@@ -83,7 +83,7 @@ for target in bootstrap generate check-generated lint test-unit test-component t
   make -n "$target" >/dev/null
 done
 
-go env GOTOOLCHAIN | grep -Eq '^(auto|go1\.26\.4)$'
+go env GOTOOLCHAIN | grep -Eq '^(auto|local|go1\.26\.4)$'
 node --version | grep -qx 'v22.22.2'
 pnpm --version | grep -qx '11.9.0'
 python3 --version | grep -qx 'Python 3.14.3'
