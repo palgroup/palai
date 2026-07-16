@@ -221,6 +221,9 @@ func generateObjects(schemasRoot, goOut string) error {
 		if base == "id.json" {
 			continue // identifier seed is handled by generateIdentifiers
 		}
+		if base == "event-types.json" {
+			continue // event registry is a data file (a name list), not a typed schema
+		}
 		schema, err := readObject(file)
 		if err != nil {
 			return err
