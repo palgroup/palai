@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+profile="${1:-}"
+case "$profile" in
+  quick)
+    go test ./spikes/control-plane/load -run 'TestCandidate|TestReconnect' -count=1
+    ;;
+  evidence)
+    output="${PALAI_SPIKE_REPORT_OUT:-spikes/.evidence/control-plane-runtime.json}"
+    go run ./spikes/control-plane/load -profile evidence -out "$output"
+    ;;
+  *)
+    echo "usage: scripts/spikes/control-plane-runtime <quick|evidence>" >&2
+    exit 2
+    ;;
+esac

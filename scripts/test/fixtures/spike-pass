@@ -1,3 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-echo "fixture_spike=PASS"
+case "${1:-}" in
+  quick|evidence) ;;
+  *) exit 2 ;;
+esac
+echo "fixture_spike=PASS profile=$1"

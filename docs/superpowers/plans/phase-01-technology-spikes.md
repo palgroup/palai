@@ -137,10 +137,14 @@ git commit -m "test: add deterministic technology spike reports"
 - Create: `spikes/control-plane/load/main.go`
 - Create: `spikes/control-plane/load/harness.go`
 - Test: `spikes/control-plane/load/harness_test.go`
+- Test: `spikes/control-plane/load/main_test.go`
 - Create: `spikes/control-plane/README.md`
+- Create: `scripts/spikes/control-plane-runtime`
+- Modify: `pnpm-workspace.yaml`
+- Modify: `pnpm-lock.yaml`
 - Generate: `spikes/reports/control-plane-runtime.json`
 
-- [ ] **Step 1: Write failing protocol/load tests**
+- [x] **Step 1: Write failing protocol/load tests**
 
 Test both candidate executables through the same black-box contract:
 
@@ -153,17 +157,17 @@ client disconnect never creates a cancel request
 bounded quick profile connects 25 clients and reconnects 10 exactly
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `go test ./spikes/control-plane/load -run 'TestCandidate|TestReconnect' -v`
 
 Expected: FAIL because candidate commands are absent.
 
-- [ ] **Step 3: Implement semantically identical candidates**
+- [x] **Step 3: Implement semantically identical candidates**
 
 Both servers accept an OS-assigned port, write one machine-readable readiness line to stdout and human diagnostics to stderr. They serve a retained two-event fixture and hold the connection open with 15-second heartbeats. Go uses `net/http`; the TypeScript 7.0.2 candidate compiles to Node and uses typed `node:http` APIs without a web framework. No framework-specific API may enter the harness.
 
-- [ ] **Step 4: Implement the load and restart harness**
+- [x] **Step 4: Implement the load and restart harness**
 
 The evidence profile:
 
@@ -180,17 +184,32 @@ maximum_node_idle_rss = 256 MiB
 
 Capture time-to-ready, RSS before/after 1,000 connections, reconnect completion, sequence duplicates/gaps and shutdown time. Do not commit PID, local port or absolute path.
 
-- [ ] **Step 5: Run quick and evidence profiles**
+- [x] **Step 5: Run repeated quick profiles and commit the clean source**
 
-Run: `go test ./spikes/control-plane/load -count=10 && go run ./spikes/control-plane/load -profile evidence -out spikes/reports/control-plane-runtime.json`
+Run: `go test ./spikes/control-plane/load -count=10 && scripts/spikes/control-plane-runtime quick`
 
-Expected: both candidates meet semantic bounds; report contains 1,000 connected and 100 exact reconnects for each candidate. ADR-0001 may choose Go using packaging/resource evidence, never familiarity alone.
-
-- [ ] **Step 6: Commit**
+Expected: both candidates meet the bounded semantic profile ten consecutive times. Commit candidate and harness sources before generating evidence so the report can bind to a clean source commit.
 
 ```bash
-git add spikes/control-plane spikes/reports/control-plane-runtime.json
-git commit -m "test: measure control-plane runtime candidates"
+git add pnpm-lock.yaml pnpm-workspace.yaml scripts/spikes/control-plane-runtime spikes/control-plane
+git commit -m "test: add control-plane runtime candidates"
+```
+
+- [ ] **Step 6: Generate, validate and commit evidence**
+
+Run from the clean source commit:
+
+```bash
+PALAI_SPIKE_REPORT_OUT=spikes/.evidence/control-plane-runtime.json \
+  scripts/spikes/control-plane-runtime evidence
+cp spikes/.evidence/control-plane-runtime.json spikes/reports/control-plane-runtime.json
+```
+
+Expected: the report contains 1,000 connected streams and 100 exact reconnects for each candidate. Update the manifest entry to `implemented`, validate source-tree ancestry and commit only the promoted report plus manifest/plan state. ADR-0001 may choose Go using packaging/resource evidence, never familiarity alone.
+
+```bash
+git add spikes/manifest.json spikes/reports/control-plane-runtime.json docs/superpowers/plans/phase-01-technology-spikes.md
+git commit -m "test: record control-plane runtime evidence"
 ```
 
 ### Task 3: PostgreSQL lease, fence, and outbox kill proof

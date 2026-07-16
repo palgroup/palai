@@ -36,7 +36,7 @@ while IFS=$'\t' read -r id status command; do
     failed=$((failed + 1))
     continue
   fi
-  if "$command"; then
+  if "$command" "$profile"; then
     echo "spike=$id status=passed profile=$profile"
   else
     echo "spike=$id status=failed profile=$profile" >&2
