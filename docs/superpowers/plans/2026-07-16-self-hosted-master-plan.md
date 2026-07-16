@@ -266,13 +266,13 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 
 **Files:** `spikes/contracts/`, `spikes/postgres-coordinator/`, `spikes/runner-supervisor/`, `spikes/nextjs-streaming/`, `docs/adr/0001-*.md` … `0005-*.md`
 
-- [ ] Go vs TypeScript control-plane spike: 1,000 concurrent idle SSE, 100 reconnect ve graceful process restart ölç.
-- [ ] PostgreSQL lease/fence/outbox spike: worker transaction'ı kill et, yalnızca bir authoritative completion olduğunu DB assertion ile kanıtla.
-- [ ] Runner spike: outbound mTLS WebSocket üzerinden lease al, Docker SDK ile digest-pinned engine başlat, JSONL stdout ve bounded stderr ayır.
-- [ ] Contract-generation bake-off: canonical JSON Schema → OpenAPI 3.2 → 3.1.2 projection → TS/Python/Go types; omitted/null/open-enum round-trip fixture'larını doğrula.
-- [ ] Next.js spike: server-only SDK credential ile Route Handler üzerinden SSE relay ve AbortSignal behavior doğrula.
-- [ ] Local object-store adaylarını license, signed image, multi-arch, checksum/multipart ve offline availability kriterleriyle ölç.
-- [ ] Sonuçları ADR-0001 language/runtime, ADR-0002 contract toolchain, ADR-0003 runner transport, ADR-0004 local object store, ADR-0005 build orchestration olarak kaydet.
+- [x] Go vs TypeScript control-plane spike: 1,000 concurrent idle SSE, 100 reconnect ve graceful process restart ölç.
+- [x] PostgreSQL lease/fence/outbox spike: worker transaction'ı kill et, yalnızca bir authoritative completion olduğunu DB assertion ile kanıtla.
+- [x] Runner spike: outbound mTLS WebSocket üzerinden lease al, Docker SDK ile digest-pinned engine başlat, JSONL stdout ve bounded stderr ayır.
+- [x] Contract-generation bake-off: canonical JSON Schema → OpenAPI 3.2 → 3.1.2 projection → TS/Python/Go types; omitted/null/open-enum round-trip fixture'larını doğrula.
+- [x] Next.js spike: server-only SDK credential ile Route Handler üzerinden SSE relay ve AbortSignal behavior doğrula.
+- [x] Local object-store adaylarını license, signed image, multi-arch, checksum/multipart ve offline availability kriterleriyle ölç.
+- [x] Sonuçları ADR-0001 language/runtime, ADR-0002 contract toolchain, ADR-0003 runner transport, ADR-0004 local object store, ADR-0005 build orchestration olarak kaydet.
 
 **Hard criteria:** Contract semantic loss, stale fence acceptance, unbounded memory, secret leak veya unsupported platform varsa aday elenir. “Daha tanıdık” ölçüt değildir.
 

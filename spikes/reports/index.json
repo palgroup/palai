@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "reports": [
+    {
+      "path": "spikes/reports/contract-toolchain.json",
+      "sha256": "276c2ed185713f1c023391e3cb68de90bce328ace00ce2102eabe0692a1d7e7a",
+      "spike": "contract-toolchain",
+      "passed": true,
+      "owning_adr": "ADR-0002"
+    },
+    {
+      "path": "spikes/reports/control-plane-runtime.json",
+      "sha256": "7463951a98c9cd45bdd4ca784ee4b2d3d09ef84c5e013d919b63573222d68541",
+      "spike": "control-plane-runtime",
+      "passed": true,
+      "owning_adr": "ADR-0001"
+    },
+    {
+      "path": "spikes/reports/nextjs-streaming.json",
+      "sha256": "423b39f8b334d5fc01ec161769a16bd4af8f31627d6514fb486b80821e1b3124",
+      "spike": "nextjs-streaming",
+      "passed": true,
+      "owning_adr": "ADR-0005"
+    },
+    {
+      "path": "spikes/reports/object-store.json",
+      "sha256": "78dea3df17675a6c3f2dec505493a877f3a09f84ef97bc322d99379483a0de9d",
+      "spike": "object-store",
+      "passed": true,
+      "owning_adr": "ADR-0004"
+    },
+    {
+      "path": "spikes/reports/postgres-coordinator.json",
+      "sha256": "6c646bcae756fa410c33e99fe10a3010a979cc97653466fb36b007fa3bd2974c",
+      "spike": "postgres-coordinator",
+      "passed": true,
+      "owning_adr": "ADR-0001"
+    },
+    {
+      "path": "spikes/reports/runner-supervisor.json",
+      "sha256": "99f8f0e75d8bf48a8fd7a6f55683633563ba7cb9f375b858ae907e0243c13ce8",
+      "spike": "runner-supervisor",
+      "passed": true,
+      "owning_adr": "ADR-0003"
+    }
+  ]
+}

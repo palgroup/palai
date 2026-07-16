@@ -2,7 +2,10 @@
 
 Palai is a provider-neutral, self-hostable agent execution platform. It exposes one durable execution kernel through Responses, Sessions, reusable Agents, and interoperability adapters.
 
-The current repository contains the product specification under review and the implementation plans derived from it. Runtime code has not started yet.
+The repository has completed its E01 technology baseline: executable spike
+reports select the implementation toolchain before production runtime work
+starts. This evidence accepts technology decisions only; it does not claim that
+the LP-0 local stack or a self-host release is complete.
 
 ## Development
 
@@ -12,6 +15,7 @@ same foundation checks used by CI:
 ```bash
 make bootstrap
 make verify
+bash scripts/verify/e01.sh
 ```
 
 Provider credentials are not required for foundation checks. Never place a
@@ -24,6 +28,8 @@ model-broker phase is available.
 - [Product and architecture specification](MASTER-SPEC.md)
 - [Self-hosted implementation master plan](docs/superpowers/plans/2026-07-16-self-hosted-master-plan.md)
 - [First local live-proof implementation plan](docs/superpowers/plans/2026-07-16-local-live-proof.md)
+- [Accepted architecture decisions](docs/adr)
+- [Checksummed E01 report index](spikes/reports/index.json)
 
 ## Initial delivery target
 

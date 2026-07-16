@@ -436,7 +436,7 @@ git commit -m "test: record outbound runner evidence"
 - Modify: `pnpm-workspace.yaml`
 - Modify: `pnpm-lock.yaml`
 
-- [ ] **Step 1: Write failing production-server tests**
+- [x] **Step 1: Write failing production-server tests**
 
 Node tests start a fake canonical SSE upstream and a built Next production server, then assert:
 
@@ -449,17 +449,17 @@ browser abort does not call the explicit /cancel endpoint
 route forwards Last-Event-ID on reconnect
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `pnpm --dir spikes/nextjs-streaming test`
 
 Expected: FAIL because the Next application and route are absent.
 
-- [ ] **Step 3: Implement the server-only relay**
+- [x] **Step 3: Implement the server-only relay**
 
 Pin Next 16.2.10, React/ReactDOM 19.2.7 and TypeScript 7.0.2. `lib/server-client.ts` imports `server-only`, validates only Palai-specific environment names and creates the upstream request. The Route Handler returns a Web `ReadableStream`, forwards canonical frames, propagates `Last-Event-ID`, and aborts only its upstream fetch when the browser disconnects.
 
-- [ ] **Step 4: Verify production build and commit**
+- [x] **Step 4: Verify production build and commit**
 
 Run: `pnpm --dir spikes/nextjs-streaming build && pnpm --dir spikes/nextjs-streaming test`
 
@@ -482,17 +482,17 @@ git commit -m "test: prove Next.js server-only streaming"
 - Modify: `go.mod`
 - Modify: `go.sum`
 
-- [ ] **Step 1: Write failing candidate/conformance tests**
+- [x] **Step 1: Write failing candidate/conformance tests**
 
 The evaluator rejects candidates missing source URL, SPDX license, active-maintenance receipt, immutable multi-arch manifest digest, amd64/arm64 entries, offline export/import path, health check, and S3 conformance command. Runtime conformance covers bucket create, put/get/head/delete, conditional request, multipart upload, abort, range read, SHA-256 checksum metadata and restart persistence.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `go test ./spikes/object-store -v`
 
 Expected: FAIL because candidate evidence and conformance adapter are absent.
 
-- [ ] **Step 3: Record current primary-source candidates**
+- [x] **Step 3: Record current primary-source candidates**
 
 Evaluate at least:
 
@@ -504,11 +504,11 @@ MinIO community: archived upstream, AGPL-3.0, source-only/community distribution
 
 Registry metadata is measured live and reduced to digests/platforms in the report. Mutable tags are never deployment input. Absence of an upstream signature is explicit; Palai must mirror the selected source/image digest and sign its release artifact before E18. An unsigned upstream tag cannot be called verified merely because TLS pull succeeded.
 
-- [ ] **Step 4: Run selected candidate S3 and offline proof**
+- [x] **Step 4: Run selected candidate S3 and offline proof**
 
 Start SeaweedFS 4.39 by the measured manifest/platform digest with random credentials and an isolated named volume. Use AWS SDK for Go v2 S3 1.105.1 with path-style addressing. After conformance, stop and start the same container/volume and re-read retained bytes. Export the exact image to a tar archive, remove only a disposable retag, import it with networking disabled for the command, and verify the same local image ID; delete the tar in cleanup.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `scripts/spikes/object-store evidence spikes/reports/object-store.json`
 
@@ -535,17 +535,17 @@ git commit -m "test: select the local object store from evidence"
 - Modify: `docs/superpowers/plans/2026-07-16-self-hosted-master-plan.md`
 - Modify: `docs/superpowers/plans/phase-01-technology-spikes.md`
 
-- [ ] **Step 1: Write the failing promotion verifier**
+- [x] **Step 1: Write the failing promotion verifier**
 
 `scripts/test/e01.sh` proves missing, failed, tampered, wrong-commit, secret-bearing or unreferenced report/ADR fixtures are rejected. `scripts/verify/e01.sh` requires five accepted ADRs, six passing reports, SHA-256 checksums, exact report-to-ADR links and no hard-gate exception.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `bash scripts/test/e01.sh`
 
 Expected: FAIL because ADRs and report index are absent.
 
-- [ ] **Step 3: Write evidence-backed ADRs**
+- [x] **Step 3: Write evidence-backed ADRs**
 
 Decisions and required links:
 
@@ -559,13 +559,13 @@ ADR-0005: Make as stable facade over Go/uv/pnpm plus Docker-backed evidence scri
 
 Every ADR records rejected options, measurable consequences, scope, exact version/digest policy and revisit triggers. It cannot claim production readiness from a spike.
 
-- [ ] **Step 4: Build and verify the report index**
+- [x] **Step 4: Build and verify the report index**
 
 Index each report path, SHA-256, spike name, pass state and owning ADR. Run: `bash scripts/test/e01.sh && bash scripts/verify/e01.sh && make verify`.
 
 Expected: `e01_verification=PASS reports=6 adrs=5 hard_gate_exceptions=0`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/adr README.md docs/superpowers/plans spikes/reports/index.json scripts/test/e01.sh scripts/verify/e01.sh
@@ -574,14 +574,14 @@ git commit -m "docs: accept the evidence-backed Palai technology baseline"
 
 ## 2. E01 exit audit
 
-- [ ] Quick spike suite passes without Docker or external credentials.
-- [ ] Evidence suite passes with real PostgreSQL, Docker Engine, Next production server and selected S3 store.
-- [ ] Control-plane report proves 1,000 connections and 100 reconnects for both candidates.
-- [ ] PostgreSQL report proves worker kill, higher fence, stale rejection and one authoritative outbox.
-- [ ] Contract report proves omitted/null/open-enum/unknown-field/integer semantics across three languages.
-- [ ] Runner report proves outbound mTLS, digest-pinned OCI, bounded output and secret isolation.
-- [ ] Next report proves streaming, reconnect, abort semantics and zero credential findings.
-- [ ] Object-store report proves current license/maintenance/multi-arch/digest, S3 persistence and offline availability.
-- [ ] ADR-0001..0005 are accepted and linked to checksummed reports.
+- [x] Quick spike suite passes without Docker or external credentials.
+- [x] Evidence suite passes with real PostgreSQL, Docker Engine, Next production server and selected S3 store.
+- [x] Control-plane report proves 1,000 connections and 100 reconnects for both candidates.
+- [x] PostgreSQL report proves worker kill, higher fence, stale rejection and one authoritative outbox.
+- [x] Contract report proves omitted/null/open-enum/unknown-field/integer semantics across three languages.
+- [x] Runner report proves outbound mTLS, digest-pinned OCI, bounded output and secret isolation.
+- [x] Next report proves streaming, reconnect, abort semantics and zero credential findings.
+- [x] Object-store report proves current license/maintenance/multi-arch/digest, S3 persistence and offline availability.
+- [x] ADR-0001..0005 are accepted and linked to checksummed reports.
 - [ ] `make verify`, `bash scripts/verify/e01.sh`, GitHub Foundation CI and branch-protection verification pass.
 - [ ] Only after this audit may LP-0 Task 2 create canonical production contracts.
