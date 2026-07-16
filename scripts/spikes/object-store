@@ -9,22 +9,35 @@ profile="${1:-}"
 case "$profile" in
   quick)
     bash scripts/test/object-store-lifecycle.sh
+    bash scripts/test/object-store-mode.sh
     go test ./spikes/object-store/... -count=1 -v
     echo "object_store=PASS profile=quick live=skipped"
     exit 0
     ;;
   evidence)
-    repetitions="${PALAI_SPIKE_OBJECT_STORE_REPETITIONS:-5}"
-    case "$repetitions" in
-      1|5) ;;
-      *)
-        echo "object-store evidence repetitions must be 1 or 5" >&2
-        exit 2
-        ;;
-    esac
+    if test -n "${PALAI_SPIKE_OBJECT_STORE_REPETITIONS:-}" && \
+      test "$PALAI_SPIKE_OBJECT_STORE_REPETITIONS" != 5; then
+      echo "object-store evidence requires exactly 5 repetitions" >&2
+      exit 2
+    fi
+    repetitions=5
+    report_enabled=1
+    ;;
+  diagnostic)
+    if test -n "${2:-}"; then
+      echo "object-store diagnostic mode does not write reports" >&2
+      exit 2
+    fi
+    if test -n "${PALAI_SPIKE_OBJECT_STORE_REPETITIONS:-}" && \
+      test "$PALAI_SPIKE_OBJECT_STORE_REPETITIONS" != 1; then
+      echo "object-store diagnostic mode requires exactly 1 repetition" >&2
+      exit 2
+    fi
+    repetitions=1
+    report_enabled=0
     ;;
   *)
-    echo "usage: scripts/spikes/object-store <quick|evidence> [report-path]" >&2
+    echo "usage: scripts/spikes/object-store <quick|evidence|diagnostic> [report-path]" >&2
     exit 2
     ;;
 esac
@@ -56,16 +69,7 @@ cleanup() {
   local cleanup_failed=0
   set +e
   object_store_remove_current_resources || cleanup_failed=1
-  if test "$archive_tag_owned" -eq 1; then
-    docker image rm "$archive_tag" >/dev/null 2>&1 || true
-    if object_store_docker_server_reachable && \
-      ! docker image inspect "$archive_tag" >/dev/null 2>&1; then
-      archive_tag_owned=0
-    else
-      echo "object-store cleanup could not verify temporary image tag removal" >&2
-      cleanup_failed=1
-    fi
-  fi
+  object_store_remove_owned_archive_tag || cleanup_failed=1
   access_key=""
   secret_key=""
   if test -n "$temp_directory" && [[ "$temp_directory" == */palai-object-store.* ]]; then
@@ -406,17 +410,23 @@ for iteration in $(seq 1 "$repetitions"); do
 done
 
 archive_file="$temp_directory/selected-platform.tar"
-if docker image inspect "$archive_tag" >/dev/null 2>&1; then
-  echo "refusing to reuse an existing archive round-trip tag" >&2
-  exit 1
-fi
+case "$(object_store_image_tag_presence "$archive_tag")" in
+  absent) ;;
+  present)
+    echo "refusing to reuse an existing archive round-trip tag" >&2
+    exit 1
+    ;;
+  *)
+    echo "could not verify absence of the archive round-trip tag" >&2
+    exit 1
+    ;;
+esac
 docker image tag "$selected_image_id" "$archive_tag"
 archive_tag_owned=1
 docker image save --output "$archive_file" "$archive_tag"
 chmod 0600 "$archive_file"
 archive_bytes="$(wc -c <"$archive_file" | tr -d ' ')"
-docker image rm "$archive_tag" >/dev/null
-archive_tag_owned=0
+object_store_remove_owned_archive_tag
 offline_load_binary="$temp_directory/offline-load"
 CGO_ENABLED=0 GOOS=linux GOARCH="$catalog_arch" \
   go build -trimpath -buildvcs=false -ldflags='-s -w' \
@@ -458,8 +468,7 @@ if test "$loaded_image_id" != "$selected_image_id"; then
   echo "local image archive round-trip changed the image config ID" >&2
   exit 1
 fi
-docker image rm "$archive_tag" >/dev/null
-archive_tag_owned=0
+object_store_remove_owned_archive_tag
 rm -f "$archive_file" "$temp_directory/image-load.log"
 archive_summary="$temp_directory/archive.json"
 jq -n \
@@ -473,7 +482,9 @@ rm -f "$config_file"
 config_file=""
 containers_after="$(count_containers)"
 volumes_after="$(count_volumes)"
-if test "$containers_after" -ne 0 || test "$volumes_after" -ne 0 || docker image inspect "$archive_tag" >/dev/null 2>&1; then
+archive_tag_after="$(object_store_image_tag_presence "$archive_tag")"
+if test "$containers_after" -ne 0 || test "$volumes_after" -ne 0 || \
+  test "$archive_tag_after" != absent; then
   echo "object-store evidence leaked an owned container, volume, or temporary tag" >&2
   exit 1
 fi
@@ -484,6 +495,11 @@ while IFS= read -r evidence_file; do
     exit 1
   fi
 done < <(find "$temp_directory" -type f -name '*.json' -print)
+
+if test "$report_enabled" -eq 0; then
+  echo "object_store_diagnostic=PASS repetitions=1 promotable=false report=not_written platform=$platform containers=$containers_after volumes=$volumes_after archive=local_roundtrip"
+  exit 0
+fi
 
 output="${2:-${PALAI_SPIKE_REPORT_OUT:-spikes/.evidence/object-store.json}}"
 go run ./spikes/object-store/cmd/report \

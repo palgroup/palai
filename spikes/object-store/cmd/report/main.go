@@ -193,9 +193,16 @@ func parseFlags() options {
 	flag.IntVar(&configuration.volumesAfter, "volumes-after", -1, "labeled volumes after")
 	flag.BoolVar(&configuration.secretScan, "secret-scan", false, "exact credential sentinel scan passed")
 	flag.Parse()
+	if err := validateOptions(configuration); err != nil {
+		fatal(err)
+	}
+	return configuration
+}
+
+func validateOptions(configuration options) error {
 	if configuration.outputPath == "" || configuration.runDirectory == "" ||
 		configuration.registryPath == "" || configuration.archivePath == "" ||
-		configuration.repetitions < 1 || configuration.startedUnix < 1 ||
+		configuration.repetitions != 5 || configuration.startedUnix < 1 ||
 		!reportDigestPattern.MatchString(configuration.indexDigest) ||
 		!reportDigestPattern.MatchString(configuration.platformDigest) ||
 		!reportDigestPattern.MatchString(configuration.imageID) ||
@@ -203,9 +210,9 @@ func parseFlags() options {
 		strings.TrimSpace(configuration.dockerVersion) == "" ||
 		configuration.containersBefore < 0 || configuration.containersAfter < 0 ||
 		configuration.volumesBefore < 0 || configuration.volumesAfter < 0 {
-		fatal(errors.New("all object-store evidence flags are required and must be valid"))
+		return errors.New("all object-store evidence flags are required, promotable reports require 5 repetitions, and all values must be valid")
 	}
-	return configuration
+	return nil
 }
 
 func commandOutput(directory, name string, arguments ...string) (string, error) {

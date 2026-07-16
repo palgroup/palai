@@ -12,7 +12,7 @@ object_store_container_owned_name() {
   local labels
   labels="$(docker container inspect "$name" \
     --format '{{ index .Config.Labels "io.palai.spike" }}|{{ index .Config.Labels "io.palai.spike.run" }}' \
-    2>/dev/null)" || return 1
+    2>/dev/null)" || return 2
   test "$labels" = "object-store|$run_id"
 }
 
@@ -21,31 +21,73 @@ object_store_volume_owned_name() {
   local labels
   labels="$(docker volume inspect "$name" \
     --format '{{ index .Labels "io.palai.spike" }}|{{ index .Labels "io.palai.spike.run" }}' \
-    2>/dev/null)" || return 1
+    2>/dev/null)" || return 2
   test "$labels" = "object-store|$run_id"
+}
+
+object_store_exact_line_presence() {
+  local expected="$1"
+  local lines="$2"
+  local line
+  while IFS= read -r line || test -n "$line"; do
+    if test "$line" = "$expected"; then
+      echo present
+      return 0
+    fi
+  done <<<"$lines"
+  echo absent
+}
+
+object_store_container_presence() {
+  local name="$1"
+  local names
+  if ! names="$(docker container ls --all --format '{{.Names}}' 2>/dev/null)"; then
+    echo unknown
+    return 0
+  fi
+  object_store_exact_line_presence "$name" "$names"
+}
+
+object_store_volume_presence() {
+  local name="$1"
+  local names
+  if ! names="$(docker volume ls --format '{{.Name}}' 2>/dev/null)"; then
+    echo unknown
+    return 0
+  fi
+  object_store_exact_line_presence "$name" "$names"
+}
+
+object_store_image_tag_presence() {
+  local tag="$1"
+  local tags
+  if ! tags="$(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)"; then
+    echo unknown
+    return 0
+  fi
+  object_store_exact_line_presence "$tag" "$tags"
 }
 
 object_store_remove_current_container() {
   local name="$current_container"
   local attempt
+  local ownership_status
   test -n "$name" || return 0
 
   for attempt in $(seq 1 "${cleanup_attempts:-3}"); do
-    if object_store_docker_server_reachable; then
-      if ! docker container inspect "$name" >/dev/null 2>&1; then
-        if object_store_docker_server_reachable; then
-          current_container=""
-          return 0
-        fi
-        continue
+    if object_store_container_owned_name "$name"; then
+      docker container rm -f "$name" >/dev/null 2>&1 || true
+      if test "$(object_store_container_presence "$name")" = absent; then
+        current_container=""
+        return 0
       fi
-      if ! object_store_container_owned_name "$name"; then
+    else
+      ownership_status=$?
+      if test "$ownership_status" -eq 1; then
         echo "refusing to remove a container without the invocation ownership labels: $name" >&2
         return 1
       fi
-      docker container rm -f "$name" >/dev/null 2>&1 || true
-      if object_store_docker_server_reachable && \
-        ! docker container inspect "$name" >/dev/null 2>&1; then
+      if test "$(object_store_container_presence "$name")" = absent; then
         current_container=""
         return 0
       fi
@@ -62,24 +104,23 @@ object_store_remove_current_container() {
 object_store_remove_current_volume() {
   local name="$current_volume"
   local attempt
+  local ownership_status
   test -n "$name" || return 0
 
   for attempt in $(seq 1 "${cleanup_attempts:-3}"); do
-    if object_store_docker_server_reachable; then
-      if ! docker volume inspect "$name" >/dev/null 2>&1; then
-        if object_store_docker_server_reachable; then
-          current_volume=""
-          return 0
-        fi
-        continue
+    if object_store_volume_owned_name "$name"; then
+      docker volume rm -f "$name" >/dev/null 2>&1 || true
+      if test "$(object_store_volume_presence "$name")" = absent; then
+        current_volume=""
+        return 0
       fi
-      if ! object_store_volume_owned_name "$name"; then
+    else
+      ownership_status=$?
+      if test "$ownership_status" -eq 1; then
         echo "refusing to remove a volume without the invocation ownership labels: $name" >&2
         return 1
       fi
-      docker volume rm -f "$name" >/dev/null 2>&1 || true
-      if object_store_docker_server_reachable && \
-        ! docker volume inspect "$name" >/dev/null 2>&1; then
+      if test "$(object_store_volume_presence "$name")" = absent; then
         current_volume=""
         return 0
       fi
@@ -98,6 +139,33 @@ object_store_remove_current_resources() {
   object_store_remove_current_container || failed=1
   object_store_remove_current_volume || failed=1
   return "$failed"
+}
+
+object_store_remove_owned_archive_tag() {
+  local attempt
+  local presence
+  test "$archive_tag_owned" -eq 1 || return 0
+
+  for attempt in $(seq 1 "${cleanup_attempts:-3}"); do
+    presence="$(object_store_image_tag_presence "$archive_tag")"
+    if test "$presence" = absent; then
+      archive_tag_owned=0
+      return 0
+    fi
+    if test "$presence" = present; then
+      docker image rm "$archive_tag" >/dev/null 2>&1 || true
+      if test "$(object_store_image_tag_presence "$archive_tag")" = absent; then
+        archive_tag_owned=0
+        return 0
+      fi
+    fi
+    if test "$attempt" -lt "${cleanup_attempts:-3}"; then
+      sleep "${cleanup_retry_delay:-1}"
+    fi
+  done
+
+  echo "object-store cleanup could not verify temporary image tag removal" >&2
+  return 1
 }
 
 object_store_public_failure_reason() {

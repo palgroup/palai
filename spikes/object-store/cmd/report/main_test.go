@@ -27,6 +27,33 @@ var persistenceCases = []string{
 	"persistence.cleanup",
 }
 
+func TestValidateOptionsRequiresFivePromotableRepetitions(t *testing.T) {
+	configuration := options{
+		outputPath:       "report.json",
+		runDirectory:     "runs",
+		registryPath:     "registry.json",
+		archivePath:      "archive.json",
+		repetitions:      5,
+		startedUnix:      1,
+		indexDigest:      "sha256:" + strings.Repeat("a", 64),
+		platformDigest:   "sha256:" + strings.Repeat("b", 64),
+		imageID:          "sha256:" + strings.Repeat("c", 64),
+		platform:         "linux/arm64",
+		dockerVersion:    "24.0.2",
+		containersBefore: 0,
+		containersAfter:  0,
+		volumesBefore:    0,
+		volumesAfter:     0,
+	}
+	if err := validateOptions(configuration); err != nil {
+		t.Fatalf("five-run report options were rejected: %v", err)
+	}
+	configuration.repetitions = 1
+	if err := validateOptions(configuration); err == nil {
+		t.Fatal("one-run diagnostic evidence was accepted for report generation")
+	}
+}
+
 func TestReadMeasurementsRequiresExactPhaseBoundEvidence(t *testing.T) {
 	commit := strings.Repeat("a", 40)
 	tree := strings.Repeat("b", 40)
