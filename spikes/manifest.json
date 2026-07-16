@@ -27,9 +27,9 @@
     },
     {
       "id": "nextjs-streaming",
-      "status": "planned",
-      "quick_command": null,
-      "evidence_command": null
+      "status": "implemented",
+      "quick_command": "scripts/spikes/nextjs-streaming",
+      "evidence_command": "scripts/spikes/nextjs-streaming"
     },
     {
       "id": "object-store",
