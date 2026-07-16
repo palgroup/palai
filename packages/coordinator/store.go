@@ -194,17 +194,6 @@ type Transition struct {
 	Sequence int64
 }
 
-// AllocateSequence hands out the next strictly-increasing sequence for a session.
-// The allocation is a single atomic upsert, so concurrent callers on one session
-// receive unique, gap-free numbers (spec §21.1).
-func (s *Store) AllocateSequence(ctx context.Context, sessionID string) (int64, error) {
-	var seq int64
-	if err := s.pool.QueryRow(ctx, storage.Query("AllocateSequence"), sessionID).Scan(&seq); err != nil {
-		return 0, fmt.Errorf("allocate session sequence: %w", err)
-	}
-	return seq, nil
-}
-
 // ApplyRunTransition is the transactional transition callback (spec §21.1, §24.5).
 // It locks the run, asks the pure RunTable whether the command is legal, then
 // writes the new state, the session event, and the outbox row in one transaction.

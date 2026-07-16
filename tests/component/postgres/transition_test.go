@@ -17,10 +17,20 @@ import (
 
 func TestSessionSequenceStrictlyAllocatedInTransaction(t *testing.T) {
 	cs := openHarness(t)
-	_, sessionID, _ := seedRun(t, cs.Pool())
+	tenant, sessionID, firstRun := seedRun(t, cs.Pool())
 	ctx := context.Background()
 
+	// Many queued runs in one session; each concurrent transition allocates one
+	// sequence through the real (tenant-gated) mutation path.
 	const workers = 20
+	runs := make([]string, workers)
+	runs[0] = firstRun
+	for i := 1; i < workers; i++ {
+		runs[i] = newID("run")
+		exec(t, cs.Pool(), `INSERT INTO runs (id, organization_id, project_id, session_id) VALUES ($1, $2, $3, $4)`,
+			runs[i], tenant.Organization, tenant.Project, sessionID)
+	}
+
 	seqs := make([]int64, workers)
 	var wg sync.WaitGroup
 	var firstErr error
@@ -31,18 +41,18 @@ func TestSessionSequenceStrictlyAllocatedInTransaction(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			seq, err := cs.AllocateSequence(ctx, sessionID)
+			tr, err := cs.ApplyRunTransition(ctx, tenant, runs[i], statemachines.RunCmdProvision)
 			if err != nil {
 				errOnce.Do(func() { firstErr = err })
 				return
 			}
-			seqs[i] = seq
+			seqs[i] = tr.Sequence
 		}(i)
 	}
 	close(start)
 	wg.Wait()
 	if firstErr != nil {
-		t.Fatalf("AllocateSequence() error = %v", firstErr)
+		t.Fatalf("ApplyRunTransition() error = %v", firstErr)
 	}
 
 	sorted := append([]int64(nil), seqs...)

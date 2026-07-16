@@ -33,12 +33,9 @@ func Open(ctx context.Context, databaseURL string, tenant coordinator.Tenant) (*
 // Close releases the underlying pool.
 func (s *Store) Close() { s.spine.Close() }
 
-// ApplyRunTransition applies a run command within the bound tenant scope.
+// ApplyRunTransition applies a run command within the bound tenant scope. It is
+// the only mutation path; session-sequence allocation happens inside it, gated by
+// the tenant-scoped run lookup, so there is no unscoped allocation surface.
 func (s *Store) ApplyRunTransition(ctx context.Context, runID string, command statemachines.RunCommand) (coordinator.Transition, error) {
 	return s.spine.ApplyRunTransition(ctx, s.tenant, runID, command)
-}
-
-// AllocateSequence hands out the next session sequence number.
-func (s *Store) AllocateSequence(ctx context.Context, sessionID string) (int64, error) {
-	return s.spine.AllocateSequence(ctx, sessionID)
 }
