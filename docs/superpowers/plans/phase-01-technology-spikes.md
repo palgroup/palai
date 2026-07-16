@@ -583,5 +583,5 @@ git commit -m "docs: accept the evidence-backed Palai technology baseline"
 - [x] Next report proves streaming, reconnect, abort semantics and zero credential findings.
 - [x] Object-store report proves current license/maintenance/multi-arch/digest, S3 persistence and offline availability.
 - [x] ADR-0001..0005 are accepted and linked to checksummed reports.
-- [ ] `make verify`, `bash scripts/verify/e01.sh`, GitHub Foundation CI and branch-protection verification pass.
-- [ ] Only after this audit may LP-0 Task 2 create canonical production contracts.
+- [x] `make verify`, `bash scripts/verify/e01.sh`, GitHub Foundation CI and branch-protection verification pass.
+- [x] Only after this audit may LP-0 Task 2 create canonical production contracts.
