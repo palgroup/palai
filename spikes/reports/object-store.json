@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "spike": "object-store",
+  "git_commit": "39f25c73d998110d77a938555e1991406b932b28",
+  "source_tree": "7b60da0dd3f9743bbc2eb8bdd8c2bf415a8961ea",
+  "started_at": "2026-07-16T15:38:59Z",
+  "ended_at": "2026-07-16T15:40:40.308445Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "tool_versions": {
+      "aws-sdk-s3": "1.105.1",
+      "docker": "24.0.2",
+      "docker-platform": "linux/arm64",
+      "go": "go version go1.26.4 darwin/arm64",
+      "seaweedfs": "4.39"
+    },
+    "image_digests": [
+      "sha256:22fe8c99253508a3d4bf2fb3c66130d9c3e238506b42c41aa3aee3bfbe3a6906",
+      "sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6",
+      "sha256:dbc44905880b231eff3adc1f74d3577468b406c7a3414679f9729eaa2385e191"
+    ]
+  },
+  "metrics": {
+    "archive.bytes": 241171968,
+    "bytes_verified.total": 31523985,
+    "containers.after": 0,
+    "containers.before": 0,
+    "latency.auth.wrong_secret_rejected.max_ms": 48.776208,
+    "latency.auth.wrong_secret_rejected.mean_ms": 23.871024999999996,
+    "latency.auth.wrong_secret_rejected.min_ms": 5.16475,
+    "latency.bucket.create_and_head.max_ms": 64.452958,
+    "latency.bucket.create_and_head.mean_ms": 31.356191799999998,
+    "latency.bucket.create_and_head.min_ms": 15.379458,
+    "latency.checksum.put_head_get.max_ms": 285.143583,
+    "latency.checksum.put_head_get.mean_ms": 250.8259,
+    "latency.checksum.put_head_get.min_ms": 234.786459,
+    "latency.conditional.if_none_match.max_ms": 18.742541,
+    "latency.conditional.if_none_match.mean_ms": 13.7762248,
+    "latency.conditional.if_none_match.min_ms": 8.149667,
+    "latency.multipart.abort.max_ms": 529.906125,
+    "latency.multipart.abort.mean_ms": 278.54675000000003,
+    "latency.multipart.abort.min_ms": 104.492875,
+    "latency.multipart.complete.max_ms": 738.373208,
+    "latency.multipart.complete.mean_ms": 419.29785860000004,
+    "latency.multipart.complete.min_ms": 235.127709,
+    "latency.object.delete_not_found.max_ms": 14.917834,
+    "latency.object.delete_not_found.mean_ms": 7.693317,
+    "latency.object.delete_not_found.min_ms": 3.123542,
+    "latency.persistence.cleanup.max_ms": 74.843834,
+    "latency.persistence.cleanup.mean_ms": 52.21391659999999,
+    "latency.persistence.cleanup.min_ms": 22.056583,
+    "latency.persistence.retained_bytes_checksum.max_ms": 103.115542,
+    "latency.persistence.retained_bytes_checksum.mean_ms": 57.190991600000004,
+    "latency.persistence.retained_bytes_checksum.min_ms": 37.904708,
+    "latency.persistence.seeded.max_ms": 13.86775,
+    "latency.persistence.seeded.mean_ms": 6.1295166,
+    "latency.persistence.seeded.min_ms": 1.778834,
+    "latency.range.exact_bytes.max_ms": 3.679833,
+    "latency.range.exact_bytes.mean_ms": 2.1444416,
+    "latency.range.exact_bytes.min_ms": 1.078958,
+    "live_cases.per_repetition": 11,
+    "live_cases.total": 55,
+    "registry.candidates": 3,
+    "test_repetitions": 5,
+    "volumes.after": 0,
+    "volumes.before": 0
+  },
+  "assertions": [
+    {
+      "name": "archive.local_archive_roundtrip",
+      "passed": true,
+      "detail": "network-isolated import returned the same image ID; daemon cache may have supplied layers"
+    },
+    {
+      "name": "candidate.catalog_complete",
+      "passed": true,
+      "detail": "3/3 structurally complete"
+    },
+    {
+      "name": "candidate.garage_policy_review_recorded",
+      "passed": true,
+      "detail": "distribution-policy review concern recorded without a legal conclusion"
+    },
+    {
+      "name": "candidate.minio_correctly_rejected",
+      "passed": true,
+      "detail": "complete negative record; archived/source-only default rejection"
+    },
+    {
+      "name": "candidate.seaweedfs_selected_immutable",
+      "passed": true,
+      "detail": "exact OCI index selected for spike recommendation"
+    },
+    {
+      "name": "docker.cleanup_exact",
+      "passed": true,
+      "detail": "containers=0/0 volumes=0/0"
+    },
+    {
+      "name": "registry.multiarch_exact",
+      "passed": true,
+      "detail": "3/3 exact index+amd64+arm64"
+    },
+    {
+      "name": "s3.auth_credentials_enforced",
+      "passed": true,
+      "detail": "5/5 observed"
+    },
+    {
+      "name": "s3.bucket_create_head",
+      "passed": true,
+      "detail": "5/5 observed"
+    },
+    {
+      "name": "s3.checksum_put_head_get",
+      "passed": true,
+      "detail": "5/5 observed"
+    },
+    {
+      "name": "s3.conditional_create",
+      "passed": true,
+      "detail": "5/5 observed"
+    },
+    {
+      "name": "s3.delete_not_found",
+      "passed": true,
+      "detail": "5/5 observed"
+    },
+    {
+      "name": "s3.multipart_complete_abort",
+      "passed": true,
+      "detail": "5/5 observed"
+    },
+    {
+      "name": "s3.range_exact",
+      "passed": true,
+      "detail": "5/5 observed"
+    },
+    {
+      "name": "s3.restart_persistence",
+      "passed": true,
+      "detail": "5/5 observed"
+    },
+    {
+      "name": "secret.exact_sentinel_scan",
+      "passed": true,
+      "detail": "generated summaries and final report scanned with exact per-run sentinels"
+    },
+    {
+      "name": "supply_chain.scoped_not_discoverable",
+      "passed": true,
+      "detail": "3/3 exact indexes; scoped methods only, not absolute absence"
+    }
+  ],
+  "passed": true
+}
