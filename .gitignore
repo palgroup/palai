@@ -8,6 +8,8 @@
 .worktrees/
 data/
 evidence/raw/
+spikes/.evidence/
+spikes/**/.build/
 
 # Build and dependency output
 bin/

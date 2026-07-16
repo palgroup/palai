@@ -59,11 +59,12 @@ Reports are generated only from a clean source commit. `git_commit` records the 
 - Test: `spikes/internal/report/report_test.go`
 - Create: `scripts/spikes/run`
 - Create: `scripts/spikes/check-reports`
+- Test: `scripts/test/spikes.sh`
 - Create: `spikes/manifest.json`
 - Modify: `Makefile`
 - Modify: `.gitignore`
 
-- [ ] **Step 1: Write failing report tests**
+- [x] **Step 1: Write failing report tests**
 
 Create table tests for:
 
@@ -100,21 +101,21 @@ func (r *Report) Finalize() error
 func (r Report) MarshalStable() ([]byte, error)
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `go test ./spikes/internal/report -v`
 
 Expected: FAIL because the report package does not exist.
 
-- [ ] **Step 3: Implement the minimum report library**
+- [x] **Step 3: Implement the minimum report library**
 
 Validate the exact 40-character lowercase commit and source tree, non-empty spike/tool identity, finite non-negative metrics, unique assertion names, monotonic timestamps and secret markers. Stable marshaling sorts tool versions, metrics, image digests and assertions before `json.MarshalIndent`.
 
-- [ ] **Step 4: Add spike commands**
+- [x] **Step 4: Add spike commands**
 
 `spikes/manifest.json` lists all six spike IDs with `planned` or `implemented` status. `scripts/spikes/run quick` runs every implemented unit-sized profile without Docker/network and prints every planned ID explicitly; planned status is permitted only during incremental E01 work. `scripts/spikes/run evidence` rejects planned entries, runs all E01 harnesses and writes temporary raw reports below `spikes/.evidence/`. `scripts/spikes/check-reports` validates committed redacted reports under `spikes/reports/`. Add `make test-spikes` and report checking to `make verify`; `make evidence-spikes` is the E01 promotion gate and raw evidence remains ignored.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `go test ./spikes/internal/report -count=20 && make test-spikes && make verify`
 

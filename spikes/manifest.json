@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "spikes": [
+    {
+      "id": "control-plane-runtime",
+      "status": "planned",
+      "quick_command": null,
+      "evidence_command": null
+    },
+    {
+      "id": "postgres-coordinator",
+      "status": "planned",
+      "quick_command": null,
+      "evidence_command": null
+    },
+    {
+      "id": "contract-toolchain",
+      "status": "planned",
+      "quick_command": null,
+      "evidence_command": null
+    },
+    {
+      "id": "runner-supervisor",
+      "status": "planned",
+      "quick_command": null,
+      "evidence_command": null
+    },
+    {
+      "id": "nextjs-streaming",
+      "status": "planned",
+      "quick_command": null,
+      "evidence_command": null
+    },
+    {
+      "id": "object-store",
+      "status": "planned",
+      "quick_command": null,
+      "evidence_command": null
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+manifest="${PALAI_SPIKE_MANIFEST:-spikes/manifest.json}"
+report_dir="${PALAI_SPIKE_REPORT_DIR:-spikes/reports}"
+test -s "$manifest" || {
+  echo "missing spike manifest: $manifest" >&2
+  exit 1
+}
+
+expected_ids='["contract-toolchain","control-plane-runtime","nextjs-streaming","object-store","postgres-coordinator","runner-supervisor"]'
+jq -e --argjson expected "$expected_ids" '
+  .schema_version == 1 and
+  (.spikes | type == "array" and length == 6) and
+  ([.spikes[].id] | length == (unique | length)) and
+  ([.spikes[].id] | sort == $expected) and
+  (all(.spikes[]; .status == "planned" or .status == "implemented")) and
+  (all(.spikes[] | select(.status == "planned");
+    .quick_command == null and .evidence_command == null)) and
+  (all(.spikes[] | select(.status == "implemented");
+    (.quick_command | type == "string" and length > 0) and
+    (.evidence_command | type == "string" and length > 0)))
+' "$manifest" >/dev/null
+
+implemented=0
+planned=0
+while IFS=$'\t' read -r id status; do
+  report="$report_dir/$id.json"
+  case "$status" in
+    planned)
+      planned=$((planned + 1))
+      test ! -e "$report" || {
+        echo "planned spike has a committed report: $id" >&2
+        exit 1
+      }
+      ;;
+    implemented)
+      implemented=$((implemented + 1))
+      test -s "$report" || {
+        echo "implemented spike is missing report: $id" >&2
+        exit 1
+      }
+      go run ./spikes/cmd/report-check "$report" >/dev/null
+      ;;
+  esac
+done < <(jq -r '.spikes[] | [.id, .status] | @tsv' "$manifest")
+
+echo "spike_reports=PASS implemented=$implemented planned=$planned"

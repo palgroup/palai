@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "spike": "control-plane-runtime",
+  "git_commit": "0123456789abcdef0123456789abcdef01234567",
+  "source_tree": "89abcdef0123456789abcdef0123456789abcdef",
+  "started_at": "2026-07-16T10:00:00Z",
+  "ended_at": "2026-07-16T10:00:01Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "tool_versions": {
+      "go": "go1.26.4"
+    },
+    "image_digests": []
+  },
+  "metrics": {
+    "go.idle_rss_bytes": 1
+  },
+  "assertions": [
+    {
+      "name": "go.reconnect_exact",
+      "passed": true,
+      "detail": "100/100"
+    }
+  ],
+  "passed": true
+}

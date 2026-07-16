@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+profile="${1:-}"
+case "$profile" in
+  quick|evidence) ;;
+  *)
+    echo "usage: scripts/spikes/run <quick|evidence>" >&2
+    exit 2
+    ;;
+esac
+
+manifest="${PALAI_SPIKE_MANIFEST:-spikes/manifest.json}"
+scripts/spikes/check-reports >/dev/null
+
+implemented=0
+planned=0
+failed=0
+while IFS=$'\t' read -r id status command; do
+  if test "$status" = planned; then
+    planned=$((planned + 1))
+    if test "$profile" = evidence; then
+      echo "spike_not_implemented spike=$id" >&2
+    else
+      echo "spike=$id status=planned"
+    fi
+    continue
+  fi
+
+  implemented=$((implemented + 1))
+  if test ! -x "$command"; then
+    echo "spike_command_missing spike=$id command=$command" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  if "$command"; then
+    echo "spike=$id status=passed profile=$profile"
+  else
+    echo "spike=$id status=failed profile=$profile" >&2
+    failed=$((failed + 1))
+  fi
+done < <(jq -r --arg profile "$profile" '
+  .spikes[] |
+  [.id, .status, (if $profile == "quick" then .quick_command else .evidence_command end) // ""] |
+  @tsv
+' "$manifest")
+
+summary="spikes_summary profile=$profile implemented=$implemented planned=$planned failed=$failed"
+if test "$profile" = evidence && test "$planned" -gt 0; then
+  echo "$summary" >&2
+  exit 2
+fi
+if test "$failed" -gt 0; then
+  echo "$summary" >&2
+  exit 1
+fi
+echo "$summary"

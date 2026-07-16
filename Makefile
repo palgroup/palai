@@ -3,7 +3,8 @@ SHELL := /bin/bash
 
 .PHONY: \
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
-	verify local-up local-down local-doctor uat-local-live
+	test-spikes evidence-spikes check-spike-reports verify local-up local-down \
+	local-doctor uat-local-live
 
 bootstrap:
 	go mod download
@@ -32,6 +33,16 @@ test-unit:
 	@packages="$$(go list ./... 2>/dev/null || true)"; \
 	if test -n "$$packages"; then go test ./...; fi
 
+test-spikes:
+	@bash scripts/test/spikes.sh
+	@scripts/spikes/run quick
+
+evidence-spikes:
+	@scripts/spikes/run evidence
+
+check-spike-reports:
+	@scripts/spikes/check-reports
+
 test-component:
 	@test -x scripts/test/component || { echo "component suite not implemented" >&2; exit 2; }
 	@scripts/test/component
@@ -40,7 +51,7 @@ test-e2e:
 	@test -x scripts/test/e2e || { echo "end-to-end suite not implemented" >&2; exit 2; }
 	@scripts/test/e2e
 
-verify: lint test-unit
+verify: lint test-unit test-spikes check-spike-reports
 	@bash scripts/verify/repository-boundary.sh
 	@bash scripts/verify/foundation.sh
 
@@ -59,4 +70,3 @@ local-doctor:
 uat-local-live:
 	@test -x scripts/uat/local-live || { echo "local live UAT not implemented" >&2; exit 2; }
 	@scripts/uat/local-live
-
