@@ -215,6 +215,16 @@ func generateObjects(schemasRoot, goOut string) error {
 	if err != nil {
 		return err
 	}
+	// The engine and runner JSONL frame schemas live under sibling protocol roots
+	// (protocols/engine, protocols/runner), outside the canonical schemas tree.
+	protocolsRoot := filepath.Dir(schemasRoot)
+	for _, dir := range []string{"engine", "runner"} {
+		more, err := filepath.Glob(filepath.Join(protocolsRoot, dir, "*.json"))
+		if err != nil {
+			return err
+		}
+		files = append(files, more...)
+	}
 	sort.Strings(files)
 	for _, file := range files {
 		base := filepath.Base(file)
@@ -274,6 +284,12 @@ type unionSchema struct {
 func isOpenUnion(schema map[string]any) bool {
 	branches, ok := schema["allOf"].([]any)
 	if !ok || len(branches) == 0 {
+		return false
+	}
+	// A pure discriminated union fixes only the discriminator (content.json). A
+	// schema that also declares a full envelope (engine/runner frames) is a fixed
+	// struct whose if/then branches merely refine each type's payload.
+	if props, _ := schema["properties"].(map[string]any); len(props) != 1 {
 		return false
 	}
 	for _, raw := range branches {
