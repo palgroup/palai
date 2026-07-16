@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "spike": "control-plane-runtime",
+  "git_commit": "13e3a1e9cce086a0da5e7ce0d96c4a920c47c331",
+  "source_tree": "55613af97a0be7d0d998395ff1e36e9ad5163e87",
+  "started_at": "2026-07-16T10:59:33.668961Z",
+  "ended_at": "2026-07-16T10:59:35.17051Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "tool_versions": {
+      "go": "go version go1.26.4 darwin/arm64",
+      "node": "v22.22.2"
+    },
+    "image_digests": []
+  },
+  "metrics": {
+    "go.cancel_requests": 0,
+    "go.connected_rss_bytes": 42090496,
+    "go.connections": 1000,
+    "go.errors": 0,
+    "go.idle_rss_bytes": 11042816,
+    "go.ready_milliseconds": 216,
+    "go.reconnects": 100,
+    "go.restart_cycles": 1,
+    "go.sequence_duplicates": 0,
+    "go.sequence_gaps": 0,
+    "go.shutdown_milliseconds": 7,
+    "node.cancel_requests": 0,
+    "node.connected_rss_bytes": 64733184,
+    "node.connections": 1000,
+    "node.errors": 0,
+    "node.idle_rss_bytes": 47120384,
+    "node.ready_milliseconds": 95,
+    "node.reconnects": 100,
+    "node.restart_cycles": 1,
+    "node.sequence_duplicates": 0,
+    "node.sequence_gaps": 0,
+    "node.shutdown_milliseconds": 28
+  },
+  "assertions": [
+    {
+      "name": "go.connections_exact",
+      "passed": true,
+      "detail": "1000/1000"
+    },
+    {
+      "name": "go.disconnect_not_cancel",
+      "passed": true,
+      "detail": "cancel_requests=0"
+    },
+    {
+      "name": "go.idle_rss_bound",
+      "passed": true,
+      "detail": "bytes=11042816 limit=134217728"
+    },
+    {
+      "name": "go.reconnects_exact",
+      "passed": true,
+      "detail": "100/100"
+    },
+    {
+      "name": "go.restart_exact",
+      "passed": true,
+      "detail": "1/1"
+    },
+    {
+      "name": "go.sequence_exact",
+      "passed": true,
+      "detail": "duplicates=0 gaps=0 errors=0 limit=0"
+    },
+    {
+      "name": "go.shutdown_bound",
+      "passed": true,
+      "detail": "milliseconds=7 limit=5000"
+    },
+    {
+      "name": "node.connections_exact",
+      "passed": true,
+      "detail": "1000/1000"
+    },
+    {
+      "name": "node.disconnect_not_cancel",
+      "passed": true,
+      "detail": "cancel_requests=0"
+    },
+    {
+      "name": "node.idle_rss_bound",
+      "passed": true,
+      "detail": "bytes=47120384 limit=268435456"
+    },
+    {
+      "name": "node.reconnects_exact",
+      "passed": true,
+      "detail": "100/100"
+    },
+    {
+      "name": "node.restart_exact",
+      "passed": true,
+      "detail": "1/1"
+    },
+    {
+      "name": "node.sequence_exact",
+      "passed": true,
+      "detail": "duplicates=0 gaps=0 errors=0 limit=0"
+    },
+    {
+      "name": "node.shutdown_bound",
+      "passed": true,
+      "detail": "milliseconds=28 limit=5000"
+    }
+  ],
+  "passed": true
+}

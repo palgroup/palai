@@ -3,9 +3,9 @@
   "spikes": [
     {
       "id": "control-plane-runtime",
-      "status": "planned",
-      "quick_command": null,
-      "evidence_command": null
+      "status": "implemented",
+      "quick_command": "scripts/spikes/control-plane-runtime",
+      "evidence_command": "scripts/spikes/control-plane-runtime"
     },
     {
       "id": "postgres-coordinator",

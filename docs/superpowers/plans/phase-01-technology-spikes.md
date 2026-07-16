@@ -195,7 +195,7 @@ git add pnpm-lock.yaml pnpm-workspace.yaml scripts/spikes/control-plane-runtime 
 git commit -m "test: add control-plane runtime candidates"
 ```
 
-- [ ] **Step 6: Generate, validate and commit evidence**
+- [x] **Step 6: Generate, validate and commit evidence**
 
 Run from the clean source commit:
 
