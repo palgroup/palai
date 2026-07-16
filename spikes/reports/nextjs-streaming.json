@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "spike": "nextjs-streaming",
+  "git_commit": "236ca5bd55bb3faf0dd7690801cd5b2334c52595",
+  "source_tree": "e709e431bd763b7f1a1bb49a61f17b5a55755b37",
+  "started_at": "2026-07-16T12:31:54Z",
+  "ended_at": "2026-07-16T12:32:05.829168Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "tool_versions": {
+      "go": "go version go1.26.4 darwin/arm64",
+      "next": "16.2.10",
+      "node": "v22.22.2",
+      "pnpm": "11.9.0",
+      "react": "19.2.7",
+      "react-dom": "19.2.7",
+      "server-only": "0.0.1",
+      "typescript": "7.0.2"
+    },
+    "image_digests": []
+  },
+  "metrics": {
+    "abort_to_upstream_close_ms.max": 7.033,
+    "abort_to_upstream_close_ms.mean": 5.497400000000001,
+    "abort_to_upstream_close_ms.min": 4.246,
+    "bounds.command_output_bytes_per_stream": 1048576,
+    "bounds.next_server_log_bytes_per_stream": 262144,
+    "live_assertions.per_repetition": 9,
+    "live_assertions.total": 45,
+    "report_assertions": 13,
+    "scan_targets.build_output.per_repetition": 2,
+    "scan_targets.build_output.total": 10,
+    "scan_targets.downstream_response.per_repetition": 4,
+    "scan_targets.downstream_response.total": 20,
+    "scan_targets.next_server_log.per_repetition": 2,
+    "scan_targets.next_server_log.total": 10,
+    "scan_targets.server_bundle.per_repetition": 99,
+    "scan_targets.server_bundle.total": 495,
+    "scan_targets.source_file.per_repetition": 4,
+    "scan_targets.source_file.total": 20,
+    "scan_targets.source_map.per_repetition": 31,
+    "scan_targets.source_map.total": 155,
+    "scan_targets.static_chunk.per_repetition": 15,
+    "scan_targets.static_chunk.total": 75,
+    "test_repetitions": 5,
+    "time_to_first_frame_ms.max": 139.394,
+    "time_to_first_frame_ms.mean": 114.79459999999999,
+    "time_to_first_frame_ms.min": 101.032
+  },
+  "assertions": [
+    {
+      "name": "abort.explicit_cancel_not_called",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "abort.upstream_transport_prompt",
+      "passed": true,
+      "detail": "5/5 limit_ms=500"
+    },
+    {
+      "name": "harness.output_capture_bounded",
+      "passed": true,
+      "detail": "command=1048576 server=262144 bytes_per_stream"
+    },
+    {
+      "name": "reconnect.last_event_id_exact",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "runtime.next_start",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "secret.scan_targets_clean",
+      "passed": true,
+      "detail": "build_output=2 downstream_response=4 next_server_log=2 server_bundle=99 source_file=4 source_map=31 static_chunk=15 repetitions=5"
+    },
+    {
+      "name": "secret.upstream_authorization_only",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "stream.first_frame_unbuffered",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "stream.ordered_canonical_frames",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "tdd.missing_route_red_observed",
+      "passed": true,
+      "detail": "1/1 before implementation"
+    },
+    {
+      "name": "toolchain.exact_runtime_versions",
+      "passed": true,
+      "detail": "next=16.2.10 react=19.2.7 react_dom=19.2.7 server_only=0.0.1"
+    },
+    {
+      "name": "toolchain.typescript7_effective_gate",
+      "passed": true,
+      "detail": "version=7.0.2 negative_probe=rejected project=passed next_legacy_api=bypassed"
+    },
+    {
+      "name": "upstream.error_response_redacted",
+      "passed": true,
+      "detail": "5/5"
+    }
+  ],
+  "passed": true
+}
