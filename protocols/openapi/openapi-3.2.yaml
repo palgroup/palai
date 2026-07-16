@@ -1,0 +1,290 @@
+{
+  "openapi": "3.2.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Palai HTTP API",
+    "version": "2026-07-16",
+    "description": "Canonical Palai HTTP contract. JSON Schema 2020-12 bodies are referenced from protocols/schemas; a mechanical OpenAPI 3.1.2 projection is derived for generators that cannot yet read 3.2."
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/v1/responses": {
+      "post": {
+        "operationId": "createResponse",
+        "summary": "Create a response",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../schemas/execution/response-create.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted; the response is being produced.",
+            "headers": {
+              "Location": {
+                "description": "URL of the created response resource.",
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference"
+                }
+              },
+              "Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "API-Version": {
+                "$ref": "#/components/headers/ApiVersion"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../schemas/execution/response.json"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/v1/responses/{response_id}": {
+      "get": {
+        "operationId": "getResponse",
+        "summary": "Fetch a response",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResponseId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The response resource.",
+            "headers": {
+              "Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "API-Version": {
+                "$ref": "#/components/headers/ApiVersion"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../schemas/execution/response.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "410": {
+            "$ref": "#/components/responses/Problem"
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/v1/responses/{response_id}/cancel": {
+      "post": {
+        "operationId": "cancelResponse",
+        "summary": "Cancel a response",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ResponseId"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Cancellation accepted.",
+            "headers": {
+              "Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "API-Version": {
+                "$ref": "#/components/headers/ApiVersion"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../schemas/execution/response.json"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/v1/sessions/{session_id}/events": {
+      "get": {
+        "operationId": "streamSessionEvents",
+        "summary": "Stream session events",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/SessionId"
+          },
+          {
+            "$ref": "#/components/parameters/LastEventId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-sent event stream of session events.",
+            "headers": {
+              "Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "API-Version": {
+                "$ref": "#/components/headers/ApiVersion"
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "../schemas/execution/event.json"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "summary": "Advertise supported capabilities",
+        "responses": {
+          "200": {
+            "description": "Advertised capabilities.",
+            "headers": {
+              "Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "API-Version": {
+                "$ref": "#/components/headers/ApiVersion"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Problem"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque"
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "description": "Client-generated key that makes response creation idempotent.",
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "ResponseId": {
+        "name": "response_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "../schemas/common/id.json#/$defs/response_id"
+        }
+      },
+      "SessionId": {
+        "name": "session_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "../schemas/common/id.json#/$defs/session_id"
+        }
+      },
+      "LastEventId": {
+        "name": "Last-Event-ID",
+        "in": "header",
+        "required": false,
+        "description": "Resume an event stream after the given event id.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "headers": {
+      "RequestId": {
+        "description": "Correlates the response with server-side logs.",
+        "schema": {
+          "$ref": "../schemas/common/id.json#/$defs/request_id"
+        }
+      },
+      "ApiVersion": {
+        "description": "Dated API version that served the request.",
+        "schema": {
+          "type": "string"
+        },
+        "example": "2026-07-16"
+      }
+    },
+    "responses": {
+      "Problem": {
+        "description": "RFC 9457 problem document.",
+        "headers": {
+          "Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "API-Version": {
+            "$ref": "#/components/headers/ApiVersion"
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "../schemas/common/problem.json"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "case": "omitted",
+  "schema": "https://schemas.palai.dev/execution/response.json",
+  "documents": [
+    {
+      "note": "response omits optional error and metadata entirely",
+      "value": {
+        "id": "resp_a",
+        "object": "response",
+        "status": "completed",
+        "created_at": "2026-07-16T12:00:00Z",
+        "model": "palai-core",
+        "output": [],
+        "usage": {"input_tokens": 12, "output_tokens": 34}
+      }
+    },
+    {
+      "note": "response-create omits previous_response_id and metadata",
+      "value": {
+        "model": "palai-core",
+        "input": "summarize the run"
+      }
+    }
+  ]
+}

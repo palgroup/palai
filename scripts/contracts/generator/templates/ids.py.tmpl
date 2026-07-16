@@ -1,0 +1,18 @@
+"""Code generated from the canonical {{.Title}} schema; DO NOT EDIT."""
+
+from __future__ import annotations
+
+import re
+from typing import NewType
+
+{{range .Identifiers -}}
+{{.PyName}} = NewType("{{.PyName}}", str)
+{{end}}
+{{range .Identifiers -}}
+{{.PyConst}} = re.compile(r"{{.Pattern}}")
+{{end}}
+{{range .Identifiers}}
+def is_{{.Def}}(value: str) -> bool:
+    return {{.PyConst}}.fullmatch(value) is not None
+
+{{end -}}

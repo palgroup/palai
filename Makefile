@@ -51,7 +51,7 @@ test-e2e:
 	@test -x scripts/test/e2e || { echo "end-to-end suite not implemented" >&2; exit 2; }
 	@scripts/test/e2e
 
-verify: lint test-unit test-spikes check-spike-reports
+verify: lint check-generated test-unit test-spikes check-spike-reports
 	@bash scripts/verify/repository-boundary.sh
 	@bash scripts/verify/foundation.sh
 

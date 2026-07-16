@@ -1,0 +1,54 @@
+{
+  "case": "rfc3339",
+  "schema": "https://schemas.palai.dev/execution/event.json",
+  "documents": [
+    {
+      "note": "microsecond precision with a Z zulu designator",
+      "value": {
+        "specversion": "1.0",
+        "id": "evt_a",
+        "source": "/v1/sessions/ses_a",
+        "type": "run.queued.v1",
+        "time": "2026-07-16T12:00:00.000000Z",
+        "sequence": 1,
+        "data": {}
+      }
+    },
+    {
+      "note": "whole-second precision with a Z zulu designator",
+      "value": {
+        "specversion": "1.0",
+        "id": "evt_b",
+        "source": "/v1/sessions/ses_a",
+        "type": "run.queued.v1",
+        "time": "2026-07-16T12:00:00Z",
+        "sequence": 2,
+        "data": {}
+      }
+    },
+    {
+      "note": "whole-second precision with an explicit +00:00 offset",
+      "value": {
+        "specversion": "1.0",
+        "id": "evt_c",
+        "source": "/v1/sessions/ses_a",
+        "type": "run.queued.v1",
+        "time": "2026-07-16T12:00:00+00:00",
+        "sequence": 3,
+        "data": {}
+      }
+    },
+    {
+      "note": "millisecond precision with a non-zero +03:00 offset",
+      "value": {
+        "specversion": "1.0",
+        "id": "evt_d",
+        "source": "/v1/sessions/ses_a",
+        "type": "run.queued.v1",
+        "time": "2026-07-16T15:00:00.500+03:00",
+        "sequence": 4,
+        "data": {}
+      }
+    }
+  ]
+}

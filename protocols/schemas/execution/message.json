@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/message.json",
+  "title": "Message",
+  "type": "object",
+  "required": ["id", "role", "content", "created_at"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/message_id"},
+    "role": {"type": "string"},
+    "content": {"type": "array", "items": {"$ref": "content.json"}},
+    "created_at": {"type": "string", "format": "date-time"},
+    "source_ref": {"$ref": "../common/id.json#/$defs/opaque_id"},
+    "visibility": {"type": "string"},
+    "delivery": {"type": "string"}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "known_roles": {"enum": ["user", "assistant", "tool", "system_notice", "external_actor"]},
+    "delivery_modes": {"enum": ["queue", "steer", "interrupt"]}
+  }
+}

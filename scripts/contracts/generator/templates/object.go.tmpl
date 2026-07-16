@@ -1,0 +1,13 @@
+{{- /*
+These generated structs are a fixed-field construction/validation view, NOT a
+lossless passthrough: raw-JSON round-trips live at the corpus level, and lossless
+typed wrappers are E16 (SDK parity) / E03 (API-layer) obligations.
+*/ -}}
+// Code generated from the canonical {{.Title}} schema; DO NOT EDIT.
+package contracts
+
+{{range .Structs}}
+type {{.Name}} struct {
+{{range .Fields}}	{{.GoName}} {{.GoType}} `json:"{{.JSONTag}}"`
+{{end}}}
+{{end -}}

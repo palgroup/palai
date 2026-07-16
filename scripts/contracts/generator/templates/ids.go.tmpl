@@ -1,0 +1,19 @@
+// Code generated from the canonical {{.Title}} schema; DO NOT EDIT.
+package contracts
+
+import "regexp"
+
+{{range .Identifiers -}}
+// {{.GoName}} is an opaque, prefixed, URL-safe identifier (schema $def {{.Def}}).
+type {{.GoName}} string
+
+{{end -}}
+
+var (
+{{range .Identifiers}}	{{.GoVar}} = regexp.MustCompile(`{{.Pattern}}`)
+{{end}})
+
+{{range .Identifiers}}
+// Valid reports whether id matches the canonical {{.Def}} pattern.
+func (id {{.GoName}}) Valid() bool { return {{.GoVar}}.MatchString(string(id)) }
+{{end -}}

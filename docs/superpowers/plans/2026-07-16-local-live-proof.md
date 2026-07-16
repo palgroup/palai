@@ -151,6 +151,8 @@ git commit -m "chore: establish independent Palai toolchains"
 
 ### Task 2: Canonical minimum schemas ve generated contract fixtures
 
+> **phase-02 ile karşılandı:** Canonical şemalar, OpenAPI 3.2 + AsyncAPI 3.1 projeksiyonu ve cross-language corpus, phase-02 contract-spine planının Task 1–6'sında uygulandı; deterministic `make generate` / `make check-generated` zero-drift ile doğrulandı (en son ilgili commit `bfd21e5`). Ayrıntı: `docs/superpowers/plans/phase-02-contract-spine.md`.
+
 **Files:**
 
 - Create: `protocols/schemas/common/problem.json`
@@ -300,6 +302,8 @@ git commit -m "feat: add durable PostgreSQL execution spine"
 ```
 
 ### Task 4: Pure lifecycle state machines ve event transaction
+
+> **phase-02 ile karşılandı:** Yedi pure lifecycle tablosu (run/attempt/response/session/command/tool_call/workspace) ve invalid-transition / terminal-monotonicity / one-active-fence / sequence-monotonicity property + registry cross-check suite'i, phase-02 contract-spine planının Task 7–12'sinde uygulandı (state tabloları commit `02d6aff`; property/registry kanıtı aynı Task 12 commit'inde eklendi). Event-append aynı DB transaction'ı E03'te bağlanır. Ayrıntı: `docs/superpowers/plans/phase-02-contract-spine.md`.
 
 **Files:**
 

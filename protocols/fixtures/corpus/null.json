@@ -1,0 +1,29 @@
+{
+  "case": "null",
+  "schema": "https://schemas.palai.dev/execution/response.json",
+  "documents": [
+    {
+      "note": "response carries an explicit null error and a present metadata object",
+      "value": {
+        "id": "resp_a",
+        "object": "response",
+        "status": "completed",
+        "created_at": "2026-07-16T12:00:00Z",
+        "model": "palai-core",
+        "output": [],
+        "usage": {"input_tokens": 12, "output_tokens": 34},
+        "error": null,
+        "metadata": {"trace": "keep"}
+      }
+    },
+    {
+      "note": "response-create carries an explicit null previous_response_id",
+      "value": {
+        "model": "palai-core",
+        "input": "continue",
+        "previous_response_id": null,
+        "metadata": {"trace": "keep"}
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/common/pagination.json",
+  "title": "Pagination",
+  "$defs": {
+    "page_params": {
+      "type": "object",
+      "properties": {
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+        "after": {"type": "string"},
+        "before": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "page": {
+      "type": "object",
+      "required": ["data", "has_more"],
+      "properties": {
+        "data": {"type": "array"},
+        "has_more": {"type": "boolean"},
+        "next_cursor": {"type": ["string", "null"]},
+        "previous_cursor": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    }
+  }
+}

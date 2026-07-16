@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/runner/runner.schema.json",
+  "title": "RunnerMessage",
+  "type": "object",
+  "required": ["protocol", "type", "time"],
+  "properties": {
+    "protocol": {"type": "string", "const": "runner.v1"},
+    "type": {"type": "string"},
+    "time": {"type": "string", "format": "date-time"},
+    "lease_id": {"type": "string"},
+    "run_id": {"$ref": "../schemas/common/id.json#/$defs/run_id"},
+    "attempt_id": {"$ref": "../schemas/common/id.json#/$defs/attempt_id"},
+    "fence": {"type": "integer", "minimum": 1},
+    "data": {"type": "object"}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "types": {
+      "description": "runner.v1 control-plane leasing message types. Documented-open: an unsupported type is preserved, not rejected by the envelope (API-009).",
+      "enum": [
+        "runner.hello", "runner.heartbeat", "lease.offer", "lease.accept",
+        "lease.renew", "lease.complete", "lease.revoke"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"required": ["type"], "properties": {"type": {"enum": ["lease.offer", "lease.accept", "lease.renew", "lease.complete", "lease.revoke"]}}},
+      "then": {"required": ["lease_id", "run_id", "attempt_id"]}
+    },
+    {
+      "if": {"required": ["type"], "properties": {"type": {"enum": ["lease.accept", "lease.renew", "lease.complete"]}}},
+      "then": {"required": ["fence"]}
+    },
+    {
+      "if": {"required": ["type"], "properties": {"type": {"const": "lease.offer"}}},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["image_digest"],
+            "properties": {
+              "image_digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+              "limits": {"type": "object"}
+            }
+          }
+        }
+      }
+    }
+  ]
+}

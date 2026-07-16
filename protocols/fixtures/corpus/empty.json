@@ -1,0 +1,32 @@
+{
+  "case": "empty",
+  "schema": "https://schemas.palai.dev/execution/response.json",
+  "documents": [
+    {
+      "note": "response with empty output, metadata, labels and an empty-string status",
+      "value": {
+        "id": "resp_a",
+        "object": "response",
+        "status": "",
+        "created_at": "2026-07-16T12:00:00Z",
+        "model": "",
+        "output": [],
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+        "metadata": {},
+        "labels": {}
+      }
+    },
+    {
+      "note": "event with an empty data object",
+      "value": {
+        "specversion": "1.0",
+        "id": "evt_a",
+        "source": "/v1/sessions/ses_a",
+        "type": "run.queued.v1",
+        "time": "2026-07-16T12:00:00Z",
+        "sequence": 1,
+        "data": {}
+      }
+    }
+  ]
+}

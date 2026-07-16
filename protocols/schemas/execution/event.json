@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/event.json",
+  "title": "Event",
+  "type": "object",
+  "required": ["specversion", "id", "source", "type", "time", "sequence", "data"],
+  "properties": {
+    "specversion": {"type": "string", "const": "1.0"},
+    "id": {"$ref": "../common/id.json#/$defs/event_id"},
+    "source": {"type": "string"},
+    "type": {"type": "string", "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)*\\.v[0-9]+$"},
+    "time": {"type": "string", "format": "date-time"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "data": {"type": "object"},
+    "subject": {"type": "string"},
+    "datacontenttype": {"type": "string", "default": "application/json"},
+    "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
+    "session_id": {"$ref": "../common/id.json#/$defs/session_id"},
+    "run_id": {"$ref": "../common/id.json#/$defs/run_id"},
+    "attempt_id": {"$ref": "../common/id.json#/$defs/attempt_id"}
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,13 @@
+// Code generated from the canonical {{.Title}} schema; DO NOT EDIT.
+
+{{range .Identifiers -}}
+export type {{.TSName}} = string;
+{{end}}
+{{range .Identifiers -}}
+export const {{.TSVar}} = /{{.Pattern}}/;
+{{end}}
+{{range .Identifiers -}}
+export function is{{.TSName}}(value: string): boolean {
+  return {{.TSVar}}.test(value);
+}
+{{end -}}

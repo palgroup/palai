@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/engine/engine.schema.json",
+  "title": "EngineFrame",
+  "type": "object",
+  "required": ["protocol", "id", "type", "sequence", "time"],
+  "properties": {
+    "protocol": {"type": "string", "const": "engine.v1"},
+    "id": {"$ref": "../schemas/common/id.json#/$defs/frame_id"},
+    "type": {"type": "string"},
+    "sequence": {"type": "integer", "minimum": 1},
+    "time": {"type": "string", "format": "date-time"},
+    "reply_to": {"type": ["string", "null"], "pattern": "^frm_[A-Za-z0-9_-]+$"},
+    "run_id": {"$ref": "../schemas/common/id.json#/$defs/run_id"},
+    "attempt_id": {"$ref": "../schemas/common/id.json#/$defs/attempt_id"},
+    "data": {"type": "object"}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "controller_types": {
+      "description": "Controller-to-engine frame types (spec §25.6 handshake + §25.7). Documented-open: an unsupported type produces a protocol.error, it is not rejected by the envelope (API-009).",
+      "enum": [
+        "supervisor.hello", "run.start", "run.restore", "message.deliver",
+        "config.change", "model.result", "model.delta", "tool.result",
+        "approval.result", "child.result", "checkpoint.request", "run.pause",
+        "run.cancel", "protocol.ack"
+      ]
+    },
+    "engine_types": {
+      "description": "Engine-to-controller frame types (spec §25.6 handshake + §25.8). Documented-open: an unsupported type produces a protocol.error, it is not rejected by the envelope (API-009).",
+      "enum": [
+        "engine.ready", "engine.heartbeat", "progress", "output.delta",
+        "output.item", "model.request", "tool.request", "child.request",
+        "approval.request", "checkpoint.offer", "context.compacted", "warning",
+        "protocol.error", "run.waiting", "run.terminal", "protocol.ack"
+      ]
+    },
+    "limits": {"max_line_bytes": 1048576}
+  },
+  "allOf": [
+    {
+      "if": {"required": ["type"], "properties": {"type": {"const": "engine.ready"}}},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["selected_protocol", "engine", "max_frame_bytes", "nonce"],
+            "properties": {
+              "selected_protocol": {"type": "string"},
+              "engine": {
+                "type": "object",
+                "required": ["name", "version"],
+                "properties": {
+                  "name": {"type": "string"},
+                  "version": {"type": "string"}
+                }
+              },
+              "max_frame_bytes": {"type": "integer", "minimum": 1},
+              "nonce": {"type": "string"},
+              "checkpoint_formats": {"type": "array", "items": {"type": "string"}},
+              "commands": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    }
+  ]
+}

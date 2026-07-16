@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/content.json",
+  "title": "ContentItem",
+  "type": "object",
+  "required": ["type"],
+  "properties": {"type": {"type": "string"}},
+  "additionalProperties": true,
+  "allOf": [
+    {"if": {"properties": {"type": {"const": "input_text"}}}, "then": {"required": ["text"], "properties": {"text": {"type": "string"}}}},
+    {"if": {"properties": {"type": {"const": "output_text"}}}, "then": {"required": ["text"], "properties": {"text": {"type": "string"}}}},
+    {"if": {"properties": {"type": {"const": "image_ref"}}}, "then": {"required": ["artifact_id"], "properties": {"artifact_id": {"$ref": "../common/id.json#/$defs/artifact_id"}}}},
+    {"if": {"properties": {"type": {"const": "audio_ref"}}}, "then": {"required": ["artifact_id"], "properties": {"artifact_id": {"$ref": "../common/id.json#/$defs/artifact_id"}}}},
+    {"if": {"properties": {"type": {"const": "file_ref"}}}, "then": {"required": ["artifact_id"], "properties": {"artifact_id": {"$ref": "../common/id.json#/$defs/artifact_id"}}}},
+    {"if": {"properties": {"type": {"const": "artifact_ref"}}}, "then": {"required": ["artifact_id"], "properties": {"artifact_id": {"$ref": "../common/id.json#/$defs/artifact_id"}}}},
+    {"if": {"properties": {"type": {"const": "structured_json"}}}, "then": {"required": ["schema_name", "data"], "properties": {"schema_name": {"type": "string"}, "schema_version": {"type": "string"}, "data": {}}}},
+    {"if": {"properties": {"type": {"const": "tool_request"}}}, "then": {"required": ["tool_call_id", "name", "arguments"], "properties": {"tool_call_id": {"$ref": "../common/id.json#/$defs/tool_call_id"}, "name": {"type": "string"}, "arguments": {"type": "object"}}}},
+    {"if": {"properties": {"type": {"const": "tool_result"}}}, "then": {"required": ["tool_call_id", "status"], "properties": {"tool_call_id": {"$ref": "../common/id.json#/$defs/tool_call_id"}, "status": {"type": "string"}, "content": {}}}},
+    {"if": {"properties": {"type": {"const": "refusal"}}}, "then": {"properties": {"reason": {"type": "string"}}}},
+    {"if": {"properties": {"type": {"const": "warning"}}}, "then": {"required": ["message"], "properties": {"message": {"type": "string"}}}},
+    {"if": {"properties": {"type": {"const": "citation"}}}, "then": {"required": ["source"], "properties": {"source": {"type": "string"}, "span": {"type": "object"}}}},
+    {"if": {"properties": {"type": {"const": "compacted_context"}}}, "then": {"required": ["summary"], "properties": {"summary": {"type": "string"}, "replaced_sequences": {"type": "array", "items": {"type": "integer"}}}}},
+    {"if": {"properties": {"type": {"const": "redacted_content"}}}, "then": {"properties": {"reason": {"type": "string"}}}}
+  ]
+}

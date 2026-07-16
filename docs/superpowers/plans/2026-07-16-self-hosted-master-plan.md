@@ -157,6 +157,7 @@ Bu gerekçeler nihai seçim değildir. E01 spike sonuçları ADR-0001..0005 ile 
 │   ├── compose/
 │   ├── helm/
 │   ├── systemd/
+│   ├── observability/
 │   └── airgap/
 ├── tests/
 │   ├── conformance/
@@ -284,12 +285,12 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 
 **Files:** `protocols/schemas/`, `protocols/openapi/`, `protocols/asyncapi/`, `protocols/engine/`, `protocols/runner/`, `packages/contracts/`, `packages/state-machines/`, `tests/conformance/contracts/`
 
-- [ ] Opaque IDs, common resource fields, Problem Details, content items, events ve pagination schemas yaz.
-- [ ] Response/Session/Run/Attempt/Command/ToolCall/Workspace state transition tablolarını executable pure functions olarak ekle.
-- [ ] Invalid transitions, terminal monotonicity, one-active-fence ve sequence monotonicity property tests yaz.
-- [ ] OpenAPI 3.2 ve AsyncAPI 3.1 üret; compatibility projection'ın canonical semantiğini değiştirmediğini diff ile doğrula.
-- [ ] Cross-language fixtures için omitted/null/empty, unknown enum/field, RFC 3339 ve integer-boundary corpus oluştur.
-- [ ] `make contracts-generate` ve `make contracts-check` komutlarını deterministic yap.
+- [x] Opaque IDs, common resource fields, Problem Details, content items, events ve pagination schemas yaz.
+- [x] Response/Session/Run/Attempt/Command/ToolCall/Workspace state transition tablolarını executable pure functions olarak ekle.
+- [x] Invalid transitions, terminal monotonicity, one-active-fence ve sequence monotonicity property tests yaz.
+- [x] OpenAPI 3.2 ve AsyncAPI 3.1 üret; compatibility projection'ın canonical semantiğini değiştirmediğini diff ile doğrula.
+- [x] Cross-language fixtures için omitted/null/empty, unknown enum/field, RFC 3339 ve integer-boundary corpus oluştur.
+- [x] `make contracts-generate` ve `make contracts-check` komutlarını deterministic yap.
 
 **UAT ownership:** API-009, API-011, ENG-001..003'ün schema tarafı.
 
@@ -485,11 +486,14 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 
 **Child plan:** `docs/superpowers/plans/phase-14-production-self-host.md`
 
-**Files:** `deploy/compose/production.yml`, `deploy/systemd/`, `docs/operations/`, `cmd/cli/doctor/`, `tests/uat/self-host/`
+**Files:** `deploy/compose/production.yml`, `deploy/systemd/`, `deploy/observability/`, `docs/operations/`, `cmd/cli/`, `tests/uat/self-host/`
 
 - [ ] External TLS/reverse proxy, non-development master key, public registration off ve persistent services kur.
 - [ ] Runner'ı signed host package/systemd unit olarak outbound-only kur; workload'a runtime socket verme.
 - [ ] `palai backup`, `restore`, `restore verify`, `config validate`, `doctor`, `support-bundle` komutlarını ekle.
+- [ ] `palai org|project|apikey|secret` admin subcommand'larını E13 API'leri üzerine ince yüzey olarak ekle (§47.6 API+CLI şartı; E17 console'a kadar tek insan arayüzü).
+- [ ] `deploy/systemd/` içine scheduled backup timer ve retention/prune örneği ekle.
+- [ ] §52.9 dashboard'larını ve §52.10 alert rule'larını hazır Grafana/Prometheus bundle olarak `deploy/observability/` altında yayımla.
 - [ ] Disk/queue/runner/provider/object-store/clock/callback diagnostics ve alerts ekle.
 - [ ] Dedicated cloud VM'ye clean install; SDK'da yalnızca base URL/key değiştirerek Next.js example çalıştır.
 - [ ] Backup'ı ayrı clean installation'a restore edip checksums/tenant IDs/run retrieval doğrula.
@@ -540,7 +544,7 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 - [ ] A2A 1.0 server/client projection; card/version/auth/SSRF controls.
 - [ ] PostgreSQL FTS + optional vector adapter ile immutable ingestion/index/retrieval ve ACL-first filtering.
 - [ ] Coding/research/recovery/security eval suites ve held-out release thresholds.
-- [ ] Yalnızca public API kullanan basic open-core console; live timeline/exact approval/recovery display/accessibility. Ticari SaaS UI burada yapılmaz.
+- [ ] Yalnızca public API kullanan basic open-core console; §47.1 admin yüzeyi (organizations/projects/API keys), live timeline/exact approval/recovery display/accessibility. Ticari SaaS UI burada yapılmaz.
 - [ ] SQS/PubSub/Kafka-class queue adapter contract'ı; durable ack/dedupe/backpressure/dead-letter ve outbound result delivery.
 - [ ] External orchestrator helper/adapters; canonical API IDs, single retry owner, cancel propagation ve reconciliation.
 - [ ] Outbound-enrolled CapabilityWorker contract'ı; typed capability/version/capacity, fenced jobs, artifact input/output ve short-lived secret handles.
@@ -557,6 +561,7 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 **Files:** `.github/workflows/release.yml`, `scripts/release/`, `docs/security/`, `docs/operations/runbooks/`, `tests/performance/`, `evidence/releases/`
 
 - [ ] Pinned hermetic builds, SBOM, provenance, digest/signature ve offline verification ekle.
+- [ ] Control plane image, runner host package, reference engine image ve CLI binary'leri için amd64+arm64 release matrisini yayımla ve doğrula.
 - [ ] API/SSE/load/cold-warm/long-session/burst performance tests çalıştır; published hardware/load profile kaydet.
 - [ ] Security threat model, vulnerability process, operational runbooks ve release support matrix yayımla.
 - [ ] Applicable P0/P1 UAT evidence manifest'lerini tek release index'inde doğrula.
