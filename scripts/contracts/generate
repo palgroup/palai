@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+go run "$root/scripts/contracts/generator" -schemas "$root/protocols/schemas" \
+  -go-out "$root/packages/contracts" \
+  -ts-out "$root/protocols/generated/typescript" \
+  -py-out "$root/protocols/generated/python"

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Regenerate into a scratch tree and diff against the committed generated
+# output. Any drift (or an uncommitted schema edit) exits non-zero with the
+# offending files, so CI blocks on stale generated sources.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+go run "$root/scripts/contracts/generator" -schemas "$root/protocols/schemas" \
+  -go-out "$scratch/go" \
+  -ts-out "$scratch/ts" \
+  -py-out "$scratch/py"
+
+status=0
+diff -r "$scratch/go" "$root/packages/contracts" || status=1
+diff -r "$scratch/ts" "$root/protocols/generated/typescript" || status=1
+diff -r "$scratch/py" "$root/protocols/generated/python" || status=1
+
+if test "$status" -ne 0; then
+  echo "generated sources are stale; run 'make generate'" >&2
+fi
+exit "$status"
