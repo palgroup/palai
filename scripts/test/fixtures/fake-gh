@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+test "${1:-}" = api
+endpoint="${2:-}"
+mode="${PALAI_FAKE_REPOSITORY_MODE:-valid}"
+
+case "$endpoint" in
+  repos/palgroup/palai)
+    if test "$mode" = private; then
+      printf '%s\n' '{"visibility":"private","default_branch":"main"}'
+    else
+      printf '%s\n' '{"visibility":"public","default_branch":"main"}'
+    fi
+    ;;
+  repos/palgroup/palai/branches/main/protection)
+    case "$mode" in
+      missing-check)
+        contexts='[]'
+        ;;
+      *)
+        contexts='["Foundation"]'
+        ;;
+    esac
+    if test "$mode" = force-push; then
+      force_push=true
+    else
+      force_push=false
+    fi
+    printf '{"required_status_checks":{"strict":true,"contexts":%s},"enforce_admins":{"enabled":true},"required_conversation_resolution":{"enabled":true},"allow_force_pushes":{"enabled":%s},"allow_deletions":{"enabled":false}}\n' "$contexts" "$force_push"
+    ;;
+  *)
+    echo "unexpected fake gh endpoint: $endpoint" >&2
+    exit 2
+    ;;
+esac
+
