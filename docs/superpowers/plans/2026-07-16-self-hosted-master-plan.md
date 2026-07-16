@@ -243,10 +243,10 @@ M4 bilinçli olarak erken konmuştur: platformun bütün uç özelliklerini bekl
 
 - [x] `/Users/salih/workspace/poc-ios-render/palai` içinde bağımsız Git repository başlat.
 - [x] Public `palgroup/palai` remote repository oluştur ve `origin` bağla.
-- [ ] Apache-2.0 license ve public contribution/security policy ekle.
-- [ ] Root toolchain manifest'lerini oluştur; hiçbir secret veya consumer-specific isim ekleme.
-- [ ] Parent repository'nin Palai'yi gitlink/submodule/normal tracked directory olarak taşımadığını test et.
-- [ ] Branch protection, required CI ve signed release policy kur.
+- [x] Apache-2.0 license ve public contribution/security policy ekle.
+- [x] Root toolchain manifest'lerini oluştur; hiçbir secret veya consumer-specific isim ekleme.
+- [x] Parent repository'nin Palai'yi gitlink/submodule/normal tracked directory olarak taşımadığını test et.
+- [x] Branch protection, required CI ve signed release policy kur.
 
 **Verify:**
 

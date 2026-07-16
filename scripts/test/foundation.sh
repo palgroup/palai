@@ -79,7 +79,8 @@ fi
 
 for path in \
   LICENSE README.md .github/CODEOWNERS CODE_OF_CONDUCT.md CONTRIBUTING.md \
-  SECURITY.md docs/adr/0000-template.md scripts/verify/foundation.sh; do
+  SECURITY.md docs/adr/0000-template.md docs/security/release-policy.md \
+  scripts/verify/foundation.sh; do
   test -s "$path" || { echo "missing foundation file: $path" >&2; exit 1; }
 done
 bash scripts/verify/foundation.sh
