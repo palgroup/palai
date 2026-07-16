@@ -1,5 +1,6 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
+import { withTimeout } from "./process-lifecycle.mjs";
 
 export const FIRST_FRAME =
   'id: event-001\nevent: progress\ndata: {"step":1}\n\n';
@@ -105,9 +106,14 @@ export async function startFakeUpstream() {
       mode = nextMode;
     },
     async stop() {
+      const closed = once(server, "close");
       server.closeAllConnections();
       server.close();
-      await once(server, "close");
+      await withTimeout(
+        closed,
+        5_000,
+        "fake upstream did not close within 5 seconds",
+      );
     },
     url: `http://127.0.0.1:${address.port}/stream`,
   };

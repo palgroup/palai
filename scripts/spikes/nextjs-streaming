@@ -13,11 +13,37 @@ case "$profile" in
     exit 2
     ;;
 esac
+
+lock_directory="$(git rev-parse --git-path nextjs-streaming-spike.lock)"
+if ! mkdir "$lock_directory" 2>/dev/null; then
+  echo "nextjs-streaming workflow is already running" >&2
+  exit 1
+fi
+cleanup_lock() {
+  rmdir "$lock_directory" 2>/dev/null || true
+}
+trap cleanup_lock EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+if test "$profile" = evidence && test -n "$(git status --porcelain --untracked-files=all)"; then
+  echo "source tree must be clean before collecting evidence" >&2
+  exit 1
+fi
+
 started_unix="$(date +%s)"
+git_commit="$(git rev-parse HEAD)"
+source_tree="$(git rev-parse HEAD^{tree})"
+invocation_id="$(node -p 'require("node:crypto").randomUUID()')"
+run_directory="spikes/nextjs-streaming/.build/runs/$invocation_id"
 
 pnpm --dir spikes/nextjs-streaming build
 for iteration in $(seq 1 "$repetitions"); do
-  PALAI_SPIKE_ITERATION="$iteration" \
+  PALAI_SPIKE_GIT_COMMIT="$git_commit" \
+    PALAI_SPIKE_INVOCATION_ID="$invocation_id" \
+    PALAI_SPIKE_ITERATION="$iteration" \
+    PALAI_SPIKE_SOURCE_TREE="$source_tree" \
     pnpm --dir spikes/nextjs-streaming test
 done
 
@@ -25,7 +51,9 @@ if test "$profile" = evidence; then
   output="${PALAI_SPIKE_REPORT_OUT:-spikes/.evidence/nextjs-streaming.json}"
   go run ./spikes/nextjs-streaming/cmd/report \
     -out "$output" \
+    -invocation-id "$invocation_id" \
     -repetitions "$repetitions" \
+    -run-dir "$run_directory" \
     -started-unix "$started_unix"
 fi
 
