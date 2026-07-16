@@ -21,7 +21,7 @@
         "next_cursor": {"type": ["string", "null"]},
         "previous_cursor": {"type": ["string", "null"]}
       },
-      "additionalProperties": false
+      "additionalProperties": true
     }
   }
 }

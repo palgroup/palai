@@ -183,3 +183,20 @@ func TestPageRequiresDataAndHasMore(t *testing.T) {
 		t.Fatalf("round-trip lost next_cursor: %v", round.NextCursor)
 	}
 }
+
+func TestPageEnvelopeToleratesUnknownFields(t *testing.T) {
+	// The pagination response envelope is open (spec §20.6): additive fields must
+	// not be rejected by a strict validator or the derived OpenAPI projection.
+	schema := readSchema(t, "common/pagination.json")
+	defs, ok := schema["$defs"].(map[string]any)
+	if !ok {
+		t.Fatal("pagination.json has no $defs")
+	}
+	page, ok := defs["page"].(map[string]any)
+	if !ok {
+		t.Fatal("pagination.json $defs.page is missing")
+	}
+	if page["additionalProperties"] != true {
+		t.Fatalf("page.additionalProperties = %v, want true (open response envelope)", page["additionalProperties"])
+	}
+}
