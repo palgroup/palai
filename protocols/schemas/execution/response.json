@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/response.json",
+  "title": "Response",
+  "type": "object",
+  "required": ["id", "object", "status", "created_at", "model", "output", "usage"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/response_id"},
+    "object": {"type": "string", "const": "response"},
+    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
+    "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "revision": {"type": "integer", "minimum": 1},
+    "metadata": {"type": "object", "maxProperties": 64},
+    "labels": {"type": "object", "additionalProperties": {"type": "string"}},
+    "status": {"type": "string"},
+    "model": {"type": "string"},
+    "output": {"type": "array", "items": {"$ref": "content.json"}},
+    "usage": {"$ref": "usage.json"},
+    "error": {"oneOf": [{"$ref": "../common/problem.json"}, {"type": "null"}]},
+    "session_id": {"$ref": "../common/id.json#/$defs/session_id"},
+    "run_id": {"$ref": "../common/id.json#/$defs/run_id"}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "known_statuses": {
+      "enum": ["queued", "provisioning", "in_progress", "waiting_for_tool",
+        "waiting_for_approval", "waiting_for_input", "completed", "failed",
+        "canceled", "timed_out", "budget_exceeded"]
+    }
+  }
+}

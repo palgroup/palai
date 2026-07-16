@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/response-create.json",
+  "title": "ResponseCreateRequest",
+  "type": "object",
+  "required": ["input"],
+  "properties": {
+    "model": {"type": "string"},
+    "instructions": {"type": "string"},
+    "input": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"$ref": "content.json"}}]},
+    "tools": {"type": "array", "items": {"type": "object", "properties": {"ref": {"type": "string"}}, "required": ["ref"], "additionalProperties": true}},
+    "tool_sets": {"type": "array", "items": {"type": "string"}},
+    "skills": {"type": "array", "items": {"type": "string"}},
+    "tool_choice": {"type": "string"},
+    "parallel_tool_calls": {"type": "boolean"},
+    "context": {"type": "object"},
+    "delegation": {
+      "type": "object",
+      "properties": {
+        "mode": {"type": "string"},
+        "max_depth": {"type": "integer", "minimum": 0},
+        "max_children": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "capabilities": {"type": "array", "items": {"type": "string"}},
+    "output": {
+      "type": "object",
+      "properties": {"format": {"type": "string"}},
+      "additionalProperties": true
+    },
+    "max_output_tokens": {"type": "integer", "minimum": 1},
+    "max_tool_calls": {"type": "integer", "minimum": 0},
+    "budget": {
+      "type": "object",
+      "properties": {
+        "max_cost_usd": {"type": "number", "minimum": 0},
+        "max_duration_seconds": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "store": {"type": "boolean"},
+    "background": {"type": "boolean"},
+    "stream": {"type": "boolean"},
+    "previous_response_id": {"type": ["string", "null"], "pattern": "^resp_[A-Za-z0-9_-]+$"},
+    "session_id": {"type": ["string", "null"], "pattern": "^ses_[A-Za-z0-9_-]+$"},
+    "workspace": {"type": "object"},
+    "repository": {"type": "object"},
+    "callback": {"type": "object"},
+    "metadata": {"type": "object", "maxProperties": 64},
+    "agent_revision_id": {"type": ["string", "null"]},
+    "engine": {"type": ["string", "null"]}
+  },
+  "additionalProperties": true,
+  "allOf": [{"not": {"required": ["previous_response_id", "session_id"]}}],
+  "$defs": {
+    "known_tool_choices": {"enum": ["auto", "none", "required"]}
+  }
+}

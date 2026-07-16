@@ -205,9 +205,11 @@ type goField struct {
 // generateObjects promotes every canonical object schema (all but the
 // identifier seed) into a package-contracts Go source. Schemas are globbed
 // across their directories in sorted order and structs/fields are sorted, so a
-// second run is a zero diff. A schema whose root declares allOf is an open
-// union (ADR-0002): it becomes a raw-preserving map wrapper that keeps unknown
-// fields and unknown discriminator values, rather than a fixed-field struct.
+// second run is a zero diff. A schema whose root allOf is a set of if/then
+// branches is an open union (ADR-0002): it becomes a raw-preserving map wrapper
+// that keeps unknown fields and unknown discriminator values. A root allOf that
+// only carries a cross-field constraint (e.g. a mutual-exclusion `not`) leaves
+// the schema an ordinary fixed-field struct.
 func generateObjects(schemasRoot, goOut string) error {
 	files, err := filepath.Glob(filepath.Join(schemasRoot, "*", "*.json"))
 	if err != nil {
@@ -227,7 +229,7 @@ func generateObjects(schemasRoot, goOut string) error {
 			ir       any
 			tmplName string
 		)
-		if _, isUnion := schema["allOf"]; isUnion {
+		if isOpenUnion(schema) {
 			tmplName = "union.go.tmpl"
 			ir, err = buildUnionIR(schema)
 		} else {
@@ -260,6 +262,24 @@ type unionSchema struct {
 	Title            string // exported Go type, e.g. "ContentItem"
 	Discriminator    string // JSON discriminator field, e.g. "type"
 	DiscriminatorTag string // exported accessor name, e.g. "Type"
+}
+
+// isOpenUnion reports whether a root allOf marks a discriminated open union
+// (if/then branches keyed on a discriminator, e.g. content.json) rather than an
+// object schema that merely carries a cross-field constraint (e.g.
+// response-create.json's mutual-exclusion `not`).
+func isOpenUnion(schema map[string]any) bool {
+	branches, ok := schema["allOf"].([]any)
+	if !ok || len(branches) == 0 {
+		return false
+	}
+	for _, raw := range branches {
+		entry, _ := raw.(map[string]any)
+		if _, isBranch := entry["if"]; !isBranch {
+			return false
+		}
+	}
+	return true
 }
 
 func buildUnionIR(schema map[string]any) (unionSchema, error) {
