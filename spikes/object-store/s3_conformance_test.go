@@ -2,6 +2,7 @@ package objectstore
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -105,6 +106,18 @@ func TestLiveConfigurationRequiresCompleteExplicitInjection(t *testing.T) {
 	t.Setenv("PALAI_SPIKE_OBJECT_STORE_SECRET_KEY", "")
 	if _, injected := LiveConfigurationFromEnvironment(); injected {
 		t.Fatal("partial environment was treated as injected live configuration")
+	}
+}
+
+func TestPublicErrorKeepsFixedCaseSubstageAndHidesCause(t *testing.T) {
+	result := RunResult{Cases: make(map[string]time.Duration)}
+	err := observe(&result, "multipart.abort", func() error {
+		return fail("multipart.abort.list_parts", errors.New("sensitive diagnostic detail"))
+	})
+	got := PublicError(err, LiveConfiguration{}).Error()
+	const want = "object-store live proof failed at multipart.abort.list_parts"
+	if got != want {
+		t.Fatalf("PublicError() = %q, want %q", got, want)
 	}
 }
 

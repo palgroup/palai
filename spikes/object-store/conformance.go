@@ -253,7 +253,7 @@ func RunS3Conformance(ctx context.Context, configuration LiveConfiguration) (Run
 			Key:    aws.String(keys.abortedMultipart),
 		})
 		if err != nil || created.UploadId == nil {
-			return coalesceError(err, "abort upload ID was absent")
+			return fail("multipart.abort.create", coalesceError(err, "abort upload ID was absent"))
 		}
 		uploaded, err := client.UploadPart(ctx, &s3.UploadPartInput{
 			Bucket:        aws.String(bucket),
@@ -264,25 +264,25 @@ func RunS3Conformance(ctx context.Context, configuration LiveConfiguration) (Run
 			ContentLength: aws.Int64(int64(len(partOne))),
 		})
 		if err != nil || uploaded.ETag == nil {
-			return coalesceError(err, "abort part ETag was absent")
+			return fail("multipart.abort.upload_part", coalesceError(err, "abort part ETag was absent"))
 		}
 		if _, err := client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
 			Bucket:   aws.String(bucket),
 			Key:      aws.String(keys.abortedMultipart),
 			UploadId: created.UploadId,
 		}); err != nil {
-			return err
+			return fail("multipart.abort.request", err)
 		}
 		listed, err := client.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{
 			Bucket: aws.String(bucket),
 			Prefix: aws.String(keys.abortedMultipart),
 		})
 		if err != nil {
-			return err
+			return fail("multipart.abort.list_uploads", err)
 		}
 		for _, upload := range listed.Uploads {
 			if aws.ToString(upload.UploadId) == aws.ToString(created.UploadId) {
-				return errors.New("aborted upload remained listable")
+				return fail("multipart.abort.still_listed", errors.New("aborted upload remained listable"))
 			}
 		}
 		_, err = client.ListParts(ctx, &s3.ListPartsInput{
@@ -291,7 +291,7 @@ func RunS3Conformance(ctx context.Context, configuration LiveConfiguration) (Run
 			UploadId: created.UploadId,
 		})
 		if err == nil || (!hasHTTPStatus(err, http.StatusNotFound) && apiErrorCode(err) != "NoSuchUpload") {
-			return errors.New("ListParts did not reject the aborted upload ID")
+			return fail("multipart.abort.list_parts", errors.New("ListParts did not reject the aborted upload ID"))
 		}
 		return nil
 	}); err != nil {
@@ -557,6 +557,10 @@ func cleanupBucket(ctx context.Context, client *s3.Client, bucket string) error 
 func observe(result *RunResult, name string, operation func() error) error {
 	started := time.Now()
 	if err := operation(); err != nil {
+		var staged *stageError
+		if errors.As(err, &staged) && strings.HasPrefix(staged.stage, name+".") {
+			return err
+		}
 		return fail(name, err)
 	}
 	result.Cases[name] = time.Since(started)
