@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/common/problem.json",
+  "title": "Problem",
+  "type": "object",
+  "required": ["type", "title", "status", "code", "request_id"],
+  "properties": {
+    "type": {"type": "string"},
+    "title": {"type": "string"},
+    "status": {"type": "integer", "minimum": 100, "maximum": 599},
+    "detail": {"type": "string"},
+    "instance": {"type": "string"},
+    "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+    "request_id": {"$ref": "id.json#/$defs/request_id"},
+    "retryable": {"type": "boolean"},
+    "field_errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field", "code"],
+        "properties": {"field": {"type": "string"}, "code": {"type": "string"}, "detail": {"type": "string"}},
+        "additionalProperties": true
+      }
+    },
+    "context": {"type": "object"}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "known_codes": {
+      "enum": ["invalid_request", "invalid_state", "unsupported_content", "missing_idempotency_key",
+        "authentication_required", "invalid_token", "expired_token",
+        "permission_denied", "capability_denied", "policy_denied", "region_denied",
+        "not_found", "revision_conflict", "idempotency_mismatch", "idempotency_in_progress",
+        "active_run_conflict", "lease_conflict", "gone", "idempotency_result_expired", "retention_expired",
+        "precondition_failed", "payload_too_large", "context_too_large",
+        "schema_validation_failed", "unsupported_model_capability",
+        "rate_limited", "quota_exceeded", "concurrency_exceeded",
+        "internal_error", "provider_error", "tool_transport_error", "runner_error",
+        "capacity_unavailable", "dependency_unavailable", "maintenance", "operation_timed_out"]
+    }
+  }
+}

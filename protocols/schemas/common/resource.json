@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/common/resource.json",
+  "title": "ResourceEnvelope",
+  "type": "object",
+  "required": ["id", "object", "created_at"],
+  "properties": {
+    "id": {"$ref": "id.json#/$defs/opaque_id"},
+    "object": {"type": "string"},
+    "organization_id": {"$ref": "id.json#/$defs/organization_id"},
+    "project_id": {"$ref": "id.json#/$defs/project_id"},
+    "created_at": {"$ref": "#/$defs/timestamp"},
+    "updated_at": {"$ref": "#/$defs/timestamp"},
+    "revision": {"type": "integer", "minimum": 1},
+    "metadata": {"type": "object", "maxProperties": 64},
+    "labels": {"type": "object", "additionalProperties": {"type": "string"}}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "timestamp": {"type": "string", "format": "date-time"}
+  }
+}

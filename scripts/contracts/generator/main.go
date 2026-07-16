@@ -44,6 +44,9 @@ func main() {
 	if err := generateIdentifiers(*schemasRoot, *goOut, *tsOut, *pyOut); err != nil {
 		fatal(err)
 	}
+	if err := generateObjects(*schemasRoot, *goOut); err != nil {
+		fatal(err)
+	}
 }
 
 // identifier is one opaque-ID $def projected into each target language.
@@ -136,26 +139,35 @@ func buildIdentifierIR(schema map[string]any) (identifierSchema, error) {
 // newIdentifier derives the per-language names from a snake_case $def key. The
 // "id" segment becomes "ID" in Go (stdlib convention) and "Id" elsewhere.
 func newIdentifier(def, pattern string) identifier {
-	var goName, otherName strings.Builder
+	goName := goExportedName(def)
+	var otherName strings.Builder
 	for _, part := range strings.Split(def, "_") {
-		if part == "id" {
-			goName.WriteString("ID")
-			otherName.WriteString("Id")
-			continue
-		}
-		goName.WriteString(titleCase(part))
 		otherName.WriteString(titleCase(part))
 	}
 	return identifier{
 		Def:     def,
 		Pattern: pattern,
-		GoName:  goName.String(),
-		GoVar:   lowerFirst(goName.String()) + "Pattern",
+		GoName:  goName,
+		GoVar:   lowerFirst(goName) + "Pattern",
 		TSName:  otherName.String(),
 		TSVar:   lowerFirst(otherName.String()) + "Pattern",
 		PyName:  otherName.String(),
 		PyConst: strings.ToUpper(def) + "_PATTERN",
 	}
+}
+
+// goExportedName turns a snake_case key into an exported Go identifier. The "id"
+// segment becomes "ID" to follow the stdlib initialism convention.
+func goExportedName(snake string) string {
+	var b strings.Builder
+	for _, part := range strings.Split(snake, "_") {
+		if part == "id" {
+			b.WriteString("ID")
+			continue
+		}
+		b.WriteString(titleCase(part))
+	}
+	return b.String()
 }
 
 func titleCase(segment string) string {
@@ -170,6 +182,230 @@ func lowerFirst(segment string) string {
 		return ""
 	}
 	return strings.ToLower(segment[:1]) + segment[1:]
+}
+
+// objectSchema is one canonical object schema projected into Go structs: the
+// root object (when the schema declares one) plus every object-typed $def.
+type objectSchema struct {
+	Title   string
+	Structs []goStruct
+}
+
+type goStruct struct {
+	Name   string
+	Fields []goField
+}
+
+type goField struct {
+	GoName  string // exported Go field name, e.g. "RequestID"
+	GoType  string // Go type, e.g. "string", "int", "RequestID", "[]any"
+	JSONTag string // json tag body, e.g. "request_id" or "detail,omitempty"
+}
+
+// generateObjects promotes every common/*.json object schema (all but the
+// identifier seed) into a package-contracts Go source. Files are globbed in
+// sorted order and structs/fields are sorted, so a second run is a zero diff.
+func generateObjects(schemasRoot, goOut string) error {
+	files, err := filepath.Glob(filepath.Join(schemasRoot, "common", "*.json"))
+	if err != nil {
+		return err
+	}
+	sort.Strings(files)
+	for _, file := range files {
+		base := filepath.Base(file)
+		if base == "id.json" {
+			continue // identifier seed is handled by generateIdentifiers
+		}
+		schema, err := readObject(file)
+		if err != nil {
+			return err
+		}
+		ir, err := buildObjectIR(schema)
+		if err != nil {
+			return fmt.Errorf("%s: %w", base, err)
+		}
+		source, err := execTemplate("object.go.tmpl", ir)
+		if err != nil {
+			return err
+		}
+		formatted, err := format.Source(source)
+		if err != nil {
+			return fmt.Errorf("format generated go for %s: %w", base, err)
+		}
+		out := filepath.Join(goOut, strings.TrimSuffix(base, ".json")+".gen.go")
+		if err := writeGenerated(out, formatted); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func buildObjectIR(schema map[string]any) (objectSchema, error) {
+	title, _ := schema["title"].(string)
+	if title == "" {
+		return objectSchema{}, errors.New("schema title is missing")
+	}
+	defs, _ := schema["$defs"].(map[string]any)
+	var structs []goStruct
+	if schema["type"] == "object" {
+		root, err := buildStruct(title, schema, defs)
+		if err != nil {
+			return objectSchema{}, err
+		}
+		structs = append(structs, root)
+	}
+	for _, name := range sortedKeys(defs) {
+		def, ok := defs[name].(map[string]any)
+		if !ok || def["type"] != "object" {
+			continue // string, enum, and other $defs are only referenced, not structs
+		}
+		s, err := buildStruct(goExportedName(name), def, defs)
+		if err != nil {
+			return objectSchema{}, err
+		}
+		structs = append(structs, s)
+	}
+	if len(structs) == 0 {
+		return objectSchema{}, errors.New("schema defines no object types")
+	}
+	sort.Slice(structs, func(i, j int) bool { return structs[i].Name < structs[j].Name })
+	return objectSchema{Title: title, Structs: structs}, nil
+}
+
+func buildStruct(name string, obj, defs map[string]any) (goStruct, error) {
+	props, _ := obj["properties"].(map[string]any)
+	required := stringSet(obj["required"])
+	fields := make([]goField, 0, len(props))
+	for _, prop := range sortedKeys(props) {
+		schema, ok := props[prop].(map[string]any)
+		if !ok {
+			return goStruct{}, fmt.Errorf("property %s is not an object", prop)
+		}
+		typ, err := goFieldType(schema, defs)
+		if err != nil {
+			return goStruct{}, fmt.Errorf("property %s: %w", prop, err)
+		}
+		tag := prop
+		if !required[prop] {
+			tag += ",omitempty"
+		}
+		fields = append(fields, goField{GoName: goExportedName(prop), GoType: typ, JSONTag: tag})
+	}
+	return goStruct{Name: name, Fields: fields}, nil
+}
+
+// goFieldType maps a property schema to its Go type. $ref resolves to a
+// generated identifier type or a local $def; a nullable type becomes a pointer.
+func goFieldType(schema, defs map[string]any) (string, error) {
+	if ref, ok := schema["$ref"].(string); ok {
+		return refType(ref, defs)
+	}
+	kind, nullable, err := jsonType(schema)
+	if err != nil {
+		return "", err
+	}
+	var base string
+	switch kind {
+	case "string":
+		base = "string"
+	case "integer":
+		base = "int"
+	case "number":
+		base = "float64"
+	case "boolean":
+		base = "bool"
+	case "object":
+		base = objectFieldType(schema)
+	case "array":
+		item, err := itemType(schema, defs)
+		if err != nil {
+			return "", err
+		}
+		base = "[]" + item
+	default:
+		base = "any"
+	}
+	if nullable {
+		return "*" + base, nil
+	}
+	return base, nil
+}
+
+// jsonType reads a JSON Schema "type", which may be a string or a ["T","null"]
+// array. It returns the concrete type and whether null is permitted.
+func jsonType(schema map[string]any) (kind string, nullable bool, err error) {
+	switch t := schema["type"].(type) {
+	case string:
+		return t, false, nil
+	case []any:
+		for _, v := range t {
+			s, _ := v.(string)
+			if s == "null" {
+				nullable = true
+				continue
+			}
+			if kind == "" {
+				kind = s
+			}
+		}
+		if kind == "" {
+			return "", false, errors.New("type array declares no concrete type")
+		}
+		return kind, nullable, nil
+	case nil:
+		return "", false, nil // untyped schema maps to any
+	default:
+		return "", false, fmt.Errorf("unsupported type declaration %T", t)
+	}
+}
+
+func objectFieldType(schema map[string]any) string {
+	if ap, ok := schema["additionalProperties"].(map[string]any); ok && ap["type"] == "string" {
+		return "map[string]string"
+	}
+	return "map[string]any"
+}
+
+func itemType(schema, defs map[string]any) (string, error) {
+	items, ok := schema["items"].(map[string]any)
+	if !ok {
+		return "any", nil // untyped array elements
+	}
+	return goFieldType(items, defs)
+}
+
+func refType(ref string, defs map[string]any) (string, error) {
+	if name, ok := strings.CutPrefix(ref, "#/$defs/"); ok {
+		def, ok := defs[name].(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("unresolved local $ref %s", ref)
+		}
+		return goFieldType(def, defs)
+	}
+	if key, ok := strings.CutPrefix(ref, "id.json#/$defs/"); ok {
+		return goExportedName(key), nil
+	}
+	return "", fmt.Errorf("unsupported $ref %s", ref)
+}
+
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func stringSet(raw any) map[string]bool {
+	list, _ := raw.([]any)
+	set := make(map[string]bool, len(list))
+	for _, v := range list {
+		if s, ok := v.(string); ok {
+			set[s] = true
+		}
+	}
+	return set
 }
 
 func execTemplate(name string, data any) ([]byte, error) {
