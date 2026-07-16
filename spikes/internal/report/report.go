@@ -79,7 +79,7 @@ func (r Report) ValidateStored() error {
 
 func (r Report) MarshalStable() ([]byte, error) {
 	copyReport := r
-	copyReport.Environment.ImageDigests = append([]string(nil), r.Environment.ImageDigests...)
+	copyReport.Environment.ImageDigests = append(make([]string, 0, len(r.Environment.ImageDigests)), r.Environment.ImageDigests...)
 	copyReport.Assertions = append([]Assertion(nil), r.Assertions...)
 	sort.Strings(copyReport.Environment.ImageDigests)
 	sort.Slice(copyReport.Assertions, func(i, j int) bool {

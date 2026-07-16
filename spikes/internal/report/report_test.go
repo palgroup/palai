@@ -147,6 +147,21 @@ func TestMarshalStableOrdersCollectionsAndOmitsHostIdentity(t *testing.T) {
 	}
 }
 
+func TestMarshalStableCanonicalizesEmptyImageDigestsAsArray(t *testing.T) {
+	report := validReport()
+	report.Environment.ImageDigests = nil
+	if err := report.Finalize(); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+	data, err := report.MarshalStable()
+	if err != nil {
+		t.Fatalf("MarshalStable() error = %v", err)
+	}
+	if !strings.Contains(string(data), `"image_digests": []`) {
+		t.Fatalf("MarshalStable() image_digests is not a canonical array:\n%s", data)
+	}
+}
+
 func TestReportRejectsSecretLikeValues(t *testing.T) {
 	markers := []string{
 		"OPENAI_API_KEY=sentinel",
