@@ -1,0 +1,4 @@
+packages:
+  - sdks/typescript
+  - examples/nextjs-sdk
+

@@ -78,3 +78,13 @@ for path in \
   test -s "$path" || { echo "missing foundation file: $path" >&2; exit 1; }
 done
 bash scripts/verify/foundation.sh
+
+for target in bootstrap generate check-generated lint test-unit test-component test-e2e verify local-up local-down local-doctor uat-local-live; do
+  make -n "$target" >/dev/null
+done
+
+go env GOTOOLCHAIN | grep -Eq '^(auto|go1\.26\.4)$'
+node --version | grep -qx 'v22.22.2'
+pnpm --version | grep -qx '11.9.0'
+python3 --version | grep -qx 'Python 3.14.3'
+uv --version | grep -q '^uv 0.8.2 '

@@ -1,0 +1,7 @@
+[project]
+name = "palai-workspace"
+version = "0.0.0"
+requires-python = ">=3.14,<3.15"
+
+[tool.uv]
+package = false
