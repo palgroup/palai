@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "spike": "contract-toolchain",
+  "git_commit": "46ebd4060c4d76556ce7869416f326bfec9d7da9",
+  "source_tree": "961a9f6b3c6234d9d621fcee2841f07461610512",
+  "started_at": "2026-07-16T11:30:11Z",
+  "ended_at": "2026-07-16T11:30:53.977855Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "tool_versions": {
+      "datamodel-code-generator": "0.68.1",
+      "go": "go version go1.26.4 darwin/arm64",
+      "go-jsonschema": "0.23.1",
+      "json-schema-to-typescript": "15.0.4",
+      "node": "v22.22.2",
+      "oapi-codegen": "2.7.2",
+      "pnpm": "11.9.0",
+      "python": "Python 3.14.3",
+      "uv": "uv 0.8.2 (21fadbcc1 2025-07-22)"
+    },
+    "image_digests": []
+  },
+  "metrics": {
+    "candidate.datamodel_code_generator.exit_code": 0,
+    "candidate.datamodel_code_generator.output_bytes": 271,
+    "candidate.go_jsonschema.exit_code": 0,
+    "candidate.go_jsonschema.output_bytes": 2700,
+    "candidate.json_schema_to_typescript.exit_code": 0,
+    "candidate.json_schema_to_typescript.output_bytes": 432,
+    "candidate.oapi_codegen.exit_code": 1,
+    "candidate.oapi_codegen.output_bytes": 0,
+    "candidates": 4,
+    "candidates.partial": 3,
+    "candidates.rejected": 1,
+    "corpus.fixtures": 4,
+    "languages": 3,
+    "test_repetitions": 20
+  },
+  "assertions": [
+    {
+      "name": "candidate.datamodel_code_generator.finding_recorded",
+      "passed": true,
+      "detail": "status=partial exit=0 reason=default None merges omitted and null and the dataclass has no unknown-field bag sha256=cda170bbee617c42fa91f30144074b22a00582ad9026d44ce2b394a07ebdde76"
+    },
+    {
+      "name": "candidate.go_jsonschema.finding_recorded",
+      "passed": true,
+      "detail": "status=partial exit=0 reason=pointer note merges omitted and null and unknown fields are not flattened on encode sha256=3cfaefac62045ae2ecaa7014f3a7ffdc7ef66b5330f43c84851b640f5e0eb1f7"
+    },
+    {
+      "name": "candidate.json_schema_to_typescript.finding_recorded",
+      "passed": true,
+      "detail": "status=partial exit=0 reason=JavaScript number cannot exactly represent the int64 corpus value sha256=f8d85f717136ec5a1ddd61e102acf308e5657620d39b5b3a0807e7693b99cdc2"
+    },
+    {
+      "name": "candidate.oapi_codegen.finding_recorded",
+      "passed": true,
+      "detail": "status=rejected exit=1 reason=candidate explicitly rejects the canonical nullable schema instead of silently weakening it sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "generation.second_run_stable",
+      "passed": true,
+      "detail": "20/20"
+    },
+    {
+      "name": "go.corpus_lossless",
+      "passed": true,
+      "detail": "20/20"
+    },
+    {
+      "name": "openapi.projection_equivalent",
+      "passed": true,
+      "detail": "3.2.0/3.1.2"
+    },
+    {
+      "name": "python.corpus_lossless",
+      "passed": true,
+      "detail": "20/20"
+    },
+    {
+      "name": "typescript.corpus_lossless",
+      "passed": true,
+      "detail": "20/20"
+    }
+  ],
+  "passed": true
+}

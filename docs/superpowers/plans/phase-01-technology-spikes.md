@@ -340,7 +340,7 @@ git add pnpm-lock.yaml pnpm-workspace.yaml scripts/spikes/contract-toolchain spi
 git commit -m "test: prove lossless cross-language contracts"
 ```
 
-- [ ] **Step 6: Generate, validate and commit evidence**
+- [x] **Step 6: Generate, validate and commit evidence**
 
 Run from the clean source commit: `PALAI_SPIKE_REPORT_OUT=spikes/.evidence/contract-toolchain.json scripts/spikes/contract-toolchain evidence`
 

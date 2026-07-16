@@ -15,9 +15,9 @@
     },
     {
       "id": "contract-toolchain",
-      "status": "planned",
-      "quick_command": null,
-      "evidence_command": null
+      "status": "implemented",
+      "quick_command": "scripts/spikes/contract-toolchain",
+      "evidence_command": "scripts/spikes/contract-toolchain"
     },
     {
       "id": "runner-supervisor",
