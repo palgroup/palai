@@ -12,12 +12,26 @@ go run "$root/scripts/contracts/generator" -schemas "$root/protocols/schemas" \
   -ts-out "$scratch/ts" \
   -py-out "$scratch/py"
 
+go run "$root/scripts/contracts/semantic" -mode project \
+  -canonical "$root/protocols/openapi/openapi-3.2.yaml" \
+  -out "$scratch/openapi-3.1.2.yaml"
+
 status=0
 diff -r "$scratch/go" "$root/packages/contracts" || status=1
 diff -r "$scratch/ts" "$root/protocols/generated/typescript" || status=1
 diff -r "$scratch/py" "$root/protocols/generated/python" || status=1
+diff "$scratch/openapi-3.1.2.yaml" "$root/protocols/generated/openapi-3.1.2.yaml" || status=1
 
 if test "$status" -ne 0; then
   echo "generated sources are stale; run 'make generate'" >&2
 fi
+
+# The projection must stay semantically equivalent to the canonical 3.2 document.
+if ! go run "$root/scripts/contracts/semantic" -mode diff \
+  -canonical "$root/protocols/openapi/openapi-3.2.yaml" \
+  -projection "$root/protocols/generated/openapi-3.1.2.yaml"; then
+  echo "OpenAPI projection is not semantically equivalent to the canonical document" >&2
+  status=1
+fi
+
 exit "$status"
