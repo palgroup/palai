@@ -21,9 +21,9 @@
     },
     {
       "id": "runner-supervisor",
-      "status": "planned",
-      "quick_command": null,
-      "evidence_command": null
+      "status": "implemented",
+      "quick_command": "scripts/spikes/runner",
+      "evidence_command": "scripts/spikes/runner"
     },
     {
       "id": "nextjs-streaming",

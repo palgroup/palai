@@ -411,7 +411,7 @@ git add go.mod go.sum spikes/runner scripts/spikes/runner docs/superpowers/plans
 git commit -m "test: prove outbound runner supervision"
 ```
 
-- [ ] **Step 6: Generate, validate and commit evidence**
+- [x] **Step 6: Generate, validate and commit evidence**
 
 Run from the clean source commit: `PALAI_SPIKE_REPORT_OUT=spikes/.evidence/runner-supervisor.json scripts/spikes/runner evidence`
 

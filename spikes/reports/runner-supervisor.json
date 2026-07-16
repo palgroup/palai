@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "spike": "runner-supervisor",
+  "git_commit": "52ad76ec55938cedf8bc0695ec720ca1c50a284c",
+  "source_tree": "336a87ae461c214e78ef465c94e31a01c0d3076c",
+  "started_at": "2026-07-16T11:53:53Z",
+  "ended_at": "2026-07-16T11:54:02.348609Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "tool_versions": {
+      "coder-websocket": "1.8.15",
+      "docker": "24.0.2",
+      "go": "go version go1.26.4 darwin/arm64",
+      "moby-client": "0.5.0"
+    },
+    "image_digests": [
+      "sha256:f1d9b8ef102dbf9a2ebbfcbd21e9a7fbb559b0853315d43ecdc735ac2ec546ea"
+    ]
+  },
+  "metrics": {
+    "bounds.frame_bytes": 512,
+    "bounds.stderr_bytes": 128,
+    "bounds.stdout_bytes": 32768,
+    "bounds.timeout_ms": 200,
+    "containers.after": 0,
+    "containers.before": 0,
+    "images.after": 1,
+    "images.before": 1,
+    "iterations": 5,
+    "mtls.client_rejection_cases": 5,
+    "mtls.server_rejection_cases": 2,
+    "supervisor.docker_scenarios": 6
+  },
+  "assertions": [
+    {
+      "name": "docker.container_cleanup_exact",
+      "passed": true,
+      "detail": "containers=0/0"
+    },
+    {
+      "name": "docker.fixture_cache_bounded",
+      "passed": true,
+      "detail": "images=1 platform=linux/arm64"
+    },
+    {
+      "name": "engine.credentials_and_socket_absent",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "engine.malformed_jsonl_rejected",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "engine.oversized_stdout_rejected",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "engine.stderr_separately_bounded",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "engine.timeout_killed",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "engine.valid_jsonl_accepted",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "lease.immutable_identity_and_bounds",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "mtls.invalid_clients_rejected",
+      "passed": true,
+      "detail": "5/5 cases=5"
+    },
+    {
+      "name": "mtls.server_hostname_verified",
+      "passed": true,
+      "detail": "5/5 cases=2"
+    },
+    {
+      "name": "mtls.short_lived_client_accepted",
+      "passed": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "runner.outbound_only",
+      "passed": true,
+      "detail": "5/5"
+    }
+  ],
+  "passed": true
+}
