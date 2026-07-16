@@ -361,6 +361,8 @@ git commit -m "test: record cross-language contract evidence"
 - Create: `spikes/runner/supervisor.go`
 - Create: `spikes/runner/engine/main.go`
 - Create: `spikes/runner/engine/Dockerfile`
+- Create: `spikes/runner/cmd/report/main.go`
+- Create: `spikes/runner/README.md`
 - Test: `spikes/runner/runner_test.go`
 - Test: `spikes/runner/supervisor_test.go`
 - Create: `scripts/spikes/runner`
@@ -368,7 +370,7 @@ git commit -m "test: record cross-language contract evidence"
 - Modify: `go.mod`
 - Modify: `go.sum`
 
-- [ ] **Step 1: Write failing transport/supervisor tests**
+- [x] **Step 1: Write failing transport/supervisor tests**
 
 Cases:
 
@@ -384,29 +386,40 @@ container receives no Docker socket, provider key, DB URL, S3 key, or runner pri
 container is absent after destroy
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `go test ./spikes/runner -v`
 
 Expected: FAIL because runner/controller/supervisor are absent.
 
-- [ ] **Step 3: Implement mTLS WebSocket lease exchange**
+- [x] **Step 3: Implement mTLS WebSocket lease exchange**
 
 Use coder/websocket 1.8.15. Test PKI uses an in-memory CA, exact DNS SANs and one-minute leaf lifetime. Controller requires and verifies the client certificate. Runner is always the WebSocket client and has no inbound listener. Messages carry protocol version, runner ID, run/attempt IDs, fence, image identity, deadline and resource/output limits.
 
-- [ ] **Step 4: Implement Docker SDK supervision**
+- [x] **Step 4: Implement Docker SDK supervision**
 
 Use Moby client 0.5.0 with API negotiation. `scripts/spikes/runner` cross-compiles a tiny JSONL fixture engine for the Docker daemon architecture and builds a `FROM scratch` image, then resolves and passes its immutable image ID. Create/start/wait/log/kill/remove calls have contexts and labels. Stdout and stderr use separate bounded readers. Environment is an explicit allowlist.
 
-- [ ] **Step 5: Run Docker evidence and commit**
+- [x] **Step 5: Verify and commit the clean source**
 
-Run: `scripts/spikes/runner evidence spikes/reports/runner-supervisor.json`
+Run: `scripts/spikes/runner quick && PALAI_SPIKE_RUNNER_IMAGE_ID="$(docker image inspect palai-runner-spike:fixture --format '{{.Id}}')" go test -race ./spikes/runner -count=1`
 
-Expected: all mTLS negative cases and OCI lifecycle assertions PASS five times; no labeled container/image allocation remains except the intentionally cached fixture image.
+Expected: all mTLS negative cases and OCI lifecycle assertions PASS; no labeled container remains and exactly one intentionally cached fixture image remains.
 
 ```bash
-git add go.mod go.sum spikes/runner spikes/reports/runner-supervisor.json scripts/spikes/runner
+git add go.mod go.sum spikes/runner scripts/spikes/runner docs/superpowers/plans/phase-01-technology-spikes.md
 git commit -m "test: prove outbound runner supervision"
+```
+
+- [ ] **Step 6: Generate, validate and commit evidence**
+
+Run from the clean source commit: `PALAI_SPIKE_REPORT_OUT=spikes/.evidence/runner-supervisor.json scripts/spikes/runner evidence`
+
+Expected: all mTLS negative cases and OCI lifecycle assertions PASS five times; no labeled container remains and exactly one intentionally cached fixture image remains. Promote the redacted report, update the manifest entry to `implemented`, and commit only evidence state.
+
+```bash
+git add spikes/manifest.json spikes/reports/runner-supervisor.json docs/superpowers/plans/phase-01-technology-spikes.md
+git commit -m "test: record outbound runner evidence"
 ```
 
 ### Task 6: Next.js server-only stream relay and abort behavior

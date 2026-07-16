@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+profile="${1:-}"
+case "$profile" in
+  quick) iterations=1 ;;
+  evidence) iterations=5 ;;
+  *)
+    echo "usage: scripts/spikes/runner <quick|evidence> [report-path]" >&2
+    exit 2
+    ;;
+esac
+started_unix="$(date +%s)"
+
+label="io.palai.spike=runner-supervisor"
+image_tag="palai-runner-spike:fixture"
+build_directory="spikes/runner/.build/image"
+
+count_containers() {
+  docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+count_images() {
+  docker image ls --no-trunc --filter "label=$label" --format '{{.ID}}' | sort -u | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+cleanup_containers() {
+  local ids
+  ids="$(docker ps -aq --filter "label=$label")"
+  if test -n "$ids"; then
+    docker rm -f $ids >/dev/null 2>&1 || true
+  fi
+}
+
+cleanup_stale_images() {
+  local current_id="$1"
+  local image_id
+  while IFS= read -r image_id; do
+    if test -n "$image_id" && test "$image_id" != "$current_id"; then
+      docker image rm -f "$image_id" >/dev/null 2>&1 || true
+    fi
+  done < <(docker image ls --no-trunc --filter "label=$label" --format '{{.ID}}' | sort -u)
+}
+
+cleanup_containers
+containers_before="$(count_containers)"
+images_before="$(count_images)"
+trap cleanup_containers EXIT
+
+daemon_os="$(docker version --format '{{.Server.Os}}')"
+daemon_arch="$(docker version --format '{{.Server.Arch}}')"
+case "$daemon_os" in
+  linux) ;;
+  *)
+    echo "runner spike requires a Linux Docker daemon, got $daemon_os" >&2
+    exit 1
+    ;;
+esac
+case "$daemon_arch" in
+  amd64|x86_64) go_arch=amd64 ;;
+  arm64|aarch64) go_arch=arm64 ;;
+  *)
+    echo "unsupported Docker daemon architecture: $daemon_arch" >&2
+    exit 1
+    ;;
+esac
+
+rm -rf "$build_directory"
+mkdir -p "$build_directory"
+CGO_ENABLED=0 GOOS=linux GOARCH="$go_arch" \
+  go build -trimpath -buildvcs=false -ldflags='-s -w' \
+  -o "$build_directory/palai-spike-engine" ./spikes/runner/engine
+docker build \
+  --platform "linux/$go_arch" \
+  --tag "$image_tag" \
+  --file spikes/runner/engine/Dockerfile \
+  "$build_directory" >/dev/null
+image_id="$(docker image inspect "$image_tag" --format '{{.Id}}')"
+if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "Docker returned a non-immutable fixture image ID" >&2
+  exit 1
+fi
+cleanup_stale_images "$image_id"
+docker image rm palai-runner-spike:dev >/dev/null 2>&1 || true
+
+set +e
+PALAI_SPIKE_RUNNER_IMAGE_ID="$image_id" \
+  go test ./spikes/runner -v -count="$iterations"
+test_status=$?
+set -e
+
+cleanup_containers
+trap - EXIT
+containers_after="$(count_containers)"
+images_after="$(count_images)"
+if test "$containers_before" -ne 0 || test "$containers_after" -ne 0; then
+  echo "runner spike leaked a labeled container" >&2
+  exit 1
+fi
+if test "$images_after" -ne 1; then
+  echo "runner spike expected exactly one cached fixture image, got $images_after" >&2
+  exit 1
+fi
+if test "$test_status" -ne 0; then
+  exit "$test_status"
+fi
+
+if test "$profile" = evidence; then
+  output="${2:-${PALAI_SPIKE_REPORT_OUT:-spikes/.evidence/runner-supervisor.json}}"
+  go run ./spikes/runner/cmd/report \
+    -out "$output" \
+    -iterations "$iterations" \
+    -started-unix "$started_unix" \
+    -image-digest "$image_id" \
+    -docker-version "$(docker version --format '{{.Server.Version}}')" \
+    -daemon-platform "$daemon_os/$go_arch" \
+    -containers-before "$containers_before" \
+    -containers-after "$containers_after" \
+    -images-before "$images_before" \
+    -images-after "$images_after"
+fi
+
+echo "runner_supervisor=PASS profile=$profile iterations=$iterations containers=$containers_after cached_images=$images_after"
