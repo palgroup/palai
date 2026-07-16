@@ -15,6 +15,8 @@ jq -e '
   .required_status_checks.strict == true and
   (.required_status_checks.contexts | index("Foundation") != null) and
   .enforce_admins.enabled == true and
+  .required_pull_request_reviews.required_approving_review_count == 0 and
+  .required_linear_history.enabled == true and
   .required_conversation_resolution.enabled == true and
   .allow_force_pushes.enabled == false and
   .allow_deletions.enabled == false
