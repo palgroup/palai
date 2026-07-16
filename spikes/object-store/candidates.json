@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "researched_at": "2026-07-16",
+  "selection": {
+    "candidate_id": "seaweedfs",
+    "immutable_reference": "docker.io/chrislusf/seaweedfs@sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6",
+    "scope": "Technology-spike recommendation only; production readiness is not established.",
+    "release_requirement": "Palai must mirror this exact index and sign the mirrored artifact before the E18 release gate."
+  },
+  "candidates": [
+    {
+      "id": "seaweedfs",
+      "name": "SeaweedFS",
+      "version": "4.39",
+      "primary_source": {
+        "url": "https://github.com/seaweedfs/seaweedfs/releases/tag/4.39",
+        "commit": "db42bb49757b459551607939807017d7a9d5a94a"
+      },
+      "license": {
+        "spdx": "Apache-2.0",
+        "receipt_url": "https://github.com/seaweedfs/seaweedfs/blob/db42bb49757b459551607939807017d7a9d5a94a/LICENSE"
+      },
+      "maintenance": {
+        "active": true,
+        "checked_at": "2026-07-16",
+        "status": "4.39 released 2026-07-10 from the recorded commit",
+        "receipt_url": "https://github.com/seaweedfs/seaweedfs/releases/tag/4.39"
+      },
+      "image": {
+        "tag_reference": "docker.io/chrislusf/seaweedfs:4.39",
+        "index_digest": "sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6",
+        "platforms": [
+          {
+            "os": "linux",
+            "architecture": "amd64",
+            "digest": "sha256:1f4d22c98089dba5e849ea3a1f24a7d85b3177ab39a8d9a70275856882ce2be3"
+          },
+          {
+            "os": "linux",
+            "architecture": "arm64",
+            "digest": "sha256:22fe8c99253508a3d4bf2fb3c66130d9c3e238506b42c41aa3aee3bfbe3a6906"
+          }
+        ]
+      },
+      "readiness": {
+        "command": "GET /readyz process hint followed by an authenticated ListBuckets request",
+        "semantics": "The /readyz handler alone is not proof of S3/auth readiness; the signed S3 request must also succeed."
+      },
+      "s3_conformance": {
+        "command": "scripts/spikes/object-store evidence"
+      },
+      "offline": {
+        "export_command": "docker image save exact selected platform image to a mode-0600 archive",
+        "import_command": "run the Palai image-load CLI in a network-none container and stream the archive to the local Docker Engine image-load API",
+        "claim": "Local archive round-trip only; cached daemon layers may remain and a cold empty-daemon air-gap install is deferred to E18."
+      },
+      "supply_chain": {
+        "checked_at": "2026-07-16",
+        "status": "No signature, attestation, or SBOM was discoverable for the exact index by the scoped checks.",
+        "check_method": "Standard OCI referrers API plus recognized Cosign legacy artifact-tag conventions; this is not a claim of absolute absence."
+      },
+      "distribution": {
+        "status": "upstream-multi-arch-container",
+        "policy_concern": "Palai mirror and signature required before release distribution."
+      }
+    },
+    {
+      "id": "garage",
+      "name": "Garage",
+      "version": "v2.3.0",
+      "primary_source": {
+        "url": "https://garagehq.deuxfleurs.fr/_releases.html",
+        "commit": "7b119c0b4fa58ab3cb6d5db435fe52d990f6a7aa"
+      },
+      "license": {
+        "spdx": "AGPL-3.0-only",
+        "receipt_url": "https://git.deuxfleurs.fr/Deuxfleurs/garage/src/tag/v2.3.0/LICENSE"
+      },
+      "maintenance": {
+        "active": true,
+        "checked_at": "2026-07-16",
+        "status": "v2.3.0 released 2026-04-16 and remains the current stable release",
+        "receipt_url": "https://garagehq.deuxfleurs.fr/_releases.html"
+      },
+      "image": {
+        "tag_reference": "docker.io/dxflrs/garage:v2.3.0",
+        "index_digest": "sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690",
+        "platforms": [
+          {
+            "os": "linux",
+            "architecture": "amd64",
+            "digest": "sha256:dac0c92add4f1a0b41035e94b41036a270ffbe88a37c7ac9c3f19e6dc5bdccf2"
+          },
+          {
+            "os": "linux",
+            "architecture": "arm64",
+            "digest": "sha256:2d3f94a89a8a02dc49fa75594d6df67ed9c6ffe08fe55ed023d0c9776f71a9bd"
+          }
+        ]
+      },
+      "readiness": {
+        "command": "GET /health",
+        "semantics": "HTTP 200 when the node can connect to enough nodes for quorum; HTTP 503 otherwise."
+      },
+      "s3_conformance": {
+        "command": "scripts/spikes/object-store evidence with the candidate endpoint injected"
+      },
+      "offline": {
+        "export_command": "docker image save exact selected platform image to a mode-0600 archive",
+        "import_command": "docker image load from the local archive",
+        "claim": "OCI local archive export/import path is available."
+      },
+      "supply_chain": {
+        "checked_at": "2026-07-16",
+        "status": "No signature, attestation, or SBOM was discoverable for the exact index by the scoped checks.",
+        "check_method": "Standard OCI referrers API plus recognized Cosign legacy artifact-tag conventions; this is not a claim of absolute absence."
+      },
+      "distribution": {
+        "status": "upstream-multi-arch-container",
+        "policy_concern": "AGPL-3.0 distribution-policy review is required; no legal compatibility conclusion is made by this spike."
+      }
+    },
+    {
+      "id": "minio-community",
+      "name": "MinIO Community",
+      "version": "RELEASE.2025-10-15T17-29-55Z source; RELEASE.2025-09-07T16-13-09Z image",
+      "primary_source": {
+        "url": "https://github.com/minio/minio/releases/tag/RELEASE.2025-10-15T17-29-55Z",
+        "commit": "9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a"
+      },
+      "license": {
+        "spdx": "AGPL-3.0-only",
+        "receipt_url": "https://github.com/minio/minio/blob/9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a/LICENSE"
+      },
+      "maintenance": {
+        "active": false,
+        "checked_at": "2026-07-16",
+        "status": "Repository archived 2026-04-25; latest community release is source-only and the remaining official image lags the source release.",
+        "receipt_url": "https://github.com/minio/minio"
+      },
+      "image": {
+        "tag_reference": "docker.io/minio/minio:RELEASE.2025-09-07T16-13-09Z",
+        "index_digest": "sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e",
+        "platforms": [
+          {
+            "os": "linux",
+            "architecture": "amd64",
+            "digest": "sha256:a1a8bd4ac40ad7881a245bab97323e18f971e4d4cba2c2007ec1bedd21cbaba2"
+          },
+          {
+            "os": "linux",
+            "architecture": "arm64",
+            "digest": "sha256:9966a92a734f9411e32f4f41d7d9d826fcdc0f68c4e20b70295bd4e7c11f8a2f"
+          }
+        ]
+      },
+      "readiness": {
+        "command": "GET /minio/health/ready",
+        "semantics": "HTTP success indicates the legacy server is ready to accept requests; this does not change the archived/source-only eligibility result."
+      },
+      "s3_conformance": {
+        "command": "scripts/spikes/object-store evidence with the candidate endpoint injected"
+      },
+      "offline": {
+        "export_command": "docker image save the historical exact platform image to a mode-0600 archive",
+        "import_command": "docker image load from the local archive",
+        "claim": "Historical image local archive path only; current community distribution is source-only."
+      },
+      "supply_chain": {
+        "checked_at": "2026-07-16",
+        "status": "No OCI signature, attestation, or SBOM was discoverable for the historical exact index by the scoped checks.",
+        "check_method": "Standard OCI referrers API plus recognized Cosign legacy artifact-tag conventions; source-tag signing is not OCI image signature verification."
+      },
+      "distribution": {
+        "status": "source-only",
+        "policy_concern": "Rejected as the default because upstream is archived/source-only and the official image lags; not rejected for S3 API maturity."
+      }
+    }
+  ]
+}

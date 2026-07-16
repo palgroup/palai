@@ -1,0 +1,517 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+profile="${1:-}"
+case "$profile" in
+  quick)
+    go test ./spikes/object-store/... -count=1 -v
+    echo "object_store=PASS profile=quick live=skipped"
+    exit 0
+    ;;
+  evidence)
+    repetitions=5
+    ;;
+  *)
+    echo "usage: scripts/spikes/object-store <quick|evidence> [report-path]" >&2
+    exit 2
+    ;;
+esac
+
+if test -n "$(git status --porcelain --untracked-files=all)"; then
+  echo "source tree must be clean before collecting object-store evidence" >&2
+  exit 1
+fi
+
+umask 077
+label="io.palai.spike=object-store"
+run_id="$(openssl rand -hex 12)"
+run_label="io.palai.spike.run=$run_id"
+selected_reference="$(jq -er '.selection.immutable_reference' spikes/object-store/candidates.json)"
+selected_index="${selected_reference##*@}"
+temp_directory=""
+lock_directory="$(git rev-parse --git-path object-store-spike.lock)"
+current_container=""
+current_volume=""
+archive_tag="palai-object-store-$run_id:local-archive-roundtrip"
+archive_tag_owned=0
+lock_owned=0
+access_key=""
+secret_key=""
+
+container_owned() {
+  test -n "$current_container" &&
+    test "$(docker container inspect "$current_container" --format '{{ index .Config.Labels "io.palai.spike" }}' 2>/dev/null || true)" = object-store &&
+    test "$(docker container inspect "$current_container" --format '{{ index .Config.Labels "io.palai.spike.run" }}' 2>/dev/null || true)" = "$run_id"
+}
+
+volume_owned() {
+  test -n "$current_volume" &&
+    test "$(docker volume inspect "$current_volume" --format '{{ index .Labels "io.palai.spike" }}' 2>/dev/null || true)" = object-store &&
+    test "$(docker volume inspect "$current_volume" --format '{{ index .Labels "io.palai.spike.run" }}' 2>/dev/null || true)" = "$run_id"
+}
+
+cleanup() {
+  set +e
+  if container_owned; then
+    docker rm -f "$current_container" >/dev/null 2>&1
+  fi
+  current_container=""
+  if volume_owned; then
+    docker volume rm -f "$current_volume" >/dev/null 2>&1
+  fi
+  current_volume=""
+  if test "$archive_tag_owned" -eq 1; then
+    docker image rm "$archive_tag" >/dev/null 2>&1
+  fi
+  archive_tag_owned=0
+  access_key=""
+  secret_key=""
+  if test -n "$temp_directory" && [[ "$temp_directory" == */palai-object-store.* ]]; then
+    rm -rf "$temp_directory"
+  fi
+  if test "$lock_owned" -eq 1; then
+    rmdir "$lock_directory" 2>/dev/null
+  fi
+  lock_owned=0
+}
+
+finish() {
+  status=$?
+  trap - EXIT
+  cleanup
+  exit "$status"
+}
+
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+if ! mkdir "$lock_directory" 2>/dev/null; then
+  echo "object-store evidence workflow is already running" >&2
+  exit 1
+fi
+lock_owned=1
+temp_directory="$(mktemp -d "${TMPDIR:-/tmp}/palai-object-store.XXXXXXXX")"
+run_directory="$temp_directory/runs"
+mkdir "$run_directory"
+git_commit="$(git rev-parse HEAD)"
+source_tree="$(git rev-parse HEAD^{tree})"
+started_unix="$(date +%s)"
+
+count_containers() {
+  docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+count_volumes() {
+  docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+containers_before="$(count_containers)"
+volumes_before="$(count_volumes)"
+if test "$containers_before" -ne 0 || test "$volumes_before" -ne 0; then
+  echo "object-store evidence requires zero pre-existing labeled resources" >&2
+  exit 1
+fi
+
+daemon_os="$(docker version --format '{{.Server.Os}}')"
+daemon_arch="$(docker version --format '{{.Server.Arch}}')"
+if test "$daemon_os" != linux; then
+  echo "object-store evidence requires a Linux Docker daemon" >&2
+  exit 1
+fi
+case "$daemon_arch" in
+  amd64|x86_64) platform="linux/amd64"; catalog_arch=amd64 ;;
+  arm64|aarch64) platform="linux/arm64"; catalog_arch=arm64 ;;
+  *)
+    echo "unsupported Docker daemon architecture for object-store evidence" >&2
+    exit 1
+    ;;
+esac
+selected_platform_digest="$(jq -er --arg arch "$catalog_arch" '
+  .candidates[] | select(.id == "seaweedfs") |
+  .image.platforms[] | select(.os == "linux" and .architecture == $arch) | .digest
+' spikes/object-store/candidates.json)"
+
+registry_result_files=()
+verify_registry_candidate() {
+  local candidate_id="$1"
+  local tag_reference repository tag token auth_file index_file header_file referrers_file
+  local observed_index expected_index expected_amd64 expected_arm64 referrers_status referrers_count
+  local legacy_count legacy_tag legacy_file status
+  tag_reference="$(jq -er --arg id "$candidate_id" '.candidates[] | select(.id == $id) | .image.tag_reference' spikes/object-store/candidates.json)"
+  repository="${tag_reference#docker.io/}"
+  tag="${repository##*:}"
+  repository="${repository%:*}"
+  expected_index="$(jq -er --arg id "$candidate_id" '.candidates[] | select(.id == $id) | .image.index_digest' spikes/object-store/candidates.json)"
+  expected_amd64="$(jq -er --arg id "$candidate_id" '.candidates[] | select(.id == $id) | .image.platforms[] | select(.os == "linux" and .architecture == "amd64") | .digest' spikes/object-store/candidates.json)"
+  expected_arm64="$(jq -er --arg id "$candidate_id" '.candidates[] | select(.id == $id) | .image.platforms[] | select(.os == "linux" and .architecture == "arm64") | .digest' spikes/object-store/candidates.json)"
+  token="$(curl -fsS --max-time 20 "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repository}:pull" | jq -er .token)"
+  auth_file="$temp_directory/registry-$candidate_id.curl"
+  printf 'header = "Authorization: Bearer %s"\n' "$token" >"$auth_file"
+  token=""
+  index_file="$temp_directory/registry-$candidate_id-index.json"
+  header_file="$temp_directory/registry-$candidate_id-headers"
+  curl -fsS --max-time 30 --config "$auth_file" \
+    --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+    --dump-header "$header_file" --output "$index_file" \
+    "https://registry-1.docker.io/v2/$repository/manifests/$tag"
+  observed_index="$(tr -d '\r' <"$header_file" | awk 'tolower($1) == "docker-content-digest:" {print $2}')"
+  test "$observed_index" = "$expected_index"
+  jq -e --arg amd64 "$expected_amd64" --arg arm64 "$expected_arm64" '
+    (.mediaType == "application/vnd.oci.image.index.v1+json" or
+     .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json") and
+    any(.manifests[]; .platform.os == "linux" and .platform.architecture == "amd64" and .digest == $amd64) and
+    any(.manifests[]; .platform.os == "linux" and .platform.architecture == "arm64" and .digest == $arm64)
+  ' "$index_file" >/dev/null
+
+  referrers_file="$temp_directory/registry-$candidate_id-referrers.json"
+  status="$(curl -sS --max-time 20 --config "$auth_file" \
+    --header 'Accept: application/vnd.oci.image.index.v1+json' \
+    --output "$referrers_file" --write-out '%{http_code}' \
+    "https://registry-1.docker.io/v2/$repository/referrers/$expected_index")"
+  case "$status" in
+    200)
+      referrers_count="$(jq -er '(.manifests // []) | length' "$referrers_file")"
+      referrers_status=queried
+      ;;
+    404|405)
+      referrers_count=0
+      referrers_status=unsupported_or_empty
+      ;;
+    *)
+      echo "registry referrers probe returned an unexpected status" >&2
+      return 1
+      ;;
+  esac
+
+  legacy_count=0
+  for suffix in sig att sbom; do
+    legacy_tag="${expected_index/:/-}.$suffix"
+    legacy_file="$temp_directory/registry-$candidate_id-legacy-$suffix.json"
+    status="$(curl -sS --max-time 20 --config "$auth_file" \
+      --header 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+      --output "$legacy_file" --write-out '%{http_code}' \
+      "https://registry-1.docker.io/v2/$repository/manifests/$legacy_tag")"
+    case "$status" in
+      200) legacy_count=$((legacy_count + 1)) ;;
+      404) ;;
+      *)
+        echo "registry legacy artifact probe returned an unexpected status" >&2
+        return 1
+        ;;
+    esac
+  done
+  rm -f "$auth_file" "$header_file" "$index_file" "$referrers_file" \
+    "$temp_directory/registry-$candidate_id-legacy-sig.json" \
+    "$temp_directory/registry-$candidate_id-legacy-att.json" \
+    "$temp_directory/registry-$candidate_id-legacy-sbom.json"
+
+  result_file="$temp_directory/registry-$candidate_id-result.json"
+  jq -n \
+    --arg id "$candidate_id" \
+    --arg index "$observed_index" \
+    --arg amd64 "$expected_amd64" \
+    --arg arm64 "$expected_arm64" \
+    --arg referrers_status "$referrers_status" \
+    --argjson referrers_count "$referrers_count" \
+    --argjson legacy_count "$legacy_count" \
+    '{id: $id, index_digest: $index, linux_amd64_digest: $amd64,
+      linux_arm64_digest: $arm64, referrers_status: $referrers_status,
+      referrers_count: $referrers_count, legacy_artifact_count: $legacy_count}' >"$result_file"
+  registry_result_files+=("$result_file")
+}
+
+for candidate_id in seaweedfs garage minio-community; do
+  verify_registry_candidate "$candidate_id"
+done
+registry_summary="$temp_directory/registry.json"
+jq -s --arg checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{schema_version: 1, checked_at: $checked_at, candidates: .}' \
+  "${registry_result_files[@]}" >"$registry_summary"
+
+docker image pull --platform "$platform" "$selected_reference" >/dev/null
+selected_image_id="$(docker image inspect "$selected_reference" --format '{{.Id}}')"
+selected_image_platform="$(docker image inspect "$selected_reference" --format '{{.Os}}/{{.Architecture}}')"
+if test "$selected_image_platform" != "$platform" || [[ ! "$selected_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "selected image did not resolve to the required host platform/config ID" >&2
+  exit 1
+fi
+
+access_key="$(openssl rand -hex 10)"
+secret_key="$(openssl rand -base64 30 | tr -d '\n')"
+config_file="$temp_directory/s3.json"
+printf '{"identities":[{"name":"palai-spike","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","List","Tagging","Write"]}]}\n' \
+  "$access_key" "$secret_key" >"$config_file"
+chmod 0600 "$config_file"
+
+scan_file_for_sentinels() {
+  local file="$1"
+  local line
+  while IFS= read -r line || test -n "$line"; do
+    if [[ "$line" == *"$access_key"* || "$line" == *"$secret_key"* ]]; then
+      return 1
+    fi
+  done <"$file"
+}
+
+scan_container_logs() {
+  local iteration="$1"
+  local output_file="$temp_directory/container-$iteration.log"
+  docker logs --tail 1000 "$current_container" >"$output_file" 2>&1
+  if ! scan_file_for_sentinels "$output_file"; then
+    echo "exact credential sentinel appeared in container logs" >&2
+    return 1
+  fi
+  rm -f "$output_file"
+}
+
+run_go_test() {
+  local endpoint="$1"
+  local phase="$2"
+  local iteration="$3"
+  local summary="$4"
+  local test_name="$5"
+  local output_file="$temp_directory/go-test-$iteration-$phase.log"
+  if ! PALAI_SPIKE_OBJECT_STORE_ENDPOINT="$endpoint" \
+    PALAI_SPIKE_OBJECT_STORE_ACCESS_KEY="$access_key" \
+    PALAI_SPIKE_OBJECT_STORE_SECRET_KEY="$secret_key" \
+    PALAI_SPIKE_OBJECT_STORE_RUN_ID="$run_id-$iteration" \
+    PALAI_SPIKE_OBJECT_STORE_ITERATION="$iteration" \
+    PALAI_SPIKE_OBJECT_STORE_SUMMARY="$summary" \
+    PALAI_SPIKE_OBJECT_STORE_PHASE="$phase" \
+    PALAI_SPIKE_GIT_COMMIT="$git_commit" \
+    PALAI_SPIKE_SOURCE_TREE="$source_tree" \
+    go test ./spikes/object-store -run "^$test_name$" -count=1 -timeout=4m -v >"$output_file" 2>&1; then
+    if ! scan_file_for_sentinels "$output_file"; then
+      echo "exact credential sentinel appeared in captured test output" >&2
+      return 1
+    fi
+    echo "object-store live Go test failed: $test_name" >&2
+    return 1
+  fi
+  if ! scan_file_for_sentinels "$output_file"; then
+    echo "exact credential sentinel appeared in captured test output" >&2
+    return 1
+  fi
+  if grep -q -- '--- SKIP:' "$output_file" || ! grep -q -- "--- PASS: $test_name" "$output_file"; then
+    echo "object-store live Go test did not execute: $test_name" >&2
+    return 1
+  fi
+  rm -f "$output_file"
+}
+
+wait_ready() {
+  local endpoint="$1"
+  local readiness_url="$2"
+  local iteration="$3"
+  local phase="$4"
+  local output_file="$temp_directory/readiness-$iteration-$phase.log"
+  local http_ready=0 signed_ready=0
+  for _ in $(seq 1 120); do
+    if curl -fsS --max-time 1 "$readiness_url/readyz" >/dev/null 2>&1; then
+      http_ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$http_ready" -ne 1; then
+    echo "SeaweedFS process readiness hint did not become ready" >&2
+    return 1
+  fi
+  for _ in $(seq 1 20); do
+    if PALAI_SPIKE_OBJECT_STORE_ENDPOINT="$endpoint" \
+      PALAI_SPIKE_OBJECT_STORE_ACCESS_KEY="$access_key" \
+      PALAI_SPIKE_OBJECT_STORE_SECRET_KEY="$secret_key" \
+      PALAI_SPIKE_OBJECT_STORE_RUN_ID="$run_id-$iteration" \
+      PALAI_SPIKE_OBJECT_STORE_ITERATION="$iteration" \
+      PALAI_SPIKE_OBJECT_STORE_SUMMARY="$run_directory/readiness-unused.json" \
+      PALAI_SPIKE_GIT_COMMIT="$git_commit" \
+      PALAI_SPIKE_SOURCE_TREE="$source_tree" \
+      go test ./spikes/object-store -run '^TestS3SignedReadiness$' -count=1 -timeout=20s -v >"$output_file" 2>&1; then
+      if ! scan_file_for_sentinels "$output_file"; then
+        echo "exact credential sentinel appeared in captured readiness output" >&2
+        return 1
+      fi
+      if ! grep -q -- '--- SKIP:' "$output_file" && grep -q -- '--- PASS: TestS3SignedReadiness' "$output_file"; then
+        signed_ready=1
+        break
+      fi
+    elif ! scan_file_for_sentinels "$output_file"; then
+      echo "exact credential sentinel appeared in captured readiness output" >&2
+      return 1
+    fi
+    sleep 0.5
+  done
+  rm -f "$output_file"
+  if test "$signed_ready" -ne 1; then
+    echo "SeaweedFS signed S3 readiness did not become ready" >&2
+    return 1
+  fi
+}
+
+destroy_current_resources() {
+  if test -n "$current_container"; then
+    if ! container_owned; then
+      echo "refusing to remove a container without the invocation ownership labels" >&2
+      return 1
+    fi
+    docker rm -f "$current_container" >/dev/null
+    current_container=""
+  fi
+  if test -n "$current_volume"; then
+    if ! volume_owned; then
+      echo "refusing to remove a volume without the invocation ownership labels" >&2
+      return 1
+    fi
+    docker volume rm "$current_volume" >/dev/null
+    current_volume=""
+  fi
+}
+
+for iteration in $(seq 1 "$repetitions"); do
+  current_container="palai-object-store-$run_id-$iteration"
+  current_volume="palai-object-store-$run_id-$iteration"
+  docker volume create --label "$label" --label "$run_label" "$current_volume" >/dev/null
+  docker run --detach --pull=never --platform "$platform" \
+    --name "$current_container" \
+    --label "$label" --label "$run_label" \
+    --publish 127.0.0.1::8333 \
+    --publish 127.0.0.1::9333 \
+    --volume "$config_file:/run/palai/s3.json:ro" \
+    --volume "$current_volume:/data" \
+    "$selected_reference" mini \
+      -dir=/data \
+      -s3.config=/run/palai/s3.json \
+      -master.telemetry=false \
+      -webdav=false \
+      -admin.ui=false >/dev/null
+  s3_binding="$(docker port "$current_container" 8333/tcp)"
+  ready_binding="$(docker port "$current_container" 9333/tcp)"
+  endpoint="http://127.0.0.1:${s3_binding##*:}"
+  readiness_url="http://127.0.0.1:${ready_binding##*:}"
+  wait_ready "$endpoint" "$readiness_url" "$iteration" initial
+  run_go_test "$endpoint" conformance "$iteration" \
+    "$run_directory/run-$iteration-conformance.json" TestS3Conformance
+
+  docker stop --time 15 "$current_container" >/dev/null
+  docker start "$current_container" >/dev/null
+  s3_binding="$(docker port "$current_container" 8333/tcp)"
+  ready_binding="$(docker port "$current_container" 9333/tcp)"
+  endpoint="http://127.0.0.1:${s3_binding##*:}"
+  readiness_url="http://127.0.0.1:${ready_binding##*:}"
+  wait_ready "$endpoint" "$readiness_url" "$iteration" restarted
+  run_go_test "$endpoint" persistence "$iteration" \
+    "$run_directory/run-$iteration-persistence.json" TestS3RestartPersistence
+  scan_container_logs "$iteration"
+  destroy_current_resources
+done
+
+archive_file="$temp_directory/selected-platform.tar"
+if docker image inspect "$archive_tag" >/dev/null 2>&1; then
+  echo "refusing to reuse an existing archive round-trip tag" >&2
+  exit 1
+fi
+docker image tag "$selected_image_id" "$archive_tag"
+archive_tag_owned=1
+docker image save --output "$archive_file" "$archive_tag"
+chmod 0600 "$archive_file"
+archive_bytes="$(wc -c <"$archive_file" | tr -d ' ')"
+docker image rm "$archive_tag" >/dev/null
+archive_tag_owned=0
+offline_load_binary="$temp_directory/offline-load"
+CGO_ENABLED=0 GOOS=linux GOARCH="$catalog_arch" \
+  go build -trimpath -buildvcs=false -ldflags='-s -w' \
+  -o "$offline_load_binary" ./spikes/object-store/cmd/offline-load
+chmod 0500 "$offline_load_binary"
+current_container="palai-object-store-import-$run_id"
+docker create --pull=never --platform "$platform" \
+  --name "$current_container" \
+  --label "$label" --label "$run_label" \
+  --network none \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --volume /var/run/docker.sock:/var/run/docker.sock \
+  --volume "$offline_load_binary:/run/palai-offline-load:ro" \
+  --volume "$archive_file:/run/selected-platform.tar:ro" \
+  --entrypoint /run/palai-offline-load \
+  "$selected_reference" /run/selected-platform.tar >/dev/null
+if test "$(docker container inspect "$current_container" --format '{{.HostConfig.NetworkMode}}')" != none; then
+  echo "archive import container did not have networking disabled" >&2
+  exit 1
+fi
+archive_tag_owned=1
+set +e
+docker start --attach "$current_container" >"$temp_directory/image-load.log" 2>&1
+import_status=$?
+set -e
+if ! scan_file_for_sentinels "$temp_directory/image-load.log"; then
+  echo "exact credential sentinel appeared in archive import output" >&2
+  exit 1
+fi
+if test "$import_status" -ne 0 || test "$(docker container inspect "$current_container" --format '{{.State.ExitCode}}')" -ne 0; then
+  echo "network-isolated local archive import failed" >&2
+  exit 1
+fi
+destroy_current_resources
+loaded_image_id="$(docker image inspect "$archive_tag" --format '{{.Id}}')"
+if test "$loaded_image_id" != "$selected_image_id"; then
+  echo "local image archive round-trip changed the image config ID" >&2
+  exit 1
+fi
+docker image rm "$archive_tag" >/dev/null
+archive_tag_owned=0
+rm -f "$archive_file" "$temp_directory/image-load.log"
+archive_summary="$temp_directory/archive.json"
+jq -n \
+  --arg image_id "$loaded_image_id" \
+  --argjson archive_bytes "$archive_bytes" \
+  '{schema_version: 1, claim: "local_archive_roundtrip", passed: true,
+    image_id: $image_id, archive_bytes: $archive_bytes,
+    cli_network_isolation: true, daemon_cache_could_supply_layers: true}' >"$archive_summary"
+
+rm -f "$config_file"
+config_file=""
+containers_after="$(count_containers)"
+volumes_after="$(count_volumes)"
+if test "$containers_after" -ne 0 || test "$volumes_after" -ne 0 || docker image inspect "$archive_tag" >/dev/null 2>&1; then
+  echo "object-store evidence leaked an owned container, volume, or temporary tag" >&2
+  exit 1
+fi
+
+while IFS= read -r evidence_file; do
+  if ! scan_file_for_sentinels "$evidence_file"; then
+    echo "exact credential sentinel appeared in generated evidence" >&2
+    exit 1
+  fi
+done < <(find "$temp_directory" -type f -name '*.json' -print)
+
+output="${2:-${PALAI_SPIKE_REPORT_OUT:-spikes/.evidence/object-store.json}}"
+go run ./spikes/object-store/cmd/report \
+  -out "$output" \
+  -run-dir "$run_directory" \
+  -registry "$registry_summary" \
+  -archive "$archive_summary" \
+  -repetitions "$repetitions" \
+  -started-unix "$started_unix" \
+  -index-digest "$selected_index" \
+  -platform-digest "$selected_platform_digest" \
+  -image-id "$selected_image_id" \
+  -platform "$platform" \
+  -docker-version "$(docker version --format '{{.Server.Version}}')" \
+  -containers-before "$containers_before" \
+  -containers-after "$containers_after" \
+  -volumes-before "$volumes_before" \
+  -volumes-after "$volumes_after" \
+  -secret-scan=true
+if ! scan_file_for_sentinels "$output"; then
+  rm -f "$output"
+  echo "exact credential sentinel appeared in the final report" >&2
+  exit 1
+fi
+
+echo "object_store=PASS profile=evidence repetitions=$repetitions platform=$platform containers=$containers_after volumes=$volumes_after archive=local_roundtrip"
