@@ -3,16 +3,25 @@ set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
+source "$root/scripts/spikes/object-store-lifecycle"
 
 profile="${1:-}"
 case "$profile" in
   quick)
+    bash scripts/test/object-store-lifecycle.sh
     go test ./spikes/object-store/... -count=1 -v
     echo "object_store=PASS profile=quick live=skipped"
     exit 0
     ;;
   evidence)
-    repetitions=5
+    repetitions="${PALAI_SPIKE_OBJECT_STORE_REPETITIONS:-5}"
+    case "$repetitions" in
+      1|5) ;;
+      *)
+        echo "object-store evidence repetitions must be 1 or 5" >&2
+        exit 2
+        ;;
+    esac
     ;;
   *)
     echo "usage: scripts/spikes/object-store <quick|evidence> [report-path]" >&2
@@ -40,33 +49,23 @@ archive_tag_owned=0
 lock_owned=0
 access_key=""
 secret_key=""
-
-container_owned() {
-  test -n "$current_container" &&
-    test "$(docker container inspect "$current_container" --format '{{ index .Config.Labels "io.palai.spike" }}' 2>/dev/null || true)" = object-store &&
-    test "$(docker container inspect "$current_container" --format '{{ index .Config.Labels "io.palai.spike.run" }}' 2>/dev/null || true)" = "$run_id"
-}
-
-volume_owned() {
-  test -n "$current_volume" &&
-    test "$(docker volume inspect "$current_volume" --format '{{ index .Labels "io.palai.spike" }}' 2>/dev/null || true)" = object-store &&
-    test "$(docker volume inspect "$current_volume" --format '{{ index .Labels "io.palai.spike.run" }}' 2>/dev/null || true)" = "$run_id"
-}
+cleanup_attempts=3
+cleanup_retry_delay=1
 
 cleanup() {
+  local cleanup_failed=0
   set +e
-  if container_owned; then
-    docker rm -f "$current_container" >/dev/null 2>&1
-  fi
-  current_container=""
-  if volume_owned; then
-    docker volume rm -f "$current_volume" >/dev/null 2>&1
-  fi
-  current_volume=""
+  object_store_remove_current_resources || cleanup_failed=1
   if test "$archive_tag_owned" -eq 1; then
-    docker image rm "$archive_tag" >/dev/null 2>&1
+    docker image rm "$archive_tag" >/dev/null 2>&1 || true
+    if object_store_docker_server_reachable && \
+      ! docker image inspect "$archive_tag" >/dev/null 2>&1; then
+      archive_tag_owned=0
+    else
+      echo "object-store cleanup could not verify temporary image tag removal" >&2
+      cleanup_failed=1
+    fi
   fi
-  archive_tag_owned=0
   access_key=""
   secret_key=""
   if test -n "$temp_directory" && [[ "$temp_directory" == */palai-object-store.* ]]; then
@@ -76,12 +75,15 @@ cleanup() {
     rmdir "$lock_directory" 2>/dev/null
   fi
   lock_owned=0
+  return "$cleanup_failed"
 }
 
 finish() {
   status=$?
   trap - EXIT
-  cleanup
+  if ! cleanup && test "$status" -eq 0; then
+    status=1
+  fi
   exit "$status"
 }
 
@@ -99,7 +101,7 @@ temp_directory="$(mktemp -d "${TMPDIR:-/tmp}/palai-object-store.XXXXXXXX")"
 run_directory="$temp_directory/runs"
 mkdir "$run_directory"
 git_commit="$(git rev-parse HEAD)"
-source_tree="$(git rev-parse HEAD^{tree})"
+source_tree="$(git rev-parse 'HEAD^{tree}')"
 started_unix="$(date +%s)"
 
 count_containers() {
@@ -276,6 +278,7 @@ run_go_test() {
   local summary="$4"
   local test_name="$5"
   local output_file="$temp_directory/go-test-$iteration-$phase.log"
+  local public_reason
   if ! PALAI_SPIKE_OBJECT_STORE_ENDPOINT="$endpoint" \
     PALAI_SPIKE_OBJECT_STORE_ACCESS_KEY="$access_key" \
     PALAI_SPIKE_OBJECT_STORE_SECRET_KEY="$secret_key" \
@@ -290,7 +293,14 @@ run_go_test() {
       echo "exact credential sentinel appeared in captured test output" >&2
       return 1
     fi
-    echo "object-store live Go test failed: $test_name" >&2
+    public_reason="$(object_store_public_failure_reason "$output_file")"
+    if ! object_store_docker_server_reachable; then
+      echo "object-store live Go test failed: $test_name (Docker daemon unavailable)" >&2
+    elif test -n "$public_reason"; then
+      echo "object-store live Go test failed: $test_name ($public_reason)" >&2
+    else
+      echo "object-store live Go test failed: $test_name" >&2
+    fi
     return 1
   fi
   if ! scan_file_for_sentinels "$output_file"; then
@@ -354,22 +364,7 @@ wait_ready() {
 }
 
 destroy_current_resources() {
-  if test -n "$current_container"; then
-    if ! container_owned; then
-      echo "refusing to remove a container without the invocation ownership labels" >&2
-      return 1
-    fi
-    docker rm -f "$current_container" >/dev/null
-    current_container=""
-  fi
-  if test -n "$current_volume"; then
-    if ! volume_owned; then
-      echo "refusing to remove a volume without the invocation ownership labels" >&2
-      return 1
-    fi
-    docker volume rm "$current_volume" >/dev/null
-    current_volume=""
-  fi
+  object_store_remove_current_resources
 }
 
 for iteration in $(seq 1 "$repetitions"); do

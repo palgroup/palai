@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+
+# Sourced callers assign the invocation-scoped run_id and tracked resource names.
+# shellcheck disable=SC2154
+
+object_store_docker_server_reachable() {
+  docker version --format '{{.Server.Version}}' >/dev/null 2>&1
+}
+
+object_store_container_owned_name() {
+  local name="$1"
+  local labels
+  labels="$(docker container inspect "$name" \
+    --format '{{ index .Config.Labels "io.palai.spike" }}|{{ index .Config.Labels "io.palai.spike.run" }}' \
+    2>/dev/null)" || return 1
+  test "$labels" = "object-store|$run_id"
+}
+
+object_store_volume_owned_name() {
+  local name="$1"
+  local labels
+  labels="$(docker volume inspect "$name" \
+    --format '{{ index .Labels "io.palai.spike" }}|{{ index .Labels "io.palai.spike.run" }}' \
+    2>/dev/null)" || return 1
+  test "$labels" = "object-store|$run_id"
+}
+
+object_store_remove_current_container() {
+  local name="$current_container"
+  local attempt
+  test -n "$name" || return 0
+
+  for attempt in $(seq 1 "${cleanup_attempts:-3}"); do
+    if object_store_docker_server_reachable; then
+      if ! docker container inspect "$name" >/dev/null 2>&1; then
+        if object_store_docker_server_reachable; then
+          current_container=""
+          return 0
+        fi
+        continue
+      fi
+      if ! object_store_container_owned_name "$name"; then
+        echo "refusing to remove a container without the invocation ownership labels: $name" >&2
+        return 1
+      fi
+      docker container rm -f "$name" >/dev/null 2>&1 || true
+      if object_store_docker_server_reachable && \
+        ! docker container inspect "$name" >/dev/null 2>&1; then
+        current_container=""
+        return 0
+      fi
+    fi
+    if test "$attempt" -lt "${cleanup_attempts:-3}"; then
+      sleep "${cleanup_retry_delay:-1}"
+    fi
+  done
+
+  echo "object-store cleanup could not verify container removal: $name" >&2
+  return 1
+}
+
+object_store_remove_current_volume() {
+  local name="$current_volume"
+  local attempt
+  test -n "$name" || return 0
+
+  for attempt in $(seq 1 "${cleanup_attempts:-3}"); do
+    if object_store_docker_server_reachable; then
+      if ! docker volume inspect "$name" >/dev/null 2>&1; then
+        if object_store_docker_server_reachable; then
+          current_volume=""
+          return 0
+        fi
+        continue
+      fi
+      if ! object_store_volume_owned_name "$name"; then
+        echo "refusing to remove a volume without the invocation ownership labels: $name" >&2
+        return 1
+      fi
+      docker volume rm -f "$name" >/dev/null 2>&1 || true
+      if object_store_docker_server_reachable && \
+        ! docker volume inspect "$name" >/dev/null 2>&1; then
+        current_volume=""
+        return 0
+      fi
+    fi
+    if test "$attempt" -lt "${cleanup_attempts:-3}"; then
+      sleep "${cleanup_retry_delay:-1}"
+    fi
+  done
+
+  echo "object-store cleanup could not verify volume removal: $name" >&2
+  return 1
+}
+
+object_store_remove_current_resources() {
+  local failed=0
+  object_store_remove_current_container || failed=1
+  object_store_remove_current_volume || failed=1
+  return "$failed"
+}
+
+object_store_public_failure_reason() {
+  local file="$1"
+  LC_ALL=C awk '
+    match($0, /object-store live proof failed at [a-z0-9._-]+/) {
+      reason = substr($0, RSTART, RLENGTH)
+      if (length(reason) <= 120) {
+        print reason
+        exit
+      }
+    }
+  ' "$file"
+}
