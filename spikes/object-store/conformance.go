@@ -285,13 +285,13 @@ func RunS3Conformance(ctx context.Context, configuration LiveConfiguration) (Run
 				return fail("multipart.abort.still_listed", errors.New("aborted upload remained listable"))
 			}
 		}
-		_, err = client.ListParts(ctx, &s3.ListPartsInput{
+		parts, err := client.ListParts(ctx, &s3.ListPartsInput{
 			Bucket:   aws.String(bucket),
 			Key:      aws.String(keys.abortedMultipart),
 			UploadId: created.UploadId,
 		})
-		if err == nil || (!hasHTTPStatus(err, http.StatusNotFound) && apiErrorCode(err) != "NoSuchUpload") {
-			return fail("multipart.abort.list_parts", errors.New("ListParts did not reject the aborted upload ID"))
+		if err := validateAbortedUploadParts(parts, err); err != nil {
+			return fail("multipart.abort.list_parts", err)
 		}
 		return nil
 	}); err != nil {
@@ -512,6 +512,19 @@ func verifyObjectBytes(ctx context.Context, client *s3.Client, bucket, key strin
 	}
 	if requireChecksum && aws.ToString(output.ChecksumSHA256) != checksumBase64(expected) {
 		return errors.New("GET SHA-256 checksum differed")
+	}
+	return nil
+}
+
+func validateAbortedUploadParts(output *s3.ListPartsOutput, err error) error {
+	if err != nil {
+		if hasHTTPStatus(err, http.StatusNotFound) || apiErrorCode(err) == "NoSuchUpload" {
+			return nil
+		}
+		return err
+	}
+	if output == nil || len(output.Parts) != 0 {
+		return errors.New("ListParts retained data for the aborted upload ID")
 	}
 	return nil
 }

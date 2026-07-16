@@ -6,6 +6,9 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 var expectedConformanceCases = []string{
@@ -118,6 +121,15 @@ func TestPublicErrorKeepsFixedCaseSubstageAndHidesCause(t *testing.T) {
 	const want = "object-store live proof failed at multipart.abort.list_parts"
 	if got != want {
 		t.Fatalf("PublicError() = %q, want %q", got, want)
+	}
+}
+
+func TestValidateAbortedUploadPartsAcceptsOnlyEmptySuccess(t *testing.T) {
+	if err := validateAbortedUploadParts(&s3.ListPartsOutput{}, nil); err != nil {
+		t.Fatalf("empty ListParts response after abort was rejected: %v", err)
+	}
+	if err := validateAbortedUploadParts(&s3.ListPartsOutput{Parts: make([]types.Part, 1)}, nil); err == nil {
+		t.Fatal("ListParts response retaining an uploaded part was accepted")
 	}
 }
 
