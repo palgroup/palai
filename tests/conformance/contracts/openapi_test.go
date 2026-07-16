@@ -15,7 +15,9 @@ const (
 )
 
 // httpMethods is the OpenAPI-defined set of operation keys under a path item.
-var httpMethods = []string{"get", "put", "post", "delete", "patch", "options", "head", "trace"}
+// "query" is the OpenAPI 3.2 HTTP QUERY operation: kept here so a future QUERY
+// operation is not silently skipped by the problem-error check.
+var httpMethods = []string{"get", "put", "post", "delete", "patch", "options", "head", "trace", "query"}
 
 func readDoc(t *testing.T, rel string) map[string]any {
 	t.Helper()

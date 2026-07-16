@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -83,6 +84,51 @@ func TestProjectDocumentRejectsWrongVersion(t *testing.T) {
 	canonical["openapi"] = "3.0.3"
 	if _, err := projectDocument(canonical); err == nil {
 		t.Fatal("projectDocument accepted a non-3.2 canonical document")
+	}
+}
+
+func TestProjectRejectsQueryMethod(t *testing.T) {
+	canonical := canonicalFixture()
+	canonical["paths"] = map[string]any{
+		"/things": map[string]any{
+			"query": map[string]any{
+				"responses": map[string]any{"200": map[string]any{"description": "ok"}},
+			},
+		},
+	}
+	_, err := projectDocument(canonical)
+	if err == nil {
+		t.Fatal("projectDocument accepted an OpenAPI 3.2 QUERY operation")
+	}
+	if !strings.Contains(err.Error(), "query") || !strings.Contains(err.Error(), "ADR-0002") {
+		t.Fatalf("error must name the construct and the ADR trigger: %v", err)
+	}
+}
+
+func TestProjectRejectsItemSchema(t *testing.T) {
+	canonical := canonicalFixture()
+	canonical["paths"] = map[string]any{
+		"/stream": map[string]any{
+			"get": map[string]any{
+				"responses": map[string]any{
+					"200": map[string]any{
+						"description": "ok",
+						"content": map[string]any{
+							"application/jsonl": map[string]any{
+								"itemSchema": map[string]any{"type": "object"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	_, err := projectDocument(canonical)
+	if err == nil {
+		t.Fatal("projectDocument accepted an OpenAPI 3.2 itemSchema media field")
+	}
+	if !strings.Contains(err.Error(), "itemSchema") || !strings.Contains(err.Error(), "ADR-0002") {
+		t.Fatalf("error must name the construct and the ADR trigger: %v", err)
 	}
 }
 

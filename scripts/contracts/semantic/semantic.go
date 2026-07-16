@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strings"
 )
 
 const (
@@ -64,12 +66,20 @@ func loadDocument(path string) (map[string]any, error) {
 // byte-verifiable against its source. Deterministic key ordering comes from
 // json.MarshalIndent.
 //
-// ponytail: the version bump is the entire projection today; if the projection
-// ever rewrites schemas, replace diffDocuments' equality with a schema-aware
-// comparison.
+// Because the projection only bumps the version, diffDocuments can never catch a
+// canonical construct that has no 3.1.2 form; oapi32OnlyConstructs is the guard
+// that does, failing loudly before an invalid-for-3.1.2 document is emitted.
+//
+// ponytail: oapi32OnlyConstructs is a fixed tripwire list (QUERY method,
+// itemSchema); the upgrade is a full OpenAPI 3.1.2 validity check if the
+// canonical starts using 3.2 features beyond that list.
 func projectDocument(canonical map[string]any) ([]byte, error) {
 	if canonical["openapi"] != canonicalVersion {
 		return nil, fmt.Errorf("canonical openapi = %v, want %s", canonical["openapi"], canonicalVersion)
+	}
+	if blockers := oapi32OnlyConstructs(canonical); len(blockers) > 0 {
+		return nil, fmt.Errorf("OpenAPI 3.2-only construct not representable in %s (ADR-0002 revisit trigger): %s",
+			projectionVersion, strings.Join(blockers, "; "))
 	}
 	projected := make(map[string]any, len(canonical))
 	for key, value := range canonical {
@@ -144,6 +154,50 @@ func checkProjection(canonicalPath, projectionPath string) error {
 		return err
 	}
 	return diffDocuments(canonical, projection)
+}
+
+// oapi32OnlyConstructs reports OpenAPI 3.2 constructs that have no OpenAPI 3.1.2
+// form, so the mechanical version bump cannot lower them. It is a deliberately
+// small tripwire, not a validator: it fires so a canonical edit that reaches
+// beyond 3.1.2 gets a human decision against ADR-0002's revisit trigger.
+func oapi32OnlyConstructs(document map[string]any) []string {
+	var found []string
+	// The HTTP QUERY method is a 3.2 path-item operation absent from 3.1.2.
+	if paths, ok := document["paths"].(map[string]any); ok {
+		for path, raw := range paths {
+			if item, ok := raw.(map[string]any); ok {
+				if _, has := item["query"]; has {
+					found = append(found, "paths."+path+".query (HTTP QUERY method)")
+				}
+			}
+		}
+	}
+	// itemSchema is a 3.2 media-type field for sequential media, absent from 3.1.2.
+	scanItemSchema(document, "$", &found)
+	sort.Strings(found)
+	return found
+}
+
+func scanItemSchema(node any, path string, found *[]string) {
+	switch value := node.(type) {
+	case map[string]any:
+		if media, ok := value["content"].(map[string]any); ok {
+			for mediaType, raw := range media {
+				if body, ok := raw.(map[string]any); ok {
+					if _, has := body["itemSchema"]; has {
+						*found = append(*found, path+".content."+mediaType+".itemSchema (sequential media itemSchema)")
+					}
+				}
+			}
+		}
+		for key, child := range value {
+			scanItemSchema(child, path+"."+key, found)
+		}
+	case []any:
+		for index, child := range value {
+			scanItemSchema(child, fmt.Sprintf("%s[%d]", path, index), found)
+		}
+	}
 }
 
 func fatal(err error) {
