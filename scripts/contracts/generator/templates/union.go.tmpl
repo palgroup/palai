@@ -1,0 +1,12 @@
+// Code generated from the canonical {{.Title}} schema; DO NOT EDIT.
+package contracts
+
+// {{.Title}} is an open union: unknown fields and unknown {{.Discriminator}}
+// values survive a JSON round-trip (ADR-0002, spec API-009).
+type {{.Title}} map[string]any
+
+// {{.DiscriminatorTag}} returns the {{.Discriminator}} discriminator.
+func (c {{.Title}}) {{.DiscriminatorTag}}() string {
+	v, _ := c[{{printf "%q" .Discriminator}}].(string)
+	return v
+}

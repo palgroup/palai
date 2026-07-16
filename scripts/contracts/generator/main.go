@@ -202,11 +202,14 @@ type goField struct {
 	JSONTag string // json tag body, e.g. "request_id" or "detail,omitempty"
 }
 
-// generateObjects promotes every common/*.json object schema (all but the
-// identifier seed) into a package-contracts Go source. Files are globbed in
-// sorted order and structs/fields are sorted, so a second run is a zero diff.
+// generateObjects promotes every canonical object schema (all but the
+// identifier seed) into a package-contracts Go source. Schemas are globbed
+// across their directories in sorted order and structs/fields are sorted, so a
+// second run is a zero diff. A schema whose root declares allOf is an open
+// union (ADR-0002): it becomes a raw-preserving map wrapper that keeps unknown
+// fields and unknown discriminator values, rather than a fixed-field struct.
 func generateObjects(schemasRoot, goOut string) error {
-	files, err := filepath.Glob(filepath.Join(schemasRoot, "common", "*.json"))
+	files, err := filepath.Glob(filepath.Join(schemasRoot, "*", "*.json"))
 	if err != nil {
 		return err
 	}
@@ -220,11 +223,21 @@ func generateObjects(schemasRoot, goOut string) error {
 		if err != nil {
 			return err
 		}
-		ir, err := buildObjectIR(schema)
+		var (
+			ir       any
+			tmplName string
+		)
+		if _, isUnion := schema["allOf"]; isUnion {
+			tmplName = "union.go.tmpl"
+			ir, err = buildUnionIR(schema)
+		} else {
+			tmplName = "object.go.tmpl"
+			ir, err = buildObjectIR(schema, filepath.Dir(file))
+		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", base, err)
 		}
-		source, err := execTemplate("object.go.tmpl", ir)
+		source, err := execTemplate(tmplName, ir)
 		if err != nil {
 			return err
 		}
@@ -240,7 +253,33 @@ func generateObjects(schemasRoot, goOut string) error {
 	return nil
 }
 
-func buildObjectIR(schema map[string]any) (objectSchema, error) {
+// unionSchema is one open-union schema projected into a raw-preserving Go type:
+// a map wrapper that keeps unknown fields and unknown discriminator values on
+// round-trip, with a typed accessor for the discriminator field.
+type unionSchema struct {
+	Title            string // exported Go type, e.g. "ContentItem"
+	Discriminator    string // JSON discriminator field, e.g. "type"
+	DiscriminatorTag string // exported accessor name, e.g. "Type"
+}
+
+func buildUnionIR(schema map[string]any) (unionSchema, error) {
+	title, _ := schema["title"].(string)
+	if title == "" {
+		return unionSchema{}, errors.New("union schema title is missing")
+	}
+	props, _ := schema["properties"].(map[string]any)
+	if len(props) != 1 {
+		return unionSchema{}, fmt.Errorf("union schema must declare exactly one discriminator property, got %d", len(props))
+	}
+	discriminator := sortedKeys(props)[0]
+	return unionSchema{
+		Title:            title,
+		Discriminator:    discriminator,
+		DiscriminatorTag: goExportedName(discriminator),
+	}, nil
+}
+
+func buildObjectIR(schema map[string]any, schemaDir string) (objectSchema, error) {
 	title, _ := schema["title"].(string)
 	if title == "" {
 		return objectSchema{}, errors.New("schema title is missing")
@@ -248,7 +287,7 @@ func buildObjectIR(schema map[string]any) (objectSchema, error) {
 	defs, _ := schema["$defs"].(map[string]any)
 	var structs []goStruct
 	if schema["type"] == "object" {
-		root, err := buildStruct(title, schema, defs)
+		root, err := buildStruct(title, schema, defs, schemaDir)
 		if err != nil {
 			return objectSchema{}, err
 		}
@@ -259,7 +298,7 @@ func buildObjectIR(schema map[string]any) (objectSchema, error) {
 		if !ok || def["type"] != "object" {
 			continue // string, enum, and other $defs are only referenced, not structs
 		}
-		s, err := buildStruct(goExportedName(name), def, defs)
+		s, err := buildStruct(goExportedName(name), def, defs, schemaDir)
 		if err != nil {
 			return objectSchema{}, err
 		}
@@ -272,7 +311,7 @@ func buildObjectIR(schema map[string]any) (objectSchema, error) {
 	return objectSchema{Title: title, Structs: structs}, nil
 }
 
-func buildStruct(name string, obj, defs map[string]any) (goStruct, error) {
+func buildStruct(name string, obj, defs map[string]any, schemaDir string) (goStruct, error) {
 	props, _ := obj["properties"].(map[string]any)
 	required := stringSet(obj["required"])
 	fields := make([]goField, 0, len(props))
@@ -281,7 +320,7 @@ func buildStruct(name string, obj, defs map[string]any) (goStruct, error) {
 		if !ok {
 			return goStruct{}, fmt.Errorf("property %s is not an object", prop)
 		}
-		typ, err := goFieldType(schema, defs)
+		typ, err := goFieldType(schema, defs, schemaDir)
 		if err != nil {
 			return goStruct{}, fmt.Errorf("property %s: %w", prop, err)
 		}
@@ -296,9 +335,9 @@ func buildStruct(name string, obj, defs map[string]any) (goStruct, error) {
 
 // goFieldType maps a property schema to its Go type. $ref resolves to a
 // generated identifier type or a local $def; a nullable type becomes a pointer.
-func goFieldType(schema, defs map[string]any) (string, error) {
+func goFieldType(schema, defs map[string]any, schemaDir string) (string, error) {
 	if ref, ok := schema["$ref"].(string); ok {
-		return refType(ref, defs)
+		return refType(ref, defs, schemaDir)
 	}
 	kind, nullable, err := jsonType(schema)
 	if err != nil {
@@ -317,7 +356,7 @@ func goFieldType(schema, defs map[string]any) (string, error) {
 	case "object":
 		base = objectFieldType(schema)
 	case "array":
-		item, err := itemType(schema, defs)
+		item, err := itemType(schema, defs, schemaDir)
 		if err != nil {
 			return "", err
 		}
@@ -366,26 +405,52 @@ func objectFieldType(schema map[string]any) string {
 	return "map[string]any"
 }
 
-func itemType(schema, defs map[string]any) (string, error) {
+func itemType(schema, defs map[string]any, schemaDir string) (string, error) {
 	items, ok := schema["items"].(map[string]any)
 	if !ok {
 		return "any", nil // untyped array elements
 	}
-	return goFieldType(items, defs)
+	return goFieldType(items, defs, schemaDir)
 }
 
-func refType(ref string, defs map[string]any) (string, error) {
+// refType maps a JSON Schema $ref to its Go type. It resolves local $defs, the
+// canonical identifier defs in common/id.json (referenced from any directory
+// depth), and a sibling schema root ref to that schema's generated title type.
+func refType(ref string, defs map[string]any, schemaDir string) (string, error) {
 	if name, ok := strings.CutPrefix(ref, "#/$defs/"); ok {
 		def, ok := defs[name].(map[string]any)
 		if !ok {
 			return "", fmt.Errorf("unresolved local $ref %s", ref)
 		}
-		return goFieldType(def, defs)
+		return goFieldType(def, defs, schemaDir)
 	}
-	if key, ok := strings.CutPrefix(ref, "id.json#/$defs/"); ok {
+	path, fragment, _ := strings.Cut(ref, "#")
+	base := filepath.Base(path)
+	if base == "id.json" {
+		key, ok := strings.CutPrefix(fragment, "/$defs/")
+		if !ok {
+			return "", fmt.Errorf("unsupported id.json $ref %s", ref)
+		}
 		return goExportedName(key), nil
 	}
+	if fragment == "" && strings.HasSuffix(base, ".json") {
+		return siblingTitle(filepath.Join(schemaDir, base))
+	}
 	return "", fmt.Errorf("unsupported $ref %s", ref)
+}
+
+// siblingTitle reads a sibling schema's title so a root $ref resolves to the
+// Go type generated from that schema.
+func siblingTitle(path string) (string, error) {
+	schema, err := readObject(path)
+	if err != nil {
+		return "", err
+	}
+	title, _ := schema["title"].(string)
+	if title == "" {
+		return "", fmt.Errorf("sibling schema %s has no title", filepath.Base(path))
+	}
+	return title, nil
 }
 
 func sortedKeys(m map[string]any) []string {
