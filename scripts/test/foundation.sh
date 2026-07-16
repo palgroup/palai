@@ -92,7 +92,7 @@ go env GOTOOLCHAIN | grep -Eq '^(auto|local|go1\.26\.4)$'
 node --version | grep -qx 'v22.22.2'
 pnpm --version | grep -qx '11.9.0'
 python3 --version | grep -qx 'Python 3.14.3'
-uv --version | grep -q '^uv 0.8.2 '
+uv --version | grep -Eq '^uv 0\.8\.2([[:space:]]|$)'
 
 test -s .github/workflows/ci.yml
 if grep -Eq 'uses: [^#[:space:]]+@(main|master|v[0-9]+)([[:space:]]|$)' .github/workflows/ci.yml; then
