@@ -1,0 +1,9 @@
+{
+  "case": "int-boundary",
+  "schema": "https://schemas.palai.dev/execution/event.json",
+  "documents": [
+    {"note": "zero", "value": {"specversion": "1.0", "id": "evt_a", "source": "/v1/sessions/ses_a", "type": "run.queued.v1", "time": "2026-07-16T12:00:00.000000Z", "sequence": 1, "data": {"n": 0}}},
+    {"note": "int32-max", "value": {"specversion": "1.0", "id": "evt_b", "source": "/v1/sessions/ses_a", "type": "run.queued.v1", "time": "2026-07-16T12:00:00.000000Z", "sequence": 2147483647, "data": {}}},
+    {"note": "int53-max", "value": {"specversion": "1.0", "id": "evt_c", "source": "/v1/sessions/ses_a", "type": "run.queued.v1", "time": "2026-07-16T12:00:00.000000Z", "sequence": 9007199254740991, "data": {}}}
+  ]
+}

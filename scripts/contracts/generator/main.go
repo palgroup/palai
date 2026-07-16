@@ -47,6 +47,35 @@ func main() {
 	if err := generateObjects(*schemasRoot, *goOut); err != nil {
 		fatal(err)
 	}
+	if err := generateCorpusCheckers(*tsOut, *pyOut); err != nil {
+		fatal(err)
+	}
+}
+
+// generateCorpusCheckers emits the TypeScript and Python corpus round-trip
+// checkers (plus the TypeScript project config used to type-check them) from
+// static templates. They carry no schema-derived data, but flowing them through
+// the generator keeps the cross-language corpus step under the same
+// regenerate-and-diff drift discipline as every other generated source.
+func generateCorpusCheckers(tsOut, pyOut string) error {
+	for _, out := range []struct {
+		template string
+		path     string
+	}{
+		{"corpus_check.ts.tmpl", filepath.Join(tsOut, "corpus_check.ts")},
+		{"tsconfig.json.tmpl", filepath.Join(tsOut, "tsconfig.json")},
+		{"package.json.tmpl", filepath.Join(tsOut, "package.json")},
+		{"corpus_check.py.tmpl", filepath.Join(pyOut, "corpus_check.py")},
+	} {
+		source, err := execTemplate(out.template, nil)
+		if err != nil {
+			return err
+		}
+		if err := writeGenerated(out.path, source); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // identifier is one opaque-ID $def projected into each target language.

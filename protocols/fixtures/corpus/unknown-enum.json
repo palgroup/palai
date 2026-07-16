@@ -1,0 +1,45 @@
+{
+  "case": "unknown-enum",
+  "schema": "https://schemas.palai.dev/execution/message.json",
+  "documents": [
+    {
+      "note": "response with an unknown open status value",
+      "value": {
+        "id": "resp_a",
+        "object": "response",
+        "status": "quantum_superposition",
+        "created_at": "2026-07-16T12:00:00Z",
+        "model": "palai-core",
+        "output": [],
+        "usage": {"input_tokens": 0, "output_tokens": 0}
+      }
+    },
+    {
+      "note": "message with an unknown open role value",
+      "value": {
+        "id": "msg_a",
+        "role": "oracle",
+        "content": [],
+        "created_at": "2026-07-16T12:00:00Z"
+      }
+    },
+    {
+      "note": "engine frame with an unknown open type value",
+      "value": {
+        "protocol": "engine.v1",
+        "id": "frm_a",
+        "type": "quantum.entangle",
+        "sequence": 1,
+        "time": "2026-07-16T12:00:00Z"
+      }
+    },
+    {
+      "note": "runner message with an unknown open type value",
+      "value": {
+        "protocol": "runner.v1",
+        "type": "lease.teleport",
+        "time": "2026-07-16T12:00:00Z"
+      }
+    }
+  ]
+}

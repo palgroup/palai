@@ -34,4 +34,12 @@ if ! go run "$root/scripts/contracts/semantic" -mode diff \
   status=1
 fi
 
+# Cross-language corpus round-trip: the generated TypeScript and Python checkers
+# must agree with the Go conformance suite that every corpus document survives a
+# decode/encode cycle (unknown fields and open enums preserved, omitted never
+# collapses to null, 64-bit integers stay exact). A failure here aborts the run.
+pnpm exec tsc --noEmit -p "$root/protocols/generated/typescript"
+node --experimental-strip-types "$root/protocols/generated/typescript/corpus_check.ts"
+PYTHONDONTWRITEBYTECODE=1 python3 "$root/protocols/generated/python/corpus_check.py"
+
 exit "$status"
