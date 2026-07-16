@@ -43,9 +43,38 @@ func TestResponseAcceptedReturns202WithLocation(t *testing.T) {
 		t.Fatalf("status = %q, want queued", r.Status)
 	}
 
+	// The resource is bound to the verified tenant, not to anything the client can
+	// choose: the response carries the authenticated org/project (spec §39.2).
+	if r.OrganizationID != contracts.OrganizationID(testScope.Organization) {
+		t.Fatalf("organization_id = %q, want verified %q", r.OrganizationID, testScope.Organization)
+	}
+	if r.ProjectID != contracts.ProjectID(testScope.Project) {
+		t.Fatalf("project_id = %q, want verified %q", r.ProjectID, testScope.Project)
+	}
+
 	// Location points at the canonical resource for the created response.
 	if got, want := resp.Header.Get("Location"), "/v1/responses/"+string(r.ID); got != want {
 		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
+
+func TestResponseIgnoresBodyScopeOverride(t *testing.T) {
+	srv := newTestServer(t)
+
+	// The body smuggles a foreign project/organization as raw JSON so the unknown
+	// fields actually travel over the wire. Scope must come from the verified key,
+	// never the body — otherwise a caller could write into another tenant (spec §39.2).
+	body := `{"input":"x","project_id":"prj_evil","organization_id":"org_evil"}`
+	r := decodeResponse(t, readBody(t, postResponses(t, srv, authedHeaders("key-scope"), body)))
+
+	if r.ProjectID != contracts.ProjectID(testScope.Project) {
+		t.Fatalf("project_id = %q, want verified %q (body override leaked)", r.ProjectID, testScope.Project)
+	}
+	if r.OrganizationID != contracts.OrganizationID(testScope.Organization) {
+		t.Fatalf("organization_id = %q, want verified %q (body override leaked)", r.OrganizationID, testScope.Organization)
+	}
+	if string(r.ProjectID) == "prj_evil" || string(r.OrganizationID) == "org_evil" {
+		t.Fatalf("injected scope leaked into the response: %+v", r)
 	}
 }
 
