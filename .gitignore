@@ -1,0 +1,23 @@
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local runtime data and generated evidence
+.palai/
+data/
+evidence/raw/
+
+# Build and dependency output
+bin/
+dist/
+coverage/
+node_modules/
+__pycache__/
+.pytest_cache/
+.venv/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
