@@ -1,0 +1,59 @@
+{
+  "components": {
+    "schemas": {
+      "Fixture": {
+        "additionalProperties": true,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sequence": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "minLength": 1,
+            "type": "string",
+            "x-palai-known-values": [
+              "queued",
+              "running",
+              "completed"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "metadata",
+          "sequence",
+          "created_at"
+        ],
+        "title": "Fixture",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Palai contract fixture",
+    "version": "0.0.0"
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "openapi": "3.1.2",
+  "paths": {}
+}

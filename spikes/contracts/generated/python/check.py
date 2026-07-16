@@ -1,0 +1,36 @@
+"""Generated semantic checker for Fixture."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+
+from fixture import MISSING, decode_fixture, encode_fixture
+
+
+def note_state(note: object) -> str:
+    if note is MISSING:
+        return "missing"
+    if note is None:
+        return "null"
+    return "value"
+
+
+results: list[dict[str, object]] = []
+for argument in sys.argv[1:]:
+    path = Path(argument)
+    fixture = decode_fixture(path.read_text(encoding="utf-8"))
+    results.append(
+        {
+            "name": path.stem,
+            "note_state": note_state(fixture.note),
+            "status": fixture.status,
+            "sequence": str(fixture.sequence),
+            "has_extra": "future_top_level" in fixture.unknown_fields,
+            "has_future_meta": "future_metadata" in fixture.metadata,
+            "encoded": encode_fixture(fixture),
+        }
+    )
+
+print(json.dumps(results, separators=(",", ":")))

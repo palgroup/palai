@@ -1,0 +1,79 @@
+"""Code generated from the canonical Fixture schema; DO NOT EDIT."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+import json
+from typing import Any
+
+
+class _Missing:
+    pass
+
+
+MISSING = _Missing()
+
+
+@dataclass(frozen=True)
+class Fixture:
+    id: str
+    note: str | None | _Missing
+    status: str
+    metadata: dict[str, Any]
+    sequence: int
+    created_at: str
+    unknown_fields: dict[str, Any]
+
+
+def decode_fixture(text: str) -> Fixture:
+    value = json.loads(text)
+    if not isinstance(value, dict):
+        raise ValueError("fixture must be an object")
+    required = ("id", "status", "metadata", "sequence", "created_at")
+    missing = [name for name in required if name not in value]
+    if missing:
+        raise ValueError(f"required fields missing: {missing}")
+    if not isinstance(value["id"], str) or not value["id"]:
+        raise ValueError("id must be a non-empty string")
+    if not isinstance(value["status"], str) or not value["status"]:
+        raise ValueError("status must be a non-empty open string")
+    if not isinstance(value["metadata"], dict):
+        raise ValueError("metadata must be an object")
+    sequence = value["sequence"]
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0 or sequence > 9_223_372_036_854_775_807:
+        raise ValueError("sequence must be a non-negative int64")
+    if not isinstance(value["created_at"], str):
+        raise ValueError("created_at must be a string")
+    datetime.fromisoformat(value["created_at"].replace("Z", "+00:00"))
+    note: str | None | _Missing = MISSING
+    if "note" in value:
+        if value["note"] is not None and not isinstance(value["note"], str):
+            raise ValueError("note must be string or null")
+        note = value["note"]
+    known = {"id", "note", "status", "metadata", "sequence", "created_at"}
+    return Fixture(
+        id=value["id"],
+        note=note,
+        status=value["status"],
+        metadata=value["metadata"],
+        sequence=sequence,
+        created_at=value["created_at"],
+        unknown_fields={name: field for name, field in value.items() if name not in known},
+    )
+
+
+def encode_fixture(fixture: Fixture) -> str:
+    value: dict[str, Any] = dict(fixture.unknown_fields)
+    value.update(
+        {
+            "id": fixture.id,
+            "status": fixture.status,
+            "metadata": fixture.metadata,
+            "sequence": fixture.sequence,
+            "created_at": fixture.created_at,
+        }
+    )
+    if fixture.note is not MISSING:
+        value["note"] = fixture.note
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)

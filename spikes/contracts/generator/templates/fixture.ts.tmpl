@@ -1,0 +1,82 @@
+// Code generated from the canonical {{.Title}} schema; DO NOT EDIT.
+
+export type OptionalNullableString =
+  | { state: "missing" }
+  | { state: "null" }
+  | { state: "value"; value: string };
+
+export interface Fixture {
+  id: string;
+  note: OptionalNullableString;
+  status: string;
+  metadata: Record<string, unknown>;
+  sequence: bigint;
+  createdAt: string;
+  unknownFields: Record<string, unknown>;
+}
+
+const knownFields = new Set(["id", "note", "status", "metadata", "sequence", "created_at"]);
+const sequencePattern = /(\"sequence\"\s*:\s*)(-?(?:0|[1-9][0-9]*))(?![0-9.eE])/;
+const maximumInt64 = 9_223_372_036_854_775_807n;
+
+export function decodeFixture(text: string): Fixture {
+  const match = sequencePattern.exec(text);
+  if (match === null || match.index < 0 || match[1] === undefined || match[2] === undefined) {
+    throw new Error("sequence must be an integer literal");
+  }
+  const protectedText = `${text.slice(0, match.index)}${match[1]}"${match[2]}"${text.slice(match.index + match[0].length)}`;
+  const value: unknown = JSON.parse(protectedText);
+  if (!isRecord(value)) throw new Error("fixture must be an object");
+  if (typeof value.id !== "string" || value.id.length === 0) throw new Error("id must be a non-empty string");
+  if (typeof value.status !== "string" || value.status.length === 0) throw new Error("status must be a non-empty open string");
+  if (!isRecord(value.metadata)) throw new Error("metadata must be an object");
+  if (typeof value.sequence !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value.sequence)) {
+    throw new Error("sequence must be a non-negative int64");
+  }
+  const sequence = BigInt(value.sequence);
+  if (sequence > maximumInt64) throw new Error("sequence exceeds int64");
+  if (typeof value.created_at !== "string" || Number.isNaN(Date.parse(value.created_at))) {
+    throw new Error("created_at must be RFC3339");
+  }
+  let note: OptionalNullableString = { state: "missing" };
+  if (Object.prototype.hasOwnProperty.call(value, "note")) {
+    if (value.note === null) note = { state: "null" };
+    else if (typeof value.note === "string") note = { state: "value", value: value.note };
+    else throw new Error("note must be string or null");
+  }
+  const unknownFields: Record<string, unknown> = {};
+  for (const [name, field] of Object.entries(value)) {
+    if (!knownFields.has(name)) unknownFields[name] = field;
+  }
+  return {
+    id: value.id,
+    note,
+    status: value.status,
+    metadata: value.metadata,
+    sequence,
+    createdAt: value.created_at,
+    unknownFields,
+  };
+}
+
+export function encodeFixture(fixture: Fixture): string {
+  const marker = `__PALAI_INT64_${fixture.sequence.toString()}__`;
+  const value: Record<string, unknown> = {
+    ...fixture.unknownFields,
+    id: fixture.id,
+    status: fixture.status,
+    metadata: fixture.metadata,
+    sequence: marker,
+    created_at: fixture.createdAt,
+  };
+  if (fixture.note.state === "null") value.note = null;
+  if (fixture.note.state === "value") value.note = fixture.note.value;
+  const encoded = JSON.stringify(value);
+  const quotedMarker = JSON.stringify(marker);
+  if (!encoded.includes(quotedMarker)) throw new Error("int64 marker was not encoded");
+  return encoded.replace(quotedMarker, fixture.sequence.toString());
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

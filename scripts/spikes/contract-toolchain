@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+profile="${1:-}"
+case "$profile" in
+  quick) repetitions=1 ;;
+  evidence) repetitions=20 ;;
+  *)
+    echo "usage: scripts/spikes/contract-toolchain <quick|evidence>" >&2
+    exit 2
+    ;;
+esac
+started_unix="$(date +%s)"
+
+spikes/contracts/generate.sh "$profile"
+git diff --exit-code -- spikes/contracts/generated
+go test ./spikes/contracts -count="$repetitions"
+
+if test "$profile" = evidence; then
+  output="${PALAI_SPIKE_REPORT_OUT:-spikes/.evidence/contract-toolchain.json}"
+  go run ./spikes/contracts/cmd/report \
+    -out "$output" \
+    -summary spikes/contracts/.build/candidate-summary.json \
+    -started-unix "$started_unix" \
+    -repetitions "$repetitions"
+fi
+
+echo "contract_toolchain=PASS profile=$profile repetitions=$repetitions"

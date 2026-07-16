@@ -142,6 +142,8 @@ git commit -m "test: add deterministic technology spike reports"
 - Create: `scripts/spikes/control-plane-runtime`
 - Modify: `pnpm-workspace.yaml`
 - Modify: `pnpm-lock.yaml`
+- Modify: `pyproject.toml`
+- Modify: `uv.lock`
 - Generate: `spikes/reports/control-plane-runtime.json`
 
 - [x] **Step 1: Write failing protocol/load tests**
@@ -284,14 +286,23 @@ git commit -m "test: record PostgreSQL coordinator evidence"
 - Create: `spikes/contracts/fixtures/null.json`
 - Create: `spikes/contracts/fixtures/empty.json`
 - Create: `spikes/contracts/fixtures/unknown.json`
+- Create: `spikes/contracts/fixtures/invalid.json`
 - Create: `spikes/contracts/openapi-3.2.yaml`
 - Create: `spikes/contracts/generate.sh`
+- Create: `spikes/contracts/generator/`
+- Create: `spikes/contracts/candidate-findings.json`
+- Create: `spikes/contracts/cmd/candidate-check/main.go`
+- Create: `spikes/contracts/cmd/report/main.go`
+- Create: `spikes/contracts/tooling/package.json`
 - Create: `spikes/contracts/semantic_check.go`
 - Test: `spikes/contracts/semantic_check_test.go`
+- Create: `scripts/spikes/contract-toolchain`
 - Generate: `spikes/contracts/generated/`
 - Generate: `spikes/reports/contract-toolchain.json`
+- Modify: `pnpm-workspace.yaml`
+- Modify: `pnpm-lock.yaml`
 
-- [ ] **Step 1: Write failing semantic corpus tests**
+- [x] **Step 1: Write failing semantic corpus tests**
 
 The source fixture contains a required ID, optional nullable `note`, open `status`, open object fields, RFC3339 timestamp and 64-bit sequence. Tests require every language projection to preserve:
 
@@ -304,29 +315,40 @@ canonical OpenAPI 3.2 and generated 3.1.2 accept/reject the same corpus
 second generation produces zero diff
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `go test ./spikes/contracts -v`
 
 Expected: FAIL because schemas, projections and generated packages are absent.
 
-- [ ] **Step 3: Execute pinned generator candidates**
+- [x] **Step 3: Execute pinned generator candidates**
 
 Run json-schema-to-typescript 15.0.4, datamodel-code-generator 0.68.1, go-jsonschema 0.23.1 and oapi-codegen 2.7.2 against isolated output directories. Record tool exit, input dialect, emitted types and each semantic assertion. A tool may be retained as a partial backend even when a wrapper is required; a silent semantic loss is a hard rejection.
 
-- [ ] **Step 4: Implement the minimum lossless proof path**
+- [x] **Step 4: Implement the minimum lossless proof path**
 
 Build a small canonical-schema IR and deterministic templates only for the corpus constructs. Use explicit optional wrappers where the target language cannot distinguish missing and null, string-backed open enums, unknown-field bags, and string/BigInt-safe TypeScript 64-bit integers. Generate OpenAPI 3.1.2 mechanically from the 3.2 source and compare normalized schema semantics.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit the clean source**
 
-Run: `bash spikes/contracts/generate.sh && git diff --exit-code -- spikes/contracts/generated && go test ./spikes/contracts -count=20`
+Run: `spikes/contracts/generate.sh evidence && git diff --exit-code -- spikes/contracts/generated && scripts/spikes/contract-toolchain quick`
 
-Expected: corpus passes in TS/Python/Go; report names which external candidates need wrappers and why. ADR-0002 accepts canonical JSON Schema/OpenAPI 3.2 plus a generated 3.1.2 projection and lossless generated transport types.
+Expected: corpus passes in TS/Python/Go; all four external candidate results match the recorded partial/rejected semantics and second generation has zero diff.
 
 ```bash
-git add spikes/contracts spikes/reports/contract-toolchain.json
+git add pnpm-lock.yaml pnpm-workspace.yaml scripts/spikes/contract-toolchain spikes/contracts
 git commit -m "test: prove lossless cross-language contracts"
+```
+
+- [ ] **Step 6: Generate, validate and commit evidence**
+
+Run from the clean source commit: `PALAI_SPIKE_REPORT_OUT=spikes/.evidence/contract-toolchain.json scripts/spikes/contract-toolchain evidence`
+
+Expected: the corpus passes 20 consecutive times in all three languages; the report names which external candidates need wrappers and why. ADR-0002 accepts canonical JSON Schema/OpenAPI 3.2 plus a generated 3.1.2 projection and lossless generated transport types.
+
+```bash
+git add spikes/manifest.json spikes/reports/contract-toolchain.json docs/superpowers/plans/phase-01-technology-spikes.md
+git commit -m "test: record cross-language contract evidence"
 ```
 
 ### Task 5: Outbound mTLS WebSocket runner and OCI supervisor

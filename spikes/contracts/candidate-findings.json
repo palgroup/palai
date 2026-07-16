@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "candidates": [
+    {
+      "name": "json-schema-to-typescript",
+      "version": "15.0.4",
+      "input_dialect": "JSON Schema 2020-12",
+      "expected_exit": 0,
+      "status": "partial",
+      "emitted_semantics": "optional nullable note, open fields, sequence number",
+      "requires_wrapper": true,
+      "reason": "JavaScript number cannot exactly represent the int64 corpus value"
+    },
+    {
+      "name": "datamodel-code-generator",
+      "version": "0.68.1",
+      "input_dialect": "JSON Schema 2020-12",
+      "expected_exit": 0,
+      "status": "partial",
+      "emitted_semantics": "Python int, open status, note defaults to None",
+      "requires_wrapper": true,
+      "reason": "default None merges omitted and null and the dataclass has no unknown-field bag"
+    },
+    {
+      "name": "go-jsonschema",
+      "version": "0.23.1",
+      "input_dialect": "JSON Schema 2020-12",
+      "expected_exit": 0,
+      "status": "partial",
+      "emitted_semantics": "int sequence, pointer note, decode-only additional properties",
+      "requires_wrapper": true,
+      "reason": "pointer note merges omitted and null and unknown fields are not flattened on encode"
+    },
+    {
+      "name": "oapi-codegen",
+      "version": "2.7.2",
+      "input_dialect": "OpenAPI 3.1.2 projection",
+      "expected_exit": 1,
+      "status": "rejected",
+      "emitted_semantics": "generation stops on nullable multi-type schema",
+      "requires_wrapper": true,
+      "reason": "candidate explicitly rejects the canonical nullable schema instead of silently weakening it"
+    }
+  ]
+}

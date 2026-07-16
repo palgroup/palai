@@ -1,0 +1,10 @@
+{
+  "id": "fixture-empty",
+  "note": "",
+  "status": "completed",
+  "metadata": {
+    "known": "value"
+  },
+  "sequence": 9007199254740993,
+  "created_at": "2026-07-16T11:00:02Z"
+}

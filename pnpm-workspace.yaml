@@ -2,3 +2,4 @@ packages:
   - sdks/typescript
   - examples/nextjs-sdk
   - spikes/control-plane/node-server
+  - spikes/contracts/tooling
