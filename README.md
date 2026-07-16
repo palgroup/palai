@@ -4,6 +4,21 @@ Palai is a provider-neutral, self-hostable agent execution platform. It exposes 
 
 The current repository contains the product specification under review and the implementation plans derived from it. Runtime code has not started yet.
 
+## Development
+
+The reference toolchain is pinned in `.tool-versions`. Bootstrap and run the
+same foundation checks used by CI:
+
+```bash
+make bootstrap
+make verify
+```
+
+Provider credentials are not required for foundation checks. Never place a
+provider key in the repository, a command argument, or committed evidence; the
+local CLI will accept credentials through a write-only bootstrap path when the
+model-broker phase is available.
+
 ## Documents
 
 - [Product and architecture specification](MASTER-SPEC.md)

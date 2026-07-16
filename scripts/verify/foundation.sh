@@ -5,6 +5,7 @@ required=(
   LICENSE
   README.md
   .github/CODEOWNERS
+  .github/workflows/ci.yml
   CODE_OF_CONDUCT.md
   CONTRIBUTING.md
   SECURITY.md
@@ -17,6 +18,7 @@ required=(
   pnpm-lock.yaml
   uv.lock
   .tool-versions
+  scripts/verify/repository-settings.sh
 )
 
 for path in "${required[@]}"; do
@@ -35,3 +37,8 @@ grep -q '"packageManager": "pnpm@11.9.0"' package.json
 grep -q '^golang 1\.26\.4$' .tool-versions
 grep -q '^nodejs 22\.22\.2$' .tool-versions
 grep -q '^python 3\.14\.3$' .tool-versions
+grep -q 'make verify' .github/workflows/ci.yml
+if grep -Eq 'uses: [^#[:space:]]+@(main|master|v[0-9]+)([[:space:]]|$)' .github/workflows/ci.yml; then
+  echo "GitHub Action is not pinned to a commit" >&2
+  exit 1
+fi
