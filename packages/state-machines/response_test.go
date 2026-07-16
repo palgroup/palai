@@ -25,6 +25,31 @@ func TestResponseWaitingStatesReturnOnlyToInProgress(t *testing.T) {
 	}
 }
 
+func TestResponseQueueDeadlineAndProvisioningFailure(t *testing.T) {
+	cases := []struct {
+		from  ResponseState
+		cmd   ResponseCommand
+		to    ResponseState
+		event string
+	}{
+		{ResponseQueued, ResponseCmdTimeout, ResponseTimedOut, "response.timed_out.v1"},
+		{ResponseQueued, ResponseCmdFail, ResponseFailed, "response.failed.v1"},
+		{ResponseProvisioning, ResponseCmdFail, ResponseFailed, "response.failed.v1"},
+	}
+	for _, tc := range cases {
+		to, event, err := Apply(tc.from, tc.cmd, ResponseTable)
+		if err != nil {
+			t.Fatalf("Apply(%v, %v): unexpected error: %v", tc.from, tc.cmd, err)
+		}
+		if to != tc.to {
+			t.Errorf("Apply(%v, %v): state %v, want %v", tc.from, tc.cmd, to, tc.to)
+		}
+		if event != tc.event {
+			t.Errorf("Apply(%v, %v): event %q, want %q", tc.from, tc.cmd, event, tc.event)
+		}
+	}
+}
+
 func TestResponseTerminalsAreMonotonic(t *testing.T) {
 	commands := []ResponseCommand{
 		ResponseCmdProvision, ResponseCmdStart, ResponseCmdRequestTool,

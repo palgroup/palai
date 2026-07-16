@@ -36,9 +36,9 @@ const (
 
 // ResponseTable is the Response transition table (spec §8.3). A response is born
 // queued. Each waiting_for_* state returns only to in_progress via resume.
-// complete fires only from in_progress; fail, timeout, and exhaust_budget also
-// fire from the three waiting states; cancel additionally fires from queued and
-// provisioning.
+// complete fires only from in_progress. exhaust_budget fires from in_progress and
+// the three waiting states; timeout adds queued; cancel and fail add queued and
+// provisioning (spec §20.12 queue-deadline).
 var ResponseTable = []Transition[ResponseState, ResponseCommand]{
 	{ResponseQueued, ResponseCmdProvision, ResponseProvisioning, "response.provisioning.v1"},
 	{ResponseProvisioning, ResponseCmdStart, ResponseInProgress, "response.in_progress.v1"},
@@ -53,6 +53,8 @@ var ResponseTable = []Transition[ResponseState, ResponseCommand]{
 
 	{ResponseInProgress, ResponseCmdComplete, ResponseCompleted, "response.completed.v1"},
 
+	{ResponseQueued, ResponseCmdFail, ResponseFailed, "response.failed.v1"},
+	{ResponseProvisioning, ResponseCmdFail, ResponseFailed, "response.failed.v1"},
 	{ResponseInProgress, ResponseCmdFail, ResponseFailed, "response.failed.v1"},
 	{ResponseWaitingForTool, ResponseCmdFail, ResponseFailed, "response.failed.v1"},
 	{ResponseWaitingForApproval, ResponseCmdFail, ResponseFailed, "response.failed.v1"},
@@ -65,6 +67,7 @@ var ResponseTable = []Transition[ResponseState, ResponseCommand]{
 	{ResponseWaitingForApproval, ResponseCmdCancel, ResponseCanceled, "response.canceled.v1"},
 	{ResponseWaitingForInput, ResponseCmdCancel, ResponseCanceled, "response.canceled.v1"},
 
+	{ResponseQueued, ResponseCmdTimeout, ResponseTimedOut, "response.timed_out.v1"},
 	{ResponseInProgress, ResponseCmdTimeout, ResponseTimedOut, "response.timed_out.v1"},
 	{ResponseWaitingForTool, ResponseCmdTimeout, ResponseTimedOut, "response.timed_out.v1"},
 	{ResponseWaitingForApproval, ResponseCmdTimeout, ResponseTimedOut, "response.timed_out.v1"},

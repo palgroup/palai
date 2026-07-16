@@ -17,9 +17,9 @@ go run "$root/scripts/contracts/semantic" -mode project \
   -out "$scratch/openapi-3.1.2.yaml"
 
 status=0
-diff -r "$scratch/go" "$root/packages/contracts" || status=1
-diff -r "$scratch/ts" "$root/protocols/generated/typescript" || status=1
-diff -r "$scratch/py" "$root/protocols/generated/python" || status=1
+diff -r -x '__pycache__' -x '.DS_Store' "$scratch/go" "$root/packages/contracts" || status=1
+diff -r -x '__pycache__' -x '.DS_Store' "$scratch/ts" "$root/protocols/generated/typescript" || status=1
+diff -r -x '__pycache__' -x '.DS_Store' "$scratch/py" "$root/protocols/generated/python" || status=1
 diff "$scratch/openapi-3.1.2.yaml" "$root/protocols/generated/openapi-3.1.2.yaml" || status=1
 
 if test "$status" -ne 0; then
