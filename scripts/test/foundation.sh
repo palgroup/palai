@@ -9,7 +9,7 @@ bash scripts/verify/repository-boundary.sh
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-git init -q "$tmp/repository"
+git init -q --template= "$tmp/repository"
 git -C "$tmp/repository" remote add origin https://example.invalid/not-palai.git
 repository_root="$(cd "$tmp/repository" && pwd -P)"
 if (cd "$repository_root" && PALAI_EXPECTED_ROOT="$repository_root" bash "$root/scripts/verify/repository-boundary.sh") >/dev/null 2>&1; then
@@ -17,7 +17,12 @@ if (cd "$repository_root" && PALAI_EXPECTED_ROOT="$repository_root" bash "$root/
   exit 1
 fi
 
-git init -q "$tmp/with-gitmodules"
+git init -q --template= "$tmp/canonical-origin-without-suffix"
+git -C "$tmp/canonical-origin-without-suffix" remote add origin https://github.com/palgroup/palai
+canonical_origin_root="$(cd "$tmp/canonical-origin-without-suffix" && pwd -P)"
+(cd "$canonical_origin_root" && PALAI_EXPECTED_ROOT="$canonical_origin_root" bash "$root/scripts/verify/repository-boundary.sh")
+
+git init -q --template= "$tmp/with-gitmodules"
 git -C "$tmp/with-gitmodules" remote add origin https://github.com/palgroup/palai.git
 touch "$tmp/with-gitmodules/.gitmodules"
 gitmodules_root="$(cd "$tmp/with-gitmodules" && pwd -P)"
@@ -26,7 +31,7 @@ if (cd "$gitmodules_root" && PALAI_EXPECTED_ROOT="$gitmodules_root" bash "$root/
   exit 1
 fi
 
-git init -q "$tmp/with-gitlink"
+git init -q --template= "$tmp/with-gitlink"
 git -C "$tmp/with-gitlink" remote add origin https://github.com/palgroup/palai.git
 git -C "$tmp/with-gitlink" update-index --add --info-only --cacheinfo 160000,1111111111111111111111111111111111111111,embedded
 gitlink_root="$(cd "$tmp/with-gitlink" && pwd -P)"
@@ -42,7 +47,7 @@ secret_names=(
 for index in "${!secret_names[@]}"; do
   fixture="$tmp/with-secret-$index"
   secret_name="${secret_names[$index]}"
-  git init -q "$fixture"
+  git init -q --template= "$fixture"
   git -C "$fixture" remote add origin https://github.com/palgroup/palai.git
   touch "$fixture/$secret_name"
   git -C "$fixture" add -f "$secret_name"
@@ -53,18 +58,18 @@ for index in "${!secret_names[@]}"; do
   fi
 done
 
-git init -q "$tmp/with-secret-example"
+git init -q --template= "$tmp/with-secret-example"
 git -C "$tmp/with-secret-example" remote add origin https://github.com/palgroup/palai.git
 touch "$tmp/with-secret-example/.env.example"
 git -C "$tmp/with-secret-example" add -f .env.example
 example_root="$(cd "$tmp/with-secret-example" && pwd -P)"
 (cd "$example_root" && PALAI_EXPECTED_ROOT="$example_root" bash "$root/scripts/verify/repository-boundary.sh")
 
-git init -q "$tmp/parent"
+git init -q --template= "$tmp/parent"
 mkdir -p "$tmp/parent/palai"
 touch "$tmp/parent/palai/tracked.txt"
 git -C "$tmp/parent" add palai/tracked.txt
-git init -q "$tmp/parent/palai"
+git init -q --template= "$tmp/parent/palai"
 git -C "$tmp/parent/palai" remote add origin https://github.com/palgroup/palai.git
 nested_root="$(cd "$tmp/parent/palai" && pwd -P)"
 if (cd "$nested_root" && PALAI_EXPECTED_ROOT="$nested_root" bash "$root/scripts/verify/repository-boundary.sh") >/dev/null 2>&1; then

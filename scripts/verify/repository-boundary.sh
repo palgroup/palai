@@ -6,7 +6,8 @@ expected_root="${PALAI_EXPECTED_ROOT:-$PWD}"
 expected_origin="${PALAI_EXPECTED_ORIGIN:-https://github.com/palgroup/palai.git}"
 
 test "$root" = "$expected_root"
-test "$(git remote get-url origin)" = "$expected_origin"
+actual_origin="$(git remote get-url origin)"
+test "${actual_origin%.git}" = "${expected_origin%.git}"
 test ! -f .gitmodules
 
 if git ls-files --stage | awk '$1 == "160000" { found=1 } END { exit !found }'; then
