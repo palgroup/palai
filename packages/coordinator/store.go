@@ -7,6 +7,7 @@ package coordinator
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -257,4 +258,145 @@ func newEventID() (string, error) {
 		return "", fmt.Errorf("generate event id: %w", err)
 	}
 	return "evt_" + hex.EncodeToString(raw[:]), nil
+}
+
+// Identity is the tenant an API key resolves to (spec §39.2).
+type Identity struct {
+	Organization string
+	Project      string
+	Principal    string
+}
+
+// ErrInvalidToken is returned when a bearer key matches no live api_keys row. Its
+// stable Problem code is invalid_token.
+var ErrInvalidToken = errors.New("invalid_token")
+
+// HashAPIKey derives the stored verifier for a bearer key. api_keys.key_hash holds
+// this digest; the full key is never persisted (spec §20 security). API keys are
+// high-entropy tokens, so a fast digest is the standard verifier, not a password KDF.
+func HashAPIKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// VerifyAPIKey resolves a bearer key to its tenant. It is the sole read keyed by
+// the credential hash rather than the tenant, because it establishes the tenant
+// every later query is scoped by; the body's project_id can never override it.
+// A key with no project is rejected: the LP-0 surface only admits project-scoped keys.
+func (s *Store) VerifyAPIKey(ctx context.Context, token string) (Identity, error) {
+	var id Identity
+	var project *string
+	err := s.pool.QueryRow(ctx, storage.Query("VerifyAPIKey"), HashAPIKey(token)).
+		Scan(&id.Organization, &project, &id.Principal)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Identity{}, ErrInvalidToken
+	}
+	if err != nil {
+		return Identity{}, fmt.Errorf("verify api key: %w", err)
+	}
+	if project == nil {
+		return Identity{}, ErrInvalidToken
+	}
+	id.Project = *project
+	return id, nil
+}
+
+// AdmissionInput is a fully-resolved response admission (spec §20.9, §8.3). The
+// caller mints the IDs and the response Body so the idempotency record can store
+// the exact body a replay must return.
+type AdmissionInput struct {
+	Principal      string
+	IdempotencyKey string
+	Method         string
+	Route          string
+	RequestHash    string
+	ResponseID     string
+	RunID          string
+	SessionID      string
+	Input          []byte
+	Body           []byte
+}
+
+// Admission is the committed, replayed, or conflicting admission outcome.
+type Admission struct {
+	Body     []byte
+	Replayed bool
+	Conflict bool
+}
+
+// AdmitResponse atomically reserves the idempotency key and, on a fresh key,
+// creates the transient session, response, and root run plus the run.queued.v1
+// birth event in one transaction (spec §20.9 step 3, §8.3). The reservation blocks
+// concurrent duplicates on the unique index, so a reused key with the same request
+// replays the stored body and a reused key with a different request reports a
+// conflict — both without a second side effect. Nothing is dispatched here: the
+// outbox row is the post-commit handoff, so dispatch never begins before commit.
+func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionInput) (Admission, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Admission{}, fmt.Errorf("begin admission: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	err = tx.QueryRow(ctx, storage.Query("ReserveIdempotency"),
+		tenant.Organization, tenant.Project, in.Principal, in.Method, in.Route, in.IdempotencyKey, in.RequestHash, in.Body).
+		Scan(new(int64))
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// The key is already reserved: replay on a matching request, conflict otherwise.
+		var storedHash string
+		var storedBody []byte
+		if err := tx.QueryRow(ctx, storage.Query("GetIdempotency"),
+			tenant.Organization, tenant.Project, in.Principal, in.Method, in.Route, in.IdempotencyKey).
+			Scan(&storedHash, &storedBody); err != nil {
+			return Admission{}, fmt.Errorf("read idempotency record: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Admission{}, fmt.Errorf("commit idempotency read: %w", err)
+		}
+		if storedHash != in.RequestHash {
+			return Admission{Conflict: true}, nil
+		}
+		return Admission{Body: storedBody, Replayed: true}, nil
+	case err != nil:
+		return Admission{}, fmt.Errorf("reserve idempotency key: %w", err)
+	}
+
+	// Fresh key: create the durable resources and the birth event atomically.
+	if _, err := tx.Exec(ctx, storage.Query("InsertSession"),
+		in.SessionID, tenant.Organization, tenant.Project); err != nil {
+		return Admission{}, fmt.Errorf("insert session: %w", err)
+	}
+	if _, err := tx.Exec(ctx, storage.Query("InsertResponse"),
+		in.ResponseID, tenant.Organization, tenant.Project, in.SessionID, in.Input); err != nil {
+		return Admission{}, fmt.Errorf("insert response: %w", err)
+	}
+	if _, err := tx.Exec(ctx, storage.Query("InsertRun"),
+		in.RunID, tenant.Organization, tenant.Project, in.SessionID, in.ResponseID); err != nil {
+		return Admission{}, fmt.Errorf("insert run: %w", err)
+	}
+
+	var seq int64
+	if err := tx.QueryRow(ctx, storage.Query("AllocateSequence"), in.SessionID).Scan(&seq); err != nil {
+		return Admission{}, fmt.Errorf("allocate session sequence: %w", err)
+	}
+	eventID, err := newEventID()
+	if err != nil {
+		return Admission{}, err
+	}
+	payload := fmt.Sprintf(`{"run_id":%q,"state":"queued"}`, in.RunID)
+	if _, err := tx.Exec(ctx, storage.Query("AppendEvent"),
+		eventID, tenant.Organization, tenant.Project, in.SessionID, seq, "run.queued.v1", []byte(payload)); err != nil {
+		return Admission{}, fmt.Errorf("append queued event: %w", err)
+	}
+	dedupe := fmt.Sprintf("run:%s:seq:%d", in.RunID, seq)
+	if _, err := tx.Exec(ctx, storage.Query("EnqueueOutbox"),
+		tenant.Organization, tenant.Project, "run.queued.v1", dedupe, []byte(payload)); err != nil {
+		return Admission{}, fmt.Errorf("enqueue admission outbox: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Admission{}, fmt.Errorf("commit admission: %w", err)
+	}
+	return Admission{Body: in.Body}, nil
 }

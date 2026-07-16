@@ -1,0 +1,112 @@
+package api_test
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/palgroup/palai/apps/control-plane/api"
+	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+)
+
+// testToken is the bearer credential the fake backend accepts. The full key is
+// never stored: the fake compares the presented token to a known value, mirroring
+// the production hash comparison without a database.
+const testToken = "test-token"
+
+// testScope is the tenant the fake resolves testToken to. Handlers must derive
+// scope from this identity, never from a request-body project_id.
+var testScope = middleware.Scope{
+	Organization: "org_test",
+	Project:      "prj_test",
+	Principal:    "prin_test",
+}
+
+// fakeBackend is the in-process store seam: it implements auth verification and
+// idempotent admission without Postgres so the HTTP contract runs Docker-free.
+// The durable admission invariants themselves are proven against real Postgres in
+// tests/component/postgres.
+type fakeBackend struct {
+	mu   sync.Mutex
+	seen map[string]stored
+}
+
+type stored struct {
+	hash   string
+	respID string
+	body   []byte
+}
+
+func newFakeBackend() *fakeBackend {
+	return &fakeBackend{seen: map[string]stored{}}
+}
+
+func (f *fakeBackend) VerifyAPIKey(_ context.Context, token string) (middleware.Scope, error) {
+	if token != testToken {
+		return middleware.Scope{}, middleware.ErrInvalidToken
+	}
+	return testScope, nil
+}
+
+func (f *fakeBackend) AdmitResponse(_ context.Context, req api.AdmitRequest) (api.AdmitResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if prev, ok := f.seen[req.IdempotencyKey]; ok {
+		if prev.hash != req.RequestHash {
+			return api.AdmitResult{Conflict: true}, nil
+		}
+		return api.AdmitResult{ResponseID: prev.respID, Body: prev.body, Replayed: true}, nil
+	}
+	f.seen[req.IdempotencyKey] = stored{hash: req.RequestHash, respID: req.ResponseID, body: req.Body}
+	return api.AdmitResult{ResponseID: req.ResponseID, Body: req.Body}, nil
+}
+
+// newTestServer starts the real router + middleware stack over a fresh fake
+// backend, so every test exercises genuine HTTP round-trips.
+func newTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	backend := newFakeBackend()
+	srv := httptest.NewServer(api.NewRouter(backend, backend))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// postResponses issues POST /v1/responses with the given headers and body.
+func postResponses(t *testing.T, srv *httptest.Server, headers map[string]string, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/responses", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	return resp
+}
+
+// authedHeaders carries a valid bearer token and idempotency key.
+func authedHeaders(key string) map[string]string {
+	return map[string]string{
+		"Authorization":   "Bearer " + testToken,
+		"Idempotency-Key": key,
+	}
+}
+
+func readBody(t *testing.T, resp *http.Response) []byte {
+	t.Helper()
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return data
+}

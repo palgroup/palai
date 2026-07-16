@@ -29,13 +29,16 @@ var eventsSQL string
 //go:embed queries/responses.sql
 var responsesSQL string
 
+//go:embed queries/identity.sql
+var identitySQL string
+
 // MigrationUp is the forward core migration.
 func MigrationUp() string { return migrationUp }
 
 // MigrationDown reverses MigrationUp.
 func MigrationDown() string { return migrationDown }
 
-var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL)
+var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL)
 
 // Query returns the SQL statement labelled "-- name: <name>" in storage/queries.
 // It panics on an unknown name because query names are compile-time constants.
