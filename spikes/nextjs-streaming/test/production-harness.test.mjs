@@ -11,6 +11,7 @@ import {
   readFirstFrame,
   readRemaining,
   runProcess,
+  supportsProcessGroups,
   withTimeout,
 } from "./process-lifecycle.mjs";
 
@@ -198,17 +199,12 @@ test("readFirstFrame cancels a stream that never emits a frame", async () => {
   }
 });
 
-test("runProcess enforces its deadline and reaps the process tree", async () => {
+test("runProcess enforces its deadline and reaps the direct child", async () => {
   const directory = mkdtempSync(join(tmpdir(), "palai-process-deadline-"));
   const pidPath = join(directory, "pids.json");
-  const descendant = "setInterval(() => {}, 10_000);";
   const fixture = [
-    'const { spawn } = require("node:child_process");',
     'const { writeFileSync } = require("node:fs");',
-    `const child = spawn(process.execPath, ["-e", ${
-      JSON.stringify(descendant)
-    }], { stdio: "ignore" });`,
-    "writeFileSync(process.env.PID_PATH, JSON.stringify([process.pid, child.pid]));",
+    "writeFileSync(process.env.PID_PATH, JSON.stringify([process.pid]));",
     "setInterval(() => {}, 10_000);",
   ].join("\n");
   let pids = [];
@@ -258,6 +254,82 @@ test("runProcess enforces its deadline and reaps the process tree", async () => 
     rmSync(directory, { force: true, recursive: true });
   }
 });
+
+test(
+  "runProcess reaps a descendant that ignores SIGTERM after its leader closes",
+  { skip: !supportsProcessGroups, timeout: 20_000 },
+  async () => {
+    const directory = mkdtempSync(join(tmpdir(), "palai-process-group-"));
+    const pidPath = join(directory, "pids.json");
+    const descendant = [
+      'const { writeFileSync } = require("node:fs");',
+      'process.on("SIGTERM", () => {});',
+      "writeFileSync(process.env.PID_PATH, JSON.stringify([process.ppid, process.pid]));",
+      "setInterval(() => {}, 10_000);",
+    ].join("\n");
+    const fixture = [
+      'const { spawn } = require("node:child_process");',
+      `spawn(process.execPath, ["-e", ${
+        JSON.stringify(descendant)
+      }], { env: process.env, stdio: "ignore" });`,
+      "setInterval(() => {}, 10_000);",
+    ].join("\n");
+    let pids = [];
+    let cleanupProven = false;
+    const readFixturePids = () => {
+      try {
+        pids = JSON.parse(readFileSync(pidPath, "utf8"));
+      } catch {
+        // The assertion below reports a missing fixture receipt.
+      }
+      pids = [...new Set(pids.filter(Number.isInteger))];
+    };
+    const emergencyCleanup = () => {
+      readFixturePids();
+      if (pids.length === 2) {
+        try {
+          process.kill(-pids[0], "SIGKILL");
+        } catch {
+          // Cleanup may already have removed the process group.
+        }
+      }
+      for (const pid of pids) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Cleanup may already have removed the process.
+        }
+      }
+    };
+    const watchdog = setTimeout(emergencyCleanup, 12_000);
+
+    try {
+      const startedAt = performance.now();
+      await assert.rejects(
+        runProcess(
+          process.execPath,
+          ["-e", fixture],
+          { ...process.env, PID_PATH: pidPath },
+          1_000,
+        ),
+        /deadline/i,
+      );
+      const elapsedMS = performance.now() - startedAt;
+      readFixturePids();
+      assert.equal(pids.length, 2, "fixture did not report both process IDs");
+      assert.throws(() => process.kill(pids[1], 0), { code: "ESRCH" });
+      assert.throws(() => process.kill(-pids[0], 0), { code: "ESRCH" });
+      cleanupProven = true;
+      assert.ok(elapsedMS < 8_000, "process-group cleanup was not bounded");
+    } finally {
+      clearTimeout(watchdog);
+      if (!cleanupProven) {
+        emergencyCleanup();
+      }
+      rmSync(directory, { force: true, recursive: true });
+    }
+  },
+);
 
 test("fetchWithDeadline aborts a request that never receives headers", async () => {
   let markClosed;

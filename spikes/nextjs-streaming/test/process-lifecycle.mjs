@@ -172,6 +172,33 @@ export async function readRemaining(reader, initial = "", deadlineMS = 5_000) {
 }
 
 export async function terminateChild(child, closed) {
+  if (!supportsProcessGroups || child.pid === undefined) {
+    return terminateDirectChild(child, closed);
+  }
+
+  // POSIX has no stable process-group handle. Capture the detached leader's
+  // PGID once and use it only during this bounded cleanup window.
+  const processGroupID = child.pid;
+  signalProcessGroup(processGroupID, "SIGTERM");
+  const leaderClosed = await closesWithin(closed, processCleanupDeadlineMS);
+  if (leaderClosed && !processGroupExists(processGroupID)) {
+    return true;
+  }
+
+  signalProcessGroup(processGroupID, "SIGKILL");
+  const [leaderGone, processGroupGone] = await Promise.all([
+    closesWithin(closed, processCleanupDeadlineMS),
+    waitForProcessGroupExit(processGroupID, processCleanupDeadlineMS),
+  ]);
+  ensure(
+    processGroupGone,
+    `child process group ${processGroupID} could not be proven gone after SIGKILL`,
+  );
+  ensure(leaderGone, "child could not be closed after process-group SIGKILL");
+  return false;
+}
+
+async function terminateDirectChild(child, closed) {
   signalProcessTree(child, "SIGTERM");
   try {
     await withTimeout(
@@ -201,18 +228,67 @@ export function signalProcessTree(child, signal) {
   if (child.pid === undefined) {
     return false;
   }
-  try {
-    if (supportsProcessGroups) {
-      process.kill(-child.pid, signal);
-    } else {
+  if (!supportsProcessGroups) {
+    try {
       child.kill(signal);
+      return true;
+    } catch (error) {
+      if (error?.code === "ESRCH") {
+        return false;
+      }
+      throw error;
     }
+  }
+  return signalProcessGroup(child.pid, signal);
+}
+
+function signalProcessGroup(processGroupID, signal) {
+  try {
+    process.kill(-processGroupID, signal);
     return true;
   } catch (error) {
     if (error?.code === "ESRCH") {
       return false;
     }
     throw error;
+  }
+}
+
+function processGroupExists(processGroupID) {
+  try {
+    process.kill(-processGroupID, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") {
+      return false;
+    }
+    if (error?.code === "EPERM") {
+      return true;
+    }
+    throw error;
+  }
+}
+
+async function waitForProcessGroupExit(processGroupID, deadlineMS) {
+  const deadlineAt = performance.now() + deadlineMS;
+  while (processGroupExists(processGroupID)) {
+    const remainingMS = deadlineAt - performance.now();
+    if (remainingMS <= 0) {
+      return false;
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(25, remainingMS))
+    );
+  }
+  return true;
+}
+
+async function closesWithin(closed, deadlineMS) {
+  try {
+    await withTimeout(closed, deadlineMS, "child close deadline exceeded");
+    return true;
+  } catch {
+    return false;
   }
 }
 
