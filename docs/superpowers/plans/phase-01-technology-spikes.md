@@ -264,7 +264,7 @@ git add go.mod go.sum spikes/postgres-coordinator scripts/spikes/postgres-coordi
 git commit -m "test: prove PostgreSQL fenced coordination"
 ```
 
-- [ ] **Step 6: Generate, validate and commit evidence**
+- [x] **Step 6: Generate, validate and commit evidence**
 
 Run: `PALAI_SPIKE_REPORT_OUT=spikes/.evidence/postgres-coordinator.json scripts/spikes/postgres-coordinator evidence`
 

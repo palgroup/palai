@@ -9,9 +9,9 @@
     },
     {
       "id": "postgres-coordinator",
-      "status": "planned",
-      "quick_command": null,
-      "evidence_command": null
+      "status": "implemented",
+      "quick_command": "scripts/spikes/postgres-coordinator",
+      "evidence_command": "scripts/spikes/postgres-coordinator"
     },
     {
       "id": "contract-toolchain",

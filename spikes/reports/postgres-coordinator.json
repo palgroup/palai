@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "spike": "postgres-coordinator",
+  "git_commit": "5adb7334f4fb345eaf2af97f1180280a4e607bf3",
+  "source_tree": "ae8d3073fed3a7f51ef33aa6a23ad4f6e849c443",
+  "started_at": "2026-07-16T11:10:15Z",
+  "ended_at": "2026-07-16T11:10:36.048397Z",
+  "environment": {
+    "os": "darwin",
+    "arch": "arm64",
+    "tool_versions": {
+      "docker": "24.0.2",
+      "go": "go version go1.26.4 darwin/arm64",
+      "postgres": "postgres (PostgreSQL) 16.14 (Debian 16.14-1.pgdg13+1)"
+    },
+    "image_digests": [
+      "sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+    ]
+  },
+  "metrics": {
+    "authoritative.iterations": 20,
+    "containers.after": 0,
+    "containers.before": 0,
+    "iterations": 20,
+    "stale_fence.iterations": 20,
+    "transaction_kill.iterations": 20,
+    "volumes.after": 0,
+    "volumes.before": 0,
+    "worker_kill.iterations": 20
+  },
+  "assertions": [
+    {
+      "name": "docker.cleanup_exact",
+      "passed": true,
+      "detail": "containers=0/0 volumes=0/0"
+    },
+    {
+      "name": "fence.stale_completion_rejected",
+      "passed": true,
+      "detail": "20/20"
+    },
+    {
+      "name": "lease.reclaimed_higher_fence",
+      "passed": true,
+      "detail": "20/20"
+    },
+    {
+      "name": "outbox.authoritative_once",
+      "passed": true,
+      "detail": "20/20"
+    },
+    {
+      "name": "transaction.kill_recoverable",
+      "passed": true,
+      "detail": "20/20"
+    }
+  ],
+  "passed": true
+}
