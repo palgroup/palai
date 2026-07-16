@@ -10,6 +10,7 @@ data/
 evidence/raw/
 spikes/.evidence/
 spikes/**/.build/
+spikes/nextjs-streaming/.next/
 
 # Build and dependency output
 bin/

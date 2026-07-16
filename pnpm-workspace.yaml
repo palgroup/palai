@@ -3,3 +3,6 @@ packages:
   - examples/nextjs-sdk
   - spikes/control-plane/node-server
   - spikes/contracts/tooling
+  - spikes/nextjs-streaming
+allowBuilds:
+  sharp: true

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+profile="${1:-}"
+case "$profile" in
+  quick) repetitions=1 ;;
+  evidence) repetitions=5 ;;
+  *)
+    echo "usage: scripts/spikes/nextjs-streaming <quick|evidence>" >&2
+    exit 2
+    ;;
+esac
+started_unix="$(date +%s)"
+
+pnpm --dir spikes/nextjs-streaming build
+for iteration in $(seq 1 "$repetitions"); do
+  PALAI_SPIKE_ITERATION="$iteration" \
+    pnpm --dir spikes/nextjs-streaming test
+done
+
+if test "$profile" = evidence; then
+  output="${PALAI_SPIKE_REPORT_OUT:-spikes/.evidence/nextjs-streaming.json}"
+  go run ./spikes/nextjs-streaming/cmd/report \
+    -out "$output" \
+    -repetitions "$repetitions" \
+    -started-unix "$started_unix"
+fi
+
+echo "nextjs_streaming=PASS profile=$profile repetitions=$repetitions server=next_start"
