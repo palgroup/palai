@@ -29,23 +29,51 @@ fail() {
   exit 1
 }
 
-test -s "$index" || fail "missing report index: $index"
-test -d "$report_dir" || fail "missing report directory: $report_dir"
-test -d "$adr_dir" || fail "missing ADR directory: $adr_dir"
+reject_traversal() {
+  local path="$1"
+  case "$path" in
+    ..|../*|*/../*|*/..) fail "input path contains parent traversal: $path" ;;
+  esac
+}
+
+require_regular_file() {
+  local path="$1"
+  local label="$2"
+  test -f "$path" && test ! -L "$path" || fail "$label is not a regular file: $path"
+}
+
+for input_path in "$adr_dir" "$report_dir" "$index"; do
+  reject_traversal "$input_path"
+done
+
+test -d "$report_dir" && test ! -L "$report_dir" || \
+  fail "report directory is missing or symlinked: $report_dir"
+test -d "$adr_dir" && test ! -L "$adr_dir" || \
+  fail "ADR directory is missing or symlinked: $adr_dir"
+require_regular_file "$index" "report index"
+test -s "$index" || fail "empty report index: $index"
 
 actual_reports="$(
-  find "$report_dir" -maxdepth 1 -type f -name '*.json' ! -name index.json \
+  find "$report_dir" -mindepth 1 -maxdepth 1 -name '*.json' ! -name index.json \
     -exec basename {} \; | LC_ALL=C sort
 )"
 expected_report_list="$(printf '%s\n' "${expected_reports[@]}" | LC_ALL=C sort)"
 test "$actual_reports" = "$expected_report_list" || fail "report set differs from the six E01 reports"
 
 actual_adrs="$(
-  find "$adr_dir" -maxdepth 1 -type f -name '000[1-9]-*.md' \
+  find "$adr_dir" -mindepth 1 -maxdepth 1 \
+    -name '[0-9][0-9][0-9][0-9]-*.md' ! -name '0000-template.md' \
     -exec basename {} \; | LC_ALL=C sort
 )"
 expected_adr_list="$(printf '%s\n' "${expected_adrs[@]}" | LC_ALL=C sort)"
 test "$actual_adrs" = "$expected_adr_list" || fail "ADR set differs from ADR-0001..0005"
+
+for report in "${expected_reports[@]}"; do
+  require_regular_file "$report_dir/$report" "E01 report"
+done
+for adr in "${expected_adrs[@]}"; do
+  require_regular_file "$adr_dir/$adr" "E01 ADR"
+done
 
 expected_index='[
   {"path":"spikes/reports/contract-toolchain.json","spike":"contract-toolchain","passed":true,"owning_adr":"ADR-0002"},
@@ -63,6 +91,7 @@ jq -e --argjson expected "$expected_index" '
   ([.reports[].spike] | length == (unique | length)) and
   (all(.reports[];
     (keys == ["owning_adr", "passed", "path", "sha256", "spike"]) and
+    (.path | test("^spikes/reports/[a-z0-9-]+\\.json$")) and
     (.sha256 | test("^[0-9a-f]{64}$")))) and
   ((.reports | map(del(.sha256)) | sort_by(.path)) == ($expected | sort_by(.path)))
 ' "$index" >/dev/null || fail "report index schema, ownership, or pass state is invalid"
@@ -76,10 +105,8 @@ for report in "${expected_reports[@]}"; do
   test "$actual_checksum" = "$indexed_checksum" || fail "report checksum mismatch: $path"
 done
 
-PALAI_SPIKE_REPORT_DIR="$report_dir" scripts/spikes/check-reports >/dev/null || \
-  fail "report content, pass state, or source provenance is invalid"
-
-secret_pattern='(OPENAI_API_KEY|ANTHROPIC_API_KEY|ANTROPHIC_API_KEY|Authorization:[[:space:]]*Bearer|BEGIN[[:space:]]+PRIVATE[[:space:]]+KEY|(^|[^[:alnum:]])sk-[[:alnum:]]|/Users/|/home/)'
+credential_assignment_pattern='(^|[^[:alnum:]_])"?([[:alpha:]][[:alnum:]_]*(API_?KEY|SECRET(_ACCESS)?_KEY|ACCESS_?KEY(_ID)?|TOKEN|PASSWORD|CREDENTIALS?)|DATABASE_URL)"?[[:space:]]*[:=][[:space:]]*"?[^[:space:]",}]+'
+secret_marker_pattern='(Authorization:[[:space:]]*Bearer|BEGIN[[:space:]]+PRIVATE[[:space:]]+KEY|(^|[^[:alnum:]])sk-[[:alnum:]]|/Users/|/home/)'
 scan_files=("$index")
 for report in "${expected_reports[@]}"; do
   scan_files+=("$report_dir/$report")
@@ -87,9 +114,21 @@ done
 for adr in "${expected_adrs[@]}"; do
   scan_files+=("$adr_dir/$adr")
 done
-if LC_ALL=C grep -Eiq "$secret_pattern" "${scan_files[@]}"; then
+if LC_ALL=C grep -Eiq "$credential_assignment_pattern|$secret_marker_pattern" "${scan_files[@]}"; then
   fail "report index, report, or ADR contains a sensitive value"
 fi
+
+require_adr_field() {
+  local number="$1"
+  local file="$2"
+  local field="$3"
+  local value="$4"
+  local count
+
+  count="$(grep -Ec "^- ${field}:" "$file" || true)"
+  test "$count" -eq 1 || fail "ADR-$number must contain exactly one $field field"
+  grep -Fqx -- "- $field: $value" "$file" || fail "ADR-$number has an invalid $field value"
+}
 
 check_adr() {
   local number="$1"
@@ -98,10 +137,9 @@ check_adr() {
   local expected_links actual_links
 
   grep -q "^# ADR-$number:" "$file" || fail "ADR-$number title is invalid"
-  grep -qx -- '- Status: accepted' "$file" || fail "ADR-$number is not accepted"
-  grep -qx -- '- Hard-gate exceptions: none' "$file" || fail "ADR-$number has a hard-gate exception"
-  grep -qx -- '- Readiness scope: E01 technology baseline only' "$file" || \
-    fail "ADR-$number overstates the E01 readiness scope"
+  require_adr_field "$number" "$file" Status accepted
+  require_adr_field "$number" "$file" 'Hard-gate exceptions' none
+  require_adr_field "$number" "$file" 'Production readiness' 'not established'
   for heading in \
     '## Context' \
     '## Evidence and options' \
@@ -137,5 +175,8 @@ check_adr 0005 "$adr_dir/0005-build-orchestration.md" \
   spikes/reports/object-store.json \
   spikes/reports/postgres-coordinator.json \
   spikes/reports/runner-supervisor.json
+
+PALAI_SPIKE_REPORT_DIR="$report_dir" scripts/spikes/check-reports >/dev/null || \
+  fail "report content, pass state, or source provenance is invalid"
 
 echo "e01_verification=PASS reports=6 adrs=5 hard_gate_exceptions=0"

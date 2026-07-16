@@ -38,6 +38,16 @@ expect_rejection() {
   fi
 }
 
+expect_traversal_rejection() {
+  if PALAI_E01_ADR_DIR="$fixture/adrs" \
+    PALAI_E01_REPORT_DIR="$fixture/reports" \
+    PALAI_E01_INDEX="$fixture/reports/../index.json" \
+    "$verifier" >"$tmp/traversal.out" 2>&1; then
+    echo "E01 verifier accepted a traversal-bearing input path" >&2
+    exit 1
+  fi
+}
+
 refresh_index_checksum() {
   local report="$1"
   local path="spikes/reports/$report"
@@ -53,12 +63,56 @@ reset_fixture
 verify_fixture >/dev/null
 
 reset_fixture
+printf '%s\n' '- Status: proposed' >>"$fixture/adrs/0001-language-runtime.md"
+expect_rejection duplicate-status-field
+
+reset_fixture
+printf '%s\n' '- Hard-gate exceptions: contract-loss' >>"$fixture/adrs/0001-language-runtime.md"
+expect_rejection duplicate-hard-gate-field
+
+reset_fixture
+printf '%s\n' '- Production readiness: established' >>"$fixture/adrs/0001-language-runtime.md"
+expect_rejection contradictory-production-readiness-field
+
+reset_fixture
+sed 's/^- Production readiness: not established$/- Production readiness: established/' \
+  "$fixture/adrs/0001-language-runtime.md" >"$fixture/adr.next"
+mv "$fixture/adr.next" "$fixture/adrs/0001-language-runtime.md"
+expect_rejection production-readiness-overclaim
+
+reset_fixture
 rm "$fixture/index.json"
 expect_rejection missing-index
 
 reset_fixture
+mv "$fixture/index.json" "$fixture/index-target.json"
+ln -s "$fixture/index-target.json" "$fixture/index.json"
+expect_rejection symlink-index
+
+reset_fixture
 rm "$fixture/reports/control-plane-runtime.json"
 expect_rejection missing-report
+
+reset_fixture
+mv "$fixture/reports/control-plane-runtime.json" "$fixture/control-plane-runtime.data"
+ln -s "$fixture/control-plane-runtime.data" "$fixture/reports/control-plane-runtime.json"
+expect_rejection symlink-report
+
+reset_fixture
+mv "$fixture/adrs/0001-language-runtime.md" "$fixture/language-runtime.data"
+ln -s "$fixture/language-runtime.data" "$fixture/adrs/0001-language-runtime.md"
+expect_rejection symlink-adr
+
+reset_fixture
+ln -s "$fixture/reports/control-plane-runtime.json" "$fixture/reports/unreferenced.json"
+expect_rejection unreferenced-symlink-report
+
+reset_fixture
+ln -s "$fixture/adrs/0001-language-runtime.md" "$fixture/adrs/0006-unreferenced.md"
+expect_rejection unreferenced-symlink-adr
+
+reset_fixture
+expect_traversal_rejection
 
 reset_fixture
 jq '.assertions[0].passed = false | .passed = false' \
@@ -79,15 +133,38 @@ refresh_index_checksum control-plane-runtime.json
 expect_rejection wrong-commit-report
 
 reset_fixture
-jq '.assertions[0].detail = "OPENAI_API_KEY=fixture-secret"' \
+jq '.assertions[0].detail = "PALAI_SPIKE_OBJECT_STORE_SECRET_KEY=fixture-secret"' \
   "$fixture/reports/control-plane-runtime.json" >"$fixture/report.next"
 mv "$fixture/report.next" "$fixture/reports/control-plane-runtime.json"
 refresh_index_checksum control-plane-runtime.json
-expect_rejection secret-bearing-report
+expect_rejection palai-secret-assignment-report
 
 reset_fixture
-printf '\nOPENAI_API_KEY=fixture-secret\n' >>"$fixture/adrs/0001-language-runtime.md"
-expect_rejection secret-bearing-adr
+jq '.assertions[0].detail = "MY_PROJECT_API_KEY=fixture-secret"' \
+  "$fixture/reports/control-plane-runtime.json" >"$fixture/report.next"
+mv "$fixture/report.next" "$fixture/reports/control-plane-runtime.json"
+refresh_index_checksum control-plane-runtime.json
+expect_rejection project-secret-assignment-report
+
+reset_fixture
+printf '\nPALAI_SPIKE_OBJECT_STORE_SECRET_KEY=fixture-secret\n' >>"$fixture/adrs/0001-language-runtime.md"
+expect_rejection palai-secret-assignment-adr
+
+reset_fixture
+printf '\nMY_PROJECT_API_KEY=fixture-secret\n' >>"$fixture/adrs/0001-language-runtime.md"
+expect_rejection project-secret-assignment-adr
+
+reset_fixture
+jq '.assertions[0].detail = "PALAI_SPIKE_OBJECT_STORE_SECRET_KEY and MY_PROJECT_API_KEY are variable names"' \
+  "$fixture/reports/control-plane-runtime.json" >"$fixture/report.next"
+mv "$fixture/report.next" "$fixture/reports/control-plane-runtime.json"
+refresh_index_checksum control-plane-runtime.json
+printf '\nPALAI_SPIKE_OBJECT_STORE_SECRET_KEY and MY_PROJECT_API_KEY are discussed without values.\n' \
+  >>"$fixture/adrs/0001-language-runtime.md"
+verify_fixture >/dev/null || {
+  echo "E01 verifier rejected benign credential variable-name discussion" >&2
+  exit 1
+}
 
 reset_fixture
 cp "$fixture/reports/control-plane-runtime.json" "$fixture/reports/unreferenced.json"

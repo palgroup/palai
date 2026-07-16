@@ -108,6 +108,18 @@ if PALAI_SPIKE_MANIFEST="$implemented_manifest" \
   exit 1
 fi
 
+missing_commit="1111111111111111111111111111111111111111"
+jq --arg commit "$missing_commit" --arg source_tree "$source_tree" '
+  .git_commit = $commit |
+  .source_tree = $source_tree
+' spikes/internal/report/testdata/valid.json >"$tmp/reports/control-plane-runtime.json"
+if PALAI_SPIKE_MANIFEST="$implemented_manifest" \
+  PALAI_SPIKE_REPORT_DIR="$tmp/reports" \
+  scripts/spikes/check-reports >/dev/null 2>&1; then
+  echo "report checker accepted a missing git_commit object" >&2
+  exit 1
+fi
+
 jq --arg commit "$commit" --arg source_tree "$source_tree" '
   .git_commit = $commit |
   .source_tree = $source_tree |

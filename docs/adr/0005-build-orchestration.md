@@ -6,7 +6,7 @@
 - Supersedes: none
 - Superseded by: none
 - Hard-gate exceptions: none
-- Readiness scope: E01 technology baseline only
+- Production readiness: not established
 
 ## Context
 
