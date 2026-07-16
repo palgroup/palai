@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+profile="${1:-}"
+case "$profile" in
+  test|quick) iterations=1 ;;
+  evidence) iterations=20 ;;
+  *)
+    echo "usage: scripts/spikes/postgres-coordinator <test|quick|evidence>" >&2
+    exit 2
+    ;;
+esac
+started_unix="$(date +%s)"
+
+image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+label="io.palai.spike=postgres-coordinator"
+run_id="$$-${RANDOM}"
+container="palai-spike-postgres-$run_id"
+volume="palai-spike-postgres-$run_id"
+
+count_containers() {
+  docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+count_volumes() {
+  docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+cleanup() {
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  docker volume rm -f "$volume" >/dev/null 2>&1 || true
+}
+
+containers_before="$(count_containers)"
+volumes_before="$(count_volumes)"
+trap cleanup EXIT
+
+docker volume create --label "$label" "$volume" >/dev/null
+docker run --detach --pull=never \
+  --name "$container" \
+  --label "$label" \
+  --env POSTGRES_DB=palai \
+  --env POSTGRES_PASSWORD=palai-spike \
+  --publish 127.0.0.1::5432 \
+  --volume "$volume:/var/lib/postgresql/data" \
+  "$image" >/dev/null
+
+ready=0
+for _ in $(seq 1 120); do
+  if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  sleep 0.25
+done
+if test "$ready" -ne 1; then
+  docker logs "$container" >&2 || true
+  echo "PostgreSQL spike container did not become ready" >&2
+  exit 1
+fi
+
+binding="$(docker port "$container" 5432/tcp)"
+port="${binding##*:}"
+postgres_url="postgres://postgres:palai-spike@127.0.0.1:$port/palai?sslmode=disable"
+postgres_version="$(docker exec "$container" postgres --version)"
+docker_version="$(docker version --format '{{.Server.Version}}')"
+
+set +e
+test_flags=(-count=1 -v)
+if test "${PALAI_SPIKE_RACE:-0}" = "1"; then
+  test_flags=(-race "${test_flags[@]}")
+fi
+PALAI_SPIKE_POSTGRES_URL="$postgres_url" \
+  PALAI_SPIKE_ITERATIONS="$iterations" \
+  go test ./spikes/postgres-coordinator \
+    -run 'TestKilledWorker|TestStaleCompletion|TestOneAuthoritative|TestTransactionKill' \
+    "${test_flags[@]}"
+test_status=$?
+set -e
+if test "$test_status" -ne 0; then
+  docker logs "$container" >&2 || true
+fi
+
+cleanup
+trap - EXIT
+containers_after="$(count_containers)"
+volumes_after="$(count_volumes)"
+if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+  echo "PostgreSQL spike leaked container or volume" >&2
+  exit 1
+fi
+if test "$test_status" -ne 0; then
+  exit "$test_status"
+fi
+
+if test "$profile" = evidence; then
+  output="${PALAI_SPIKE_REPORT_OUT:-spikes/.evidence/postgres-coordinator.json}"
+  go run ./spikes/postgres-coordinator/cmd/report \
+    -out "$output" \
+    -iterations "$iterations" \
+    -started-unix "$started_unix" \
+    -image-digest "${image#postgres@}" \
+    -postgres-version "$postgres_version" \
+    -docker-version "$docker_version" \
+    -containers-before "$containers_before" \
+    -containers-after "$containers_after" \
+    -volumes-before "$volumes_before" \
+    -volumes-after "$volumes_after"
+fi
+
+echo "postgres_coordinator=PASS profile=$profile iterations=$iterations containers=$containers_after volumes=$volumes_after"

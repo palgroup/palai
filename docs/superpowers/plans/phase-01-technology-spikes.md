@@ -221,12 +221,14 @@ git commit -m "test: record control-plane runtime evidence"
 - Create: `spikes/postgres-coordinator/worker.go`
 - Create: `spikes/postgres-coordinator/worker_process_test.go`
 - Create: `spikes/postgres-coordinator/store_test.go`
+- Create: `spikes/postgres-coordinator/cmd/report/main.go`
+- Create: `spikes/postgres-coordinator/README.md`
 - Create: `scripts/spikes/postgres-coordinator`
 - Generate: `spikes/reports/postgres-coordinator.json`
 - Modify: `go.mod`
 - Modify: `go.sum`
 
-- [ ] **Step 1: Write failing real-PostgreSQL tests**
+- [x] **Step 1: Write failing real-PostgreSQL tests**
 
 Tests require `PALAI_SPIKE_POSTGRES_URL` and assert:
 
@@ -237,29 +239,40 @@ func TestOneAuthoritativeCompletionAndOutbox(t *testing.T)
 func TestTransactionKillLeavesClaimRecoverable(t *testing.T)
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `scripts/spikes/postgres-coordinator test`
 
 Expected: PostgreSQL container becomes healthy, then tests FAIL because schema/store are absent. The script always removes its named container and volume on exit.
 
-- [ ] **Step 3: Implement the minimal fenced store**
+- [x] **Step 3: Implement the minimal fenced store**
 
 Use PostgreSQL 16 by immutable digest and pgx 5.10.0. `jobs` has `status`, `lease_owner`, `lease_expires_at`, `fence`, `attempt_count`, `result_hash`; `outbox` has a unique `(job_id, fence, event_type)`. Claim uses database time, `FOR UPDATE SKIP LOCKED`, increments the fence and commits before work. Completion updates only `WHERE id=$1 AND fence=$2 AND lease_owner=$3 AND status='running'`, then inserts outbox in the same transaction.
 
-- [ ] **Step 4: Prove real kill behavior**
+- [x] **Step 4: Prove real kill behavior**
 
 The parent test process starts worker A, waits for a committed claim receipt, sends `SIGKILL`, waits for DB lease expiry, starts worker B and submits A's stale callback. Required evidence is fence B > fence A, stale affected rows = 0, one completed row, one result hash and one outbox row.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify repeatedly and commit the clean source**
 
-Run: `scripts/spikes/postgres-coordinator evidence spikes/reports/postgres-coordinator.json`
+Run: `scripts/spikes/postgres-coordinator quick && PALAI_SPIKE_RACE=1 scripts/spikes/postgres-coordinator test`
+
+Expected: all four fault assertions pass against the pinned PostgreSQL container and container/volume counts return to their pre-test values.
+
+```bash
+git add go.mod go.sum spikes/postgres-coordinator scripts/spikes/postgres-coordinator
+git commit -m "test: prove PostgreSQL fenced coordination"
+```
+
+- [ ] **Step 6: Generate, validate and commit evidence**
+
+Run: `PALAI_SPIKE_REPORT_OUT=spikes/.evidence/postgres-coordinator.json scripts/spikes/postgres-coordinator evidence`
 
 Expected: all four fault assertions PASS for 20 iterations; container and volume counts return to their pre-test values.
 
 ```bash
-git add go.mod go.sum spikes/postgres-coordinator spikes/reports/postgres-coordinator.json scripts/spikes/postgres-coordinator
-git commit -m "test: prove PostgreSQL fenced coordination"
+git add spikes/manifest.json spikes/reports/postgres-coordinator.json docs/superpowers/plans/phase-01-technology-spikes.md
+git commit -m "test: record PostgreSQL coordinator evidence"
 ```
 
 ### Task 4: Contract-generation semantic bake-off
