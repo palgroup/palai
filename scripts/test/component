@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Component test tier: exercises code against real backing services in throwaway
+# Docker containers. Selected with `make test-component TEST=<suite>`; defaults to
+# the postgres suite. Kept out of `make verify`/`make test-unit` (Docker-bound).
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+suite="${TEST:-postgres}"
+
+run_postgres() {
+  # Immutable pinned image (matches the postgres-coordinator spike / ADR-0001).
+  local image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  local label="io.palai.component=postgres"
+  local run_id="$$-${RANDOM}"
+  local container="palai-component-postgres-$run_id"
+  local volume="palai-component-postgres-$run_id"
+  # Throwaway local credential, generated per run; never written to a file.
+  local password="palai-component-${RANDOM}${RANDOM}"
+
+  count_containers() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_volumes() { docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+  }
+
+  local containers_before volumes_before
+  containers_before="$(count_containers)"
+  volumes_before="$(count_volumes)"
+  trap cleanup EXIT
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never \
+    --name "$container" \
+    --label "$label" \
+    --env POSTGRES_DB=palai \
+    --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 \
+    --volume "$volume:/var/lib/postgresql/data" \
+    "$image" >/dev/null
+
+  local ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "postgres component container did not become ready" >&2
+    exit 1
+  fi
+
+  local binding port url
+  binding="$(docker port "$container" 5432/tcp)"
+  port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+
+  set +e
+  PALAI_COMPONENT_POSTGRES_URL="$url" \
+    go test -tags=component -count=1 -v ./tests/component/postgres
+  local status=$?
+  set -e
+  if test "$status" -ne 0; then
+    docker logs "$container" >&2 || true
+  fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers)"
+  volumes_after="$(count_volumes)"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "postgres component suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then
+    exit "$status"
+  fi
+  echo "component_postgres=PASS containers=$containers_after volumes=$volumes_after"
+}
+
+case "$suite" in
+  postgres) run_postgres ;;
+  *)
+    echo "unknown component suite: $suite (known: postgres)" >&2
+    exit 2
+    ;;
+esac
