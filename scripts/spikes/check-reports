@@ -44,6 +44,24 @@ while IFS=$'\t' read -r id status; do
         exit 1
       }
       go run ./spikes/cmd/report-check "$report" >/dev/null
+      report_spike="$(jq -er '.spike' "$report")"
+      test "$report_spike" = "$id" || {
+        echo "report spike mismatch: expected=$id actual=$report_spike" >&2
+        exit 1
+      }
+      report_commit="$(jq -er '.git_commit' "$report")"
+      source_tree="$(jq -er '.source_tree' "$report")"
+      git log --format=%T HEAD | grep -Fx -- "$source_tree" >/dev/null || {
+        echo "report source tree is not present in current history: $id" >&2
+        exit 1
+      }
+      if git cat-file -e "$report_commit^{commit}" 2>/dev/null; then
+        actual_tree="$(git show -s --format=%T "$report_commit")"
+        test "$actual_tree" = "$source_tree" || {
+          echo "report commit and source tree disagree: $id" >&2
+          exit 1
+        }
+      fi
       ;;
   esac
 done < <(jq -r '.spikes[] | [.id, .status] | @tsv' "$manifest")

@@ -39,7 +39,12 @@ jq --arg quick "$root/scripts/test/fixtures/spike-pass" \
   .spikes[0].quick_command = $quick |
   .spikes[0].evidence_command = $evidence
 ' spikes/manifest.json >"$implemented_manifest"
-cp spikes/internal/report/testdata/valid.json "$tmp/reports/control-plane-runtime.json"
+commit="$(git rev-parse HEAD)"
+source_tree="$(git rev-parse HEAD^{tree})"
+jq --arg commit "$commit" --arg source_tree "$source_tree" '
+  .git_commit = $commit |
+  .source_tree = $source_tree
+' spikes/internal/report/testdata/valid.json >"$tmp/reports/control-plane-runtime.json"
 
 PALAI_SPIKE_MANIFEST="$implemented_manifest" \
   PALAI_SPIKE_REPORT_DIR="$tmp/reports" \
@@ -59,10 +64,51 @@ if PALAI_SPIKE_MANIFEST="$implemented_manifest" \
   echo "report checker accepted invalid report JSON" >&2
   exit 1
 fi
-cp spikes/internal/report/testdata/valid.json "$tmp/reports/control-plane-runtime.json"
+jq --arg commit "$commit" --arg source_tree "$source_tree" '
+  .git_commit = $commit |
+  .source_tree = $source_tree
+' spikes/internal/report/testdata/valid.json >"$tmp/reports/control-plane-runtime.json"
+
+jq '.source_tree = "0000000000000000000000000000000000000000"' \
+  "$tmp/reports/control-plane-runtime.json" >"$tmp/reports/unbound.json"
+mv "$tmp/reports/unbound.json" "$tmp/reports/control-plane-runtime.json"
+if PALAI_SPIKE_MANIFEST="$implemented_manifest" \
+  PALAI_SPIKE_REPORT_DIR="$tmp/reports" \
+  scripts/spikes/check-reports >/dev/null 2>&1; then
+  echo "report checker accepted a source tree outside current history" >&2
+  exit 1
+fi
+
+parent_tree="$(git rev-parse HEAD^1^{tree})"
+jq --arg commit "$commit" --arg source_tree "$parent_tree" '
+  .git_commit = $commit |
+  .source_tree = $source_tree
+' spikes/internal/report/testdata/valid.json >"$tmp/reports/control-plane-runtime.json"
+if PALAI_SPIKE_MANIFEST="$implemented_manifest" \
+  PALAI_SPIKE_REPORT_DIR="$tmp/reports" \
+  scripts/spikes/check-reports >/dev/null 2>&1; then
+  echo "report checker accepted a mismatched commit and source tree" >&2
+  exit 1
+fi
+
+jq --arg commit "$commit" --arg source_tree "$source_tree" '
+  .git_commit = $commit |
+  .source_tree = $source_tree |
+  .spike = "postgres-coordinator"
+' spikes/internal/report/testdata/valid.json >"$tmp/reports/control-plane-runtime.json"
+if PALAI_SPIKE_MANIFEST="$implemented_manifest" \
+  PALAI_SPIKE_REPORT_DIR="$tmp/reports" \
+  scripts/spikes/check-reports >/dev/null 2>&1; then
+  echo "report checker accepted a report for the wrong spike" >&2
+  exit 1
+fi
 
 jq '.assertions[0].passed = false | .passed = false' \
-  spikes/internal/report/testdata/valid.json >"$tmp/reports/control-plane-runtime.json"
+  spikes/internal/report/testdata/valid.json |
+  jq --arg commit "$commit" --arg source_tree "$source_tree" '
+    .git_commit = $commit |
+    .source_tree = $source_tree
+  ' >"$tmp/reports/control-plane-runtime.json"
 if PALAI_SPIKE_MANIFEST="$implemented_manifest" \
   PALAI_SPIKE_REPORT_DIR="$tmp/reports" \
   scripts/spikes/check-reports >/dev/null 2>&1; then
