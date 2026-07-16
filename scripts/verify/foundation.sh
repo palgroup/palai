@@ -10,6 +10,7 @@ required=(
   CONTRIBUTING.md
   SECURITY.md
   docs/adr/0000-template.md
+  docs/security/release-policy.md
   Makefile
   go.mod
   pyproject.toml
@@ -32,6 +33,10 @@ grep -q 'Apache License' LICENSE
 grep -q 'Private vulnerability reporting' SECURITY.md
 grep -q '^\* @pal-salih$' .github/CODEOWNERS
 grep -q '^## Decision$' docs/adr/0000-template.md
+grep -q '^## Two-person promotion$' docs/security/release-policy.md
+grep -q 'offline verification' docs/security/release-policy.md
+grep -q 'SBOM' docs/security/release-policy.md
+grep -q 'build provenance' docs/security/release-policy.md
 grep -q 'github.com/palgroup/palai' go.mod
 grep -q '"packageManager": "pnpm@11.9.0"' package.json
 grep -q '^golang 1\.26\.4$' .tool-versions

@@ -36,7 +36,7 @@
 - Create: `scripts/verify/repository-boundary.sh`
 - Modify: `.gitignore`
 
-- [ ] **Step 1: Write the failing black-box test**
+- [x] **Step 1: Write the failing black-box test**
 
 Create `scripts/test/foundation.sh` with a test that executes `scripts/verify/repository-boundary.sh` from the repository root and rejects a copied checkout with a mismatched origin:
 
@@ -60,13 +60,13 @@ if (cd "$tmp/repository" && PALAI_EXPECTED_ROOT="$tmp/repository" bash "$root/sc
 fi
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `bash scripts/test/foundation.sh`
 
 Expected: FAIL because `scripts/verify/repository-boundary.sh` does not exist or is not executable.
 
-- [ ] **Step 3: Implement the minimum boundary verifier**
+- [x] **Step 3: Implement the minimum boundary verifier**
 
 Create an executable `scripts/verify/repository-boundary.sh`:
 
@@ -98,13 +98,13 @@ fi
 
 Keep `.worktrees/`, `.palai/`, raw evidence, lock-independent build output and secret-bearing `.env` files ignored.
 
-- [ ] **Step 4: Run the regression test and boundary verifier**
+- [x] **Step 4: Run the regression test and boundary verifier**
 
 Run: `bash scripts/test/foundation.sh && bash scripts/verify/repository-boundary.sh`
 
 Expected: both commands exit 0; the negative-origin fixture is rejected.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .gitignore scripts/test/foundation.sh scripts/verify/repository-boundary.sh
@@ -123,7 +123,7 @@ git commit -m "test: enforce the Palai repository boundary"
 - Create: `scripts/verify/foundation.sh`
 - Modify: `scripts/test/foundation.sh`
 
-- [ ] **Step 1: Extend the failing foundation test**
+- [x] **Step 1: Extend the failing foundation test**
 
 Append assertions to `scripts/test/foundation.sh`:
 
@@ -136,13 +136,13 @@ done
 bash scripts/verify/foundation.sh
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `bash scripts/test/foundation.sh`
 
 Expected: FAIL naming `.github/CODEOWNERS` as the first missing file.
 
-- [ ] **Step 3: Add the minimum governance documents and verifier**
+- [x] **Step 3: Add the minimum governance documents and verifier**
 
 Use `@pal-salih` as the initial CODEOWNER. `SECURITY.md` directs vulnerability reports to GitHub private vulnerability reporting and explicitly forbids secrets in issues. `CONTRIBUTING.md` requires feature branches, TDD, `make verify`, generated-drift checks, no secrets and scoped commits. `docs/adr/0000-template.md` requires status, context, evidence, decision, consequences and supersession.
 
@@ -165,13 +165,13 @@ grep -q 'Apache License' LICENSE
 grep -q 'Private vulnerability reporting' SECURITY.md
 ```
 
-- [ ] **Step 4: Run the narrow test**
+- [x] **Step 4: Run the narrow test**
 
 Run: `bash scripts/test/foundation.sh`
 
 Expected: PASS; all governance documents and their required policy markers are present.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .github/CODEOWNERS CODE_OF_CONDUCT.md CONTRIBUTING.md SECURITY.md docs/adr/0000-template.md scripts
@@ -193,7 +193,7 @@ git commit -m "docs: define Palai contribution and security governance"
 - Modify: `scripts/test/foundation.sh`
 - Modify: `scripts/verify/foundation.sh`
 
-- [ ] **Step 1: Add failing command-surface assertions**
+- [x] **Step 1: Add failing command-surface assertions**
 
 Append to `scripts/test/foundation.sh`:
 
@@ -209,13 +209,13 @@ python3 --version | grep -qx 'Python 3.14.3'
 uv --version | grep -Eq '^uv 0\.8\.2([[:space:]]|$)'
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `bash scripts/test/foundation.sh`
 
 Expected: FAIL because `Makefile` and the root toolchain manifests are missing.
 
-- [ ] **Step 3: Create minimal manifests and Make targets**
+- [x] **Step 3: Create minimal manifests and Make targets**
 
 Create `go.mod` with module `github.com/palgroup/palai`, language version `1.26.0`, and `toolchain go1.26.4`. Create a private root `package.json` pinned to `pnpm@11.9.0` and Node `22.22.2`; the pnpm workspace contains `sdks/typescript` and `examples/nextjs-sdk`. Create a non-packaged uv root project requiring Python `>=3.14,<3.15`. Pin the same versions in `.tool-versions`.
 
@@ -231,19 +231,19 @@ grep -q 'packageManager' package.json
 
 The `Makefile` provides stable targets. `bootstrap` uses `go mod download`, `uv sync --locked` and `pnpm install --frozen-lockfile`. `verify` runs repository boundary, foundation, lint and available unit tests. Targets whose implementation belongs to later epics invoke their canonical script if present and otherwise fail with a precise `capability not implemented` message; `make -n` still proves that the command exists.
 
-- [ ] **Step 4: Generate dependency locks**
+- [x] **Step 4: Generate dependency locks**
 
 Run: `uv lock && pnpm install --lockfile-only`
 
 Expected: `uv.lock` and `pnpm-lock.yaml` are generated without application dependencies.
 
-- [ ] **Step 5: Run bootstrap and verification**
+- [x] **Step 5: Run bootstrap and verification**
 
 Run: `make bootstrap && make verify`
 
 Expected: exit 0 with repository, governance, lock and syntax checks green; no provider credential requested.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add .tool-versions Makefile go.mod package.json pnpm-workspace.yaml pnpm-lock.yaml pyproject.toml uv.lock scripts
@@ -259,7 +259,7 @@ git commit -m "chore: establish deterministic Palai toolchains"
 - Modify: `scripts/test/foundation.sh`
 - Modify: `README.md`
 
-- [ ] **Step 1: Add failing CI/policy assertions**
+- [x] **Step 1: Add failing CI/policy assertions**
 
 Append to `scripts/test/foundation.sh`:
 
@@ -270,13 +270,13 @@ grep -q 'make verify' .github/workflows/ci.yml
 test -x scripts/verify/repository-settings.sh
 ```
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run: `bash scripts/test/foundation.sh`
 
 Expected: FAIL because `.github/workflows/ci.yml` is missing.
 
-- [ ] **Step 3: Add pinned workflow and settings verifier**
+- [x] **Step 3: Add pinned workflow and settings verifier**
 
 Create `ci.yml` with one job named `Foundation` that checks out the repository, installs the exact Go/Node/pnpm/Python/uv versions, runs `make bootstrap`, then `make verify`. Pin every third-party action to a full commit SHA and retain the release tag only in an inline comment.
 
@@ -290,13 +290,13 @@ required status check contains Foundation
 force pushes and deletion are disabled
 ```
 
-- [ ] **Step 4: Run local foundation verification**
+- [x] **Step 4: Run local foundation verification**
 
 Run: `bash scripts/test/foundation.sh && make verify`
 
 Expected: exit 0; remote policy verification is not included until the branch is pushed and protection is configured.
 
-- [ ] **Step 5: Commit and push the feature branch**
+- [x] **Step 5: Commit and push the feature branch**
 
 ```bash
 git add .github/workflows/ci.yml scripts README.md
@@ -304,7 +304,7 @@ git commit -m "ci: enforce the Palai foundation checks"
 git push -u origin feat/self-host-foundation
 ```
 
-- [ ] **Step 6: Configure and verify branch protection**
+- [x] **Step 6: Configure and verify branch protection**
 
 After the `Foundation` check has been registered, configure `main` protection with strict required status checks, administrator enforcement, required conversation resolution, blocked force-pushes and blocked deletion. Do not require a second reviewer until a second repository maintainer exists; release promotion remains a separate two-person policy.
 
@@ -314,9 +314,9 @@ Expected: `repository_settings=PASS`.
 
 ## E00 exit audit
 
-- [ ] `bash scripts/test/foundation.sh` passes including the negative-origin fixture.
-- [ ] `make bootstrap && make verify` passes from the isolated worktree.
-- [ ] `git diff --check` passes and no secret-like path is tracked.
-- [ ] GitHub `Foundation` workflow passes on the feature branch.
-- [ ] `main` protection requires `Foundation`, blocks force-push/delete and applies to administrators.
-- [ ] E01 is the only next phase permitted to choose runtime, generator, runner transport, object store and build orchestration details.
+- [x] `bash scripts/test/foundation.sh` passes including the negative-origin fixture.
+- [x] `make bootstrap && make verify` passes from the isolated worktree.
+- [x] `git diff --check` passes and no secret-like path is tracked.
+- [x] GitHub `Foundation` workflow passes on the feature branch.
+- [x] `main` protection requires `Foundation`, blocks force-push/delete and applies to administrators.
+- [x] E01 is the only next phase permitted to choose runtime, generator, runner transport, object store and build orchestration details.
