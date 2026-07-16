@@ -41,65 +41,65 @@ WORKSPACE_ID_PATTERN = re.compile(r"^wksp_[A-Za-z0-9_-]+$")
 
 
 def is_artifact_id(value: str) -> bool:
-    return ARTIFACT_ID_PATTERN.match(value) is not None
+    return ARTIFACT_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_attempt_id(value: str) -> bool:
-    return ATTEMPT_ID_PATTERN.match(value) is not None
+    return ATTEMPT_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_command_id(value: str) -> bool:
-    return COMMAND_ID_PATTERN.match(value) is not None
+    return COMMAND_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_event_id(value: str) -> bool:
-    return EVENT_ID_PATTERN.match(value) is not None
+    return EVENT_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_frame_id(value: str) -> bool:
-    return FRAME_ID_PATTERN.match(value) is not None
+    return FRAME_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_message_id(value: str) -> bool:
-    return MESSAGE_ID_PATTERN.match(value) is not None
+    return MESSAGE_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_model_request_id(value: str) -> bool:
-    return MODEL_REQUEST_ID_PATTERN.match(value) is not None
+    return MODEL_REQUEST_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_opaque_id(value: str) -> bool:
-    return OPAQUE_ID_PATTERN.match(value) is not None
+    return OPAQUE_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_organization_id(value: str) -> bool:
-    return ORGANIZATION_ID_PATTERN.match(value) is not None
+    return ORGANIZATION_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_project_id(value: str) -> bool:
-    return PROJECT_ID_PATTERN.match(value) is not None
+    return PROJECT_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_request_id(value: str) -> bool:
-    return REQUEST_ID_PATTERN.match(value) is not None
+    return REQUEST_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_response_id(value: str) -> bool:
-    return RESPONSE_ID_PATTERN.match(value) is not None
+    return RESPONSE_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_run_id(value: str) -> bool:
-    return RUN_ID_PATTERN.match(value) is not None
+    return RUN_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_session_id(value: str) -> bool:
-    return SESSION_ID_PATTERN.match(value) is not None
+    return SESSION_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_tool_call_id(value: str) -> bool:
-    return TOOL_CALL_ID_PATTERN.match(value) is not None
+    return TOOL_CALL_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_workspace_id(value: str) -> bool:
-    return WORKSPACE_ID_PATTERN.match(value) is not None
+    return WORKSPACE_ID_PATTERN.fullmatch(value) is not None
 

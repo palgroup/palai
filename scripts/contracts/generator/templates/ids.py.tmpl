@@ -13,6 +13,6 @@ from typing import NewType
 {{end}}
 {{range .Identifiers}}
 def is_{{.Def}}(value: str) -> bool:
-    return {{.PyConst}}.match(value) is not None
+    return {{.PyConst}}.fullmatch(value) is not None
 
 {{end -}}
