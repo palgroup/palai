@@ -777,7 +777,7 @@ Run: `go test ./packages/state-machines -run 'TestResponse|TestSession' -v` → 
 
 - [ ] **Step 3: Tabloları uygula**
 
-`response.go` commands: `provision, start, request_tool, request_approval, request_input, resume, complete, fail, cancel, timeout, exhaust_budget`. `in_progress → waiting_for_*` üç komutla, her `waiting_for_* → in_progress` `resume` ile döner (`response.in_progress.v1`); terminale geçişler `in_progress` ve üç `waiting_*` durumundan tanımlanır; `cancel` `queued/provisioning`dan da geçerlidir. Event adları registry'deki `response.*` adlarıdır.
+`response.go` commands: `provision, start, request_tool, request_approval, request_input, resume, complete, fail, cancel, timeout, exhaust_budget`. `in_progress → waiting_for_*` üç komutla, her `waiting_for_* → in_progress` `resume` ile döner (`response.in_progress.v1`); terminale geçişler `in_progress` ve üç `waiting_*` durumundan tanımlanır; `cancel` `queued/provisioning`dan da geçerlidir. Run projeksiyonu simetrisi (spec §8.3 + §20.12): `queued`dan `timeout → timed_out` ve `fail → failed`, `provisioning`dan `fail → failed` satırları da tanımlıdır (queue-deadline ve provisioning hatası run'ı terminale taşırken response tablodan geçebilmelidir). Event adları registry'deki `response.*` adlarıdır.
 
 `session.go` commands: `pause, resume, close, finish_close, delete`. Satırlar: `active→paused (pause)`, `paused→active (resume)`, `active→closing (close)`, `paused→closing (close)`, `closing→closed (finish_close)`, `closed→deleted (delete)`. Session `active` doğar; `created` bir state değildir (spec §22.1).
 
