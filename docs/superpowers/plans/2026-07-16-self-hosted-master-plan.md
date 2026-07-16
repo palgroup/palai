@@ -285,12 +285,12 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 
 **Files:** `protocols/schemas/`, `protocols/openapi/`, `protocols/asyncapi/`, `protocols/engine/`, `protocols/runner/`, `packages/contracts/`, `packages/state-machines/`, `tests/conformance/contracts/`
 
-- [ ] Opaque IDs, common resource fields, Problem Details, content items, events ve pagination schemas yaz.
-- [ ] Response/Session/Run/Attempt/Command/ToolCall/Workspace state transition tablolarını executable pure functions olarak ekle.
-- [ ] Invalid transitions, terminal monotonicity, one-active-fence ve sequence monotonicity property tests yaz.
-- [ ] OpenAPI 3.2 ve AsyncAPI 3.1 üret; compatibility projection'ın canonical semantiğini değiştirmediğini diff ile doğrula.
-- [ ] Cross-language fixtures için omitted/null/empty, unknown enum/field, RFC 3339 ve integer-boundary corpus oluştur.
-- [ ] `make contracts-generate` ve `make contracts-check` komutlarını deterministic yap.
+- [x] Opaque IDs, common resource fields, Problem Details, content items, events ve pagination schemas yaz.
+- [x] Response/Session/Run/Attempt/Command/ToolCall/Workspace state transition tablolarını executable pure functions olarak ekle.
+- [x] Invalid transitions, terminal monotonicity, one-active-fence ve sequence monotonicity property tests yaz.
+- [x] OpenAPI 3.2 ve AsyncAPI 3.1 üret; compatibility projection'ın canonical semantiğini değiştirmediğini diff ile doğrula.
+- [x] Cross-language fixtures için omitted/null/empty, unknown enum/field, RFC 3339 ve integer-boundary corpus oluştur.
+- [x] `make contracts-generate` ve `make contracts-check` komutlarını deterministic yap.
 
 **UAT ownership:** API-009, API-011, ENG-001..003'ün schema tarafı.
 
