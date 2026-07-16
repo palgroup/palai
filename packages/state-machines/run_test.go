@@ -5,6 +5,19 @@ import (
 	"testing"
 )
 
+func TestRunQueueDeadlineTimesOut(t *testing.T) {
+	to, event, err := Apply(RunQueued, RunCmdTimeout, RunTable)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if to != RunTimedOut {
+		t.Errorf("state: got %v, want %v", to, RunTimedOut)
+	}
+	if event != "run.timed_out.v1" {
+		t.Errorf("event: got %q, want %q", event, "run.timed_out.v1")
+	}
+}
+
 func TestRunTerminalityIsMonotonic(t *testing.T) {
 	commands := []RunCommand{
 		RunCmdProvision, RunCmdStart, RunCmdWait, RunCmdResume,

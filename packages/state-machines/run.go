@@ -45,6 +45,7 @@ var RunTable = []Transition[RunState, RunCommand]{
 	{RunProvisioning, RunCmdFail, RunFailed, "run.failed.v1"},
 	{RunRunning, RunCmdFail, RunFailed, "run.failed.v1"},
 	{RunWaiting, RunCmdFail, RunFailed, "run.failed.v1"},
+	{RunQueued, RunCmdTimeout, RunTimedOut, "run.timed_out.v1"},
 	{RunRunning, RunCmdTimeout, RunTimedOut, "run.timed_out.v1"},
 	{RunWaiting, RunCmdTimeout, RunTimedOut, "run.timed_out.v1"},
 	{RunRunning, RunCmdExhaustBudget, RunBudgetExceeded, "run.budget_exceeded.v1"},
