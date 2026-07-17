@@ -40,32 +40,36 @@ func (d *dockerDriver) Close() error {
 	return d.client.Close()
 }
 
-// Run creates, starts, waits on, and destroys one hardened engine container. It always
-// force-removes the container before returning, so no allocation survives the call.
-func (d *dockerDriver) Run(ctx context.Context, spec ContainerSpec) (result Outcome, runErr error) {
-	if err := spec.validate(); err != nil {
-		return Outcome{}, err
-	}
-
-	// Digest verification: the daemon must resolve the pinned reference to exactly the
-	// same immutable image, never a re-tagged one.
-	inspectCtx, cancelInspect := context.WithTimeout(ctx, operationTimeout)
-	image, err := d.client.ImageInspect(inspectCtx, spec.ImageDigest)
-	cancelInspect()
+// verifyImage resolves the pinned reference and confirms the daemon returns exactly the
+// same immutable image, never a re-tagged one. Both the batch and interactive entry
+// points gate on it, so a mutable reference cannot reach either.
+func (d *dockerDriver) verifyImage(ctx context.Context, digest string) (string, error) {
+	inspectCtx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	image, err := d.client.ImageInspect(inspectCtx, digest)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("inspect engine image: %w", err)
+		return "", fmt.Errorf("inspect engine image: %w", err)
 	}
-	if image.ID != spec.ImageDigest {
-		return Outcome{}, fmt.Errorf("%w: daemon resolved %s", ErrMutableImage, image.ID)
+	if image.ID != digest {
+		return "", fmt.Errorf("%w: daemon resolved %s", ErrMutableImage, image.ID)
 	}
-	result.ImageID = image.ID
+	return image.ID, nil
+}
 
+// createOptions is the single hardened container spec both entry points create from:
+// unprivileged user, no network, read-only rootfs, all capabilities dropped,
+// no-new-privileges, and the exact env/labels/limits. interactive additionally opens
+// stdin so the streaming supervisor can inject controller frames mid-run; the isolation
+// is otherwise identical, so the batch hardening cannot drift from the streaming one.
+func createOptions(spec ContainerSpec, interactive bool) client.ContainerCreateOptions {
 	processLimit := spec.Limits.MaxProcessCount
-	createCtx, cancelCreate := context.WithTimeout(ctx, operationTimeout)
-	created, err := d.client.ContainerCreate(createCtx, client.ContainerCreateOptions{
+	return client.ContainerCreateOptions{
 		Image: spec.ImageDigest,
 		Config: &container.Config{
 			User:            "65532:65532",
+			AttachStdin:     interactive,
+			OpenStdin:       interactive,
+			StdinOnce:       false,
 			AttachStdout:    true,
 			AttachStderr:    true,
 			NetworkDisabled: true,
@@ -84,7 +88,24 @@ func (d *dockerDriver) Run(ctx context.Context, spec ContainerSpec) (result Outc
 				PidsLimit:  &processLimit,
 			},
 		},
-	})
+	}
+}
+
+// Run creates, starts, waits on, and destroys one hardened engine container. It always
+// force-removes the container before returning, so no allocation survives the call.
+func (d *dockerDriver) Run(ctx context.Context, spec ContainerSpec) (result Outcome, runErr error) {
+	if err := spec.validate(); err != nil {
+		return Outcome{}, err
+	}
+
+	imageID, err := d.verifyImage(ctx, spec.ImageDigest)
+	if err != nil {
+		return Outcome{}, err
+	}
+	result.ImageID = imageID
+
+	createCtx, cancelCreate := context.WithTimeout(ctx, operationTimeout)
+	created, err := d.client.ContainerCreate(createCtx, createOptions(spec, false))
 	cancelCreate()
 	if err != nil {
 		return result, fmt.Errorf("create engine container: %w", err)

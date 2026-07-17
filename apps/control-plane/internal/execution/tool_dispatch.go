@@ -27,7 +27,7 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	result, _ := json.Marshal(outcome.Result)
 	payload, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "tool_call_id": callID})
 	if _, err := o.spine.CommitToolResult(ctx, st.tenant, st.sessionID, string(st.attempt.RunID),
-		st.attempt.Fence, callID, name, arguments, result, "run.tool_result.v1", payload); err != nil {
+		st.attempt.Fence, callID, name, arguments, result, toolCallCompletedEvent, payload); err != nil {
 		return err
 	}
 

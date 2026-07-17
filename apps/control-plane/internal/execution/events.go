@@ -1,0 +1,43 @@
+package execution
+
+import (
+	"fmt"
+
+	statemachines "github.com/palgroup/palai/packages/state-machines"
+)
+
+// The orchestrator journals these canonical event types (spec §13.3/§21.3), each already
+// present in protocols/schemas/execution/event-types.json. The model-step names are owned
+// here; the tool-call completion name is sourced from the state-machine table so the table
+// stays the single definition of that transition's event (Step 7 fold — the ad-hoc
+// run.model_request/result/tool_result.v1 names were folded onto these canonical ones).
+const (
+	eventModelStepCreated   = "model_step.created.v1"
+	eventModelStepCompleted = "model_step.completed.v1"
+)
+
+// toolCallCompletedEvent is the event the tool-call table emits on Executing->Completed,
+// read from the table rather than hardcoded, so the phase-02 ToolCallTable remains the
+// single source of that name (tool_call.reconciled_completed.v1 is the §26 uncertain path,
+// not this one).
+var toolCallCompletedEvent = mustTransitionEvent(statemachines.ToolCallExecuting, statemachines.ToolCallCmdComplete)
+
+// emittedEventTypes is every journal event type the execution package commits. The
+// registry cross-check asserts this stays a subset of the canonical registry, so a future
+// ad-hoc name is caught rather than silently drifting outside it.
+var emittedEventTypes = []string{
+	eventModelStepCreated,
+	eventModelStepCompleted,
+	toolCallCompletedEvent,
+}
+
+// mustTransitionEvent returns the event the tool-call table emits for a transition,
+// panicking at package init if the table has no such row — a broken single source of
+// truth is a build-time defect, not a runtime one.
+func mustTransitionEvent(from statemachines.ToolCallState, cmd statemachines.ToolCallCommand) string {
+	_, event, err := statemachines.Apply(from, cmd, statemachines.ToolCallTable)
+	if err != nil {
+		panic(fmt.Sprintf("tool-call table has no %v->%v transition: %v", from, cmd, err))
+	}
+	return event
+}

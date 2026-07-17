@@ -68,6 +68,65 @@ func TestEnrolledRunnerReconnectsWithShortLivedIdentity(t *testing.T) {
 	}
 }
 
+// TestLeaseSessionRelaysFramesAndReportsOutcome proves the persistent lease: OpenLease
+// keeps the connection open, SendEngineFrame delivers a runner->controller engine frame
+// the control plane can read, ReceiveControllerFrame decodes the controller.frame relayed
+// back, and Complete reports the terminal outcome and redacted stderr digest — the wire
+// the runner gateway (Task 11c) drives.
+func TestLeaseSessionRelaysFramesAndReportsOutcome(t *testing.T) {
+	stub := newStubControlPlane(t, []string{"enroll-token-1"}, stubOptions{now: conformanceNow(), relay: true})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	identity, err := runner.Enroll(ctx, stub.bootstrap("enroll-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+
+	lease, err := stub.session(identity).OpenLease(ctx)
+	if err != nil {
+		t.Fatalf("open lease: %v", err)
+	}
+	defer lease.Close()
+	if lease.Lease().LeaseID == "" || lease.Lease().RunID != contracts.RunID("run_conformance1") {
+		t.Fatalf("OpenLease returned an incomplete lease: %+v", lease.Lease())
+	}
+
+	engineFrame := contracts.EngineFrame{
+		Protocol:  "engine.v1",
+		ID:        "frm_engine1",
+		Type:      "model.request",
+		Sequence:  2,
+		Time:      conformanceNow().Format(time.RFC3339),
+		RunID:     lease.Lease().RunID,
+		AttemptID: lease.Lease().AttemptID,
+		Data:      map[string]any{"model_request_id": "mreq_1"},
+	}
+	if err := lease.SendEngineFrame(ctx, engineFrame); err != nil {
+		t.Fatalf("send engine frame: %v", err)
+	}
+
+	controllerFrame, err := lease.ReceiveControllerFrame(ctx)
+	if err != nil {
+		t.Fatalf("receive controller frame: %v", err)
+	}
+	if controllerFrame.Type != "model.result" || controllerFrame.ID != contracts.FrameID("frm_controller1") {
+		t.Fatalf("relayed controller frame = %+v, want the model.result frame", controllerFrame)
+	}
+
+	if err := lease.Complete(ctx, "completed", "sha256:redacted"); err != nil {
+		t.Fatalf("complete lease: %v", err)
+	}
+	select {
+	case got := <-stub.relayComplete:
+		if got.outcome != "completed" || got.digest != "sha256:redacted" {
+			t.Fatalf("control plane received outcome=%q digest=%q, want completed/sha256:redacted", got.outcome, got.digest)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("control plane never received the lease.complete")
+	}
+}
+
 // TestSessionFailsOnHandshakeTimeout proves that when the control plane never completes
 // the lease handshake the runner surfaces an error and yields no lease — nothing
 // downstream (no engine, no secret) can proceed past an incomplete handshake (ENG-001).

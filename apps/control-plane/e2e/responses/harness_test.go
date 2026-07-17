@@ -360,13 +360,15 @@ func (d scriptedDialer) Dial(context.Context, execution.AttemptDescriptor) (exec
 }
 
 // scriptFrame builds a valid engine frame for the scripted channel. AttemptID is left
-// empty so the orchestrator's identity check skips it; each frame gets a fresh id.
-func scriptFrame(typ, runID string, data map[string]any) contracts.EngineFrame {
+// empty so the orchestrator's identity check skips it; each frame gets a fresh id and an
+// explicit sequence so a scripted stream can be contiguous (or deliberately gapped, to
+// exercise the intake monotonicity gate).
+func scriptFrame(typ, runID string, seq int, data map[string]any) contracts.EngineFrame {
 	return contracts.EngineFrame{
 		Protocol: "engine.v1",
 		ID:       contracts.FrameID(newID("frm")),
 		Type:     typ,
-		Sequence: 1,
+		Sequence: seq,
 		Time:     time.Now().UTC().Format(time.RFC3339),
 		RunID:    contracts.RunID(runID),
 		Data:     data,

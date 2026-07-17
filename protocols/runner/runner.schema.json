@@ -17,10 +17,11 @@
   "additionalProperties": true,
   "$defs": {
     "types": {
-      "description": "runner.v1 control-plane leasing message types. Documented-open: an unsupported type is preserved, not rejected by the envelope (API-009).",
+      "description": "runner.v1 control-plane leasing message types. Documented-open: an unsupported type is preserved, not rejected by the envelope (API-009). engine.frame and controller.frame carry a single engine.v1 frame across the open lease relay (runner->controller and controller->runner respectively).",
       "enum": [
         "runner.hello", "runner.heartbeat", "lease.offer", "lease.accept",
-        "lease.renew", "lease.complete", "lease.revoke"
+        "lease.renew", "lease.complete", "lease.revoke",
+        "engine.frame", "controller.frame"
       ]
     }
   },

@@ -138,7 +138,15 @@ type stubOptions struct {
 	offerProtocol   string   // protocol value the lease.offer carries (default runner.v1)
 	subprotocol     string   // websocket subprotocol the connect endpoint offers (default runner.v1)
 	silentHandshake bool     // accept the socket but never send a lease.offer
+	relay           bool     // after the offer, run one engine.frame/controller.frame/lease.complete exchange
 	serverSANs      []string // server certificate SANs (default [controllerDNS])
+}
+
+// relayComplete is the terminal outcome a relayed lease.complete carried, surfaced to
+// the test asserting the runner reported it.
+type relayComplete struct {
+	outcome string
+	digest  string
 }
 
 // stubControlPlane is an outbound-only counterpart: it serves the enrollment
@@ -151,6 +159,7 @@ type stubControlPlane struct {
 
 	mu             sync.Mutex
 	consumedTokens map[string]bool
+	relayComplete  chan relayComplete
 }
 
 func newStubControlPlane(t *testing.T, tokens []string, options stubOptions) *stubControlPlane {
@@ -165,7 +174,7 @@ func newStubControlPlane(t *testing.T, tokens []string, options stubOptions) *st
 		options.serverSANs = []string{controllerDNS}
 	}
 	ca := newTestCA(t, options.now)
-	stub := &stubControlPlane{ca: ca, options: options, consumedTokens: map[string]bool{}}
+	stub := &stubControlPlane{ca: ca, options: options, consumedTokens: map[string]bool{}, relayComplete: make(chan relayComplete, 1)}
 	for _, token := range tokens {
 		stub.consumedTokens[token] = false
 	}
@@ -358,4 +367,58 @@ func (s *stubControlPlane) handleConnect(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	_ = connection.Write(r.Context(), websocket.MessageText, payload)
+
+	if s.options.relay {
+		s.runRelay(r.Context(), connection)
+	}
+}
+
+// runRelay is the control-plane counterpart of a LeaseSession over an open lease: it
+// reads one relayed engine.frame, echoes a controller.frame, and reports the lease.complete
+// outcome the runner sent. It proves the runner's frame relay wire without a container.
+func (s *stubControlPlane) runRelay(ctx context.Context, connection *websocket.Conn) {
+	_, enginePayload, err := connection.Read(ctx)
+	if err != nil {
+		return
+	}
+	var engineMsg contracts.RunnerMessage
+	if err := json.Unmarshal(enginePayload, &engineMsg); err != nil || engineMsg.Type != "engine.frame" {
+		return
+	}
+
+	controllerMsg := contracts.RunnerMessage{
+		Protocol:  "runner.v1",
+		Type:      "controller.frame",
+		Time:      s.options.now.Format(time.RFC3339),
+		LeaseID:   engineMsg.LeaseID,
+		RunID:     engineMsg.RunID,
+		AttemptID: engineMsg.AttemptID,
+		Data: map[string]any{"frame": map[string]any{
+			"protocol": "engine.v1",
+			"id":       "frm_controller1",
+			"type":     "model.result",
+			"sequence": 1,
+			"time":     s.options.now.Format(time.RFC3339),
+			"data":     map[string]any{"model_request_id": "mreq_1"},
+		}},
+	}
+	controllerPayload, err := json.Marshal(controllerMsg)
+	if err != nil {
+		return
+	}
+	if err := connection.Write(ctx, websocket.MessageText, controllerPayload); err != nil {
+		return
+	}
+
+	_, completePayload, err := connection.Read(ctx)
+	if err != nil {
+		return
+	}
+	var completeMsg contracts.RunnerMessage
+	if err := json.Unmarshal(completePayload, &completeMsg); err != nil || completeMsg.Type != "lease.complete" {
+		return
+	}
+	outcome, _ := completeMsg.Data["outcome"].(string)
+	digest, _ := completeMsg.Data["stderr_digest"].(string)
+	s.relayComplete <- relayComplete{outcome: outcome, digest: digest}
 }

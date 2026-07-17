@@ -77,15 +77,15 @@ func TestModelRequestPersistedBeforeRouteAndReplayed(t *testing.T) {
 
 	mreq := newID("mreq")
 	frames := []contracts.EngineFrame{
-		scriptFrame("engine.ready", runID, map[string]any{
+		scriptFrame("engine.ready", runID, 1, map[string]any{
 			"selected_protocol": "engine.v1",
 			"engine":            map[string]any{"name": "fake", "version": "0"},
 			"max_frame_bytes":   1024, "nonce": "n",
 		}),
-		scriptFrame("model.request", runID, map[string]any{"model_request_id": mreq}),
-		scriptFrame("model.request", runID, map[string]any{"model_request_id": mreq}),
-		scriptFrame("output.item", runID, map[string]any{"type": "message", "content": "done"}),
-		scriptFrame("run.terminal", runID, map[string]any{"outcome": "completed", "output": "done"}),
+		scriptFrame("model.request", runID, 2, map[string]any{"model_request_id": mreq}),
+		scriptFrame("model.request", runID, 3, map[string]any{"model_request_id": mreq}),
+		scriptFrame("output.item", runID, 4, map[string]any{"type": "message", "content": "done"}),
+		scriptFrame("run.terminal", runID, 5, map[string]any{"outcome": "completed", "output": "done"}),
 	}
 	orch := h.newOrchestrator(scriptedDialer{&scriptedChannel{frames: frames}})
 	if err := orch.ExecuteAttempt(context.Background(), h.descriptor(runID, 1)); err != nil {
@@ -99,21 +99,57 @@ func TestModelRequestPersistedBeforeRouteAndReplayed(t *testing.T) {
 	events := h.events(sessionID)
 	reqSeq, resSeq := -1, -1
 	for _, e := range events {
-		if e.typ == "run.model_request.v1" && reqSeq < 0 {
+		if e.typ == "model_step.created.v1" && reqSeq < 0 {
 			reqSeq = e.seq
 		}
-		if e.typ == "run.model_result.v1" && resSeq < 0 {
+		if e.typ == "model_step.completed.v1" && resSeq < 0 {
 			resSeq = e.seq
 		}
 	}
 	if reqSeq < 1 {
-		t.Fatalf("no run.model_request.v1 event journaled: %+v", events)
+		t.Fatalf("no model_step.created.v1 event journaled: %+v", events)
 	}
 	if resSeq < 1 || reqSeq >= resSeq {
 		t.Fatalf("request event (seq %d) must precede result event (seq %d)", reqSeq, resSeq)
 	}
 	if state, _ := h.response(responseID); state != "completed" {
 		t.Fatalf("response state = %q, want completed", state)
+	}
+}
+
+// TestIntakeRejectsNonMonotonicEngineSequence proves the controller intake enforces the
+// engine frame sequence: engine.ready at sequence 1 followed by a frame at sequence 3 is
+// a gap the intake rejects as a protocol violation, failing the attempt before any model
+// or tool dispatch. It closes the batch/streaming parity — the batch supervisor already
+// required a contiguous index+1 sequence.
+//
+// The attempt fails as a protocol violation (ExecuteAttempt returns an error) with zero
+// dispatch, matching the orchestrator's uniform intake-violation contract (see
+// different_hash_violates): a violation returns an error rather than finalizing the run,
+// so no false completion is committed.
+func TestIntakeRejectsNonMonotonicEngineSequence(t *testing.T) {
+	h := newHarness(t)
+	_, _, runID := h.admit()
+
+	frames := []contracts.EngineFrame{
+		scriptFrame("engine.ready", runID, 1, map[string]any{
+			"selected_protocol": "engine.v1",
+			"engine":            map[string]any{"name": "fake", "version": "0"},
+			"max_frame_bytes":   1024, "nonce": "n",
+		}),
+		scriptFrame("model.request", runID, 3, map[string]any{"model_request_id": newID("mreq")}),
+	}
+	orch := h.newOrchestrator(scriptedDialer{&scriptedChannel{frames: frames}})
+
+	err := orch.ExecuteAttempt(context.Background(), h.descriptor(runID, 1))
+	if err == nil {
+		t.Fatal("intake accepted a non-monotonic engine sequence (gap at 1->3)")
+	}
+	if calls := atomic.LoadInt32(&h.provider.calls); calls != 0 {
+		t.Fatalf("model provider calls = %d, want 0 (a gapped frame must not dispatch)", calls)
+	}
+	if n := h.count(`SELECT count(*) FROM tool_calls WHERE run_id=$1`, runID); n != 0 {
+		t.Fatalf("tool_call rows = %d, want 0 (a gapped frame must not dispatch)", n)
 	}
 }
 
@@ -138,7 +174,7 @@ func TestCommitBeforeDeliverOnToolResult(t *testing.T) {
 		if state != "completed" {
 			t.Errorf("tool_call state = %q before delivery, want completed", state)
 		}
-		if n := h.count(`SELECT count(*) FROM events WHERE session_id=$1 AND type='run.tool_result.v1'`, sessionID); n < 1 {
+		if n := h.count(`SELECT count(*) FROM events WHERE session_id=$1 AND type='tool_call.completed.v1'`, sessionID); n < 1 {
 			t.Errorf("tool result event not committed before delivery")
 		}
 		atomic.AddInt32(&checked, 1)

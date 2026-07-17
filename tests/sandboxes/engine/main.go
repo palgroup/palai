@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -46,6 +47,8 @@ func main() {
 		emit(runID, attemptID, map[string]any{"status": "completed"})
 	case "inspect":
 		emit(runID, attemptID, inspectAuthority())
+	case "interactive":
+		interactive(runID, attemptID)
 	case "hang":
 		time.Sleep(30 * time.Second)
 	default:
@@ -69,6 +72,57 @@ func emit(runID, attemptID string, data any) {
 		fmt.Fprintln(os.Stderr, "encode fixture frame")
 		os.Exit(2)
 	}
+}
+
+// interactive is the streaming fixture for the runner fault tier: it performs the §25.6
+// handshake, requests one model step, writes a sentinel secret to stderr (proving the
+// supervisor masks it before forwarding), then blocks for the controller's model.result
+// before emitting a terminal. A container kill while it blocks proves the supervisor
+// classifies the attempt lost/failed — never a false success — and stdin closing before
+// a result exits non-zero for the same reason. Sequences are contiguous (1,2,3), as the
+// supervisor's monotonic-sequence gate requires.
+func interactive(runID, attemptID string) {
+	seq := 0
+	emitFrame := func(typ string, data any) {
+		seq++
+		value := frame{
+			Protocol:  engineProtocol,
+			ID:        fmt.Sprintf("frm_interactive%d", seq),
+			Type:      typ,
+			RunID:     runID,
+			AttemptID: attemptID,
+			Sequence:  uint64(seq),
+			Time:      time.Now().UTC(),
+			Data:      data,
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(value); err != nil {
+			fmt.Fprintln(os.Stderr, "encode interactive frame")
+			os.Exit(2)
+		}
+	}
+
+	stdin := bufio.NewScanner(os.Stdin)
+	stdin.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	if !stdin.Scan() { // supervisor.hello
+		fmt.Fprintln(os.Stderr, "no supervisor.hello before run input")
+		os.Exit(1)
+	}
+	emitFrame("engine.ready", map[string]any{
+		"selected_protocol": engineProtocol,
+		"engine":            map[string]any{"name": "palai-fault-fixture", "version": "0"},
+		"max_frame_bytes":   1048576,
+		"nonce":             "fault-nonce",
+	})
+
+	// A secret-shaped token on stderr the supervisor is required to redact.
+	fmt.Fprintln(os.Stderr, "provider auth failed token=sk-live-FAULTREDACTSENTINEL0123456789")
+
+	emitFrame("model.request", map[string]any{"model_request_id": "mreq_interactive1"})
+	if !stdin.Scan() { // blocks for model.result; a kill or stdin-close ends the attempt here
+		os.Exit(1)
+	}
+	emitFrame("run.terminal", map[string]any{"outcome": "completed"})
 }
 
 // inspectAuthority reports whether any credential, the Docker socket, or the runner

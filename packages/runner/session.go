@@ -50,26 +50,55 @@ type Session struct {
 }
 
 // ReceiveLease opens the outbound session, completes the runner.v1 handshake, and
-// returns the offered lease. It never opens an inbound connection and returns an error
-// (yielding no lease) if the handshake does not complete in ctx.
+// returns the offered lease, closing the connection immediately. It never opens an
+// inbound connection and returns an error (yielding no lease) if the handshake does not
+// complete in ctx. OpenLease is the variant that keeps the connection for the frame relay.
 func (s Session) ReceiveLease(ctx context.Context) (Lease, error) {
+	connection, transport, lease, err := s.openConnection(ctx)
+	if err != nil {
+		return Lease{}, err
+	}
+	_ = connection.Close(websocket.StatusNormalClosure, "lease received")
+	transport.CloseIdleConnections()
+	return lease, nil
+}
+
+// OpenLease completes the same handshake as ReceiveLease but keeps the connection open,
+// returning a LeaseSession over which the runner streams engine frames to the controller,
+// receives controller frames, and finally reports the terminal outcome. It is the
+// persistent form ReceiveLease's one-shot close forecloses.
+func (s Session) OpenLease(ctx context.Context) (*LeaseSession, error) {
+	connection, transport, lease, err := s.openConnection(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// The handshake cap is small; a relayed controller.frame can be as large as the
+	// lease's per-frame bound, so raise the read limit before any frame is read.
+	connection.SetReadLimit(lease.Limits.MaxFrameBytes + 64*1024)
+	return &LeaseSession{conn: connection, transport: transport, lease: lease, now: s.Now}, nil
+}
+
+// openConnection dials the control plane over mutually authenticated TLS, completes the
+// runner.v1 handshake, and returns the live connection, its transport, and the offered
+// lease. The caller owns closing the connection and transport on success; on any error
+// the helper closes them itself and returns no lease.
+func (s Session) openConnection(ctx context.Context) (*websocket.Conn, *http.Transport, Lease, error) {
 	if s.Identity.Certificate.Leaf == nil || s.ControllerCAs == nil || s.ControllerDNS == "" || s.Now == nil {
-		return Lease{}, errors.New("session identity, controller trust, DNS and clock are required")
+		return nil, nil, Lease{}, errors.New("session identity, controller trust, DNS and clock are required")
 	}
 	if !strings.HasPrefix(s.URL, "wss://") {
-		return Lease{}, errors.New("session URL must be outbound wss")
+		return nil, nil, Lease{}, errors.New("session URL must be outbound wss")
 	}
 	transport := &http.Transport{TLSClientConfig: s.tlsConfig(), Proxy: nil}
-	defer transport.CloseIdleConnections()
 
 	connection, _, err := websocket.Dial(ctx, s.URL, &websocket.DialOptions{
 		HTTPClient:   &http.Client{Transport: transport},
 		Subprotocols: []string{RunnerProtocolV1},
 	})
 	if err != nil {
-		return Lease{}, fmt.Errorf("dial control plane: %w", err)
+		transport.CloseIdleConnections()
+		return nil, nil, Lease{}, fmt.Errorf("dial control plane: %w", err)
 	}
-	defer connection.CloseNow()
 	connection.SetReadLimit(64 * 1024)
 
 	hello, err := json.Marshal(contracts.RunnerMessage{
@@ -78,29 +107,131 @@ func (s Session) ReceiveLease(ctx context.Context) (Lease, error) {
 		Time:     s.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
-		return Lease{}, fmt.Errorf("encode runner hello: %w", err)
+		closeConnection(connection, transport)
+		return nil, nil, Lease{}, fmt.Errorf("encode runner hello: %w", err)
 	}
 	if err := connection.Write(ctx, websocket.MessageText, hello); err != nil {
-		return Lease{}, fmt.Errorf("write runner hello: %w", err)
+		closeConnection(connection, transport)
+		return nil, nil, Lease{}, fmt.Errorf("write runner hello: %w", err)
 	}
 
 	messageType, payload, err := connection.Read(ctx)
 	if err != nil {
-		return Lease{}, fmt.Errorf("read lease offer: %w", err)
+		closeConnection(connection, transport)
+		return nil, nil, Lease{}, fmt.Errorf("read lease offer: %w", err)
 	}
 	if messageType != websocket.MessageText {
-		return Lease{}, errors.New("lease offer must be a text message")
+		closeConnection(connection, transport)
+		return nil, nil, Lease{}, errors.New("lease offer must be a text message")
 	}
 	var message contracts.RunnerMessage
 	if err := json.Unmarshal(payload, &message); err != nil {
-		return Lease{}, fmt.Errorf("decode lease offer: %w", err)
+		closeConnection(connection, transport)
+		return nil, nil, Lease{}, fmt.Errorf("decode lease offer: %w", err)
 	}
 	lease, err := ParseLeaseOffer(message)
 	if err != nil {
-		return Lease{}, err
+		closeConnection(connection, transport)
+		return nil, nil, Lease{}, err
 	}
-	_ = connection.Close(websocket.StatusNormalClosure, "lease received")
-	return lease, nil
+	return connection, transport, lease, nil
+}
+
+func closeConnection(connection *websocket.Conn, transport *http.Transport) {
+	connection.CloseNow()
+	transport.CloseIdleConnections()
+}
+
+// LeaseSession is a lease held over a live connection. After OpenLease the runner relays
+// each supervised engine frame to the controller with SendEngineFrame, feeds controller
+// frames back into the supervisor via ReceiveControllerFrame, and reports the terminal
+// outcome and redacted stderr digest with Complete. It stays outbound-only: the runner
+// still opens no inbound port, it keeps the one connection it dialed.
+type LeaseSession struct {
+	conn      *websocket.Conn
+	transport *http.Transport
+	lease     Lease
+	now       func() time.Time
+}
+
+// Lease returns the lease this session holds.
+func (l *LeaseSession) Lease() Lease { return l.lease }
+
+// SendEngineFrame relays one runner->controller engine frame inside an engine.frame
+// message, carrying the single frame in its data.
+func (l *LeaseSession) SendEngineFrame(ctx context.Context, frame contracts.EngineFrame) error {
+	return l.write(ctx, "engine.frame", map[string]any{"frame": frame})
+}
+
+// ReceiveControllerFrame reads one controller->runner engine frame from a
+// controller.frame message and returns it for injection into the supervisor.
+func (l *LeaseSession) ReceiveControllerFrame(ctx context.Context) (contracts.EngineFrame, error) {
+	messageType, payload, err := l.conn.Read(ctx)
+	if err != nil {
+		return contracts.EngineFrame{}, fmt.Errorf("read controller frame: %w", err)
+	}
+	if messageType != websocket.MessageText {
+		return contracts.EngineFrame{}, errors.New("controller frame must be a text message")
+	}
+	var message contracts.RunnerMessage
+	if err := json.Unmarshal(payload, &message); err != nil {
+		return contracts.EngineFrame{}, fmt.Errorf("decode controller message: %w", err)
+	}
+	if message.Type != "controller.frame" {
+		return contracts.EngineFrame{}, fmt.Errorf("unexpected message type %q, want controller.frame", message.Type)
+	}
+	return decodeRelayFrame(message.Data)
+}
+
+// Complete reports the terminal outcome class and the redacted stderr digest in a
+// lease.complete message, then closes the connection.
+func (l *LeaseSession) Complete(ctx context.Context, outcome string, stderrDigest string) error {
+	err := l.write(ctx, "lease.complete", map[string]any{"outcome": outcome, "stderr_digest": stderrDigest})
+	_ = l.conn.Close(websocket.StatusNormalClosure, "lease complete")
+	l.transport.CloseIdleConnections()
+	return err
+}
+
+// Close tears the lease connection down without reporting an outcome — an aborted lease.
+func (l *LeaseSession) Close() error {
+	closeConnection(l.conn, l.transport)
+	return nil
+}
+
+func (l *LeaseSession) write(ctx context.Context, messageType string, data map[string]any) error {
+	message := contracts.RunnerMessage{
+		Protocol:  RunnerProtocolV1,
+		Type:      messageType,
+		Time:      l.now().UTC().Format(time.RFC3339),
+		LeaseID:   l.lease.LeaseID,
+		RunID:     l.lease.RunID,
+		AttemptID: l.lease.AttemptID,
+		Fence:     int(l.lease.Fence),
+		Data:      data,
+	}
+	payload, err := json.Marshal(message)
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", messageType, err)
+	}
+	return l.conn.Write(ctx, websocket.MessageText, payload)
+}
+
+// decodeRelayFrame extracts the single engine.v1 frame a relay message carries in its
+// data.frame field.
+func decodeRelayFrame(data map[string]any) (contracts.EngineFrame, error) {
+	raw, ok := data["frame"]
+	if !ok {
+		return contracts.EngineFrame{}, errors.New("relay message carries no frame")
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return contracts.EngineFrame{}, fmt.Errorf("encode relay frame: %w", err)
+	}
+	var frame contracts.EngineFrame
+	if err := json.Unmarshal(encoded, &frame); err != nil {
+		return contracts.EngineFrame{}, fmt.Errorf("decode relay frame: %w", err)
+	}
+	return frame, nil
 }
 
 func (s Session) tlsConfig() *tls.Config {

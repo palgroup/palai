@@ -43,15 +43,16 @@ func NewOrchestrator(st *store.Store, dialer EngineDialer, models *modelbroker.B
 
 // attemptState is the per-attempt working set threaded through the dispatch handlers.
 type attemptState struct {
-	attempt    AttemptDescriptor
-	tenant     coordinator.Tenant
-	sessionID  string
-	responseID string
-	ch         EngineChannel
-	ledger     *runner.FrameLedger
-	seq        int // controller frame sequence (engine ignores it; kept envelope-valid)
-	output     []contracts.ContentItem
-	usage      contracts.Usage
+	attempt        AttemptDescriptor
+	tenant         coordinator.Tenant
+	sessionID      string
+	responseID     string
+	ch             EngineChannel
+	ledger         *runner.FrameLedger
+	seq            int // controller frame sequence (engine ignores it; kept envelope-valid)
+	lastInboundSeq int // last accepted engine frame sequence; the intake requires the next to be +1
+	output         []contracts.ContentItem
+	usage          contracts.Usage
 }
 
 // ExecuteAttempt drives one run attempt to a terminal outcome. It provisions and
@@ -99,6 +100,7 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	if ready.Type != "engine.ready" {
 		return fmt.Errorf("first frame type = %q, want engine.ready", ready.Type)
 	}
+	st.lastInboundSeq = ready.Sequence
 
 	var inputValue any
 	if len(input) > 0 {
@@ -128,6 +130,15 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		if duplicate {
 			continue
 		}
+		// Intake sequence monotonicity: after dedup, every accepted engine frame must
+		// carry the next sequence. A gap or reorder is a protocol violation that fails the
+		// attempt before any dispatch, matching the batch supervisor's index+1 rule. A
+		// dropped retransmit above does not advance the sequence — it rides the same
+		// ordered stream with the same number.
+		if frame.Sequence != st.lastInboundSeq+1 {
+			return fmt.Errorf("engine frame %s sequence %d is not %d (non-monotonic)", frame.ID, frame.Sequence, st.lastInboundSeq+1)
+		}
+		st.lastInboundSeq = frame.Sequence
 
 		switch frame.Type {
 		case "model.request":

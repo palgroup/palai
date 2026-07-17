@@ -45,7 +45,7 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 	}
 
 	requestEvent, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID})
-	if err := o.spine.CommitModelRequest(ctx, st.tenant, st.sessionID, string(st.attempt.RunID), requestID, "run.model_request.v1", requestEvent); err != nil {
+	if err := o.spine.CommitModelRequest(ctx, st.tenant, st.sessionID, string(st.attempt.RunID), requestID, eventModelStepCreated, requestEvent); err != nil {
 		return err
 	}
 
@@ -78,7 +78,7 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 
 	stored, _ := json.Marshal(data)
 	resultEvent, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID})
-	if _, err := o.spine.CommitModelResult(ctx, st.tenant, st.sessionID, requestID, stored, "run.model_result.v1", resultEvent); err != nil {
+	if _, err := o.spine.CommitModelResult(ctx, st.tenant, st.sessionID, requestID, stored, eventModelStepCompleted, resultEvent); err != nil {
 		return err
 	}
 	return st.ch.Send(ctx, o.frame(st, "model.result", data, string(frame.ID)))

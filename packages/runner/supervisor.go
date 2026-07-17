@@ -126,21 +126,7 @@ func (s *Supervisor) Run(ctx context.Context, request EngineRequest) (EngineResu
 		return EngineResult{}, err
 	}
 
-	spec := oci.ContainerSpec{
-		ImageDigest: request.ImageDigest,
-		Env:         buildEnv(request),
-		Labels:      map[string]string{sandboxLabelKey: "engine"},
-		Limits: oci.Limits{
-			WallTime:        time.Duration(request.Limits.WallTimeMS) * time.Millisecond,
-			MaxMemoryBytes:  request.Limits.MaxMemoryBytes,
-			MaxProcessCount: request.Limits.MaxProcessCount,
-			NanoCPUs:        1_000_000_000,
-		},
-		MaxStdoutBytes: request.Limits.MaxStdoutBytes,
-		MaxStderrBytes: request.Limits.MaxStderrBytes,
-	}
-
-	outcome, err := s.driver.Run(ctx, spec)
+	outcome, err := s.driver.Run(ctx, buildSpec(request))
 	result := EngineResult{
 		ContainerID:     outcome.ContainerID,
 		ImageID:         outcome.ImageID,
@@ -168,6 +154,26 @@ func (s *Supervisor) Run(ctx context.Context, request EngineRequest) (EngineResu
 	}
 	result.Frames = frames
 	return result, nil
+}
+
+// buildSpec is the single hardened sandbox spec both the batch and streaming
+// supervisors run: the pinned image, the allowlisted environment, the engine label,
+// and the wall-time, memory, process, and per-stream output bounds. Sharing it keeps
+// the streaming path's isolation identical to the batch path's.
+func buildSpec(request EngineRequest) oci.ContainerSpec {
+	return oci.ContainerSpec{
+		ImageDigest: request.ImageDigest,
+		Env:         buildEnv(request),
+		Labels:      map[string]string{sandboxLabelKey: "engine"},
+		Limits: oci.Limits{
+			WallTime:        time.Duration(request.Limits.WallTimeMS) * time.Millisecond,
+			MaxMemoryBytes:  request.Limits.MaxMemoryBytes,
+			MaxProcessCount: request.Limits.MaxProcessCount,
+			NanoCPUs:        1_000_000_000,
+		},
+		MaxStdoutBytes: request.Limits.MaxStdoutBytes,
+		MaxStderrBytes: request.Limits.MaxStderrBytes,
+	}
 }
 
 // buildEnv is the exact environment the engine receives: an empty base (so no host
@@ -215,17 +221,31 @@ func parseEngineFrames(output []byte, request EngineRequest) ([]contracts.Engine
 }
 
 func validateFrame(frame contracts.EngineFrame, index int, request EngineRequest) error {
-	if frame.Protocol != EngineProtocolV1 || !frame.ID.Valid() || frame.Type == "" || frame.Sequence != index+1 {
-		return fmt.Errorf("%w: frame %d violates the engine envelope", ErrInvalidEngineOutput, index+1)
+	if err := validateEnvelope(frame, request); err != nil {
+		return err
+	}
+	if frame.Sequence != index+1 {
+		return fmt.Errorf("%w: frame %d is out of sequence", ErrInvalidEngineOutput, index+1)
+	}
+	return nil
+}
+
+// validateEnvelope enforces the frame rules shared by the batch and streaming
+// supervisors: the engine protocol, a canonical frame id, a non-empty type, an RFC 3339
+// timestamp, and matching run/attempt identity. The monotonic sequence is applied by
+// each caller — batch by output position, streaming against the last accepted sequence.
+func validateEnvelope(frame contracts.EngineFrame, request EngineRequest) error {
+	if frame.Protocol != EngineProtocolV1 || !frame.ID.Valid() || frame.Type == "" {
+		return fmt.Errorf("%w: frame %s violates the engine envelope", ErrInvalidEngineOutput, frame.ID)
 	}
 	if _, err := time.Parse(time.RFC3339, frame.Time); err != nil {
-		return fmt.Errorf("%w: frame %d has no valid timestamp", ErrInvalidEngineOutput, index+1)
+		return fmt.Errorf("%w: frame %s has no valid timestamp", ErrInvalidEngineOutput, frame.ID)
 	}
 	if frame.RunID != "" && frame.RunID != request.RunID {
-		return fmt.Errorf("%w: frame %d run identity mismatch", ErrInvalidEngineOutput, index+1)
+		return fmt.Errorf("%w: frame %s run identity mismatch", ErrInvalidEngineOutput, frame.ID)
 	}
 	if frame.AttemptID != "" && frame.AttemptID != request.AttemptID {
-		return fmt.Errorf("%w: frame %d attempt identity mismatch", ErrInvalidEngineOutput, index+1)
+		return fmt.Errorf("%w: frame %s attempt identity mismatch", ErrInvalidEngineOutput, frame.ID)
 	}
 	return nil
 }

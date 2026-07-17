@@ -10,12 +10,16 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
+	"errors"
 	"log"
 	"os"
 	"time"
 
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
+	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/runner"
 )
 
@@ -39,28 +43,79 @@ func main() {
 		ControllerDNS: controllerDNS,
 		Now:           time.Now,
 	}
-	lease, err := session.ReceiveLease(ctx)
+	leaseSession, err := session.OpenLease(ctx)
 	if err != nil {
-		log.Fatalf("receive lease: %v", err)
+		log.Fatalf("open lease: %v", err)
 	}
+	defer leaseSession.Close()
+	lease := leaseSession.Lease()
 	log.Printf("received lease %s for run %s (fence %d)", lease.LeaseID, lease.RunID, lease.Fence)
 
-	driver, err := oci.NewDockerDriver()
+	driver, err := oci.NewDockerInteractiveDriver()
 	if err != nil {
 		log.Fatalf("create sandbox driver: %v", err)
 	}
-	defer driver.Close()
+	if closer, ok := driver.(interface{ Close() error }); ok {
+		defer func() { _ = closer.Close() }()
+	}
 
-	result, err := runner.NewSupervisor(driver).Run(ctx, runner.EngineRequest{
+	// Controller frames relayed over the lease feed the supervisor's stdin injection; the
+	// supervisor's forwarded engine frames are relayed back to the controller by the sink.
+	inbound := make(chan contracts.EngineFrame)
+	go func() {
+		defer close(inbound)
+		for {
+			frame, err := leaseSession.ReceiveControllerFrame(ctx)
+			if err != nil {
+				return
+			}
+			select {
+			case inbound <- frame:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	sink := func(ctx context.Context, frame contracts.EngineFrame) error {
+		return leaseSession.SendEngineFrame(ctx, frame)
+	}
+
+	result, streamErr := runner.NewStreamSupervisor(driver).Stream(ctx, runner.EngineRequest{
 		ImageDigest: lease.ImageDigest,
 		RunID:       lease.RunID,
 		AttemptID:   lease.AttemptID,
 		Limits:      lease.Limits,
-	})
-	if err != nil {
-		log.Fatalf("supervise engine (exit %d, %d stderr bytes): %v", result.ExitCode, result.StderrBytes, err)
+	}, inbound, sink)
+
+	if err := leaseSession.Complete(ctx, outcomeClass(streamErr), stderrDigest(result.Stderr)); err != nil {
+		log.Fatalf("report lease completion: %v", err)
 	}
-	log.Printf("engine completed: %d frames, %d stdout bytes", len(result.Frames), result.StdoutBytes)
+	if streamErr != nil {
+		log.Fatalf("supervise engine (exit %d, %d stderr bytes): %v", result.ExitCode, result.StderrBytes, streamErr)
+	}
+	log.Printf("engine completed: %d stdout bytes", result.StdoutBytes)
+}
+
+// outcomeClass maps a supervised streaming outcome to the lease.complete outcome class the
+// control plane records: a wall-time kill is lost, any other failure is failed, and a
+// clean run is succeeded.
+func outcomeClass(err error) string {
+	switch {
+	case err == nil:
+		return "succeeded"
+	case errors.Is(err, runner.ErrEngineTimeout):
+		return "lost"
+	default:
+		return "failed"
+	}
+}
+
+// stderrDigest is the content digest of the already-redacted stderr the runner reports on
+// completion, so the controller can correlate logs without the runner shipping raw stderr.
+func stderrDigest(redacted []byte) string {
+	sum := sha256.Sum256(redacted)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // loadConfig reads the bootstrap input from the environment and immediately clears the
