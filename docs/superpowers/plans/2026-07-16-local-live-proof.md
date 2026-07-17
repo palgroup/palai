@@ -939,9 +939,14 @@ git commit -m "feat: stream the engine protocol through a live supervisor"
 - Modify: `adapters/models/provider_one/adapter.go`
 - Modify: `adapters/models/fake/adapter.go`
 - Modify: `apps/control-plane/internal/execution/model_dispatch.go`
+- Modify: `apps/control-plane/internal/execution/reconciler.go` (dead-letter → run terminal köprüsü — Task 11b review follow-up; plan genelinde yük taşıyan)
+- Modify: `packages/runner/stream.go` (supervisor.hello fence hash + boundary-aware stderr redaction — Task 11b review follow-up)
+- Modify: `packages/runner/supervisor.go` (`EngineRequest.Fence`; batch `parseEngineFrames` frame-ID dedup — LP8 Minor-2 kalıntısı)
 - Test: `tests/conformance/engine/gateway_test.go`
+- Test: `tests/conformance/engine/stream_test.go` (Modify — fence-hash + chunk-boundary redaction case'leri)
 - Test: `apps/control-plane/e2e/responses/gateway_parity_test.go`
 - Test: `apps/control-plane/e2e/responses/reclaim_test.go`
+- Test: `apps/control-plane/e2e/responses/dead_letter_test.go`
 
 **Interfaces:**
 
@@ -1013,7 +1018,50 @@ Run: `go test ./apps/control-plane/e2e/responses -run TestReclaim -v`
 
 Expected: önce FAIL (iki farklı çağrı/effect), key plumbing sonrası PASS.
 
-- [ ] **Step 5: Live channel parity e2e testini yaz ve çalıştır**
+- [ ] **Step 5: Dead-letter → run terminal köprüsünü uygula (Task 11b review follow-up; plan genelinde yük taşıyan)**
+
+Deterministik bir engine/protokol ihlali her attempt'i düşürür → durable job §24.4 gereği dead-letter'a iner → ama RUN sonsuza dek `running` kalır: response hiçbir zaman terminale ulaşmaz ve SSE stream'i kapanmaz. Bunu hiçbir task reconcile etmiyordu; Task 7'nin reconciler'ı genişletilir. `Sweep`, dead-lettered response.run job'larını bulur ve run'ı Task 4 tablosuyla (`statemachines.RunCmdFail` — her non-terminal state'ten `run.failed.v1` üretir, §22.3 terminality) failed terminale taşır; transition + terminal event aynı transaction'dadır, böylece response projection failed olur ve SSE terminal event'ten sonra temiz kapanır. Job üzerindeki operator retry/reconcile aksiyonları kalır (§24.4); terminal monotonicity gereği run geri açılmaz — sonradan retry edilen job terminal run'ı görüp no-op yapar. Bu adım Task 15 canlı UAT'ından önce kanıtlanmış olmak ZORUNDADIR: asılı bir run LP-0'ın "gerçekten çalışıyor" kapısını düşürür.
+
+Failing test — `apps/control-plane/e2e/responses/dead_letter_test.go`:
+
+```go
+func TestDeadLetteredRunJobIsDrivenToFailedTerminal(t *testing.T)
+// Scripted channel her attempt'te protokol ihlali üretir; MaxAttempts sonrası job
+// dead-letter olur. Reconciler sweep sonrası: run row'u failed, run.failed.v1 event
+// journal'da, GET /v1/responses/{id} failed terminal projection döner ve SSE reader
+// terminal event'i alıp stream'in kapandığını görür — asılı run kalmaz.
+```
+
+Run: `go test ./apps/control-plane/e2e/responses -run TestDeadLettered -v`
+
+Expected: önce FAIL (run `running` asılı kalır, SSE kapanmaz), köprü sonrası PASS.
+
+- [ ] **Step 6: supervisor.hello'ya fence hash ekle ve batch frame-ID kalıntısını kapat (Task 11b review follow-up)**
+
+- §25.6 hello frame'i fencing token hash taşımalıdır; bugün taşımıyor. `runner.EngineRequest`'e `Fence uint64` eklenir (`Lease.Fence` runner'a zaten ulaşıyor; `cmd/runner` geçirir) ve `StreamSupervisor.Stream` hello data'sına `fence_hash` yazar: `sha256("<run_id>/<fence>")` hex digest. Engine tarafı karşılaştırma E10 recovery'de anlamlanır (engine'in kıyaslayacağı bir değeri henüz yok); burada yalnızca taşınır. `tests/conformance/engine/stream_test.go`'ya assertion: hello, herhangi bir run input'undan önce boş olmayan `fence_hash` ile yazılır.
+- Aynı dosya dokunuşuyla LP8 Minor-2 kalıntısı kapanır: batch `parseEngineFrames` de her frame'i `runner.FrameLedger.Admit`'ten geçirir — duplicate ID + farklı hash `ErrFrameHashConflict` ile attempt'i düşürür (streaming yoluyla parite; batch artık ikincil yol ama tutarsız kalmaz). Docker'sız case: `TestBatchRunRejectsChangedHashDuplicateFrame` `tests/conformance/engine/stream_test.go`'ya eklenir.
+
+Run: `go test ./tests/conformance/engine -run 'TestStream|TestBatch' -v`
+
+Expected: PASS; hello fence_hash'siz yazılamaz, batch duplicate-changed-hash fail eder.
+
+- [ ] **Step 7: Stderr redaction'ı chunk-boundary'ye karşı sertleştir (Task 11b review follow-up)**
+
+Bugün runner dışına yalnızca stderr DIGEST'i çıkar (`lease.complete`); redactor ise chunk sınırında bölünen bir secret'ı (`sk-l` bir Write'ta, `ive-...` sonrakinde) kaçırabilir. Redactor'a chunk'lar arası tail carry-over penceresi eklenir (en uzun secret pattern uzunluğu − 1 bayt taşınır ve bir sonraki chunk'la birlikte taranır). Gate notu: stderr BYTE'ları controller'a ilk forward edildiğinde (gateway diagnostics bu task'ta veya sonrasında), focused regex seti bu sertleştirmeyle BİRLİKTE yeniden gözden geçirilir — byte forwarding hardening'siz eklenemez.
+
+Failing case — `tests/conformance/engine/stream_test.go`:
+
+```go
+func TestStreamRedactsSecretSplitAcrossChunkBoundary(t *testing.T)
+// Sentinel "sk-live-..." iki ayrı stderr Write'ına bölünür; persist/forward edilen
+// stderr'de yine maskelidir.
+```
+
+Run: `go test ./tests/conformance/engine -run TestStreamRedacts -v`
+
+Expected: önce FAIL (bölünmüş sentinel sızar), carry-over sonrası PASS.
+
+- [ ] **Step 8: Live channel parity e2e testini yaz ve çalıştır**
 
 `apps/control-plane/e2e/responses/gateway_parity_test.go` (Docker gerektirir; runner fault suite'iyle aynı guard'ı kullanır):
 
@@ -1031,10 +1079,10 @@ Run: `go test ./apps/control-plane/e2e/responses -run TestGateway -v`
 
 Expected: PASS; iki channel aynı canonical sonucu üretir.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add apps/control-plane packages/model-broker adapters/models cmd/runner tests/conformance/engine
+git add apps/control-plane packages/model-broker packages/runner adapters/models cmd/runner tests/conformance/engine
 git commit -m "feat: bridge the orchestrator to live runners through the gateway"
 ```
 
