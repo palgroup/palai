@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Fault-injection test tier: kills a durable-coordinator worker mid-lease against a
+# real PostgreSQL process and proves the lease is reclaimed at a higher fence while
+# the killed worker's completion is rejected. Selected with
+# `make test-fault TEST=<suite>`; defaults to the coordinator suite. Repeat-count is
+# COUNT (the plan gate runs it at 20). Kept out of `make verify`/`make test-unit`
+# (Docker-bound).
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+suite="${TEST:-coordinator}"
+
+# Short, injected lease timer so the suite proves expiry/reclaim by database time
+# without waiting on a production interval. The test reads it for both the claim and
+# the heartbeat renewal.
+export PALAI_FAULT_LEASE="${PALAI_FAULT_LEASE:-150ms}"
+
+run_coordinator() {
+  # Immutable pinned image (matches the postgres-coordinator spike / ADR-0001).
+  local image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  local label="io.palai.fault=coordinator"
+  local run_id="$$-${RANDOM}"
+  local container="palai-fault-coordinator-$run_id"
+  local volume="palai-fault-coordinator-$run_id"
+  # Throwaway local credential, generated per run; never written to a file.
+  local password="palai-fault-${RANDOM}${RANDOM}"
+
+  count_containers() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_volumes() { docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+  }
+
+  local containers_before volumes_before
+  containers_before="$(count_containers)"
+  volumes_before="$(count_volumes)"
+  trap cleanup EXIT
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never \
+    --name "$container" \
+    --label "$label" \
+    --env POSTGRES_DB=palai \
+    --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 \
+    --volume "$volume:/var/lib/postgresql/data" \
+    "$image" >/dev/null
+
+  local ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "postgres fault container did not become ready" >&2
+    exit 1
+  fi
+
+  local binding port url
+  binding="$(docker port "$container" 5432/tcp)"
+  port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+
+  set +e
+  PALAI_FAULT_POSTGRES_URL="$url" \
+    go test -tags=fault -count="${COUNT:-1}" -v ./tests/fault/coordinator
+  local status=$?
+  set -e
+  if test "$status" -ne 0; then
+    docker logs "$container" >&2 || true
+  fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers)"
+  volumes_after="$(count_volumes)"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "coordinator fault suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then
+    exit "$status"
+  fi
+  echo "fault_coordinator=PASS containers=$containers_after volumes=$volumes_after"
+}
+
+case "$suite" in
+  coordinator) run_coordinator ;;
+  *)
+    echo "unknown fault suite: $suite (known: coordinator)" >&2
+    exit 2
+    ;;
+esac

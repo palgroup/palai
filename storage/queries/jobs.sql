@@ -58,3 +58,94 @@ WHERE id = $1
 SELECT status, fence, attempt_count, result_hash
 FROM durable_jobs
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- name: ClaimNextJob
+-- The worker loop leases the oldest ready job across the queue. The job queue is
+-- coordinator infrastructure, so a claim spans tenants and returns the job's own
+-- scope for the handler to act within. One row is taken per call (bounded batch);
+-- rows locked by peer workers are skipped. Eligibility and the lease deadline use
+-- the database clock, and every claim raises a monotonic fence and attempt count.
+WITH claimable AS (
+    SELECT id
+    FROM durable_jobs
+    WHERE ready_at <= clock_timestamp()
+      AND (
+        status = 'queued'
+        OR (status = 'running' AND lease_expires_at <= clock_timestamp())
+      )
+    ORDER BY ready_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE durable_jobs AS job
+SET status = 'running',
+    lease_owner = $1,
+    lease_expires_at = clock_timestamp() + ($2::bigint * interval '1 millisecond'),
+    fence = job.fence + 1,
+    attempt_count = job.attempt_count + 1,
+    updated_at = clock_timestamp()
+FROM claimable
+WHERE job.id = claimable.id
+RETURNING job.id, job.organization_id, job.project_id, job.lease_owner,
+          job.fence, job.attempt_count, job.lease_expires_at, job.payload;
+
+-- name: HeartbeatJob
+-- Renew a live lease by database time. Fenced to the exact holder: once the job is
+-- reclaimed at a higher fence the predicate matches nothing, so a paused worker
+-- cannot resurrect a lost lease.
+UPDATE durable_jobs
+SET lease_expires_at = clock_timestamp() + ($4::bigint * interval '1 millisecond'),
+    updated_at = clock_timestamp()
+WHERE id = $1
+  AND fence = $2
+  AND lease_owner = $3
+  AND status = 'running'
+RETURNING lease_expires_at;
+
+-- name: FailJob
+-- Record a failed attempt: requeue the job behind a persisted backoff deadline, or
+-- dead-letter it once its attempts are exhausted. The attempt count is canonical in
+-- the row, so the ceiling is enforced here rather than in a worker's memory. Fenced
+-- to the holder; a superseded worker matches nothing and mutates no state.
+UPDATE durable_jobs
+SET status = CASE WHEN attempt_count >= $4 THEN 'dead' ELSE 'queued' END,
+    lease_owner = NULL,
+    lease_expires_at = NULL,
+    ready_at = CASE WHEN attempt_count >= $4 THEN ready_at
+                    ELSE clock_timestamp() + ($5::bigint * interval '1 millisecond') END,
+    updated_at = clock_timestamp()
+WHERE id = $1
+  AND fence = $2
+  AND lease_owner = $3
+  AND status = 'running'
+RETURNING status;
+
+-- name: RecordJobOutcome
+-- Close the attempt ledger row so the durable history records how each fenced
+-- attempt ended, not merely that it started.
+UPDATE job_attempts
+SET outcome = $3
+WHERE job_id = $1 AND fence = $2;
+
+-- name: ReclaimExpiredJobs
+-- Reconciler safety net: dead-letter jobs whose lease has lapsed and whose attempts
+-- are exhausted — the abandoned-work case where a worker is killed every attempt and
+-- never self-reports. Expired leases still under the ceiling are left for the next
+-- claim, which reclaims them inline at a higher fence. Bounded per sweep.
+WITH abandoned AS (
+    SELECT id
+    FROM durable_jobs
+    WHERE status = 'running'
+      AND lease_expires_at <= clock_timestamp()
+      AND attempt_count >= $1
+    ORDER BY lease_expires_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT $2
+)
+UPDATE durable_jobs AS job
+SET status = 'dead',
+    lease_owner = NULL,
+    lease_expires_at = NULL,
+    updated_at = clock_timestamp()
+FROM abandoned
+WHERE job.id = abandoned.id;
