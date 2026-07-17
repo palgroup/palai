@@ -25,6 +25,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
 	mux.HandleFunc("GET /v1/responses/{response_id}", responses.get)
+	mux.HandleFunc("GET /v1/capabilities", capabilities)
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}
 	mux.HandleFunc("GET /v1/sessions/{session_id}/events", stream.stream)
@@ -33,11 +34,18 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	root = middleware.Auth(verifier)(root)
 	root = middleware.RequestContext(root)
 
-	if runner == nil {
-		return root
-	}
+	// /healthz is an unauthenticated liveness probe the Compose stack's healthcheck
+	// polls; it carries no contract surface (not in the OpenAPI spec) and bypasses auth
+	// and correlation so a probe needs no credential. The runner gateway, when present,
+	// mounts ahead of the public router with its own token/mTLS identity (see doc above).
 	top := http.NewServeMux()
-	top.Handle("/v1/runner/", runner)
+	top.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	})
+	if runner != nil {
+		top.Handle("/v1/runner/", runner)
+	}
 	top.Handle("/", root)
 	return top
 }

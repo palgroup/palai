@@ -247,11 +247,21 @@ run_responses() {
   echo "e2e_responses=PASS containers=$containers_after volumes=$volumes_after"
 }
 
+run_local() {
+  # The local suite is self-contained: the harness builds the palai CLI and drives a real
+  # four-service Docker Compose stack (its own throwaway PALAI_HOME + random ports), so no
+  # external Postgres is provisioned here. Retained volumes are torn down per-stack by the
+  # harness's `reset --confirm` cleanup. A generous -timeout covers the per-stack image
+  # build and healthcheck waits across a -count run (each stack is a full boot).
+  exec go test -tags=e2e -timeout=45m -count="${COUNT:-1}" -v ./tests/e2e/local
+}
+
 case "$suite" in
   sse) run_sse ;;
   responses) run_responses ;;
+  local) run_local ;;
   *)
-    echo "unknown e2e suite: $suite (known: sse, responses)" >&2
+    echo "unknown e2e suite: $suite (known: sse, responses, local)" >&2
     exit 2
     ;;
 esac

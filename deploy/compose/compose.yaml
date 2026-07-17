@@ -1,0 +1,116 @@
+# The packaged local Palai stack: Postgres (durable spine), SeaweedFS (object store,
+# run-not-consumed in LP-0), the control-plane, and one private runner. `palai local up`
+# interpolates the ${PALAI_*} contract below from .palai/config.json; the raw provider
+# credential rides a native Docker file-secret (top-level `secrets:`), never a compose
+# `environment:` value, so it appears in no `docker inspect`/`compose config` surface.
+#
+# External bases are digest-pinned (postgres matches CI ci.yml; seaweedfs matches
+# ADR-0004). The control-plane and runner are built locally from the repo; the reference
+# engine is NOT a service here — `local up` builds it and passes its ref as
+# PALAI_ENGINE_IMAGE. Only the runner mounts the Docker socket; the engine (Task 8 OCI
+# driver) receives none.
+services:
+  postgres:
+    image: postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c
+    environment:
+      POSTGRES_USER: palai
+      POSTGRES_DB: palai
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets:
+      - pg_password
+    volumes:
+      - palai-pg:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${PALAI_PG_PORT}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U palai -d palai"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  object-store:
+    image: docker.io/chrislusf/seaweedfs@sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6
+    command: ["server", "-s3", "-dir=/data"]
+    volumes:
+      - palai-objects:/data
+    ports:
+      - "127.0.0.1:${PALAI_S3_PORT}:8333"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8333/ >/dev/null 2>&1 || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  control-plane:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/control-plane.Dockerfile
+    image: palai/control-plane:local
+    environment:
+      # The provider secret and the DB password are NOT here — the entrypoint bridges
+      # them from /run/secrets at start (Option B, LP fork 1). Only non-secret config.
+      PALAI_LISTEN_ADDR: ":8080"
+      PALAI_RUNNER_LISTEN_ADDR: ":8443"
+      PALAI_RUNNER_CA_CERT: /palai/ca/ca.crt
+      PALAI_RUNNER_CA_KEY: /palai/ca/ca.key
+      PALAI_RUNNER_SERVER_CERT: /palai/ca/server.crt
+      PALAI_RUNNER_SERVER_KEY: /palai/ca/server.key
+      PALAI_ENROLLMENT_TOKEN_FILE: /palai/runner-token
+      PALAI_BOOTSTRAP_API_KEY_FILE: /run/secrets/bootstrap_api_key
+      PALAI_ENGINE_IMAGE: ${PALAI_ENGINE_IMAGE}
+      # LP-0 does not drive the exec path (that is Task 15): run no dispatch worker so
+      # an admitted response stays queued rather than failing against an absent provider.
+      PALAI_DISPATCH_WORKERS: "0"
+      PALAI_RETENTION_STORE_FALSE_TTL: ${PALAI_RETENTION_STORE_FALSE_TTL:-}
+    secrets:
+      - provider_one_key
+      - bootstrap_api_key
+      - pg_password
+    volumes:
+      - "${PALAI_HOME}/ca:/palai/ca:ro"
+      - "${PALAI_HOME}/runner-token:/palai/runner-token:ro"
+    ports:
+      - "127.0.0.1:${PALAI_API_PORT}:8080"
+      - "127.0.0.1:${PALAI_RUNNER_PORT}:8443"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      object-store:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  runner:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/runner.Dockerfile
+    image: palai/runner:local
+    environment:
+      PALAI_CONTROLLER_URL: https://control-plane:8443
+      PALAI_CONTROLLER_DNS: control-plane
+      PALAI_RUNNER_CA_CERT: /palai/ca/ca.crt
+      # One-use; consumed at connect, never persisted by the runner.
+      PALAI_ENROLLMENT_TOKEN_FILE: /palai/runner-token
+      PALAI_ENGINE_IMAGE: ${PALAI_ENGINE_IMAGE}
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "${PALAI_HOME}/ca/ca.crt:/palai/ca/ca.crt:ro"
+      - "${PALAI_HOME}/runner-token:/palai/runner-token:ro"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+
+secrets:
+  provider_one_key:
+    file: "${PALAI_HOME}/secrets/provider-one"
+  bootstrap_api_key:
+    file: "${PALAI_HOME}/api-key"
+  pg_password:
+    file: "${PALAI_HOME}/secrets/pg-password"
+
+volumes:
+  palai-pg: {}
+  palai-objects: {}

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Run the local-stack health checks. Exits non-zero if any check is not green.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+bin="$(mktemp -d)/palai"
+go build -o "$bin" ./cmd/cli
+exec env PALAI_HOME="${PALAI_HOME:-$root/.palai}" "$bin" local doctor

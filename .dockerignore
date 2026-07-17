@@ -1,0 +1,12 @@
+# Build context for the control-plane and runner images is the repo root
+# (deploy/compose/*.Dockerfile). Keep it to the Go module: drop VCS metadata, the
+# Python engine virtualenv, caches, and heavy trees the Go build never imports.
+.git
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+spikes
+docs
+.superpowers
+*.log

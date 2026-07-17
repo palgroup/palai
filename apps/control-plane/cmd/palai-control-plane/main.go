@@ -3,11 +3,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
@@ -31,6 +34,11 @@ func main() {
 	if err := repo.Migrate(ctx); err != nil {
 		log.Fatalf("apply migration: %v", err)
 	}
+	if err := repo.Bootstrap(ctx, readFileEnv("PALAI_BOOTSTRAP_API_KEY_FILE")); err != nil {
+		log.Fatalf("seed bootstrap identity: %v", err)
+	}
+
+	startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"))
 
 	addr := os.Getenv("PALAI_LISTEN_ADDR")
 	if addr == "" {
@@ -90,6 +98,86 @@ func startRetention(ctx context.Context, repo *store.Store) {
 	}
 	reaper := execution.NewReaper(repo, ttl)
 	go func() { _ = reaper.Run(ctx, 30*time.Second) }()
+}
+
+// startRunnerGateway serves the runner enrollment + mutually-authenticated session
+// endpoints on a SEPARATE listener from the public API. The server TLS accepts a certless
+// handshake (VerifyClientCertIfGiven) so the enrollment endpoint can bootstrap a runner
+// that has no certificate yet; the connect handler asserts the verified client chain
+// itself. addr empty disables the gateway — the public router still carries a nil runner
+// handler, and this task binds the listener but does NOT wire the gateway as an
+// EngineDialer to any worker (that live exec-path is Task 15).
+func startRunnerGateway(addr string) {
+	if strings.TrimSpace(addr) == "" {
+		return
+	}
+	caCertPath := mustGatewayEnv("PALAI_RUNNER_CA_CERT")
+	caKeyPath := mustGatewayEnv("PALAI_RUNNER_CA_KEY")
+	serverCert, err := tls.LoadX509KeyPair(mustGatewayEnv("PALAI_RUNNER_SERVER_CERT"), mustGatewayEnv("PALAI_RUNNER_SERVER_KEY"))
+	if err != nil {
+		log.Fatalf("load runner server certificate: %v", err)
+	}
+	caPEM, err := os.ReadFile(caCertPath)
+	if err != nil {
+		log.Fatalf("read runner CA certificate: %v", err)
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caPEM) {
+		log.Fatal("runner CA certificate file held no certificates")
+	}
+	issuer, err := execution.NewFileCertIssuer(caCertPath, caKeyPath)
+	if err != nil {
+		log.Fatalf("bind runner CA issuer: %v", err)
+	}
+	tokens := execution.NewFileEnrollmentTokens(mustGatewayEnv("PALAI_ENROLLMENT_TOKEN_FILE"))
+	gateway := execution.NewRunnerGateway(issuer, tokens)
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           gateway.Routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		TLSConfig: &tls.Config{
+			MinVersion:   tls.VersionTLS13,
+			Certificates: []tls.Certificate{serverCert},
+			ClientCAs:    caPool,
+			ClientAuth:   tls.VerifyClientCertIfGiven,
+		},
+	}
+	// Bind synchronously so a bind failure fails fast and the gateway port is listening
+	// before main starts the public server. The control-plane healthcheck gates on the
+	// public /healthz, so a runner that waits for service_healthy is guaranteed a bound
+	// gateway to enroll against.
+	ln, err := tls.Listen("tcp", addr, srv.TLSConfig)
+	if err != nil {
+		log.Fatalf("bind runner gateway listener: %v", err)
+	}
+	log.Printf("palai runner gateway listening on %s", addr)
+	go func() { log.Fatal(srv.Serve(ln)) }()
+}
+
+// mustGatewayEnv reads a required gateway env var, failing fast when the runner listener
+// is enabled but misconfigured.
+func mustGatewayEnv(name string) string {
+	value := os.Getenv(name)
+	if value == "" {
+		log.Fatalf("%s is required when PALAI_RUNNER_LISTEN_ADDR is set", name)
+	}
+	return value
+}
+
+// readFileEnv reads the file named by env var name and returns its trimmed contents, or
+// "" when the var is unset or the file is unreadable (the bootstrap seed treats an empty
+// key as a no-op).
+func readFileEnv(name string) string {
+	path := os.Getenv(name)
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // envIntDefault reads an integer env var, returning def when unset or unparseable.

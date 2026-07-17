@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Local-live UAT smoke: the documented operator path, no manual SQL. Initialise .palai,
+# bring the four-service stack up, prove doctor is all-green, and admit a response over
+# the bootstrap key. The terminal execution outcome is out of scope here (the live
+# round-trip is Task 15); this proves boot, health, and the admission surface.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+bin="$(mktemp -d)/palai"
+go build -o "$bin" ./cmd/cli
+export PALAI_HOME="${PALAI_HOME:-$root/.palai}"
+
+test -f "$PALAI_HOME/config.json" || "$bin" init
+"$bin" local up
+"$bin" local doctor
+"$bin" response create --input "local-live UAT"
+
+echo "uat_local_live=PASS"

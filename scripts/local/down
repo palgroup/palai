@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Stop the local stack, RETAINING volumes (data survives to the next `up`). Use
+# `palai local reset --confirm` to also delete the volumes.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+bin="$(mktemp -d)/palai"
+go build -o "$bin" ./cmd/cli
+exec env PALAI_HOME="${PALAI_HOME:-$root/.palai}" "$bin" local down
