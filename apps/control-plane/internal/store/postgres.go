@@ -39,6 +39,11 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 // Close releases the underlying pool.
 func (s *Store) Close() { s.spine.Close() }
 
+// Spine exposes the durable coordinator so the composition root (main) can start
+// background dispatch — the run workers and the reconciler. Request handlers use the
+// tenant-scoped methods on this Store, never the spine directly.
+func (s *Store) Spine() *coordinator.Store { return s.spine }
+
 // Migrate applies the forward core migration. It is safe to run repeatedly.
 func (s *Store) Migrate(ctx context.Context) error { return s.spine.Migrate(ctx) }
 

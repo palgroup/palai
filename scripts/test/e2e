@@ -89,7 +89,10 @@ run_sse() {
   go build -o "$binary" ./apps/control-plane/cmd/palai-control-plane
   local app_port
   app_port="$(pick_port)"
+  # The SSE suite proves the read path and drives runs by hand; run the server
+  # without a dispatcher so no background worker races those manual transitions.
   PALAI_DATABASE_URL="$url" PALAI_LISTEN_ADDR="127.0.0.1:$app_port" \
+    PALAI_DISPATCH_WORKERS=0 \
     "$binary" >"$serverlog" 2>&1 &
   server_pid=$!
 

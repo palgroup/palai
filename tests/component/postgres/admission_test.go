@@ -104,6 +104,11 @@ func TestAdmitResponseIsIdempotentAndAtomic(t *testing.T) {
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM events WHERE type='run.queued.v1' AND organization_id=$1 AND project_id=$2`, tenant.Organization, tenant.Project)
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM outbox WHERE topic='run.queued.v1' AND project_id=$1`, tenant.Project)
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM idempotency_records WHERE idempotency_key='key-1' AND project_id=$1`, tenant.Project)
+	// Admission enqueues exactly one response.run dispatch job, whose payload run_id
+	// resolves to the admitted run; the replay must not enqueue a second.
+	assertCount(t, cs.Pool(), 1,
+		`SELECT count(*) FROM durable_jobs j JOIN runs r ON r.id = j.payload->>'run_id'
+		 WHERE j.kind='response.run' AND j.project_id=$1`, tenant.Project)
 
 	// The same key with a different request hash is a conflict; the original is
 	// untouched and no second response appears.
@@ -115,6 +120,7 @@ func TestAdmitResponseIsIdempotentAndAtomic(t *testing.T) {
 		t.Fatalf("divergent reuse = %+v, want conflict", conflict)
 	}
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM responses WHERE organization_id=$1 AND project_id=$2`, tenant.Organization, tenant.Project)
+	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM durable_jobs WHERE kind='response.run' AND project_id=$1`, tenant.Project)
 }
 
 func decodeID(t *testing.T, body []byte) string {

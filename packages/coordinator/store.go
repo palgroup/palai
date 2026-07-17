@@ -27,7 +27,17 @@ var (
 	// ErrStaleFence is returned when a completion offers a fence that no longer
 	// owns the job. Its stable Problem code aligns with lease_conflict.
 	ErrStaleFence = errors.New("lease_conflict")
+	// ErrRunTerminal is returned when a run transition is rejected because the run is
+	// already terminal. It wraps statemachines.ErrInvalidState, so existing
+	// invalid-state checks still match, while letting a job handler tell "already
+	// terminal" apart from "already advanced past this step": a terminal run (e.g.
+	// canceled before dispatch) must not be silently treated as successfully assigned.
+	ErrRunTerminal = errors.New("run_terminal")
 )
+
+// runTerminalStates marks the terminal run states (table destinations with no
+// outgoing transition), derived once from the canonical table rather than hardcoded.
+var runTerminalStates = statemachines.TerminalStates(statemachines.RunTable)
 
 // Tenant is the organization/project scope every query is keyed by (spec §39.2).
 type Tenant struct {
@@ -218,6 +228,9 @@ func (s *Store) ApplyRunTransition(ctx context.Context, tenant Tenant, runID str
 
 	next, event, err := statemachines.Apply(statemachines.RunState(current), command, statemachines.RunTable)
 	if err != nil {
+		if runTerminalStates[statemachines.RunState(current)] {
+			return Transition{}, fmt.Errorf("%w: %w", ErrRunTerminal, err)
+		}
 		return Transition{}, err
 	}
 
@@ -258,6 +271,14 @@ func newEventID() (string, error) {
 		return "", fmt.Errorf("generate event id: %w", err)
 	}
 	return "evt_" + hex.EncodeToString(raw[:]), nil
+}
+
+func newJobID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate job id: %w", err)
+	}
+	return "job_" + hex.EncodeToString(raw[:]), nil
 }
 
 // Identity is the tenant an API key resolves to (spec §39.2).
@@ -393,6 +414,19 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	if _, err := tx.Exec(ctx, storage.Query("EnqueueOutbox"),
 		tenant.Organization, tenant.Project, "run.queued.v1", dedupe, []byte(payload)); err != nil {
 		return Admission{}, fmt.Errorf("enqueue admission outbox: %w", err)
+	}
+
+	// Enqueue the durable dispatch job in the same transaction, so the queued run is
+	// actually assigned by a worker once committed. Nothing runs before commit: the
+	// job becomes claimable only when the admission is durable (spec §24.4, §24.5).
+	jobID, err := newJobID()
+	if err != nil {
+		return Admission{}, err
+	}
+	jobPayload := fmt.Sprintf(`{"run_id":%q}`, in.RunID)
+	if _, err := tx.Exec(ctx, storage.Query("EnqueueJob"),
+		jobID, tenant.Organization, tenant.Project, "response.run", []byte(jobPayload)); err != nil {
+		return Admission{}, fmt.Errorf("enqueue dispatch job: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

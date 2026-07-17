@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -10,7 +11,9 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
+	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 func main() {
@@ -38,8 +41,51 @@ func main() {
 		Handler:           api.NewRouter(repo, repo, repo, sseConfigFromEnv()),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	startDispatch(ctx, repo.Spine())
+
 	log.Printf("palai control-plane listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
+}
+
+// startDispatch launches the durable dispatch workers and the reconciler that turn
+// admitted response.run jobs into assigned runs (spec §24.4). A killed worker's lease
+// lapses and its job is reclaimed at a higher fence, so no graceful shutdown is
+// needed. PALAI_DISPATCH_WORKERS sets the worker count (default 1); 0 disables
+// dispatch — the read-path SSE e2e drives runs by hand and runs the server without a
+// dispatcher racing it.
+func startDispatch(ctx context.Context, spine *coordinator.Store) {
+	workers := envIntDefault("PALAI_DISPATCH_WORKERS", 1)
+	if workers <= 0 {
+		return
+	}
+	retry := coordinator.RetryPolicy{MaxAttempts: 5, BaseBackoff: 100 * time.Millisecond, MaxBackoff: 30 * time.Second}
+	handler := execution.AdvanceRun(spine)
+	for i := 0; i < workers; i++ {
+		w := coordinator.NewWorker(spine, coordinator.WorkerConfig{
+			Owner:        fmt.Sprintf("control-plane-%d-%d", os.Getpid(), i),
+			Lease:        30 * time.Second,
+			Heartbeat:    10 * time.Second,
+			PollInterval: 500 * time.Millisecond,
+			Retry:        retry,
+		}, handler)
+		go func() { _ = w.Run(ctx) }()
+	}
+	reconciler := execution.NewReconciler(spine, 30*time.Second, retry.MaxAttempts)
+	go func() { _ = reconciler.Run(ctx) }()
+}
+
+// envIntDefault reads an integer env var, returning def when unset or unparseable.
+func envIntDefault(name string, def int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 // sseConfigFromEnv reads the event-stream timers from the environment. Unset values
