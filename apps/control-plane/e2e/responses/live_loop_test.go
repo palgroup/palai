@@ -66,6 +66,57 @@ func TestLiveLoopCompletesOneResponseThroughSubprocessEngine(t *testing.T) {
 	}
 }
 
+// TestModelRequestPersistedBeforeRouteAndReplayed proves two things brief Step 4
+// requires: the model request is journaled BEFORE the provider is called, and a
+// committed result for a stable model_request_id is replayed rather than re-routed
+// (the DB half of cross-attempt dedup, spec §53.4). The scripted channel dispatches
+// the same model_request_id twice — a live engine would reject a second model.result.
+func TestModelRequestPersistedBeforeRouteAndReplayed(t *testing.T) {
+	h := newHarness(t)
+	responseID, sessionID, runID := h.admit()
+
+	mreq := newID("mreq")
+	frames := []contracts.EngineFrame{
+		scriptFrame("engine.ready", runID, map[string]any{
+			"selected_protocol": "engine.v1",
+			"engine":            map[string]any{"name": "fake", "version": "0"},
+			"max_frame_bytes":   1024, "nonce": "n",
+		}),
+		scriptFrame("model.request", runID, map[string]any{"model_request_id": mreq}),
+		scriptFrame("model.request", runID, map[string]any{"model_request_id": mreq}),
+		scriptFrame("output.item", runID, map[string]any{"type": "message", "content": "done"}),
+		scriptFrame("run.terminal", runID, map[string]any{"outcome": "completed", "output": "done"}),
+	}
+	orch := h.newOrchestrator(scriptedDialer{&scriptedChannel{frames: frames}})
+	if err := orch.ExecuteAttempt(context.Background(), h.descriptor(runID, 1)); err != nil {
+		t.Fatalf("ExecuteAttempt error = %v", err)
+	}
+
+	if calls := atomic.LoadInt32(&h.provider.calls); calls != 1 {
+		t.Fatalf("provider calls = %d, want 1 (a committed result must replay, not re-route)", calls)
+	}
+
+	events := h.events(sessionID)
+	reqSeq, resSeq := -1, -1
+	for _, e := range events {
+		if e.typ == "run.model_request.v1" && reqSeq < 0 {
+			reqSeq = e.seq
+		}
+		if e.typ == "run.model_result.v1" && resSeq < 0 {
+			resSeq = e.seq
+		}
+	}
+	if reqSeq < 1 {
+		t.Fatalf("no run.model_request.v1 event journaled: %+v", events)
+	}
+	if resSeq < 1 || reqSeq >= resSeq {
+		t.Fatalf("request event (seq %d) must precede result event (seq %d)", reqSeq, resSeq)
+	}
+	if state, _ := h.response(responseID); state != "completed" {
+		t.Fatalf("response state = %q, want completed", state)
+	}
+}
+
 // TestCommitBeforeDeliverOnToolResult proves the tool_call row and its journal event
 // are committed to PostgreSQL before the tool.result frame ever reaches the engine.
 func TestCommitBeforeDeliverOnToolResult(t *testing.T) {

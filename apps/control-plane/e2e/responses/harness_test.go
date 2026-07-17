@@ -333,6 +333,46 @@ func (c *subprocessChannel) Close() error {
 	return nil
 }
 
+// scriptedChannel replays a fixed frame sequence and discards sends. It drives the
+// orchestrator without a live engine, so a test can dispatch the same model_request_id
+// twice (a real engine would reject a second model.result) to prove the cross-attempt,
+// DB-side committed-result replay.
+type scriptedChannel struct {
+	frames []contracts.EngineFrame
+	i      int
+}
+
+func (c *scriptedChannel) Send(context.Context, contracts.EngineFrame) error { return nil }
+func (c *scriptedChannel) Close() error                                      { return nil }
+func (c *scriptedChannel) Receive(context.Context) (contracts.EngineFrame, error) {
+	if c.i >= len(c.frames) {
+		return contracts.EngineFrame{}, io.EOF
+	}
+	f := c.frames[c.i]
+	c.i++
+	return f, nil
+}
+
+type scriptedDialer struct{ ch *scriptedChannel }
+
+func (d scriptedDialer) Dial(context.Context, execution.AttemptDescriptor) (execution.EngineChannel, error) {
+	return d.ch, nil
+}
+
+// scriptFrame builds a valid engine frame for the scripted channel. AttemptID is left
+// empty so the orchestrator's identity check skips it; each frame gets a fresh id.
+func scriptFrame(typ, runID string, data map[string]any) contracts.EngineFrame {
+	return contracts.EngineFrame{
+		Protocol: "engine.v1",
+		ID:       contracts.FrameID(newID("frm")),
+		Type:     typ,
+		Sequence: 1,
+		Time:     time.Now().UTC().Format(time.RFC3339),
+		RunID:    contracts.RunID(runID),
+		Data:     data,
+	}
+}
+
 func helloFrame(attempt execution.AttemptDescriptor) contracts.EngineFrame {
 	return contracts.EngineFrame{
 		Protocol:  "engine.v1",

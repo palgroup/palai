@@ -42,6 +42,27 @@ INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, n
 VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8)
 ON CONFLICT (id) DO NOTHING;
 
+-- InsertModelRequest records a model request before the provider is called. It returns
+-- the id only on a fresh insert, so the caller journals the request event exactly once
+-- even if a reclaimed attempt re-derives the same stable id (spec §25.9, §53.4).
+-- name: InsertModelRequest
+INSERT INTO model_requests (id, organization_id, project_id, run_id, state)
+VALUES ($1, $2, $3, $4, 'requested')
+ON CONFLICT (id) DO NOTHING
+RETURNING id;
+
+-- GetModelResult reads a model request's state and committed result for replay.
+-- name: GetModelResult
+SELECT state, result
+FROM model_requests
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- CompleteModelRequest stores the model result so a later attempt replays it.
+-- name: CompleteModelRequest
+UPDATE model_requests
+SET state = 'completed', result = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
 -- Idempotent admission (spec §20.9, §8.3). The reservation is atomic with the
 -- resource creation; the response_body is the exact resource a replay returns.
 

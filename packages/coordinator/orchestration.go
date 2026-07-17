@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -47,16 +48,69 @@ func appendEvent(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, event
 	return seq, nil
 }
 
-// CommitModelResult persists a model result's journal event in one transaction. The
-// orchestrator calls it before delivering model.result to the engine, so no provider
-// result reaches the engine until its state is durable (spec §24.7).
-func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID, eventType string, payload []byte) (int64, error) {
+// CommitModelRequest records a model request and its journal event before the provider
+// is called, so the request has a durable trace and a reclaimed attempt can dedup
+// against a committed result (spec §24.7 order, §53.4). The row is idempotent; the
+// event is journaled only on the fresh insert, so a re-derived request adds nothing.
+func (s *Store) CommitModelRequest(ctx context.Context, tenant Tenant, sessionID, runID, requestID, eventType string, payload []byte) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin model request: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	err = tx.QueryRow(ctx, storage.Query("InsertModelRequest"),
+		requestID, tenant.Organization, tenant.Project, runID).Scan(new(string))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // already recorded by an earlier attempt; nothing new to journal
+	}
+	if err != nil {
+		return fmt.Errorf("insert model request: %w", err)
+	}
+	if _, err := appendEvent(ctx, tx, tenant, sessionID, eventType, payload); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit model request: %w", err)
+	}
+	return nil
+}
+
+// LookupModelResult returns a committed model result for replay, if one exists. A
+// reclaimed attempt re-derives the same stable model_request_id and finds the result
+// here, so the provider is never dispatched twice for one logical request (spec §53.4).
+func (s *Store) LookupModelResult(ctx context.Context, tenant Tenant, requestID string) ([]byte, bool, error) {
+	var state string
+	var result []byte
+	err := s.pool.QueryRow(ctx, storage.Query("GetModelResult"), requestID, tenant.Organization, tenant.Project).
+		Scan(&state, &result)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read model result: %w", err)
+	}
+	if state != "completed" {
+		return nil, false, nil
+	}
+	return result, true, nil
+}
+
+// CommitModelResult completes the model request row with its result and journals the
+// result event in one transaction. The orchestrator calls it before delivering
+// model.result to the engine, so no provider result reaches the engine until its state
+// is durable (spec §24.7).
+func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID, requestID string, result []byte, eventType string, payload []byte) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin model commit: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	if _, err := tx.Exec(ctx, storage.Query("CompleteModelRequest"),
+		requestID, tenant.Organization, tenant.Project, result); err != nil {
+		return 0, fmt.Errorf("complete model request: %w", err)
+	}
 	seq, err := appendEvent(ctx, tx, tenant, sessionID, eventType, payload)
 	if err != nil {
 		return 0, err

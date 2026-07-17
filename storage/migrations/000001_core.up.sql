@@ -269,6 +269,22 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     FOREIGN KEY (organization_id, project_id) REFERENCES projects (organization_id, id)
 );
 
+-- Brokered model requests, keyed by the stable model_request_id (spec §25.9). The
+-- request is recorded before the provider is called and completed with its result
+-- after, so a reclaimed attempt replays a committed result instead of re-dispatching
+-- the provider (spec §53.4).
+CREATE TABLE IF NOT EXISTS model_requests (
+    id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES runs (id),
+    state TEXT NOT NULL DEFAULT 'requested',
+    result JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    FOREIGN KEY (organization_id, project_id) REFERENCES projects (organization_id, id)
+);
+
 CREATE TABLE IF NOT EXISTS artifacts (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL,

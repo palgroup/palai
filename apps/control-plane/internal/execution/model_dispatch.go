@@ -18,16 +18,35 @@ const (
 	modelSecret   = modelbroker.SecretRef("model")
 )
 
-// dispatchModel handles a model.request: it persists the model result and only then
-// delivers model.result to the engine (commit-before-deliver, spec §24.7). The tool
-// calls the provider returns cross the engine boundary as objects, not the provider's
-// raw JSON string (spec §25.9).
+// dispatchModel handles a model.request. A committed result for the stable
+// model_request_id is replayed without re-calling the provider (the DB half of
+// cross-attempt dedup, spec §53.4). Otherwise the request is persisted (row + event)
+// BEFORE the provider is called (spec §24.7 order), the result is committed, and only
+// then is model.result delivered (commit-before-deliver). Provider tool calls cross
+// the engine boundary as objects, never the raw JSON string (spec §25.9).
 func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, frame contracts.EngineFrame) error {
 	requestID, _ := frame.Data["model_request_id"].(string)
+
+	if stored, found, err := o.spine.LookupModelResult(ctx, st.tenant, requestID); err != nil {
+		return err
+	} else if found {
+		var data map[string]any
+		if err := json.Unmarshal(stored, &data); err != nil {
+			return fmt.Errorf("replay model result %s: %w", requestID, err)
+		}
+		// ponytail: replayed usage is not re-accounted; the crash-recovery path
+		// undercounts. Store usage on the row if accurate recovered metering matters.
+		return st.ch.Send(ctx, o.frame(st, "model.result", data, string(frame.ID)))
+	}
 
 	messages, err := decodeMessages(frame.Data["messages"])
 	if err != nil {
 		return fmt.Errorf("model request %s: %w", requestID, err)
+	}
+
+	requestEvent, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID})
+	if err := o.spine.CommitModelRequest(ctx, st.tenant, st.sessionID, string(st.attempt.RunID), requestID, "run.model_request.v1", requestEvent); err != nil {
+		return err
 	}
 
 	result, err := o.models.Route(ctx, modelProvider, modelbroker.Request{
@@ -57,8 +76,9 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		data["tool_calls"] = toolCalls
 	}
 
-	payload, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID})
-	if _, err := o.spine.CommitModelResult(ctx, st.tenant, st.sessionID, "run.model_result.v1", payload); err != nil {
+	stored, _ := json.Marshal(data)
+	resultEvent, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID})
+	if _, err := o.spine.CommitModelResult(ctx, st.tenant, st.sessionID, requestID, stored, "run.model_result.v1", resultEvent); err != nil {
 		return err
 	}
 	return st.ch.Send(ctx, o.frame(st, "model.result", data, string(frame.ID)))

@@ -8,6 +8,7 @@ DROP TABLE IF EXISTS
     usage_events,
     artifacts,
     tool_calls,
+    model_requests,
     model_route_revisions,
     model_routes,
     model_connections,
