@@ -778,8 +778,13 @@ git commit -m "feat: execute responses through the common kernel"
 - Modify: `protocols/runner/runner.schema.json`
 - Modify: `tests/sandboxes/engine/main.go`
 - Modify: `cmd/runner/main.go`
+- Modify: `apps/control-plane/internal/execution/orchestrator.go` (intake sequence monotonicity — Task 11 review follow-up)
+- Modify: `apps/control-plane/internal/execution/model_dispatch.go` (ad-hoc event adlarının kanonik registry adlarına katlanması — Task 11 review follow-up)
+- Modify: `apps/control-plane/internal/execution/tool_dispatch.go` (aynı katlama)
+- Create: `apps/control-plane/internal/execution/events_registry_test.go` (emitted ⊆ registry cross-check)
 - Test: `tests/conformance/engine/stream_test.go`
 - Test: `tests/fault/runner/stream_kill_test.go`
+- Test: `apps/control-plane/e2e/responses/live_loop_test.go` (Modify — intake monotonicity case + event-adı assertion güncellemeleri)
 
 **Interfaces:**
 
@@ -868,7 +873,45 @@ Run: `go test ./tests/fault/runner -run TestStreamKill -count=5 -v`
 
 Expected: PASS; false success yok.
 
-- [ ] **Step 6: cmd/runner'ı streaming loop'a geçir**
+- [ ] **Step 6: Controller intake sequence monotonicity'sini uygula (Task 11 review follow-up)**
+
+Task 11'in orchestrator intake'i envelope/identity/time doğrular ama engine frame `sequence` monotonicity'sini doğrulamaz; Task 8 batch supervisor'ı `index+1`'i zorluyordu (`packages/runner/supervisor.go` `validateFrame`). Parite kapatılır: intake döngüsü attempt başına son kabul edilen sequence'ı tutar ve her frame'de `frame.Sequence == last+1` şartını arar; gap'li veya yeniden sıralanmış sequence protocol violation olarak attempt'i düşürür, hiçbir dispatch tetiklenmez.
+
+Önce failing test — `apps/control-plane/e2e/responses/live_loop_test.go`'ya eklenir:
+
+```go
+func TestIntakeRejectsNonMonotonicEngineSequence(t *testing.T)
+// Scripted test channel engine.ready'yi sequence=1 ile, sonraki frame'i sequence=3
+// ile verir. Assert: attempt protocol violation ile failed olur, model/tool dispatch
+// sayaçları sıfır kalır, run exactly-one terminal (failed) üretir.
+```
+
+Run: `go test ./apps/control-plane/e2e/responses -run TestIntakeRejects -v`
+
+Expected: önce FAIL (gap kabul ediliyor), tek satırlık kontrol sonrası PASS.
+
+- [ ] **Step 7: Ad-hoc event adlarını kanonik registry adlarına katla (Task 11 review follow-up)**
+
+Task 11 dispatcher'ları `run.model_request.v1`, `run.model_result.v1`, `run.tool_result.v1` tiplerini ad-hoc emit eder; registry (`protocols/schemas/execution/event-types.json`, spec §13.3/§21.3'ten türetilmiş) aynı kavramların kanonik adlarını ZATEN içerir. Registry büyütülmez; emit edilen adlar kanonik adlara katlanır (üç eşleme de doğrulandı: aynı granülarite — brokered model call başına bir model_step — ve aynı lifecycle noktası):
+
+- `model_dispatch.go:48` `CommitModelRequest` çağrısındaki `"run.model_request.v1"` → `"model_step.created.v1"` (model request Route'tan önce persist edilirken = step'in yaratılışı).
+- `model_dispatch.go:81` `CommitModelResult` çağrısındaki `"run.model_result.v1"` → `"model_step.completed.v1"` (finalize edilmiş canonical result commit'i; §25.9 partial delta bir completed result değildir). Sanitized failure branch'i eklendiğinde adı `"model_step.failed.v1"`dir.
+- `tool_dispatch.go:30` `CommitToolResult` çağrısındaki `"run.tool_result.v1"` → `"tool_call.completed.v1"` — phase-02 `statemachines.ToolCallTable`'ın Executing→Completed geçişi tam bu adı zaten üretir (`packages/state-machines/tool_call.go:55`); literal hardcode etmek yerine tablonun döndürdüğü event adını geçir, tek kaynak tablo kalsın. (`tool_call.reconciled_completed.v1` yalnızca §26 uncertain-reconciliation yoludur, bu path değil.)
+- Test güncellemeleri: `apps/control-plane/e2e/responses/live_loop_test.go:102,105,110` (`run.model_request/result.v1` beklentileri) ve `:141` (SQL `type='run.tool_result.v1'`) kanonik adlara çevrilir.
+
+Gelecekte ad-hoc ad üretimini önlemek için cross-check kalır — `events_registry_test.go`, `packages/state-machines/registry_test.go` ile aynı dosya-okuma deseniyle:
+
+```go
+func TestEmittedOrchestratorEventsAreInCanonicalRegistry(t *testing.T)
+// execution package'ın emit ettiği her event type constant'ı
+// protocols/schemas/execution/event-types.json listesinde bulunur.
+```
+
+Run: `go test ./apps/control-plane/internal/execution -run TestEmitted -v && make test-e2e TEST=responses`
+
+Expected: PASS; schema değişikliği yok (registry'ye ekleme yapılmaz), `make check-generated` zero-drift kalır.
+
+- [ ] **Step 8: cmd/runner'ı streaming loop'a geçir**
 
 `cmd/runner/main.go`: `OpenLease` → `StreamSupervisor.Stream`; sink her frame'i `SendEngineFrame` ile iletir, `ReceiveControllerFrame` çıktısı `inbound` kanalına akar; sonunda `Complete` gönderilir.
 
@@ -876,10 +919,10 @@ Run: `make verify`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add adapters/sandboxes/oci packages/runner protocols/runner packages/contracts tests/sandboxes/engine tests/conformance/engine tests/fault/runner cmd/runner
+git add adapters/sandboxes/oci packages/runner protocols/runner packages/contracts apps/control-plane tests/sandboxes/engine tests/conformance/engine tests/fault/runner cmd/runner
 git commit -m "feat: stream the engine protocol through a live supervisor"
 ```
 
@@ -892,8 +935,13 @@ git commit -m "feat: stream the engine protocol through a live supervisor"
 - Create: `apps/control-plane/internal/execution/runner_gateway.go`
 - Modify: `apps/control-plane/api/router.go`
 - Modify: `cmd/runner/main.go` (yalnızca "gateway does not exist" doc comment'inin kaldırılması)
+- Modify: `packages/model-broker/types.go` (provider idempotency key — Task 11 review follow-up; plumbing'in evi Task 10'un model-broker'ıdır)
+- Modify: `adapters/models/provider_one/adapter.go`
+- Modify: `adapters/models/fake/adapter.go`
+- Modify: `apps/control-plane/internal/execution/model_dispatch.go`
 - Test: `tests/conformance/engine/gateway_test.go`
-- Test: `tests/e2e/responses/gateway_parity_test.go`
+- Test: `apps/control-plane/e2e/responses/gateway_parity_test.go`
+- Test: `apps/control-plane/e2e/responses/reclaim_test.go`
 
 **Interfaces:**
 
@@ -944,9 +992,30 @@ Run: `go test ./tests/conformance/engine -run TestGateway -v`
 
 Expected: PASS.
 
-- [ ] **Step 4: Live channel parity e2e testini yaz ve çalıştır**
+- [ ] **Step 4: Cross-attempt provider idempotency key'ini uygula (Task 11 review follow-up)**
 
-`tests/e2e/responses/gateway_parity_test.go` (Docker gerektirir; runner fault suite'iyle aynı guard'ı kullanır):
+Task 11 fix'inin kalıntısı: model request Route'tan önce persist edilir ve COMMITTED result replay edilir; ama "Route verildi, result commit edilmeden process düştü" penceresi reclaim'de ikinci bir provider çağrısına hâlâ izin verir. Tam kapanış provider-side idempotency key ister — §53.4 (exactly-one-retry-owner) ve §35.3 (at-least-once + idempotent effect; evrensel exactly-once değil) bunun çapalarıdır.
+
+- `modelbroker.Request`'e `IdempotencyKey string` alanı eklenir; `model_dispatch.go` onu deterministik türetir: `string(run_id) + "/" + string(model_request_id)`. Her ikisi de attempt'ler arasında sabittir, dolayısıyla reclaim edilen attempt aynı key'i taşır.
+- Adapter'lar key'i provider'a iletir: `provider_one` HTTP `Idempotency-Key` header'ı olarak; `fake` adapter gördüğü key'leri kaydeder ve aynı key'in ikinci çağrısında stored result'ı döndürüp effect sayacını artırmaz.
+
+Failing fault testi — `apps/control-plane/e2e/responses/reclaim_test.go`:
+
+```go
+func TestReclaimAfterCrashBetweenRouteAndCommitReusesProviderIdempotencyKey(t *testing.T)
+// Fake provider Route çağrısını kaydettikten sonra, result commit edilmeden
+// orchestrator process'i öldürülür; lease expiry sonrası reclaim edilen attempt
+// Route'u yeniden verir. Assert: provider iki çağrıda da AYNI idempotency key'i
+// gördü ve provider effect sayacı 1'de kaldı — tek dış etki, tek usage settle.
+```
+
+Run: `go test ./apps/control-plane/e2e/responses -run TestReclaim -v`
+
+Expected: önce FAIL (iki farklı çağrı/effect), key plumbing sonrası PASS.
+
+- [ ] **Step 5: Live channel parity e2e testini yaz ve çalıştır**
+
+`apps/control-plane/e2e/responses/gateway_parity_test.go` (Docker gerektirir; runner fault suite'iyle aynı guard'ı kullanır):
 
 ```go
 func TestGatewayLoopMatchesSubprocessChannelOutcome(t *testing.T)
@@ -958,14 +1027,14 @@ func TestNoSecretReachesEngineThroughGateway(t *testing.T)
 // Sentinel provider secret hiçbir engine env/frame/redacted stderr içinde görünmez.
 ```
 
-Run: `go test ./tests/e2e/responses -run TestGateway -v`
+Run: `go test ./apps/control-plane/e2e/responses -run TestGateway -v`
 
 Expected: PASS; iki channel aynı canonical sonucu üretir.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add apps/control-plane/internal/execution apps/control-plane/api cmd/runner tests/conformance/engine tests/e2e/responses
+git add apps/control-plane packages/model-broker adapters/models cmd/runner tests/conformance/engine
 git commit -m "feat: bridge the orchestrator to live runners through the gateway"
 ```
 
@@ -979,9 +1048,10 @@ git commit -m "feat: bridge the orchestrator to live runners through the gateway
 - Create: `storage/migrations/000002_retention.down.sql`
 - Create: `apps/control-plane/internal/execution/retention.go`
 - Modify: `apps/control-plane/api/middleware/idempotency.go`
-- Modify: `apps/control-plane/api/responses.go`
+- Modify: `apps/control-plane/api/responses.go` (GET /v1/responses/{id} endpoint'i — Task 11'den deferred — ve 410 yolları)
 - Test: `tests/component/postgres/retention_test.go`
-- Test: `tests/e2e/responses/store_false_test.go`
+- Test: `apps/control-plane/e2e/responses/store_false_test.go`
+- Test: `tests/conformance/api/responses_test.go` (Modify — retrieval 200/404 case'leri)
 
 **Interfaces:**
 
@@ -1014,7 +1084,7 @@ func TestPurgeReplacesEventPayloadsButKeepsSequence(t *testing.T)
 // sequence bütünlüğü korunur.
 ```
 
-`tests/e2e/responses/store_false_test.go` (Task 11 kapsamından taşındı):
+`apps/control-plane/e2e/responses/store_false_test.go` (Task 11 kapsamından taşındı; Task 11 harness'ını yeniden kullanır):
 
 ```go
 func TestStoreFalseContentIsGoneAfterConfiguredTTL(t *testing.T)
@@ -1036,26 +1106,46 @@ Run: `make test-component TEST=postgres && make test-e2e TEST=responses`
 
 Expected: retention migration/reaper/410 yolları olmadığı için FAIL.
 
-- [ ] **Step 3: Migration ve reaper'ı uygula**
+- [ ] **Step 3: GET /v1/responses/{id} endpoint'ini inşa et (Task 11'den deferred)**
+
+Task 11 implementasyonu retrieval'ı DB'den doğrudan okuyarak doğruladı; OpenAPI'de sözleşmeli `GET /v1/responses/{id}` sahipsiz kaldı. Bu task'ın purge testleri HTTP 410'u ancak bu endpoint üzerinden kanıtlayabilir; o yüzden endpoint burada, purge makinesinden önce inşa edilir.
+
+- `responses.go`: `GET /v1/responses/{id}` — 200 terminal projection (status, output, model, usage, error); verified project scope dışı veya bilinmeyen ID 404 `not_found`.
+- `tests/conformance/api/responses_test.go`'ya iki case eklenir:
+
+```go
+func TestRetrieveReturnsTerminalProjection(t *testing.T)
+// tamamlanmış response GET ile 200 döner; status/output/usage admission+terminal
+// commit'iyle birebir aynıdır.
+func TestRetrieveUnknownIDReturns404(t *testing.T)
+```
+
+- Step 1'deki purge testleri (`TestRetrieveAfterPurgeReturns410RetentionExpired`, `TestDuplicateCreateAfterPurgeReturns410WithoutReexecution`) assertion'larını DB'den değil bu HTTP endpoint'i üzerinden yapar.
+
+Run: `go test ./tests/conformance/api -run TestRetrieve -v`
+
+Expected: iki yeni case PASS; purge case'leri hâlâ FAIL (410 yolları Step 5'te gelir).
+
+- [ ] **Step 4: Migration ve reaper'ı uygula**
 
 - Migration: `responses.store boolean not null default true` (admission'da persist edilir), `responses.purged_at timestamptz`; `idempotency_records`'a `result_purged_at timestamptz`, `resource_tombstone text`, `outcome_fingerprint text`.
 - `retention.go`: configured TTL'i (`PALAI_RETENTION_STORE_FALSE_TTL`; UAT'ta saniye mertebesi, production default'u bu task'ta değiştirilmez) geçmiş `store=false` terminal response'ları seçer; tek transaction'da content sütunlarını temizler, event payload'larını `{"purged": true}` ile değiştirir, artifact byte'larını siler, `purged_at` yazar ve idempotency satırını §20.9 tombstone alanlarına daraltır.
 - Configured retention değeri discovery yüzeyinde yayınlanır (§20.9); Task 12 `doctor --json` bu alanı okur.
 
-- [ ] **Step 4: 410 yollarını uygula**
+- [ ] **Step 5: 410 yollarını uygula**
 
-`idempotency.go`: reservation lookup'ı `result_purged_at` dolu satırda 410 `idempotency_result_expired` + tombstone identity döndürür ve execution başlatmaz. `responses.go`: `purged_at` dolu response'un GET'i 410 `retention_expired` döndürür.
+`idempotency.go`: reservation lookup'ı `result_purged_at` dolu satırda 410 `idempotency_result_expired` + tombstone identity döndürür ve execution başlatmaz. `responses.go`: `purged_at` dolu response'un GET'i (Step 3 endpoint'i) 410 `retention_expired` döndürür.
 
-- [ ] **Step 5: Testleri çalıştır**
+- [ ] **Step 6: Testleri çalıştır**
 
 Run: `make test-component TEST=postgres && make test-e2e TEST=responses`
 
 Expected: PASS; retained response davranışı değişmemiştir.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add storage/migrations apps/control-plane tests/component/postgres tests/e2e/responses
+git add storage/migrations apps/control-plane tests/component/postgres tests/conformance/api
 git commit -m "feat: purge store-false content behind idempotency tombstones"
 ```
 
