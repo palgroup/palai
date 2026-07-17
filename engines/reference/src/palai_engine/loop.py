@@ -1,0 +1,151 @@
+"""The deterministic reference run loop (spec §25.10).
+
+Model and tool decisions advance only via controller result frames: this engine
+never imports a provider SDK. Every transition rests at a safe boundary
+(spec §25.11), so cancellation and the single-terminal invariant hold by
+construction.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from enum import Enum
+
+from . import output, protocol
+from .context import Context
+from .protocol import Emitter
+
+
+class State(str, Enum):
+    AWAITING_START = "awaiting_start"
+    BEFORE_MODEL = "before_model"
+    AWAITING_MODEL = "awaiting_model"
+    AWAITING_TOOLS = "awaiting_tools"
+    VALIDATING_OUTPUT = "validating_output"
+    TERMINAL = "terminal"
+
+
+def _noop(event: str, **fields: object) -> None:
+    pass
+
+
+class Loop:
+    """One run's state machine. ``handle`` consumes one controller frame and returns
+    the engine frames it triggers. The loop starts after a successful handshake."""
+
+    def __init__(self, emitter: Emitter, context: Context, *, log: Callable[..., None] = _noop) -> None:
+        self.emitter = emitter
+        self.context = context
+        self.state = State.AWAITING_START
+        self.log = log
+        self._step = 0
+        self._model_request_id: str | None = None
+        self._pending_tools: set[str] = set()
+
+    def handle(self, frame: dict) -> list[dict]:
+        type_ = frame.get("type")
+
+        # One-terminal invariant: nothing after terminal produces another terminal.
+        if self.state is State.TERMINAL:
+            return [self._error("run_already_terminal", f"{type_!r} ignored after terminal")]
+
+        # Cancellation is honored at the current safe boundary. Every awaiting_*
+        # state is a boundary: the engine holds no in-flight side effect of its own.
+        if type_ == "run.cancel":
+            return self._cancel(frame)
+
+        if self.state is State.AWAITING_START and type_ == "run.start":
+            return self._begin(frame)
+        if self.state is State.AWAITING_MODEL and type_ == "model.result":
+            return self._on_model_result(frame)
+        if self.state is State.AWAITING_TOOLS and type_ == "tool.result":
+            return self._on_tool_result(frame)
+        return [self._error("unexpected_frame", f"{type_!r} is not accepted in {self.state.value}")]
+
+    def _begin(self, frame: dict) -> list[dict]:
+        self.context.start(frame.get("data") or {})
+        return self._request_model()
+
+    def _request_model(self) -> list[dict]:
+        self.state = State.BEFORE_MODEL
+        self._step += 1
+        self.log("safe_boundary", boundary="before_model", step=self._step)
+        payload = self.context.model_request()
+        self._model_request_id = protocol.model_request_id(self.emitter.run_id, self._step)
+        data = {
+            "model_request_id": self._model_request_id,
+            "request_hash": protocol.content_hash(payload),
+            **payload,
+        }
+        frame = self.emitter.build("model.request", data)
+        self.state = State.AWAITING_MODEL
+        return [frame]
+
+    def _on_model_result(self, frame: dict) -> list[dict]:
+        data = frame.get("data") or {}
+        if data.get("model_request_id") != self._model_request_id:
+            return [self._error("uncorrelated_model_result", "model_request_id does not match the outstanding request")]
+        self.log("safe_boundary", boundary="after_model", step=self._step)
+        self.context.add_model_result(data)
+
+        tool_calls = data.get("tool_calls") or []
+        if tool_calls:
+            return self._request_tools(tool_calls, reply_to=frame.get("id"))
+        return self._finish(data, reply_to=frame.get("id"))
+
+    def _request_tools(self, tool_calls: list[dict], *, reply_to: str | None) -> list[dict]:
+        self._pending_tools.clear()
+        frames: list[dict] = []
+        for index, call in enumerate(tool_calls):
+            call_id = protocol.tool_call_id(self.emitter.run_id, self._step, index)
+            self._pending_tools.add(call_id)
+            self.log("safe_boundary", boundary="before_tool", tool_call_id=call_id)
+            frames.append(
+                self.emitter.build(
+                    "tool.request",
+                    {
+                        "tool_call_id": call_id,
+                        "name": call.get("name"),
+                        "arguments": call.get("arguments") or {},
+                        "request_hash": protocol.content_hash([call.get("name"), call.get("arguments") or {}]),
+                    },
+                    reply_to=reply_to,
+                )
+            )
+        self.state = State.AWAITING_TOOLS
+        return frames
+
+    def _on_tool_result(self, frame: dict) -> list[dict]:
+        data = frame.get("data") or {}
+        call_id = data.get("tool_call_id")
+        if call_id not in self._pending_tools:
+            return [self._error("unknown_tool_call", f"{call_id!r} is not an outstanding tool call")]
+        self.log("safe_boundary", boundary="after_tool", tool_call_id=call_id)
+        self.context.add_tool_result(data)
+        self._pending_tools.discard(call_id)
+        if self._pending_tools:
+            return []  # still awaiting the remaining tool results
+        return self._request_model()  # resume: next model request for the next step
+
+    def _finish(self, data: dict, *, reply_to: str | None) -> list[dict]:
+        self.state = State.VALIDATING_OUTPUT
+        try:
+            items = output.output_items(data)
+        except protocol.ProtocolError as exc:
+            return [self._terminal("failed", reason=exc.code, reply_to=reply_to)]
+        frames = [self.emitter.build("output.item", item, reply_to=reply_to) for item in items]
+        frames.append(self._terminal("completed", output_value=data.get("output"), reply_to=reply_to))
+        return frames
+
+    def _cancel(self, frame: dict) -> list[dict]:
+        reason = (frame.get("data") or {}).get("reason", "canceled")
+        self.log("safe_boundary", boundary="cancel", state=self.state.value)
+        return [self._terminal("canceled", reason=reason, reply_to=frame.get("id"))]
+
+    def _terminal(self, outcome: str, *, output_value: object = None, reason: str | None = None, reply_to: str | None = None) -> dict:
+        self.state = State.TERMINAL
+        return self.emitter.build("run.terminal", output.terminal_data(outcome, output=output_value, reason=reason), reply_to=reply_to)
+
+    def _error(self, code: str, message: str) -> dict:
+        self.log("protocol_error", code=code)
+        return self.emitter.build("protocol.error", {"code": code, "message": message})

@@ -9,6 +9,7 @@ SHELL := /bin/bash
 bootstrap:
 	go mod download
 	uv sync --locked
+	uv sync --locked --project engines/reference
 	pnpm install --frozen-lockfile
 
 generate:
@@ -32,6 +33,7 @@ test-unit:
 	@bash scripts/test/foundation.sh
 	@packages="$$(go list ./... 2>/dev/null || true)"; \
 	if test -n "$$packages"; then go test ./...; fi
+	@uv run --locked --project engines/reference pytest engines/reference/tests -q
 
 test-spikes:
 	@bash scripts/test/spikes.sh

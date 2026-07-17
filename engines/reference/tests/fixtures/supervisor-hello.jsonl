@@ -1,0 +1,1 @@
+{"protocol":"engine.v1","id":"frm_hello1","type":"supervisor.hello","sequence":1,"time":"2026-07-16T12:00:00Z","data":{"protocols":["engine.v1"],"limits":{"max_frame_bytes":1048576},"features":[]}}
