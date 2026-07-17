@@ -139,10 +139,97 @@ run_sse() {
   echo "e2e_sse=PASS containers=$containers_after volumes=$volumes_after"
 }
 
+run_responses() {
+  # Response-kernel end-to-end: real PostgreSQL + the real API router + the real
+  # coordinator run in-process, and the reference engine runs as a real subprocess
+  # through the injectable EngineChannel seam (deterministic fake provider, no network).
+  # The orchestrator is internal to the control plane, so the white-box suite lives
+  # under apps/control-plane/e2e (Go forbids importing internal packages from tests/).
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "responses e2e suite requires uv on PATH (for the reference engine subprocess)" >&2
+    exit 1
+  fi
+  # Warm the engine environment once so per-attempt `uv run` is offline and fast.
+  uv sync --locked --project engines/reference >/dev/null
+
+  local image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  local label="io.palai.e2e=responses"
+  local run_id="$$-${RANDOM}"
+  local container="palai-e2e-responses-$run_id"
+  local volume="palai-e2e-responses-$run_id"
+  local password="palai-e2e-${RANDOM}${RANDOM}"
+
+  count_containers() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_volumes() { docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+  }
+
+  local containers_before volumes_before
+  containers_before="$(count_containers)"
+  volumes_before="$(count_volumes)"
+  trap cleanup EXIT
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never \
+    --name "$container" \
+    --label "$label" \
+    --env POSTGRES_DB=palai \
+    --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 \
+    --volume "$volume:/var/lib/postgresql/data" \
+    "$image" >/dev/null
+
+  local ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "postgres e2e container did not become ready" >&2
+    exit 1
+  fi
+
+  local binding port url
+  binding="$(docker port "$container" 5432/tcp)"
+  port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+
+  set +e
+  PALAI_E2E_POSTGRES_URL="$url" \
+    PALAI_ENGINE_DIR="$root/engines/reference" \
+    go test -tags=e2e -count="${COUNT:-1}" -v ./apps/control-plane/e2e/responses
+  local status=$?
+  set -e
+  if test "$status" -ne 0; then
+    docker logs "$container" >&2 || true
+  fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers)"
+  volumes_after="$(count_volumes)"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "responses e2e suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then
+    exit "$status"
+  fi
+  echo "e2e_responses=PASS containers=$containers_after volumes=$volumes_after"
+}
+
 case "$suite" in
   sse) run_sse ;;
+  responses) run_responses ;;
   *)
-    echo "unknown e2e suite: $suite (known: sse)" >&2
+    echo "unknown e2e suite: $suite (known: sse, responses)" >&2
     exit 2
     ;;
 esac

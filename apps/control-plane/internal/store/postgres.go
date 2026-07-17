@@ -14,7 +14,6 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
-	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 )
@@ -24,7 +23,7 @@ import (
 // tenant state leaks between requests.
 type Store struct {
 	spine   *coordinator.Store
-	journal *execution.Journal
+	journal *Journal
 }
 
 // Open connects the durable spine. databaseURL carries a local throwaway credential.
@@ -33,7 +32,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{spine: spine, journal: execution.NewJournal(spine.Pool())}, nil
+	return &Store{spine: spine, journal: NewJournal(spine.Pool())}, nil
 }
 
 // Close releases the underlying pool.

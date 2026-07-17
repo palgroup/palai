@@ -18,6 +18,30 @@ SELECT session_id, state, output
 FROM responses
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- RunContext resolves a run's durable context (tenant, session, response, input) by
+-- its primary key. The run id is coordinator-supplied from the claimed job, so this
+-- by-PK read establishes the scope every later write is gated by — the same
+-- cross-tenant infrastructure read the job claim itself performs (spec §24.4).
+-- name: RunContext
+SELECT r.organization_id, r.project_id, r.session_id, r.response_id, resp.input
+FROM runs r
+JOIN responses resp ON resp.id = r.response_id
+WHERE r.id = $1;
+
+-- UpdateResponse writes the terminal Response projection (status + output/usage JSON).
+-- name: UpdateResponse
+UPDATE responses
+SET state = $4, output = $5, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- UpsertToolCall records a completed tool call. ON CONFLICT DO NOTHING makes a
+-- redelivered tool_call_id idempotent: the cached completion is authoritative and is
+-- never overwritten (spec §26.7).
+-- name: UpsertToolCall
+INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, result)
+VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8)
+ON CONFLICT (id) DO NOTHING;
+
 -- Idempotent admission (spec §20.9, §8.3). The reservation is atomic with the
 -- resource creation; the response_body is the exact resource a replay returns.
 

@@ -12,3 +12,8 @@ type EngineFrame struct {
 	Time      string         `json:"time"`
 	Type      string         `json:"type"`
 }
+
+type ToolCall struct {
+	Arguments map[string]any `json:"arguments"`
+	Name      string         `json:"name"`
+}

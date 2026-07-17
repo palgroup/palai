@@ -1,9 +1,9 @@
-// Package execution reads the durable session journal for the control-plane's
-// live event stream. Every read is keyed by the verified tenant scope (spec
-// §39.2): a session_id from another tenant matches no row, so the journal cannot
-// leak one tenant's events to another. The journal is read-only — streaming a
-// session never writes state, so a disconnecting client cannot affect a run.
-package execution
+// Journal reads the durable session journal for the control-plane's live event
+// stream. Every read is keyed by the verified tenant scope (spec §39.2): a
+// session_id from another tenant matches no row, so the journal cannot leak one
+// tenant's events to another. The journal is read-only — streaming a session never
+// writes state, so a disconnecting client cannot affect a run.
+package store
 
 import (
 	"context"

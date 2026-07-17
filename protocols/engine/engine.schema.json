@@ -35,7 +35,16 @@
         "protocol.error", "run.waiting", "run.terminal", "protocol.ack"
       ]
     },
-    "limits": {"max_line_bytes": 1048576}
+    "limits": {"max_line_bytes": 1048576},
+    "tool_call": {
+      "description": "A tool the model asked to run, as it crosses the engine boundary. The provider emits arguments as a JSON string; the controller resolves it to an object exactly once before the frame is built, so the engine only ever sees an object (spec §25.9).",
+      "type": "object",
+      "required": ["name", "arguments"],
+      "properties": {
+        "name": {"type": "string"},
+        "arguments": {"type": "object"}
+      }
+    }
   },
   "allOf": [
     {
@@ -59,6 +68,31 @@
               "nonce": {"type": "string"},
               "checkpoint_formats": {"type": "array", "items": {"type": "string"}},
               "commands": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"required": ["type"], "properties": {"type": {"const": "tool.request"}}},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["arguments"],
+            "properties": {"arguments": {"type": "object"}}
+          }
+        }
+      }
+    },
+    {
+      "if": {"required": ["type"], "properties": {"type": {"const": "model.result"}}},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "tool_calls": {"type": "array", "items": {"$ref": "#/$defs/tool_call"}}
             }
           }
         }
