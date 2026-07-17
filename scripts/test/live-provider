@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Live-provider test tier: the most protected tier. It runs the provider adapter
+# against a REAL provider, so it needs the network and a real credential. The
+# credential is loaded from the git-ignored .env.local into the process
+# environment at runtime and never appears as a command argument, in a log, or in
+# any captured output — the test asserts credential absence by construction, in
+# process. Selected with `make test-live-provider PROVIDER=<p> CASE=<c>`. Kept out
+# of `make verify`/`make test-unit` (network- and credential-bound).
+#
+# set -x must NEVER be enabled in this script: it would echo the sourced secret.
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+provider="${PROVIDER:-provider-one}"
+case_name="${CASE:-text-stream-tool-schema}"
+env_file=".env.local"
+
+# The credential lives only in .env.local. Without it this tier cannot run, and it
+# must fail loudly rather than silently pass a credential-free check.
+if test ! -f "$env_file"; then
+  echo "live-provider tier requires $env_file (git-ignored) with the provider credential; not found" >&2
+  exit 1
+fi
+
+# Resolve the provider/case to a test package and a single test. Do this before
+# loading the secret so an unknown selector fails without touching the credential.
+case "$provider/$case_name" in
+  provider-one/text-stream-tool-schema)
+    pkg="./tests/live/provider"
+    run="TestLiveProviderOneTextStreamToolSchema"
+    required_key="OPENAI_API_KEY"
+    ;;
+  *)
+    echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema" >&2
+    exit 2
+    ;;
+esac
+
+# Load the credential into the environment at runtime. set -a exports every
+# assignment in the file so the go test child inherits it; the source itself never
+# echoes values, and set -x is off (see the header), so the secret never surfaces.
+set -a
+# shellcheck disable=SC1090
+. "./$env_file"
+set +a
+
+if test -z "${!required_key:-}"; then
+  echo "$env_file does not define $required_key for $provider" >&2
+  exit 1
+fi
+
+# The credential travels only in the environment — never in argv (ps-visible) and
+# never in a log. Leak protection is asserted inside the test process by an opaque
+# comparison that never prints the value.
+go test -tags=live -count=1 -run "$run" -v "$pkg"
+
+echo "live_${provider//-/_}_${case_name//-/_}=PASS"

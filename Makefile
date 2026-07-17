@@ -3,8 +3,8 @@ SHELL := /bin/bash
 
 .PHONY: \
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
-	test-fault test-security test-spikes evidence-spikes check-spike-reports verify \
-	local-up local-down local-doctor uat-local-live
+	test-fault test-security test-live-provider test-spikes evidence-spikes \
+	check-spike-reports verify local-up local-down local-doctor uat-local-live
 
 bootstrap:
 	go mod download
@@ -60,6 +60,13 @@ test-fault:
 test-security:
 	@test -x scripts/test/security || { echo "security suite not implemented" >&2; exit 2; }
 	@scripts/test/security
+
+# Most protected tier: real provider over the network, credential loaded from the
+# git-ignored .env.local at runtime. Not part of verify. Select the case with
+# `make test-live-provider PROVIDER=provider-one CASE=text-stream-tool-schema`.
+test-live-provider:
+	@test -x scripts/test/live-provider || { echo "live provider suite not implemented" >&2; exit 2; }
+	@scripts/test/live-provider
 
 verify: lint check-generated test-unit test-spikes check-spike-reports
 	@bash scripts/verify/repository-boundary.sh
