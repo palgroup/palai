@@ -4,6 +4,8 @@ package responses
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,6 +65,40 @@ func TestLiveLoopCompletesOneResponseThroughSubprocessEngine(t *testing.T) {
 	}
 	if n := h.count(`SELECT count(*) FROM tool_calls WHERE run_id=$1`, runID); n != 1 {
 		t.Fatalf("tool_call rows = %d, want 1", n)
+	}
+}
+
+// TestRetrieveCompletedResponseCarriesUsedModel proves the terminal projection
+// completeness follow-up: after the live loop reaches a completed terminal, GET
+// /v1/responses/{id} carries the actually-used model from the committed model result
+// (non-empty), and a completed response carries no error field (spec §8.3 retrieval,
+// response.json requires model and models error as oneOf[problem, null]).
+func TestRetrieveCompletedResponseCarriesUsedModel(t *testing.T) {
+	h := newHarness(t)
+	stop := h.runWorker(h.newOrchestrator(subprocessDialer{engineDir: h.engineDir}))
+	defer stop()
+
+	responseID, _, _ := h.admit()
+	h.awaitResponseState(responseID, "completed", 60*time.Second)
+
+	resp := h.getResponse(responseID, h.token)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", resp.StatusCode)
+	}
+	var got struct {
+		Model string             `json:"model"`
+		Error *contracts.Problem `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode retrieve body error = %v", err)
+	}
+	// The scripted provider commits "fake" as the used model on every model result.
+	if got.Model != "fake" {
+		t.Fatalf("retrieved model = %q, want the used model %q", got.Model, "fake")
+	}
+	if got.Error != nil {
+		t.Fatalf("completed response carried an error = %+v, want none", got.Error)
 	}
 }
 

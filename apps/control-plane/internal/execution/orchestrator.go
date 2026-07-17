@@ -53,6 +53,7 @@ type attemptState struct {
 	lastInboundSeq int // last accepted engine frame sequence; the intake requires the next to be +1
 	output         []contracts.ContentItem
 	usage          contracts.Usage
+	model          string // the actually-used model from the latest committed model result
 }
 
 // ExecuteAttempt drives one run attempt to a terminal outcome. It provisions and

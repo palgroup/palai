@@ -34,6 +34,11 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		if err := json.Unmarshal(stored, &data); err != nil {
 			return fmt.Errorf("replay model result %s: %w", requestID, err)
 		}
+		// The committed result carries the used model, so the replay branch fills the
+		// terminal projection's model without re-routing (spec §53.4).
+		if model, ok := data["model"].(string); ok {
+			st.model = model
+		}
 		// ponytail: replayed usage is not re-accounted; the crash-recovery path
 		// undercounts. Store usage on the row if accurate recovered metering matters.
 		return st.ch.Send(ctx, o.frame(st, "model.result", data, string(frame.ID)))
@@ -64,6 +69,7 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		return fmt.Errorf("route model request %s: %w", requestID, err)
 	}
 	st.usage = addUsage(st.usage, result.Usage)
+	st.model = result.Model
 
 	toolCalls, err := toEngineToolCalls(result.ToolCalls)
 	if err != nil {
@@ -72,7 +78,7 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		return fmt.Errorf("model request %s: provider_error: %w", requestID, err)
 	}
 
-	data := map[string]any{"model_request_id": requestID}
+	data := map[string]any{"model_request_id": requestID, "model": result.Model}
 	if result.Output != "" {
 		data["output"] = result.Output
 	}

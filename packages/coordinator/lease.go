@@ -21,8 +21,14 @@ const reclaimBatch = 100
 const deadLetterBatch = 100
 
 // deadLetterProjection is the terminal Response body a dead-lettered run finalizes to:
-// no output and no usage, because its attempts never produced any.
-var deadLetterProjection = []byte(`{"output":[],"usage":{}}`)
+// no output and no usage, because its attempts never produced any, and a sanitized
+// problem-shaped error so a retrieval of the failed response reads why (spec §22.3,
+// §8.3). model is absent — a dead-lettered run never reached a model step, and the
+// schema accepts an empty model on the failed path. request_id is stamped at retrieval,
+// not stored, so it is omitted here. The shape mirrors execution.terminalProblem's
+// "failed" case; kept as literal JSON so this low-level package need not import
+// contracts. ponytail: literal, not a marshaled struct — one static body, no inputs.
+var deadLetterProjection = []byte(`{"output":[],"usage":{},"error":{"type":"https://docs.palai.dev/problems/internal_error","title":"Internal error","status":500,"code":"internal_error","detail":"the run failed during execution","retryable":true}}`)
 
 // RetryPolicy bounds how a failed job is retried before it is dead-lettered. A
 // failure recorded at or beyond MaxAttempts dead-letters the job; otherwise the job

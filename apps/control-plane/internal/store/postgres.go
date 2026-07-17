@@ -103,8 +103,10 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 
 // GetResponse reads a response's terminal projection within the request's verified
 // scope and renders the retrieval body. A missing or foreign row is a miss (404); a
-// reaped row is Purged (410). Model is not part of the durable terminal projection, so
-// the retrieved resource carries the committed status, output, and usage (spec §22.3).
+// reaped row is Purged (410). The projection carries the committed status, output,
+// usage, the actually-used model, and — on a non-completed terminal — a sanitized
+// problem-shaped error whose request_id is stamped from this retrieval (spec §22.3,
+// §8.3).
 func (s *Store) GetResponse(ctx context.Context, scope middleware.Scope, id string) (api.RetrieveResult, error) {
 	view, err := s.spine.GetResponse(ctx, coordinator.Tenant{Organization: scope.Organization, Project: scope.Project}, id)
 	if err != nil {
@@ -128,6 +130,8 @@ func (s *Store) GetResponse(ctx context.Context, scope middleware.Scope, id stri
 		var projection struct {
 			Output []contracts.ContentItem `json:"output"`
 			Usage  contracts.Usage         `json:"usage"`
+			Model  string                  `json:"model"`
+			Error  *contracts.Problem      `json:"error"`
 		}
 		if err := json.Unmarshal(view.Output, &projection); err != nil {
 			return api.RetrieveResult{}, fmt.Errorf("decode response projection: %w", err)
@@ -136,6 +140,13 @@ func (s *Store) GetResponse(ctx context.Context, scope middleware.Scope, id stri
 			resp.Output = projection.Output
 		}
 		resp.Usage = projection.Usage
+		resp.Model = projection.Model
+		if projection.Error != nil {
+			// The terminal was finalized off any HTTP request, so its error carries no
+			// request_id; stamp this retrieval's so the problem is complete (spec §20.10).
+			projection.Error.RequestID = contracts.RequestID(middleware.RequestID(ctx))
+			resp.Error = projection.Error
+		}
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {

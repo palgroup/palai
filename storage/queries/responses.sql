@@ -128,6 +128,10 @@ tombstone AS (
       AND i.organization_id = v.organization_id
       AND i.project_id = v.project_id
 ),
+-- ponytail: session-level scrub — create her response'a taze session açtığı için bugün
+-- doğru (session:response 1:1); session reuse / previous_response_id chaining gelirse
+-- purge response başına yeniden anahtarlanmalı, yoksa store:false purge aynı session'daki
+-- retained kardeş response'ların journal'ını da siler (events'te per-response anahtar yok).
 scrub_events AS (
     UPDATE events e
     SET payload = '{"purged": true}'::jsonb

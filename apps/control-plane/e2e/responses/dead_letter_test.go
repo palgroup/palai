@@ -5,6 +5,7 @@ package responses
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -103,6 +104,56 @@ func TestDeadLetteredRunJobIsDrivenToFailedTerminal(t *testing.T) {
 	}
 	if after := h.events(sessionID); len(after) != len(events) {
 		t.Fatalf("a second sweep journaled %d new events; the terminal run must not reopen", len(after)-len(events))
+	}
+}
+
+// TestRetrieveDeadLetteredResponseCarriesProblemError proves the terminal projection
+// completeness follow-up on the failed path: a dead-lettered run the reconciler bridge
+// drives to failed retrieves with a sanitized problem-shaped error (code + human title
+// filled), and the error's request_id is stamped by the retrieval request. The dead
+// letter never reached a model step, so model may be empty — only the completed path
+// asserts a non-empty model.
+func TestRetrieveDeadLetteredResponseCarriesProblemError(t *testing.T) {
+	h := newHarness(t)
+	responseID, _, runID := h.admit()
+
+	stop := h.runWorkerWithRetry(
+		h.newOrchestrator(violatingDialer{runID: runID}),
+		coordinator.RetryPolicy{MaxAttempts: 3, BaseBackoff: 5 * time.Millisecond, MaxBackoff: 20 * time.Millisecond},
+	)
+	h.awaitJobStatus(runID, "dead", 30*time.Second)
+	stop()
+
+	// The reconciler bridge drives the dead-lettered run to a failed terminal projection.
+	rec := execution.NewReconciler(h.spine, time.Hour, 3)
+	if _, err := rec.Sweep(context.Background()); err != nil {
+		t.Fatalf("reconciler Sweep error = %v", err)
+	}
+
+	resp := h.getResponse(responseID, h.token)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", resp.StatusCode)
+	}
+	var got struct {
+		Status string             `json:"status"`
+		Error  *contracts.Problem `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode retrieve body error = %v", err)
+	}
+	if got.Status != "failed" {
+		t.Fatalf("retrieved status = %q, want failed", got.Status)
+	}
+	if got.Error == nil {
+		t.Fatal("failed response carried no error; want a problem-shaped error object")
+	}
+	if got.Error.Code == "" || got.Error.Title == "" {
+		t.Fatalf("error is not problem-shaped (code/title empty): %+v", got.Error)
+	}
+	// request_id is stamped at retrieval time, not stored, so it is a valid req_ id.
+	if !strings.HasPrefix(string(got.Error.RequestID), "req_") {
+		t.Fatalf("error.request_id = %q, want a req_ id stamped at retrieval", got.Error.RequestID)
 	}
 }
 
