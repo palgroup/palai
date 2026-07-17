@@ -11,6 +11,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/packages/contracts"
 )
 
 // testToken is the bearer credential the fake backend accepts. The full key is
@@ -65,12 +66,27 @@ func (f *fakeBackend) AdmitResponse(_ context.Context, req api.AdmitRequest) (ap
 	return api.AdmitResult{ResponseID: req.ResponseID, Body: req.Body}, nil
 }
 
+// EventReader: the response-admission conformance tier never streams, so these
+// satisfy the interface without a journal. The SSE contract is proven end-to-end
+// against real Postgres in tests/e2e/sse.
+func (f *fakeBackend) SessionExists(context.Context, string, string, string) (bool, error) {
+	return false, nil
+}
+
+func (f *fakeBackend) ResolveCursor(context.Context, string, string, string, string) (int64, bool, error) {
+	return 0, false, nil
+}
+
+func (f *fakeBackend) After(context.Context, string, string, string, int64, int) ([]contracts.Event, error) {
+	return nil, nil
+}
+
 // newTestServer starts the real router + middleware stack over a fresh fake
 // backend, so every test exercises genuine HTTP round-trips.
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	backend := newFakeBackend()
-	srv := httptest.NewServer(api.NewRouter(backend, backend))
+	srv := httptest.NewServer(api.NewRouter(backend, backend, backend, api.SSEConfig{}))
 	t.Cleanup(srv.Close)
 	return srv
 }

@@ -17,7 +17,24 @@ go run "$root/scripts/contracts/semantic" -mode project \
   -out "$scratch/openapi-3.1.2.yaml"
 
 status=0
-diff -r -x '__pycache__' -x '.DS_Store' "$scratch/go" "$root/packages/contracts" || status=1
+# packages/contracts also holds handwritten, stdlib-only helpers (e.g. events.go)
+# that the generator does not emit, so compare only the generated *.gen.go
+# artifacts here rather than the whole directory — otherwise a hand-written helper
+# reads as spurious drift. The comparison stays loud on real drift: a changed or
+# missing generated file fails the diff, and an orphaned generated file (schema
+# removed/renamed) fails the second pass. The TS/Py/OpenAPI roots are fully
+# generated and stay whole-directory.
+while IFS= read -r -d '' gen; do
+  rel="${gen#"$scratch/go/"}"
+  diff "$gen" "$root/packages/contracts/$rel" || status=1
+done < <(find "$scratch/go" -type f -name '*.gen.go' -print0)
+while IFS= read -r -d '' committed; do
+  rel="${committed#"$root/packages/contracts/"}"
+  if test ! -f "$scratch/go/$rel"; then
+    echo "stale generated file not emitted by the generator: packages/contracts/$rel" >&2
+    status=1
+  fi
+done < <(find "$root/packages/contracts" -type f -name '*.gen.go' -print0)
 diff -r -x '__pycache__' -x '.DS_Store' "$scratch/ts" "$root/protocols/generated/typescript" || status=1
 diff -r -x '__pycache__' -x '.DS_Store' "$scratch/py" "$root/protocols/generated/python" || status=1
 diff "$scratch/openapi-3.1.2.yaml" "$root/protocols/generated/openapi-3.1.2.yaml" || status=1

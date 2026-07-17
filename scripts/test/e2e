@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# End-to-end test tier: exercises the resumable SSE stream against a real running
+# control-plane binary over real Postgres, both in throwaway resources. Selected
+# with `make test-e2e TEST=<suite>`; defaults to the sse suite. Kept out of
+# `make verify`/`make test-unit` (Docker- and server-bound).
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+suite="${TEST:-sse}"
+
+# Short, injected SSE timers so the suite proves heartbeat/slow-consumer behaviour
+# without waiting on production intervals. The binary and the test both read them.
+export PALAI_SSE_POLL_INTERVAL="10ms"
+export PALAI_SSE_HEARTBEAT="1s"
+export PALAI_SSE_WRITE_TIMEOUT="200ms"
+export PALAI_SSE_BATCH_LIMIT="64"
+
+pick_port() {
+  python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+
+run_sse() {
+  # Immutable pinned image (matches the postgres-coordinator spike / ADR-0001).
+  local image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  local label="io.palai.e2e=sse"
+  local run_id="$$-${RANDOM}"
+  local container="palai-e2e-sse-$run_id"
+  local volume="palai-e2e-sse-$run_id"
+  # Throwaway local credential, generated per run; never written to a file.
+  local password="palai-e2e-${RANDOM}${RANDOM}"
+  local workdir
+  workdir="$(mktemp -d)"
+  local binary="$workdir/palai-control-plane"
+  local serverlog="$workdir/server.log"
+  local server_pid=""
+
+  count_containers() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_volumes() { docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    if test -n "$server_pid"; then kill "$server_pid" >/dev/null 2>&1 || true; wait "$server_pid" 2>/dev/null || true; fi
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+    rm -rf "$workdir"
+  }
+
+  local containers_before volumes_before
+  containers_before="$(count_containers)"
+  volumes_before="$(count_volumes)"
+  trap cleanup EXIT
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never \
+    --name "$container" \
+    --label "$label" \
+    --env POSTGRES_DB=palai \
+    --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 \
+    --volume "$volume:/var/lib/postgresql/data" \
+    "$image" >/dev/null
+
+  local ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "postgres e2e container did not become ready" >&2
+    exit 1
+  fi
+
+  local binding port url
+  binding="$(docker port "$container" 5432/tcp)"
+  port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+
+  # Build and start the real control-plane binary against the throwaway database.
+  go build -o "$binary" ./apps/control-plane/cmd/palai-control-plane
+  local app_port
+  app_port="$(pick_port)"
+  PALAI_DATABASE_URL="$url" PALAI_LISTEN_ADDR="127.0.0.1:$app_port" \
+    "$binary" >"$serverlog" 2>&1 &
+  server_pid=$!
+
+  local up=0
+  for _ in $(seq 1 80); do
+    if ! kill -0 "$server_pid" >/dev/null 2>&1; then break; fi
+    if (exec 3<>"/dev/tcp/127.0.0.1/$app_port") 2>/dev/null; then
+      exec 3>&- 3<&- || true
+      up=1
+      break
+    fi
+    sleep 0.125
+  done
+  if test "$up" -ne 1; then
+    cat "$serverlog" >&2 || true
+    echo "control-plane did not start listening on 127.0.0.1:$app_port" >&2
+    exit 1
+  fi
+
+  set +e
+  PALAI_E2E_BASE_URL="http://127.0.0.1:$app_port" \
+    PALAI_E2E_POSTGRES_URL="$url" \
+    go test -tags=e2e -count="${COUNT:-1}" -v ./tests/e2e/sse
+  local status=$?
+  set -e
+  if test "$status" -ne 0; then
+    echo "----- control-plane server log -----" >&2
+    cat "$serverlog" >&2 || true
+    docker logs "$container" >&2 || true
+  fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers)"
+  volumes_after="$(count_volumes)"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "sse e2e suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then
+    exit "$status"
+  fi
+  echo "e2e_sse=PASS containers=$containers_after volumes=$volumes_after"
+}
+
+case "$suite" in
+  sse) run_sse ;;
+  *)
+    echo "unknown e2e suite: $suite (known: sse)" >&2
+    exit 2
+    ;;
+esac

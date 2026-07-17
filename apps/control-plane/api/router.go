@@ -12,11 +12,15 @@ import (
 // NewRouter builds the LP-0 HTTP handler. RequestContext is outermost so every
 // response — success or problem — carries the correlation headers; Auth runs
 // before routing so an unauthenticated request never reaches a handler; the
-// idempotency-key requirement is scoped to the mutating route.
-func NewRouter(verifier middleware.Verifier, admitter Admitter) http.Handler {
+// idempotency-key requirement is scoped to the mutating route. The event stream is
+// a plain GET (no idempotency key) that reads the journal through events.
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sse SSEConfig) http.Handler {
 	mux := http.NewServeMux()
-	handler := &responseHandler{admitter: admitter}
-	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(handler.create)))
+	responses := &responseHandler{admitter: admitter}
+	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
+
+	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}
+	mux.HandleFunc("GET /v1/sessions/{session_id}/events", stream.stream)
 
 	var root http.Handler = mux
 	root = middleware.Auth(verifier)(root)

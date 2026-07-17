@@ -14,6 +14,8 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/apps/control-plane/internal/execution"
+	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 )
 
@@ -21,7 +23,8 @@ import (
 // each method scopes itself by the verified identity passed in, so no shared
 // tenant state leaks between requests.
 type Store struct {
-	spine *coordinator.Store
+	spine   *coordinator.Store
+	journal *execution.Journal
 }
 
 // Open connects the durable spine. databaseURL carries a local throwaway credential.
@@ -30,7 +33,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{spine: spine}, nil
+	return &Store{spine: spine, journal: execution.NewJournal(spine.Pool())}, nil
 }
 
 // Close releases the underlying pool.
@@ -83,6 +86,23 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 		Replayed:   adm.Replayed,
 		Conflict:   adm.Conflict,
 	}, nil
+}
+
+// SessionExists reports whether the session is visible in the given tenant scope;
+// the event stream uses it as the 404 gate for a foreign or unknown session.
+func (s *Store) SessionExists(ctx context.Context, org, project, sessionID string) (bool, error) {
+	return s.journal.SessionExists(ctx, org, project, sessionID)
+}
+
+// ResolveCursor maps a Last-Event-ID to its per-session sequence within scope.
+func (s *Store) ResolveCursor(ctx context.Context, org, project, sessionID, eventID string) (int64, bool, error) {
+	return s.journal.ResolveCursor(ctx, org, project, sessionID, eventID)
+}
+
+// After returns up to limit tenant-scoped events with sequence greater than
+// afterSeq, in ascending order, as CloudEvents envelopes.
+func (s *Store) After(ctx context.Context, org, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error) {
+	return s.journal.After(ctx, org, project, sessionID, afterSeq, limit)
 }
 
 // responseID reads the response id from a stored/created response body so both the

@@ -37,5 +37,6 @@ var problemTitles = map[string]string{
 	"missing_idempotency_key": "Missing idempotency key",
 	"invalid_request":         "Invalid request",
 	"idempotency_mismatch":    "Idempotency key reused with a different request",
+	"not_found":               "Not found",
 	"internal_error":          "Internal error",
 }
