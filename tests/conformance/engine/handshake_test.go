@@ -40,7 +40,9 @@ func TestEnrollmentTokenIsSingleUse(t *testing.T) {
 
 // TestEnrolledRunnerReconnectsWithShortLivedIdentity proves the runner opens the
 // outbound session with the short-lived certificate it obtained at enrollment — never
-// the bootstrap token — and can reconnect on the same identity to receive a lease.
+// the bootstrap token — and can reconnect on the same identity to receive a lease. The
+// connect handler rejects a certless client (handleConnect asserts the verified peer
+// chain), so this succeeds only because the session presents its client certificate.
 func TestEnrolledRunnerReconnectsWithShortLivedIdentity(t *testing.T) {
 	stub := newStubControlPlane(t, []string{"enroll-token-1"}, stubOptions{now: conformanceNow()})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -103,6 +105,34 @@ func TestSessionRejectsProtocolMajorMismatch(t *testing.T) {
 	}
 	if _, err := stub.session(identity).ReceiveLease(ctx); err == nil {
 		t.Fatal("runner accepted a lease offered on an unsupported protocol major")
+	}
+}
+
+// TestRunnerRejectsOverBroadServerIdentity proves the runner pins the exact controller
+// DNS. A server certificate that also carries an extra SAN passes Go's built-in
+// hostname check (controllerDNS is present) but is refused by the runner's own
+// VerifyConnection, so both Enroll and ReceiveLease fail against it and no lease is
+// returned — the runner never falls back to an unverified controller.
+func TestRunnerRejectsOverBroadServerIdentity(t *testing.T) {
+	stub := newStubControlPlane(t, []string{"enroll-token-1"}, stubOptions{
+		now:        conformanceNow(),
+		serverSANs: []string{controllerDNS, "extra.attacker.conformance.palai.test"},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := runner.Enroll(ctx, stub.bootstrap("enroll-token-1")); err == nil {
+		t.Fatal("Enroll accepted an over-broad (multi-SAN) controller server certificate")
+	}
+
+	// A valid short-lived identity is not enough — the session must still refuse the
+	// over-broad server.
+	lease, err := stub.session(stub.issueIdentity(t)).ReceiveLease(ctx)
+	if err == nil {
+		t.Fatalf("ReceiveLease accepted an over-broad controller server certificate: %+v", lease)
+	}
+	if lease.LeaseID != "" {
+		t.Fatalf("ReceiveLease returned a lease despite the server-identity rejection: %+v", lease)
 	}
 }
 

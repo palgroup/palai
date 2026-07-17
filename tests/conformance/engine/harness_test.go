@@ -78,14 +78,14 @@ func newTestCA(t *testing.T, now time.Time) *testCA {
 	return &testCA{certificate: certificate, key: key, pool: pool}
 }
 
-// issueServer mints the controller's own TLS server certificate.
-func (ca *testCA) issueServer(t *testing.T, dnsName string, now time.Time) tls.Certificate {
+// issueServer mints the controller's own TLS server certificate over the given SANs.
+func (ca *testCA) issueServer(t *testing.T, now time.Time, dnsNames ...string) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("generate server key: %v", err)
 	}
-	der := ca.sign(t, &key.PublicKey, dnsName, x509.ExtKeyUsageServerAuth, now.Add(-time.Minute), now.Add(time.Hour))
+	der := ca.sign(t, &key.PublicKey, x509.ExtKeyUsageServerAuth, now.Add(-time.Minute), now.Add(time.Hour), dnsNames...)
 	leaf, err := x509.ParseCertificate(der)
 	if err != nil {
 		t.Fatalf("parse server certificate: %v", err)
@@ -96,23 +96,23 @@ func (ca *testCA) issueServer(t *testing.T, dnsName string, now time.Time) tls.C
 // signClient signs an enrolling runner's public key into a short-lived client
 // certificate — the wire behaviour of the enrollment endpoint.
 func (ca *testCA) signClient(pub *ecdsa.PublicKey, dnsName string, now time.Time) ([]byte, error) {
-	return ca.signRaw(pub, dnsName, x509.ExtKeyUsageClientAuth, now.Add(-time.Second), now.Add(45*time.Second))
+	return ca.signRaw(pub, x509.ExtKeyUsageClientAuth, now.Add(-time.Second), now.Add(45*time.Second), dnsName)
 }
 
-func (ca *testCA) sign(t *testing.T, pub *ecdsa.PublicKey, dnsName string, usage x509.ExtKeyUsage, notBefore, notAfter time.Time) []byte {
+func (ca *testCA) sign(t *testing.T, pub *ecdsa.PublicKey, usage x509.ExtKeyUsage, notBefore, notAfter time.Time, dnsNames ...string) []byte {
 	t.Helper()
-	der, err := ca.signRaw(pub, dnsName, usage, notBefore, notAfter)
+	der, err := ca.signRaw(pub, usage, notBefore, notAfter, dnsNames...)
 	if err != nil {
 		t.Fatalf("sign certificate: %v", err)
 	}
 	return der
 }
 
-func (ca *testCA) signRaw(pub *ecdsa.PublicKey, dnsName string, usage x509.ExtKeyUsage, notBefore, notAfter time.Time) ([]byte, error) {
+func (ca *testCA) signRaw(pub *ecdsa.PublicKey, usage x509.ExtKeyUsage, notBefore, notAfter time.Time, dnsNames ...string) ([]byte, error) {
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
-		Subject:      pkix.Name{CommonName: dnsName},
-		DNSNames:     []string{dnsName},
+		Subject:      pkix.Name{CommonName: dnsNames[0]},
+		DNSNames:     dnsNames,
 		NotBefore:    notBefore,
 		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -135,9 +135,10 @@ func serial(t *testing.T) *big.Int {
 // harness can drive the accept, timeout, and version-mismatch cases.
 type stubOptions struct {
 	now             time.Time
-	offerProtocol   string // protocol value the lease.offer carries (default runner.v1)
-	subprotocol     string // websocket subprotocol the connect endpoint offers (default runner.v1)
-	silentHandshake bool   // accept the socket but never send a lease.offer
+	offerProtocol   string   // protocol value the lease.offer carries (default runner.v1)
+	subprotocol     string   // websocket subprotocol the connect endpoint offers (default runner.v1)
+	silentHandshake bool     // accept the socket but never send a lease.offer
+	serverSANs      []string // server certificate SANs (default [controllerDNS])
 }
 
 // stubControlPlane is an outbound-only counterpart: it serves the enrollment
@@ -160,6 +161,9 @@ func newStubControlPlane(t *testing.T, tokens []string, options stubOptions) *st
 	if options.subprotocol == "" {
 		options.subprotocol = "runner.v1"
 	}
+	if len(options.serverSANs) == 0 {
+		options.serverSANs = []string{controllerDNS}
+	}
 	ca := newTestCA(t, options.now)
 	stub := &stubControlPlane{ca: ca, options: options, consumedTokens: map[string]bool{}}
 	for _, token := range tokens {
@@ -176,7 +180,10 @@ func newStubControlPlane(t *testing.T, tokens []string, options stubOptions) *st
 	mux.HandleFunc("/v1/runner/enroll", stub.handleEnroll)
 	mux.HandleFunc("/v1/runner/connect", stub.handleConnect)
 
-	serverCert := ca.issueServer(t, controllerDNS, options.now)
+	// VerifyClientCertIfGiven, not RequireAndVerify: the enrollment endpoint must accept
+	// the certless bootstrap request. The connect handler enforces the client identity
+	// itself (see handleConnect), so a session that presents no certificate is rejected.
+	serverCert := ca.issueServer(t, options.now, options.serverSANs...)
 	stub.server = &http.Server{
 		Handler: mux,
 		TLSConfig: &tls.Config{
@@ -223,6 +230,30 @@ func (s *stubControlPlane) session(identity runner.Identity) runner.Session {
 		ControllerCAs: s.ca.pool,
 		ControllerDNS: controllerDNS,
 		Now:           func() time.Time { return s.options.now },
+	}
+}
+
+// issueIdentity mints a valid short-lived runner identity directly from the stub's CA,
+// bypassing the enrollment exchange. It lets a test isolate the session's server-identity
+// check when enrollment against the same (deliberately bad) server would itself fail.
+func (s *stubControlPlane) issueIdentity(t *testing.T) runner.Identity {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate identity key: %v", err)
+	}
+	der, err := s.ca.signClient(&key.PublicKey, runnerDNS, s.options.now)
+	if err != nil {
+		t.Fatalf("sign identity: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse identity: %v", err)
+	}
+	return runner.Identity{
+		RunnerID:    runnerID,
+		Certificate: tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf},
+		NotAfter:    leaf.NotAfter,
 	}
 }
 
@@ -277,6 +308,14 @@ func (s *stubControlPlane) handleEnroll(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *stubControlPlane) handleConnect(w http.ResponseWriter, r *http.Request) {
+	// The session must present its short-lived client identity: the server TLS accepts a
+	// certless handshake (for enrollment), so the leasing endpoint asserts the verified
+	// client chain here. Without this, a session that never sent a certificate would still
+	// be served.
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		http.Error(w, "runner client certificate required", http.StatusUnauthorized)
+		return
+	}
 	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{s.options.subprotocol}})
 	if err != nil {
 		return
