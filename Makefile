@@ -3,8 +3,8 @@ SHELL := /bin/bash
 
 .PHONY: \
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
-	test-fault test-spikes evidence-spikes check-spike-reports verify local-up \
-	local-down local-doctor uat-local-live
+	test-fault test-security test-spikes evidence-spikes check-spike-reports verify \
+	local-up local-down local-doctor uat-local-live
 
 bootstrap:
 	go mod download
@@ -54,6 +54,10 @@ test-e2e:
 test-fault:
 	@test -x scripts/test/fault || { echo "fault suite not implemented" >&2; exit 2; }
 	@scripts/test/fault
+
+test-security:
+	@test -x scripts/test/security || { echo "security suite not implemented" >&2; exit 2; }
+	@scripts/test/security
 
 verify: lint check-generated test-unit test-spikes check-spike-reports
 	@bash scripts/verify/repository-boundary.sh

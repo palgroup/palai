@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Security test tier: supervises the fixture engine in a real digest-pinned OCI
+# container and proves the untrusted engine receives only an exact environment
+# allowlist (no provider/DB/object-store/runner secret, no Docker socket, no runner
+# key), that stderr is redacted and bounded independently of stdout, and that the
+# container is unfindable by allocation ID once destroyed. Selected with
+# `make test-security TEST=<suite>`; defaults to the runner suite. Repeat-count is
+# COUNT. Kept out of `make verify`/`make test-unit` (Docker-bound).
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# shellcheck source=scripts/test/runner-engine.sh
+source "$root/scripts/test/runner-engine.sh"
+
+suite="${TEST:-runner}"
+
+run_runner() {
+  run_runner_suite security ./tests/security/runner
+}
+
+case "$suite" in
+  runner) run_runner ;;
+  *)
+    echo "unknown security suite: $suite (known: runner)" >&2
+    exit 2
+    ;;
+esac

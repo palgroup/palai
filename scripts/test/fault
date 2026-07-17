@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Fault-injection test tier: kills a durable-coordinator worker mid-lease against a
-# real PostgreSQL process and proves the lease is reclaimed at a higher fence while
-# the killed worker's completion is rejected. Selected with
-# `make test-fault TEST=<suite>`; defaults to the coordinator suite. Repeat-count is
-# COUNT (the plan gate runs it at 20). Kept out of `make verify`/`make test-unit`
-# (Docker-bound).
+# Fault-injection test tier. Selected with `make test-fault TEST=<suite>`; defaults to
+# the coordinator suite. Repeat-count is COUNT (the plan gate runs it at 20). Kept out
+# of `make verify`/`make test-unit` (Docker-bound).
+#
+#   coordinator  kills a durable-coordinator worker mid-lease against real PostgreSQL
+#                and proves the lease is reclaimed at a higher fence while the killed
+#                worker's completion is rejected.
+#   runner       supervises the fixture engine in a real digest-pinned OCI container
+#                and proves a hung engine is force-killed and classified terminal, and
+#                that malformed or oversized stdout fails the attempt safely.
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
+
+# shellcheck source=scripts/test/runner-engine.sh
+source "$root/scripts/test/runner-engine.sh"
 
 suite="${TEST:-coordinator}"
 
@@ -92,10 +99,19 @@ run_coordinator() {
   echo "fault_coordinator=PASS containers=$containers_after volumes=$volumes_after"
 }
 
+# run_runner cross-builds the fixture engine into a digest-pinned `FROM scratch` image
+# and supervises it through the real Moby driver, proving kill classification and JSONL
+# bounds. The supervisor labels every sandbox container io.palai.sandbox=engine, so a
+# leaked allocation is a non-zero delta after the run.
+run_runner() {
+  run_runner_suite fault ./tests/fault/runner
+}
+
 case "$suite" in
   coordinator) run_coordinator ;;
+  runner) run_runner ;;
   *)
-    echo "unknown fault suite: $suite (known: coordinator)" >&2
+    echo "unknown fault suite: $suite (known: coordinator, runner)" >&2
     exit 2
     ;;
 esac
