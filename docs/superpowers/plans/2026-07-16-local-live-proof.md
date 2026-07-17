@@ -627,44 +627,436 @@ git add packages/model-broker packages/tool-broker adapters/models tests/conform
 git commit -m "feat: broker real models and idempotent tools"
 ```
 
-### Task 11: End-to-end Response orchestration
+### Task 11: End-to-end Response orchestration (injectable engine channel)
+
+> **Fork kararı 1 — engine execution channel:** Task 8 supervisor'ı batch'tir (container'ı tamamlanana kadar çalıştırır, stdin'e hiçbir frame yazmaz, `supervisor.hello` göndermez); Task 9 engine'i ise stdin'den `model.result`/`tool.result` bekleyen canlı bir stdio oturumudur ve production runner gateway henüz yoktur. Orchestrator çekirdeği bu task'ta **bir kez**, enjekte edilebilir `EngineChannel` seam'ine karşı yazılır. Deterministic e2e bu seam'i, reference engine'i bare `os/exec` subprocess olarak çalıştıran test channel'ıyla sürer; OCI + mTLS dışına yalnızca bu test kanalı çıkar. Hardened production yolu aynı seam'in ikinci implementasyonu olarak Task 11b (streaming supervisor, runner tarafı) ve Task 11c (runner gateway + live parity, controller tarafı) ile ayrı ayrı kanıtlanır. Hiçbir kapsam silinmez; yalnızca yeniden sıralanır.
+>
+> **Fork kararı 2 — retention:** `store:false` purge → tombstone → 410 makinesi (§20.9/§8.3) bağımsız bir alt sistemdir ve sıfır implementasyonu vardı; Task 11d'ye taşındı. Bu task'ın e2e testleri live_loop ve restart'tır; `store_false_test.go` Task 11d'de yaşar.
 
 **Files:**
 
+- Create: `apps/control-plane/internal/execution/engine_channel.go`
 - Create: `apps/control-plane/internal/execution/orchestrator.go`
-- Create: `apps/control-plane/internal/execution/runner_gateway.go`
 - Create: `apps/control-plane/internal/execution/model_dispatch.go`
 - Create: `apps/control-plane/internal/execution/tool_dispatch.go`
 - Create: `apps/control-plane/internal/execution/finalize.go`
+- Modify: `protocols/engine/engine.schema.json`
+- Test: `tests/e2e/responses/harness_test.go`
 - Test: `tests/e2e/responses/live_loop_test.go`
 - Test: `tests/e2e/responses/restart_test.go`
-- Test: `tests/e2e/responses/store_false_test.go`
+
+**Interfaces:**
+
+- Consumes: `statemachines.Apply` + Run/Attempt/ToolCall tabloları (Task 4); `store.Store` ve transition transaction'ı (Task 3); `coordinator` worker + `execution.AdvanceRun` (Task 7); `modelbroker.Broker.Route(ctx, provider string, req modelbroker.Request, onDelta func(modelbroker.Delta)) (modelbroker.Result, error)` ve `toolbroker.Broker.Execute(callID contracts.ToolCallID, name string, args map[string]any, fence uint64) (toolbroker.Outcome, error)` (Task 10); `contracts.EngineFrame` ve `runner.FrameLedger` (Task 8).
+- Produces (Task 11b–11c bu seam'i production tarafında implemente eder):
+
+```go
+// engine_channel.go
+type AttemptDescriptor struct {
+	RunID       contracts.RunID
+	AttemptID   contracts.AttemptID
+	Fence       uint64
+	ImageDigest string
+	Limits      runner.Limits
+}
+
+// EngineChannel, handshake'i tamamlanmış tek attempt'lik frame taşıyıcısıdır.
+// Receive'in verdiği ilk frame engine.ready'dir; temiz kapanış io.EOF döndürür.
+type EngineChannel interface {
+	Send(ctx context.Context, frame contracts.EngineFrame) error
+	Receive(ctx context.Context) (contracts.EngineFrame, error)
+	Close() error
+}
+
+// EngineDialer bir attempt için canlı channel açar: deterministic e2e'de subprocess
+// implementasyonu, Task 11c'de runner gateway implementasyonu.
+type EngineDialer interface {
+	Dial(ctx context.Context, attempt AttemptDescriptor) (EngineChannel, error)
+}
+
+func NewOrchestrator(store *store.Store, dialer EngineDialer, models *modelbroker.Broker, tools *toolbroker.Broker) *Orchestrator
+func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescriptor) error
+```
 
 - [ ] **Step 1: Failing vertical e2e tests yaz**
 
-Deterministic test fake provider ile run admission → runner lease → engine ready → model tool request → tool result → final model output → terminal response zincirini assert eder. Restart test terminal DB state'ini process restart sonrası okur. Purge test short UAT TTL ve tombstone behavior'ını assert eder.
+`tests/e2e/responses/harness_test.go` deterministic kablolamayı kurar: gerçek PostgreSQL + Task 5 API + Task 7 coordinator + fake provider adapter + test-only `subprocessDialer`. `subprocessDialer.Dial` reference engine'i bare subprocess olarak başlatır ve `supervisor.hello`'yu stdin'e kendisi yazar:
+
+```go
+// harness_test.go — test-only EngineChannel implementasyonu.
+cmd := exec.CommandContext(ctx, "uv", "run", "--locked", "--project", engineDir, "python", "-m", "palai_engine")
+cmd.Env = []string{
+	"PALAI_RUN_ID=" + string(a.RunID),
+	"PALAI_ATTEMPT_ID=" + string(a.AttemptID),
+	"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"),
+}
+// stdin pipe → Send: frame başına tek JSONL satırı + flush.
+// stdout scanner → Receive: satır → contracts.EngineFrame; Limits.MaxFrameBytes
+// bound'u satır okunurken uygulanır.
+// Dial dönmeden önce supervisor.hello yazılır; Close process'i öldürür.
+```
+
+Test fonksiyonları ve assertion'ları:
+
+```go
+func TestLiveLoopCompletesOneResponseThroughSubprocessEngine(t *testing.T)
+// admission → run.queued job → attempt (fence=1) → engine.ready → model.request →
+// fake provider tool_calls({a:7,b:5}) → tool.request → committed tool.result →
+// ikinci model.request → final output → exactly one run.terminal →
+// GET /v1/responses/{id}: terminal status, output, usage ve contiguous events.
+
+func TestCommitBeforeDeliverOnToolResult(t *testing.T)
+// Test channel'ı Send'i intercept eder: tool.result engine'e ulaşmadan ÖNCE
+// tool_calls satırı completed ve karşılık gelen event satırı DB'de commit edilmiştir.
+
+func TestDuplicateEngineFrameDoesNotDoubleDispatch(t *testing.T)
+// Aynı frame ID + aynı hash yeniden verilir → idempotent replay; model/tool dispatch
+// sayaçları artmaz. Aynı ID + farklı hash → protocol violation, attempt failed.
+
+func TestRestartPreservesTerminalResponseAndEvents(t *testing.T)
+// Terminal sonrası control-plane process yeniden başlatılır; response/events aynı
+// terminal state'i ve aynı contiguous canonical sequence'ı döndürür (LP-008).
+```
 
 - [ ] **Step 2: Fail'i doğrula**
 
 Run: `make test-e2e TEST=responses`
 
-Expected: frame dispatch/orchestrator absent nedeniyle FAIL.
+Expected: `execution.Orchestrator`/`EngineChannel` tanımsız olduğu için derleme FAIL.
 
-- [ ] **Step 3: Orchestrator'ı minimum state-machine glue olarak uygula**
+- [ ] **Step 3: Tool arguments canonical wire shape'ini şemaya yükselt**
 
-Orchestrator yalnızca canonical transitions ve durable jobs çağırır; ikinci agent loop yazmaz. Her engine frame önce schema/run/fence/hash doğrular, sonra transaction ile state/event yazar. Provider/tool result DB commit edilmeden engine'e teslim edilmez. Terminal response projection committed run/output/usage üzerinden üretilir.
+`modelbroker.ToolCall.Arguments` provider'ın ürettiği JSON **string**'dir; engine wire'ında ise `arguments` her zaman JSON **object**'tir. Sınır tek noktadır: `model_dispatch.go` broker sonucunu `model.result` frame'ine çevirirken string'i bir kez `json.Unmarshal` ile object'e çözer; object'e çözülemeyen arguments sanitized `provider_error` sınıflı model failure olur ve raw string engine'e asla sızmaz. `protocols/engine/engine.schema.json` `$defs`'ine kanonik shape eklenir:
 
-- [ ] **Step 4: E2E ve restart tests çalıştır**
+```json
+"tool_call": {
+  "type": "object",
+  "required": ["name", "arguments"],
+  "properties": {
+    "name": {"type": "string"},
+    "arguments": {"type": "object"}
+  }
+}
+```
+
+ve `allOf`'a iki koşul bağlanır: `type == "tool.request"` iken `data.arguments` object zorunludur; `type == "model.result"` iken `data.tool_calls` varsa her elemanı `$defs/tool_call`'a uyar.
+
+Run: `make generate && make check-generated`
+
+Expected: zero drift; `go test ./tests/conformance/contracts -v` PASS.
+
+- [ ] **Step 4: Orchestrator'ı minimum state-machine glue olarak uygula**
+
+- `orchestrator.go`: run job'ını Task 7 coordinator'ından teslim alır, `queued→provisioning→in_progress` geçişlerini Task 4 tabloları ve Task 3 transaction'ı ile yürütür, `dialer.Dial` ile channel açar, `run.start` gönderir ve frame intake döngüsünü işletir. İkinci bir agent loop yazılmaz.
+- Frame intake her frame'de sırasıyla: envelope/schema doğrulaması, run/attempt identity ve fence kontrolü, `runner.FrameLedger.Admit` ile ID dedup — aynı ID + aynı hash stored result'ı replay eder, farklı hash protocol violation'dır (ENG-002'nin controller yarısı; runner yarısı Task 11b'dedir).
+- `model_dispatch.go`: `model.request` önce transaction ile persist edilir (event dahil), sonra `models.Route` çağrılır, canonical result commit edilir ve ancak o zaman `model.result` Send edilir (commit-before-deliver).
+- `tool_dispatch.go`: `tool.request` → strict schema + fenced `toolbroker.Execute` → commit → `tool.result` Send. Duplicate `tool_call_id` cached result'ı replay eder, executor'ı yeniden çalıştırmaz.
+- `finalize.go`: `run.terminal` → exactly-one terminal transition; terminal Response projection committed run/output/usage üzerinden üretilir.
+
+- [ ] **Step 5: E2E ve restart tests çalıştır**
 
 Run: `make test-e2e TEST=responses`
 
 Expected: PASS; one transient session/root run, one terminal, contiguous events, no duplicate model/tool dispatch.
 
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/control-plane/internal/execution protocols/engine packages/contracts tests/e2e/responses
+git commit -m "feat: execute responses through the common kernel"
+```
+
+### Task 11b: Live streaming supervisor ve interactive OCI channel (runner tarafı)
+
+> Task 8'in batch supervisor'ı bilinçli minimumdu; bu task batch→streaming delta'sını kapatır ve Task 8'de deferred bırakılan iki maddeyi içerir: **stderr redaction transform** ve **forwarding loop'ta frame-ID uniqueness** (ENG-002'nin runner yarısı). Master planda E05 yüzeyidir; LP planında Task 11c gateway'inin runner-tarafı ön koşuludur.
+
+**Files:**
+
+- Create: `adapters/sandboxes/oci/stream.go`
+- Create: `packages/runner/stream.go`
+- Modify: `packages/runner/session.go`
+- Modify: `protocols/runner/runner.schema.json`
+- Modify: `tests/sandboxes/engine/main.go`
+- Modify: `cmd/runner/main.go`
+- Test: `tests/conformance/engine/stream_test.go`
+- Test: `tests/fault/runner/stream_kill_test.go`
+
+**Interfaces:**
+
+- Consumes: `oci.ContainerSpec`/`oci.Outcome`/digest-allowlist-limit kuralları (Task 8); `runner.EngineRequest`, `runner.Limits`, `runner.FrameLedger` ve Task 8 frame-envelope kuralları; `contracts.EngineFrame`, `contracts.RunnerMessage`.
+- Produces (Task 11c gateway'i bunları tüketir):
+
+```go
+// adapters/sandboxes/oci/stream.go
+type Process interface {
+	Stdin() io.WriteCloser
+	Stdout() io.Reader // satır satır okunur; kapanış = engine çıkışı
+	Stderr() io.Reader
+	Wait(ctx context.Context) (Outcome, error)
+	Kill(ctx context.Context) error
+}
+type InteractiveDriver interface {
+	Start(ctx context.Context, spec ContainerSpec) (Process, error)
+}
+
+// packages/runner/stream.go
+type FrameSink func(ctx context.Context, frame contracts.EngineFrame) error
+type StreamSupervisor struct{ /* driver InteractiveDriver */ }
+func NewStreamSupervisor(driver InteractiveDriver) *StreamSupervisor
+// Stream: supervisor.hello yazar, engine.ready'yi startup deadline içinde bekler,
+// inbound frame'leri stdin'e enjekte eder, her doğrulanmış stdout frame'ini sink'e
+// iletir; dönüşte batch Run ile aynı outcome sınıflandırmasını uygular.
+func (s *StreamSupervisor) Stream(ctx context.Context, request EngineRequest, inbound <-chan contracts.EngineFrame, sink FrameSink) (EngineResult, error)
+
+// packages/runner/session.go — lease sonrası bağlantı açık kalır.
+type LeaseSession struct{ /* ... */ }
+func (s Session) OpenLease(ctx context.Context) (*LeaseSession, error) // ReceiveLease'in kalıcı hâli
+func (l *LeaseSession) Lease() Lease
+func (l *LeaseSession) SendEngineFrame(ctx context.Context, frame contracts.EngineFrame) error
+func (l *LeaseSession) ReceiveControllerFrame(ctx context.Context) (contracts.EngineFrame, error)
+func (l *LeaseSession) Complete(ctx context.Context, outcome string, stderrDigest string) error
+```
+
+Batch→streaming delta'sı (tamamı bu task'ta kapanır):
+
+1. **Handshake:** batch `Supervisor.Run` hiç `supervisor.hello` yazmaz; `Stream` container start'tan hemen sonra stdin'e §25.6 hello frame'ini (protocol version, run identity, fence hash, limits) yazar ve `engine.ready`'yi startup deadline içinde bekler; aşım `incompatible_engine` sınıfı attempt failure'dır.
+2. **Incremental okuma:** stdout post-hoc değil satır satır okunur; `MaxFrameBytes` per-frame bound ve `MaxStdoutBytes` toplam bound akış sırasında uygulanır; her frame gelişinde Task 8 envelope kuralları (monotonic sequence, run/attempt identity, RFC 3339 time) uygulanır.
+3. **Frame-ID uniqueness (Task 8 deferred):** forwarding loop her frame'i `runner.FrameLedger.Admit`'ten geçirir — aynı ID + aynı hash idempotent retransmit olarak forward edilmeden düşürülür; aynı ID + farklı hash `ErrFrameHashConflict` ile attempt'i protokol ihlalinden bitirir.
+4. **Stderr redaction transform (Task 8 deferred):** bounded stderr persist/forward edilmeden önce secret-pattern maskelemesinden geçer; engine kendi loglarını redact eder ama supervisor buna güvenmez.
+5. **Stdin enjeksiyonu:** `model.result`, `tool.result`, `run.cancel` controller frame'leri per-frame flush ile stdin'e yazılır — batch'te bu yol hiç yoktu.
+6. **Outcome paritesi:** wall-time/memory/process bounds ve timeout/exit/malformed sınıflandırması batch ile birebir aynıdır; mid-stream container kill attempt lost/failed üretir, asla false success değil.
+
+Session relay: `ReceiveLease` bugün lease alınca bağlantıyı kapatır; `OpenLease` bağlantıyı açık tutar. Runner→controller frame'leri `engine.frame`, controller→runner frame'leri `controller.frame` message'ı içinde (`data` alanında tek `contracts.EngineFrame`) taşınır; bitişte outcome sınıfı + redacted stderr digest taşıyan `lease.complete` gönderilir. `protocols/runner/runner.schema.json` `$defs/types` enum'una `engine.frame` ve `controller.frame` eklenir.
+
+- [ ] **Step 1: Docker-free failing stream tests yaz**
+
+`tests/conformance/engine/stream_test.go`, in-memory pipe'larla sahte bir `oci.Process` kurar ve şunları assert eder:
+
+```go
+func TestStreamWritesHelloBeforeAnyRunInput(t *testing.T)
+func TestStreamEnforcesFrameBoundMidStream(t *testing.T)
+func TestStreamRejectsChangedHashDuplicateFrame(t *testing.T)
+func TestStreamDropsIdenticalRetransmitWithoutForwarding(t *testing.T)
+func TestStreamRedactsStderrBeforeForwarding(t *testing.T) // sentinel "sk-live-..." maskelenir
+func TestStreamInjectsControllerFramesToStdin(t *testing.T)
+func TestStreamHandshakeDeadlineFailsAsIncompatibleEngine(t *testing.T)
+```
+
+- [ ] **Step 2: Fail'i doğrula**
+
+Run: `go test ./tests/conformance/engine -run TestStream -v`
+
+Expected: `StreamSupervisor`/`InteractiveDriver` tanımsız olduğu için FAIL.
+
+- [ ] **Step 3: Interactive OCI process'i uygula**
+
+`adapters/sandboxes/oci/stream.go` Docker attach ile stdin/stdout/stderr stream'lerini açar; digest verification, environment allowlist ve resource limits batch `Run` ile aynı koddan geçer. `tests/sandboxes/engine/main.go`'ya `PALAI_ENGINE_MODE=interactive` eklenir: hello'yu okur, ready yazar, `model.request` yazar, stdin'den `model.result` bekler, `run.terminal` yazar — Docker fault testinin sabit senaryosu.
+
+- [ ] **Step 4: StreamSupervisor ve LeaseSession relay'ini uygula**
+
+Yukarıdaki delta listesinin altı maddesi ve schema enum ekleri uygulanır.
+
+Run: `go test ./tests/conformance/engine -run TestStream -v && make generate && make check-generated`
+
+Expected: stream tests PASS; zero generated drift.
+
+- [ ] **Step 5: Docker fault testini yaz ve çalıştır**
+
+`tests/fault/runner/stream_kill_test.go`: interactive fixture engine `model.result` beklerken container kill edilir → attempt lost/failed sınıflanır, kısmi frame'ler success üretmez; ikinci senaryoda stderr'e yazılmış sentinel secret forward edilen stderr'de maskelidir.
+
+Run: `go test ./tests/fault/runner -run TestStreamKill -count=5 -v`
+
+Expected: PASS; false success yok.
+
+- [ ] **Step 6: cmd/runner'ı streaming loop'a geçir**
+
+`cmd/runner/main.go`: `OpenLease` → `StreamSupervisor.Stream`; sink her frame'i `SendEngineFrame` ile iletir, `ReceiveControllerFrame` çıktısı `inbound` kanalına akar; sonunda `Complete` gönderilir.
+
+Run: `make verify`
+
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add adapters/sandboxes/oci packages/runner protocols/runner packages/contracts tests/sandboxes/engine tests/conformance/engine tests/fault/runner cmd/runner
+git commit -m "feat: stream the engine protocol through a live supervisor"
+```
+
+### Task 11c: Production runner gateway ve live channel parity (controller tarafı)
+
+> `tests/conformance/engine/harness_test.go` içindeki stub, "the control-plane counterpart the production runner-gateway task will replace" olarak işaretlenmişti; bu o task'tır. Gateway, Task 11 `EngineDialer` seam'inin production implementasyonudur: bağlı bir runner'a lease offer eder ve Task 11b session frame'lerini `EngineChannel` olarak köprüler. Bu task'tan sonra Task 15'in LP-003/LP-004 canlı UAT'ları gerçek topolojiden (orchestrator → gateway → runner → OCI engine) geçer; subprocess channel yalnızca deterministic suite'te kalır.
+
+**Files:**
+
+- Create: `apps/control-plane/internal/execution/runner_gateway.go`
+- Modify: `apps/control-plane/api/router.go`
+- Modify: `cmd/runner/main.go` (yalnızca "gateway does not exist" doc comment'inin kaldırılması)
+- Test: `tests/conformance/engine/gateway_test.go`
+- Test: `tests/e2e/responses/gateway_parity_test.go`
+
+**Interfaces:**
+
+- Consumes: Task 11 `EngineDialer`/`EngineChannel`/`AttemptDescriptor`; Task 11b `LeaseSession` mesaj tipleri (`engine.frame`/`controller.frame`/`lease.complete`); Task 8 enrollment beklentileri (one-use token, short-lived certificate, mTLS identity). CA bu task'ta enjekte edilen `CertIssuer`'dır (testte in-test CA); `.palai/` dosya düzenine bağlama Task 12'nin işidir.
+- Produces:
+
+```go
+// runner_gateway.go
+type CertIssuer interface {
+	// Local CA ile runner public key'ini short-lived client certificate'a imzalar.
+	SignRunnerCertificate(publicKeyDER []byte, runnerDNS string) (certificateDER []byte, err error)
+}
+type EnrollmentTokens interface {
+	Consume(token string) error // bilinmeyen veya kullanılmış token error döndürür (one-use)
+}
+type RunnerGateway struct{ /* ... */ }
+func NewRunnerGateway(issuer CertIssuer, tokens EnrollmentTokens) *RunnerGateway
+func (g *RunnerGateway) Routes() http.Handler // /v1/runner/enroll + /v1/runner/connect (WS)
+// EngineDialer implementasyonu: bağlı bir runner'a lease.offer gönderir, attempt'in
+// frame trafiğini WS session üzerinden EngineChannel olarak köprüler.
+func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (EngineChannel, error)
+```
+
+- [ ] **Step 1: Failing gateway conformance tests yaz**
+
+`tests/conformance/engine/gateway_test.go` stub'ın kanıtladığı wire beklentilerini gerçek gateway'e karşı, in-process `runner.Session`/`OpenLease` ile assert eder:
+
+```go
+func TestGatewayEnrollmentConsumesTokenOnce(t *testing.T)
+func TestGatewayConnectRequiresRunnerClientCertificate(t *testing.T)
+func TestGatewayOffersLeaseWithImmutableDigestAndFence(t *testing.T)
+func TestGatewayRelaysFramesBothWays(t *testing.T)
+```
+
+Mevcut stub tabanlı testler silinmez; runner-tarafı semantiği Docker'sız kanıtlamaya devam ederler.
+
+- [ ] **Step 2: Fail'i doğrula**
+
+Run: `go test ./tests/conformance/engine -run TestGateway -v`
+
+Expected: gateway package/handler tanımsız olduğu için FAIL.
+
+- [ ] **Step 3: Gateway'i uygula ve router'a bağla**
+
+Enroll: bearer one-use token doğrulanır, runner public key'i local CA ile kısa ömürlü client cert'e imzalanır. Connect: mTLS client chain doğrulanır, `runner.hello` beklenir, `Dial`'ın beklettiği attempt için `lease.offer` gönderilir, `engine.frame`/`controller.frame` köprüsü kurulur; `lease.complete` outcome'u attempt sınıflandırmasına işlenir. `router.go` `/v1/runner/*` altına gateway routes'u mount eder; bu endpoint'ler public API auth middleware'inden geçmez, kendi mTLS/token kimliğini kullanır.
+
+Run: `go test ./tests/conformance/engine -run TestGateway -v`
+
+Expected: PASS.
+
+- [ ] **Step 4: Live channel parity e2e testini yaz ve çalıştır**
+
+`tests/e2e/responses/gateway_parity_test.go` (Docker gerektirir; runner fault suite'iyle aynı guard'ı kullanır):
+
+```go
+func TestGatewayLoopMatchesSubprocessChannelOutcome(t *testing.T)
+// Task 11 live_loop senaryosunun aynısı gateway → gerçek runner session →
+// StreamSupervisor → reference engine image yoluyla koşar; canonical event type
+// dizisi, terminal state, output ve usage subprocess channel sonucuyla birebir eşittir.
+
+func TestNoSecretReachesEngineThroughGateway(t *testing.T)
+// Sentinel provider secret hiçbir engine env/frame/redacted stderr içinde görünmez.
+```
+
+Run: `go test ./tests/e2e/responses -run TestGateway -v`
+
+Expected: PASS; iki channel aynı canonical sonucu üretir.
+
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/control-plane/internal/execution tests/e2e/responses
-git commit -m "feat: execute responses through the common kernel"
+git add apps/control-plane/internal/execution apps/control-plane/api cmd/runner tests/conformance/engine tests/e2e/responses
+git commit -m "feat: bridge the orchestrator to live runners through the gateway"
+```
+
+### Task 11d: store:false retention, purge, tombstone ve 410
+
+> **Fork kararı 2'nin uygulaması:** §20.9/§8.3 retention kuralları (purge → tombstone → 410 `idempotency_result_expired`) spec'te tanımlı ama implementasyonu yoktu. Master plan UAT matrisi DAT ailesinin "store:false subset"ini E07/LP-0'a atar; LP-009 bu task olmadan geçemez. Task 11'den taşınan `store_false_test.go` burada yaşar.
+
+**Files:**
+
+- Create: `storage/migrations/000002_retention.up.sql`
+- Create: `storage/migrations/000002_retention.down.sql`
+- Create: `apps/control-plane/internal/execution/retention.go`
+- Modify: `apps/control-plane/api/middleware/idempotency.go`
+- Modify: `apps/control-plane/api/responses.go`
+- Test: `tests/component/postgres/retention_test.go`
+- Test: `tests/e2e/responses/store_false_test.go`
+
+**Interfaces:**
+
+- Consumes: Task 3 migration zinciri ve `store.Store`; Task 5 idempotency middleware ve Problem Details; Task 7 coordinator (reaper bir durable job olarak koşar); Task 11 terminal response üretimi.
+- Produces:
+
+```go
+// retention.go — reaper, coordinator üzerinde periyodik durable job olarak koşar.
+func NewReaper(store *store.Store, storeFalseTTL time.Duration) *Reaper
+func (r *Reaper) Sweep(ctx context.Context) (purged int, err error)
+```
+
+ve iki yeni RFC 9457 problem code'u: create replay'inde `idempotency_result_expired`, purged retrieval'da `retention_expired` (her ikisi HTTP 410).
+
+- [ ] **Step 1: Failing retention tests yaz**
+
+`tests/component/postgres/retention_test.go`:
+
+```go
+func TestReaperPurgesOnlyExpiredStoreFalseResponses(t *testing.T)
+// store=false + terminal + TTL geçmiş satırlar purge edilir; store=true ve
+// TTL dolmamış satırlara dokunulmaz.
+
+func TestPurgeKeepsTombstoneRequestHashAndFingerprint(t *testing.T)
+// purge sonrası idempotency satırında yalnızca request hash, resource tombstone,
+// outcome fingerprint ve purge time kalır (§20.9); cached response body kalmaz.
+
+func TestPurgeReplacesEventPayloadsButKeepsSequence(t *testing.T)
+// content taşıyan event data'ları {"purged": true} olur; satırlar ve contiguous
+// sequence bütünlüğü korunur.
+```
+
+`tests/e2e/responses/store_false_test.go` (Task 11 kapsamından taşındı):
+
+```go
+func TestStoreFalseContentIsGoneAfterConfiguredTTL(t *testing.T)
+// Kısa UAT TTL ile response tamamlanır, reaper koşar; DB'de output/message/event
+// content'i kalmaz ve response'a bağlı artifact satırı varsa byte'ları da silinmiştir.
+
+func TestDuplicateCreateAfterPurgeReturns410WithoutReexecution(t *testing.T)
+// Aynı Idempotency-Key + aynı body → 410 idempotency_result_expired + original
+// operation identity; model dispatch sayacı artmaz (re-execution yok).
+
+func TestRetrieveAfterPurgeReturns410RetentionExpired(t *testing.T)
+
+func TestRetainedResponseSurvivesReaper(t *testing.T)
+```
+
+- [ ] **Step 2: Fail'i doğrula**
+
+Run: `make test-component TEST=postgres && make test-e2e TEST=responses`
+
+Expected: retention migration/reaper/410 yolları olmadığı için FAIL.
+
+- [ ] **Step 3: Migration ve reaper'ı uygula**
+
+- Migration: `responses.store boolean not null default true` (admission'da persist edilir), `responses.purged_at timestamptz`; `idempotency_records`'a `result_purged_at timestamptz`, `resource_tombstone text`, `outcome_fingerprint text`.
+- `retention.go`: configured TTL'i (`PALAI_RETENTION_STORE_FALSE_TTL`; UAT'ta saniye mertebesi, production default'u bu task'ta değiştirilmez) geçmiş `store=false` terminal response'ları seçer; tek transaction'da content sütunlarını temizler, event payload'larını `{"purged": true}` ile değiştirir, artifact byte'larını siler, `purged_at` yazar ve idempotency satırını §20.9 tombstone alanlarına daraltır.
+- Configured retention değeri discovery yüzeyinde yayınlanır (§20.9); Task 12 `doctor --json` bu alanı okur.
+
+- [ ] **Step 4: 410 yollarını uygula**
+
+`idempotency.go`: reservation lookup'ı `result_purged_at` dolu satırda 410 `idempotency_result_expired` + tombstone identity döndürür ve execution başlatmaz. `responses.go`: `purged_at` dolu response'un GET'i 410 `retention_expired` döndürür.
+
+- [ ] **Step 5: Testleri çalıştır**
+
+Run: `make test-component TEST=postgres && make test-e2e TEST=responses`
+
+Expected: PASS; retained response davranışı değişmemiştir.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add storage/migrations apps/control-plane tests/component/postgres tests/e2e/responses
+git commit -m "feat: purge store-false content behind idempotency tombstones"
 ```
 
 ### Task 12: Local Compose distribution ve CLI lifecycle
