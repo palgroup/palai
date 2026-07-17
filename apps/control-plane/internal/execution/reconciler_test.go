@@ -7,15 +7,21 @@ import (
 )
 
 // fakeReclaimer records the ceiling the reconciler sweeps with and returns a fixed
-// dead-letter count.
+// dead-letter count. It also records that the dead-letter bridge sweep ran.
 type fakeReclaimer struct {
 	sawMaxAttempts int
 	swept          int
+	bridgeSweeps   int
 }
 
 func (f *fakeReclaimer) ReclaimExpired(_ context.Context, maxAttempts int) (int, error) {
 	f.sawMaxAttempts = maxAttempts
 	return f.swept, nil
+}
+
+func (f *fakeReclaimer) SweepDeadLetteredRuns(_ context.Context) (int, error) {
+	f.bridgeSweeps++
+	return 0, nil
 }
 
 func TestReconcilerSweepReportsDeadLetteredWithConfiguredCeiling(t *testing.T) {
@@ -30,5 +36,8 @@ func TestReconcilerSweepReportsDeadLetteredWithConfiguredCeiling(t *testing.T) {
 	}
 	if rec.sawMaxAttempts != 5 {
 		t.Fatalf("sweep ceiling = %d, want 5", rec.sawMaxAttempts)
+	}
+	if rec.bridgeSweeps != 1 {
+		t.Fatalf("dead-letter bridge sweeps = %d, want 1 (each pass must bridge dead-lettered runs)", rec.bridgeSweeps)
 	}
 }

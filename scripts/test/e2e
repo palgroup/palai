@@ -152,9 +152,29 @@ run_responses() {
   # Warm the engine environment once so per-attempt `uv run` is offline and fast.
   uv sync --locked --project engines/reference >/dev/null
 
+  local run_id="$$-${RANDOM}"
+
+  # Build the reference engine into a digest-pinned OCI image for the live channel parity
+  # test (orchestrator -> gateway -> runner session -> StreamSupervisor -> engine). The
+  # hardened sandbox is Linux-only; when the daemon is not Linux the image env is left
+  # unset and the parity test skips.
+  local reference_image_tag="palai-reference-engine:e2e-$run_id"
+  local reference_image_id="" daemon_os daemon_arch go_arch
+  daemon_os="$(docker version --format '{{.Server.Os}}')"
+  daemon_arch="$(docker version --format '{{.Server.Arch}}')"
+  case "$daemon_arch" in
+    amd64 | x86_64) go_arch=amd64 ;;
+    arm64 | aarch64) go_arch=arm64 ;;
+    *) go_arch="" ;;
+  esac
+  if test "$daemon_os" = linux && test -n "$go_arch"; then
+    docker build --platform "linux/$go_arch" --tag "$reference_image_tag" \
+      --file "$root/engines/reference/Dockerfile" "$root/engines/reference" >/dev/null
+    reference_image_id="$(docker image inspect "$reference_image_tag" --format '{{.Id}}')"
+  fi
+
   local image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
   local label="io.palai.e2e=responses"
-  local run_id="$$-${RANDOM}"
   local container="palai-e2e-responses-$run_id"
   local volume="palai-e2e-responses-$run_id"
   local password="palai-e2e-${RANDOM}${RANDOM}"
@@ -164,6 +184,7 @@ run_responses() {
   cleanup() {
     docker rm -f "$container" >/dev/null 2>&1 || true
     docker volume rm -f "$volume" >/dev/null 2>&1 || true
+    docker image rm -f "$reference_image_tag" >/dev/null 2>&1 || true
   }
 
   local containers_before volumes_before
@@ -203,6 +224,7 @@ run_responses() {
   set +e
   PALAI_E2E_POSTGRES_URL="$url" \
     PALAI_ENGINE_DIR="$root/engines/reference" \
+    PALAI_REFERENCE_ENGINE_IMAGE="$reference_image_id" \
     go test -tags=e2e -count="${COUNT:-1}" -v ./apps/control-plane/e2e/responses
   local status=$?
   set -e

@@ -7,6 +7,7 @@ package fake
 
 import (
 	"context"
+	"sync"
 
 	"github.com/palgroup/palai/packages/contracts"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
@@ -23,9 +24,59 @@ type Script struct {
 	Err               *modelbroker.SanitizedError
 }
 
-// Adapter replays one Script as a canonical model call.
+// IdempotencyLedger makes the fake provider idempotent by request key: the first call
+// for a key produces the scripted result and counts one effect; a repeat of the same key
+// replays that stored result and streams nothing new, counting no additional effect. It
+// lets a fault test prove that a reclaimed attempt re-routing the same request after a
+// crash settles exactly one provider effect (spec §35.3 idempotent effect, §53.4 single
+// retry owner) — the local, no-spend counterpart of a real provider's Idempotency-Key.
+type IdempotencyLedger struct {
+	mu      sync.Mutex
+	keys    []string
+	effects int
+	stored  map[string]modelbroker.Result
+}
+
+// NewIdempotencyLedger returns an empty ledger.
+func NewIdempotencyLedger() *IdempotencyLedger {
+	return &IdempotencyLedger{stored: map[string]modelbroker.Result{}}
+}
+
+// Keys returns every idempotency key the ledger was asked to serve, in call order —
+// repeats included, so a test can assert a reclaimed attempt presented the same key.
+func (l *IdempotencyLedger) Keys() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.keys...)
+}
+
+// Effects returns the number of distinct provider effects: one per first-seen key.
+func (l *IdempotencyLedger) Effects() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.effects
+}
+
+func (l *IdempotencyLedger) lookup(key string) (modelbroker.Result, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.keys = append(l.keys, key)
+	res, ok := l.stored[key]
+	return res, ok
+}
+
+func (l *IdempotencyLedger) record(key string, res modelbroker.Result) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.stored[key] = res
+	l.effects++
+}
+
+// Adapter replays one Script as a canonical model call. When Idempotency is set the
+// adapter dedups by Request.IdempotencyKey; when nil it replays the script on every call.
 type Adapter struct {
-	Script Script
+	Script      Script
+	Idempotency *IdempotencyLedger
 }
 
 // Execute streams the scripted deltas and returns the canonical result. It honors
@@ -35,6 +86,14 @@ type Adapter struct {
 func (a Adapter) Execute(ctx context.Context, req modelbroker.Request, _ string, onDelta func(modelbroker.Delta)) (modelbroker.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return modelbroker.Result{}, err
+	}
+
+	// Idempotent replay: a repeated key returns the stored result and streams nothing,
+	// so no second effect is counted.
+	if a.Idempotency != nil && req.IdempotencyKey != "" {
+		if stored, ok := a.Idempotency.lookup(req.IdempotencyKey); ok {
+			return stored, nil
+		}
 	}
 
 	var deltas []modelbroker.Delta
@@ -86,6 +145,9 @@ func (a Adapter) Execute(ctx context.Context, req modelbroker.Request, _ string,
 		res.FinishReason = "tool_calls"
 	default:
 		res.FinishReason = "stop"
+	}
+	if a.Idempotency != nil && req.IdempotencyKey != "" {
+		a.Idempotency.record(req.IdempotencyKey, res)
 	}
 	return res, nil
 }

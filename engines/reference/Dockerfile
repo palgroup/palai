@@ -15,4 +15,7 @@ ENV PYTHONPATH=/app/src \
 # Non-root, matching the supervisor's sandbox user (packages/runner).
 USER 65532:65532
 
-ENTRYPOINT ["python", "-m", "palai_engine"]
+# Absolute interpreter path: the runner's hardened sandbox runs with an empty PATH
+# (packages/runner buildEnv), so a bare "python" would fail to exec. The path is the
+# pinned base image's interpreter.
+ENTRYPOINT ["/usr/local/bin/python", "-m", "palai_engine"]

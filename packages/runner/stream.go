@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
@@ -324,9 +326,10 @@ func sendRead(ctx context.Context, out chan<- streamRead, read streamRead) bool 
 }
 
 // helloFrame is the §25.6 supervisor.hello: the engine protocol, a fresh frame id, the
-// run/attempt identity, and the per-frame limit. ponytail: the handshake counterpart
-// (the reference engine) accepts any well-formed hello, so no fence-hash field is
-// carried yet; add it when an engine authenticates the fence.
+// run/attempt identity, the per-frame limit, and the lease fencing token as a hash. The
+// engine compares fence_hash on E10 recovery to bind the handshake to the authorizing
+// lease; here it is transported. The reference engine accepts any well-formed hello, so
+// the value is not yet verified downstream.
 func helloFrame(request EngineRequest) contracts.EngineFrame {
 	return contracts.EngineFrame{
 		Protocol:  EngineProtocolV1,
@@ -338,9 +341,18 @@ func helloFrame(request EngineRequest) contracts.EngineFrame {
 		AttemptID: request.AttemptID,
 		Data: map[string]any{
 			"protocol_version": EngineProtocolV1,
+			"fence_hash":       fenceHash(request.RunID, request.Fence),
 			"limits":           map[string]any{"max_frame_bytes": request.Limits.MaxFrameBytes},
 		},
 	}
+}
+
+// fenceHash is the supervisor.hello fencing token: the hex sha256 of "<run_id>/<fence>",
+// so the engine can bind the handshake to the lease that authorized it (§25.6) without
+// the raw fence crossing the boundary.
+func fenceHash(runID contracts.RunID, fence uint64) string {
+	sum := sha256.Sum256([]byte(string(runID) + "/" + strconv.FormatUint(fence, 10)))
+	return hex.EncodeToString(sum[:])
 }
 
 // writeStreamFrame marshals frame and writes it as one JSONL line with a per-frame flush

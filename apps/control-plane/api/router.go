@@ -14,7 +14,13 @@ import (
 // before routing so an unauthenticated request never reaches a handler; the
 // idempotency-key requirement is scoped to the mutating route. The event stream is
 // a plain GET (no idempotency key) that reads the journal through events.
-func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sse SSEConfig) http.Handler {
+//
+// runner, when non-nil, is the runner gateway surface (enrollment + mTLS session):
+// it is mounted under /v1/runner/ ahead of and bypassing the public API auth and
+// correlation middleware, because it carries its own one-use-token and mTLS identity.
+// It is served over a separate mutually-authenticated listener; binding the CA and that
+// listener is Task 12, so production passes nil until then.
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sse SSEConfig, runner http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
@@ -25,5 +31,12 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	var root http.Handler = mux
 	root = middleware.Auth(verifier)(root)
 	root = middleware.RequestContext(root)
-	return root
+
+	if runner == nil {
+		return root
+	}
+	top := http.NewServeMux()
+	top.Handle("/v1/runner/", runner)
+	top.Handle("/", root)
+	return top
 }

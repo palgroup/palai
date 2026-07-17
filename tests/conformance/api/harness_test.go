@@ -86,7 +86,7 @@ func (f *fakeBackend) After(context.Context, string, string, string, int64, int)
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	backend := newFakeBackend()
-	srv := httptest.NewServer(api.NewRouter(backend, backend, backend, api.SSEConfig{}))
+	srv := httptest.NewServer(api.NewRouter(backend, backend, backend, api.SSEConfig{}, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }

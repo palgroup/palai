@@ -9,12 +9,20 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	statemachines "github.com/palgroup/palai/packages/state-machines"
 	"github.com/palgroup/palai/storage"
 )
 
 // reclaimBatch bounds one reconciler sweep so a backlog of abandoned jobs cannot
 // take a table-wide lock or a runaway transaction.
 const reclaimBatch = 100
+
+// deadLetterBatch bounds one dead-letter bridge sweep, mirroring reclaimBatch.
+const deadLetterBatch = 100
+
+// deadLetterProjection is the terminal Response body a dead-lettered run finalizes to:
+// no output and no usage, because its attempts never produced any.
+var deadLetterProjection = []byte(`{"output":[],"usage":{}}`)
 
 // RetryPolicy bounds how a failed job is retried before it is dead-lettered. A
 // failure recorded at or beyond MaxAttempts dead-letters the job; otherwise the job
@@ -103,6 +111,62 @@ func (s *Store) ReclaimExpired(ctx context.Context, maxAttempts int) (int, error
 		return 0, fmt.Errorf("reclaim expired jobs: %w", err)
 	}
 	return int(tag.RowsAffected()), nil
+}
+
+// deadLetteredRun is one dead-lettered response.run job's run and response to fail.
+type deadLetteredRun struct {
+	tenant     Tenant
+	runID      string
+	responseID string
+}
+
+// SweepDeadLetteredRuns drives every dead-lettered response.run job whose run is still
+// non-terminal to a failed run terminal (spec §24.4 -> §22.3). A run whose every attempt
+// hit a deterministic engine/protocol violation exhausts its ceiling and its durable job
+// dead-letters, but the run never self-reports, so without this bridge the response hangs
+// in running and its SSE stream never closes. Each run is driven with RunCmdFail — the
+// transition, the run.failed.v1 terminal event, and its outbox row commit together in
+// ApplyRunTransition — and its response projection is finalized to failed so a retrieval
+// reads a terminal failure. It is idempotent: a run already terminal is excluded by the
+// query and, if it raced there, skipped by the transition, so terminal monotonicity holds
+// and a job an operator later retries finds the run terminal and changes nothing. The dead
+// job is left dead for operator retry/reconcile actions. Bounded per sweep; returns the
+// number driven to failed.
+func (s *Store) SweepDeadLetteredRuns(ctx context.Context) (int, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("DeadLetteredResponseRuns"), deadLetterBatch)
+	if err != nil {
+		return 0, fmt.Errorf("query dead-lettered runs: %w", err)
+	}
+	var dead []deadLetteredRun
+	for rows.Next() {
+		var d deadLetteredRun
+		if err := rows.Scan(&d.tenant.Organization, &d.tenant.Project, &d.runID, &d.responseID); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan dead-lettered run: %w", err)
+		}
+		dead = append(dead, d)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("read dead-lettered runs: %w", err)
+	}
+
+	// The cursor is drained before any transition, so driving each run acquires its own
+	// pooled connection without contending with the open scan.
+	driven := 0
+	for _, d := range dead {
+		switch _, err := s.ApplyRunTransition(ctx, d.tenant, d.runID, statemachines.RunCmdFail); {
+		case errors.Is(err, ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+			continue // already terminal or past a failable state — idempotent
+		case err != nil:
+			return driven, fmt.Errorf("drive run %s to failed: %w", d.runID, err)
+		}
+		if err := s.FinalizeResponse(ctx, d.tenant, d.responseID, string(statemachines.RunFailed), deadLetterProjection); err != nil {
+			return driven, err
+		}
+		driven++
+	}
+	return driven, nil
 }
 
 // FullJitterBackoff returns a random duration in [0, min(max, base*2^(attempt-1))] —

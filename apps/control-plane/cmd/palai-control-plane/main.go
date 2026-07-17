@@ -37,8 +37,11 @@ func main() {
 		addr = ":8080"
 	}
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           api.NewRouter(repo, repo, repo, sseConfigFromEnv()),
+		Addr: addr,
+		// The runner gateway is served over a separate mutually-authenticated listener
+		// (Task 12 binds the local CA and that listener); the public API server carries no
+		// runner routes, so it is passed nil here.
+		Handler:           api.NewRouter(repo, repo, repo, sseConfigFromEnv(), nil),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

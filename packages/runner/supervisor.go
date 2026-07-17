@@ -69,11 +69,14 @@ func (l Limits) validate() error {
 }
 
 // EngineRequest is one attempt to supervise: the pinned image, the run/attempt
-// identity, an allowlisted environment, and the execution bounds.
+// identity, the lease fencing token, an allowlisted environment, and the execution
+// bounds. Fence is carried into the supervisor.hello as a hash so the engine can bind
+// the handshake to the lease that authorized it (§25.6).
 type EngineRequest struct {
 	ImageDigest string
 	RunID       contracts.RunID
 	AttemptID   contracts.AttemptID
+	Fence       uint64
 	Env         map[string]string
 	Limits      Limits
 }
@@ -204,6 +207,7 @@ func parseEngineFrames(output []byte, request EngineRequest) ([]contracts.Engine
 	}
 	lines := bytes.Split(output[:len(output)-1], []byte{'\n'})
 	frames := make([]contracts.EngineFrame, 0, len(lines))
+	ledger := NewFrameLedger()
 	for index, line := range lines {
 		if len(line) == 0 || int64(len(line)) > request.Limits.MaxFrameBytes {
 			return nil, fmt.Errorf("%w: frame %d violates frame bound", ErrInvalidEngineOutput, index+1)
@@ -213,6 +217,12 @@ func parseEngineFrames(output []byte, request EngineRequest) ([]contracts.Engine
 			return nil, fmt.Errorf("%w: frame %d is not JSON", ErrInvalidEngineOutput, index+1)
 		}
 		if err := validateFrame(frame, index, request); err != nil {
+			return nil, err
+		}
+		// Frame-id discipline (ENG-002), the same the streaming path enforces: a reused id
+		// with a changed payload is a protocol violation. The strict positional sequence
+		// above already makes every batch frame unique, so this only rejects the conflict.
+		if _, err := ledger.Admit(frame); err != nil {
 			return nil, err
 		}
 		frames = append(frames, frame)

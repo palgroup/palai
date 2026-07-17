@@ -3,9 +3,12 @@ package engine_test
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -150,6 +153,76 @@ type collectingSink struct{ frames []contracts.EngineFrame }
 func (s *collectingSink) sink(_ context.Context, frame contracts.EngineFrame) error {
 	s.frames = append(s.frames, frame)
 	return nil
+}
+
+// fakeBatchDriver is a batch oci.Driver that returns a preset stdout — the post-hoc
+// parseEngineFrames path, Docker-free.
+type fakeBatchDriver struct{ stdout []byte }
+
+func (d fakeBatchDriver) Run(context.Context, oci.ContainerSpec) (oci.Outcome, error) {
+	return oci.Outcome{Stdout: d.stdout, StdoutBytes: int64(len(d.stdout)), ExitCode: 0}, nil
+}
+func (d fakeBatchDriver) Close() error { return nil }
+
+// TestStreamWritesFenceHashInHello proves the §25.6 supervisor.hello carries the lease
+// fencing token as a hash — sha256("<run_id>/<fence>") — before any run input, so the
+// engine can bind the handshake to the lease that authorized it (E10 recovery compares
+// it; here it is transported).
+func TestStreamWritesFenceHashInHello(t *testing.T) {
+	proc := newFakeProcess()
+	sup := runner.NewStreamSupervisor(fakeDriver{proc})
+	sink := &collectingSink{}
+	req := streamRequest()
+	req.Fence = 9
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sup.Stream(context.Background(), req, nil, sink.sink)
+		done <- err
+	}()
+
+	stdin := bufio.NewScanner(proc.stdinR)
+	hello := readInjectedFrame(t, stdin)
+	if hello.Type != "supervisor.hello" {
+		t.Fatalf("first stdin frame type = %q, want supervisor.hello", hello.Type)
+	}
+	got, _ := hello.Data["fence_hash"].(string)
+	want := fmt.Sprintf("%x", sha256.Sum256([]byte(string(req.RunID)+"/"+strconv.FormatUint(req.Fence, 10))))
+	if got == "" {
+		t.Fatal("supervisor.hello carried no fence_hash")
+	}
+	if got != want {
+		t.Fatalf("hello fence_hash = %q, want %q", got, want)
+	}
+
+	writeEngineFrame(t, proc.stdoutW, engineFrame("engine.ready", 1, "frm_ready", readyData()))
+	writeEngineFrame(t, proc.stdoutW, engineFrame("run.terminal", 2, "frm_term", map[string]any{"outcome": "completed"}))
+	proc.exit()
+	if err := <-done; err != nil {
+		t.Fatalf("Stream() error = %v, want nil", err)
+	}
+}
+
+// TestBatchRunRejectsChangedHashDuplicateFrame proves the batch supervisor closes the
+// LP8 Minor-2 gap: a frame id reused with a different payload in the parsed stdout is a
+// protocol violation (ENG-002), the same stable request-id discipline the streaming path
+// enforces — so the secondary batch path cannot silently accept what streaming rejects.
+func TestBatchRunRejectsChangedHashDuplicateFrame(t *testing.T) {
+	first := engineFrame("output.item", 1, "frm_batchdup", map[string]any{"v": 1})
+	second := engineFrame("output.item", 2, "frm_batchdup", map[string]any{"v": 2}) // same id, different payload
+	var stdout []byte
+	for _, frame := range []contracts.EngineFrame{first, second} {
+		line, err := json.Marshal(frame)
+		if err != nil {
+			t.Fatalf("marshal frame: %v", err)
+		}
+		stdout = append(stdout, append(line, '\n')...)
+	}
+
+	sup := runner.NewSupervisor(fakeBatchDriver{stdout: stdout})
+	if _, err := sup.Run(context.Background(), streamRequest()); !errors.Is(err, runner.ErrFrameHashConflict) {
+		t.Fatalf("batch Run() error = %v, want ErrFrameHashConflict", err)
+	}
 }
 
 // TestStreamWritesHelloBeforeAnyRunInput proves the streaming supervisor opens with the
@@ -323,6 +396,58 @@ func TestStreamRedactsStderrBeforeForwarding(t *testing.T) {
 	}
 	if !strings.Contains(string(got.result.Stderr), "***") {
 		t.Fatalf("forwarded stderr was not masked: %q", got.result.Stderr)
+	}
+}
+
+// TestStreamRedactsSecretSplitAcrossChunkBoundary proves a secret written to stderr in
+// two separate writes — split across a read/chunk boundary — is still masked before the
+// runner surfaces (and digests) the stderr. The supervisor drains the whole bounded
+// stderr and redacts the assembled buffer, so a secret straddling two writes is reunited
+// before the redactor runs and never leaks in the persisted/forwarded stderr.
+func TestStreamRedactsSecretSplitAcrossChunkBoundary(t *testing.T) {
+	const sentinel = "sk-live-SPLITBOUNDARYSENTINEL0123456789"
+	proc := newFakeProcess()
+	sup := runner.NewStreamSupervisor(fakeDriver{proc})
+	sink := &collectingSink{}
+
+	done := make(chan struct {
+		result runner.EngineResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := sup.Stream(context.Background(), streamRequest(), nil, sink.sink)
+		done <- struct {
+			result runner.EngineResult
+			err    error
+		}{result, err}
+	}()
+
+	stdin := bufio.NewScanner(proc.stdinR)
+	_ = readInjectedFrame(t, stdin) // hello
+
+	// Split the sentinel across two writes: "sk-live-SPLIT..." lands in one chunk, the
+	// remainder in the next, so a naive per-chunk redactor would miss it.
+	head, tail := sentinel[:6], sentinel[6:]
+	if _, err := proc.stderrW.Write([]byte("provider call failed token=" + head)); err != nil {
+		t.Fatalf("write stderr head: %v", err)
+	}
+	if _, err := proc.stderrW.Write([]byte(tail + "\n")); err != nil {
+		t.Fatalf("write stderr tail: %v", err)
+	}
+	writeEngineFrame(t, proc.stdoutW, engineFrame("engine.ready", 1, "frm_ready", readyData()))
+	writeEngineFrame(t, proc.stdoutW, engineFrame("run.terminal", 2, "frm_term", map[string]any{"outcome": "completed"}))
+	_ = proc.stderrW.Close()
+	_ = proc.stdoutW.Close()
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("Stream() error = %v, want nil", got.err)
+	}
+	if strings.Contains(string(got.result.Stderr), sentinel) {
+		t.Fatalf("forwarded stderr still contains the split secret: %q", got.result.Stderr)
+	}
+	if strings.Contains(string(got.result.Stderr), "sk-live") {
+		t.Fatalf("forwarded stderr leaked a secret fragment: %q", got.result.Stderr)
 	}
 }
 

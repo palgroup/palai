@@ -83,7 +83,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	token := newID("e2e-tok")
 	tenant := seedTenantWithKey(t, repo.Spine().Pool(), token)
-	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, api.SSEConfig{}))
+	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, api.SSEConfig{}, nil))
 	t.Cleanup(srv.Close)
 
 	return &harness{
@@ -142,8 +142,14 @@ func (h *harness) admit() (responseID, sessionID, runID string) {
 // newOrchestrator builds the kernel over the given dialer with the deterministic fake
 // provider and the conformance math tool.
 func (h *harness) newOrchestrator(dialer execution.EngineDialer) *execution.Orchestrator {
+	return h.newOrchestratorWithAdapter(dialer, h.provider)
+}
+
+// newOrchestratorWithAdapter builds the kernel over a caller-supplied model adapter — the
+// reclaim fault proof swaps in an idempotent, crash-injecting provider.
+func (h *harness) newOrchestratorWithAdapter(dialer execution.EngineDialer, adapter modelbroker.ModelAdapter) *execution.Orchestrator {
 	models := modelbroker.New(modelbroker.Config{
-		Adapters: map[string]modelbroker.ModelAdapter{"fake": h.provider},
+		Adapters: map[string]modelbroker.ModelAdapter{"fake": adapter},
 		Secrets:  modelbroker.StaticResolver{modelbroker.SecretRef("model"): "unused"},
 	})
 	tools := toolbroker.New(toolbroker.ConformanceMathAdd())
@@ -153,6 +159,12 @@ func (h *harness) newOrchestrator(dialer execution.EngineDialer) *execution.Orch
 // runWorker starts a coordinator worker whose handler executes the claimed run job
 // through the orchestrator. It returns a stop func the test defers.
 func (h *harness) runWorker(orch *execution.Orchestrator) func() {
+	return h.runWorkerWithRetry(orch, coordinator.RetryPolicy{MaxAttempts: 1, BaseBackoff: 10 * time.Millisecond, MaxBackoff: 100 * time.Millisecond})
+}
+
+// runWorkerWithRetry is runWorker with a caller-chosen retry policy — the dead-letter
+// bridge proof drives every attempt to failure until the ceiling dead-letters the job.
+func (h *harness) runWorkerWithRetry(orch *execution.Orchestrator, retry coordinator.RetryPolicy) func() {
 	h.t.Helper()
 	handler := func(ctx context.Context, claim coordinator.Claim, payload []byte) (string, error) {
 		var body struct {
@@ -168,7 +180,7 @@ func (h *harness) runWorker(orch *execution.Orchestrator) func() {
 	}
 	worker := coordinator.NewWorker(h.spine, coordinator.WorkerConfig{
 		Owner: newID("e2e-worker"), Lease: 30 * time.Second, Heartbeat: 5 * time.Second, PollInterval: 25 * time.Millisecond,
-		Retry: coordinator.RetryPolicy{MaxAttempts: 1, BaseBackoff: 10 * time.Millisecond, MaxBackoff: 100 * time.Millisecond},
+		Retry: retry,
 	}, handler)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = worker.Run(ctx) }()

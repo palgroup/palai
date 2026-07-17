@@ -53,17 +53,23 @@ type OutputSchema struct {
 // and budget reservation — never the credential value.
 type Request struct {
 	ModelRequestID contracts.ModelRequestID `json:"model_request_id"`
-	RouteRevision  int                      `json:"route_revision"`
-	ModelStepID    string                   `json:"model_step_id"`
-	Model          string                   `json:"model"`
-	Messages       []Message                `json:"messages"`
-	Tools          []ToolSchema             `json:"tools,omitempty"`
-	ForceToolCall  bool                     `json:"force_tool_call,omitempty"`
-	OutputSchema   *OutputSchema            `json:"output_schema,omitempty"`
-	Deadline       time.Time                `json:"deadline"`
-	Privacy        PrivacyFlags             `json:"privacy,omitempty"`
-	Reservation    Reservation              `json:"reservation"`
-	Secret         SecretRef                `json:"secret"`
+	// IdempotencyKey is the provider-facing dedup key, stable across attempts of one
+	// logical request (spec §35.3 at-least-once + idempotent effect, §53.4). The executor
+	// derives it from the run and model-request identity and the adapter forwards it, so a
+	// reclaimed attempt that re-routes the same request produces exactly one provider
+	// effect even when the crash window between routing and commit re-opens the call.
+	IdempotencyKey string        `json:"idempotency_key,omitempty"`
+	RouteRevision  int           `json:"route_revision"`
+	ModelStepID    string        `json:"model_step_id"`
+	Model          string        `json:"model"`
+	Messages       []Message     `json:"messages"`
+	Tools          []ToolSchema  `json:"tools,omitempty"`
+	ForceToolCall  bool          `json:"force_tool_call,omitempty"`
+	OutputSchema   *OutputSchema `json:"output_schema,omitempty"`
+	Deadline       time.Time     `json:"deadline"`
+	Privacy        PrivacyFlags  `json:"privacy,omitempty"`
+	Reservation    Reservation   `json:"reservation"`
+	Secret         SecretRef     `json:"secret"`
 }
 
 // ToolCall is a tool the model asked to run. Arguments is the provider-generated

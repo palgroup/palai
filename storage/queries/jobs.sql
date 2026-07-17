@@ -127,6 +127,25 @@ UPDATE job_attempts
 SET outcome = $3
 WHERE job_id = $1 AND fence = $2;
 
+-- name: DeadLetteredResponseRuns
+-- Reconciler bridge (spec §24.4 -> §22.3): a response.run job that dead-lettered while
+-- its run is still non-terminal names a run that will otherwise hang in running forever —
+-- its response never projects terminal and its SSE stream never closes. Return each such
+-- run and its response, tenant-scoped and bounded per sweep. Runs already terminal are
+-- excluded (only the states RunCmdFail is legal from), so a run failed by an earlier sweep
+-- is never reprocessed and terminal monotonicity holds.
+SELECT j.organization_id, j.project_id, j.payload->>'run_id' AS run_id, r.response_id
+FROM durable_jobs j
+JOIN runs r
+  ON r.id = j.payload->>'run_id'
+ AND r.organization_id = j.organization_id
+ AND r.project_id = j.project_id
+WHERE j.status = 'dead'
+  AND j.kind = 'response.run'
+  AND r.state IN ('queued', 'provisioning', 'running', 'waiting')
+ORDER BY j.updated_at
+LIMIT $1;
+
 -- name: ReclaimExpiredJobs
 -- Reconciler safety net: dead-letter jobs whose lease has lapsed and whose attempts
 -- are exhausted — the abandoned-work case where a worker is killed every attempt and

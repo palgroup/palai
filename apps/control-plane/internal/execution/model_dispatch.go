@@ -51,6 +51,10 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 
 	result, err := o.models.Route(ctx, modelProvider, modelbroker.Request{
 		ModelRequestID: contracts.ModelRequestID(requestID),
+		// Stable across attempts: the same run and model-request identity re-derive the
+		// same key, so a reclaimed attempt that re-routes carries it and the provider
+		// settles one effect (spec §53.4, §35.3).
+		IdempotencyKey: string(st.attempt.RunID) + "/" + requestID,
 		Model:          modelProvider,
 		Messages:       messages,
 		Reservation:    modelbroker.Reservation{},

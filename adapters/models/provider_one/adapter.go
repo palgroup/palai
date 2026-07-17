@@ -52,6 +52,11 @@ func (a Adapter) Execute(ctx context.Context, req modelbroker.Request, secret st
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("Authorization", "Bearer "+secret) // the sole use of the credential
+	if req.IdempotencyKey != "" {
+		// Stable across attempts, so a reclaimed retry that re-routes the same request
+		// settles one provider effect rather than double-charging (spec §53.4, §35.3).
+		httpReq.Header.Set("Idempotency-Key", req.IdempotencyKey)
+	}
 
 	resp, err := a.client().Do(httpReq)
 	if err != nil {

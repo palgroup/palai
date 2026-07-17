@@ -1,11 +1,7 @@
 // Command runner is the Palai private execution host. It enrolls once with a one-use
-// bootstrap token, opens an outbound mutually authenticated session to obtain a lease,
-// and supervises the leased engine inside a hardened OCI sandbox. It opens no inbound
-// port and retains no bootstrap token on disk.
-//
-// The production control-plane runner gateway is a later task; until it exists this
-// binary is the runner-side wiring, exercised by the conformance, fault, and security
-// suites through packages/runner and adapters/sandboxes/oci.
+// bootstrap token, opens an outbound mutually authenticated session to the control-plane
+// runner gateway to obtain a lease, and supervises the leased engine inside a hardened
+// OCI sandbox. It opens no inbound port and retains no bootstrap token on disk.
 package main
 
 import (
@@ -85,6 +81,7 @@ func main() {
 		ImageDigest: lease.ImageDigest,
 		RunID:       lease.RunID,
 		AttemptID:   lease.AttemptID,
+		Fence:       lease.Fence,
 		Limits:      lease.Limits,
 	}, inbound, sink)
 
