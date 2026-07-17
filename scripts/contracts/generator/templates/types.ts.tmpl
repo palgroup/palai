@@ -1,0 +1,21 @@
+// Code generated from the canonical execution and common schemas; DO NOT EDIT.
+//
+// The SDK's typed transport surface: fixed-field construction/validation views of the
+// canonical objects, with open unions kept lossless via an index signature. Identifier
+// types are inlined as string aliases so this file is self-contained.
+{{range .IDNames}}
+export type {{.}} = string;
+{{- end}}
+{{range .Types}}
+{{- if .Doc}}
+// {{.Doc}}
+{{- end}}
+export interface {{.Name}} {
+{{- range .Fields}}
+  {{.Name}}{{if .Optional}}?{{end}}: {{.Type}};
+{{- end}}
+{{- if .Open}}
+  [key: string]: unknown;
+{{- end}}
+}
+{{end -}}

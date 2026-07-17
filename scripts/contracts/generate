@@ -4,7 +4,8 @@ root="$(git rev-parse --show-toplevel)"
 go run "$root/scripts/contracts/generator" -schemas "$root/protocols/schemas" \
   -go-out "$root/packages/contracts" \
   -ts-out "$root/protocols/generated/typescript" \
-  -py-out "$root/protocols/generated/python"
+  -py-out "$root/protocols/generated/python" \
+  -sdk-ts-out "$root/sdks/typescript/src/generated"
 
 # Derive the OpenAPI 3.1.2 compatibility projection from the canonical 3.2 doc.
 go run "$root/scripts/contracts/semantic" -mode project \

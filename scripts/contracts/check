@@ -10,7 +10,8 @@ trap 'rm -rf "$scratch"' EXIT
 go run "$root/scripts/contracts/generator" -schemas "$root/protocols/schemas" \
   -go-out "$scratch/go" \
   -ts-out "$scratch/ts" \
-  -py-out "$scratch/py"
+  -py-out "$scratch/py" \
+  -sdk-ts-out "$scratch/sdk-ts"
 
 go run "$root/scripts/contracts/semantic" -mode project \
   -canonical "$root/protocols/openapi/openapi-3.2.yaml" \
@@ -37,6 +38,8 @@ while IFS= read -r -d '' committed; do
 done < <(find "$root/packages/contracts" -type f -name '*.gen.go' -print0)
 diff -r -x '__pycache__' -x '.DS_Store' "$scratch/ts" "$root/protocols/generated/typescript" || status=1
 diff -r -x '__pycache__' -x '.DS_Store' "$scratch/py" "$root/protocols/generated/python" || status=1
+# The SDK's generated transport types trace the same schemas; drift fails the diff.
+diff "$scratch/sdk-ts/types.ts" "$root/sdks/typescript/src/generated/types.ts" || status=1
 diff "$scratch/openapi-3.1.2.yaml" "$root/protocols/generated/openapi-3.1.2.yaml" || status=1
 
 if test "$status" -ne 0; then

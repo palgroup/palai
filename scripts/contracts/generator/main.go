@@ -30,12 +30,14 @@ func main() {
 	goOut := flag.String("go-out", "", "Go output directory (packages/contracts)")
 	tsOut := flag.String("ts-out", "", "TypeScript output directory")
 	pyOut := flag.String("py-out", "", "Python output directory")
+	sdkTSOut := flag.String("sdk-ts-out", "", "TypeScript SDK generated-types output directory")
 	flag.Parse()
 	for name, value := range map[string]string{
-		"-schemas": *schemasRoot,
-		"-go-out":  *goOut,
-		"-ts-out":  *tsOut,
-		"-py-out":  *pyOut,
+		"-schemas":    *schemasRoot,
+		"-go-out":     *goOut,
+		"-ts-out":     *tsOut,
+		"-py-out":     *pyOut,
+		"-sdk-ts-out": *sdkTSOut,
 	} {
 		if value == "" {
 			fatal(fmt.Errorf("%s is required", name))
@@ -45,6 +47,9 @@ func main() {
 		fatal(err)
 	}
 	if err := generateObjects(*schemasRoot, *goOut); err != nil {
+		fatal(err)
+	}
+	if err := generateSDKTypes(*schemasRoot, *sdkTSOut); err != nil {
 		fatal(err)
 	}
 	if err := generateCorpusCheckers(*tsOut, *pyOut); err != nil {
