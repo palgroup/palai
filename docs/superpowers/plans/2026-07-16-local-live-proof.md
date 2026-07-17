@@ -1199,11 +1199,18 @@ git commit -m "feat: purge store-false content behind idempotency tombstones"
 
 ### Task 12: Local Compose distribution ve CLI lifecycle
 
+> **Fork kararı 3 — Task 12 kapsam revizyonu (üç çatal; implementer bulguları + plan kararı):**
+>
+> 1. **Secret — Option B (env-backed resolver + native Compose file-secret).** Provider credential LP10'da kanıtlanan `modelbroker.EnvResolver` yolunda kalır. "Provider secret Compose environment'ına yayılmaz" şartı native Docker file-secret ile karşılanır: top-level `secrets:` bloğu `.palai/secrets/<ref>` dosyasını yalnızca control-plane'e `/run/secrets/` altında mount eder; entrypoint değeri EnvResolver'ın okuduğu process env'ine yükler. Raw değer compose `environment:` bloğunda, `docker inspect .Config.Env` çıktısında, repo'da, argv'de veya loglarda görünmez (§20.9 secret asla cache/log'da; §41.5 file-based delivery; LP-011 secret scan). Encrypted-at-rest backend + write-only `/v1/secret-refs` admission API (§41.1/§41.2) SİLİNMEDİ: sahibi master plan E13'tür ve carve-out §7.1'de TDD adımlarıyla sıralanmıştır — bu task'ta AEAD/key-management yazmak, exec path'i tüketmeyen kapıların önüne net-new kripto koymaktır.
+> 2. **Object store — present, not consumed.** SeaweedFS, ADR-0004'ün immutable index digest'i ile health-checked Compose servisi olarak kurulur ve doctor S3 ping'i yapar (§44.2: `local up` object store'u BAŞLATIR; LP-002 doctor check ister). Control-plane LP-0'da bu store'u TÜKETMEZ: kernel output/usage'ı PG JSONB'de kanıtladı ve `artifacts` tablosunun yazarı yok — write-path'siz S3 client YAGNI'dir. İlk gerçek tüketici (artifact write-path) E09'dadır — carve-out §7.2.
+> 3. **Live-exec binding.** Bu task'ın runner kanıtı: gateway mTLS listener'ı local CA ile ayakta + compose runner'ı her `local up`'ta taze mint edilen one-use token ile enroll/connect oluyor + doctor non-mTLS bağlantının reddedildiğini raporluyor. TAM production exec-path (main.go'nun Orchestrator + broker + `RunnerGateway`'i EngineDialer olarak kurması) ve gerçek canlı round-trip Task 15'tedir: tek round-trip one-use token + one-shot lease tüketir, `-count=3` idempotent clean-boot döngüsüyle çelişir, tek seferlik UAT ile çelişmez. Enroll/connect wire semantiği zaten Docker'sız kanıtlıdır (`tests/conformance/engine/gateway_test.go`).
+
 **Files:**
 
 - Create: `deploy/compose/compose.yaml`
 - Create: `deploy/compose/compose.env.example`
 - Create: `deploy/compose/control-plane.Dockerfile`
+- Create: `deploy/compose/control-plane-entrypoint.sh`
 - Create: `deploy/compose/runner.Dockerfile`
 - Create: `cmd/cli/main.go`
 - Create: `cmd/cli/internal/local/up.go`
@@ -1211,12 +1218,63 @@ git commit -m "feat: purge store-false content behind idempotency tombstones"
 - Create: `cmd/cli/internal/local/doctor.go`
 - Create: `cmd/cli/internal/provider/add.go`
 - Create: `cmd/cli/internal/response/create.go`
+- Create: `apps/control-plane/api/capabilities.go`
+- Create: `apps/control-plane/internal/execution/local_credentials.go`
+- Create: `apps/control-plane/internal/store/bootstrap.go`
+- Modify: `apps/control-plane/cmd/palai-control-plane/main.go` (mTLS runner listener — dosyadaki "Task 12 binds the local CA and that listener" notunun kapanışı; exec-path wiring DEĞİL, o Task 15)
 - Test: `tests/e2e/local/clean_boot_test.go`
 - Test: `tests/e2e/local/doctor_test.go`
 
+**Interfaces:**
+
+- Consumes: `execution.NewRunnerGateway(issuer CertIssuer, tokens EnrollmentTokens)` + `Routes()` + `handleConnect`'in peer-cert zorlaması (Task 11c); `modelbroker.EnvResolver` semantiği (Task 10 — bu task yalnızca file→env köprüsünü kurar, broker koduna dokunmaz); `PALAI_RETENTION_STORE_FALSE_TTL` (Task 11d); `coordinator.HashAPIKey` (Task 3/5 verifier); ADR-0004 SeaweedFS digest; CI'ın pinlediği PostgreSQL digest (`.github/workflows/ci.yml:65`).
+- Produces (Task 15 bunları tüketir): `palai` CLI — `init | local up | local down | local reset --confirm | local doctor [--json] | provider add | response create` (stdlib `flag`; go.mod'a cobra benzeri dependency EKLENMEZ); `.palai/` layout (aşağıda); `GET /v1/capabilities` discovery JSON'u (maturity/isolation + §20.9 configured retention); compose env sözleşmesi: `PALAI_RUNNER_LISTEN_ADDR`, `PALAI_RUNNER_CA_CERT`, `PALAI_RUNNER_CA_KEY`, `PALAI_RUNNER_SERVER_CERT`, `PALAI_RUNNER_SERVER_KEY`, `PALAI_ENROLLMENT_TOKEN_FILE`, `PALAI_BOOTSTRAP_API_KEY_FILE`, `PALAI_ENGINE_IMAGE`.
+
+`palai init`'in ürettiği `.palai/` layout (dizin 0700, dosyalar 0600):
+
+```text
+.palai/
+├── config.json          # data dir, portlar, project ID, base URL
+├── api-key              # bootstrap dev API key (bir kez mint edilir)
+├── ca/ca.crt  ca/ca.key # local CA (gateway mTLS) + server cert/key
+├── runner-token         # her `local up`'ta yeniden mint edilen one-use enrollment token
+└── secrets/<ref>        # `provider add`'in yazdığı secret dosyaları
+```
+
 - [ ] **Step 1: Failing clean-boot/doctor tests yaz**
 
-Tests isolated temp data directory ve random ports kullanır. `down` sonrası volumes kalır; explicit `reset --confirm` olmadan silinmez.
+Tests izole temp `PALAI_HOME` + random portlar kullanır; gerçek `docker compose` çalıştırır (CI'daki component lane guard'ı ile aynı Docker gereksinimi):
+
+```go
+func TestCleanBootUpDoctorDownRetainsData(t *testing.T)
+// palai init + local up: dört servis healthy; doctor --json bütün check'ler green.
+// local down volume silmez; ikinci local up aynı veriyi geri getirir (LP-012).
+// Gövde -count=3 ile idempotenttir: her up taze one-use enrollment token mint eder.
+
+func TestResetRequiresConfirm(t *testing.T)
+// local reset, --confirm bayrağı olmadan non-zero exit döner ve hiçbir volume silinmez;
+// --confirm ile volume'lar gerçekten gider (§44.4).
+
+func TestDoctorJSONShape(t *testing.T)
+// doctor --json alanları: api, migration, object_store, runner, image_digests,
+// provider, clock, retention_ttl, runner_tls_reject — her biri {status, detail}.
+// retention_ttl değeri GET /v1/capabilities'ten okunur (Task 11d discovery şartı);
+// object_store ADR-0004 digest'inin çalıştığını S3 ping ile raporlar.
+
+func TestRunnerPortRejectsNonMTLS(t *testing.T)
+// Client cert'siz TLS bağlantısı /v1/runner/connect'te 401 alır; plain HTTP handshake
+// reddedilir. (Binding-1 kanıtı — canlı round-trip Task 15'te.)
+
+func TestProviderSecretIsAbsentFromComposeSurfaces(t *testing.T)
+// Sentinel değerle provider add sonrası: compose.yaml, `docker compose config` çıktısı,
+// control-plane container'ının `docker inspect` .Config.Env çıktısı ve CLI argv'si
+// sentinel içermez; sentinel yalnızca .palai/secrets/<ref> (0600) dosyasındadır.
+
+func TestResponseCreateAdmitsOverBootstrapKey(t *testing.T)
+// palai response create --input "hello" 202 + response ID döner (LP-001'in "documented
+// command, no manual SQL" kanıtı); GET /v1/responses/{id} aynı key ile erişilebilir.
+// Terminal outcome bu task'ın kapsamı değildir (exec path Task 15'te bağlanır).
+```
 
 - [ ] **Step 2: Fail'i doğrula**
 
@@ -1224,24 +1282,117 @@ Run: `go test ./tests/e2e/local -v`
 
 Expected: CLI/Compose assets absent nedeniyle FAIL.
 
-- [ ] **Step 3: Compose stack oluştur**
+- [ ] **Step 3: Compose stack'i oluştur**
 
-Services health checks ve immutable image digests/locally built release labels taşır. Runner runtime socket'a erişebilir; engine workload erişemez. Random passwords/local CA/setup token `.palai/` data directory'de strict permissions ile bulunur. Provider secret Compose environment'ına yayılmaz; bootstrap write-only API ile encrypted SecretRef olur.
+`deploy/compose/compose.yaml` dört servis + bir build edilen engine image:
 
-- [ ] **Step 4: CLI lifecycle ve doctor uygula**
+```yaml
+services:
+  postgres:
+    image: postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c  # CI ile aynı pin
+    environment: {POSTGRES_USER: palai, POSTGRES_PASSWORD_FILE: /run/secrets/pg_password, POSTGRES_DB: palai}
+    secrets: [pg_password]
+    volumes: [palai-pg:/var/lib/postgresql/data]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U palai"], interval: 2s, timeout: 2s, retries: 30}
+  object-store:
+    image: docker.io/chrislusf/seaweedfs@sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6  # ADR-0004
+    command: ["server", "-s3", "-dir=/data"]
+    volumes: [palai-objects:/data]
+    healthcheck: {test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8333/ || exit 1"], interval: 2s, retries: 60}
+  control-plane:
+    build: {context: ../.., dockerfile: deploy/compose/control-plane.Dockerfile}
+    environment:  # secret DEĞERİ burada bulunmaz
+      PALAI_DATABASE_URL: postgres://palai@postgres:5432/palai
+      PALAI_RUNNER_LISTEN_ADDR: ":8443"
+      PALAI_RUNNER_CA_CERT: /palai/ca/ca.crt
+      PALAI_RUNNER_CA_KEY: /palai/ca/ca.key
+      PALAI_RUNNER_SERVER_CERT: /palai/ca/server.crt
+      PALAI_RUNNER_SERVER_KEY: /palai/ca/server.key
+      PALAI_ENROLLMENT_TOKEN_FILE: /palai/runner-token
+      PALAI_BOOTSTRAP_API_KEY_FILE: /run/secrets/bootstrap_api_key
+      PALAI_ENGINE_IMAGE: ${PALAI_ENGINE_IMAGE}
+      PALAI_RETENTION_STORE_FALSE_TTL: ${PALAI_RETENTION_STORE_FALSE_TTL:-}
+    secrets: [provider_one_key, bootstrap_api_key, pg_password]
+    volumes: ["${PALAI_HOME}/ca:/palai/ca:ro", "${PALAI_HOME}/runner-token:/palai/runner-token:ro"]
+    ports: ["${PALAI_API_PORT}:8080", "${PALAI_RUNNER_PORT}:8443"]
+    depends_on: {postgres: {condition: service_healthy}, object-store: {condition: service_healthy}}
+  runner:
+    build: {context: ../.., dockerfile: deploy/compose/runner.Dockerfile}
+    environment:
+      PALAI_CONTROLLER_URL: https://control-plane:8443
+      PALAI_RUNNER_CA_CERT: /palai/ca/ca.crt
+      PALAI_ENROLLMENT_TOKEN_FILE: /palai/runner-token  # one-use; connect'te tüketilir, runner disk'te tutmaz
+      PALAI_ENGINE_IMAGE: ${PALAI_ENGINE_IMAGE}
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "${PALAI_HOME}/ca/ca.crt:/palai/ca/ca.crt:ro", "${PALAI_HOME}/runner-token:/palai/runner-token:ro"]
+    depends_on: {control-plane: {condition: service_started}}
+secrets:
+  provider_one_key: {file: "${PALAI_HOME}/secrets/provider-one"}
+  bootstrap_api_key: {file: "${PALAI_HOME}/api-key"}
+  pg_password: {file: "${PALAI_HOME}/secrets/pg-password"}
+volumes: {palai-pg: {}, palai-objects: {}}
+```
 
-`palai init` config/data dir ve local project oluşturur. `local up` migrations/health bekler. `doctor --json` API, migration, object store, runner, image pull/digest, provider capability ve clock results verir. Provider key stdin/OS keychain/file descriptor ile alınır; argument değildir.
+Kurallar: yalnızca runner Docker socket mount eder; engine container'ına socket/DB/S3/provider secret asla geçmez (Task 8 allowlist zaten zorluyor). Reference engine bir compose servisi DEĞİLDİR — `local up` onu `engines/reference/Dockerfile`'dan build eder ve image referansını `PALAI_ENGINE_IMAGE` olarak geçirir. `control-plane-entrypoint.sh` file-secret → env köprüsüdür:
 
-- [ ] **Step 5: Clean local tests çalıştır**
+```sh
+#!/bin/sh
+set -eu
+# ponytail: file-secret -> process env köprüsü; E13 encrypted backend bu köprüyü söker (LP planı §7.1)
+if [ -f /run/secrets/provider_one_key ]; then
+  PALAI_SECRET_PROVIDER_ONE="$(cat /run/secrets/provider_one_key)"; export PALAI_SECRET_PROVIDER_ONE
+fi
+exec /usr/local/bin/palai-control-plane
+```
+
+- [ ] **Step 4: mTLS runner listener'ını ve capabilities discovery'yi uygula**
+
+- `apps/control-plane/internal/execution/local_credentials.go`:
+
+```go
+// NewFileCertIssuer, .palai CA cert/key dosyalarıyla CertIssuer'ı uygular.
+func NewFileCertIssuer(certPath, keyPath string) (*FileCertIssuer, error)
+// NewFileEnrollmentTokens, tek satırlık token dosyasını one-use tüketir:
+// Consume başarılı ilk çağrıda in-memory işaretler, sonrakiler error döner.
+func NewFileEnrollmentTokens(path string) *FileEnrollmentTokens
+```
+
+- `main.go`: `PALAI_RUNNER_LISTEN_ADDR` doluysa ikinci bir `http.Server` açılır — `Handler: gw.Routes()`, `TLSConfig: &tls.Config{Certificates: []tls.Certificate{serverCert}, ClientCAs: caPool, ClientAuth: tls.VerifyClientCertIfGiven}`. Enroll bearer token'la cert'siz erişir; `handleConnect` peer certificate'ı zaten zorlar (Task 11c). Public router'daki `nil` runner handler AYNEN kalır; gateway bu task'ta hiçbir worker'a EngineDialer olarak bağlanmaz.
+- `apps/control-plane/internal/store/bootstrap.go`: startup'ta `api_keys` boşsa dev organization/project/principal + `coordinator.HashAPIKey(bootstrap key)` verifier'lı bir api_keys satırı yazar (key değeri `PALAI_BOOTSTRAP_API_KEY_FILE`'dan okunur; DB'ye yalnızca hash girer). LP-001'in "manual SQL yok" şartının sunucu yarısı budur.
+- `apps/control-plane/api/capabilities.go`: `GET /v1/capabilities` (bearer auth'lu) şunu döner:
+
+```json
+{"object": "capabilities", "maturity": "preview", "isolation": "development",
+ "retention": {"store_false_ttl_seconds": 0},
+ "capabilities": {"responses": "preview", "sessions": "unavailable", "workspaces": "unavailable"}}
+```
+
+`store_false_ttl_seconds` configured TTL'den doldurulur (§20.9 "publish configured retention through discovery"; LP planı §2 maturity ilanı).
+
+Run: `go test ./tests/conformance/api -run TestCapabilities -v` (yeni küçük conformance case'i aynı adımda eklenir)
+
+Expected: PASS.
+
+- [ ] **Step 5: CLI lifecycle ve doctor'ı uygula**
+
+`cmd/cli` stdlib `flag` ile subcommand dispatch yapar (`os.Args[1:]` üzerinde manuel switch; yeni dependency yok):
+
+- `palai init`: `.palai/` layout'u üretir — random API key + pg password mint, local CA + server cert üret, `config.json` yaz.
+- `palai local up`: (1) `docker build engines/reference` → `PALAI_ENGINE_IMAGE`; (2) taze one-use runner token mint edip `.palai/runner-token`'a yazar; (3) `docker compose up -d --build --wait`; (4) migration/health'i doctor'ın api/migration check'leri green olana kadar bekler.
+- `palai local down`: `docker compose down` — volume SİLMEZ. `palai local reset --confirm`: `down --volumes` + `.palai` data temizliği; `--confirm` yoksa non-zero exit.
+- `palai provider add <ref>`: secret değerini stdin'den okur (argv'ye asla yazılmaz), `.palai/secrets/<ref>` dosyasına 0600 yazar; compose `secrets:` mount'u sonraki `up`'ta control-plane'e taşır.
+- `palai local doctor [--json]`: check'ler — `api` (`/v1/capabilities` 200), `migration` (schema_migrations current), `object_store` (aws-sdk-go-v2 ile S3 endpoint ping; go.mod'da zaten var), `runner` (gateway'in connected-runner state'i), `image_digests` (postgres + seaweedfs resolved digest'leri pin'lerle birebir; control-plane/runner/engine locally-built label — release digest pinning E18 işi), `provider` (secret dosyası mevcut + boş değil; canlı probe Task 15 `--live`), `clock` (DB `now()` ile host saat farkı < 2s), `retention_ttl` (capabilities'ten), `runner_tls_reject` (cert'siz connect denemesi 401 aldı).
+- `palai response create --input <text>`: bootstrap key ile `POST /v1/responses` çağırır, response ID + status basar.
+
+- [ ] **Step 6: Clean local tests çalıştır**
 
 Run: `go test ./tests/e2e/local -count=3 -v`
 
-Expected: PASS; repeated up/down idempotent; data retained.
+Expected: PASS; repeated up/down idempotent (her `up` taze token mint eder); data retained; doctor bütün check'ler green; sentinel secret hiçbir compose yüzeyinde yok.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add deploy/compose cmd/cli tests/e2e/local
+git add deploy/compose cmd/cli apps/control-plane tests/e2e/local
 git commit -m "feat: package the complete local stack"
 ```
 
@@ -1384,10 +1535,16 @@ git add examples/nextjs-sdk
 git commit -m "feat: prove SDK streaming from Next.js"
 ```
 
-### Task 15: Live UAT harness ve evidence verifier
+### Task 15: Live UAT harness, production exec-path wiring ve evidence verifier
+
+> **Fork kararı 3'ün canlı yarısı — sert kısıt:** LP-0'ın adı "Local Live Proof"tur; e2e harness'ta kanıtlanmış bir orchestrator, main.go onu hiç kurmuyorsa "gerçekten çalışıyor" sayılmaz. Task 12 bilinçli olarak yalnızca listener + reject-check bağladı (idempotent `-count=3` döngüsü one-use token/one-shot lease tüketemez). TAM production exec-path — main.go'nun broker (EnvResolver + gerçek provider adapter) + `RunnerGateway` EngineDialer + non-nil execute handler kurması — BU task'ta bağlanır ve LP-003/LP-004 gerçek topolojiden (create → gateway → runner → OCI engine → gerçek provider → terminal) TEK canlı round-trip ile kanıtlanır. One-use token ve one-shot lease burada sorun değildir: UAT bir kez koşar, `-count=3` koşmaz. Bu adımlar kapanmadan LP suite çalıştırılamaz.
 
 **Files:**
 
+- Create: `apps/control-plane/internal/execution/execute_run.go`
+- Modify: `apps/control-plane/cmd/palai-control-plane/main.go` (exec-path wiring — Task 12'nin bıraktığı son boşluk)
+- Modify: `deploy/compose/compose.env.example` (`PALAI_MODEL_PROVIDER` seçimi)
+- Test: `tests/e2e/local/live_wiring_test.go`
 - Create: `tests/uat/cases/LP-001/case.yaml`
 - Create: `tests/uat/cases/LP-002/case.yaml`
 - Create: `tests/uat/cases/LP-003/case.yaml`
@@ -1407,6 +1564,11 @@ git commit -m "feat: prove SDK streaming from Next.js"
 - Create: `scripts/evidence/capture`
 - Create: `scripts/evidence/verify`
 - Create: `protocols/schemas/evidence/manifest.json`
+
+**Interfaces:**
+
+- Consumes: `execution.NewOrchestrator(st, dialer, models, tools)` + `ExecuteAttempt` (Task 11); `RunnerGateway.Dial` EngineDialer implementasyonu (Task 11c); `modelbroker.New(Config{Secrets: EnvResolver{...}})` + `provider_one.Adapter`/`fake` adapter + `toolbroker.New(toolbroker.ConformanceMathAdd())` (Task 10); `execution.AdvanceRun`'ın assignment plan'ı ve `coordinator.Claim.Fence` (Task 7); Task 12'nin compose env sözleşmesi, `.palai/` layout'u, doctor ve CLI komutları.
+- Produces: `execution.ExecuteRun(spine *coordinator.Store, st *store.Store, orch *Orchestrator) coordinator.Handler` — production worker handler'ı; LP-001..015 case runner + evidence verifier.
 
 - [ ] **Step 1: Failing evidence verifier tests yaz**
 
@@ -1428,7 +1590,40 @@ Run: `go test ./tests/uat -run TestEvidenceVerifier -v`
 
 Expected: valid fixture PASS; eksik/tampered/secret fixture FAIL.
 
-- [ ] **Step 5: Protected real-provider LP suite çalıştır**
+- [ ] **Step 5: Failing production-wiring testi yaz (deterministic, fake provider, gerçek topoloji)**
+
+`tests/e2e/local/live_wiring_test.go` — Task 12'nin compose harness'ını yeniden kullanır; canlı UAT'tan ÖNCE aynı wiring'i shipped binary üzerinden fake provider ile kanıtlar (proof class `e2e-deterministic`; LP-003/004'ün live-provider sınıfının yerine GEÇMEZ):
+
+```go
+func TestShippedBinaryCompletesOneResponseThroughLiveTopology(t *testing.T)
+// PALAI_MODEL_PROVIDER=fake ile local up; palai response create --input "hello".
+// Assert: response TERMINAL completed'a ulaşır; runner compose mTLS üzerinden enroll
+// oldu (doctor runner check + gateway state); engine GERÇEK OCI container olarak
+// koştu (docker inspect/events receipt, Task 12 image'ı); canonical event dizisi
+// contiguous ve exactly-one terminal. Orchestration in-process test kablosu DEĞİL,
+// main.go'nun kendi wiring'idir.
+```
+
+- [ ] **Step 6: Fail'i doğrula, sonra production exec-path'i main.go'ya bağla**
+
+Run: `go test ./tests/e2e/local -run TestShippedBinary -v`
+
+Expected: FAIL — run `running`'de asılı kalıp dead-letter köprüsüyle failed olur (Task 11c köprüsü), completed'a asla ulaşmaz; çünkü `main.go` yalnızca `AdvanceRun` (assignment-only) kurar, hiçbir broker/dialer/engine yolu yoktur.
+
+Sonra implementasyon:
+
+- `apps/control-plane/internal/execution/execute_run.go` — `ExecuteRun(spine, st, orch) coordinator.Handler`: `AdvanceRun`'ın idempotent assignment plan'ını aynen uygular, sonra `AttemptDescriptor{RunID, AttemptID, Fence: claim.Fence, ImageDigest: cfg engine image, Limits: defaults}` kurup `orch.ExecuteAttempt(ctx, desc)` çağırır. Reclaim edilen job daha yüksek `claim.Fence` ile yeni attempt açar (Task 11c reclaim/idempotency-key testlerinin kanıtladığı yol); hata coordinator retry/dead-letter politikasına düşer, gizli retry yok.
+- `main.go` `startDispatch`: `PALAI_MODEL_PROVIDER` (`fake` | `provider-one`) adapter'ı seçer; broker `modelbroker.New(modelbroker.Config{Secrets: modelbroker.EnvResolver{"provider-one": "PALAI_SECRET_PROVIDER_ONE"}, ...})` ile kurulur (env değeri Task 12 file-secret köprüsünden gelir); `tools := toolbroker.New(toolbroker.ConformanceMathAdd())`; Task 12'nin gateway'i `EngineDialer` olarak `execution.NewOrchestrator(repo, gw, models, tools)`'a verilir ve worker handler'ı `execution.AdvanceRun(spine)` yerine `execution.ExecuteRun(spine, repo, orch)` olur. Runner listener kapalıysa (env yok) eski assignment-only davranış korunur — SSE read-path e2e'leri kırılmaz.
+
+- [ ] **Step 7: Wiring testini yeşil çalıştır**
+
+Run: `go test ./tests/e2e/local -run TestShippedBinary -v && make test-e2e TEST=responses`
+
+Expected: PASS; deterministic suite regress etmez; subprocess channel yalnızca deterministic suite'te kalır.
+
+- [ ] **Step 8: Protected real-provider LP suite çalıştır**
+
+LP-003/LP-004 artık gerçek production topolojisinden geçer: `main.go` wiring → gateway → compose runner (one-use token, tek enroll) → reference-engine OCI → gerçek provider. Evidence şunları içermek ZORUNDADIR: gerçek provider request ID'leri, runner'ın mTLS enroll/connect audit kaydı, engine container'ının digest'li OCI receipt'i ve exactly-one canonical terminal — "e2e harness'ta çalışıyor" bu kapıyı geçmez.
 
 Run: `make uat-local-live PROVIDER=provider-one`
 
@@ -1452,16 +1647,16 @@ LP-014 PASS
 LP-015 PASS
 ```
 
-- [ ] **Step 6: Evidence bundle verify et**
+- [ ] **Step 9: Evidence bundle verify et**
 
 Run: `make evidence-verify RELEASE=local-live-0.1.0`
 
 Expected: `15 passed, 0 failed, 0 missing, 0 secret findings`.
 
-- [ ] **Step 7: Commit redacted fixtures ve summary**
+- [ ] **Step 10: Commit redacted fixtures ve summary**
 
 ```bash
-git add tests/uat scripts/evidence protocols/schemas/evidence evidence/releases/local-live-0.1.0
+git add apps/control-plane deploy/compose tests/e2e/local tests/uat scripts/evidence protocols/schemas/evidence evidence/releases/local-live-0.1.0
 git commit -m "test: prove the local stack with a live provider"
 ```
 
@@ -1483,8 +1678,32 @@ git commit -m "test: prove the local stack with a live provider"
 LP-0, yalnızca gerçek local vertical slice kanıtıdır. Sonraki implementation sırası:
 
 1. `phase-08-interactive-sessions.md` ile durable chat/commands/config revisions. Not (Task 11d review follow-up): session reuse / `previous_response_id` chaining, store:false purge'ü response başına yeniden anahtarlamadan gelemez — bugünkü `scrub_events` (`storage/queries/responses.sql`) session'ın TÜM event'lerini temizler ve yalnızca session:response 1:1 olduğu için doğrudur.
-2. `phase-09-repository-coding.md` ile gerçek coding workspace.
+2. `phase-09-repository-coding.md` ile gerçek coding workspace (§7.2 object-store carve-out'unu içerir).
 3. `phase-10-recovery-replay.md` ile process/container/host kill ve side-effect replay.
-4. `phase-14-production-self-host.md` ile TLS/backup/cloud VM.
+4. `phase-14-production-self-host.md` ile TLS/backup/cloud VM (§7.1 kapanmadan production secret iddiası verilmez).
 
 Bu dört kapı geçmeden local proof production self-host iddiasına çevrilmez.
+
+### 7.1 Carve-out: Encrypted SecretRef backend ve write-only admission API (ev: E13, `phase-13-governance-data.md`)
+
+Task 12 fork kararı 1'in borcu. LP-0 provider secret'ı için geçici mekanizma: `.palai/secrets/<ref>` dosyası → Compose file-secret → entrypoint env köprüsü → `modelbroker.EnvResolver`. §41.1 ("Creation accepts a write-only value"; GET asla value döndürmez) ve §41.2 (baseline self-host backend = envelope encryption) LP-0'da UYGULANMADI; master plan E13'ün "Envelope-encrypted SecretRef backend" maddesi bu carve-out'un sahibidir. E13 child planı şu task'ı içermek ZORUNDADIR:
+
+**Files:** Create `apps/control-plane/internal/identity/secrets.go`, `apps/control-plane/api/secret_refs.go`, `storage/migrations/00000N_secret_refs.up.sql`; Modify `apps/control-plane/cmd/palai-control-plane/main.go` (EnvResolver → DB-backed sealing resolver), `cmd/cli/internal/provider/add.go` (dosya yazmak yerine `POST /v1/secret-refs`), `deploy/compose/control-plane-entrypoint.sh` (file-secret köprüsü SÖKÜLÜR).
+
+- [ ] Failing testler: `TestSecretValueIsAEADSealedAtRest` (DB satırında plaintext yok; `pgcrypto` değil uygulama-seviyesi AEAD — random per-secret data key, master key ile wrap, §41.2); `TestGetSecretRefNeverReturnsValue` (§41.1); `TestProviderAddCreatesWriteOnlySecretRef` (CLI → `POST /v1/secret-refs`, value yalnızca request body'de, audit/log/idempotency cache'te yok — §20.9); `TestBrokerRedeemsSealedRefOnlyAtCallTime` (resolver decrypt'i yalnızca executor çağrısında yapar; Task 10 `SecretResolver` seam'i DEĞİŞMEZ).
+- [ ] Fail'i doğrula; sonra envelope encryption backend + `/v1/secret-refs` create/versions/revoke endpoint'lerini (§20.7 route listesi) uygula; master key `.palai/ca` gibi `palai init`'in ürettiği dosyadan gelir, production'da §45 deployment master key'idir.
+- [ ] `make test-component && go test ./tests/security/secrets -v` PASS; LP-011 secret scan'i yeni yüzeylerde yeniden koşulur.
+
+Bu carve-out kapanana kadar discovery `secret_refs: "unavailable"` ilan eder ve hiçbir sürüm "production secret handling" iddiası taşımaz.
+
+### 7.2 Carve-out: Object-store consumption / artifact write-path (ev: E09, `phase-09-repository-coding.md`)
+
+Task 12 fork kararı 2'nin borcu. LP-0'da SeaweedFS (ADR-0004 digest'i ile) compose'da sağlıklı çalışır ve doctor S3 ping'i yapar; ama control-plane'de tek S3 çağrısı yoktur — `responses.output` PG JSONB'dedir ve `artifacts` tablosunun yazarı yoktur. İlk gerçek artifact üreticisi E09'un patch/test artifacts işidir; S3 client oraya, write-path ile BİRLİKTE gelir. E09 child planı şu task'ı içermek ZORUNDADIR:
+
+**Files:** Create `apps/control-plane/internal/artifacts/store.go` (S3-compatible boundary; aws-sdk-go-v2 zaten go.mod'da), `apps/control-plane/internal/artifacts/writer.go`; Modify `apps/control-plane/internal/execution/retention.go` (Task 11d'nin bugün vacuous olan "artifact byte'larını sil" adımı gerçek delete olur).
+
+- [ ] Failing testler (gerçek SeaweedFS'e karşı component test): `TestArtifactPutRecordsRowAndBytes` (write → `artifacts` satırı + S3 object + checksum eşleşir); `TestArtifactReadIsTenantScoped`; `TestStoreFalsePurgeDeletesArtifactBytes` (Task 11d reaper'ı artifact byte'larını S3'ten gerçekten siler — bugünkü no-op'un kapanışı).
+- [ ] Fail'i doğrula; minimum put/get/delete boundary'yi uygula; engine/runner S3 credential GÖRMEZ (§24 topolojisi — yalnızca control-plane).
+- [ ] `make test-component TEST=artifacts` PASS; doctor `object_store` check'i değişmez (ping zaten var).
+
+Bu carve-out kapanana kadar `artifacts` tablosu yazarsızdır ve bu bilinen bir durumdur; SeaweedFS'in compose'da hazır olması E09'un tek satır config ile tüketmeye başlamasını sağlar.

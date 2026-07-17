@@ -406,7 +406,7 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 
 - [ ] Logical Workspace/Binding/Allocation ve single writer lease uygula.
 - [ ] Deterministic clone at exact commit; hooks/unsafe config/submodule/LFS policy ve scoped GitHub App credential broker ekle.
-- [ ] File/shell tools, changeset, patch/test artifacts ve secret scan ekle.
+- [ ] File/shell tools, changeset, patch/test artifacts ve secret scan ekle. (Carve-out devri: LP-0, SeaweedFS'i ADR-0004 digest'i ile compose'da başlatır ama tüketmez; ilk object-store consumer — artifact write-path + Task 11d purge'ünün gerçek byte silmesi — bu epic'tedir, zorunlu TDD çerçevesi LP planı §7.2'dedir.)
 - [ ] Child branch/worktree ve explicit conflict-aware merge uygula.
 - [ ] Push branch ve draft PR'ı ayrı exact approvals, idempotency ve reconciliation ile ekle.
 - [ ] Unsafe local bind'i explicit local-only flag ve prominent warning ile uygula.
@@ -473,7 +473,7 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 
 - [ ] PostgreSQL RLS, verified tenant context ve cross-tenant negative corpus ekle.
 - [ ] API key hash/scope/expiry/revoke; roles/relationships; optional OIDC ekle.
-- [ ] Envelope-encrypted SecretRef backend ve one-operation audience/fence-bound leases uygula.
+- [ ] Envelope-encrypted SecretRef backend ve one-operation audience/fence-bound leases uygula. (Carve-out devri: LP-0 Task 12, provider secret'ı geçici olarak `.palai` file-secret → env → `EnvResolver` yoluyla taşıdı; bu epic o köprüyü söker ve write-only `POST /v1/secret-refs` admission + §41.2 envelope encryption'ı getirir — zorunlu TDD çerçevesi LP planı §7.1'dedir.)
 - [ ] Append-only usage ledger, reservations/settlement, budgets ve quotas ekle; commercial invoice üretme.
 - [ ] Audit integrity linkage, retention, `store:false`, deletion/export ve signed artifact URL policy ekle.
 - [ ] Default content-free OpenTelemetry signals ve redaction/secret scanners ekle.
