@@ -1260,18 +1260,59 @@ git commit -m "feat: package the complete local stack"
 - Test: `sdks/typescript/test/responses.test.ts`
 - Test: `sdks/typescript/test/stream.test.ts`
 - Test: `sdks/typescript/test/retry.test.ts`
+- Modify: `apps/control-plane/internal/execution/finalize.go` (Step 1 — projection'a model + error)
+- Modify: `apps/control-plane/internal/store/postgres.go` (Step 1 — GET model/error'ı geri yansıtır)
+- Modify: `packages/coordinator/lease.go` (Step 1 — dead-letter projection'a problem-shaped error)
+- Modify: `storage/queries/responses.sql` (Step 1 — scrub_events ceiling yorumu)
+- Test: `apps/control-plane/e2e/responses/live_loop_test.go` (Modify — completed GET model assertion)
+- Test: `apps/control-plane/e2e/responses/dead_letter_test.go` (Modify — failed GET error assertion)
 
-- [ ] **Step 1: Failing SDK contract tests yaz**
+- [ ] **Step 1: Terminal projection'ı model ve error ile tamamla (Task 11d review follow-up)**
+
+> Task 11d Step 3 GET sözleşmesini "(status, output, model, usage, error)" olarak kurdu; ama finalize durable projection'a yalnızca `{output, usage}` yazar (`apps/control-plane/internal/execution/finalize.go:50`), orphaned-run köprüsü sabit `{"output":[],"usage":{}}` yazar (`packages/coordinator/lease.go` `deadLetterProjection`) ve `store/postgres.go` `GetResponse` yalnızca bu iki alanı geri okur. Gerçek sunucuda GET bu yüzden `model:""` döndürür ve failed bir response'un GET'inde `error` alanı hiç yoktur — oysa `protocols/schemas/execution/response.json` `model`'i required sayar ve `error`'ı `oneOf[problem, null]` modeller (§8.3 retrieval sözleşmesi). Conformance suite bu açığı yakalayamaz çünkü fake backend admission gövdesini verbatim saklar; kanıt Task 11 e2e harness'ında yaşar. SDK `retrieve()`/`finalResponse()` bu şekle bağlanmadan ve Task 15 failed-response retrieval'ı canlı UAT'lamadan önce sunucu tarafı tamamlanmalıdır.
+
+Önce iki failing test yazılır (Task 11 harness'ının `getResponse` HTTP helper'ı ile):
+
+```go
+// apps/control-plane/e2e/responses/live_loop_test.go
+func TestRetrieveCompletedResponseCarriesUsedModel(t *testing.T)
+// live-loop akışı terminal'e ulaştıktan sonra GET /v1/responses/{id} gövdesindeki
+// "model" boş değildir ve committed model result'taki gerçekten kullanılan modeldir.
+
+// apps/control-plane/e2e/responses/dead_letter_test.go
+func TestRetrieveDeadLetteredResponseCarriesProblemError(t *testing.T)
+// reconciler köprüsünün failed'a sürdüğü response'un GET gövdesindeki "error"
+// problem-shaped bir objedir (code/message dolu); completed response GET'inde
+// error alanı yoktur (null/absent).
+```
+
+Sonra implementasyon:
+
+- `finalize.go`: attemptState, committed model result'tan gerçekten kullanılan modeli taşır (`modelbroker.Result.Model`; hem taze route hem `LookupModelResult` replay branch'i doldurur) ve projection `{output, usage, model}` olur; failed/timed_out/budget_exceeded/canceled outcome'larında projection'a sanitize edilmiş problem-shaped `error` eklenir (raw provider/engine detayı sızmaz, §22.3).
+- `packages/coordinator/lease.go`: `deadLetterProjection` problem-shaped bir `error` taşır; run hiç model step'e ulaşmadıysa model boş kalabilir (schema `model`'i boş string olarak kabul eder — non-empty model assertion'ı yalnızca completed yolundadır).
+- `store/postgres.go` `GetResponse`: inline projection struct'ına `Model` ve `Error` eklenir ve GET gövdesine yansıtılır; 106. satırdaki "Model is not part of the durable terminal projection" yorumu artık yanlıştır, kaldırılır.
+- `storage/queries/responses.sql` (Task 11d review follow-up 2 — ceiling notu, davranış değişikliği yok): `scrub_events` CTE'sinin üstüne yorum eklenir: `-- ponytail: session-level scrub — create her response'a taze session açtığı için bugün doğru (session:response 1:1); session reuse / previous_response_id chaining gelirse purge response başına yeniden anahtarlanmalı, yoksa store:false purge aynı session'daki retained kardeş response'ların journal'ını da siler (events'te per-response anahtar yok).`
+
+Run: `make test-e2e TEST=responses && go test ./tests/conformance/api -run TestRetrieve -v`
+
+Expected: iki yeni test PASS; mevcut retrieve/store-false/dead-letter case'leri regress etmez.
+
+```bash
+git add apps/control-plane packages/coordinator storage/queries
+git commit -m "fix: carry model and error in the terminal response projection"
+```
+
+- [ ] **Step 2: Failing SDK contract tests yaz**
 
 Cases: constructor config precedence; no unrelated provider env discovery; automatic stable idempotency key across retry; AsyncIterable SSE; reconnect/dedupe; explicit cancel; RFC 9457 typed error; unknown event/enum preservation; browser import of server credential path fails.
 
-- [ ] **Step 2: Fail'i doğrula**
+- [ ] **Step 3: Fail'i doğrula**
 
 Run: `pnpm --dir sdks/typescript test`
 
 Expected: package/source absent nedeniyle FAIL.
 
-- [ ] **Step 3: Generated transport types ve handwritten ergonomic layer uygula**
+- [ ] **Step 4: Generated transport types ve handwritten ergonomic layer uygula**
 
 Public surface:
 
@@ -1285,13 +1326,13 @@ await client.responses.cancel(responseID);
 
 `stream.finalResponse()` canonical terminal object döndürür. Iterator close yalnızca transport'u kapatır. API key browser-safe entrypoint'ten export edilmez; package conditional exports ile server path ayırır.
 
-- [ ] **Step 4: SDK tests ve generated drift çalıştır**
+- [ ] **Step 5: SDK tests ve generated drift çalıştır**
 
 Run: `pnpm --dir sdks/typescript test && make check-generated`
 
 Expected: PASS; retry capture aynı idempotency key gösterir.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add sdks/typescript protocols scripts/contracts
@@ -1441,7 +1482,7 @@ git commit -m "test: prove the local stack with a live provider"
 
 LP-0, yalnızca gerçek local vertical slice kanıtıdır. Sonraki implementation sırası:
 
-1. `phase-08-interactive-sessions.md` ile durable chat/commands/config revisions.
+1. `phase-08-interactive-sessions.md` ile durable chat/commands/config revisions. Not (Task 11d review follow-up): session reuse / `previous_response_id` chaining, store:false purge'ü response başına yeniden anahtarlamadan gelemez — bugünkü `scrub_events` (`storage/queries/responses.sql`) session'ın TÜM event'lerini temizler ve yalnızca session:response 1:1 olduğu için doğrudur.
 2. `phase-09-repository-coding.md` ile gerçek coding workspace.
 3. `phase-10-recovery-replay.md` ile process/container/host kill ve side-effect replay.
 4. `phase-14-production-self-host.md` ile TLS/backup/cloud VM.
