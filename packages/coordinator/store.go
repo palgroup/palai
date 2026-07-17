@@ -336,13 +336,21 @@ type AdmissionInput struct {
 	SessionID      string
 	Input          []byte
 	Body           []byte
+	// Store is the §8.3 retention flag persisted on the response. It defaults true
+	// (persistent); the caller resolves an absent request field to true before admission.
+	Store bool
 }
 
-// Admission is the committed, replayed, or conflicting admission outcome.
+// Admission is the committed, replayed, conflicting, or purged admission outcome.
+// Purged marks a replay whose cached result has been reaped (spec §20.9): the request
+// matched but the resource is a tombstone, so it is answered 410 without re-execution,
+// and ResourceTombstone names the original resource so the caller can return its identity.
 type Admission struct {
-	Body     []byte
-	Replayed bool
-	Conflict bool
+	Body              []byte
+	Replayed          bool
+	Conflict          bool
+	Purged            bool
+	ResourceTombstone string
 }
 
 // AdmitResponse atomically reserves the idempotency key and, on a fresh key,
@@ -367,9 +375,11 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		// The key is already reserved: replay on a matching request, conflict otherwise.
 		var storedHash string
 		var storedBody []byte
+		var resultPurgedAt *time.Time
+		var resourceTombstone *string
 		if err := tx.QueryRow(ctx, storage.Query("GetIdempotency"),
 			tenant.Organization, tenant.Project, in.Principal, in.Method, in.Route, in.IdempotencyKey).
-			Scan(&storedHash, &storedBody); err != nil {
+			Scan(&storedHash, &storedBody, &resultPurgedAt, &resourceTombstone); err != nil {
 			return Admission{}, fmt.Errorf("read idempotency record: %w", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -377,6 +387,14 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		}
 		if storedHash != in.RequestHash {
 			return Admission{Conflict: true}, nil
+		}
+		// A matching replay whose result has been reaped is a tombstone: 410, no re-run.
+		if resultPurgedAt != nil {
+			tombstone := ""
+			if resourceTombstone != nil {
+				tombstone = *resourceTombstone
+			}
+			return Admission{Purged: true, ResourceTombstone: tombstone}, nil
 		}
 		return Admission{Body: storedBody, Replayed: true}, nil
 	case err != nil:
@@ -389,7 +407,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		return Admission{}, fmt.Errorf("insert session: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertResponse"),
-		in.ResponseID, tenant.Organization, tenant.Project, in.SessionID, in.Input); err != nil {
+		in.ResponseID, tenant.Organization, tenant.Project, in.SessionID, in.Input, in.Store); err != nil {
 		return Admission{}, fmt.Errorf("insert response: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertRun"),

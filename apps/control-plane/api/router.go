@@ -24,6 +24,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	mux := http.NewServeMux()
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
+	mux.HandleFunc("GET /v1/responses/{response_id}", responses.get)
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}
 	mux.HandleFunc("GET /v1/sessions/{session_id}/events", stream.stream)

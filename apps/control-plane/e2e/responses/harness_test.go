@@ -117,17 +117,14 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinat
 // dispatch job. It returns the response, session, and run ids.
 func (h *harness) admit() (responseID, sessionID, runID string) {
 	h.t.Helper()
-	req, err := http.NewRequest(http.MethodPost, h.base+"/v1/responses", strings.NewReader(`{"input":"do the work"}`))
-	if err != nil {
-		h.t.Fatalf("build POST error = %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+h.token)
-	req.Header.Set("Idempotency-Key", newID("idem"))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		h.t.Fatalf("POST /v1/responses error = %v", err)
-	}
+	return h.admitWith(`{"input":"do the work"}`, newID("idem"))
+}
+
+// admitWith is admit with a caller-chosen body and idempotency key, so a retention
+// test can create a store:false response and later replay the exact same request.
+func (h *harness) admitWith(body, idemKey string) (responseID, sessionID, runID string) {
+	h.t.Helper()
+	resp := h.postResponse(body, idemKey, h.token)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
 		h.t.Fatalf("POST status = %d, want 202", resp.StatusCode)
@@ -137,6 +134,52 @@ func (h *harness) admit() (responseID, sessionID, runID string) {
 		h.t.Fatalf("decode response error = %v", err)
 	}
 	return string(r.ID), string(r.SessionID), string(r.RunID)
+}
+
+// postResponse issues POST /v1/responses and returns the raw response so a caller can
+// assert on a non-2xx status (e.g. a 410 replay after purge).
+func (h *harness) postResponse(body, idemKey, token string) *http.Response {
+	h.t.Helper()
+	req, err := http.NewRequest(http.MethodPost, h.base+"/v1/responses", strings.NewReader(body))
+	if err != nil {
+		h.t.Fatalf("build POST error = %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", idemKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Fatalf("POST /v1/responses error = %v", err)
+	}
+	return resp
+}
+
+// getResponse issues GET /v1/responses/{id} with the given bearer token and returns
+// the raw response.
+func (h *harness) getResponse(responseID, token string) *http.Response {
+	h.t.Helper()
+	req, err := http.NewRequest(http.MethodGet, h.base+"/v1/responses/"+responseID, nil)
+	if err != nil {
+		h.t.Fatalf("build GET error = %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Fatalf("GET /v1/responses error = %v", err)
+	}
+	return resp
+}
+
+// purgedAt reads a response's purge timestamp, or nil if it has not been purged.
+func (h *harness) purgedAt(responseID string) *time.Time {
+	h.t.Helper()
+	var purged *time.Time
+	if err := h.spine.Pool().QueryRow(context.Background(),
+		`SELECT purged_at FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		responseID, h.tenant.Organization, h.tenant.Project).Scan(&purged); err != nil {
+		h.t.Fatalf("read purged_at error = %v", err)
+	}
+	return purged
 }
 
 // newOrchestrator builds the kernel over the given dialer with the deterministic fake

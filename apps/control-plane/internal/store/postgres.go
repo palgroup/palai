@@ -11,6 +11,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -80,16 +82,72 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 			SessionID:      req.SessionID,
 			Input:          req.Input,
 			Body:           req.Body,
+			Store:          req.Store,
 		})
 	if err != nil {
 		return api.AdmitResult{}, err
 	}
-	return api.AdmitResult{
+	result := api.AdmitResult{
 		ResponseID: responseID(adm.Body),
 		Body:       adm.Body,
 		Replayed:   adm.Replayed,
 		Conflict:   adm.Conflict,
-	}, nil
+		Purged:     adm.Purged,
+	}
+	// On a purged replay the body is gone; the tombstone identity is the resource id.
+	if adm.Purged {
+		result.ResponseID = adm.ResourceTombstone
+	}
+	return result, nil
+}
+
+// GetResponse reads a response's terminal projection within the request's verified
+// scope and renders the retrieval body. A missing or foreign row is a miss (404); a
+// reaped row is Purged (410). Model is not part of the durable terminal projection, so
+// the retrieved resource carries the committed status, output, and usage (spec §22.3).
+func (s *Store) GetResponse(ctx context.Context, scope middleware.Scope, id string) (api.RetrieveResult, error) {
+	view, err := s.spine.GetResponse(ctx, coordinator.Tenant{Organization: scope.Organization, Project: scope.Project}, id)
+	if err != nil {
+		return api.RetrieveResult{}, err
+	}
+	if !view.Found {
+		return api.RetrieveResult{}, nil
+	}
+	if view.Purged {
+		return api.RetrieveResult{Found: true, Purged: true}, nil
+	}
+	resp := contracts.Response{
+		ID:        contracts.ResponseID(id),
+		Object:    "response",
+		Status:    view.State,
+		CreatedAt: view.CreatedAt.UTC().Format(time.RFC3339Nano),
+		Output:    []contracts.ContentItem{},
+		Usage:     contracts.Usage{},
+	}
+	if len(view.Output) > 0 {
+		var projection struct {
+			Output []contracts.ContentItem `json:"output"`
+			Usage  contracts.Usage         `json:"usage"`
+		}
+		if err := json.Unmarshal(view.Output, &projection); err != nil {
+			return api.RetrieveResult{}, fmt.Errorf("decode response projection: %w", err)
+		}
+		if projection.Output != nil {
+			resp.Output = projection.Output
+		}
+		resp.Usage = projection.Usage
+	}
+	body, err := json.Marshal(resp)
+	if err != nil {
+		return api.RetrieveResult{}, fmt.Errorf("marshal response projection: %w", err)
+	}
+	return api.RetrieveResult{Body: body, Found: true}, nil
+}
+
+// PurgeExpiredStoreFalse runs one retention sweep over the durable spine, reaping the
+// content of store=false responses whose terminal state has aged past ttl (spec §8.3).
+func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (int, error) {
+	return s.spine.PurgeExpiredStoreFalse(ctx, ttl)
 }
 
 // SessionExists reports whether the session is visible in the given tenant scope;

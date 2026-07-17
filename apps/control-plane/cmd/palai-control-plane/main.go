@@ -46,6 +46,7 @@ func main() {
 	}
 
 	startDispatch(ctx, repo.Spine())
+	startRetention(ctx, repo)
 
 	log.Printf("palai control-plane listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
@@ -76,6 +77,19 @@ func startDispatch(ctx context.Context, spine *coordinator.Store) {
 	}
 	reconciler := execution.NewReconciler(spine, 30*time.Second, retry.MaxAttempts)
 	go func() { _ = reconciler.Run(ctx) }()
+}
+
+// startRetention launches the store:false retention reaper when a TTL is configured
+// (PALAI_RETENTION_STORE_FALSE_TTL). Unset disables it, so no arbitrary production
+// default is imposed here; UAT and operators set a short TTL to activate reaping (spec
+// §8.3, §20.9). A killed process just misses ticks; the next run resumes the sweep.
+func startRetention(ctx context.Context, repo *store.Store) {
+	ttl := envDuration("PALAI_RETENTION_STORE_FALSE_TTL")
+	if ttl <= 0 {
+		return
+	}
+	reaper := execution.NewReaper(repo, ttl)
+	go func() { _ = reaper.Run(ctx, 30*time.Second) }()
 }
 
 // envIntDefault reads an integer env var, returning def when unset or unparseable.

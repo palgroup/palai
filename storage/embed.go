@@ -20,6 +20,12 @@ var migrationUp string
 //go:embed migrations/000001_core.down.sql
 var migrationDown string
 
+//go:embed migrations/000002_retention.up.sql
+var migrationUp2 string
+
+//go:embed migrations/000002_retention.down.sql
+var migrationDown2 string
+
 //go:embed queries/jobs.sql
 var jobsSQL string
 
@@ -32,11 +38,13 @@ var responsesSQL string
 //go:embed queries/identity.sql
 var identitySQL string
 
-// MigrationUp is the forward core migration.
-func MigrationUp() string { return migrationUp }
+// MigrationUp is the forward migration chain, applied in version order (000001 then
+// 000002). Each file is individually idempotent, so the whole chain is safe to re-run.
+func MigrationUp() string { return migrationUp + "\n" + migrationUp2 }
 
-// MigrationDown reverses MigrationUp.
-func MigrationDown() string { return migrationDown }
+// MigrationDown reverses MigrationUp in the opposite order: 000002 drops its added
+// columns before 000001 drops the tables that carried them.
+func MigrationDown() string { return migrationDown2 + "\n" + migrationDown }
 
 var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL)
 

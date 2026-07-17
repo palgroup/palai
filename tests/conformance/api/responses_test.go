@@ -114,6 +114,51 @@ func TestResponseReplaySameKeySameBodyReturnsSameResource(t *testing.T) {
 	}
 }
 
+func TestRetrieveReturnsTerminalProjection(t *testing.T) {
+	srv := newTestServer(t)
+	headers := authedHeaders("key-retrieve")
+
+	created := decodeResponse(t, readBody(t, postResponses(t, srv, headers, `{"input":"do the work"}`)))
+
+	resp := getResponse(t, srv, string(created.ID))
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("retrieve status = %d, want 200 (body=%s)", resp.StatusCode, body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", ct)
+	}
+
+	// The retrieved projection is the committed resource, field-for-field: same id,
+	// same status, same output and usage as the admission returned.
+	got := decodeResponse(t, body)
+	if got.ID != created.ID {
+		t.Fatalf("retrieved id = %q, want %q", got.ID, created.ID)
+	}
+	if got.Status != created.Status {
+		t.Fatalf("retrieved status = %q, want %q", got.Status, created.Status)
+	}
+	if len(got.Output) != len(created.Output) {
+		t.Fatalf("retrieved output len = %d, want %d", len(got.Output), len(created.Output))
+	}
+	if got.Usage.TotalTokens != created.Usage.TotalTokens || got.Usage.InputTokens != created.Usage.InputTokens {
+		t.Fatalf("retrieved usage = %+v, want %+v", got.Usage, created.Usage)
+	}
+}
+
+func TestRetrieveUnknownIDReturns404(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := getResponse(t, srv, "resp_does_not_exist")
+	problem := decodeProblem(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("retrieve status = %d, want 404", resp.StatusCode)
+	}
+	if problem.Code != "not_found" {
+		t.Fatalf("code = %q, want not_found", problem.Code)
+	}
+}
+
 func TestResponseConflictSameKeyDifferentBodyReturns409(t *testing.T) {
 	srv := newTestServer(t)
 	headers := authedHeaders("key-conflict")

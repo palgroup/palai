@@ -34,6 +34,7 @@ var testScope = middleware.Scope{
 type fakeBackend struct {
 	mu   sync.Mutex
 	seen map[string]stored
+	byID map[string][]byte
 }
 
 type stored struct {
@@ -43,7 +44,7 @@ type stored struct {
 }
 
 func newFakeBackend() *fakeBackend {
-	return &fakeBackend{seen: map[string]stored{}}
+	return &fakeBackend{seen: map[string]stored{}, byID: map[string][]byte{}}
 }
 
 func (f *fakeBackend) VerifyAPIKey(_ context.Context, token string) (middleware.Scope, error) {
@@ -63,7 +64,21 @@ func (f *fakeBackend) AdmitResponse(_ context.Context, req api.AdmitRequest) (ap
 		return api.AdmitResult{ResponseID: prev.respID, Body: prev.body, Replayed: true}, nil
 	}
 	f.seen[req.IdempotencyKey] = stored{hash: req.RequestHash, respID: req.ResponseID, body: req.Body}
+	f.byID[req.ResponseID] = req.Body
 	return api.AdmitResult{ResponseID: req.ResponseID, Body: req.Body}, nil
+}
+
+// GetResponse serves the retrieval seam from the by-id index: an unknown id is a
+// miss (404) and a stored resource returns its committed body (200). The 410 purge
+// path is proven against real Postgres in the e2e tier, not here.
+func (f *fakeBackend) GetResponse(_ context.Context, _ middleware.Scope, id string) (api.RetrieveResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	body, ok := f.byID[id]
+	if !ok {
+		return api.RetrieveResult{}, nil
+	}
+	return api.RetrieveResult{Body: body, Found: true}, nil
 }
 
 // EventReader: the response-admission conformance tier never streams, so these
@@ -102,6 +117,22 @@ func postResponses(t *testing.T, srv *httptest.Server, headers map[string]string
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	return resp
+}
+
+// getResponse issues GET /v1/responses/{id} with a valid bearer token. Retrieval is
+// a plain read, so it carries no idempotency key.
+func getResponse(t *testing.T, srv *httptest.Server, id string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/responses/"+id, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
 	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatalf("do request: %v", err)
