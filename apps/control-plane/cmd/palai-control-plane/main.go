@@ -13,10 +13,14 @@ import (
 	"strings"
 	"time"
 
+	fake "github.com/palgroup/palai/adapters/models/fake"
+	providerone "github.com/palgroup/palai/adapters/models/provider_one"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
+	modelbroker "github.com/palgroup/palai/packages/model-broker"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
 func main() {
@@ -38,7 +42,7 @@ func main() {
 		log.Fatalf("seed bootstrap identity: %v", err)
 	}
 
-	startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"))
+	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"))
 
 	addr := os.Getenv("PALAI_LISTEN_ADDR")
 	if addr == "" {
@@ -53,26 +57,37 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	startDispatch(ctx, repo.Spine())
+	startDispatch(ctx, repo, gateway)
 	startRetention(ctx, repo)
 
 	log.Printf("palai control-plane listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
 }
 
-// startDispatch launches the durable dispatch workers and the reconciler that turn
-// admitted response.run jobs into assigned runs (spec §24.4). A killed worker's lease
-// lapses and its job is reclaimed at a higher fence, so no graceful shutdown is
-// needed. PALAI_DISPATCH_WORKERS sets the worker count (default 1); 0 disables
-// dispatch — the read-path SSE e2e drives runs by hand and runs the server without a
-// dispatcher racing it.
-func startDispatch(ctx context.Context, spine *coordinator.Store) {
+// startDispatch launches the durable dispatch workers and the reconciler that drive
+// admitted response.run jobs. With a runner listener bound (gateway != nil) the worker
+// runs the full production exec-path: the orchestrator drives each claimed run through the
+// model broker, the conformance tool broker, and a live engine dialed over the gateway, to
+// a committed terminal response. Without it, the binary keeps the assignment-only behavior
+// the read-path SSE e2e drives (no broker/engine racing it). A killed worker's lease lapses
+// and its job is reclaimed at a higher fence, so no graceful shutdown is needed.
+// PALAI_DISPATCH_WORKERS sets the worker count (default 1); 0 disables dispatch.
+func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway) {
 	workers := envIntDefault("PALAI_DISPATCH_WORKERS", 1)
 	if workers <= 0 {
 		return
 	}
+	spine := repo.Spine()
 	retry := coordinator.RetryPolicy{MaxAttempts: 5, BaseBackoff: 100 * time.Millisecond, MaxBackoff: 30 * time.Second}
+
 	handler := execution.AdvanceRun(spine)
+	if gateway != nil {
+		broker, route := modelBrokerFromEnv()
+		orch := execution.NewOrchestrator(repo, gateway, broker, toolbroker.New(toolbroker.ConformanceMathAdd()))
+		orch.SetModelRoute(route)
+		handler = execution.ExecuteRun(spine, repo, orch)
+	}
+
 	for i := 0; i < workers; i++ {
 		w := coordinator.NewWorker(spine, coordinator.WorkerConfig{
 			Owner:        fmt.Sprintf("control-plane-%d-%d", os.Getpid(), i),
@@ -85,6 +100,35 @@ func startDispatch(ctx context.Context, spine *coordinator.Store) {
 	}
 	reconciler := execution.NewReconciler(spine, 30*time.Second, retry.MaxAttempts)
 	go func() { _ = reconciler.Run(ctx) }()
+}
+
+// modelBrokerFromEnv builds the model broker and route the exec-path uses, selected by
+// PALAI_MODEL_PROVIDER. "provider-one" is the live OpenAI adapter: the model id comes from
+// PALAI_MODEL (default gpt-4o-mini) and the credential is redeemed only at call time from
+// PALAI_SECRET_PROVIDER_ONE (the compose file-secret bridge) — never on a request, argument,
+// or log. Any other value (including unset) selects the deterministic fake adapter: no
+// network, no credential, a fixed scripted completion for the shipped-binary wiring proof.
+// ponytail: env selection, not a DB model_routes lookup — that routing is the deferred
+// E-series carve-out.
+func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
+	if os.Getenv("PALAI_MODEL_PROVIDER") == "provider-one" {
+		model := os.Getenv("PALAI_MODEL")
+		if model == "" {
+			model = "gpt-4o-mini"
+		}
+		broker := modelbroker.New(modelbroker.Config{
+			Adapters: map[string]modelbroker.ModelAdapter{"provider-one": providerone.Adapter{}},
+			Secrets:  modelbroker.EnvResolver{modelbroker.SecretRef("provider-one"): "PALAI_SECRET_PROVIDER_ONE"},
+		})
+		return broker, execution.ModelRoute{Provider: "provider-one", Model: model, Secret: modelbroker.SecretRef("provider-one")}
+	}
+	broker := modelbroker.New(modelbroker.Config{
+		Adapters: map[string]modelbroker.ModelAdapter{"fake": fake.Adapter{Script: fake.Script{
+			ProviderRequestID: "fake-local", Model: "fake", Output: "ok",
+		}}},
+		Secrets: modelbroker.StaticResolver{modelbroker.SecretRef("fake"): "unused"},
+	})
+	return broker, execution.ModelRoute{Provider: "fake", Model: "fake", Secret: modelbroker.SecretRef("fake")}
 }
 
 // startRetention launches the store:false retention reaper when a TTL is configured
@@ -104,12 +148,12 @@ func startRetention(ctx context.Context, repo *store.Store) {
 // endpoints on a SEPARATE listener from the public API. The server TLS accepts a certless
 // handshake (VerifyClientCertIfGiven) so the enrollment endpoint can bootstrap a runner
 // that has no certificate yet; the connect handler asserts the verified client chain
-// itself. addr empty disables the gateway — the public router still carries a nil runner
-// handler, and this task binds the listener but does NOT wire the gateway as an
-// EngineDialer to any worker (that live exec-path is Task 15).
-func startRunnerGateway(addr string) {
+// itself. It returns the gateway so startDispatch can drive the production exec-path over it
+// as the orchestrator's EngineDialer. addr empty disables the gateway (returns nil) — the
+// public router carries a nil runner handler and dispatch stays assignment-only.
+func startRunnerGateway(addr string) *execution.RunnerGateway {
 	if strings.TrimSpace(addr) == "" {
-		return
+		return nil
 	}
 	caCertPath := mustGatewayEnv("PALAI_RUNNER_CA_CERT")
 	caKeyPath := mustGatewayEnv("PALAI_RUNNER_CA_KEY")
@@ -153,6 +197,7 @@ func startRunnerGateway(addr string) {
 	}
 	log.Printf("palai runner gateway listening on %s", addr)
 	go func() { log.Fatal(srv.Serve(ln)) }()
+	return gateway
 }
 
 // mustGatewayEnv reads a required gateway env var, failing fast when the runner listener

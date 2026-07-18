@@ -33,13 +33,20 @@ type Orchestrator struct {
 	dialer EngineDialer
 	models *modelbroker.Broker
 	tools  *toolbroker.Broker
+	route  ModelRoute
 }
 
 // NewOrchestrator binds the durable store, the engine dialer, and the model and tool
-// brokers into one kernel.
+// brokers into one kernel. The model route defaults to the deterministic fake provider;
+// main.go overrides it for a live provider via SetModelRoute.
 func NewOrchestrator(st *store.Store, dialer EngineDialer, models *modelbroker.Broker, tools *toolbroker.Broker) *Orchestrator {
-	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools}
+	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, route: defaultModelRoute}
 }
+
+// SetModelRoute points the kernel at a non-default provider/model/secret selected by the
+// composition root (main.go) from the environment. ponytail: a setter, not a model_routes
+// lookup — the DB-backed routing is the deferred E-series carve-out.
+func (o *Orchestrator) SetModelRoute(r ModelRoute) { o.route = r }
 
 // attemptState is the per-attempt working set threaded through the dispatch handlers.
 type attemptState struct {

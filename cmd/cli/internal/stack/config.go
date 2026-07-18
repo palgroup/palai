@@ -121,17 +121,20 @@ func loadConfig() (Config, paths, error) {
 }
 
 // composeEnv is the process environment for a `docker compose` invocation: the caller's
-// environment plus the ${PALAI_*} interpolation contract compose.yaml consumes.
-// PALAI_RETENTION_STORE_FALSE_TTL is inherited from os.Environ unchanged (its compose
-// default is empty), so an operator can enable reaping without a config field.
-func (c Config) composeEnv(home string) []string {
+// environment plus the ${PALAI_*} interpolation contract compose.yaml consumes. engine is
+// the reference engine image reference to hand the runner — the mutable tag for a build or
+// teardown, the resolved immutable sha256 digest for a boot that drives the exec-path.
+// PALAI_RETENTION_STORE_FALSE_TTL (and PALAI_DISPATCH_WORKERS/PALAI_MODEL_PROVIDER) are
+// inherited from os.Environ unchanged (their compose defaults hold), so an operator or the
+// UAT can set them without a config field.
+func (c Config) composeEnv(home, engine string) []string {
 	return append(os.Environ(),
 		"PALAI_HOME="+home,
 		"PALAI_API_PORT="+strconv.Itoa(c.APIPort),
 		"PALAI_RUNNER_PORT="+strconv.Itoa(c.RunnerPort),
 		"PALAI_PG_PORT="+strconv.Itoa(c.PgPort),
 		"PALAI_S3_PORT="+strconv.Itoa(c.S3Port),
-		"PALAI_ENGINE_IMAGE="+engineImage,
+		"PALAI_ENGINE_IMAGE="+engine,
 	)
 }
 

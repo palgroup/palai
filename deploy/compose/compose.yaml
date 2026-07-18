@@ -58,9 +58,16 @@ services:
       PALAI_ENROLLMENT_TOKEN_FILE: /palai/runner-token
       PALAI_BOOTSTRAP_API_KEY_FILE: /run/secrets/bootstrap_api_key
       PALAI_ENGINE_IMAGE: ${PALAI_ENGINE_IMAGE}
-      # LP-0 does not drive the exec path (that is Task 15): run no dispatch worker so
-      # an admitted response stays queued rather than failing against an absent provider.
-      PALAI_DISPATCH_WORKERS: "0"
+      # Dispatch drives the production exec-path (Task 15). Default 0 (queued-only) keeps the
+      # browser/clean-boot proofs unchanged; the wiring test and live UAT set it to 1 with
+      # PALAI_MODEL_PROVIDER to run a real create -> engine -> terminal round-trip.
+      PALAI_DISPATCH_WORKERS: ${PALAI_DISPATCH_WORKERS:-0}
+      # Model provider the exec-path routes to: "fake" (deterministic, no network/credential)
+      # or "provider-one" (live OpenAI; model id from PALAI_MODEL, credential redeemed at call
+      # time from the provider_one_key file secret bridged by the entrypoint). The credential
+      # never rides this environment block.
+      PALAI_MODEL_PROVIDER: ${PALAI_MODEL_PROVIDER:-fake}
+      PALAI_MODEL: ${PALAI_MODEL:-}
       PALAI_RETENTION_STORE_FALSE_TTL: ${PALAI_RETENTION_STORE_FALSE_TTL:-}
     secrets:
       - provider_one_key

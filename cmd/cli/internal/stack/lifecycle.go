@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -76,13 +77,21 @@ func Up() error {
 	if err != nil {
 		return err
 	}
-	env := cfg.composeEnv(p.home)
 
 	// Build the reference engine image `local up` hands the runner. It is not a compose
 	// service (the runner launches it per-lease through the Docker socket).
-	if err := runVisible(env, "docker", "build", "-t", engineImage, "engines/reference"); err != nil {
+	if err := runVisible(cfg.composeEnv(p.home, engineImage), "docker", "build", "-t", engineImage, "engines/reference"); err != nil {
 		return fmt.Errorf("build reference engine image: %w", err)
 	}
+	// The runner's lease requires an immutable sha256 image, but the locally-built engine is
+	// a mutable tag (release-digest pinning is E18). Resolve the built image's id so the
+	// exec-path hands the runner a digest its lease accepts rather than the tag.
+	engineDigest, err := imageID(engineImage)
+	if err != nil {
+		return err
+	}
+	env := cfg.composeEnv(p.home, engineDigest)
+
 	// A fresh one-use enrollment token for this boot.
 	if err := os.WriteFile(p.runnerToken, []byte(randomHex(24)), 0o600); err != nil {
 		return fmt.Errorf("mint runner token: %w", err)
@@ -105,7 +114,7 @@ func Down() error {
 	if err != nil {
 		return err
 	}
-	return runVisible(cfg.composeEnv(p.home), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+	return runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
 		"down", "--remove-orphans")
 }
 
@@ -121,7 +130,7 @@ func Reset(confirm bool) error {
 	if !confirm {
 		return fmt.Errorf("refusing to delete volumes without --confirm")
 	}
-	return runVisible(cfg.composeEnv(p.home), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+	return runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
 		"down", "--volumes", "--remove-orphans")
 }
 
@@ -150,6 +159,23 @@ func waitForAPI(cfg Config, p paths) error {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+// imageID resolves a built image's immutable id (sha256:...) — the digest the runner's lease
+// offer requires, since the locally-built engine tag is mutable (release-digest pinning is
+// E18). It captures stdout directly rather than routing it to stderr.
+func imageID(ref string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "image", "inspect", ref, "--format", "{{.Id}}").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve %s image id: %w", ref, err)
+	}
+	id := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(id, "sha256:") {
+		return "", fmt.Errorf("image %s id %q is not a sha256 digest", ref, id)
+	}
+	return id, nil
 }
 
 // runVisible runs a command with progress routed to stderr, keeping stdout clean for the

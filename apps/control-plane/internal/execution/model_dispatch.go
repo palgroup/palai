@@ -9,14 +9,19 @@ import (
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 )
 
-// modelProvider and modelSecret are the deterministic broker coordinates this kernel
-// routes to. ponytail: hardcoded until model routing (provider + credential from
-// model_routes) is wired; the runner-gateway task (11c) revisits this with real
-// routing. The e2e broker registers its adapter and resolver under these names.
-const (
-	modelProvider = "fake"
-	modelSecret   = modelbroker.SecretRef("model")
-)
+// ModelRoute is the broker coordinates this kernel routes a model.request to: the
+// adapter name, the model id put on the provider wire, and the SecretRef the executor
+// redeems at call time. ponytail: env-selected in main.go
+// (PALAI_MODEL_PROVIDER/PALAI_MODEL) until DB-backed model_routes routing is wired —
+// that lookup is the deferred E-series carve-out. The default is the deterministic
+// fake provider every existing suite registers its adapter and resolver under.
+type ModelRoute struct {
+	Provider string
+	Model    string
+	Secret   modelbroker.SecretRef
+}
+
+var defaultModelRoute = ModelRoute{Provider: "fake", Model: "fake", Secret: modelbroker.SecretRef("model")}
 
 // dispatchModel handles a model.request. A committed result for the stable
 // model_request_id is replayed without re-calling the provider (the DB half of
@@ -54,16 +59,16 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		return err
 	}
 
-	result, err := o.models.Route(ctx, modelProvider, modelbroker.Request{
+	result, err := o.models.Route(ctx, o.route.Provider, modelbroker.Request{
 		ModelRequestID: contracts.ModelRequestID(requestID),
 		// Stable across attempts: the same run and model-request identity re-derive the
 		// same key, so a reclaimed attempt that re-routes carries it and the provider
 		// settles one effect (spec §53.4, §35.3).
 		IdempotencyKey: string(st.attempt.RunID) + "/" + requestID,
-		Model:          modelProvider,
+		Model:          o.route.Model,
 		Messages:       messages,
 		Reservation:    modelbroker.Reservation{},
-		Secret:         modelSecret,
+		Secret:         o.route.Secret,
 	}, nil)
 	if err != nil {
 		return fmt.Errorf("route model request %s: %w", requestID, err)
@@ -79,6 +84,12 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 	}
 
 	data := map[string]any{"model_request_id": requestID, "model": result.Model}
+	// Persist the provider's own request id (a chatcmpl-... for provider-one, the fake id
+	// for the deterministic adapter). It is safe, non-secret correlation evidence — the UAT
+	// reads it back from the committed result for the live-round-trip receipt.
+	if result.ProviderRequestID != "" {
+		data["provider_request_id"] = result.ProviderRequestID
+	}
 	if result.Output != "" {
 		data["output"] = result.Output
 	}
