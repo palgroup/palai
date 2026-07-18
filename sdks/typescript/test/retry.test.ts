@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { Palai } from "../src/client.ts";
 import { fullJitterBackoff } from "../src/stream.ts";
-import { InternalServerError, InvalidRequestError, PalaiConnectionError } from "../src/errors.ts";
+import { InvalidRequestError, PalaiConnectionError, PalaiError } from "../src/errors.ts";
 
 function json(status: number, body: unknown): globalThis.Response {
   return new globalThis.Response(JSON.stringify(body), {
@@ -117,6 +117,34 @@ test("a persistent network error retries to the ceiling then throws a connection
   assert.equal(attempts, 3, "the initial attempt plus two retries");
 });
 
+test("a cancel that lands during the retry backoff throws a PalaiError, never a raw AbortError", async (t) => {
+  // Pin the jitter so the backoff sleep is a known 100ms; the abort fires inside it, after
+  // the network error, so it lands in the delay rather than the fetch itself.
+  t.mock.method(Math, "random", () => 0.5);
+  const controller = new AbortController();
+  let attempts = 0;
+  const fetchImpl = (async () => {
+    attempts += 1;
+    throw new TypeError("network unreachable"); // a drop, not an abort — forces the backoff sleep
+  }) as unknown as typeof fetch;
+
+  const client = new Palai({
+    apiKey: "sk-test",
+    baseURL: "http://palai.test",
+    fetch: fetchImpl,
+    maxRetries: 3,
+    backoffBaseMs: 200, // 0.5 jitter → a 100ms sleep
+    backoffMaxMs: 200,
+  });
+  setTimeout(() => controller.abort(), 10); // land inside the 100ms backoff sleep
+
+  await assert.rejects(
+    client.request("GET", "/v1/x", { signal: controller.signal }),
+    (error: unknown) => error instanceof PalaiError,
+  );
+  assert.equal(attempts, 1, "canceled during backoff: no second attempt");
+});
+
 test("the total deadline bounds retries below a large maxRetries", async () => {
   let attempts = 0;
   const fetchImpl = (async () => {
@@ -133,6 +161,9 @@ test("the total deadline bounds retries below a large maxRetries", async () => {
     backoffBaseMs: 5,
     backoffMaxMs: 10,
   });
-  await assert.rejects(client.responses.retrieve("x"), (error: unknown) => error instanceof InternalServerError);
+  // Both terminals are a valid "the deadline stopped us": the last 503 surfaces as an
+  // InternalServerError, or — when the deadline trips at the top-of-loop check first — as a
+  // PalaiConnectionError. Both are PalaiError; the bound itself is the point, asserted next.
+  await assert.rejects(client.responses.retrieve("x"), (error: unknown) => error instanceof PalaiError);
   assert.ok(attempts < 100, `made ${attempts} attempts; the 25ms deadline must stop well before maxRetries`);
 });

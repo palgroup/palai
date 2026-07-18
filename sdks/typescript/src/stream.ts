@@ -232,7 +232,9 @@ export class ResponseStream implements AsyncIterable<Event> {
         if (reconnects >= this.#maxReconnects) {
           throw new PalaiConnectionError("event stream could not be (re)opened", { cause });
         }
-        await delay(fullJitterBackoff(reconnects, this.#backoffBaseMs, this.#backoffMaxMs), this.#signal);
+        if (!(await this.#backoffSleep(reconnects))) {
+          return; // canceled mid-backoff: end quietly, like every other cancel path
+        }
         reconnects += 1;
         continue;
       }
@@ -290,8 +292,25 @@ export class ResponseStream implements AsyncIterable<Event> {
       if (reconnects >= this.#maxReconnects) {
         throw new PalaiConnectionError("event stream dropped before a terminal event and exhausted reconnects");
       }
-      await delay(fullJitterBackoff(reconnects, this.#backoffBaseMs, this.#backoffMaxMs), this.#signal);
+      if (!(await this.#backoffSleep(reconnects))) {
+        return; // canceled mid-backoff: end quietly, like every other cancel path
+      }
       reconnects += 1;
+    }
+  }
+
+  // #backoffSleep waits out one reconnect backoff, cancelably. It returns true when the
+  // sleep completes, or false if the caller aborts mid-sleep — so #run ends the stream
+  // quietly instead of leaking the abort's DOMException, matching every other cancel path.
+  async #backoffSleep(reconnects: number): Promise<boolean> {
+    try {
+      await delay(fullJitterBackoff(reconnects, this.#backoffBaseMs, this.#backoffMaxMs), this.#signal);
+      return true;
+    } catch (cause) {
+      if (isAbort(cause, this.#signal)) {
+        return false;
+      }
+      throw cause;
     }
   }
 }

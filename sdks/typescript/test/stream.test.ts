@@ -188,3 +188,38 @@ test("finalResponse drains to the terminal and resolves the canonical Response",
   assert.equal(final.model, "fake-model");
   assert.equal(final.output[0]?.type, "output_text");
 });
+
+// --- cancel during backoff --------------------------------------------------------
+
+test("a cancel that lands during the reconnect backoff ends the stream quietly", async (t) => {
+  // Pin the full-jitter so the backoff window is a known, comfortably wide 100ms; the abort
+  // below fires well inside it, exercising the delay-abort path rather than the open path.
+  t.mock.method(Math, "random", () => 0.5);
+  const controller = new AbortController();
+  let opens = 0;
+  const transport: StreamTransport = {
+    openEventStream() {
+      opens += 1;
+      // Every open fails, so #run enters the reconnect backoff; a second open would mean the
+      // cancel failed to stop reconnection.
+      return Promise.reject(new Error("connection dropped"));
+    },
+    retrieveResponse: () => Promise.resolve(completedResponse),
+  };
+  const stream = new ResponseStream({
+    transport,
+    start: async () => ({ responseID: "resp_1", sessionID: "ses_1" }),
+    signal: controller.signal,
+    backoffBaseMs: 200, // 0.5 jitter → a 100ms sleep
+    backoffMaxMs: 200,
+  });
+  setTimeout(() => controller.abort(), 10); // land inside the 100ms backoff sleep
+
+  const seen: string[] = [];
+  // Must resolve quietly (no throw), like every other cancel path — not leak the AbortError.
+  for await (const event of stream) {
+    seen.push(event.id);
+  }
+  assert.deepEqual(seen, []);
+  assert.equal(opens, 1, "canceled mid-backoff: the stream must not reconnect");
+});

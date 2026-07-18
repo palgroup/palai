@@ -19,6 +19,10 @@ generate:
 check-generated:
 	@test -x scripts/contracts/check || { echo "contracts capability not implemented" >&2; exit 2; }
 	@scripts/contracts/check
+# The TypeScript SDK rides this tier: it already warms node+pnpm (and diffs the SDK's
+# generated types above), and nothing else in verify typechecks src/ or runs the suite.
+	@pnpm --dir sdks/typescript run typecheck
+	@pnpm --dir sdks/typescript test
 
 lint:
 	@git diff --check

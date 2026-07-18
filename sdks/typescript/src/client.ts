@@ -120,7 +120,13 @@ export class Palai implements StreamTransport {
         if (attempt >= maxRetries || !withinBudget(deadline, attempt, this.#backoffBaseMs, this.#backoffMaxMs)) {
           throw new PalaiConnectionError(`${method} ${path} failed to reach the server`, { cause });
         }
-        await delay(fullJitterBackoff(attempt, this.#backoffBaseMs, this.#backoffMaxMs), options.signal);
+        try {
+          await delay(fullJitterBackoff(attempt, this.#backoffBaseMs, this.#backoffMaxMs), options.signal);
+        } catch (abortCause) {
+          // A cancel landing inside the backoff sleep must surface as a PalaiError, not the
+          // raw DOMException delay() rejects with.
+          throw new PalaiConnectionError(`${method} ${path} was canceled`, { cause: abortCause });
+        }
         attempt += 1;
         continue;
       }
@@ -133,7 +139,13 @@ export class Palai implements StreamTransport {
         const wait = retryAfterMs(response) ?? fullJitterBackoff(attempt, this.#backoffBaseMs, this.#backoffMaxMs);
         if (Date.now() + wait < deadline) {
           await response.body?.cancel().catch(() => {});
-          await delay(wait, options.signal);
+          try {
+            await delay(wait, options.signal);
+          } catch (cause) {
+            // A cancel landing inside the backoff sleep must surface as a PalaiError, not the
+            // raw DOMException delay() rejects with.
+            throw new PalaiConnectionError(`${method} ${path} was canceled`, { cause });
+          }
           attempt += 1;
           continue;
         }
