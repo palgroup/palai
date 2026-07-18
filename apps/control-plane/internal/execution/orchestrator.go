@@ -144,11 +144,11 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		switch frame.Type {
 		case "model.request":
 			if err := o.dispatchModel(ctx, st, frame); err != nil {
-				return err
+				return abortIfTerminal(err)
 			}
 		case "tool.request":
 			if err := o.dispatchTool(ctx, st, frame); err != nil {
-				return err
+				return abortIfTerminal(err)
 			}
 		case "output.item":
 			st.output = append(st.output, contracts.ContentItem(frame.Data))
@@ -198,6 +198,18 @@ func validateFrame(f contracts.EngineFrame, a AttemptDescriptor) error {
 		return fmt.Errorf("frame %s attempt identity mismatch", f.ID)
 	}
 	return nil
+}
+
+// abortIfTerminal maps a mid-attempt terminal-run rejection to a clean attempt end. When a
+// run is canceled while an attempt is in flight, its next commit is rejected with
+// ErrRunTerminal (the commit-after-terminal guard); the attempt then has nothing left to do
+// — the run is already terminal — so it ends without error and the durable job settles
+// instead of dead-lettering. Any other error still fails the attempt.
+func abortIfTerminal(err error) error {
+	if errors.Is(err, coordinator.ErrRunTerminal) {
+		return nil
+	}
+	return err
 }
 
 func newFrameID() contracts.FrameID {

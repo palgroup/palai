@@ -7,8 +7,45 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	statemachines "github.com/palgroup/palai/packages/state-machines"
 	"github.com/palgroup/palai/storage"
 )
+
+// RunIDForResponse resolves a response's root run within the tenant scope. found is false
+// for an unknown or foreign response, so the caller renders the same 404 as retrieval and
+// never leaks a cross-tenant resource's existence (spec §39.2). LP's response:run is 1:1.
+func (s *Store) RunIDForResponse(ctx context.Context, tenant Tenant, responseID string) (string, bool, error) {
+	var runID string
+	err := s.pool.QueryRow(ctx, storage.Query("RunIDForResponse"), responseID, tenant.Organization, tenant.Project).Scan(&runID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("resolve run for response %s: %w", responseID, err)
+	}
+	return runID, true, nil
+}
+
+// guardRunActive locks the run and rejects a commit whose run has already reached a terminal
+// state, returning ErrRunTerminal. It is the shared precondition of the commit-before-deliver
+// primitives below: once a run is terminal (e.g. canceled mid-attempt), no result event may
+// be appended after its terminal event, so the "terminal is the journal's end" contract holds
+// even when a cancel races an in-flight attempt (spec §22.3 monotonic terminality). The FOR
+// UPDATE lock serializes against ApplyRunTransition, so a cancel and a commit cannot both win.
+func guardRunActive(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string) error {
+	var sessionID, state string
+	err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).Scan(&sessionID, &state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("run %s not found in tenant scope", runID)
+	}
+	if err != nil {
+		return fmt.Errorf("lock run: %w", err)
+	}
+	if runTerminalStates[statemachines.RunState(state)] {
+		return fmt.Errorf("%w: run %s is %s", ErrRunTerminal, runID, state)
+	}
+	return nil
+}
 
 // RunContext resolves a run's durable execution context for the orchestrator: its
 // tenant scope, session, response, and admitted input. The run id comes from the
@@ -59,6 +96,9 @@ func (s *Store) CommitModelRequest(ctx context.Context, tenant Tenant, sessionID
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	if err := guardRunActive(ctx, tx, tenant, runID); err != nil {
+		return err
+	}
 	err = tx.QueryRow(ctx, storage.Query("InsertModelRequest"),
 		requestID, tenant.Organization, tenant.Project, runID).Scan(new(string))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -100,13 +140,16 @@ func (s *Store) LookupModelResult(ctx context.Context, tenant Tenant, requestID 
 // result event in one transaction. The orchestrator calls it before delivering
 // model.result to the engine, so no provider result reaches the engine until its state
 // is durable (spec §24.7).
-func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID, requestID string, result []byte, eventType string, payload []byte) (int64, error) {
+func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID, runID, requestID string, result []byte, eventType string, payload []byte) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin model commit: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	if err := guardRunActive(ctx, tx, tenant, runID); err != nil {
+		return 0, err
+	}
 	if _, err := tx.Exec(ctx, storage.Query("CompleteModelRequest"),
 		requestID, tenant.Organization, tenant.Project, result); err != nil {
 		return 0, fmt.Errorf("complete model request: %w", err)
@@ -133,6 +176,9 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	if err := guardRunActive(ctx, tx, tenant, runID); err != nil {
+		return 0, err
+	}
 	if _, err := tx.Exec(ctx, storage.Query("UpsertToolCall"),
 		callID, tenant.Organization, tenant.Project, runID, int64(fence), name, arguments, result); err != nil {
 		return 0, fmt.Errorf("upsert tool call: %w", err)

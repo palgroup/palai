@@ -18,6 +18,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+	statemachines "github.com/palgroup/palai/packages/state-machines"
 )
 
 // Store is a Postgres-backed repository that serves every tenant from one pool;
@@ -153,6 +154,62 @@ func (s *Store) GetResponse(ctx context.Context, scope middleware.Scope, id stri
 		return api.RetrieveResult{}, fmt.Errorf("marshal response projection: %w", err)
 	}
 	return api.RetrieveResult{Body: body, Found: true}, nil
+}
+
+// CancelResponse cancels a response's run within the request's verified scope and returns
+// the canceled terminal projection to render (spec §22.3). An unknown or foreign id is a
+// miss (Found=false → 404, same contract as retrieval, leaking no cross-tenant existence).
+// A non-terminal run is transitioned via RunCmdCancel — ApplyRunTransition writes the
+// run.canceled.v1 terminal event that closes the SSE stream — and the canceled projection is
+// finalized. A run already terminal is a monotonic no-op: no second transition, no new event
+// (ErrRunTerminal), and the existing terminal projection is returned unchanged, so cancel is
+// retry-safe and cancel-after-terminal is safe. The read-back renders the projection body
+// (stamping the retrieval's request_id on the problem), reusing the retrieval path.
+func (s *Store) CancelResponse(ctx context.Context, scope middleware.Scope, id string) (api.RetrieveResult, error) {
+	tenant := coordinator.Tenant{Organization: scope.Organization, Project: scope.Project}
+	runID, found, err := s.spine.RunIDForResponse(ctx, tenant, id)
+	if err != nil {
+		return api.RetrieveResult{}, err
+	}
+	if !found {
+		return api.RetrieveResult{}, nil
+	}
+	switch _, err := s.spine.ApplyRunTransition(ctx, tenant, runID, statemachines.RunCmdCancel); {
+	case errors.Is(err, coordinator.ErrRunTerminal):
+		// Already terminal: no second terminal, no new event — return the existing projection.
+	case err != nil:
+		return api.RetrieveResult{}, err
+	default:
+		projection, err := canceledProjection()
+		if err != nil {
+			return api.RetrieveResult{}, err
+		}
+		if err := s.spine.FinalizeResponse(ctx, tenant, id, "canceled", projection); err != nil {
+			return api.RetrieveResult{}, err
+		}
+	}
+	return s.GetResponse(ctx, scope, id)
+}
+
+// canceledProjection builds the terminal Response projection an endpoint-initiated cancel
+// finalizes: empty output/usage/model and the sanitized canceled problem. It mirrors the
+// canceled terminal execution/finalize.go projects (same fields, same stable RFC 9457
+// problem the HTTP surface uses), so a retrieval reads the same canceled terminal whichever
+// path canceled the run; the problem's request_id is stamped at retrieval, not here
+// (spec §22.3, §8.3).
+func canceledProjection() ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"output": []contracts.ContentItem{},
+		"usage":  contracts.Usage{},
+		"model":  "",
+		"error": contracts.Problem{
+			Type:   "https://docs.palai.dev/problems/canceled",
+			Code:   "canceled",
+			Title:  "Canceled",
+			Status: 409,
+			Detail: "the run was canceled before completion",
+		},
+	})
 }
 
 // PurgeExpiredStoreFalse runs one retention sweep over the durable spine, reaping the

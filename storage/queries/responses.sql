@@ -30,6 +30,14 @@ FROM runs r
 JOIN responses resp ON resp.id = r.response_id
 WHERE r.id = $1;
 
+-- RunIDForResponse resolves a response's root run within the tenant scope. An unknown or
+-- foreign id returns no row (the caller renders 404, never leaking cross-tenant existence).
+-- LP's response:run is 1:1, so a response has exactly one run.
+-- name: RunIDForResponse
+SELECT id
+FROM runs
+WHERE response_id = $1 AND organization_id = $2 AND project_id = $3;
+
 -- UpdateResponse writes the terminal Response projection (status + output/usage JSON).
 -- name: UpdateResponse
 UPDATE responses

@@ -81,6 +81,20 @@ func (f *fakeBackend) GetResponse(_ context.Context, _ middleware.Scope, id stri
 	return api.RetrieveResult{Body: body, Found: true}, nil
 }
 
+// CancelResponse mirrors GetResponse in the fake: an unknown id is a miss (404) and a stored
+// resource returns its body. The durable cancel transaction — the run transition, the
+// canceled projection, and the commit-after-terminal guard — is proven against real Postgres
+// in the e2e tier, not here; this tier only asserts the HTTP 401/404 contract of the route.
+func (f *fakeBackend) CancelResponse(_ context.Context, _ middleware.Scope, id string) (api.RetrieveResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	body, ok := f.byID[id]
+	if !ok {
+		return api.RetrieveResult{}, nil
+	}
+	return api.RetrieveResult{Body: body, Found: true}, nil
+}
+
 // EventReader: the response-admission conformance tier never streams, so these
 // satisfy the interface without a journal. The SSE contract is proven end-to-end
 // against real Postgres in tests/e2e/sse.
@@ -129,6 +143,22 @@ func postResponses(t *testing.T, srv *httptest.Server, headers map[string]string
 func getResponse(t *testing.T, srv *httptest.Server, id string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/responses/"+id, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	return resp
+}
+
+// cancelResponse issues POST /v1/responses/{id}/cancel with a valid bearer token.
+// Cancel is naturally idempotent, so it carries no idempotency key.
+func cancelResponse(t *testing.T, srv *httptest.Server, id string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/responses/"+id+"/cancel", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}

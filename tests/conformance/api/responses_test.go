@@ -159,6 +159,41 @@ func TestRetrieveUnknownIDReturns404(t *testing.T) {
 	}
 }
 
+func TestCancelUnknownIDReturns404(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := cancelResponse(t, srv, "resp_does_not_exist")
+	problem := decodeProblem(t, resp)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("cancel status = %d, want 404", resp.StatusCode)
+	}
+	if problem.Code != "not_found" {
+		t.Fatalf("code = %q, want not_found", problem.Code)
+	}
+}
+
+func TestCancelRequiresAuth(t *testing.T) {
+	srv := newTestServer(t)
+
+	// No Authorization header: cancel is an authenticated, tenant-scoped mutation, so an
+	// unauthenticated request never reaches the handler.
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/responses/resp_x/cancel", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	problem := decodeProblem(t, resp)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("cancel status = %d, want 401", resp.StatusCode)
+	}
+	if problem.Code != "authentication_required" {
+		t.Fatalf("code = %q, want authentication_required", problem.Code)
+	}
+}
+
 func TestResponseConflictSameKeyDifferentBodyReturns409(t *testing.T) {
 	srv := newTestServer(t)
 	headers := authedHeaders("key-conflict")

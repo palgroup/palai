@@ -25,6 +25,9 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
 	mux.HandleFunc("GET /v1/responses/{response_id}", responses.get)
+	// Cancel is naturally idempotent (a canceled terminal is monotonic), so it is not wrapped
+	// with RequireIdempotencyKey; the OpenAPI cancelResponse operation defines no key parameter.
+	mux.HandleFunc("POST /v1/responses/{response_id}/cancel", responses.cancel)
 	mux.HandleFunc("GET /v1/capabilities", capabilities)
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}

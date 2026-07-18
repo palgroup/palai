@@ -24,6 +24,11 @@ const (
 type Admitter interface {
 	AdmitResponse(ctx context.Context, req AdmitRequest) (AdmitResult, error)
 	GetResponse(ctx context.Context, scope middleware.Scope, id string) (RetrieveResult, error)
+	// CancelResponse cancels a response's run within scope and returns the terminal
+	// projection to render. It shares retrieval's result: Found=false is a 404 (unknown or
+	// foreign id), Purged is a 410, and a hit carries the canceled (or already-terminal)
+	// projection. It is a monotonic no-op on an already-terminal run — cancel is retry-safe.
+	CancelResponse(ctx context.Context, scope middleware.Scope, id string) (RetrieveResult, error)
 }
 
 // RetrieveResult is the outcome of a response retrieval. Found is false for an unknown
@@ -195,6 +200,35 @@ func (h *responseHandler) get(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out.Body)
+}
+
+// cancel cancels a response's run within the verified scope and returns its terminal
+// projection. Success is 202 with the canonical response projection (OpenAPI cancelResponse);
+// an unknown or foreign id is 404 (never leaking a foreign response's existence); a reaped
+// store:false resource is 410. Cancel is naturally idempotent, so the route carries no
+// idempotency key, and canceling an already-terminal response is a safe no-op (spec §22.3).
+func (h *responseHandler) cancel(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	out, err := h.admitter.CancelResponse(r.Context(), scope, r.PathValue("response_id"))
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	if !out.Found {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such response in this project")
+		return
+	}
+	if out.Purged {
+		middleware.WriteProblem(w, r, http.StatusGone, "retention_expired", "the response content has been reaped and is no longer available")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write(out.Body)
 }
 
