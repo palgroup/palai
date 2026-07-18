@@ -221,7 +221,7 @@ export function LiveResponse() {
 
         <Panel title="Final output">
           <pre data-testid="final-output" style={styles.mono}>
-            {state.finalOutput ? state.finalOutput.map((item) => asText((item as { content?: unknown }).content)).join("\n") : "—"}
+            {state.finalOutput ? state.finalOutput.map((item) => asText((item as { text?: unknown }).text)).join("\n") : "—"}
           </pre>
         </Panel>
       </section>

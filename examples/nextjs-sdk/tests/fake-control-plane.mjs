@@ -13,11 +13,11 @@
 import { createServer } from "node:http";
 
 const PORT = Number(process.env.FAKE_UPSTREAM_PORT ?? 3101);
-const SESSION_ID = "sess_live_proof_0001";
+const SESSION_ID = "ses_live_proof_0001";
 const RESPONSE_ID = "resp_live_proof_0001";
 const RUN_ID = "run_live_proof_0001";
 const MODEL = "fake";
-const FINAL_OUTPUT = [{ type: "message", role: "assistant", content: "12" }];
+const FINAL_OUTPUT = [{ type: "output_text", text: "12" }];
 const USAGE = { input_tokens: 24, output_tokens: 8, total_tokens: 32, tool_calls: 1 };
 // Gap between frames: long enough to reliably abort mid-stream, short enough to keep the
 // happy path snappy (14 frames ≈ 1.7s total).
@@ -46,8 +46,8 @@ function scriptedEvents() {
     ["model_step.delta.v1", { model_request_id: "mreq_1", text: "The sum " }],
     ["model_step.delta.v1", { model_request_id: "mreq_1", text: "is being " }],
     ["model_step.delta.v1", { model_request_id: "mreq_1", text: "computed. " }],
-    ["tool_call.proposed.v1", { tool_call_id: "call_add_1", name: "add", arguments: { a: 7, b: 5 } }],
-    ["tool_call.completed.v1", { tool_call_id: "call_add_1", name: "add", result: "12" }],
+    ["tool_call.proposed.v1", { tool_call_id: "tcall_add_1", name: "add", arguments: { a: 7, b: 5 } }],
+    ["tool_call.completed.v1", { tool_call_id: "tcall_add_1", name: "add", result: "12" }],
     ["model_step.completed.v1", { model_request_id: "mreq_1" }],
     ["model_step.created.v1", { model_request_id: "mreq_2" }],
     ["model_step.delta.v1", { model_request_id: "mreq_2", text: "12" }],
