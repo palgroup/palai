@@ -1535,6 +1535,79 @@ git add examples/nextjs-sdk
 git commit -m "feat: prove SDK streaming from Next.js"
 ```
 
+### Task 14b: Sözleşmeli response cancel endpoint'ini mount et ve kanıtla (Task 13 review follow-up)
+
+> **Sözleşme boşluğu:** `POST /v1/responses/{response_id}/cancel` kanonik OpenAPI'de sözleşmelidir (`protocols/openapi/openapi-3.2.yaml:107` — 202 "Cancellation accepted" + kanonik response projection) ve Task 13 SDK'sı `client.responses.cancel()` ile tam bu path'i çağırır; ama `apps/control-plane/api/router.go` cancel route'u mount ETMEZ — canlı sunucuda cancel bugün 404 döner. Kanonik makine hazırdır: `statemachines.RunCmdCancel` queued/provisioning/running/waiting'den `run.canceled.v1` üretir (`packages/state-machines/run.go:40`), `run.canceled.v1` SSE terminal-close listesindedir (`apps/control-plane/api/events.go` `terminalEventTypes`) ve `finalize.go:40` canceled terminal projection'ın problem shape'ini zaten tanımlar. Eksik olan HTTP mount + cancel transaction + bir invariant'tır: bugün `CommitModelRequest`/`CommitModelResult`/`CommitToolResult` (`packages/coordinator/orchestration.go`) run state'ine bakmaz; running bir response cancel edildiğinde in-flight attempt'in sonraki commit'i terminal event'ten SONRA journal'a event sızdırır ve "exactly one canonical terminal, contiguous events" sözleşmesini kırar. Bu task Task 15'ten ÖNCE kapanmak ZORUNDADIR: §2 kapsamı "cancel'ın minimum canonical behavior'ını" içerir ve canlı UAT'ta SDK cancel'ının 404 alması LP-0'ın "gerçekten çalışıyor" kapısını düşürür. Çapalar: OpenAPI cancel sözleşmesi (`openapi-3.2.yaml:107`), §22.3 (run/response terminality monotonic), §8.3 (retrieval projection).
+
+**Files:**
+
+- Modify: `apps/control-plane/api/router.go` (cancel route mount)
+- Modify: `apps/control-plane/api/responses.go` (cancel handler; `Admitter` seam'ine `CancelResponse`)
+- Modify: `apps/control-plane/internal/store/postgres.go` (`CancelResponse` transaction)
+- Modify: `packages/coordinator/orchestration.go` (terminal-run commit guard)
+- Modify: `apps/control-plane/internal/execution/orchestrator.go` (dispatch'te `ErrRunTerminal` → temiz abort)
+- Test: `apps/control-plane/e2e/responses/cancel_test.go`
+- Test: `tests/conformance/api/responses_test.go` (Modify — cancel 401/404 case'leri)
+
+**Interfaces:**
+
+- Consumes: `statemachines.RunCmdCancel` + RunTable cancel geçişleri (phase-02); `coordinator.ApplyRunTransition`/`ErrRunTerminal`/`FinalizeResponse` (Task 3/7/11); `finalize.go` canceled problem shape'i (Task 13 Step 1); Task 11 e2e harness + `dead_letter_test.go`'nun SSE-close assertion kalıbı; Task 6 SSE terminal close.
+- Produces: `POST /v1/responses/{response_id}/cancel` — authenticated + tenant-scoped, 202 + kanonik response projection; Task 15 UAT'ı ve SDK `responses.cancel()` canlı sunucuda bunu tüketir.
+
+- [ ] **Step 1: Failing cancel tests yaz**
+
+`apps/control-plane/e2e/responses/cancel_test.go` (Task 11 harness'ını yeniden kullanır):
+
+```go
+func TestCancelRunningResponseReachesCanceledTerminal(t *testing.T)
+// Scripted channel engine.ready + ilk model.request'i verir, model.result'ı aldıktan
+// sonra bekler (run `running`, attempt in-flight). POST /v1/responses/{id}/cancel →
+// 202 + status=canceled projection. Assert: run satırı canceled; journal'ın SON
+// event'i run.canceled.v1 ve SSE reader terminal event'ten sonra stream'in temiz
+// kapandığını görür; GET /v1/responses/{id} canceled terminal + problem-shaped error
+// döner. Sonra scripted engine İKİNCİ bir model.request verir: hiçbir yeni event
+// oluşmaz (terminalden sonra journal büyümez), fake provider çağrı sayacı artmaz,
+// attempt temiz düşer ve job dead-letter'a inmeden settle olur — exactly-one terminal.
+
+func TestCancelIsScopedToProject(t *testing.T)
+// İkinci projenin API key'i ile cancel → 404 not_found (LP5 scope-immunity
+// precedent'i: foreign id varlık sızdırmaz); run cancel OLMAZ, event üretilmez.
+
+func TestCancelAfterTerminalIsSafe(t *testing.T)
+// Tamamlanmış (completed) response'a cancel → 202 + MEVCUT completed projection;
+// hiçbir transition/event üretilmez (§22.3 terminal monotonicity — double-terminal
+// yok); GET hâlâ completed döner. Canceled bir response'a cancel tekrarı da aynı
+// no-op sözleşmesindedir — cancel retry-safe'tir.
+```
+
+`tests/conformance/api/responses_test.go`'ya iki küçük case eklenir: `TestCancelUnknownIDReturns404` ve `TestCancelRequiresAuth` (401). Cancel `Idempotency-Key` GEREKTİRMEZ — OpenAPI cancel operasyonu key parametresi tanımlamaz; route `RequireIdempotencyKey` ile sarılmaz (doğal idempotent).
+
+- [ ] **Step 2: Fail'i doğrula**
+
+Run: `go test ./apps/control-plane/e2e/responses -run TestCancel -v && go test ./tests/conformance/api -run TestCancel -v`
+
+Expected: route mount edilmediği için tüm case'ler 404 → FAIL.
+
+- [ ] **Step 3: Cancel transaction'ını, handler'ı ve terminal-commit guard'ını uygula**
+
+- `store/postgres.go` — `CancelResponse(ctx, scope, id)`: tek transaction'da scope'lu response→run çözümü (bilinmeyen/yabancı id not-found; `get` ile aynı 404 sözleşmesi). Non-terminal run'a `ApplyRunTransition(RunCmdCancel)` uygulanır (RunTable `run.canceled.v1` terminal event'ini aynı transaction'da journal'a yazar — Task 3 kuralı, SSE bu event'le kapanır) ve `FinalizeResponse(tenant, responseID, "canceled", projection)` canceled projection'ı yazar. Projection dead-letter köprüsüyle aynı kalıptadır: boş output, boş usage özeti (kanonik usage kaydı committed `usage_events` satırlarında kalır — LP-013), model boş olabilir (schema non-completed'da boş model kabul eder — Task 13 Step 1), `error` = `finalize.go:40` canceled problem shape'i. `ErrRunTerminal` → no-op branch: transition/event üretmeden mevcut terminal projection okunur ve döndürülür.
+- `responses.go` — `cancel` handler: `middleware.ScopeFrom` + `admitter.CancelResponse`; not-found → `WriteProblem(404, "not_found", ...)` (`get` ile aynı); başarı → 202 + projection + korelasyon header'ları. `router.go`: `mux.HandleFunc("POST /v1/responses/{response_id}/cancel", responses.cancel)`.
+- `packages/coordinator/orchestration.go` — invariant: `CommitModelRequest`/`CommitModelResult`/`CommitToolResult` kendi transaction'ları içinde run satırını kilitleyip non-terminal olduğunu doğrular; terminal run'a commit `ErrRunTerminal` döndürür. Terminal event'ten sonra journal'a hiçbir event giremez — "terminal is the journal's end" sözleşmesi cancel altında da korunur.
+- `orchestrator.go` — dispatch yolunda `errors.Is(err, coordinator.ErrRunTerminal)` temiz abort'tur (attempt hatasız biter; run zaten terminal). ExecuteAttempt'in açılıştaki mevcut `ErrRunTerminal` no-op'u (`orchestrator.go:74`) queued'dan cancel edilen run'ların sonraki claim'ini zaten susturur — yeni davranış yalnızca mid-attempt yakalamadır. Ayrı bir in-memory cancel sinyali/registry EKLENMEZ (ponytail: DB guard cross-process doğrudur; graceful `run.cancel` engine frame'i E10 graceful-cancel işidir).
+
+- [ ] **Step 4: Testleri yeşil çalıştır**
+
+Run: `go test ./apps/control-plane/e2e/responses -run TestCancel -v && go test ./tests/conformance/api -run TestCancel -v && make test-e2e TEST=responses`
+
+Expected: cancel case'leri PASS; live_loop/dead_letter/reclaim/store_false regress etmez; `make check-generated` zero-drift kalır (OpenAPI değişmedi — route zaten sözleşmeliydi).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/control-plane packages/coordinator tests/conformance/api
+git commit -m "feat: mount the contracted response cancel endpoint"
+```
+
 ### Task 15: Live UAT harness, production exec-path wiring ve evidence verifier
 
 > **Fork kararı 3'ün canlı yarısı — sert kısıt:** LP-0'ın adı "Local Live Proof"tur; e2e harness'ta kanıtlanmış bir orchestrator, main.go onu hiç kurmuyorsa "gerçekten çalışıyor" sayılmaz. Task 12 bilinçli olarak yalnızca listener + reject-check bağladı (idempotent `-count=3` döngüsü one-use token/one-shot lease tüketemez). TAM production exec-path — main.go'nun broker (EnvResolver + gerçek provider adapter) + `RunnerGateway` EngineDialer + non-nil execute handler kurması — BU task'ta bağlanır ve LP-003/LP-004 gerçek topolojiden (create → gateway → runner → OCI engine → gerçek provider → terminal) TEK canlı round-trip ile kanıtlanır. One-use token ve one-shot lease burada sorun değildir: UAT bir kez koşar, `-count=3` koşmaz. Bu adımlar kapanmadan LP suite çalıştırılamaz.
