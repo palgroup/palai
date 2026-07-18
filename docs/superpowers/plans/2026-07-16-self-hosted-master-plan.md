@@ -354,7 +354,7 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 
 **Files:** `packages/model-broker/`, `packages/tool-broker/`, `adapters/models/`, `engines/reference/`, `tests/conformance/models/`, `tests/conformance/tools/`
 
-- [ ] Canonical model request/result, route revision, capability probe, budget reservation ve usage settlement uygula.
+- [ ] Canonical model request/result, route revision, capability probe, budget reservation ve usage settlement uygula. (Carve-out devri: LP-0 Task 15, model seçimini geçici olarak tek env-configured `ModelRoute{Provider, Model, Secret}` ile bağladı; şemada var olan `model_routes`/`model_route_revisions`/`model_connections` tablolarının ilk okuyucusu — §27.6/§27.7 per-project DB-backed route seçimi — bu epic'tedir ve env route'u söker; zorunlu TDD çerçevesi LP planı §7.3'tedir.)
 - [ ] İlk direct provider adapter'ını text/stream/tool/strict-schema/cancel/usage yollarıyla ekle.
 - [ ] ToolCall state machine, request hash, replay class, approval hook ve normalized result uygula.
 - [ ] Minimum built-in pure tool ile sandbox file/shell tool interface'lerini ekle.
