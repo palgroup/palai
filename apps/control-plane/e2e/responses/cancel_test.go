@@ -250,6 +250,83 @@ func TestCancelAfterTerminalIsSafe(t *testing.T) {
 	}
 }
 
+// TestLateTerminalDoesNotOverwriteCanceled proves the second terminal at the response surface
+// is closed (spec §22.3): once a cancel commits the canceled terminal, an in-flight engine
+// that finishes recovery and sends run.terminal outcome=completed must NOT overwrite the
+// canceled projection. finalize finds the run already terminal (ErrRunTerminal) and skips the
+// projection write, so the run row, GET, and the journal all stay canceled — the late
+// completed terminal loses the race and is dropped.
+//
+// A gated engine delivers engine.ready + one model.request, parking before a run.terminal
+// completed frame. With the attempt parked, POST /cancel commits run.canceled.v1. Releasing
+// the gate delivers the late run.terminal: without the guard, its unconditional projection
+// write would flip GET to completed (a second terminal); with it, GET stays canceled.
+func TestLateTerminalDoesNotOverwriteCanceled(t *testing.T) {
+	h := newHarness(t)
+	responseID, sessionID, runID := h.admit()
+
+	ch := &gatedChannel{
+		gate:   make(chan struct{}),
+		gateAt: 2, // block before delivering the run.terminal completed frame
+		frames: []contracts.EngineFrame{
+			scriptFrame("engine.ready", runID, 1, map[string]any{
+				"selected_protocol": "engine.v1",
+				"engine":            map[string]any{"name": "fake", "version": "0"},
+				"max_frame_bytes":   1024, "nonce": "n",
+			}),
+			scriptFrame("model.request", runID, 2, map[string]any{"model_request_id": newID("mreq")}),
+			scriptFrame("run.terminal", runID, 3, map[string]any{"outcome": "completed"}),
+		},
+	}
+	// Drive this run's attempt directly rather than through the shared worker: the worker is
+	// not run-scoped, so it would also claim sibling tests' stale queued jobs and consume this
+	// single gated channel on the wrong run. A direct ExecuteAttempt dials the gated channel
+	// only for this run, so the park is deterministic and order-independent.
+	orch := h.newOrchestrator(gatedDialer{ch: ch})
+	done := make(chan error, 1)
+	go func() { done <- orch.ExecuteAttempt(context.Background(), h.descriptor(runID, 1)) }()
+
+	// The attempt drives the run to running and commits the first model step, then parks at
+	// the gate before the late terminal.
+	h.awaitLastEvent(sessionID, "model_step.completed.v1", 20*time.Second)
+
+	// Cancel the parked run: run.canceled.v1 is the terminal.
+	resp := h.cancelResponse(responseID, h.token)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("cancel status = %d, want 202 (body=%s)", resp.StatusCode, readAll(t, resp))
+	}
+	resp.Body.Close()
+	if state := h.runState(runID); state != "canceled" {
+		t.Fatalf("run state after cancel = %q, want canceled", state)
+	}
+	afterCancel := h.events(sessionID)
+
+	// Release the gate: the in-flight engine delivers the late run.terminal completed. The run
+	// is already terminal, so finalize must skip the projection write and end the attempt cleanly.
+	close(ch.gate)
+	if err := <-done; err != nil {
+		t.Fatalf("attempt after late terminal error = %v", err)
+	}
+
+	// The canceled terminal stands: the run row and GET both stay canceled. GET is the
+	// load-bearing check — the overwrite lands on the responses projection, not the journal.
+	if state := h.runState(runID); state != "canceled" {
+		t.Fatalf("run state after late terminal = %q, want canceled", state)
+	}
+	get := h.getResponse(responseID, h.token)
+	if got := decodeResp(t, readAll(t, get)); got.Status != "canceled" {
+		t.Fatalf("GET after late terminal = %q, want canceled (a late completed overwrote the canceled response, §22.3)", got.Status)
+	}
+	// The journal is unchanged: the rejected transition appends nothing after the terminal.
+	after := h.events(sessionID)
+	if len(after) != len(afterCancel) {
+		t.Fatalf("late terminal journaled %d events after the cancel, want 0", len(after)-len(afterCancel))
+	}
+	if last := after[len(after)-1].typ; last != "run.canceled.v1" {
+		t.Fatalf("last journaled event = %q, want run.canceled.v1", last)
+	}
+}
+
 // awaitLastEvent polls the journal until its last event is want, so a test can wait for an
 // in-flight attempt to reach a known committed step before acting.
 func (h *harness) awaitLastEvent(sessionID, want string, within time.Duration) {

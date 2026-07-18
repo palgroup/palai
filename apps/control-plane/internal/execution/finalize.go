@@ -61,10 +61,17 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 		return fmt.Errorf("engine terminal frame has unknown outcome %q", outcome)
 	}
 
-	// Exactly one terminal transition. A run already terminal (idempotent redelivery)
-	// is not re-transitioned, but its projection is still refreshed below.
+	// Exactly one terminal transition, and exactly one terminal projection. A run that is
+	// already terminal was finalized by whoever won the transition (a completed engine, or a
+	// user cancel that raced this in-flight attempt), so a late or duplicate run.terminal must
+	// NOT overwrite that projection — the response UPDATE is unconditional, and a completed
+	// terminal landing on a canceled run would surface a second terminal (§22.3). Skip the
+	// write, mirroring the coordinator's dead-letter sweep (lease.go).
 	switch _, err := o.spine.ApplyRunTransition(ctx, st.tenant, string(st.attempt.RunID), terminal.command); {
-	case errors.Is(err, coordinator.ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+	case errors.Is(err, coordinator.ErrRunTerminal):
+		return nil
+	case errors.Is(err, statemachines.ErrInvalidState):
+		// A non-terminal state that cannot take this command still refreshes the projection below.
 	case err != nil:
 		return err
 	}
