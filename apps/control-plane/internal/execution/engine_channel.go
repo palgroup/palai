@@ -30,7 +30,9 @@ type EngineChannel interface {
 }
 
 // EngineDialer opens a live channel for one attempt. Dial completes the handshake, so
-// the channel it returns is ready for run.start.
+// the channel it returns is ready for run.start. ctx bounds ONLY the dial and handshake —
+// the orchestrator gives it an attempt-scoped deadline and stops honoring it once the
+// handshake completes — so the returned channel must not tie its lifetime to ctx.
 type EngineDialer interface {
 	Dial(ctx context.Context, attempt AttemptDescriptor) (EngineChannel, error)
 }

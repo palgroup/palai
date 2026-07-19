@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,13 +49,16 @@ func gwLimits() runner.Limits {
 }
 
 // gatewayCA is the in-test control-plane certificate authority. It mints the gateway's
-// TLS server certificate and implements execution.CertIssuer, signing an enrolling
-// runner's public key into a short-lived client certificate — the CA Task 12 will bind
-// to the .palai layout.
+// TLS server certificate and implements execution.CertIssuer, signing an enrolling (or
+// renewing) runner's public key into a short-lived client certificate. ttl bounds an issued
+// runner certificate (the renewal proof shortens it); signs counts every issuance so a test
+// can prove the runner renewed across certificate lifetimes.
 type gatewayCA struct {
-	cert *x509.Certificate
-	key  *ecdsa.PrivateKey
-	pool *x509.CertPool
+	cert  *x509.Certificate
+	key   *ecdsa.PrivateKey
+	pool  *x509.CertPool
+	ttl   time.Duration
+	signs atomic.Int64
 }
 
 func newGatewayCA(t *testing.T) *gatewayCA {
@@ -84,7 +88,7 @@ func newGatewayCA(t *testing.T) *gatewayCA {
 	}
 	pool := x509.NewCertPool()
 	pool.AddCert(cert)
-	return &gatewayCA{cert: cert, key: key, pool: pool}
+	return &gatewayCA{cert: cert, key: key, pool: pool, ttl: 45 * time.Second}
 }
 
 func (ca *gatewayCA) serverCertificate(t *testing.T) tls.Certificate {
@@ -116,6 +120,7 @@ func (ca *gatewayCA) serverCertificate(t *testing.T) tls.Certificate {
 
 // SignRunnerCertificate implements execution.CertIssuer.
 func (ca *gatewayCA) SignRunnerCertificate(publicKeyDER []byte, runnerDNS string) ([]byte, error) {
+	ca.signs.Add(1)
 	parsed, err := x509.ParsePKIXPublicKey(publicKeyDER)
 	if err != nil {
 		return nil, err
@@ -130,7 +135,7 @@ func (ca *gatewayCA) SignRunnerCertificate(publicKeyDER []byte, runnerDNS string
 		Subject:      pkix.Name{CommonName: runnerDNS},
 		DNSNames:     []string{runnerDNS},
 		NotBefore:    now.Add(-time.Second),
-		NotAfter:     now.Add(45 * time.Second),
+		NotAfter:     now.Add(ca.ttl),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
@@ -167,6 +172,7 @@ type gatewayFixture struct {
 	gateway    *execution.RunnerGateway
 	ca         *gatewayCA
 	enrollURL  string
+	renewURL   string
 	sessionURL string
 }
 
@@ -203,7 +209,18 @@ func newGatewayFixture(t *testing.T, tokens *oneUseTokens) *gatewayFixture {
 		gateway:    gateway,
 		ca:         ca,
 		enrollURL:  "https://" + addr + "/v1/runner/enroll",
+		renewURL:   "https://" + addr + "/v1/runner/renew",
 		sessionURL: "wss://" + addr + "/v1/runner/connect",
+	}
+}
+
+// renewConfig points a renewal at this fixture's cert-authenticated renew endpoint.
+func (f *gatewayFixture) renewConfig() runner.RenewConfig {
+	return runner.RenewConfig{
+		RenewURL:      f.renewURL,
+		ControllerCAs: f.ca.pool,
+		ControllerDNS: gwControllerDNS,
+		Now:           time.Now,
 	}
 }
 
@@ -259,6 +276,124 @@ func TestGatewayEnrollmentConsumesTokenOnce(t *testing.T) {
 	}
 	if _, err := runner.Enroll(ctx, f.bootstrap("gw-token-1")); err == nil {
 		t.Fatal("gateway accepted a reused one-use enrollment token")
+	}
+}
+
+// TestGatewayRenewsCertificateOverExistingIdentity proves the renew endpoint rolls a
+// runner's certificate forward over its CURRENT mutually-authenticated identity — no
+// enrollment token — issuing a fresh, CA-signed client certificate with advanced validity,
+// and rejects a certless caller. The one-use bootstrap token is spent exactly once at
+// enrollment and never presented again, so a long-lived runner never re-enrolls.
+func TestGatewayRenewsCertificateOverExistingIdentity(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	identity, err := runner.Enroll(ctx, f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+
+	// Renew over the existing identity — no token is presented.
+	renewed, err := runner.Renew(ctx, identity, f.renewConfig())
+	if err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if renewed.RunnerID != identity.RunnerID {
+		t.Fatalf("renewed identity changed runner id: %q -> %q", identity.RunnerID, renewed.RunnerID)
+	}
+	if renewed.Certificate.Leaf == nil || renewed.Certificate.PrivateKey == nil {
+		t.Fatal("renewed identity is not a usable client certificate")
+	}
+	// A distinct serial proves a fresh issuance over the same identity (back-to-back here, so
+	// the fresh validity window rounds to the same second; test B proves it advances over real
+	// TTL windows). The renewal must never come back earlier than the original.
+	if renewed.Certificate.Leaf.SerialNumber.Cmp(identity.Certificate.Leaf.SerialNumber) == 0 {
+		t.Fatal("renewal returned the same certificate (equal serial), not a fresh issuance")
+	}
+	if renewed.NotAfter.Before(identity.NotAfter) {
+		t.Fatalf("renewed NotAfter %s is earlier than the original %s", renewed.NotAfter, identity.NotAfter)
+	}
+
+	// The bootstrap token was spent once at enrollment; the renewal path never reuses it.
+	if _, err := runner.Enroll(ctx, f.bootstrap("gw-token-1")); err == nil {
+		t.Fatal("the one-use bootstrap token was accepted a second time")
+	}
+
+	// A certless caller to /renew is rejected: renewal requires a current mTLS identity.
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion: tls.VersionTLS13, RootCAs: f.ca.pool, ServerName: gwControllerDNS,
+	}}}
+	resp, err := client.Post(f.renewURL, "application/json", nil)
+	if err != nil {
+		t.Fatalf("certless renew probe errored before a status: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("certless /v1/runner/renew = %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestRunnerRenewsCertificateAcrossLifetimesWithoutReenrolling is the fault-live proof that a
+// long-lived runner keeps a continuously valid identity across many short certificate
+// lifetimes by renewing over its existing certificate — never the one-use bootstrap token. It
+// drives the REAL serve loop (runner.ServeConfig.Serve) against the REAL
+// mutually-authenticated gateway with a deliberately short certificate TTL, and proves the CA
+// signed the runner three or more times (one enrollment plus two or more renewals) past the
+// point the ORIGINAL certificate would have expired. Each renewal requires the then-current
+// certificate to complete the mTLS handshake, so reaching three signatures proves the identity
+// never lapsed. A runner without renewal signs exactly once and then cannot re-dial after
+// expiry — the "open lease...retrying" loop the whole-branch review found.
+func TestRunnerRenewsCertificateAcrossLifetimesWithoutReenrolling(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	f.ca.ttl = 2 * time.Second // short lifetime so several renewals elapse in seconds
+
+	identity, err := runner.Enroll(context.Background(), f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	originalNotAfter := identity.NotAfter
+
+	// Run the real serve loop. No lease is ever offered, so it parks (unbounded) while the
+	// background renewer rolls the certificate forward across lifetimes on its own connection;
+	// the supervisor is never reached (nil is fine).
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runner.ServeConfig{
+			Session: f.session(identity),
+			Renew: func(ctx context.Context, current runner.Identity) (runner.Identity, error) {
+				return runner.Renew(ctx, current, f.renewConfig())
+			},
+			Now:     time.Now,
+			Backoff: 50 * time.Millisecond,
+		}.Serve(ctx)
+	}()
+
+	// Poll until the CA has signed >= 3 certificates: 1 enrollment + >= 2 renewals.
+	deadline := time.Now().Add(20 * time.Second)
+	for f.ca.signs.Load() < 3 {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatalf("CA signed %d certificates in 20s, want >= 3 (1 enroll + >= 2 renewals); the runner did not renew across lifetimes", f.ca.signs.Load())
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	// The runner renewed past the point the original certificate would have expired, and
+	// renewal only succeeds with a still-valid identity — so the certificate never lapsed.
+	if !time.Now().After(originalNotAfter) {
+		t.Fatalf("test finished before the original certificate would expire (%s); shorten the TTL", originalNotAfter)
+	}
+
+	// Zero re-enrollment: the one-use bootstrap token was spent exactly once at enrollment and
+	// the renewal path never presents it again, so a replay is rejected.
+	if _, err := runner.Enroll(context.Background(), f.bootstrap("gw-token-1")); err == nil {
+		t.Fatal("the one-use bootstrap token was accepted a second time; the runner re-enrolled")
 	}
 }
 

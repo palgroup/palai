@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -44,6 +45,11 @@ func main() {
 
 	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"))
 
+	// One supervisor keeps the dispatch workers, reconciler, and retention reaper alive: a
+	// background loop that returns a transient error is logged, counted, and restarted rather
+	// than silently dying and stalling dispatch (H2; LP-15 — no restart cap).
+	supervisor := coordinator.NewSupervisor(log.Printf, time.Second)
+
 	addr := os.Getenv("PALAI_LISTEN_ADDR")
 	if addr == "" {
 		addr = ":8080"
@@ -52,13 +58,14 @@ func main() {
 		Addr: addr,
 		// The runner gateway is served over a separate mutually-authenticated listener
 		// (Task 12 binds the local CA and that listener); the public API server carries no
-		// runner routes, so it is passed nil here.
-		Handler:           api.NewRouter(repo, repo, repo, sseConfigFromEnv(), nil),
+		// runner routes, so it is passed nil here. The handler is wrapped so `palai doctor`
+		// can surface the supervisor's restart counters over /healthz/supervisor.
+		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, sseConfigFromEnv(), nil), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	startDispatch(ctx, repo, gateway)
-	startRetention(ctx, repo)
+	startDispatch(ctx, repo, gateway, supervisor)
+	startRetention(ctx, repo, supervisor)
 
 	log.Printf("palai control-plane listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
@@ -72,7 +79,7 @@ func main() {
 // the read-path SSE e2e drives (no broker/engine racing it). A killed worker's lease lapses
 // and its job is reclaimed at a higher fence, so no graceful shutdown is needed.
 // PALAI_DISPATCH_WORKERS sets the worker count (default 1); 0 disables dispatch.
-func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway) {
+func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor) {
 	workers := envIntDefault("PALAI_DISPATCH_WORKERS", 1)
 	if workers <= 0 {
 		return
@@ -88,6 +95,9 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		handler = execution.ExecuteRun(spine, repo, orch)
 	}
 
+	// Each worker, and the reconciler, run under the supervisor: a transient error restarts
+	// the loop (logged + counted) instead of ending it, so the queue keeps draining. A worker
+	// cancelled mid-job still leaves its lease to lapse and be reclaimed at a higher fence.
 	for i := 0; i < workers; i++ {
 		w := coordinator.NewWorker(spine, coordinator.WorkerConfig{
 			Owner:        fmt.Sprintf("control-plane-%d-%d", os.Getpid(), i),
@@ -96,10 +106,10 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			PollInterval: 500 * time.Millisecond,
 			Retry:        retry,
 		}, handler)
-		go func() { _ = w.Run(ctx) }()
+		go supervisor.Supervise(ctx, fmt.Sprintf("dispatch-worker-%d", i), w.Run)
 	}
 	reconciler := execution.NewReconciler(spine, 30*time.Second, retry.MaxAttempts)
-	go func() { _ = reconciler.Run(ctx) }()
+	go supervisor.Supervise(ctx, "reconciler", reconciler.Run)
 }
 
 // modelBrokerFromEnv builds the model broker and route the exec-path uses, selected by
@@ -135,13 +145,28 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 // (PALAI_RETENTION_STORE_FALSE_TTL). Unset disables it, so no arbitrary production
 // default is imposed here; UAT and operators set a short TTL to activate reaping (spec
 // §8.3, §20.9). A killed process just misses ticks; the next run resumes the sweep.
-func startRetention(ctx context.Context, repo *store.Store) {
+func startRetention(ctx context.Context, repo *store.Store, supervisor *coordinator.Supervisor) {
 	ttl := envDuration("PALAI_RETENTION_STORE_FALSE_TTL")
 	if ttl <= 0 {
 		return
 	}
 	reaper := execution.NewReaper(repo, ttl)
-	go func() { _ = reaper.Run(ctx, 30*time.Second) }()
+	go supervisor.Supervise(ctx, "retention-reaper", func(ctx context.Context) error { return reaper.Run(ctx, 30*time.Second) })
+}
+
+// withSupervisorStatus serves GET /healthz/supervisor as the JSON restart-counter snapshot
+// `palai doctor` surfaces, delegating every other request to next. It rides alongside
+// /healthz (unauthenticated liveness) and carries no sensitive data — only the per-loop
+// restart counts, so an operator can see a background loop that is silently restarting.
+func withSupervisorStatus(next http.Handler, supervisor *coordinator.Supervisor) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/healthz/supervisor" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"restarts": supervisor.Restarts()})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // startRunnerGateway serves the runner enrollment + mutually-authenticated session
@@ -169,7 +194,10 @@ func startRunnerGateway(addr string) *execution.RunnerGateway {
 	if !caPool.AppendCertsFromPEM(caPEM) {
 		log.Fatal("runner CA certificate file held no certificates")
 	}
-	issuer, err := execution.NewFileCertIssuer(caCertPath, caKeyPath)
+	// PALAI_RUNNER_CERT_TTL bounds an issued runner certificate; unset takes the production
+	// default (5m). The fault-live renewal proof injects a short TTL to make rollover provable
+	// in seconds. The runner renews over the cert-authenticated renew endpoint before expiry.
+	issuer, err := execution.NewFileCertIssuer(caCertPath, caKeyPath, envDuration("PALAI_RUNNER_CERT_TTL"))
 	if err != nil {
 		log.Fatalf("bind runner CA issuer: %v", err)
 	}

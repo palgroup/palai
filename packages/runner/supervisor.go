@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"time"
@@ -18,6 +19,12 @@ import (
 const EngineProtocolV1 = "engine.v1"
 
 const sandboxLabelKey = "io.palai.sandbox"
+
+// composeProjectLabelKey tags each engine sandbox with the compose project the runner
+// belongs to (PALAI_COMPOSE_PROJECT, injected by `palai local up`), so `palai local down`
+// can force-remove exactly this stack's orphaned engines without touching a concurrent
+// stack's. It mirrors the compose project a co-located service carries.
+const composeProjectLabelKey = "io.palai.project"
 
 var (
 	// ErrInvalidEngineOutput reports stdout that is not strict, in-protocol JSONL.
@@ -167,7 +174,7 @@ func buildSpec(request EngineRequest) oci.ContainerSpec {
 	return oci.ContainerSpec{
 		ImageDigest: request.ImageDigest,
 		Env:         buildEnv(request),
-		Labels:      map[string]string{sandboxLabelKey: "engine"},
+		Labels:      engineLabels(),
 		Limits: oci.Limits{
 			WallTime:        time.Duration(request.Limits.WallTimeMS) * time.Millisecond,
 			MaxMemoryBytes:  request.Limits.MaxMemoryBytes,
@@ -177,6 +184,18 @@ func buildSpec(request EngineRequest) oci.ContainerSpec {
 		MaxStdoutBytes: request.Limits.MaxStdoutBytes,
 		MaxStderrBytes: request.Limits.MaxStderrBytes,
 	}
+}
+
+// engineLabels are the leak-accounting labels every engine sandbox carries: the base
+// sandbox marker, plus this stack's compose project (PALAI_COMPOSE_PROJECT) when the runner
+// runs inside compose, so `palai local down` can force-remove exactly this project's orphans
+// and never a concurrent stack's.
+func engineLabels() map[string]string {
+	labels := map[string]string{sandboxLabelKey: "engine"}
+	if project := os.Getenv("PALAI_COMPOSE_PROJECT"); project != "" {
+		labels[composeProjectLabelKey] = project
+	}
+	return labels
 }
 
 // buildEnv is the exact environment the engine receives: an empty base (so no host

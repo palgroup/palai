@@ -21,6 +21,14 @@ import (
 // RunnerProtocolV1 is the control-plane leasing protocol the session speaks.
 const RunnerProtocolV1 = "runner.v1"
 
+// dialHandshakeDeadline bounds the outbound dial + runner.v1 handshake when a Session sets
+// no explicit DialHandshakeTimeout. It is shorter than the 30s worker-lease window the
+// control plane grants (main.go) so a gateway that accepts the connection but never
+// completes the handshake fails fast — the serve loop logs it and re-parks — instead of
+// wedging on a dead control plane. It bounds only the dial/handshake, never the lease-offer
+// park (a parked runner waits for work indefinitely) nor a held lease.
+const dialHandshakeDeadline = 20 * time.Second
+
 var imageDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 // ErrFrameHashConflict reports a frame id reused with a different payload — a
@@ -47,6 +55,9 @@ type Session struct {
 	ControllerCAs *x509.CertPool
 	ControllerDNS string
 	Now           func() time.Time
+	// DialHandshakeTimeout bounds the outbound dial + runner.v1 handshake. Zero uses
+	// dialHandshakeDeadline. It never bounds the lease-offer park or a held lease.
+	DialHandshakeTimeout time.Duration
 }
 
 // ReceiveLease opens the outbound session, completes the runner.v1 handshake, and
@@ -91,7 +102,18 @@ func (s Session) openConnection(ctx context.Context) (*websocket.Conn, *http.Tra
 	}
 	transport := &http.Transport{TLSClientConfig: s.tlsConfig(), Proxy: nil}
 
-	connection, _, err := websocket.Dial(ctx, s.URL, &websocket.DialOptions{
+	// Bound the dial + hello write with an attempt-scoped deadline: a control plane that
+	// accepts the connection but never completes the handshake must fail fast, not wedge
+	// the serve loop. The lease-offer read below is the park — a runner waits for the next
+	// lease indefinitely — so it stays on the parent context, never this deadline.
+	timeout := s.DialHandshakeTimeout
+	if timeout <= 0 {
+		timeout = dialHandshakeDeadline
+	}
+	dialCtx, cancelDial := context.WithTimeout(ctx, timeout)
+	defer cancelDial()
+
+	connection, _, err := websocket.Dial(dialCtx, s.URL, &websocket.DialOptions{
 		HTTPClient:   &http.Client{Transport: transport},
 		Subprotocols: []string{RunnerProtocolV1},
 	})
@@ -110,7 +132,7 @@ func (s Session) openConnection(ctx context.Context) (*websocket.Conn, *http.Tra
 		closeConnection(connection, transport)
 		return nil, nil, Lease{}, fmt.Errorf("encode runner hello: %w", err)
 	}
-	if err := connection.Write(ctx, websocket.MessageText, hello); err != nil {
+	if err := connection.Write(dialCtx, websocket.MessageText, hello); err != nil {
 		closeConnection(connection, transport)
 		return nil, nil, Lease{}, fmt.Errorf("write runner hello: %w", err)
 	}
@@ -186,7 +208,11 @@ func (l *LeaseSession) ReceiveControllerFrame(ctx context.Context) (contracts.En
 // Complete reports the terminal outcome class and the redacted stderr digest in a
 // lease.complete message, then closes the connection.
 func (l *LeaseSession) Complete(ctx context.Context, outcome string, stderrDigest string) error {
-	err := l.write(ctx, "lease.complete", map[string]any{"outcome": outcome, "stderr_digest": stderrDigest})
+	// Bound the terminal write so a control plane that stopped reading cannot wedge the
+	// serve loop at completion; the connection is torn down regardless.
+	writeCtx, cancel := context.WithTimeout(ctx, dialHandshakeDeadline)
+	defer cancel()
+	err := l.write(writeCtx, "lease.complete", map[string]any{"outcome": outcome, "stderr_digest": stderrDigest})
 	_ = l.conn.Close(websocket.StatusNormalClosure, "lease complete")
 	l.transport.CloseIdleConnections()
 	return err

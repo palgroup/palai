@@ -26,6 +26,12 @@ import (
 
 const engineProtocol = "engine.v1"
 
+// dialHandshakeDeadline bounds one attempt's engine dial + engine.ready handshake. It is
+// shorter than the 30s worker lease the dispatcher grants (main.go startDispatch) so a
+// stuck dial fails the attempt — routed through the existing retry / dead-letter path —
+// well before the lease lapses, turning a silent hang into a classified, retryable failure.
+const dialHandshakeDeadline = 20 * time.Second
+
 // Orchestrator executes response run attempts through the common kernel.
 type Orchestrator struct {
 	store  *store.Store
@@ -34,13 +40,16 @@ type Orchestrator struct {
 	models *modelbroker.Broker
 	tools  *toolbroker.Broker
 	route  ModelRoute
+	// DialHandshakeDeadline bounds the dial + engine.ready handshake per attempt. Zero uses
+	// dialHandshakeDeadline; NewOrchestrator sets the default. Tests shorten it.
+	DialHandshakeDeadline time.Duration
 }
 
 // NewOrchestrator binds the durable store, the engine dialer, and the model and tool
 // brokers into one kernel. The model route defaults to the deterministic fake provider;
 // main.go overrides it for a live provider via SetModelRoute.
 func NewOrchestrator(st *store.Store, dialer EngineDialer, models *modelbroker.Broker, tools *toolbroker.Broker) *Orchestrator {
-	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, route: defaultModelRoute}
+	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
 }
 
 // SetModelRoute points the kernel at a non-default provider/model/secret selected by the
@@ -87,7 +96,15 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		}
 	}
 
-	ch, err := o.dialer.Dial(ctx, attempt)
+	// Bound the dial + engine.ready handshake with an attempt-scoped deadline: a runner that
+	// connects but whose handshake wedges (or a gateway with no available runner) must fail
+	// the attempt — routed through retry / dead-letter — not hang it silently. The deadline
+	// covers only Dial and the ready receive below; the run loop that follows uses the parent
+	// ctx, so a long-running response is never cut off at the deadline.
+	dialCtx, cancelDial := context.WithTimeout(ctx, o.DialHandshakeDeadline)
+	defer cancelDial()
+
+	ch, err := o.dialer.Dial(dialCtx, attempt)
 	if err != nil {
 		return fmt.Errorf("dial engine: %w", err)
 	}
@@ -98,7 +115,7 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		ch: ch, ledger: runner.NewFrameLedger(),
 	}
 
-	ready, err := ch.Receive(ctx)
+	ready, err := ch.Receive(dialCtx)
 	if err != nil {
 		return fmt.Errorf("receive engine.ready: %w", err)
 	}

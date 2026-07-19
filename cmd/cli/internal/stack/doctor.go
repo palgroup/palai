@@ -92,6 +92,7 @@ func runChecks(cfg Config, p paths) Report {
 		"clock":             checkClock(ctx, pgURL),
 		"retention_ttl":     checkRetention(caps),
 		"runner_tls_reject": checkRunnerTLSReject(cfg, p),
+		"supervisor":        checkSupervisor(ctx, cfg),
 	}
 	ok := true
 	for _, c := range checks {
@@ -254,6 +255,36 @@ func checkRetention(caps capabilities) Check {
 		return ok("store:false retention disabled (ttl=0)")
 	}
 	return ok(fmt.Sprintf("store:false retention ttl=%ds", ttl))
+}
+
+// checkSupervisor surfaces the control-plane background-loop restart counters over the
+// unauthenticated /healthz/supervisor endpoint (H2). Zero restarts on a healthy boot is
+// green; a non-zero count is still green but named in the detail so an operator sees a loop
+// that has been restarting. Only an unreachable or unparseable endpoint fails.
+func checkSupervisor(ctx context.Context, cfg Config) Check {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/healthz/supervisor", nil)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return fail("GET /healthz/supervisor: " + err.Error())
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fail(fmt.Sprintf("GET /healthz/supervisor = %d, want 200", resp.StatusCode))
+	}
+	var body struct {
+		Restarts map[string]int `json:"restarts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return fail("decode /healthz/supervisor: " + err.Error())
+	}
+	total := 0
+	for _, n := range body.Restarts {
+		total += n
+	}
+	if total == 0 {
+		return ok("background loops supervised (0 restarts)")
+	}
+	return ok(fmt.Sprintf("background loops supervised (%d restarts: %v)", total, body.Restarts))
 }
 
 // checkRunnerTLSReject proves the connect endpoint enforces mutual TLS: a client trusting

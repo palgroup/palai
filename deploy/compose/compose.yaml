@@ -69,6 +69,9 @@ services:
       PALAI_MODEL_PROVIDER: ${PALAI_MODEL_PROVIDER:-fake}
       PALAI_MODEL: ${PALAI_MODEL:-}
       PALAI_RETENTION_STORE_FALSE_TTL: ${PALAI_RETENTION_STORE_FALSE_TTL:-}
+      # Issued runner-cert lifetime; unset = 5m production default. A short value (the
+      # fault-live renewal proof) makes the runner renew mid-session over the renew endpoint.
+      PALAI_RUNNER_CERT_TTL: ${PALAI_RUNNER_CERT_TTL:-}
     secrets:
       - provider_one_key
       - bootstrap_api_key
@@ -102,6 +105,9 @@ services:
       # One-use; consumed at connect, never persisted by the runner.
       PALAI_ENROLLMENT_TOKEN_FILE: /palai/runner-token
       PALAI_ENGINE_IMAGE: ${PALAI_ENGINE_IMAGE}
+      # The compose project this runner belongs to; it labels every engine sandbox it
+      # launches so `palai local down` reaps exactly this stack's orphaned engines (H4).
+      PALAI_COMPOSE_PROJECT: ${PALAI_COMPOSE_PROJECT}
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "${PALAI_HOME}/ca/ca.crt:/palai/ca/ca.crt:ro"

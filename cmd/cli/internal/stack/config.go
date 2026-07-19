@@ -135,6 +135,9 @@ func (c Config) composeEnv(home, engine string) []string {
 		"PALAI_PG_PORT="+strconv.Itoa(c.PgPort),
 		"PALAI_S3_PORT="+strconv.Itoa(c.S3Port),
 		"PALAI_ENGINE_IMAGE="+engine,
+		// The runner tags every engine sandbox it launches with this project so `local down`
+		// can sweep exactly this stack's orphaned engines (H4).
+		"PALAI_COMPOSE_PROJECT="+c.Project,
 	)
 }
 

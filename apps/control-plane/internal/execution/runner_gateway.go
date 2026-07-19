@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -68,6 +69,7 @@ type pendingRunner struct {
 func (g *RunnerGateway) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/runner/enroll", g.handleEnroll)
+	mux.HandleFunc("/v1/runner/renew", g.handleRenew)
 	mux.HandleFunc("/v1/runner/connect", g.handleConnect)
 	return mux
 }
@@ -108,6 +110,43 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(enrollResponse{Certificate: base64.StdEncoding.EncodeToString(certDER)})
+}
+
+// handleRenew re-issues a runner's client certificate over its EXISTING mutually-authenticated
+// identity — no enrollment token. It asserts the verified client chain (the server TLS accepts
+// a certless handshake for enrollment, so a tokenless, certless caller is rejected here), then
+// re-signs the public key the presented certificate carries with a fresh validity window. An
+// expired certificate cannot complete the mTLS handshake, so renewal is only possible while
+// the current identity is still valid — the proactive ~80%-TTL renewal keeps it so. The
+// one-use bootstrap token is never presented again, so a long-lived runner rolls its
+// certificate forward without re-enrolling.
+func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		http.Error(w, "runner client certificate required", http.StatusUnauthorized)
+		return
+	}
+	leaf := r.TLS.PeerCertificates[0]
+	publicDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
+	if err != nil {
+		http.Error(w, "marshal runner public key", http.StatusBadRequest)
+		return
+	}
+	certDER, err := g.issuer.SignRunnerCertificate(publicDER, renewDNS(leaf))
+	if err != nil {
+		http.Error(w, "sign runner certificate", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(enrollResponse{Certificate: base64.StdEncoding.EncodeToString(certDER)})
+}
+
+// renewDNS is the runner DNS identity the presented certificate carries — its SAN, or the
+// common name when the SAN is absent — so a renewal preserves the enrolled identity.
+func renewDNS(leaf *x509.Certificate) string {
+	if len(leaf.DNSNames) > 0 {
+		return leaf.DNSNames[0]
+	}
+	return leaf.Subject.CommonName
 }
 
 // handleConnect accepts the runner's mutually-authenticated WebSocket, completes the

@@ -15,23 +15,27 @@ import (
 	"time"
 )
 
-// runnerCertTTL bounds an issued runner client certificate. It is short-lived — the
-// runner enrolls and immediately opens its lease session — but comfortably outlives one
-// enroll→connect window and small clock skew on a local host.
+// runnerCertTTL bounds an issued runner client certificate when no TTL is configured. It is
+// short-lived — the runner enrolls and immediately opens its lease session — but comfortably
+// outlives one enroll→connect window and small clock skew on a local host. A long-lived
+// runner rolls its certificate forward before expiry over the cert-authenticated renew
+// endpoint (never the one-use bootstrap token).
 const runnerCertTTL = 5 * time.Minute
 
 // FileCertIssuer implements CertIssuer with the local control-plane CA `palai init`
-// writes into the .palai layout. It signs an enrolling runner's public key into a
-// short-lived client certificate — the file-backed counterpart of the in-test CA the
+// writes into the .palai layout. It signs an enrolling (or renewing) runner's public key
+// into a short-lived client certificate — the file-backed counterpart of the in-test CA the
 // gateway conformance proof drives.
 type FileCertIssuer struct {
 	caCert *x509.Certificate
 	caKey  *ecdsa.PrivateKey
+	ttl    time.Duration
 }
 
 // NewFileCertIssuer loads the PEM CA certificate and its EC private key (PKCS#8) from the
-// .palai CA files.
-func NewFileCertIssuer(certPath, keyPath string) (*FileCertIssuer, error) {
+// .palai CA files. A non-positive ttl uses runnerCertTTL; the fault-live renewal proof
+// injects a short TTL so a long-lived runner's rollover is provable in seconds.
+func NewFileCertIssuer(certPath, keyPath string, ttl time.Duration) (*FileCertIssuer, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return nil, fmt.Errorf("read CA certificate: %w", err)
@@ -48,7 +52,10 @@ func NewFileCertIssuer(certPath, keyPath string) (*FileCertIssuer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &FileCertIssuer{caCert: cert, caKey: key}, nil
+	if ttl <= 0 {
+		ttl = runnerCertTTL
+	}
+	return &FileCertIssuer{caCert: cert, caKey: key, ttl: ttl}, nil
 }
 
 // SignRunnerCertificate signs the runner's public key into a short-lived client
@@ -72,7 +79,7 @@ func (i *FileCertIssuer) SignRunnerCertificate(publicKeyDER []byte, runnerDNS st
 		Subject:      pkix.Name{CommonName: runnerDNS},
 		DNSNames:     []string{runnerDNS},
 		NotBefore:    now.Add(-time.Second),
-		NotAfter:     now.Add(runnerCertTTL),
+		NotAfter:     now.Add(i.ttl),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}

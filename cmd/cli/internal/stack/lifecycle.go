@@ -114,8 +114,11 @@ func Down() error {
 	if err != nil {
 		return err
 	}
-	return runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
-		"down", "--remove-orphans")
+	if err := runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+		"down", "--remove-orphans"); err != nil {
+		return err
+	}
+	return sweepEngineContainers(cfg.Project)
 }
 
 // Reset tears the stack down and DELETES its volumes — the destructive path. It refuses
@@ -130,8 +133,36 @@ func Reset(confirm bool) error {
 	if !confirm {
 		return fmt.Errorf("refusing to delete volumes without --confirm")
 	}
-	return runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
-		"down", "--volumes", "--remove-orphans")
+	if err := runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+		"down", "--volumes", "--remove-orphans"); err != nil {
+		return err
+	}
+	return sweepEngineContainers(cfg.Project)
+}
+
+// engineSandboxLabel marks a runner-launched engine container, mirroring packages/runner's
+// io.palai.sandbox=engine. The sweep pairs it with the compose project (io.palai.project) so
+// only this stack's engines are removed.
+const engineSandboxLabel = "io.palai.sandbox=engine"
+
+// sweepEngineContainers force-removes the engine sandbox containers this stack's runner
+// launched through the Docker socket. They are not compose services, so `compose down` never
+// tracks them — a mid-run-killed engine would otherwise leak. Filtering by the compose
+// project keeps a concurrent stack's engines untouched. An empty result is not an error.
+func sweepEngineContainers(project string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "ps", "-aq",
+		"--filter", "label="+engineSandboxLabel,
+		"--filter", "label=io.palai.project="+project).Output()
+	if err != nil {
+		return fmt.Errorf("list engine containers: %w", err)
+	}
+	ids := strings.Fields(string(out))
+	if len(ids) == 0 {
+		return nil
+	}
+	return runVisible(os.Environ(), "docker", append([]string{"rm", "-f"}, ids...)...)
 }
 
 // waitForAPI polls GET /v1/capabilities with the bootstrap key until it answers 200 or the
