@@ -1,0 +1,50 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-19T13:22:57Z",
+  "cases": [
+    {
+      "checksum": "sha256:907710e33f10fa4b2489c9c2159262d8c74730b3d6d1652ff86649994e817cb4",
+      "db_assertions": [
+        "runs.state=completed",
+        "model_requests.result.model=gpt-4o-mini-2024-07-18",
+        "model_requests.provider_request_id present (chatcmpl)"
+      ],
+      "id": "T1-CHAIN-ROOT",
+      "image_digest": "sha256:3da07ad87e3482428db226aaed3d4a83b5ce248d6789ada31ecb736c931e2255",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T13:27:48Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3LljC8lgCViATrd2dRX14nFogFa7",
+      "run_id": "run_bdf4acd99c74986eb7e725d29f3d7be8",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:b8c35b3bb6c847e5adb4fa32729b42f55588cc19250a86c31871bd43162c078f",
+      "db_assertions": [
+        "runs.state=completed",
+        "model_requests.result.model=gpt-4o-mini-2024-07-18",
+        "model_requests.provider_request_id present (chatcmpl)",
+        "response 2 output carried turn-1 session history (codename echoed)"
+      ],
+      "id": "T1-CHAIN-FOLLOWUP",
+      "image_digest": "sha256:3da07ad87e3482428db226aaed3d4a83b5ce248d6789ada31ecb736c931e2255",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T13:27:48Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3LllxNwnPvhI4aIHNXbTlYZHtAWE",
+      "run_id": "run_f9a23c4443335a31e31a064b59c0c3dc",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    }
+  ],
+  "git_sha": "6ca2b70",
+  "migration": "000005_config_revisions",
+  "release": "local-live-0.1.0-chaining"
+}
