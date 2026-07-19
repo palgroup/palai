@@ -49,23 +49,25 @@ func guardRunActive(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string)
 }
 
 // RunContext resolves a run's durable execution context for the orchestrator: its
-// tenant scope, session, response, and admitted input. The run id comes from the
-// claimed durable job, so this by-primary-key read is the same cross-tenant
-// infrastructure read the job claim performs; it establishes the scope every later
-// orchestrator write is gated by.
-func (s *Store) RunContext(ctx context.Context, runID string) (Tenant, string, string, []byte, error) {
+// tenant scope, session, response, current run state, and admitted input. The run id
+// comes from the claimed durable job, so this by-primary-key read is the same
+// cross-tenant infrastructure read the job claim performs; it establishes the scope
+// every later orchestrator write is gated by. The state lets the attempt bail before
+// driving a run a pause already parked in waiting (a redelivered/reclaimed job).
+func (s *Store) RunContext(ctx context.Context, runID string) (Tenant, string, string, string, []byte, error) {
 	var (
 		tenant     Tenant
 		sessionID  string
 		responseID string
+		state      string
 		input      []byte
 	)
 	err := s.pool.QueryRow(ctx, storage.Query("RunContext"), runID).
-		Scan(&tenant.Organization, &tenant.Project, &sessionID, &responseID, &input)
+		Scan(&tenant.Organization, &tenant.Project, &sessionID, &responseID, &state, &input)
 	if err != nil {
-		return Tenant{}, "", "", nil, fmt.Errorf("read run context for %s: %w", runID, err)
+		return Tenant{}, "", "", "", nil, fmt.Errorf("read run context for %s: %w", runID, err)
 	}
-	return tenant, sessionID, responseID, input, nil
+	return tenant, sessionID, responseID, state, input, nil
 }
 
 // PriorResponse is one earlier response in a session, as run.start history needs it:

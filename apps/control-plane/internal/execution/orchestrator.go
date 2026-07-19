@@ -77,9 +77,19 @@ type attemptState struct {
 // the frame-intake loop: every frame is validated and deduped before any dispatch,
 // and every provider/tool result is committed before it is delivered to the engine.
 func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescriptor) error {
-	tenant, sessionID, responseID, input, err := o.spine.RunContext(ctx, string(attempt.RunID))
+	tenant, sessionID, responseID, state, input, err := o.spine.RunContext(ctx, string(attempt.RunID))
 	if err != nil {
 		return err
+	}
+
+	// A waiting run was pre-empted by a pause (spec §22.3, SES-009); a job redelivered in the ms
+	// window between PauseRun's commit and the paused attempt settling must not drive it. Provision
+	// and Start would both skip on ErrInvalidState (waiting is non-terminal), so without this guard
+	// the doomed attempt delivers the pre-empted message and finalizes an illegal waiting→completed,
+	// dead-lettering the job and FAILING a resumable run. Bail cleanly — resume opens a fresh attempt
+	// to continue it. Only waiting bails; a running/provisioning reclaim proceeds as before.
+	if statemachines.RunState(state) == statemachines.RunWaiting {
+		return nil
 	}
 
 	// Move the run into execution using canonical transitions only. A run already

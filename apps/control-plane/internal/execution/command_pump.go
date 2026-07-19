@@ -26,16 +26,26 @@ var errRunPaused = errors.New("run_paused")
 // deliver — the same guard the model/tool commits use. A command another attempt already
 // claimed returns ErrCommandNotPending and is skipped.
 //
-// ponytail: applied-but-not-folded message loss — after ApplyCommand commits, the delivered
-// message lives only in the engine subprocess's memory until the next model request folds it, and
-// run.start history is only prior-RESPONSE outputs, so a crash/reclaim between apply and fold gives
-// the fresh attempt no redelivery and command.applied.v1 claims an effect that is lost. T4
-// pause/resume does NOT hit this: pause PRE-EMPTS the boundary (below), leaving queued messages
-// unapplied so resume re-delivers them from the queue, while the committed model steps replay from
-// the journal (LookupModelResult). The residual loss — a message applied at a NORMAL boundary, then
-// the attempt crashes before the fold commits — is a reclaim-recovery gap deferred to E10's
-// recovery-ladder (plan §7.4): a durable delivered-message row, or applied-undelivered redelivery
-// at attempt start, closes it there.
+// ponytail: delivered-message loss across reclaim/resume — after ApplyCommand commits, the
+// delivered message lives only in the engine subprocess's memory until a model request folds it,
+// and run.start history reassembles from prior-RESPONSE outputs only (history.go), never a mid-run
+// user turn. Two variants survive T4, both in the reclaim class (T4 did not invent either).
+// The ORIGINAL variant: a message applied at a NORMAL boundary, then the attempt crashes BEFORE the
+// folding model step commits — the fresh attempt gets no redelivery (the command is already drained,
+// ApplyCommand is single-winner WHERE state='queued') and command.applied.v1 claims an effect that
+// is lost. The R1 variant: a message applied+folded+COMMITTED at a NORMAL boundary, then the run
+// pauses and RESUMES — the committed step's answer survives, but the fresh attempt's context drops
+// that user turn on every post-resume step, because run.start carries prior responses only, the
+// applied message is not redelivered, and step replay keys solely on model_request_id(run,step) with
+// no request_hash check (LookupModelResult), so the diverged context is never caught. Unlike the
+// original, R1 needs no crash: pause→resume triggers it user-initiated, crash-free.
+// T4 pause/resume does NOT hit the original: pause PRE-EMPTS the boundary (below), leaving queued
+// messages unapplied so resume re-delivers them from the queue, while committed model steps replay
+// from the journal (LookupModelResult). Both variants are deferred to E10's recovery ladder (plan
+// §7.4). The fix that closes BOTH is a durable delivered-message row — journaled at delivery, read
+// by run.start history assembly and re-deliverable on resume. The narrower "applied-undelivered
+// redelivery at attempt start" idea closes only the original: in R1 the message WAS delivered and
+// committed, so there is nothing undelivered to replay — only the durable row restores the lost turn.
 func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState) error {
 	// A pending pause pre-empts the boundary (spec §22.3, SES-009): apply it and stop driving —
 	// every other queued command stays queued for resume to re-deliver (faithful resume). Read

@@ -25,7 +25,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- by-PK read establishes the scope every later write is gated by — the same
 -- cross-tenant infrastructure read the job claim itself performs (spec §24.4).
 -- name: RunContext
-SELECT r.organization_id, r.project_id, r.session_id, r.response_id, resp.input
+SELECT r.organization_id, r.project_id, r.session_id, r.response_id, r.state, resp.input
 FROM runs r
 JOIN responses resp ON resp.id = r.response_id
 WHERE r.id = $1;

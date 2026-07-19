@@ -195,6 +195,61 @@ func TestPauseReleasesComputeResumeSameRunNewAttempt(t *testing.T) {
 	}
 }
 
+// TestRedeliveredJobOnWaitingRunIsBailedNotDriven closes the pause/settle race window (the T4
+// R2 finding): in the ms between PauseRun committing the run to waiting and the paused attempt's
+// durable job settling, a worker crash redelivers the response.run job. Without the entry guard
+// the fresh attempt skips Provision/Start on ErrInvalidState (waiting is non-terminal), drives the
+// waiting run, delivers the PRE-EMPTED message, and finalizes an illegal waiting→completed —
+// dead-lettering the job and FAILING a resumable run. The guard bails the attempt cleanly, leaving
+// the run waiting and the pre-empted message queued for resume — faithful resume survives the race.
+func TestRedeliveredJobOnWaitingRunIsBailedNotDriven(t *testing.T) {
+	h := newHarness(t)
+	gp, rec := newGatedProvider(), &deliverRecorder{}
+	dialer := subprocessDialer{engineDir: h.engineDir, onSend: rec.onSend}
+	orch := h.newOrchestratorWithAdapter(dialer, gp)
+	stop := h.runWorker(orch)
+	defer stop()
+
+	_, sessionID, runID := h.admitWith(`{"input":"first turn"}`, newID("idem"))
+
+	// Park the first step at the gate, queue a message to survive the pause, then pause.
+	select {
+	case <-gp.started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("first model step never started")
+	}
+	msgID := newID("cmd")
+	if cmd := h.submitCommand(sessionID, `{"command_id":"`+msgID+`","kind":"send_message","delivery":"queue","message":"SURVIVE-REDELIVERY"}`); cmd.Status != "queued" {
+		t.Fatalf("send_message status = %q, want queued", cmd.Status)
+	}
+	pauseID := newID("cmd")
+	if cmd := h.submitCommand(sessionID, `{"command_id":"`+pauseID+`","kind":"pause"}`); cmd.Status != "queued" {
+		t.Fatalf("pause status = %q, want queued", cmd.Status)
+	}
+	close(gp.release)
+
+	h.awaitRunState(runID, "waiting", 30*time.Second)
+	h.awaitJobStatus(runID, "completed", 30*time.Second) // the paused attempt's job settled
+
+	// The race: redeliver the response.run job while the run is waiting, by driving a fresh attempt
+	// directly (a redelivery whose paused predecessor had not yet acked would land here identically).
+	if err := orch.ExecuteAttempt(context.Background(), h.descriptor(runID, 2)); err != nil {
+		t.Fatalf("redelivered attempt on a waiting run error = %v, want a clean bail (nil)", err)
+	}
+
+	// The guard held: the run is STILL waiting (never driven or failed) and the pre-empted message
+	// is STILL queued — the doomed attempt neither delivered it nor finalized the run.
+	if st := h.runState(runID); st != "waiting" {
+		t.Fatalf("run state after redelivered attempt = %q, want waiting (the guard must not drive/fail it)", st)
+	}
+	if st, _ := h.commandRow(msgID); st != "queued" {
+		t.Fatalf("pre-empted message state after redelivered attempt = %q, want queued (never delivered)", st)
+	}
+	if count, _ := rec.snapshot(); count != 0 {
+		t.Fatalf("message.deliver frames from the redelivered attempt = %d, want 0", count)
+	}
+}
+
 // TestForkCopiesHistoryBoundaryIsolatesFuture proves fork_session (spec §22.8, SES-011): the fork
 // child is a new active session that reference-copies the parent's history up to the fork
 // boundary, and a response written to the PARENT after the fork is NOT in the child — the fork's
