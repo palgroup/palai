@@ -5,6 +5,7 @@
 // types are inlined as string aliases so this file is self-contained.
 
 export type AttemptId = string;
+export type CommandId = string;
 export type EventId = string;
 export type MessageId = string;
 export type OpaqueId = string;
@@ -27,6 +28,25 @@ export interface Case {
   status: string;
   terminal: Record<string, unknown>;
   usage: Record<string, unknown>;
+}
+
+export interface Command {
+  applied_sequence?: number | null;
+  created_at: string;
+  delivery?: string;
+  id: CommandId;
+  kind: string;
+  object: string;
+  result?: Record<string, unknown>;
+  session_id: SessionId;
+  status: string;
+}
+
+export interface CommandCreateRequest {
+  command_id: CommandId;
+  delivery?: string;
+  kind: string;
+  message?: string;
 }
 
 // open union: unknown fields and unknown type values survive a round-trip (ADR-0002, spec API-009).
@@ -154,6 +174,16 @@ export interface ResponseCreateRequest {
   tool_sets?: string[];
   tools?: Record<string, unknown>[];
   workspace?: Record<string, unknown>;
+}
+
+export interface Session {
+  created_at: string;
+  id: SessionId;
+  metadata?: Record<string, unknown>;
+  object: string;
+  organization_id?: OrganizationId;
+  project_id?: ProjectId;
+  status: string;
 }
 
 export interface Usage {

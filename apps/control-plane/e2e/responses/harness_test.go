@@ -83,7 +83,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	token := newID("e2e-tok")
 	tenant := seedTenantWithKey(t, repo.Spine().Pool(), token)
-	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, api.SSEConfig{}, nil))
+	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, repo, api.SSEConfig{}, nil))
 	t.Cleanup(srv.Close)
 
 	return &harness{
@@ -284,8 +284,13 @@ type subprocessDialer struct {
 	mutateDup bool
 }
 
-func (d subprocessDialer) Dial(ctx context.Context, attempt execution.AttemptDescriptor) (execution.EngineChannel, error) {
-	cmd := exec.CommandContext(ctx, "uv", "run", "--locked", "--project", d.engineDir, "python", "-m", "palai_engine")
+func (d subprocessDialer) Dial(_ context.Context, attempt execution.AttemptDescriptor) (execution.EngineChannel, error) {
+	// Plain exec.Command, not exec.CommandContext(dialCtx): the engine PROCESS must outlive
+	// the orchestrator's 20s dial deadline. A mid-run steer that keeps the provider busy past
+	// 20s would otherwise see the process killed at the dial ctx expiry ("signal: killed").
+	// Teardown is explicit — Close kills the process — and Receive honors ctx so a canceled
+	// worker still unwinds (see subprocessChannel.Receive).
+	cmd := exec.Command("uv", "run", "--locked", "--project", d.engineDir, "python", "-m", "palai_engine")
 	cmd.Env = []string{
 		"PALAI_RUN_ID=" + string(attempt.RunID),
 		"PALAI_ATTEMPT_ID=" + string(attempt.AttemptID),
@@ -347,7 +352,7 @@ func (c *subprocessChannel) write(frame contracts.EngineFrame) error {
 	return nil
 }
 
-func (c *subprocessChannel) Receive(_ context.Context) (contracts.EngineFrame, error) {
+func (c *subprocessChannel) Receive(ctx context.Context) (contracts.EngineFrame, error) {
 	if c.pending != nil {
 		frame := *c.pending
 		c.pending = nil
@@ -356,6 +361,30 @@ func (c *subprocessChannel) Receive(_ context.Context) (contracts.EngineFrame, e
 		}
 		return frame, nil
 	}
+	// Honor ctx: a canceled worker (teardown) or a run whose engine outlives the dial
+	// deadline must unwind here rather than block on stdout. The blocking scan runs in a
+	// goroutine over a buffered channel, so a ctx-cancel return never leaks it — the parked
+	// scan completes when Close kills the process and its stdout EOFs.
+	type scanned struct {
+		frame contracts.EngineFrame
+		err   error
+	}
+	done := make(chan scanned, 1)
+	go func() {
+		frame, err := c.scan()
+		done <- scanned{frame, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return contracts.EngineFrame{}, ctx.Err()
+	case r := <-done:
+		return r.frame, r.err
+	}
+}
+
+// scan reads one frame off the engine's stdout, applying the optional duplicate hook. It
+// blocks until a line, EOF, or error; Receive wraps it in a ctx-aware select.
+func (c *subprocessChannel) scan() (contracts.EngineFrame, error) {
 	if !c.scanner.Scan() {
 		if err := c.scanner.Err(); err != nil {
 			return contracts.EngineFrame{}, err

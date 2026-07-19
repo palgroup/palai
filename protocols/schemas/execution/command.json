@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/command.json",
+  "title": "Command",
+  "type": "object",
+  "required": ["id", "object", "session_id", "kind", "status", "created_at"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/command_id"},
+    "object": {"type": "string", "const": "command"},
+    "session_id": {"$ref": "../common/id.json#/$defs/session_id"},
+    "kind": {"type": "string"},
+    "delivery": {"type": "string"},
+    "status": {"type": "string"},
+    "applied_sequence": {"type": ["integer", "null"]},
+    "result": {"type": "object"},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "known_statuses": {"enum": ["queued", "applying", "applied", "rejected", "expired"]},
+    "known_kinds": {"enum": ["send_message", "approve", "deny"]}
+  }
+}

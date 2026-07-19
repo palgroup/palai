@@ -9,6 +9,8 @@ from pathlib import Path
 from palai_engine import protocol
 from palai_engine.protocol import Emitter
 
+FIXTURES = Path(__file__).parent / "fixtures"
+
 
 def _schema() -> dict:
     for parent in Path(__file__).resolve().parents:
@@ -22,6 +24,11 @@ SCHEMA = _schema()
 
 # The engine-to-controller types this engine actually emits (protocol.py / loop.py).
 EMITTED_TYPES = {"engine.ready", "model.request", "tool.request", "output.item", "run.terminal", "protocol.error"}
+
+# The controller-to-engine types the loop accepts and acts on (loop.py). message.deliver is
+# the T2 addition — a supported command frame must be a declared controller type, not envelope
+# rejected.
+HANDLED_CONTROLLER_TYPES = {"supervisor.hello", "run.start", "model.result", "tool.result", "run.cancel", "message.deliver"}
 
 
 def test_emitter_envelope_matches_schema() -> None:
@@ -38,3 +45,16 @@ def test_max_line_bytes_matches_schema() -> None:
 
 def test_emitted_types_are_declared_engine_types() -> None:
     assert EMITTED_TYPES <= set(SCHEMA["$defs"]["engine_types"]["enum"])
+
+
+def test_handled_controller_types_are_declared_controller_types() -> None:
+    assert HANDLED_CONTROLLER_TYPES <= set(SCHEMA["$defs"]["controller_types"]["enum"])
+
+
+def test_engine_ready_announces_the_supported_commands() -> None:
+    # engine.ready.commands must declare exactly the command kinds the engine really applies
+    # (spec §9.1); a drift here is a false capability advertisement.
+    hello = json.loads((FIXTURES / "supervisor-hello.jsonl").read_text())
+    ready = protocol.build_ready(Emitter(run_id="run_1", attempt_id="att_1"), hello, nonce="n")
+    assert ready["data"]["commands"] == list(protocol.SUPPORTED_COMMANDS)
+    assert "send_message" in ready["data"]["commands"]

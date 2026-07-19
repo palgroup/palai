@@ -19,6 +19,12 @@ MAX_LINE_BYTES = 1_048_576
 ENGINE_NAME = "palai-reference"
 ENGINE_VERSION = "0.1.0"
 
+# The command kinds this engine can apply at a safe boundary, announced in engine.ready
+# (spec §9.1, §22.4). T2 delivers send_message (the message.deliver frame); config.change and
+# the lifecycle commands are contracted in the schema but land with later phases, so declaring
+# only what is really handled keeps the announcement honest (the schema-pin test enforces it).
+SUPPORTED_COMMANDS = ("send_message",)
+
 
 class ProtocolError(Exception):
     """A frame that violates the wire protocol. Reported as a protocol.error frame."""
@@ -130,7 +136,7 @@ def build_ready(emitter: Emitter, hello: dict, *, nonce: str) -> dict:
             "max_frame_bytes": MAX_LINE_BYTES,
             "nonce": nonce,
             "checkpoint_formats": [],
-            "commands": [],
+            "commands": list(SUPPORTED_COMMANDS),
             "content_types": {"input": ["text"], "output": ["text"]},
         },
         reply_to=hello.get("id"),

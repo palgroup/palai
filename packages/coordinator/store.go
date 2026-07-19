@@ -261,6 +261,16 @@ func (s *Store) ApplyRunTransition(ctx context.Context, tenant Tenant, runID str
 		return Transition{}, fmt.Errorf("enqueue outbox: %w", err)
 	}
 
+	// A terminalizing run expires its still-queued commands atomically (spec §22.4 lifecycle):
+	// a mid-run-accepted command that never reached a delivery boundary must not stay queued.
+	// This is the single choke point every terminal path (engine terminal, cancel, fail) routes
+	// through, so the sweep runs exactly once per run (terminality is monotonic).
+	if runTerminalStates[next] {
+		if err := sweepQueuedCommands(ctx, tx, tenant, sessionID, responseID, runID); err != nil {
+			return Transition{}, err
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return Transition{}, fmt.Errorf("commit transition: %w", err)
 	}

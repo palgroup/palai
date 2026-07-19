@@ -115,7 +115,9 @@ func (f *fakeBackend) After(context.Context, string, string, string, int64, int)
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	backend := newFakeBackend()
-	srv := httptest.NewServer(api.NewRouter(backend, backend, backend, api.SSEConfig{}, nil))
+	// Sessions seam is nil: this Docker-free tier exercises only the response surface, so the
+	// standalone session/command routes stay unmounted here (proven in the e2e responses tier).
+	srv := httptest.NewServer(api.NewRouter(backend, backend, backend, nil, api.SSEConfig{}, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }

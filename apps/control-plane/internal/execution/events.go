@@ -14,6 +14,11 @@ import (
 const (
 	eventModelStepCreated   = "model_step.created.v1"
 	eventModelStepCompleted = "model_step.completed.v1"
+	// eventModelStepInterrupted is the partial record of an interrupt-aborted provider call: a
+	// user-initiated partial, NOT a failure (spec §25.11: "its outcome is recorded as partial",
+	// spec §9.2 interrupt). Distinct from model_step.failed.v1 so the journal never mislabels an
+	// interrupt as a failure.
+	eventModelStepInterrupted = "model_step.interrupted.v1"
 )
 
 // toolCallCompletedEvent is the event the tool-call table emits on Executing->Completed,
@@ -28,6 +33,7 @@ var toolCallCompletedEvent = mustTransitionEvent(statemachines.ToolCallExecuting
 var emittedEventTypes = []string{
 	eventModelStepCreated,
 	eventModelStepCompleted,
+	eventModelStepInterrupted,
 	toolCallCompletedEvent,
 }
 

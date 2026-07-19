@@ -178,8 +178,18 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 
 		switch frame.Type {
 		case "model.request":
-			if err := o.dispatchModel(ctx, st, frame); err != nil {
+			continues, err := o.dispatchModel(ctx, st, frame)
+			if err != nil {
 				return abortIfTerminal(err)
+			}
+			// After a model result is committed and delivered, this is a safe boundary
+			// (spec §25.11). When the run continues to another step, drain any queued/steered
+			// messages here so they fold into the NEXT model request — the input boundary
+			// (spec §9.2). A final result has no next step, so nothing is delivered.
+			if continues {
+				if err := o.pumpCommands(ctx, st); err != nil {
+					return abortIfTerminal(err)
+				}
 			}
 		case "tool.request":
 			if err := o.dispatchTool(ctx, st, frame); err != nil {

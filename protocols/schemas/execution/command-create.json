@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/command-create.json",
+  "title": "CommandCreateRequest",
+  "type": "object",
+  "required": ["command_id", "kind"],
+  "properties": {
+    "command_id": {"$ref": "../common/id.json#/$defs/command_id"},
+    "kind": {"type": "string"},
+    "delivery": {"type": "string"},
+    "message": {"type": "string"}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "known_kinds": {"enum": ["send_message", "approve", "deny"]},
+    "delivery_modes": {"enum": ["queue", "steer", "interrupt"]}
+  }
+}

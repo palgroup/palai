@@ -26,7 +26,7 @@ var allTables = []string{
 	"organizations", "projects", "principals", "api_keys",
 	"idempotency_records",
 	"sessions", "responses", "messages", "runs", "attempts",
-	"session_sequences", "events",
+	"session_sequences", "events", "commands",
 	"durable_jobs", "job_attempts", "outbox", "inbox",
 	"runner_pools", "runners", "runner_leases",
 	"model_connections", "model_routes", "model_route_revisions",

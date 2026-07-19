@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import Enum
 
-from . import output, protocol
+from . import commands, output, protocol
 from .context import Context
 from .protocol import Emitter
 
@@ -54,6 +54,14 @@ class Loop:
         if type_ == "run.cancel":
             return self._cancel(frame)
 
+        # A steered/queued message is folded at the current safe boundary (spec §9.2, §25.11):
+        # it surfaces in the next model request, never mid-step. Rejected before run.start —
+        # there is no conversation to fold into yet.
+        if type_ == "message.deliver":
+            if self.state is State.AWAITING_START:
+                return [self._error("unexpected_frame", "message.deliver before run.start")]
+            return commands.deliver(self.context, frame)
+
         if self.state is State.AWAITING_START and type_ == "run.start":
             return self._begin(frame)
         if self.state is State.AWAITING_MODEL and type_ == "model.result":
@@ -69,6 +77,9 @@ class Loop:
     def _request_model(self) -> list[dict]:
         self.state = State.BEFORE_MODEL
         self._step += 1
+        # Fold any messages delivered since the last request in here, at the input boundary,
+        # so a queued/steered message becomes part of this step's context (spec §9.2).
+        self.context.flush_deliveries()
         self.log("safe_boundary", boundary="before_model", step=self._step)
         payload = self.context.model_request()
         self._model_request_id = protocol.model_request_id(self.emitter.run_id, self._step)
@@ -86,6 +97,14 @@ class Loop:
         if data.get("model_request_id") != self._model_request_id:
             return [self._error("uncorrelated_model_result", "model_request_id does not match the outstanding request")]
         self.log("safe_boundary", boundary="after_model", step=self._step)
+
+        # An interrupted step was aborted in flight by the controller (spec §9.2, §25.11):
+        # record the partial turn and resume in a NEW step, folding any delivered message in,
+        # rather than finishing on this (incomplete) result.
+        if data.get("interrupted"):
+            self.context.add_partial_result(data)
+            return self._request_model()
+
         self.context.add_model_result(data)
 
         tool_calls = data.get("tool_calls") or []

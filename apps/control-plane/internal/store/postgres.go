@@ -216,6 +216,107 @@ func canceledProjection() ([]byte, error) {
 	})
 }
 
+// CreateSession opens a session within the request's verified scope (spec §9.1). The id is
+// minted here (one place mints session ids); the coordinator inserts it active and reads back
+// the projection this renders.
+func (s *Store) CreateSession(ctx context.Context, scope middleware.Scope) (api.SessionResult, error) {
+	view, err := s.spine.CreateSession(ctx, tenantOf(scope), middleware.NewID("ses"))
+	if err != nil {
+		return api.SessionResult{}, err
+	}
+	body, err := marshalSession(scope, view)
+	if err != nil {
+		return api.SessionResult{}, err
+	}
+	return api.SessionResult{Body: body, Found: true}, nil
+}
+
+// GetSession reads a session projection within the request's verified scope (spec §9.1). A
+// missing or foreign row is a miss (404), leaking no cross-tenant existence.
+func (s *Store) GetSession(ctx context.Context, scope middleware.Scope, id string) (api.SessionResult, error) {
+	view, err := s.spine.GetSession(ctx, tenantOf(scope), id)
+	if err != nil {
+		return api.SessionResult{}, err
+	}
+	if !view.Found {
+		return api.SessionResult{}, nil
+	}
+	body, err := marshalSession(scope, view)
+	if err != nil {
+		return api.SessionResult{}, err
+	}
+	return api.SessionResult{Body: body, Found: true}, nil
+}
+
+// AcceptCommand records a durable command within the request's verified scope (spec §22.4).
+// A duplicate command_id returns the original resource; an unknown or foreign session is a
+// miss (404). The command payload carries the send_message text as the command's own content;
+// the durable row and journal keep them apart from the response projection.
+func (s *Store) AcceptCommand(ctx context.Context, scope middleware.Scope, sessionID string, req contracts.CommandCreateRequest) (api.CommandResult, error) {
+	payload, err := json.Marshal(map[string]any{"message": req.Message})
+	if err != nil {
+		return api.CommandResult{}, err
+	}
+	cmd, err := s.spine.AcceptCommand(ctx, tenantOf(scope), sessionID, coordinator.CommandInput{
+		CommandID: string(req.CommandID),
+		Kind:      req.Kind,
+		Delivery:  req.Delivery,
+		Payload:   payload,
+	})
+	if err != nil {
+		return api.CommandResult{}, err
+	}
+	if cmd.SessionNotFound {
+		return api.CommandResult{SessionNotFound: true}, nil
+	}
+	body, err := marshalCommand(cmd)
+	if err != nil {
+		return api.CommandResult{}, err
+	}
+	return api.CommandResult{Body: body}, nil
+}
+
+// marshalSession renders a session projection. organization_id/project_id come from the
+// verified scope, never a request field (spec §39.2).
+func marshalSession(scope middleware.Scope, view coordinator.SessionView) ([]byte, error) {
+	return json.Marshal(contracts.Session{
+		ID:             contracts.SessionID(view.ID),
+		Object:         "session",
+		Status:         view.State,
+		CreatedAt:      view.CreatedAt.UTC().Format(time.RFC3339Nano),
+		OrganizationID: contracts.OrganizationID(scope.Organization),
+		ProjectID:      contracts.ProjectID(scope.Project),
+	})
+}
+
+// marshalCommand renders a command projection from the durable row.
+func marshalCommand(cmd coordinator.Command) ([]byte, error) {
+	out := contracts.Command{
+		ID:        contracts.CommandID(cmd.ID),
+		Object:    "command",
+		SessionID: contracts.SessionID(cmd.SessionID),
+		Kind:      cmd.Kind,
+		Delivery:  cmd.Delivery,
+		Status:    cmd.State,
+		CreatedAt: cmd.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if cmd.AppliedSequence != nil {
+		seq := int(*cmd.AppliedSequence)
+		out.AppliedSequence = &seq
+	}
+	if len(cmd.Result) > 0 {
+		if err := json.Unmarshal(cmd.Result, &out.Result); err != nil {
+			return nil, fmt.Errorf("decode command result: %w", err)
+		}
+	}
+	return json.Marshal(out)
+}
+
+// tenantOf projects a verified scope onto the coordinator tenant key.
+func tenantOf(scope middleware.Scope) coordinator.Tenant {
+	return coordinator.Tenant{Organization: scope.Organization, Project: scope.Project}
+}
+
 // PurgeExpiredStoreFalse runs one retention sweep over the durable spine, reaping the
 // content of store=false responses whose terminal state has aged past ttl (spec §8.3).
 func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (int, error) {

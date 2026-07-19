@@ -102,6 +102,51 @@ def test_unknown_tool_result_is_rejected_without_resuming() -> None:
     assert loop.state is State.AWAITING_TOOLS
 
 
+def test_delivered_message_folds_into_the_next_model_request() -> None:
+    # A steered message mid-step is folded at the input boundary — it surfaces in the NEXT
+    # model request (after the current step's tool results), never splitting the step.
+    loop = make_loop("run_d")
+    req = loop.handle(run_start("first"))[0]
+    mrid = req["data"]["model_request_id"]
+    treq = loop.handle(
+        ctrl("model.result", {"model_request_id": mrid, "tool_calls": [{"name": "t", "arguments": {}}]}, "frm_mr")
+    )[0]
+    tcall = treq["data"]["tool_call_id"]
+
+    out = loop.handle(ctrl("message.deliver", {"delivery": "steer", "message": "steered!"}, "frm_d"))
+    assert out == []  # the fold emits no engine frame
+    assert loop.state is State.AWAITING_TOOLS  # and does not advance the loop
+
+    step2 = loop.handle(ctrl("tool.result", {"tool_call_id": tcall, "content": "42"}, "frm_tr"))[0]
+    assert step2["type"] == "model.request"
+    msgs = step2["data"]["messages"]
+    tool_idx = next(i for i, m in enumerate(msgs) if m.get("role") == "tool")
+    deliver_idx = next(i for i, m in enumerate(msgs) if m.get("content") == "steered!")
+    assert deliver_idx > tool_idx  # folded AFTER the tool result: conversation order preserved
+
+
+def test_interrupted_model_result_resumes_in_a_new_step() -> None:
+    # An interrupt aborts the in-flight step; the engine resumes in a NEW model step that folds
+    # the delivered message in, instead of finishing on the incomplete result (spec §9.2).
+    loop = make_loop("run_i")
+    req = loop.handle(run_start("go"))[0]
+    mrid = req["data"]["model_request_id"]
+    loop.handle(ctrl("message.deliver", {"delivery": "interrupt", "message": "changed my mind"}, "frm_d"))
+    out = loop.handle(ctrl("model.result", {"model_request_id": mrid, "interrupted": True}, "frm_int"))
+    assert [f["type"] for f in out] == ["model.request"]
+    assert out[0]["data"]["model_request_id"] != mrid  # a genuinely new step
+    contents = [m.get("content") for m in out[0]["data"]["messages"]]
+    assert "changed my mind" in contents  # the delivered message folded into the resumed step
+    assert loop.state is State.AWAITING_MODEL
+
+
+def test_message_deliver_before_run_start_is_rejected() -> None:
+    loop = make_loop()
+    out = loop.handle(ctrl("message.deliver", {"delivery": "queue", "message": "early"}, "frm_d"))
+    assert [f["type"] for f in out] == ["protocol.error"]
+    assert loop.state is State.AWAITING_START
+
+
 def test_cancellation_terminates_once_at_a_safe_boundary() -> None:
     loop = make_loop()
     loop.handle(run_start())  # awaiting_model

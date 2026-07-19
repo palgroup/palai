@@ -18,6 +18,13 @@ FROM responses r
 JOIN sessions s ON s.id = r.session_id
 WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
 
+-- GetSessionInScope reads a session's projection for GET /v1/sessions/{id}. An unknown or
+-- foreign id matches no row (404, no existence disclosure).
+-- name: GetSessionInScope
+SELECT id, state, created_at
+FROM sessions
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
 -- SessionHistory returns the prior responses of a session in creation order so run.start can
 -- carry them as conversation history (spec §22.2). A retained response yields its stored
 -- output projection; a purged one yields NULL output with purged = true, which the assembler

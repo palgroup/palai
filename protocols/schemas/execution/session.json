@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/session.json",
+  "title": "Session",
+  "type": "object",
+  "required": ["id", "object", "status", "created_at"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/session_id"},
+    "object": {"type": "string", "const": "session"},
+    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
+    "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
+    "status": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "metadata": {"type": "object", "maxProperties": 64}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "known_statuses": {"enum": ["active", "paused", "closing", "closed", "deleted"]}
+  }
+}

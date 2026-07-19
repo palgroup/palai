@@ -114,6 +114,7 @@ components:
         - model_step.delta.v1
         - model_step.completed.v1
         - model_step.failed.v1
+        - model_step.interrupted.v1
         - artifact.created.v1
         - usage.updated.v1
         - warning.raised.v1
