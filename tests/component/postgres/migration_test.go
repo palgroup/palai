@@ -276,6 +276,79 @@ func TestOneActiveRootMigration(t *testing.T) {
 	}
 }
 
+// TestChildRunsMigration proves 000007 adds its child-run columns idempotently and reverses
+// cleanly: runs.parent_run_id/depth/delegation exist after apply (a re-apply is a clean no-op),
+// are gone after rollback, and return after reapply (spec §11, §25.18-19; the 000005/000006
+// re-run-safety pattern). The one-active-root index survives the DROP-and-recreate the migration
+// uses to add the child-excluding predicate.
+func TestChildRunsMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (ADD COLUMN IF NOT EXISTS +
+	// the DROP/CREATE index step is idempotent — a re-run recreates the same new-predicate index).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, col := range []string{"parent_run_id", "depth", "delegation"} {
+		if !columnExists(t, pool, "runs", col) {
+			t.Fatalf("after apply, runs.%s is missing", col)
+		}
+	}
+	if !indexExists(t, pool, "runs_one_active_root_per_session") {
+		t.Fatal("after apply, runs_one_active_root_per_session is missing")
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, col := range []string{"parent_run_id", "depth", "delegation"} {
+		if columnExists(t, pool, "runs", col) {
+			t.Fatalf("after rollback, runs.%s still exists", col)
+		}
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, col := range []string{"parent_run_id", "depth", "delegation"} {
+		if !columnExists(t, pool, "runs", col) {
+			t.Fatalf("after reapply, runs.%s is missing", col)
+		}
+	}
+}
+
+// TestChildRunDoesNotConsumeRootSlot proves the 000007 predicate change (spec §22.3, §22.8): a
+// child run (parent_run_id set) shares its parent's session but is excluded from the
+// one-active-root index, so it never consumes the session's single root slot — while a second
+// concurrent ROOT run (parent_run_id NULL) still conflicts. This is the child leg of
+// TestSecondConcurrentRootRunConflicts.
+func TestChildRunDoesNotConsumeRootSlot(t *testing.T) {
+	cs := openHarness(t)
+	pool := cs.Pool()
+	ctx := context.Background()
+	tenant, sessionID, rootRunID := seedRun(t, pool)
+
+	// The seeded root run is queued (non-terminal): it holds the session's single root slot.
+	// A child run of that root, in the SAME session and non-terminal, is admitted — it is
+	// excluded from the root-only index.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth)
+		 VALUES ($1, $2, $3, $4, 'running', $5, 1)`,
+		newID("run"), tenant.Organization, tenant.Project, sessionID, rootRunID); err != nil {
+		t.Fatalf("child run in the parent's session error = %v, want admitted (excluded from one-active-root)", err)
+	}
+	// A second concurrent ROOT run (parent_run_id NULL) for the same session is still the
+	// one-active-root violation — the child did not free or fill the root slot.
+	_, err := pool.Exec(ctx,
+		`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`,
+		newID("run"), tenant.Organization, tenant.Project, sessionID)
+	if got := pgCode(err); got != "23505" {
+		t.Fatalf("second concurrent root run code = %q, want 23505 unique_violation", got)
+	}
+}
+
 // TestSecondConcurrentRootRunConflicts proves the one-active-root invariant is a DB constraint,
 // not an app-code race (spec §22.3): a session holds at most one non-terminal root run, so a
 // second concurrent root run for the same session is a unique_violation (23505). The slot frees
