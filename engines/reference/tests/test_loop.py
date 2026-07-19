@@ -157,6 +157,18 @@ def test_interrupt_without_partial_output_omits_the_empty_assistant_turn() -> No
     assert "do X instead" in [m.get("content") for m in msgs]  # the redirect still folds in
 
 
+def test_non_empty_partial_survives_an_interrupt() -> None:
+    # The other half of the guard: a REAL streamed partial must NEVER be dropped — a mid-generation
+    # interrupt has to carry its streamed text into the resumed request, or the user's output is
+    # silently lost. The live smoke proves this on the wire but is creds-gated; this locks it in CI.
+    loop = make_loop("run_np")
+    req = loop.handle(run_start("go"))[0]
+    mrid = req["data"]["model_request_id"]
+    loop.handle(ctrl("message.deliver", {"delivery": "interrupt", "message": "do X instead"}, "frm_d"))
+    out = loop.handle(ctrl("model.result", {"model_request_id": mrid, "interrupted": True, "output": "partial so far"}, "frm_int"))
+    assert {"role": "assistant", "content": "partial so far", "interrupted": True} in out[0]["data"]["messages"]
+
+
 def test_message_deliver_before_run_start_is_rejected() -> None:
     loop = make_loop()
     out = loop.handle(ctrl("message.deliver", {"delivery": "queue", "message": "early"}, "frm_d"))
