@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -75,8 +76,9 @@ func (s *uatStack) proveForkSession(t *testing.T) liveProof {
 	if final := s.awaitTerminal(anchorResp, 120*time.Second); final.Status != "completed" {
 		t.Fatalf("fork: parent response-1 %s status = %q, want completed", anchorResp, final.Status)
 	}
-	if _, chat := s.modelCall(anchorRun); !liveProviderIDPattern.MatchString(chat) {
-		t.Fatalf("fork: parent response-1 provider request id %q is not a genuine chatcmpl id", chat)
+	_, anchorChat := s.modelCall(anchorRun)
+	if !liveProviderIDPattern.MatchString(anchorChat) {
+		t.Fatalf("fork: parent response-1 provider request id %q is not a genuine chatcmpl id", anchorChat)
 	}
 
 	// Fork the session at the completed-response boundary; the command result carries the child id.
@@ -104,12 +106,28 @@ func (s *uatStack) proveForkSession(t *testing.T) liveProof {
 
 	// The fork is a LIVE session: it runs its OWN real response to completion with its own chatcmpl.
 	forkResp, forkRun := s.createResponseInSession(childID, "Reply with exactly one word and nothing else: BEACON.")
-	if final := s.awaitTerminal(forkResp, 120*time.Second); final.Status != "completed" {
-		t.Fatalf("fork: child response %s status = %q, want completed", forkResp, final.Status)
+	forkFinal := s.awaitTerminal(forkResp, 120*time.Second)
+	if forkFinal.Status != "completed" {
+		t.Fatalf("fork: child response %s status = %q, want completed", forkResp, forkFinal.Status)
+	}
+	// The fork's own real call produced real OUTPUT, not just a chatcmpl id: its committed response
+	// carries a non-empty generated content item. The exact word is model-chosen and steered by the
+	// inherited history (the child carries the parent's LIGHTHOUSE turn, so the real answer here is
+	// "LIGHT."-ish, not the asked BEACON) — assert real content, not a fixed token.
+	var forkContent string
+	if len(forkFinal.Output) > 0 {
+		forkContent, _ = forkFinal.Output[0]["content"].(string)
+	}
+	if strings.TrimSpace(forkContent) == "" {
+		t.Fatalf("fork: child response %s carried no real output token, only a chatcmpl id — got %+v", forkResp, forkFinal.Output)
 	}
 	model, chat := s.modelCall(forkRun)
 	if !liveProviderIDPattern.MatchString(chat) {
 		t.Fatalf("fork: child provider request id %q is not a genuine chatcmpl id", chat)
+	}
+	// The fork made its OWN real generation: its chatcmpl is distinct from the parent anchor's call.
+	if chat == anchorChat {
+		t.Fatalf("fork: child chatcmpl %s equals the parent anchor's — the fork did not make its own real generation", chat)
 	}
 
 	// Isolated future: a response written to the PARENT after the fork must never reach the child.
@@ -133,9 +151,10 @@ func (s *uatStack) proveForkSession(t *testing.T) liveProof {
 	return liveProof{"T4-FORK", "live-fork-session", forkRun, model, chat, []string{
 		"parent ran a real completed response-1 (the pre-fork history)",
 		"fork_session applied; child session active, reference-copied the parent's real pre-fork output (byte-equal, §22.8)",
-		"the fork ran its OWN real response to completion; provider_request_id is the fork's own chatcmpl (live child session)",
+		"the fork ran its OWN real response to completion; provider_request_id is the fork's own chatcmpl, distinct from the parent anchor's call (live child session)",
+		"the fork's committed response carried a real output token, not just a chatcmpl id (its own live, history-steered generation)",
 		"a response written to the parent AFTER the fork is absent from the child's history and journal (isolated future)",
-	}}
+	}, "run.completed"}
 }
 
 // proveCloseSession drives the close_session proof (spec §22.1): a session runs a real completed
@@ -185,7 +204,7 @@ func (s *uatStack) proveCloseSession(t *testing.T) liveProof {
 		"model_requests.provider_request_id present (chatcmpl)",
 		"close_session applied; session state=closed (§22.1)",
 		"closed session rejects a new response (409 session_not_active) and a new command (typed rejection)",
-	}}
+	}, "run.completed"}
 }
 
 // proveCancelInFlight drives the cancel proof (spec §22.3): a session runs a real completed anchor
@@ -240,7 +259,7 @@ func (s *uatStack) proveCancelInFlight(t *testing.T) liveProof {
 		"the second chained long generation was canceled after its real model call started",
 		"run.state=canceled; GET=canceled with the canonical canceled problem; run.canceled.v1 the single terminal (§22.3)",
 		"repeated cancel is a monotonic no-op (no second terminal event)",
-	}}
+	}, "run.canceled"}
 }
 
 // submitLifecycleCommand posts a bare session-lifecycle command (fork_session|close_session) and

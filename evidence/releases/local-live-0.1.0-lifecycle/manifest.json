@@ -1,21 +1,22 @@
 {
   "api_version": "v1",
-  "captured_at": "2026-07-19T18:08:34Z",
+  "captured_at": "2026-07-19T19:07:08Z",
   "cases": [
     {
-      "checksum": "sha256:4629db0d9b41f80fba02244ed08816633ea22c01542473705e130c9f89e4c578",
+      "checksum": "sha256:bbe6451dc51c87aa8bfe28f8c0fe777486e69cbf84b1804baf95aa14bdfb5a41",
       "db_assertions": [
         "parent ran a real completed response-1 (the pre-fork history)",
         "fork_session applied; child session active, reference-copied the parent's real pre-fork output (byte-equal, §22.8)",
-        "the fork ran its OWN real response to completion; provider_request_id is the fork's own chatcmpl (live child session)",
+        "the fork ran its OWN real response to completion; provider_request_id is the fork's own chatcmpl, distinct from the parent anchor's call (live child session)",
+        "the fork's committed response carried a real output token, not just a chatcmpl id (its own live, history-steered generation)",
         "a response written to the parent AFTER the fork is absent from the child's history and journal (isolated future)"
       ],
       "id": "T4-FORK",
       "image_digest": "sha256:b6c5c7673e6fbac02b76afceeb241245bbea6cb767b19511f3a4528e74cc1d75",
-      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T18:13:22Z",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T19:11:56Z",
       "proof_class": "live-provider",
-      "provider_request_id": "chatcmpl-E3QE7KPAFVCdGw994nkqPi4TEtjMR",
-      "run_id": "run_8cbb7480a3a7ee1dd4a83b0004d767ae",
+      "provider_request_id": "chatcmpl-E3R8lyAkBIGfSww9V8kFV6GqngPp6",
+      "run_id": "run_634e52dbd27c3953de705599b24c7cff",
       "status": "PASS",
       "terminal": {
         "count": 1,
@@ -24,7 +25,7 @@
       "usage": {}
     },
     {
-      "checksum": "sha256:b9c740e7d0a589ad0ffde63718f01e7359f6a897100846935b273fec6406755c",
+      "checksum": "sha256:138b15572762e9e19476323047ca363c9dc4e8c4ffca747a0b2f7ba000512fef",
       "db_assertions": [
         "runs.state=completed (real anchor call)",
         "model_requests.provider_request_id present (chatcmpl)",
@@ -33,10 +34,10 @@
       ],
       "id": "T4-CLOSE",
       "image_digest": "sha256:b6c5c7673e6fbac02b76afceeb241245bbea6cb767b19511f3a4528e74cc1d75",
-      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T18:13:22Z",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T19:11:56Z",
       "proof_class": "live-provider",
-      "provider_request_id": "chatcmpl-E3QEB9ez7NUGCn0MVbRXgB9b6MQF4",
-      "run_id": "run_cff28f8be001207cd7ab61b85b4d10a5",
+      "provider_request_id": "chatcmpl-E3R8pjoGiTZOqrR6zVutaupu0VrWj",
+      "run_id": "run_3cecfea70320cbd4f9bdd97cdffc92b9",
       "status": "PASS",
       "terminal": {
         "count": 1,
@@ -45,7 +46,7 @@
       "usage": {}
     },
     {
-      "checksum": "sha256:8d00ec6097536fad308c0764b6b7484abc7836845d1e9ed9ff7816fd35a48cb3",
+      "checksum": "sha256:1cd6a52f0fe56ff4f71e1fe5fa17666072c47032c38ae59ba48daa340fa00246",
       "db_assertions": [
         "session anchor response completed on the real provider; provider_request_id is that call's chatcmpl (real-wire proof)",
         "the second chained long generation was canceled after its real model call started",
@@ -54,19 +55,19 @@
       ],
       "id": "T4-CANCEL",
       "image_digest": "sha256:b6c5c7673e6fbac02b76afceeb241245bbea6cb767b19511f3a4528e74cc1d75",
-      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T18:13:22Z",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T19:11:56Z",
       "proof_class": "live-provider",
-      "provider_request_id": "chatcmpl-E3QEDr2N1YRoJR7GIoR7pWzkmdNUV",
-      "run_id": "run_657668e2c019ba3db0ff828b700262f1",
+      "provider_request_id": "chatcmpl-E3R8r33g8HxhQZN5QVvjPd5lTq6u6",
+      "run_id": "run_501ff5b0ece1a9f2b748157d494fb719",
       "status": "PASS",
       "terminal": {
         "count": 1,
-        "type": "run.completed"
+        "type": "run.canceled"
       },
       "usage": {}
     }
   ],
-  "git_sha": "42717e4",
+  "git_sha": "eadef84",
   "migration": "000006_one_active_root",
   "release": "local-live-0.1.0-lifecycle"
 }

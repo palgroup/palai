@@ -69,9 +69,13 @@ func TestLocalLiveCommandSpine(t *testing.T) {
 }
 
 // liveProof is one live-provider case's captured identity and DB assertions for the evidence bundle.
+// terminalType is the run's canonical terminal event (run.completed for the completed cases,
+// run.canceled for the cancel case) so the receipt's structural terminal is a true claim, not the
+// blanket run.completed the prose assertions would then contradict.
 type liveProof struct {
 	id, name, runID, model, chat string
 	assertions                   []string
+	terminalType                 string
 }
 
 // proveInterrupt drives one real interrupt proof: it admits a long generation and injects an
@@ -133,7 +137,7 @@ func (s *uatStack) proveInterrupt(t *testing.T, id, name, redirect, token string
 		"model_requests.provider_request_id present (chatcmpl)",
 		"model_step.interrupted.v1 journaled (real in-flight abort)",
 		"command applied; redirect folded into the resumed call (output carried the token)",
-	}}
+	}, "run.completed"}
 }
 
 // proveQueueExpiryLifecycle drives the queue→expired proof: a send_message queued on a live real
@@ -177,7 +181,7 @@ func (s *uatStack) proveQueueExpiryLifecycle(t *testing.T) liveProof {
 		"model_requests.provider_request_id present (chatcmpl)",
 		"send_message queued on the live run, swept to expired (§22.4)",
 		"command.expired.v1 journaled",
-	}}
+	}, "run.completed"}
 }
 
 // submitSendMessage posts a send_message command with the given delivery (queue|steer|interrupt)
@@ -220,7 +224,7 @@ func (s *uatStack) writeAndVerifyLiveProviderEvidence(t *testing.T, key, suffix 
 		specs = append(specs, caseSpec{ID: p.id, Name: p.name, ProofClass: "live-provider", Provider: "provider-one", ExpectStatus: "completed"})
 		receipts[p.id] = caseReceipt{
 			RunID: p.runID, ImageDigest: digest, ProviderRequestID: redactBytes(p.chat, s.secret), MTLSEnroll: enroll,
-			TerminalType: "run.completed", TerminalCount: 1, Usage: map[string]int{},
+			TerminalType: p.terminalType, TerminalCount: 1, Usage: map[string]int{},
 			DBAssertions: p.assertions, Checksum: hashBundle(p.runID, p.model, p.chat),
 		}
 	}
