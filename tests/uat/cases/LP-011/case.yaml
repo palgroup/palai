@@ -1,0 +1,6 @@
+id: LP-011
+name: evidence-redaction-clean
+proof_class: e2e-deterministic
+provider: fake
+input: "redaction check"
+expect_status: completed

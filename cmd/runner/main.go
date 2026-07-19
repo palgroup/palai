@@ -12,6 +12,8 @@ import (
 	"errors"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
@@ -21,8 +23,10 @@ import (
 
 func main() {
 	log.SetFlags(0)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+	// The runner is a long-lived execution host: it serves leases until it is signalled to stop
+	// (SIGTERM on container teardown) or its enrolled certificate expires (runnerCertTTL).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	bootstrap, sessionURL, controllerDNS, controllerCAs := loadConfig()
 
@@ -39,13 +43,6 @@ func main() {
 		ControllerDNS: controllerDNS,
 		Now:           time.Now,
 	}
-	leaseSession, err := session.OpenLease(ctx)
-	if err != nil {
-		log.Fatalf("open lease: %v", err)
-	}
-	defer leaseSession.Close()
-	lease := leaseSession.Lease()
-	log.Printf("received lease %s for run %s (fence %d)", lease.LeaseID, lease.RunID, lease.Fence)
 
 	driver, err := oci.NewDockerInteractiveDriver()
 	if err != nil {
@@ -54,6 +51,47 @@ func main() {
 	if closer, ok := driver.(interface{ Close() error }); ok {
 		defer func() { _ = closer.Close() }()
 	}
+	supervisor := runner.NewStreamSupervisor(driver)
+
+	// Serve leases for the runner's lifetime. OpenLease re-dials with the enrolled identity
+	// and blocks until the gateway offers the next lease — the enrollment token is spent once
+	// (above); every reconnect rides the client certificate — so this is a clean
+	// park -> lease -> supervise -> repeat loop with no gateway change. A one-shot runner (the
+	// prior behaviour) served exactly one lease then exited, leaving every subsequent
+	// response's Dial blocked on the gateway's empty available channel.
+	// ponytail: runnerCertTTL (5m) bounds a runner's serving window — ample for one tier;
+	// cert renewal for a longer-lived runner is a separate follow-up.
+	for {
+		leaseSession, err := session.OpenLease(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return // signalled to stop between leases — clean exit, no spin
+			}
+			// A transient dial error must not end the runner (that reintroduces the one-shot
+			// stall); log it and back off so a persistent failure stays visible + rate-limited.
+			log.Printf("open lease: %v; retrying", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+		serveLease(ctx, supervisor, leaseSession)
+	}
+}
+
+// serveLease supervises one leased engine to a terminal outcome: it relays controller frames
+// into the engine and engine frames back to the control plane, then reports lease completion.
+// A lease-scoped context stops the inbound relay goroutine so it never outlives the lease. A
+// failed lease is logged, not fatal, so one bad engine does not end the runner's service.
+func serveLease(ctx context.Context, supervisor *runner.StreamSupervisor, leaseSession *runner.LeaseSession) {
+	defer leaseSession.Close()
+	lease := leaseSession.Lease()
+	log.Printf("received lease %s for run %s (fence %d)", lease.LeaseID, lease.RunID, lease.Fence)
+
+	leaseCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	// Controller frames relayed over the lease feed the supervisor's stdin injection; the
 	// supervisor's forwarded engine frames are relayed back to the controller by the sink.
@@ -61,13 +99,13 @@ func main() {
 	go func() {
 		defer close(inbound)
 		for {
-			frame, err := leaseSession.ReceiveControllerFrame(ctx)
+			frame, err := leaseSession.ReceiveControllerFrame(leaseCtx)
 			if err != nil {
 				return
 			}
 			select {
 			case inbound <- frame:
-			case <-ctx.Done():
+			case <-leaseCtx.Done():
 				return
 			}
 		}
@@ -77,7 +115,7 @@ func main() {
 		return leaseSession.SendEngineFrame(ctx, frame)
 	}
 
-	result, streamErr := runner.NewStreamSupervisor(driver).Stream(ctx, runner.EngineRequest{
+	result, streamErr := supervisor.Stream(leaseCtx, runner.EngineRequest{
 		ImageDigest: lease.ImageDigest,
 		RunID:       lease.RunID,
 		AttemptID:   lease.AttemptID,
@@ -86,12 +124,14 @@ func main() {
 	}, inbound, sink)
 
 	if err := leaseSession.Complete(ctx, outcomeClass(streamErr), stderrDigest(result.Stderr)); err != nil {
-		log.Fatalf("report lease completion: %v", err)
+		log.Printf("report lease completion for run %s: %v", lease.RunID, err)
+		return
 	}
 	if streamErr != nil {
-		log.Fatalf("supervise engine (exit %d, %d stderr bytes): %v", result.ExitCode, result.StderrBytes, streamErr)
+		log.Printf("supervise engine for run %s (exit %d, %d stderr bytes): %v", lease.RunID, result.ExitCode, result.StderrBytes, streamErr)
+		return
 	}
-	log.Printf("engine completed: %d stdout bytes", result.StdoutBytes)
+	log.Printf("engine completed for run %s: %d stdout bytes", lease.RunID, result.StdoutBytes)
 }
 
 // outcomeClass maps a supervised streaming outcome to the lease.complete outcome class the

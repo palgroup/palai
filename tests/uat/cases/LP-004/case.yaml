@@ -1,0 +1,6 @@
+id: LP-004
+name: live-provider-second-round-trip
+proof_class: live-provider
+provider: provider-one
+input: "In one short sentence, greet the user."
+expect_status: completed

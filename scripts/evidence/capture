@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Capture a local-live evidence bundle: run the LP-001..015 cases through the packaged stack
+# and write the redacted manifest to evidence/releases/$RELEASE/manifest.json. Deterministic
+# (fake) cases always run; PROVIDER=provider-one additionally runs the live-provider cases
+# (LP-003/LP-004) against the real provider, loading the credential from the git-ignored
+# .env.local into this process env only — never into argv, logs, or the manifest.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+release="${RELEASE:-local-live-0.1.0}"
+provider="${PROVIDER:-fake}"
+
+export PALAI_UAT_RELEASE="$release"
+if [ "$provider" = "provider-one" ]; then
+  if [ -f .env.local ]; then
+    set -a; . ./.env.local; set +a
+  fi
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "OPENAI_API_KEY is unset; provider-one needs it in .env.local" >&2
+    exit 1
+  fi
+  export PALAI_UAT_PROVIDER=provider-one
+fi
+
+# -count=1 so the one-use enrollment token and one-shot lease are never replayed from cache.
+exec go test -tags uat -count=1 -timeout 30m -run TestLocalLive ./tests/uat -v

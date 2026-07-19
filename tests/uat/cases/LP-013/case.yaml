@@ -1,0 +1,6 @@
+id: LP-013
+name: doctor-all-green
+proof_class: e2e-deterministic
+provider: fake
+input: "doctor check"
+expect_status: completed

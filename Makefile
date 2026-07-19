@@ -4,7 +4,8 @@ SHELL := /bin/bash
 .PHONY: \
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
 	test-fault test-security test-live-provider test-spikes evidence-spikes \
-	check-spike-reports verify local-up local-down local-doctor uat-local-live
+	check-spike-reports verify local-up local-down local-doctor uat-local-live \
+	evidence-verify
 
 bootstrap:
 	go mod download
@@ -90,4 +91,8 @@ local-doctor:
 
 uat-local-live:
 	@test -x scripts/uat/local-live || { echo "local live UAT not implemented" >&2; exit 2; }
-	@scripts/uat/local-live
+	@RELEASE='$(RELEASE)' PROVIDER='$(PROVIDER)' scripts/uat/local-live
+
+evidence-verify:
+	@test -x scripts/evidence/verify || { echo "evidence verifier not implemented" >&2; exit 2; }
+	@RELEASE='$(RELEASE)' scripts/evidence/verify

@@ -1,0 +1,6 @@
+id: LP-009
+name: secret-absent-from-compose-surfaces
+proof_class: e2e-deterministic
+provider: fake
+input: "compose surface check"
+expect_status: completed

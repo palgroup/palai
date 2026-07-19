@@ -1,0 +1,6 @@
+id: LP-006
+name: usage-metering-present
+proof_class: e2e-deterministic
+provider: fake
+input: "echo test"
+expect_status: completed

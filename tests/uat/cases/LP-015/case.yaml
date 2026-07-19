@@ -1,0 +1,6 @@
+id: LP-015
+name: deterministic-repeatable-slice
+proof_class: e2e-deterministic
+provider: fake
+input: "repeatable check"
+expect_status: completed

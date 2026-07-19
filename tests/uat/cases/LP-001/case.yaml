@@ -1,0 +1,6 @@
+id: LP-001
+name: boot-admit-and-terminal
+proof_class: e2e-deterministic
+provider: fake
+input: "hello"
+expect_status: completed

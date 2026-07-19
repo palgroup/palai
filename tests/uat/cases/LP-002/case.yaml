@@ -1,0 +1,6 @@
+id: LP-002
+name: retrieval-after-terminal
+proof_class: e2e-deterministic
+provider: fake
+input: "please summarize"
+expect_status: completed

@@ -15,6 +15,20 @@ export type ResponseId = string;
 export type RunId = string;
 export type SessionId = string;
 
+export interface Case {
+  checksum: string;
+  db_assertions: string[];
+  id: string;
+  image_digest: string;
+  mtls_enroll: string;
+  proof_class: string;
+  provider_request_id: string;
+  run_id: string;
+  status: string;
+  terminal: Record<string, unknown>;
+  usage: Record<string, unknown>;
+}
+
 // open union: unknown fields and unknown type values survive a round-trip (ADR-0002, spec API-009).
 export interface ContentItem {
   type: string;
@@ -35,6 +49,15 @@ export interface Event {
   subject?: string;
   time: string;
   type: string;
+}
+
+export interface LocalLiveEvidenceManifest {
+  api_version: string;
+  captured_at: string;
+  cases: Record<string, unknown>[];
+  git_sha: string;
+  migration: string;
+  release: string;
 }
 
 export interface Message {

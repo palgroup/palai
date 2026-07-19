@@ -1,0 +1,369 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-19T01:09:08Z",
+  "cases": [
+    {
+      "checksum": "sha256:38bd21e8f7bdc9fa798cdb6d0a5c982fa452e2fe952ce113b7bdee9b97ceb2d6",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-001",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_b910fbdc455b98e0facc5c7057a2710b",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:9663a13e990663b99e4df591c622ae8a0af66d5d7cfee082e14c0fc1864cf1b5",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-002",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_4cc66ddeb7aaee1977e619b0537b43ea",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:7bc5f1de622db8a7015d5d4e16daca23bf9771e6949ff582ecbe771047f8e787",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-003",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:50Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3AJSiJGR1rWDPYoPVMDFOtxJgUcZ",
+      "run_id": "run_904e82ab5abbd639b71190e3a7c507d4",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 47,
+        "output_tokens": 1,
+        "total_tokens": 48
+      }
+    },
+    {
+      "checksum": "sha256:b73dce94c1c90a7d3badc0b7f1a7a49ab70116b18764c37d45faf3f26e842153",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-004",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:50Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3AJUK8YeWZK8Apk2Mvl40rhdbRLX",
+      "run_id": "run_0e3ba5026fb749f9e69aff9c8471e294",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 48,
+        "output_tokens": 9,
+        "total_tokens": 57
+      }
+    },
+    {
+      "checksum": "sha256:bff20a5dbd0a44581ff1f4889add15b896c8e5f50971a35b78085a05c0bc93c9",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-005",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_7f17a269138d5d2f69369f957f13d0a3",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:b1e732f47b6fea75cbf62f7b851527ff99a7382270b56302147675596cbacce2",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-006",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_5d708969eba3b5b56991ab8a7cf66034",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:4109bc9dce13e706f7a632c0cd9bc73dc3c30bcf4b901c135d73a38ac6f9ddbd",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-007",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_aca639426e36633367240ff55d218b36",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:8bd1d36570ac62c2671fcab6f15c7b3b406fd357f9c1924fdf3a63bd7d7deae0",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-008",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_8fbc797b0cde6e26bd44dde7374eca3e",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:ef815b36994f8d1ca3e277b38dff5f6efa586883c4d4705fcbd1ae4132e6f34c",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-009",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_26be313cb88145f8b18ffeb5e40e870e",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:6cb862c33f4f0101fad88da7557b230f1d2f8fa327602d96bf3da7dbeb1a24d7",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-010",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_85e7009201e0a2d2255dec576d2e494d",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:42f629fc7415ab7655a4e7c0853be4b1bea5571b0c0ab7bc7b933cc802fcf0d9",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-011",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_15d144c33da273730394e8759a475658",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:839359c60bcd2803ae9bc1d54d3c4ac4de3270a77ce6f2db9e780e336d586886",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-012",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_ab0f021c02b1afbecaf460c491814c99",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:1239a1fc376351ba46aa35f4cf4baceda36bcb783d95378d72394de598acb9d6",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-013",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_96b377fb61a7cf025e731a23f8f36a15",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:d553384628a6c23076042a9c16cdaed1355a7b57d8ad404bd5b0aedbe8795299",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-014",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_fcf635fce15fb8fc47ab836a16cbba21",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:2de6caab20047d6f334b6fd58e7b816fb5ac1df6dce0df3a6207026061266585",
+      "db_assertions": [
+        "runs.state=completed",
+        "responses.state=completed",
+        "model_requests.provider_request_id present"
+      ],
+      "id": "LP-015",
+      "image_digest": "sha256:716893d5d59d26a0dab742e0d4d1e4e2d37f9f9722ecb414e088a0a5d8e6cb83",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T01:13:14Z",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "fake-local",
+      "run_id": "run_a993b2bf1de40c49f979b35457fb3268",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    }
+  ],
+  "git_sha": "43f7333",
+  "migration": "000002_retention",
+  "release": "local-live-0.1.0"
+}

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Verify a local-live evidence bundle: every case receipt present (run id, engine OCI digest,
+# provider request id, mTLS enroll, checksum, DB assertions), exactly one terminal per case,
+# and no leaked credential. Backs `make evidence-verify RELEASE=<name>`. Exits non-zero on any
+# finding. The verifier logic is Docker-free Go shared with TestEvidenceVerifier.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+release="${RELEASE:-${1:-}}"
+if [ -z "$release" ]; then
+  echo "usage: RELEASE=<name> scripts/evidence/verify" >&2
+  exit 2
+fi
+exec go run ./tests/uat/cmd/evidence-verify --release "$release"

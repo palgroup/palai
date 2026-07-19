@@ -1,19 +1,11 @@
 #!/usr/bin/env bash
-# Local-live UAT smoke: the documented operator path, no manual SQL. Initialise .palai,
-# bring the four-service stack up, prove doctor is all-green, and admit a response over
-# the bootstrap key. The terminal execution outcome is out of scope here (the live
-# round-trip is Task 15); this proves boot, health, and the admission surface.
+# Local-live UAT: run the LP-001..015 cases through the packaged four-service stack via the
+# `palai` CLI and capture the redacted evidence bundle. Deterministic (fake) cases prove the
+# vertical slice with no network or credential; `make uat-local-live PROVIDER=provider-one`
+# additionally runs the live-provider cases (LP-003/LP-004) create -> gateway -> runner -> OCI
+# engine -> real provider -> terminal, with the credential loaded from .env.local at runtime.
+# The live round-trip is its own protected run: not in make verify, not in the -count=3 loop.
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
-
-bin="$(mktemp -d)/palai"
-go build -o "$bin" ./cmd/cli
-export PALAI_HOME="${PALAI_HOME:-$root/.palai}"
-
-test -f "$PALAI_HOME/config.json" || "$bin" init
-"$bin" local up
-"$bin" local doctor
-"$bin" response create --input "local-live UAT"
-
-echo "uat_local_live=PASS"
+exec scripts/evidence/capture

@@ -16,6 +16,8 @@ spikes/nextjs-streaming/.next/
 bin/
 dist/
 coverage/
+/evidence-verify
+/runner
 node_modules/
 __pycache__/
 .pytest_cache/

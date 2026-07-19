@@ -1,0 +1,6 @@
+id: LP-003
+name: live-provider-round-trip
+proof_class: live-provider
+provider: provider-one
+input: "Reply with the single word: pong."
+expect_status: completed
