@@ -194,6 +194,16 @@ func (s *Store) CancelResponse(ctx context.Context, scope middleware.Scope, id s
 			return api.RetrieveResult{}, err
 		}
 	}
+	// Propagate the cancel to any non-terminal ChildRuns (spec §25.18, SUB-005), always — a
+	// re-cancel whose parent is already terminal still reconciles a child a first cancel missed.
+	// The canonical canceled projection is applied to every child so a GET reads the same terminal.
+	projection, err := canceledProjection()
+	if err != nil {
+		return api.RetrieveResult{}, err
+	}
+	if _, err := s.spine.CancelChildren(ctx, tenant, runID, projection); err != nil {
+		return api.RetrieveResult{}, err
+	}
 	return s.GetResponse(ctx, scope, id)
 }
 

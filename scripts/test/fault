@@ -6,6 +6,9 @@
 #   coordinator  kills a durable-coordinator worker mid-lease against real PostgreSQL
 #                and proves the lease is reclaimed at a higher fence while the killed
 #                worker's completion is rejected.
+#   subagents    cancels a parent run holding a live ChildRun against real PostgreSQL and
+#                proves the cancel propagates to the child, the terminal accounting stays
+#                consistent, and a late child completion is dropped at the database (SUB-005).
 #   runner       supervises the fixture engine in a real digest-pinned OCI container
 #                and proves a hung engine is force-killed and classified terminal, and
 #                that malformed or oversized stdout fails the attempt safely.
@@ -17,20 +20,24 @@ cd "$root"
 # shellcheck source=scripts/test/runner-engine.sh
 source "$root/scripts/test/runner-engine.sh"
 
-suite="${TEST:-coordinator}"
+suite="${TEST:-${CASE:-coordinator}}"
 
 # Short, injected lease timer so the suite proves expiry/reclaim by database time
 # without waiting on a production interval. The test reads it for both the claim and
 # the heartbeat renewal.
 export PALAI_FAULT_LEASE="${PALAI_FAULT_LEASE:-150ms}"
 
-run_coordinator() {
+# run_pg_fault_suite spins a throwaway pinned-Postgres container, exports PALAI_FAULT_POSTGRES_URL,
+# and runs the given fault package under -tags=fault, asserting no leaked container/volume. Both the
+# coordinator (lease/fence) and subagents (child cancel propagation) suites share it.
+run_pg_fault_suite() {
+  local name="$1" pkg="$2"
   # Immutable pinned image (matches the postgres-coordinator spike / ADR-0001).
   local image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
-  local label="io.palai.fault=coordinator"
+  local label="io.palai.fault=$name"
   local run_id="$$-${RANDOM}"
-  local container="palai-fault-coordinator-$run_id"
-  local volume="palai-fault-coordinator-$run_id"
+  local container="palai-fault-$name-$run_id"
+  local volume="palai-fault-$name-$run_id"
   # Throwaway local credential, generated per run; never written to a file.
   local password="palai-fault-${RANDOM}${RANDOM}"
 
@@ -77,7 +84,7 @@ run_coordinator() {
 
   set +e
   PALAI_FAULT_POSTGRES_URL="$url" \
-    go test -tags=fault -count="${COUNT:-1}" -v ./tests/fault/coordinator
+    go test -tags=fault -count="${COUNT:-1}" -v "$pkg"
   local status=$?
   set -e
   if test "$status" -ne 0; then
@@ -90,14 +97,21 @@ run_coordinator() {
   containers_after="$(count_containers)"
   volumes_after="$(count_volumes)"
   if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
-    echo "coordinator fault suite leaked a container or volume" >&2
+    echo "$name fault suite leaked a container or volume" >&2
     exit 1
   fi
   if test "$status" -ne 0; then
     exit "$status"
   fi
-  echo "fault_coordinator=PASS containers=$containers_after volumes=$volumes_after"
+  echo "fault_$name=PASS containers=$containers_after volumes=$volumes_after"
 }
+
+run_coordinator() { run_pg_fault_suite coordinator ./tests/fault/coordinator; }
+
+# run_subagents proves ChildRun cancel propagation + terminal accounting (SUB-005) against real
+# Postgres: a parent cancel drives its live child to the canceled terminal, and a late child
+# completion is dropped at the database rather than overwriting the canceled row.
+run_subagents() { run_pg_fault_suite subagents ./tests/fault/subagents; }
 
 # run_runner cross-builds the fixture engine into a digest-pinned `FROM scratch` image
 # and supervises it through the real Moby driver, proving kill classification and JSONL
@@ -109,9 +123,10 @@ run_runner() {
 
 case "$suite" in
   coordinator) run_coordinator ;;
+  subagents) run_subagents ;;
   runner) run_runner ;;
   *)
-    echo "unknown fault suite: $suite (known: coordinator, runner)" >&2
+    echo "unknown fault suite: $suite (known: coordinator, subagents, runner)" >&2
     exit 2
     ;;
 esac

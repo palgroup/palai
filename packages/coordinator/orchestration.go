@@ -190,6 +190,34 @@ func (s *Store) NonTerminalChildRuns(ctx context.Context, tenant Tenant, parentR
 	return out, rows.Err()
 }
 
+// CancelChildren propagates a parent's cancel to all its non-terminal descendant ChildRuns
+// (spec §25.18, SUB-005): each is driven to the canceled terminal (run transition + response
+// projection), monotonically — a descendant a racing terminal already finished is skipped
+// (ErrRunTerminal), so the count reflects only the runs this call canceled. canceledProjection is
+// the caller's canonical canceled body, applied to every child so a GET reads the same terminal.
+// A child's own in-flight attempt then loses its next commit to the run-terminal guard, and its
+// response UPDATE is conditional, so a late child terminal cannot overwrite the canceled row.
+func (s *Store) CancelChildren(ctx context.Context, tenant Tenant, parentRunID string, canceledProjection []byte) (int, error) {
+	children, err := s.NonTerminalChildRuns(ctx, tenant, parentRunID)
+	if err != nil {
+		return 0, err
+	}
+	canceled := 0
+	for _, child := range children {
+		switch _, err := s.ApplyRunTransition(ctx, tenant, child.RunID, statemachines.RunCmdCancel); {
+		case errors.Is(err, ErrRunTerminal):
+			continue // a racing terminal already finished this child; nothing to cancel
+		case err != nil:
+			return canceled, err
+		}
+		if err := s.FinalizeResponse(ctx, tenant, child.ResponseID, "canceled", canceledProjection); err != nil {
+			return canceled, err
+		}
+		canceled++
+	}
+	return canceled, nil
+}
+
 // PriorResponse is one earlier response in a session, as run.start history needs it:
 // Output is the stored terminal projection (nil once purged or not yet terminal), and
 // Purged marks a reaped response whose content is a redacted_content marker (spec §22.2).
