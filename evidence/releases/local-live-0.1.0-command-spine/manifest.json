@@ -1,0 +1,74 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-19T14:07:36Z",
+  "cases": [
+    {
+      "checksum": "sha256:04e45463bb08accfd5fbcd6e356dbfe55f0f8b1a28f2e477a6e604c2520e579a",
+      "db_assertions": [
+        "runs.state=completed",
+        "model_requests.result.model=gpt-4o-mini-2024-07-18",
+        "model_requests.provider_request_id present (chatcmpl)",
+        "model_step.interrupted.v1 journaled (real in-flight abort)",
+        "command applied; redirect folded into the resumed call (output carried the token)"
+      ],
+      "id": "T2-INTERRUPT",
+      "image_digest": "sha256:b6c5c7673e6fbac02b76afceeb241245bbea6cb767b19511f3a4528e74cc1d75",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T14:12:15Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3MSlNMGpnOX8hGLrhbTw9AwhqT6G",
+      "run_id": "run_ff6310db0ed22c2560ffef8a37429fbb",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:b851b9dd98938fafd108ae91ff6ad53091623a17ad851da14df0c0f6fa0b63cf",
+      "db_assertions": [
+        "runs.state=completed",
+        "model_requests.result.model=gpt-4o-mini-2024-07-18",
+        "model_requests.provider_request_id present (chatcmpl)",
+        "model_step.interrupted.v1 journaled (real in-flight abort)",
+        "command applied; redirect folded into the resumed call (output carried the token)"
+      ],
+      "id": "T2-INTERRUPT-FAST",
+      "image_digest": "sha256:b6c5c7673e6fbac02b76afceeb241245bbea6cb767b19511f3a4528e74cc1d75",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T14:12:15Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3MSnLeb7joOPkt2r9KQfSs2YH3Qn",
+      "run_id": "run_324f1d3d35d39a1f2e0fac5842a5c236",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:a86fac37a3ad2242899e5581c61ca2b87da9c42059deff26f6103ad4f7e2462d",
+      "db_assertions": [
+        "runs.state=completed",
+        "model_requests.provider_request_id present (chatcmpl)",
+        "send_message queued on the live run, swept to expired (§22.4)",
+        "command.expired.v1 journaled"
+      ],
+      "id": "T2-QUEUE-EXPIRED",
+      "image_digest": "sha256:b6c5c7673e6fbac02b76afceeb241245bbea6cb767b19511f3a4528e74cc1d75",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T14:12:15Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3MSpb4pl4J1GNexyqrsmLinv5mle",
+      "run_id": "run_cd071f7abc014618efa15823d3276300",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    }
+  ],
+  "git_sha": "d6321ac",
+  "migration": "000005_config_revisions",
+  "release": "local-live-0.1.0-command-spine"
+}
