@@ -53,9 +53,14 @@ class Context:
         )
 
     def add_partial_result(self, data: dict) -> None:
-        """Append the partial assistant turn of an interrupt-aborted step (spec §9.2). It keeps
-        whatever partial output the canceled call produced (often none) and is marked
-        interrupted, so the transcript records the boundary before the run resumes."""
+        """Append the partial assistant turn of an interrupt-aborted step (spec §9.2), keeping
+        whatever partial output the canceled call produced and marking it interrupted so the
+        transcript records the boundary before the run resumes. An interrupt that aborted before
+        any output streamed has nothing to record: skip it, because an assistant turn with neither
+        content nor tool calls is not a valid model message — a real provider rejects the resumed
+        request (the interrupted boundary is still journaled as model_step.interrupted.v1)."""
+        if not data.get("output"):
+            return
         self._messages.append({"role": "assistant", "content": data.get("output"), "interrupted": True})
 
     def add_tool_result(self, data: dict) -> None:

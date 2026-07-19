@@ -140,6 +140,23 @@ def test_interrupted_model_result_resumes_in_a_new_step() -> None:
     assert loop.state is State.AWAITING_MODEL
 
 
+def test_interrupt_without_partial_output_omits_the_empty_assistant_turn() -> None:
+    # An interrupt that aborts BEFORE any output streamed has no partial to record. The resumed
+    # request must NOT carry an assistant turn with neither content nor tool calls — that message
+    # is invalid to a real chat provider (a fake provider ignores it, which is why the live smoke,
+    # not this suite, first surfaced the resulting real-provider run failure). The interrupted
+    # boundary is still journaled separately as model_step.interrupted.v1.
+    loop = make_loop("run_ip")
+    req = loop.handle(run_start("go"))[0]
+    mrid = req["data"]["model_request_id"]
+    loop.handle(ctrl("message.deliver", {"delivery": "interrupt", "message": "do X instead"}, "frm_d"))
+    out = loop.handle(ctrl("model.result", {"model_request_id": mrid, "interrupted": True}, "frm_int"))
+    msgs = out[0]["data"]["messages"]
+    empty_assistant = [m for m in msgs if m.get("role") == "assistant" and not m.get("content") and not m.get("tool_calls")]
+    assert empty_assistant == [], f"resumed request carries a content-less, tool-call-less assistant turn: {empty_assistant}"
+    assert "do X instead" in [m.get("content") for m in msgs]  # the redirect still folds in
+
+
 def test_message_deliver_before_run_start_is_rejected() -> None:
     loop = make_loop()
     out = loop.handle(ctrl("message.deliver", {"delivery": "queue", "message": "early"}, "frm_d"))
