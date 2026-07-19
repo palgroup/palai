@@ -90,6 +90,11 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 		}
 	}
 	proj := map[string]any{"output": output, "usage": st.usage, "model": st.model}
+	// A run that delegated identifies its ChildRuns in the terminal projection (spec §25.19): the
+	// parent's final output links the child run ids, not a hidden transcript.
+	if len(st.childRunIDs) > 0 {
+		proj["child_runs"] = st.childRunIDs
+	}
 	if problem := terminalProblem(terminal.status); problem != nil {
 		proj["error"] = problem
 	}

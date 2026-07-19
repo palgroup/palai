@@ -70,6 +70,28 @@ type attemptState struct {
 	output         []contracts.ContentItem
 	usage          contracts.Usage
 	model          string // the actually-used model from the latest committed model result
+	// Delegation state (spec §25.18-19). depth is this run's depth (a child's is parent+1);
+	// childModel/childBudget route a ChildRun's own model call; budget/budgetBounded is the
+	// parent budget children intersect against; childReserved is the effective budget already
+	// handed to dispatched children (so the next child intersects the depleting remainder);
+	// childRunIDs are the children this attempt dispatched (fan-out count + final-output linkage).
+	depth         int
+	childModel    string
+	childBudget   int
+	budget        int
+	budgetBounded bool
+	childReserved int
+	childRunIDs   []string
+}
+
+// budgetRemaining reports the parent budget a child may still intersect against: the total less
+// this run's own model spend and the budget already reserved to earlier children. Meaningful only
+// when bounded; an unbounded parent passes its children's requests through untouched.
+func (st *attemptState) budgetRemaining() (int, bool) {
+	if !st.budgetBounded {
+		return 0, false
+	}
+	return st.budget - st.usage.TotalTokens - st.childReserved, true
 }
 
 // ExecuteAttempt drives one run attempt to a terminal outcome. It provisions and
@@ -125,6 +147,25 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		ch: ch, ledger: runner.NewFrameLedger(),
 	}
 
+	// Read this run's delegation context (spec §25.18): its depth, the required delegations a root
+	// run seeds into run.start, its parent budget children intersect against, and — for a ChildRun
+	// — its own model and budget. A plain run carries none and behaves exactly as before.
+	depth, delegationRaw, err := o.spine.RunDelegation(ctx, string(attempt.RunID))
+	if err != nil {
+		return fmt.Errorf("read run delegation: %w", err)
+	}
+	deleg := parseRunDelegation(delegationRaw)
+	st.depth = depth
+	if deleg.Spec != nil {
+		st.childModel = deleg.Spec.Model
+		st.childBudget = deleg.Spec.Budget
+	}
+	if deleg.Budget > 0 {
+		st.budget, st.budgetBounded = deleg.Budget, true
+	} else if deleg.Spec != nil && deleg.Spec.Budget > 0 {
+		st.budget, st.budgetBounded = deleg.Spec.Budget, true
+	}
+
 	ready, err := ch.Receive(dialCtx)
 	if err != nil {
 		return fmt.Errorf("receive engine.ready: %w", err)
@@ -151,6 +192,11 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	runStart := map[string]any{"input": inputValue}
 	if messages := historyMessages(prior); len(messages) > 0 {
 		runStart["messages"] = messages
+	}
+	// Seed required delegations (spec §25.18): the engine emits one child.request per spec at the
+	// safe boundary after its first model step. Config-driven, so a real single-step run delegates.
+	if delegations := deleg.emitFrames(); len(delegations) > 0 {
+		runStart["delegations"] = delegations
 	}
 	if err := ch.Send(ctx, o.frame(st, "run.start", runStart, string(ready.ID))); err != nil {
 		return fmt.Errorf("send run.start: %w", err)
@@ -216,6 +262,10 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 			}
 		case "tool.request":
 			if err := o.dispatchTool(ctx, st, frame); err != nil {
+				return abortIfTerminal(err)
+			}
+		case "child.request":
+			if err := o.dispatchChild(ctx, st, frame); err != nil {
 				return abortIfTerminal(err)
 			}
 		case "output.item":

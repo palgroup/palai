@@ -1,8 +1,13 @@
 package execution
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"slices"
 
+	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 )
 
@@ -94,4 +99,195 @@ func intersectBudget(requested, parentRemaining int, parentBounded bool) int {
 		return parentRemaining
 	}
 	return requested
+}
+
+// delegationSpec is one required delegation as it rides run config and run.start (spec §25.18). It
+// is the durable shape the create body carries (root run's emit list) and a ChildRun stores as its
+// own spec; the engine echoes it into a child.request the controller decodes back to a childSpec.
+type delegationSpec struct {
+	Role          string   `json:"role,omitempty"`
+	Objective     string   `json:"objective,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	Tools         []string `json:"tools,omitempty"`
+	Budget        int      `json:"budget,omitempty"`
+	WorkspaceMode string   `json:"workspace_mode,omitempty"`
+	Required      bool     `json:"required,omitempty"`
+}
+
+// runDelegation is a run's delegation column (spec §25.18): Emit (+ the parent Budget children
+// intersect) on a root run configured to delegate, Spec on a ChildRun (its own model/budget).
+type runDelegation struct {
+	Emit   []delegationSpec `json:"emit,omitempty"`
+	Budget int              `json:"budget,omitempty"`
+	Spec   *delegationSpec  `json:"spec,omitempty"`
+}
+
+// parseRunDelegation decodes a run's delegation JSON; an empty/NULL column is the zero value (a
+// plain run — no delegations to emit, no child spec).
+func parseRunDelegation(raw []byte) runDelegation {
+	if len(raw) == 0 {
+		return runDelegation{}
+	}
+	var d runDelegation
+	_ = json.Unmarshal(raw, &d)
+	return d
+}
+
+// emitFrames renders the seeded delegations as the run.start data.delegations the engine emits as
+// child.request frames (the workspace_mode default is carried in the contract, enforced by E09).
+func (d runDelegation) emitFrames() []map[string]any {
+	out := make([]map[string]any, 0, len(d.Emit))
+	for _, s := range d.Emit {
+		mode := s.WorkspaceMode
+		if mode == "" {
+			mode = "none"
+		}
+		out = append(out, map[string]any{
+			"role": s.Role, "objective": s.Objective, "model": s.Model,
+			"tools": s.Tools, "budget": map[string]any{"max_total_tokens": s.Budget},
+			"workspace_mode": mode, "required": s.Required,
+		})
+	}
+	return out
+}
+
+// decodeChildSpec reads a child.request frame's data into the childSpec the admission gate scores.
+func decodeChildSpec(data map[string]any) childSpec {
+	spec := childSpec{}
+	spec.ChildRequestID, _ = data["child_request_id"].(string)
+	spec.Role, _ = data["role"].(string)
+	spec.Objective, _ = data["objective"].(string)
+	spec.Model, _ = data["model"].(string)
+	spec.WorkspaceMode, _ = data["workspace_mode"].(string)
+	spec.Required, _ = data["required"].(bool)
+	if tools, ok := data["tools"].([]any); ok {
+		for _, t := range tools {
+			if s, ok := t.(string); ok {
+				spec.Tools = append(spec.Tools, s)
+			}
+		}
+	}
+	if budget, ok := data["budget"].(map[string]any); ok {
+		if max, ok := budget["max_total_tokens"].(float64); ok {
+			spec.Budget = int(max)
+		}
+	}
+	return spec
+}
+
+// dispatchChild handles a child.request (spec §25.18-19): it scores the delegation against the
+// parent's depth/fan-out/budget/capability, and on a deny journals child.denied.v1 and replies a
+// denied child.result the engine folds (required → fail, optional → skip). On an admit it creates a
+// ChildRun (parent_run_id, its own model/budget), runs it INLINE through the existing ExecuteAttempt
+// path — a nested run with its own attempt, engine, and model call (its own chatcmpl), never a
+// second queued job a single worker would deadlock on — then journals child.completed.v1 and replies
+// the child's typed result (status + output + child run id). No secret ever reaches the child: it
+// routes the same broker the parent does.
+func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, frame contracts.EngineFrame) error {
+	spec := decodeChildSpec(frame.Data)
+
+	policy, err := o.spine.ProjectConfig(ctx, st.tenant)
+	if err != nil {
+		return err
+	}
+	parentTools := o.parentTools(ctx, st)
+	remaining, bounded := st.budgetRemaining()
+	admission := admitChild(spec, st.depth, len(st.childRunIDs), remaining, bounded, policy, parentTools)
+	if admission.Denied {
+		denied, _ := json.Marshal(map[string]any{"child_request_id": spec.ChildRequestID, "role": spec.Role, "model": spec.Model, "required": spec.Required, "reason": admission.Reason})
+		if err := o.spine.JournalChildEvent(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), eventChildDenied, denied); err != nil {
+			return err
+		}
+		return st.ch.Send(ctx, o.frame(st, "child.result", map[string]any{
+			"child_request_id": spec.ChildRequestID, "status": "denied", "reason": admission.Reason,
+		}, string(frame.ID)))
+	}
+
+	childRunID, childResponseID := newExecID("run"), newExecID("resp")
+	childInput, _ := json.Marshal(spec.Objective)
+	childDelegation, _ := json.Marshal(runDelegation{Spec: &delegationSpec{
+		Role: spec.Role, Objective: spec.Objective, Model: spec.Model, Tools: spec.Tools,
+		Budget: admission.EffectiveBudget, WorkspaceMode: spec.WorkspaceMode, Required: spec.Required,
+	}})
+	requested, _ := json.Marshal(map[string]any{"child_run_id": childRunID, "child_request_id": spec.ChildRequestID, "role": spec.Role, "model": spec.Model, "required": spec.Required})
+	if err := o.spine.CreateChildRun(ctx, st.tenant, coordinator.ChildRunInput{
+		ParentRunID: string(st.attempt.RunID), ParentResponseID: st.responseID, SessionID: st.sessionID,
+		ChildRunID: childRunID, ChildResponseID: childResponseID, Depth: st.depth + 1,
+		Input: childInput, Delegation: childDelegation, Store: true,
+	}, eventChildRequested, requested); err != nil {
+		return err
+	}
+	st.childRunIDs = append(st.childRunIDs, childRunID)
+	st.childReserved += admission.EffectiveBudget
+
+	// Run the child inline on the existing execution path. A child error (its own dial/loop
+	// failure) is not the parent's — the child run row is authoritative, so we read its committed
+	// outcome regardless and report it to the engine, which decides required-vs-optional.
+	_ = o.ExecuteAttempt(ctx, AttemptDescriptor{
+		RunID: contracts.RunID(childRunID), AttemptID: newAttemptID(), Fence: st.attempt.Fence,
+		ImageDigest: st.attempt.ImageDigest, Limits: defaultAttemptLimits,
+	})
+
+	runState, output, err := o.spine.ChildRunOutcome(ctx, st.tenant, childRunID)
+	if err != nil {
+		return err
+	}
+	status := childStatus(runState)
+	completed, _ := json.Marshal(map[string]any{"child_run_id": childRunID, "child_request_id": spec.ChildRequestID, "status": status})
+	if err := o.spine.JournalChildEvent(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), eventChildCompleted, completed); err != nil {
+		return err
+	}
+	return st.ch.Send(ctx, o.frame(st, "child.result", map[string]any{
+		"child_request_id": spec.ChildRequestID, "status": status, "child_run_id": childRunID,
+		"output": childOutputText(output),
+	}, string(frame.ID)))
+}
+
+// parentTools is the parent's effective capability, which a child's tool subset must stay within
+// (the parent half of the parent ∩ project intersection): the parent's session config tools, or
+// unrestricted when it never narrowed them.
+func (o *Orchestrator) parentTools(ctx context.Context, st *attemptState) []string {
+	override, found, err := o.spine.LatestSessionConfig(ctx, st.tenant, st.sessionID)
+	if err != nil || !found {
+		return nil
+	}
+	return override.Tools
+}
+
+// childStatus maps a ChildRun's terminal run state to the child.result status the engine folds: a
+// completed child is a typed result, any other terminal (failed/canceled/timed_out/budget) is a
+// non-completion the parent treats per the delegation's required flag.
+func childStatus(runState string) string {
+	if runState == "completed" {
+		return "completed"
+	}
+	return "failed"
+}
+
+// childOutputText extracts the child's final text from its response projection so the parent folds a
+// typed result, not a hidden transcript. A missing/again-shaped projection yields "".
+func childOutputText(projection []byte) string {
+	if len(projection) == 0 {
+		return ""
+	}
+	var proj struct {
+		Output []map[string]any `json:"output"`
+	}
+	if err := json.Unmarshal(projection, &proj); err != nil {
+		return ""
+	}
+	for _, item := range proj.Output {
+		if content, ok := item["content"].(string); ok && content != "" {
+			return content
+		}
+	}
+	return ""
+}
+
+// newExecID mints an envelope-valid id with the given prefix for a ChildRun's run and response
+// rows, minted in the execution layer where the child is created (spec §25.18).
+func newExecID(prefix string) string {
+	var raw [8]byte
+	_, _ = rand.Read(raw[:])
+	return prefix + "_" + hex.EncodeToString(raw[:])
 }

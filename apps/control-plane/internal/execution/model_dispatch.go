@@ -121,8 +121,10 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		IdempotencyKey: string(st.attempt.RunID) + "/" + requestID,
 		Model:          effectiveModel,
 		Messages:       messages,
-		Reservation:    modelbroker.Reservation{},
-		Secret:         o.route.Secret,
+		// A ChildRun runs under its parent-intersected budget (spec §25.18); a root run stays
+		// unbounded here (0). Enforcement is the broker's Reservation.Admit at settle.
+		Reservation: modelbroker.Reservation{MaxTotalTokens: st.childBudget},
+		Secret:      o.route.Secret,
 	}, onDelta)
 	cancelModel()
 	hit := <-hitCh
@@ -252,6 +254,12 @@ func addUsage(a, b contracts.Usage) contracts.Usage {
 // config revision's model wins; absent one, the deployment default. Only the model id moves —
 // the provider and its credential ref stay env-selected (E06 §7.3 carve-out).
 func (o *Orchestrator) effectiveModel(ctx context.Context, st *attemptState) (string, error) {
+	// A ChildRun routes its own model id (spec §25.18): the cheaper/alias model the delegation
+	// asked for, within the same env-selected provider (E06 §7.3 carve-out). It wins over the
+	// session/deployment default so a child can run a different model than its parent.
+	if st.childModel != "" {
+		return st.childModel, nil
+	}
 	override, found, err := o.spine.LatestSessionConfig(ctx, st.tenant, st.sessionID)
 	if err != nil {
 		return "", err

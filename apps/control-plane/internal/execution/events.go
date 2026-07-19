@@ -27,6 +27,12 @@ const (
 	// step (spec §9.3, §25.16): the aborted attempt's state may be omitted, so the switch is not
 	// silently presented as a clean step boundary.
 	eventWarningRaised = "warning.raised.v1"
+	// The child-delegation lifecycle events the parent journal carries (spec §25.18-19): a child
+	// dispatched, a dispatched child's typed terminal, and an admission-denied delegation. Only
+	// these — never the child's own model steps — enter the parent's response stream.
+	eventChildRequested = "child.requested.v1"
+	eventChildCompleted = "child.completed.v1"
+	eventChildDenied    = "child.denied.v1"
 )
 
 // toolCallCompletedEvent is the event the tool-call table emits on Executing->Completed,
@@ -44,6 +50,9 @@ var emittedEventTypes = []string{
 	eventModelStepInterrupted,
 	eventConfigRevised,
 	eventWarningRaised,
+	eventChildRequested,
+	eventChildCompleted,
+	eventChildDenied,
 	toolCallCompletedEvent,
 }
 

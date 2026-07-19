@@ -70,6 +70,126 @@ func (s *Store) RunContext(ctx context.Context, runID string) (Tenant, string, s
 	return tenant, sessionID, responseID, state, input, nil
 }
 
+// RunDelegation reads a run's delegation context by primary key (spec §25.18): its depth and the
+// delegation JSON the orchestrator seeds into run.start (a root run's {"emit":[...]}) or routes a
+// child's own model/budget from ({"spec":{...}}). A plain run carries NULL delegation.
+func (s *Store) RunDelegation(ctx context.Context, runID string) (int, []byte, error) {
+	var depth int
+	var delegation []byte
+	if err := s.pool.QueryRow(ctx, storage.Query("RunDelegation"), runID).Scan(&depth, &delegation); err != nil {
+		return 0, nil, fmt.Errorf("read run delegation for %s: %w", runID, err)
+	}
+	return depth, delegation, nil
+}
+
+// ChildRunInput is the durable creation of one ChildRun (spec §25.18-19): a runs row carrying
+// parent_run_id/depth/delegation plus its own response, in the parent's session. The caller mints
+// the ids and passes the objective as the child's run.start input.
+type ChildRunInput struct {
+	ParentRunID      string
+	ParentResponseID string
+	SessionID        string
+	ChildRunID       string
+	ChildResponseID  string
+	Depth            int
+	Input            []byte
+	Delegation       []byte
+	Store            bool
+}
+
+// CreateChildRun creates a ChildRun's response and run and journals the child-requested event on
+// the PARENT's response (so the parent journal carries the child lifecycle, not the child's own
+// steps — §25.19). It guards the parent active, so a canceled parent spawns no child, and runs in
+// one transaction: the row and its birth event are atomic. eventType/payload are the caller's
+// child.requested.v1.
+func (s *Store) CreateChildRun(ctx context.Context, tenant Tenant, in ChildRunInput, eventType string, payload []byte) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin child run: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	if err := guardRunActive(ctx, tx, tenant, in.ParentRunID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, storage.Query("InsertResponse"),
+		in.ChildResponseID, tenant.Organization, tenant.Project, in.SessionID, in.Input, in.Store); err != nil {
+		return fmt.Errorf("insert child response: %w", err)
+	}
+	if _, err := tx.Exec(ctx, storage.Query("InsertChildRun"),
+		in.ChildRunID, tenant.Organization, tenant.Project, in.SessionID, in.ChildResponseID, in.ParentRunID, in.Depth, in.Delegation); err != nil {
+		return fmt.Errorf("insert child run: %w", err)
+	}
+	if _, err := appendEvent(ctx, tx, tenant, in.SessionID, in.ParentResponseID, eventType, payload); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit child run: %w", err)
+	}
+	return nil
+}
+
+// JournalChildEvent appends a child-lifecycle event (child.denied.v1 / child.completed.v1) to the
+// PARENT's response journal (spec §25.19), guarded by the parent run being active so a canceled
+// parent appends nothing after its terminal (monotonic terminality, §22.3). child.requested.v1 is
+// journaled by CreateChildRun instead — atomically with the child row.
+func (s *Store) JournalChildEvent(ctx context.Context, tenant Tenant, sessionID, parentResponseID, parentRunID, eventType string, payload []byte) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin child event: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	if err := guardRunActive(ctx, tx, tenant, parentRunID); err != nil {
+		return err
+	}
+	if _, err := appendEvent(ctx, tx, tenant, sessionID, parentResponseID, eventType, payload); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit child event: %w", err)
+	}
+	return nil
+}
+
+// ChildRunOutcome reads a finished ChildRun's terminal run state and response projection so the
+// parent folds its typed result (spec §25.19). Tenant-scoped by primary key.
+func (s *Store) ChildRunOutcome(ctx context.Context, tenant Tenant, childRunID string) (string, []byte, error) {
+	var state string
+	var output []byte
+	err := s.pool.QueryRow(ctx, storage.Query("ChildRunOutcome"), childRunID, tenant.Organization, tenant.Project).Scan(&state, &output)
+	if err != nil {
+		return "", nil, fmt.Errorf("read child run outcome for %s: %w", childRunID, err)
+	}
+	return state, output, nil
+}
+
+// ChildRunRef identifies a non-terminal ChildRun for cancel propagation (spec §25.18, SUB-005).
+type ChildRunRef struct {
+	RunID      string
+	ResponseID string
+}
+
+// NonTerminalChildRuns returns every non-terminal descendant of a run (recursively), so a parent
+// cancel propagates to all its children (SUB-005). Tenant-scoped; a run with no live children
+// yields no rows.
+func (s *Store) NonTerminalChildRuns(ctx context.Context, tenant Tenant, parentRunID string) ([]ChildRunRef, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("NonTerminalDescendantRuns"), parentRunID, tenant.Organization, tenant.Project)
+	if err != nil {
+		return nil, fmt.Errorf("read non-terminal child runs: %w", err)
+	}
+	defer rows.Close()
+	var out []ChildRunRef
+	for rows.Next() {
+		var ref ChildRunRef
+		if err := rows.Scan(&ref.RunID, &ref.ResponseID); err != nil {
+			return nil, fmt.Errorf("scan child run ref: %w", err)
+		}
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
 // PriorResponse is one earlier response in a session, as run.start history needs it:
 // Output is the stored terminal projection (nil once purged or not yet terminal), and
 // Purged marks a reaped response whose content is a redacted_content marker (spec §22.2).

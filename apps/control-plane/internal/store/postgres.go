@@ -86,6 +86,7 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 			Input:              req.Input,
 			Body:               req.Body,
 			Store:              req.Store,
+			Delegations:        req.Delegations,
 		})
 	if err != nil {
 		return api.AdmitResult{}, err

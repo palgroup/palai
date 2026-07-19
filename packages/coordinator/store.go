@@ -373,6 +373,9 @@ type AdmissionInput struct {
 	// Store is the §8.3 retention flag persisted on the response. It defaults true
 	// (persistent); the caller resolves an absent request field to true before admission.
 	Store bool
+	// Delegations is the root run's required-delegation JSON ({"emit":[...],"budget":N}) or nil,
+	// persisted on the run so the orchestrator seeds run.start (spec §25.18).
+	Delegations []byte
 }
 
 // Admission is the committed, replayed, conflicting, or purged admission outcome.
@@ -497,7 +500,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		return Admission{}, fmt.Errorf("insert response: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertRun"),
-		in.RunID, tenant.Organization, tenant.Project, sessionID, in.ResponseID); err != nil {
+		in.RunID, tenant.Organization, tenant.Project, sessionID, in.ResponseID, nullableJSON(in.Delegations)); err != nil {
 		// The session already holds a non-terminal root run: one-active-root (spec §22.3). The
 		// partial unique index (runs_one_active_root_per_session) rejects the second root run at
 		// the DB, so a concurrent chain loses here rather than in an app-code check-then-insert

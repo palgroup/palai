@@ -61,6 +61,9 @@ type AdmitRequest struct {
 	Body               []byte
 	// Store is the resolved §8.3 retention flag (default true) persisted on the response.
 	Store bool
+	// Delegations is the root run's required-delegation JSON ({"emit":[...],"budget":N}) or nil
+	// (spec §25.18). Resolved from the raw body, it seeds the run.start delegations the engine emits.
+	Delegations []byte
 }
 
 // AdmitResult is the admission outcome. Conflict marks a key reused with a
@@ -117,6 +120,11 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	// flag from an explicit false, so an absent field resolves to persistent.
 	store := resolveStore(raw)
 
+	// Required delegations ride the raw body (spec §25.18), parsed here like store — a Palai
+	// extension the generated OpenAI-shaped contract does not carry. The root run stores them and
+	// the orchestrator seeds run.start, so a real single-step run still delegates.
+	delegations := resolveDelegations(raw)
+
 	hash, err := canonicalRequestHash(req)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -164,6 +172,7 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		Input:              input,
 		Body:               body,
 		Store:              store,
+		Delegations:        delegations,
 	})
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -273,6 +282,29 @@ func resolveStore(raw []byte) bool {
 		return true
 	}
 	return *probe.Store
+}
+
+// resolveDelegations parses the required delegations (and the optional parent budget children
+// intersect against) from the raw create body into the run's delegation JSON — {"emit":[...],
+// "budget":N} — or nil when none are configured (spec §25.18). Each spec passes through verbatim;
+// the engine emits it as a child.request and the controller admits it.
+func resolveDelegations(raw []byte) []byte {
+	var probe struct {
+		Delegations []json.RawMessage `json:"delegations"`
+		Budget      int               `json:"delegation_budget"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil || len(probe.Delegations) == 0 {
+		return nil
+	}
+	envelope := map[string]any{"emit": probe.Delegations}
+	if probe.Budget > 0 {
+		envelope["budget"] = probe.Budget
+	}
+	out, err := json.Marshal(envelope)
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // validateCreate enforces the two request invariants a malformed body can violate

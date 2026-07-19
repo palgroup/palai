@@ -38,6 +38,49 @@ SELECT id
 FROM runs
 WHERE response_id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- RunDelegation reads a run's delegation context (spec §25.18): its depth and the delegation
+-- JSON — {"emit":[...]} on a root run configured to delegate, {"spec":{...}} on a child run,
+-- NULL on a plain run. By primary key, like RunContext, so the orchestrator reads it once per
+-- attempt to seed run.start delegations and route a child's own model/budget.
+-- name: RunDelegation
+SELECT depth, delegation
+FROM runs
+WHERE id = $1;
+
+-- InsertChildRun creates a ChildRun (spec §25.18-19): a runs row carrying parent_run_id, its
+-- depth, and its own delegation spec, in the parent's session. It is excluded from
+-- one-active-root (parent_run_id IS NOT NULL), so it does not consume the session's root slot.
+-- name: InsertChildRun
+INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, parent_run_id, depth, delegation)
+VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8);
+
+-- ChildRunOutcome reads a finished ChildRun's terminal run state and its response projection,
+-- so the parent can fold the child.result and link the child run. Tenant-scoped by primary key.
+-- name: ChildRunOutcome
+SELECT r.state, resp.output
+FROM runs r
+JOIN responses resp ON resp.id = r.response_id
+WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
+
+-- NonTerminalDescendantRuns walks the parent_run_id tree from a run and returns every
+-- non-terminal descendant (spec §25.18 cancel propagation, SUB-005). Recursive so a cancel
+-- reaches the whole subtree even if delegation depth grows past 1 later; today the depth cap
+-- keeps it one level. Each descendant carries its response id so the caller finalizes it canceled.
+-- name: NonTerminalDescendantRuns
+WITH RECURSIVE subtree AS (
+    SELECT id, response_id, state
+    FROM runs
+    WHERE parent_run_id = $1 AND organization_id = $2 AND project_id = $3
+    UNION ALL
+    SELECT c.id, c.response_id, c.state
+    FROM runs c
+    JOIN subtree s ON c.parent_run_id = s.id
+    WHERE c.organization_id = $2 AND c.project_id = $3
+)
+SELECT id, response_id
+FROM subtree
+WHERE state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded');
+
 -- UpdateResponse writes the terminal Response projection (status + output/usage JSON). The
 -- terminal states are excluded from the WHERE so the projection is monotonically terminal at the
 -- database: the first terminal write wins and a late-arriving one (a reclaimed or in-flight
@@ -106,8 +149,8 @@ INSERT INTO responses (id, organization_id, project_id, session_id, state, input
 VALUES ($1, $2, $3, $4, 'queued', $5, $6);
 
 -- name: InsertRun
-INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
-VALUES ($1, $2, $3, $4, $5, 'queued');
+INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, delegation)
+VALUES ($1, $2, $3, $4, $5, 'queued', $6);
 
 -- PurgeExpiredStoreFalse is the retention sweep (spec §8.3, §20.9): it purges the
 -- content of store=false responses whose terminal state has aged past the configured
