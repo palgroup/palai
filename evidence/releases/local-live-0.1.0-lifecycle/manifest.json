@@ -1,0 +1,72 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-19T18:02:10Z",
+  "cases": [
+    {
+      "checksum": "sha256:6e7d9b9a664479061e9f7d43a020caf4e69f93f36fede4639cc7b08994078bb4",
+      "db_assertions": [
+        "runs.state=completed (real anchor call)",
+        "model_requests.provider_request_id present (chatcmpl)",
+        "fork_session applied; child session active with a fresh journal",
+        "child reference-copied the parent's real pre-fork output (byte-equal, §22.8)"
+      ],
+      "id": "T4-FORK",
+      "image_digest": "sha256:b6c5c7673e6fbac02b76afceeb241245bbea6cb767b19511f3a4528e74cc1d75",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T18:06:53Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3Q7u0imbQjaIqAc8G5MsN6JDYDHj",
+      "run_id": "run_9a35f451078d9a5a69b9b4cc98321f93",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:a730264bae9bf8a2b1ff1fbcec7a28482bf97c8222c647b5aa466cd84d9e255e",
+      "db_assertions": [
+        "runs.state=completed (real anchor call)",
+        "model_requests.provider_request_id present (chatcmpl)",
+        "close_session applied; session state=closed (§22.1)",
+        "closed session rejects a new response (409 session_not_active) and a new command (typed rejection)"
+      ],
+      "id": "T4-CLOSE",
+      "image_digest": "sha256:b6c5c7673e6fbac02b76afceeb241245bbea6cb767b19511f3a4528e74cc1d75",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T18:06:53Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3Q7ymfivhQPrApah9WXfuvKaOXLg",
+      "run_id": "run_dcfe23acf2d834f93f386321788b0002",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:81213c76515cffb662c724c855184952b993f9810545509d79a7942215174202",
+      "db_assertions": [
+        "session anchor response completed on the real provider; provider_request_id is that call's chatcmpl (real-wire proof)",
+        "the second chained long generation was canceled after its real model call started",
+        "run.state=canceled; GET=canceled with the canonical canceled problem; run.canceled.v1 the single terminal (§22.3)",
+        "repeated cancel is a monotonic no-op (no second terminal event)"
+      ],
+      "id": "T4-CANCEL",
+      "image_digest": "sha256:b6c5c7673e6fbac02b76afceeb241245bbea6cb767b19511f3a4528e74cc1d75",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-19T18:06:53Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3Q80yaTdWm5W6rZKWu3V7wgQo6FR",
+      "run_id": "run_0ce25722c9d8f091b1f24506fa558a93",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    }
+  ],
+  "git_sha": "5ca90f9",
+  "migration": "000006_one_active_root",
+  "release": "local-live-0.1.0-lifecycle"
+}
