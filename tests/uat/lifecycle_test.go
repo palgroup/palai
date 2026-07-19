@@ -22,8 +22,11 @@ const lifecycleAnchorPrompt = "Reply with exactly one word and nothing else: LIG
 //
 // On the real provider every run is single step (no tools → no boundary), so the lifecycle
 // operations are proven AROUND real calls, never a fabricated multi-step run:
-//   - fork_session and close_session act at a COMPLETED-response boundary — the real anchor call
-//     gives the case its chatcmpl, and the lifecycle command is then applied and asserted.
+//   - close_session acts at a COMPLETED-response boundary — the real anchor call gives the case its
+//     chatcmpl, and close is then applied and asserted (a closed session rejects new work).
+//   - fork_session forks at a completed-response boundary, then the FORK runs its OWN real response:
+//     the case's chatcmpl is the fork's own call, and a response written to the parent AFTER the
+//     fork is proven absent from the child's history and journal (the future is isolated, §22.8).
 //   - cancel acts on a real IN-FLIGHT run: a long generation is canceled after its model call
 //     starts, so the aborted run commits no result of its own. Its receipt carries the session's
 //     prior completed call's chatcmpl (the real-wire proof), disclosed in the assertions.
@@ -58,52 +61,80 @@ func TestLocalLiveLifecycle(t *testing.T) {
 	s.writeAndVerifyLiveProviderEvidence(t, key, "-lifecycle", proofs)
 }
 
-// proveForkSession drives the fork_session proof (spec §22.8): a session runs a real completed
-// response, then fork_session opens a fresh active child that reference-copies the parent's
-// pre-fork history — the child carries the parent's REAL committed output, byte-for-byte. Returns
-// the anchor call's run, model, and genuine chatcmpl id.
+// proveForkSession drives the fork_session proof (spec §22.8): a parent session runs a real
+// completed response-1, then fork_session opens a fresh active child that reference-copies the
+// parent's pre-fork history byte-for-byte. The fork then runs its OWN real response to completion
+// (its own genuine chatcmpl — the receipt's real-wire proof that the child is a LIVE session, not a
+// dead copy), and a response written to the PARENT after the fork is proven absent from the child's
+// history and journal: the fork's future is isolated. Returns the fork's own run, model, chatcmpl.
 func (s *uatStack) proveForkSession(t *testing.T) liveProof {
 	t.Helper()
-	sessionID := s.createSession()
-	respID, runID := s.createResponseInSession(sessionID, lifecycleAnchorPrompt)
-	if final := s.awaitTerminal(respID, 120*time.Second); final.Status != "completed" {
-		t.Fatalf("fork: anchor response %s status = %q, want completed", respID, final.Status)
+	// Parent runs a real completed response-1 — the pre-fork history the child will inherit.
+	parentID := s.createSession()
+	anchorResp, anchorRun := s.createResponseInSession(parentID, lifecycleAnchorPrompt)
+	if final := s.awaitTerminal(anchorResp, 120*time.Second); final.Status != "completed" {
+		t.Fatalf("fork: parent response-1 %s status = %q, want completed", anchorResp, final.Status)
 	}
-	model, chat := s.modelCall(runID)
-	if !liveProviderIDPattern.MatchString(chat) {
-		t.Fatalf("fork: anchor provider request id %q is not a genuine chatcmpl id", chat)
+	if _, chat := s.modelCall(anchorRun); !liveProviderIDPattern.MatchString(chat) {
+		t.Fatalf("fork: parent response-1 provider request id %q is not a genuine chatcmpl id", chat)
 	}
 
 	// Fork the session at the completed-response boundary; the command result carries the child id.
-	status, result := s.submitLifecycleCommand(sessionID, "fork_session")
+	status, result := s.submitLifecycleCommand(parentID, "fork_session")
 	if status != "applied" {
 		t.Fatalf("fork_session status = %q, want applied", status)
 	}
 	childID, _ := result["session_id"].(string)
-	if childID == "" || childID == sessionID {
-		t.Fatalf("fork_session result session_id = %q, want a fresh child id (parent %q)", childID, sessionID)
+	if childID == "" || childID == parentID {
+		t.Fatalf("fork_session result session_id = %q, want a fresh child id (parent %q)", childID, parentID)
 	}
-
-	// The child is a fresh ACTIVE session that reference-copied the parent's completed history.
+	// The child is a fresh ACTIVE session that reference-copied exactly the parent's one pre-fork
+	// response, byte-for-byte (faithful to the REAL call, not a placeholder).
 	if st := s.query(fmt.Sprintf("SELECT state FROM sessions WHERE id='%s'", childID)); st != "active" {
 		t.Fatalf("fork child session %s state = %q, want active", childID, st)
 	}
 	if n := s.query(fmt.Sprintf("SELECT count(*) FROM responses WHERE session_id='%s'", childID)); n != "1" {
 		t.Fatalf("fork child response count = %q, want 1 (the pre-fork history copy)", n)
 	}
-	// The copy is faithful to the REAL call: the child's response output equals the parent's.
-	parentOut := s.query(fmt.Sprintf("SELECT output::text FROM responses WHERE id='%s'", respID))
+	parentOut := s.query(fmt.Sprintf("SELECT output::text FROM responses WHERE id='%s'", anchorResp))
 	childOut := s.query(fmt.Sprintf("SELECT output::text FROM responses WHERE session_id='%s'", childID))
 	if childOut == "" || childOut != parentOut {
 		t.Fatalf("fork child copied output = %q, want the parent's real output %q", childOut, parentOut)
 	}
 
-	fmt.Printf("T4-FORK: forked %s -> child %s copied the real completed history (%s)\n", sessionID, childID, chat)
-	return liveProof{"T4-FORK", "live-fork-session", runID, model, chat, []string{
-		"runs.state=completed (real anchor call)",
-		"model_requests.provider_request_id present (chatcmpl)",
-		"fork_session applied; child session active with a fresh journal",
-		"child reference-copied the parent's real pre-fork output (byte-equal, §22.8)",
+	// The fork is a LIVE session: it runs its OWN real response to completion with its own chatcmpl.
+	forkResp, forkRun := s.createResponseInSession(childID, "Reply with exactly one word and nothing else: BEACON.")
+	if final := s.awaitTerminal(forkResp, 120*time.Second); final.Status != "completed" {
+		t.Fatalf("fork: child response %s status = %q, want completed", forkResp, final.Status)
+	}
+	model, chat := s.modelCall(forkRun)
+	if !liveProviderIDPattern.MatchString(chat) {
+		t.Fatalf("fork: child provider request id %q is not a genuine chatcmpl id", chat)
+	}
+
+	// Isolated future: a response written to the PARENT after the fork must never reach the child.
+	postForkResp, _ := s.createResponseInSession(parentID, "Reply with exactly one word and nothing else: DIVERGE.")
+	if final := s.awaitTerminal(postForkResp, 120*time.Second); final.Status != "completed" {
+		t.Fatalf("fork: parent post-fork response %s status = %q, want completed", postForkResp, final.Status)
+	}
+	// The post-fork parent write is absent from the child's history AND its journal, and the child
+	// holds only its pre-fork copy + its own run (2) — the copy happened once, at the fork boundary.
+	if n := s.query(fmt.Sprintf("SELECT count(*) FROM responses WHERE session_id='%s' AND id='%s'", childID, postForkResp)); n != "0" {
+		t.Fatalf("fork child leaked the post-fork parent response %s — the future is not isolated", postForkResp)
+	}
+	if n := s.query(fmt.Sprintf("SELECT count(*) FROM events WHERE session_id='%s' AND response_id='%s'", childID, postForkResp)); n != "0" {
+		t.Fatalf("fork child journal contains the post-fork parent response %s — the future is not isolated", postForkResp)
+	}
+	if n := s.query(fmt.Sprintf("SELECT count(*) FROM responses WHERE session_id='%s'", childID)); n != "2" {
+		t.Fatalf("fork child response count = %q after its own run, want 2 (pre-fork copy + the fork's own run)", n)
+	}
+
+	fmt.Printf("T4-FORK: forked %s -> child %s; fork ran its own real response (%s); post-fork parent write %s stayed isolated\n", parentID, childID, chat, postForkResp)
+	return liveProof{"T4-FORK", "live-fork-session", forkRun, model, chat, []string{
+		"parent ran a real completed response-1 (the pre-fork history)",
+		"fork_session applied; child session active, reference-copied the parent's real pre-fork output (byte-equal, §22.8)",
+		"the fork ran its OWN real response to completion; provider_request_id is the fork's own chatcmpl (live child session)",
+		"a response written to the parent AFTER the fork is absent from the child's history and journal (isolated future)",
 	}}
 }
 
