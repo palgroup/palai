@@ -116,6 +116,9 @@ components:
         - model_step.failed.v1
         - model_step.interrupted.v1
         - config.revised.v1
+        - child.requested.v1
+        - child.completed.v1
+        - child.denied.v1
         - artifact.created.v1
         - usage.updated.v1
         - warning.raised.v1
