@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -218,7 +219,8 @@ func (s *Store) ApplyRunTransition(ctx context.Context, tenant Tenant, runID str
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	var sessionID, current string
-	err = tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).Scan(&sessionID, &current)
+	var responseID *string
+	err = tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).Scan(&sessionID, &responseID, &current)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Transition{}, fmt.Errorf("run %s not found in tenant scope", runID)
 	}
@@ -249,7 +251,7 @@ func (s *Store) ApplyRunTransition(ctx context.Context, tenant Tenant, runID str
 	}
 	payload := fmt.Sprintf(`{"run_id":%q,"state":%q}`, runID, next)
 	if _, err := tx.Exec(ctx, storage.Query("AppendEvent"),
-		eventID, tenant.Organization, tenant.Project, sessionID, seq, event, []byte(payload)); err != nil {
+		eventID, tenant.Organization, tenant.Project, sessionID, responseID, seq, event, []byte(payload)); err != nil {
 		return Transition{}, fmt.Errorf("append event: %w", err)
 	}
 
@@ -333,9 +335,17 @@ type AdmissionInput struct {
 	RequestHash    string
 	ResponseID     string
 	RunID          string
-	SessionID      string
-	Input          []byte
-	Body           []byte
+	// SessionID is the freshly minted session id used when the response opens a new session.
+	// A chained response (RequestedSessionID / PreviousResponseID set) reuses the resolved
+	// existing session instead, and this minted id is discarded.
+	SessionID string
+	// RequestedSessionID / PreviousResponseID chain onto an existing session (spec §9, LP
+	// Task 5 minor-a). At most one is set (the handler rejects both). An unknown or foreign
+	// id resolves to SessionNotFound (404); a non-active session to SessionConflict (409).
+	RequestedSessionID *string
+	PreviousResponseID *string
+	Input              []byte
+	Body               []byte
 	// Store is the §8.3 retention flag persisted on the response. It defaults true
 	// (persistent); the caller resolves an absent request field to true before admission.
 	Store bool
@@ -351,6 +361,11 @@ type Admission struct {
 	Conflict          bool
 	Purged            bool
 	ResourceTombstone string
+	// SessionNotFound marks a chain onto an unknown or foreign session/response (404, no
+	// existence disclosure); SessionConflict a chain onto a non-active session (409). Both
+	// are decided before any resource is created, so the transaction leaves nothing behind.
+	SessionNotFound bool
+	SessionConflict bool
 }
 
 // AdmitResponse atomically reserves the idempotency key and, on a fresh key,
@@ -367,8 +382,48 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	// Resolve the target session: a chained request (session_id / previous_response_id)
+	// appends to an existing session, otherwise the minted id opens a new one (spec §9, LP
+	// Task 5 minor-a). Resolution is read-only and runs before the idempotency reserve, so an
+	// unknown session (404) or a non-active one (409) leaves no idempotency record behind.
+	// ponytail: resolve-then-reserve is correct because Task 1 has no runtime session-close
+	// racing a replay; T4's one-active-root constraint + close_session command formalize it.
+	sessionID := in.SessionID
+	createSession := true
+	if in.PreviousResponseID != nil || in.RequestedSessionID != nil {
+		query, arg := "SessionForCreate", ""
+		if in.PreviousResponseID != nil {
+			query, arg = "SessionForPreviousResponse", *in.PreviousResponseID
+		} else {
+			arg = *in.RequestedSessionID
+		}
+		var existingID, state string
+		switch err := tx.QueryRow(ctx, storage.Query(query), arg, tenant.Organization, tenant.Project).
+			Scan(&existingID, &state); {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Admission{SessionNotFound: true}, nil
+		case err != nil:
+			return Admission{}, fmt.Errorf("resolve chained session: %w", err)
+		}
+		if state != string(statemachines.SessionActive) {
+			return Admission{SessionConflict: true}, nil
+		}
+		sessionID, createSession = existingID, false
+	}
+
+	// The response body carries the resolved session id (the minted one is only correct for a
+	// fresh session), and the idempotency record must store that exact body for replay.
+	body := in.Body
+	if sessionID != in.SessionID {
+		patched, err := withSessionID(in.Body, sessionID)
+		if err != nil {
+			return Admission{}, err
+		}
+		body = patched
+	}
+
 	err = tx.QueryRow(ctx, storage.Query("ReserveIdempotency"),
-		tenant.Organization, tenant.Project, in.Principal, in.Method, in.Route, in.IdempotencyKey, in.RequestHash, in.Body).
+		tenant.Organization, tenant.Project, in.Principal, in.Method, in.Route, in.IdempotencyKey, in.RequestHash, body).
 		Scan(new(int64))
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -401,22 +456,25 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		return Admission{}, fmt.Errorf("reserve idempotency key: %w", err)
 	}
 
-	// Fresh key: create the durable resources and the birth event atomically.
-	if _, err := tx.Exec(ctx, storage.Query("InsertSession"),
-		in.SessionID, tenant.Organization, tenant.Project); err != nil {
-		return Admission{}, fmt.Errorf("insert session: %w", err)
+	// Fresh key: create the durable resources and the birth event atomically. A chained
+	// response reuses the resolved session (createSession is false); a fresh one opens it.
+	if createSession {
+		if _, err := tx.Exec(ctx, storage.Query("InsertSession"),
+			sessionID, tenant.Organization, tenant.Project); err != nil {
+			return Admission{}, fmt.Errorf("insert session: %w", err)
+		}
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertResponse"),
-		in.ResponseID, tenant.Organization, tenant.Project, in.SessionID, in.Input, in.Store); err != nil {
+		in.ResponseID, tenant.Organization, tenant.Project, sessionID, in.Input, in.Store); err != nil {
 		return Admission{}, fmt.Errorf("insert response: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertRun"),
-		in.RunID, tenant.Organization, tenant.Project, in.SessionID, in.ResponseID); err != nil {
+		in.RunID, tenant.Organization, tenant.Project, sessionID, in.ResponseID); err != nil {
 		return Admission{}, fmt.Errorf("insert run: %w", err)
 	}
 
 	var seq int64
-	if err := tx.QueryRow(ctx, storage.Query("AllocateSequence"), in.SessionID).Scan(&seq); err != nil {
+	if err := tx.QueryRow(ctx, storage.Query("AllocateSequence"), sessionID).Scan(&seq); err != nil {
 		return Admission{}, fmt.Errorf("allocate session sequence: %w", err)
 	}
 	eventID, err := newEventID()
@@ -425,7 +483,7 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	}
 	payload := fmt.Sprintf(`{"run_id":%q,"state":"queued"}`, in.RunID)
 	if _, err := tx.Exec(ctx, storage.Query("AppendEvent"),
-		eventID, tenant.Organization, tenant.Project, in.SessionID, seq, "run.queued.v1", []byte(payload)); err != nil {
+		eventID, tenant.Organization, tenant.Project, sessionID, in.ResponseID, seq, "run.queued.v1", []byte(payload)); err != nil {
 		return Admission{}, fmt.Errorf("append queued event: %w", err)
 	}
 	dedupe := fmt.Sprintf("run:%s:seq:%d", in.RunID, seq)
@@ -450,5 +508,34 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	if err := tx.Commit(ctx); err != nil {
 		return Admission{}, fmt.Errorf("commit admission: %w", err)
 	}
-	return Admission{Body: in.Body}, nil
+	return Admission{Body: body}, nil
+}
+
+// withSessionID rewrites the session_id of a response projection so a chained response's
+// stored and returned body names the resolved existing session, not the minted candidate.
+// Every other field is preserved verbatim as raw JSON; only session_id changes.
+func withSessionID(body []byte, sessionID string) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, fmt.Errorf("decode response body: %w", err)
+	}
+	sid, err := json.Marshal(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	fields["session_id"] = sid
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("encode response body: %w", err)
+	}
+	return out, nil
+}
+
+// nullableText maps an empty string to a SQL NULL, so a session-scoped event journals a
+// NULL response_id rather than an empty string.
+func nullableText(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }

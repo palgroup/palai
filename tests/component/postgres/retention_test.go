@@ -140,6 +140,73 @@ func TestPurgeKeepsTombstoneRequestHashAndFingerprint(t *testing.T) {
 	}
 }
 
+// seedEvent appends one journal event to a session, keyed to a response, at an explicit
+// sequence. The purge scrub is per-response (spec §22.2), so response_id decides which
+// events a purge reaches.
+func seedEvent(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, sessionID, responseID string, seq int, payload string) {
+	t.Helper()
+	exec(t, pool,
+		`INSERT INTO events (id, organization_id, project_id, session_id, response_id, seq, type, payload)
+		 VALUES ($1, $2, $3, $4, $5, $6, 'output.item.v1', $7)`,
+		newID("evt"), tenant.Organization, tenant.Project, sessionID, responseID, seq, []byte(payload))
+}
+
+func eventPayload(t *testing.T, pool *pgxpool.Pool, responseID string, seq int) string {
+	t.Helper()
+	var payload string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT payload::text FROM events WHERE response_id = $1 AND seq = $2`, responseID, seq).Scan(&payload); err != nil {
+		t.Fatalf("read event payload response=%s seq=%d error = %v", responseID, seq, err)
+	}
+	return payload
+}
+
+// TestStoreFalsePurgeLeavesSiblingResponseEvents proves the store:false purge is scoped to
+// the victim response, not its whole session: a retained sibling response sharing the same
+// session keeps its journal intact while the victim's events are scrubbed. This is the
+// closure of the 000002 session-level scrub ceiling (storage/queries/responses.sql) — under
+// a session-wide scrub the sibling's events would be wrongly reaped too (spec §22.2).
+func TestStoreFalsePurgeLeavesSiblingResponseEvents(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	tenant, sessionID, _ := seedRun(t, pool)
+
+	// Two responses in ONE session: an expired store:false victim and a retained sibling.
+	victim := seedTerminalResponse(t, pool, tenant, sessionID, false, time.Hour)
+	sibling := seedTerminalResponse(t, pool, tenant, sessionID, true, time.Hour)
+
+	// One contiguous per-session journal, but events are keyed per response.
+	seedEvent(t, pool, tenant, sessionID, victim, 1, `{"content":"victim secret"}`)
+	seedEvent(t, pool, tenant, sessionID, victim, 2, `{"content":"victim secret 2"}`)
+	seedEvent(t, pool, tenant, sessionID, sibling, 3, `{"content":"sibling content"}`)
+	seedEvent(t, pool, tenant, sessionID, sibling, 4, `{"content":"sibling content 2"}`)
+
+	purged, err := cs.PurgeExpiredStoreFalse(ctx, time.Minute)
+	if err != nil {
+		t.Fatalf("PurgeExpiredStoreFalse() error = %v", err)
+	}
+	if purged != 1 {
+		t.Fatalf("purged = %d, want 1 (only the store:false victim)", purged)
+	}
+
+	// The victim's events are scrubbed.
+	for _, seq := range []int{1, 2} {
+		if got := eventPayload(t, pool, victim, seq); got != `{"purged": true}` {
+			t.Fatalf("victim event seq %d payload = %s, want scrubbed", seq, got)
+		}
+	}
+	// The sibling's events are INTACT — the purge must not cross the response boundary.
+	// (jsonb renders a space after the colon, matching the {"purged": true} scrub literal.)
+	if got := eventPayload(t, pool, sibling, 3); got != `{"content": "sibling content"}` {
+		t.Fatalf("sibling event seq 3 payload = %s, want unchanged (a session-wide scrub would reap this retained sibling)", got)
+	}
+	if got := eventPayload(t, pool, sibling, 4); got != `{"content": "sibling content 2"}` {
+		t.Fatalf("sibling event seq 4 payload = %s, want unchanged", got)
+	}
+}
+
 // TestPurgeReplacesEventPayloadsButKeepsSequence proves the sweep scrubs the content
 // out of a purged response's journal events yet preserves every row and the
 // contiguous per-session sequence (spec §20.9, §21.1).
@@ -149,15 +216,12 @@ func TestPurgeReplacesEventPayloadsButKeepsSequence(t *testing.T) {
 	pool := cs.Pool()
 
 	tenant, sessionID, _ := seedRun(t, pool)
-	_ = seedTerminalResponse(t, pool, tenant, sessionID, false, time.Hour)
+	respID := seedTerminalResponse(t, pool, tenant, sessionID, false, time.Hour)
 
-	// A content-bearing journal for the transient session: three contiguous events.
+	// A content-bearing journal for the transient response: three contiguous events keyed
+	// to the response the purge reaps.
 	for seq := 1; seq <= 3; seq++ {
-		exec(t, pool,
-			`INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
-			 VALUES ($1, $2, $3, $4, $5, 'output.item.v1', $6)`,
-			newID("evt"), tenant.Organization, tenant.Project, sessionID, seq,
-			[]byte(`{"content":"secret message body"}`))
+		seedEvent(t, pool, tenant, sessionID, respID, seq, `{"content":"secret message body"}`)
 	}
 
 	if _, err := cs.PurgeExpiredStoreFalse(ctx, time.Minute); err != nil {

@@ -131,7 +131,18 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	if len(input) > 0 {
 		_ = json.Unmarshal(input, &inputValue)
 	}
-	if err := ch.Send(ctx, o.frame(st, "run.start", map[string]any{"input": inputValue}, string(ready.ID))); err != nil {
+	// Carry the session's prior responses as conversation history so a chained response
+	// continues the session (spec §9, §22.2). A first response has no prior — messages is
+	// omitted and run.start is exactly the LP-0 single-shot shape.
+	prior, err := o.spine.SessionHistory(ctx, tenant, sessionID, responseID)
+	if err != nil {
+		return fmt.Errorf("assemble session history: %w", err)
+	}
+	runStart := map[string]any{"input": inputValue}
+	if messages := historyMessages(prior); len(messages) > 0 {
+		runStart["messages"] = messages
+	}
+	if err := ch.Send(ctx, o.frame(st, "run.start", runStart, string(ready.ID))); err != nil {
 		return fmt.Errorf("send run.start: %w", err)
 	}
 

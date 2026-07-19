@@ -73,27 +73,31 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 	adm, err := s.spine.AdmitResponse(ctx,
 		coordinator.Tenant{Organization: req.Scope.Organization, Project: req.Scope.Project},
 		coordinator.AdmissionInput{
-			Principal:      req.Scope.Principal,
-			IdempotencyKey: req.IdempotencyKey,
-			Method:         req.Method,
-			Route:          req.Route,
-			RequestHash:    req.RequestHash,
-			ResponseID:     req.ResponseID,
-			RunID:          req.RunID,
-			SessionID:      req.SessionID,
-			Input:          req.Input,
-			Body:           req.Body,
-			Store:          req.Store,
+			Principal:          req.Scope.Principal,
+			IdempotencyKey:     req.IdempotencyKey,
+			Method:             req.Method,
+			Route:              req.Route,
+			RequestHash:        req.RequestHash,
+			ResponseID:         req.ResponseID,
+			RunID:              req.RunID,
+			SessionID:          req.SessionID,
+			RequestedSessionID: req.RequestedSessionID,
+			PreviousResponseID: req.PreviousResponseID,
+			Input:              req.Input,
+			Body:               req.Body,
+			Store:              req.Store,
 		})
 	if err != nil {
 		return api.AdmitResult{}, err
 	}
 	result := api.AdmitResult{
-		ResponseID: responseID(adm.Body),
-		Body:       adm.Body,
-		Replayed:   adm.Replayed,
-		Conflict:   adm.Conflict,
-		Purged:     adm.Purged,
+		ResponseID:      responseID(adm.Body),
+		Body:            adm.Body,
+		Replayed:        adm.Replayed,
+		Conflict:        adm.Conflict,
+		Purged:          adm.Purged,
+		SessionNotFound: adm.SessionNotFound,
+		SessionConflict: adm.SessionConflict,
 	}
 	// On a purged replay the body is gone; the tombstone identity is the resource id.
 	if adm.Purged {

@@ -9,9 +9,12 @@ ON CONFLICT (session_id)
 DO UPDATE SET last_seq = session_sequences.last_seq + 1
 RETURNING last_seq;
 
+-- AppendEvent journals one event. response_id names the owning response for run-scoped
+-- events so the retention purge is per-response (spec §22.2); session-scoped events pass
+-- NULL and are left untouched by the purge (they carry no customer content).
 -- name: AppendEvent
-INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO events (id, organization_id, project_id, session_id, response_id, seq, type, payload)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: EnqueueOutbox
 INSERT INTO outbox (organization_id, project_id, topic, dedupe_key, payload)

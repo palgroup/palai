@@ -34,7 +34,8 @@ func (s *Store) RunIDForResponse(ctx context.Context, tenant Tenant, responseID 
 // UPDATE lock serializes against ApplyRunTransition, so a cancel and a commit cannot both win.
 func guardRunActive(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string) error {
 	var sessionID, state string
-	err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).Scan(&sessionID, &state)
+	var responseID *string
+	err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).Scan(&sessionID, &responseID, &state)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("run %s not found in tenant scope", runID)
 	}
@@ -67,9 +68,39 @@ func (s *Store) RunContext(ctx context.Context, runID string) (Tenant, string, s
 	return tenant, sessionID, responseID, input, nil
 }
 
+// PriorResponse is one earlier response in a session, as run.start history needs it:
+// Output is the stored terminal projection (nil once purged or not yet terminal), and
+// Purged marks a reaped response whose content is a redacted_content marker (spec §22.2).
+type PriorResponse struct {
+	Output []byte
+	Purged bool
+}
+
+// SessionHistory returns a session's responses created before responseID, in creation
+// order, so run.start can carry them as conversation history (spec §9, §22.2). It is
+// tenant-scoped; a foreign session or response yields no rows.
+func (s *Store) SessionHistory(ctx context.Context, tenant Tenant, sessionID, responseID string) ([]PriorResponse, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("SessionHistory"), sessionID, tenant.Organization, tenant.Project, responseID)
+	if err != nil {
+		return nil, fmt.Errorf("read session history: %w", err)
+	}
+	defer rows.Close()
+	var out []PriorResponse
+	for rows.Next() {
+		var p PriorResponse
+		if err := rows.Scan(&p.Output, &p.Purged); err != nil {
+			return nil, fmt.Errorf("scan session history: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // appendEvent journals one event under a freshly allocated, gap-free session sequence
 // inside tx. It is the shared body of the commit-before-deliver primitives below.
-func appendEvent(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, eventType string, payload []byte) (int64, error) {
+// responseID keys the event to its owning response so the retention purge is per-response
+// (spec §22.2); an empty string journals a session-scoped event with a NULL response_id.
+func appendEvent(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, eventType string, payload []byte) (int64, error) {
 	var seq int64
 	if err := tx.QueryRow(ctx, storage.Query("AllocateSequence"), sessionID).Scan(&seq); err != nil {
 		return 0, fmt.Errorf("allocate session sequence: %w", err)
@@ -79,7 +110,7 @@ func appendEvent(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, event
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, storage.Query("AppendEvent"),
-		eventID, tenant.Organization, tenant.Project, sessionID, seq, eventType, payload); err != nil {
+		eventID, tenant.Organization, tenant.Project, sessionID, nullableText(responseID), seq, eventType, payload); err != nil {
 		return 0, fmt.Errorf("append event: %w", err)
 	}
 	return seq, nil
@@ -89,7 +120,7 @@ func appendEvent(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, event
 // is called, so the request has a durable trace and a reclaimed attempt can dedup
 // against a committed result (spec §24.7 order, §53.4). The row is idempotent; the
 // event is journaled only on the fresh insert, so a re-derived request adds nothing.
-func (s *Store) CommitModelRequest(ctx context.Context, tenant Tenant, sessionID, runID, requestID, eventType string, payload []byte) error {
+func (s *Store) CommitModelRequest(ctx context.Context, tenant Tenant, sessionID, responseID, runID, requestID, eventType string, payload []byte) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin model request: %w", err)
@@ -107,7 +138,7 @@ func (s *Store) CommitModelRequest(ctx context.Context, tenant Tenant, sessionID
 	if err != nil {
 		return fmt.Errorf("insert model request: %w", err)
 	}
-	if _, err := appendEvent(ctx, tx, tenant, sessionID, eventType, payload); err != nil {
+	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, eventType, payload); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -140,7 +171,7 @@ func (s *Store) LookupModelResult(ctx context.Context, tenant Tenant, requestID 
 // result event in one transaction. The orchestrator calls it before delivering
 // model.result to the engine, so no provider result reaches the engine until its state
 // is durable (spec §24.7).
-func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID, runID, requestID string, result []byte, eventType string, payload []byte) (int64, error) {
+func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID, requestID string, result []byte, eventType string, payload []byte) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin model commit: %w", err)
@@ -154,7 +185,7 @@ func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID,
 		requestID, tenant.Organization, tenant.Project, result); err != nil {
 		return 0, fmt.Errorf("complete model request: %w", err)
 	}
-	seq, err := appendEvent(ctx, tx, tenant, sessionID, eventType, payload)
+	seq, err := appendEvent(ctx, tx, tenant, sessionID, responseID, eventType, payload)
 	if err != nil {
 		return 0, err
 	}
@@ -169,7 +200,7 @@ func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID,
 // (commit-before-deliver). The tool_call row is idempotent (UpsertToolCall keeps the
 // authoritative completed row); duplicate frames are already deduped by the caller's
 // frame ledger, so this runs once per tool call.
-func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, runID string, fence uint64, callID, name string, arguments, result []byte, eventType string, payload []byte) (int64, error) {
+func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, fence uint64, callID, name string, arguments, result []byte, eventType string, payload []byte) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin tool commit: %w", err)
@@ -183,7 +214,7 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 		callID, tenant.Organization, tenant.Project, runID, int64(fence), name, arguments, result); err != nil {
 		return 0, fmt.Errorf("upsert tool call: %w", err)
 	}
-	seq, err := appendEvent(ctx, tx, tenant, sessionID, eventType, payload)
+	seq, err := appendEvent(ctx, tx, tenant, sessionID, responseID, eventType, payload)
 	if err != nil {
 		return 0, err
 	}

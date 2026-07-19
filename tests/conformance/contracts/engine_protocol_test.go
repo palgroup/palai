@@ -168,6 +168,72 @@ func TestEngineFrameMaxLineBytesDocumented(t *testing.T) {
 	}
 }
 
+// engineBranchData returns the then.properties.data schema of the allOf branch that gates
+// on the given frame type, reading the shape straight from the canonical schema.
+func engineBranchData(t *testing.T, schema map[string]any, typ string) map[string]any {
+	t.Helper()
+	allOf, _ := schema["allOf"].([]any)
+	for _, raw := range allOf {
+		entry, _ := raw.(map[string]any)
+		ifObj, _ := entry["if"].(map[string]any)
+		ifProps, _ := ifObj["properties"].(map[string]any)
+		typeGate, _ := ifProps["type"].(map[string]any)
+		if !gateMatches(typeGate, typ) {
+			continue
+		}
+		then, _ := entry["then"].(map[string]any)
+		props, _ := then["properties"].(map[string]any)
+		data, ok := props["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("%q branch has no then.properties.data", typ)
+		}
+		return data
+	}
+	t.Fatalf("no allOf branch gates on %q", typ)
+	return nil
+}
+
+// TestRunStartCarriesInputAndHistory pins the run.start data shape: it requires input and
+// documents the assembled prior-response history channel (messages), so session chaining
+// cannot silently drift the frame shape (spec §9, §22.2; LP Task 9 schema-pin pattern).
+func TestRunStartCarriesInputAndHistory(t *testing.T) {
+	schema := readProtocolSchema(t, "engine/engine.schema.json")
+	data := engineBranchData(t, schema, "run.start")
+
+	if req := schemaStrings(t, data["required"]); !slices.Contains(req, "input") {
+		t.Fatalf("run.start data.required = %v, want it to require input", req)
+	}
+	props, _ := data["properties"].(map[string]any)
+	messages, ok := props["messages"].(map[string]any)
+	if !ok {
+		t.Fatal("run.start data.properties is missing the messages (history) field")
+	}
+	if messages["type"] != "array" {
+		t.Fatalf("run.start messages type = %v, want array", messages["type"])
+	}
+
+	// The generated envelope round-trips a chained run.start (input + history) without loss.
+	f := contracts.EngineFrame{
+		Protocol: "engine.v1",
+		ID:       contracts.FrameID("frm_abc123"),
+		Type:     "run.start",
+		Sequence: 2,
+		Time:     "2026-07-16T12:00:00Z",
+		Data: map[string]any{
+			"input":    "second turn",
+			"messages": []any{map[string]any{"role": "assistant", "content": "prior output"}},
+		},
+	}
+	var round contracts.EngineFrame
+	roundTrip(t, f, &round)
+	if round.Data["input"] != "second turn" {
+		t.Fatalf("round-trip lost run.start input: %+v", round.Data)
+	}
+	if _, ok := round.Data["messages"].([]any); !ok {
+		t.Fatalf("round-trip lost run.start history: %+v", round.Data)
+	}
+}
+
 func TestRunnerLeaseMessagesRequireFence(t *testing.T) {
 	schema := readProtocolSchema(t, "runner/runner.schema.json")
 

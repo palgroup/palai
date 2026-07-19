@@ -13,6 +13,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -103,6 +104,93 @@ func tableExists(t *testing.T, pool *pgxpool.Pool, name string) bool {
 		t.Fatalf("to_regclass(%s) error = %v", name, err)
 	}
 	return reg != nil
+}
+
+func columnExists(t *testing.T, pool *pgxpool.Pool, table, column string) bool {
+	t.Helper()
+	var exists bool
+	if err := pool.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2)`,
+		table, column).Scan(&exists); err != nil {
+		t.Fatalf("column exists %s.%s error = %v", table, column, err)
+	}
+	return exists
+}
+
+// TestSessionChainingMigrationColumns proves 000003 adds its columns idempotently and
+// reverses cleanly: the columns exist after apply (and a re-apply is a no-op), are gone
+// after rollback, and return after reapply (spec §9 chaining, migration re-run safety).
+func TestSessionChainingMigrationColumns(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// The 000003 columns are present after apply, and a second Migrate is a clean no-op
+	// (ADD COLUMN IF NOT EXISTS makes the whole chain safe to re-run).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !columnExists(t, pool, "sessions", "active_root_run_id") {
+		t.Fatal("after apply, sessions.active_root_run_id is missing")
+	}
+	if !columnExists(t, pool, "events", "response_id") {
+		t.Fatal("after apply, events.response_id is missing")
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if columnExists(t, pool, "sessions", "active_root_run_id") {
+		t.Fatal("after rollback, sessions.active_root_run_id still exists")
+	}
+	if columnExists(t, pool, "events", "response_id") {
+		t.Fatal("after rollback, events.response_id still exists")
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !columnExists(t, pool, "sessions", "active_root_run_id") || !columnExists(t, pool, "events", "response_id") {
+		t.Fatal("after reapply, a 000003 column is missing")
+	}
+}
+
+// TestSessionChainingMigrationBackfillsPreexistingEvents proves the one-shot backfill closes
+// the upgrade-boundary retention gap: events written before 000003 carry a NULL response_id
+// the per-response scrub can't reach, so the migration keys each session's legacy events to
+// its sole response (LP-0 1:1). Re-running the marker-gated backfill drives the real
+// migration path, not a copy.
+func TestSessionChainingMigrationBackfillsPreexistingEvents(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	tenant, sessionID, _ := seedRun(t, pool)
+	// A pre-000003 response with events that predate the response_id column (NULL-keyed).
+	respID := seedTerminalResponse(t, pool, tenant, sessionID, false, time.Hour)
+	for seq := 1; seq <= 2; seq++ {
+		exec(t, pool,
+			`INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
+			 VALUES ($1, $2, $3, $4, $5, 'output.item.v1', '{"content":"legacy"}')`,
+			newID("evt"), tenant.Organization, tenant.Project, sessionID, seq)
+	}
+
+	// Clear the version marker so the one-shot backfill runs again on the next Migrate.
+	exec(t, pool, `DELETE FROM schema_migrations WHERE version = 3`)
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+
+	// The legacy events are now keyed to their session's sole response, so the per-response
+	// purge can reach them (the upgrade-boundary gap is closed).
+	var keyed int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM events WHERE session_id = $1 AND response_id = $2`, sessionID, respID).Scan(&keyed); err != nil {
+		t.Fatalf("count keyed events error = %v", err)
+	}
+	if keyed != 2 {
+		t.Fatalf("backfilled events keyed to the response = %d, want 2", keyed)
+	}
 }
 
 func TestMigrationApplyRollbackReapply(t *testing.T) {

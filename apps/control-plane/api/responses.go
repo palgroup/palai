@@ -52,8 +52,13 @@ type AdmitRequest struct {
 	ResponseID     string
 	RunID          string
 	SessionID      string
-	Input          []byte
-	Body           []byte
+	// RequestedSessionID / PreviousResponseID chain onto an existing session (spec §9). They
+	// carry the request's opt-in ids verbatim; the store resolves them to the effective
+	// session (or a tenant-scoped 404 / 409) — the minted SessionID opens a fresh session.
+	RequestedSessionID *string
+	PreviousResponseID *string
+	Input              []byte
+	Body               []byte
 	// Store is the resolved §8.3 retention flag (default true) persisted on the response.
 	Store bool
 }
@@ -69,6 +74,10 @@ type AdmitResult struct {
 	Replayed   bool
 	Conflict   bool
 	Purged     bool
+	// SessionNotFound is a chain onto an unknown or foreign session/response (404, no
+	// existence disclosure); SessionConflict a chain onto a non-active session (409).
+	SessionNotFound bool
+	SessionConflict bool
 }
 
 type responseHandler struct {
@@ -139,20 +148,32 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := h.admitter.AdmitResponse(r.Context(), AdmitRequest{
-		Scope:          scope,
-		IdempotencyKey: middleware.IdempotencyKey(r.Context()),
-		Method:         http.MethodPost,
-		Route:          createRoute,
-		RequestHash:    hash,
-		ResponseID:     responseID,
-		RunID:          runID,
-		SessionID:      sessionID,
-		Input:          input,
-		Body:           body,
-		Store:          store,
+		Scope:              scope,
+		IdempotencyKey:     middleware.IdempotencyKey(r.Context()),
+		Method:             http.MethodPost,
+		Route:              createRoute,
+		RequestHash:        hash,
+		ResponseID:         responseID,
+		RunID:              runID,
+		SessionID:          sessionID,
+		RequestedSessionID: req.SessionID,
+		PreviousResponseID: req.PreviousResponseID,
+		Input:              input,
+		Body:               body,
+		Store:              store,
 	})
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	// A chain onto an unknown/foreign session is a tenant-scoped 404 (no existence
+	// disclosure); a chain onto a non-active session is a 409 (spec §9, §22.1).
+	if out.SessionNotFound {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such session in this project")
+		return
+	}
+	if out.SessionConflict {
+		middleware.WriteProblem(w, r, http.StatusConflict, "session_not_active", "the session is not active and cannot accept a new response")
 		return
 	}
 	if out.Conflict {

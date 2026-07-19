@@ -97,6 +97,25 @@
           }
         }
       }
+    },
+    {
+      "if": {"required": ["type"], "properties": {"type": {"const": "run.start"}}},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": ["input"],
+            "properties": {
+              "input": {"description": "This turn's user input (spec §25.10 step 2)."},
+              "messages": {
+                "description": "Prior-response conversation history the engine folds in before input (spec §9, §22.2). The controller assembles it from the session's earlier responses; a purged response is carried as a redacted_content marker, and a first response omits it.",
+                "type": "array",
+                "items": {"type": "object"}
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

@@ -3,7 +3,7 @@
 -- another tenant's run by guessing an ID.
 
 -- name: LockRun
-SELECT session_id, state
+SELECT session_id, response_id, state
 FROM runs
 WHERE id = $1 AND organization_id = $2 AND project_id = $3
 FOR UPDATE;
@@ -115,7 +115,7 @@ VALUES ($1, $2, $3, $4, $5, 'queued');
 -- TTL in milliseconds, $2 the batch bound.
 -- name: PurgeExpiredStoreFalse
 WITH victims AS (
-    SELECT id, session_id, organization_id, project_id, state, output
+    SELECT id, organization_id, project_id, state, output
     FROM responses
     WHERE store = false
       AND purged_at IS NULL
@@ -136,15 +136,15 @@ tombstone AS (
       AND i.organization_id = v.organization_id
       AND i.project_id = v.project_id
 ),
--- ponytail: session-level scrub — create her response'a taze session açtığı için bugün
--- doğru (session:response 1:1); session reuse / previous_response_id chaining gelirse
--- purge response başına yeniden anahtarlanmalı, yoksa store:false purge aynı session'daki
--- retained kardeş response'ların journal'ını da siler (events'te per-response anahtar yok).
+-- Per-response scrub (spec §22.2): only the victim response's own run-scoped events are
+-- reaped, keyed by events.response_id (000003). A retained sibling response sharing the
+-- session keeps its journal — the closure of the 000002 session-level scrub ceiling now
+-- that a session chains multiple responses.
 scrub_events AS (
     UPDATE events e
     SET payload = '{"purged": true}'::jsonb
     FROM victims v
-    WHERE e.session_id = v.session_id
+    WHERE e.response_id = v.id
       AND e.organization_id = v.organization_id
       AND e.project_id = v.project_id
 ),
