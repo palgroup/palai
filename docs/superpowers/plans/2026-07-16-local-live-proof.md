@@ -66,6 +66,8 @@ Bu sınırlar discovery response'unda maturity/availability olarak görünür; u
 
 LP-003 ve LP-004 fake provider ile pass edilemez. CI deterministic suite ayrıca vardır; release evidence protected live environment'da üretilir.
 
+> **Adjudication (2026-07-19, LP-0 merge `ddf2501` sonrası):** Shipped UAT case'i LP-004 (`tests/uat/cases/LP-004/case.yaml`, `live-provider-second-round-trip`) canlı bir İKİNCİ TEXT round-trip'idir; bu tablonun LP-004 satırındaki "brokered tool LIVE" kanıtı stack-level UAT'ta üretilmedi ve üretilmiyor. Canlı tool-call kapsamı adapter seviyesinde kalır: `make test-live-provider PROVIDER=provider-one CASE=text-stream-tool-schema` (`tests/live/provider/live_test.go`, gerçek provider'a karşı text+stream+tool+strict-schema). Stack-level canlı brokered-tool kanıtı SİLİNMEDİ, sahibine devredildi: master plan E06 (model/tool broker + reference kernel) canlı tool yolunu stack UAT'a bir case olarak eklemekle yükümlüdür. O kapanışa kadar LP-004 satırı "ikinci canlı text round-trip + adapter-level canlı tool" olarak okunur.
+
 ## 4. Minimum runtime topology
 
 ```text
@@ -1794,3 +1796,15 @@ Task 15 fork kararı 4'ün borcu. LP-0'da model seçimi instance-wide tek env-co
 - [ ] `make test-component TEST=models && make test-e2e TEST=responses` PASS; LP deterministic suite regress etmez.
 
 Bu carve-out kapanana kadar model seçimi instance-wide tek env route'tur ve `model_routes`/`model_connections` tabloları okuyucusuzdur; bu bilinen bir durumdur — şemanın LP-0'dan beri hazır olması E06'nın migration yazmadan tüketmeye başlamasını sağlar.
+
+### 7.4 Runtime follow-up'ları (whole-branch review, 2026-07-19)
+
+Kayıt yeri bu commit'li plandır — `.superpowers/` ledger gitignored ve makine-yereldir, oraya yazılan kaybolur. LP-0 merge'ünden (`ddf2501`) sonra tespit edildi; hiçbiri LP-0 kanıtını geçersiz kılmaz, her biri sahibinin epic child planına taşınmak ZORUNDADIR:
+
+1. **Engine dial + lease handshake üst sınırsız (ev: E03 controller yarısı; E05 runner yarısı).** `apps/control-plane/internal/execution/orchestrator.go:90` `dialer.Dial(ctx, attempt)` per-attempt deadline taşımaz (yalnızca worker ctx'ine bağlı); runner tarafında `packages/runner/session.go:70` `OpenLease` ve `packages/runner/session.go:188` `Complete` handshake'leri de sınırsız bloklayabilir. Upgrade: attempt-scoped `context.WithTimeout` — dial+handshake toplamı coordinator lease penceresinden (30s, `main.go` WorkerConfig) kısa tutulur; aşım sessiz askı değil, sınıflandırılmış attempt failure olur.
+
+2. **Worker/reconciler/retention supervision yok (ev: E03).** `apps/control-plane/cmd/palai-control-plane/main.go:99` `go func() { _ = w.Run(ctx) }()` — `packages/coordinator/worker.go:87` `Run` claim/poll hatasında return eder, launcher hatayı discard eder ve goroutine sessizce ölür (dispatch kapasitesi kalıcı düşer); `main.go:102` reconciler ve `main.go:144` retention reaper aynı discard kalıbındadır. Upgrade: üçü için tek backoff'lu supervised-restart helper + ölüm/restart sayacının doctor'a çıkması.
+
+3. **Runner cert renewal >5m serving (ev: E05; production kapısı E14).** `cmd/runner/main.go:62-63`'teki ponytail notunun plan kaydı: `runnerCertTTL` (5m) tek UAT tier'ının penceresidir; daha uzun yaşayan runner cert expiry ile ölür. Upgrade: TTL'in ~%80'inde sessiz re-enroll/renew ve lease-safe rollover; E14 production self-host iddiası bu kapanmadan verilmez.
+
+4. **Engine container reaping compose teardown'da yok (ev: E07 CLI teardown; label sözleşmesi E05'te hazır).** Engine container'ları compose service değildir; runner onları Docker API ile açar ve `io.palai.sandbox=engine` label'ını zaten basar (`packages/runner/supervisor.go:20` + `:170`). `palai local reset`/`down` (`cmd/cli/internal/stack/lifecycle.go`) yalnızca compose'u söker; mid-run kesilen bir stack yetim engine container'ı bırakabilir. Upgrade: teardown'a label-filtreli sweep (`docker ps -aq --filter label=io.palai.sandbox=engine` → force remove); sweep'in başka bir eşzamanlı stack'in engine'ini vurmaması için label'a compose project adı da eklenir (driver `Labels` map'ine tek satır).

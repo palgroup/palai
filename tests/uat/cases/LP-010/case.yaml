@@ -1,6 +1,7 @@
 id: LP-010
-name: secret-absent-from-engine-frames
+name: engine-path-round-trip
 proof_class: e2e-deterministic
 provider: fake
 input: "frame hygiene check"
 expect_status: completed
+# secret-absent-from-engine-frames proof: tests/security/secrets/model_broker_test.go (sentinel frame scan)

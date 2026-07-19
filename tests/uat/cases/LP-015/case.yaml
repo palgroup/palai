@@ -1,6 +1,7 @@
 id: LP-015
-name: deterministic-repeatable-slice
+name: repeat-input-round-trip
 proof_class: e2e-deterministic
 provider: fake
 input: "repeatable check"
 expect_status: completed
+# determinism/repeatability proof: adapters/models/fake + tests/e2e/local/clean_boot_test.go -count=3; manifest reproducibility fields enforced by verifier

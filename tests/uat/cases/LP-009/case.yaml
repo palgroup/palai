@@ -1,6 +1,7 @@
 id: LP-009
-name: secret-absent-from-compose-surfaces
+name: compose-stack-round-trip
 proof_class: e2e-deterministic
 provider: fake
 input: "compose surface check"
 expect_status: completed
+# secret-absent-from-compose-surfaces proof: tests/security/runner/isolation_test.go (env allowlist) + bundle redaction scan (tests/uat/evidence.go)

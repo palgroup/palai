@@ -1,6 +1,7 @@
 id: LP-005
-name: canonical-event-sequence-contiguous
+name: multi-step-input-completes
 proof_class: e2e-deterministic
 provider: fake
 input: "count to three"
 expect_status: completed
+# event-sequence contiguity not asserted per-case here; proof: tests/e2e/sse/stream_test.go + reconnect_test.go

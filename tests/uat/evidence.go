@@ -82,6 +82,11 @@ var secretPattern = regexp.MustCompile(`sk-[A-Za-z0-9_-]{12,}`)
 // checksumPattern is the required checksum shape (sha256:<64 hex>).
 var checksumPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
+// liveProviderIDPattern is the provider request-id shape a live-provider case must carry.
+// Today the only live adapter is provider-one (OpenAI Chat Completions, ids "chatcmpl-...");
+// widen the alternation when a second live adapter lands.
+var liveProviderIDPattern = regexp.MustCompile(`^chatcmpl-[A-Za-z0-9_-]+$`)
+
 // VerifyManifest checks one evidence manifest against the required-field and redaction
 // contract. It returns every finding; an empty slice is a clean pass. secrets are extra
 // literal needles (e.g. a run's real credential) that must never appear in the manifest.
@@ -124,6 +129,9 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 		miss(c.Checksum == "", "checksum", c.ID)
 		if c.Checksum != "" && !checksumPattern.MatchString(c.Checksum) {
 			findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "checksum is not sha256:<64 hex>"})
+		}
+		if c.ProofClass == "live-provider" && c.ProviderRequestID != "" && !liveProviderIDPattern.MatchString(c.ProviderRequestID) {
+			findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: fmt.Sprintf("provider_request_id %q is not provider-shaped (want chatcmpl-...) for proof_class=live-provider", c.ProviderRequestID)})
 		}
 		if c.Terminal.Count != 1 {
 			findings = append(findings, Finding{Case: c.ID, Kind: "invalid",

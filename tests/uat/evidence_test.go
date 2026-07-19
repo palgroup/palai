@@ -90,6 +90,20 @@ func TestEvidenceVerifier(t *testing.T) {
 		t.Error("a terminal count != 1 did not fail verification")
 	}
 
+	// A live-provider case with a non-provider-shaped request id is invalid...
+	m = baseManifest()
+	caseOf(m)["provider_request_id"] = "fake-local"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+		t.Error("a non-provider-shaped id on a live-provider case did not fail verification")
+	}
+	// ...but the same id on a deterministic case passes — the rule is scoped to live-provider.
+	m = baseManifest()
+	caseOf(m)["provider_request_id"] = "fake-local"
+	caseOf(m)["proof_class"] = "e2e-deterministic"
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Errorf("a fake-local id on a deterministic case must pass, got: %v", f)
+	}
+
 	// A plaintext credential is caught by the redaction pattern scan (sk- shaped)...
 	m = baseManifest()
 	caseOf(m)["provider_request_id"] = "sk-live-SENTINELDONTLEAK0123456789abcd"
