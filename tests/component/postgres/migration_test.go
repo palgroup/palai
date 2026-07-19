@@ -27,6 +27,7 @@ var allTables = []string{
 	"idempotency_records",
 	"sessions", "responses", "messages", "runs", "attempts",
 	"session_sequences", "events", "commands",
+	"config_revisions",
 	"durable_jobs", "job_attempts", "outbox", "inbox",
 	"runner_pools", "runners", "runner_leases",
 	"model_connections", "model_routes", "model_route_revisions",
@@ -190,6 +191,45 @@ func TestSessionChainingMigrationBackfillsPreexistingEvents(t *testing.T) {
 	}
 	if keyed != 2 {
 		t.Fatalf("backfilled events keyed to the response = %d, want 2", keyed)
+	}
+}
+
+// TestConfigRevisionsMigration proves 000005 adds its table and column idempotently and
+// reverses cleanly: config_revisions and projects.config_policy exist after apply (a re-apply
+// is a clean no-op), are gone after rollback, and return after reapply (spec §9.3, §14;
+// migration re-run safety, the 000002/000003 pattern).
+func TestConfigRevisionsMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE TABLE / ADD COLUMN
+	// IF NOT EXISTS makes the whole chain safe to re-run).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "config_revisions") {
+		t.Fatal("after apply, config_revisions is missing")
+	}
+	if !columnExists(t, pool, "projects", "config_policy") {
+		t.Fatal("after apply, projects.config_policy is missing")
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if tableExists(t, pool, "config_revisions") {
+		t.Fatal("after rollback, config_revisions still exists")
+	}
+	if columnExists(t, pool, "projects", "config_policy") {
+		t.Fatal("after rollback, projects.config_policy still exists")
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "config_revisions") || !columnExists(t, pool, "projects", "config_policy") {
+		t.Fatal("after reapply, a 000005 object is missing")
 	}
 }
 

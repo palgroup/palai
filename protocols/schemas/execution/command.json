@@ -18,6 +18,6 @@
   "additionalProperties": true,
   "$defs": {
     "known_statuses": {"enum": ["queued", "applying", "applied", "rejected", "expired"]},
-    "known_kinds": {"enum": ["send_message", "approve", "deny"]}
+    "known_kinds": {"enum": ["send_message", "change_config", "approve", "deny"]}
   }
 }

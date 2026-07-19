@@ -119,21 +119,23 @@ func (h *sessionHandler) command(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out.Body)
 }
 
-// commandKinds and deliveryModes are the T2 command surface. Lifecycle kinds
-// (pause/resume/cancel/change_config/fork/close) arrive with T3/T4; approve/deny are accepted
-// but rejected here (no approval source until E09 — the store rejects them typed).
-var commandKinds = map[string]bool{"send_message": true, "approve": true, "deny": true}
+// commandKinds and deliveryModes are the command surface through T3. change_config carries a
+// model and/or tool-set change (spec §9.3); the remaining lifecycle kinds (pause/resume/cancel/
+// fork/close) arrive with T4. approve/deny are accepted but rejected here (no approval source
+// until E09 — the store rejects them typed).
+var commandKinds = map[string]bool{"send_message": true, "change_config": true, "approve": true, "deny": true}
 var deliveryModes = map[string]bool{"queue": true, "steer": true, "interrupt": true}
 
 // validateCommand enforces the request invariants a malformed body can violate before any
 // durable write, so they are 400 invalid_request (never a durable command). Fuller schema
-// validation is a later task.
+// validation is a later task. A change_config's policy verdict is NOT decided here — an
+// out-of-allowlist model/tool is a durable, typed command.rejected (the store), not a 400.
 func validateCommand(req contracts.CommandCreateRequest) error {
 	if req.CommandID == "" {
 		return errors.New("command_id is required")
 	}
 	if !commandKinds[req.Kind] {
-		return errors.New("kind must be one of send_message, approve, deny")
+		return errors.New("kind must be one of send_message, change_config, approve, deny")
 	}
 	if req.Kind == "send_message" {
 		if !deliveryModes[req.Delivery] {
@@ -142,6 +144,9 @@ func validateCommand(req contracts.CommandCreateRequest) error {
 		if req.Message == "" {
 			return errors.New("message is required for send_message")
 		}
+	}
+	if req.Kind == "change_config" && req.Model == "" && req.Tools == nil {
+		return errors.New("change_config requires a model or tools change")
 	}
 	return nil
 }

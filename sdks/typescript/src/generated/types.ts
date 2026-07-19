@@ -45,8 +45,11 @@ export interface Command {
 export interface CommandCreateRequest {
   command_id: CommandId;
   delivery?: string;
+  immediate?: boolean;
   kind: string;
   message?: string;
+  model?: string;
+  tools?: string[];
 }
 
 // open union: unknown fields and unknown type values survive a round-trip (ADR-0002, spec API-009).

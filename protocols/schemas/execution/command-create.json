@@ -8,11 +8,14 @@
     "command_id": {"$ref": "../common/id.json#/$defs/command_id"},
     "kind": {"type": "string"},
     "delivery": {"type": "string"},
-    "message": {"type": "string"}
+    "message": {"type": "string"},
+    "model": {"type": "string"},
+    "tools": {"type": "array", "items": {"type": "string"}},
+    "immediate": {"type": "boolean"}
   },
   "additionalProperties": true,
   "$defs": {
-    "known_kinds": {"enum": ["send_message", "approve", "deny"]},
+    "known_kinds": {"enum": ["send_message", "change_config", "approve", "deny"]},
     "delivery_modes": {"enum": ["queue", "steer", "interrupt"]}
   }
 }

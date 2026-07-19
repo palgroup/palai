@@ -65,9 +65,11 @@ type Command struct {
 	SessionNotFound bool
 }
 
-// PendingCommand is one queued send_message command the pump delivers at a boundary.
+// PendingCommand is one queued command the pump settles at a boundary — a send_message it
+// delivers or a change_config it applies. Kind lets the pump branch.
 type PendingCommand struct {
 	ID       string
+	Kind     string
 	Delivery string
 	Payload  []byte
 }
@@ -130,10 +132,19 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 		return Command{}, err
 	}
 
-	// Synchronous resolution. approve/deny have no pending-approval source (E09 deferral);
-	// a send_message with no live run has no loop to steer. Both are typed rejections. A
-	// send_message on a live run stays queued for the pump.
-	if reason := rejectionReason(in.Kind, runID); reason != nil {
+	// Synchronous resolution. approve/deny have no pending-approval source (E09 deferral); a
+	// send_message with no live run has no loop to steer; a change_config outside the project
+	// allowlist is denied before any revision is created (no silent fallback — SES-008). All are
+	// typed rejections. A permitted send_message on a live run stays queued for the pump/watcher;
+	// a permitted change_config is queued regardless of run state (it can carry to the next run).
+	reason := rejectionReason(in.Kind, runID)
+	if in.Kind == "change_config" {
+		reason, err = changeConfigRejection(ctx, tx, tenant, in.Payload)
+		if err != nil {
+			return Command{}, err
+		}
+	}
+	if reason != nil {
 		if err := rejectCommandTx(ctx, tx, tenant, sessionID, responseID, in.CommandID, reason); err != nil {
 			return Command{}, err
 		}
@@ -151,6 +162,8 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 
 // rejectionReason returns the typed rejection a command earns at accept time, or nil to keep
 // it queued. approve/deny are unsupported until E09; a send_message needs a live root run.
+// change_config is resolved separately (changeConfigRejection) because its verdict needs the
+// project policy, so it is never routed through this pure switch.
 func rejectionReason(kind, runID string) map[string]any {
 	switch kind {
 	case "approve", "deny":
@@ -163,9 +176,36 @@ func rejectionReason(kind, runID string) map[string]any {
 			return map[string]any{"code": "no_active_run", "detail": "the session has no active run to deliver to"}
 		}
 		return nil
+	case "change_config":
+		return nil // resolved by changeConfigRejection (needs the project policy)
 	default:
 		return map[string]any{"code": "unsupported_command", "detail": "the command kind is not supported"}
 	}
+}
+
+// changeConfigRejection resolves a change_config command's typed rejection at accept, or nil to
+// keep it queued (spec §9.3). Only policy denies a config change: a model or tool outside the
+// project allowlist is denied outright, never silently narrowed to an allowed value (SES-008).
+// Run state does NOT reject it — a permitted change is queued regardless. A change submitted
+// mid-run applies at that run's next step boundary; one with no boundary in its own run (an idle
+// session, or a single-step run) carries to the next run's start (the cross-run config carry).
+func changeConfigRejection(ctx context.Context, tx pgx.Tx, tenant Tenant, payload []byte) (map[string]any, error) {
+	var req struct {
+		Model string   `json:"model"`
+		Tools []string `json:"tools"`
+	}
+	_ = json.Unmarshal(payload, &req)
+	policy, err := projectConfigTx(ctx, tx, tenant)
+	if err != nil {
+		return nil, err
+	}
+	if !policy.AllowModel(req.Model) {
+		return map[string]any{"code": "model_not_allowed", "detail": "the requested model is outside the project allowlist"}, nil
+	}
+	if bad := policy.DeniedTool(req.Tools); bad != "" {
+		return map[string]any{"code": "tool_not_allowed", "detail": "tool " + bad + " is outside the project allowlist"}, nil
+	}
+	return nil, nil
 }
 
 // rejectCommandTx drives the command queued->rejected within tx and journals
@@ -184,11 +224,12 @@ func rejectCommandTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, r
 	return nil
 }
 
-// PendingSendMessageCommands returns a run's queued send_message commands in creation order
-// — the pump's boundary read. A command that has left 'queued' never reappears, which is the
-// deliver-once guarantee (spec §9.2).
-func (s *Store) PendingSendMessageCommands(ctx context.Context, tenant Tenant, runID string) ([]PendingCommand, error) {
-	rows, err := s.pool.Query(ctx, storage.Query("PendingSendMessageCommands"), runID, tenant.Organization, tenant.Project)
+// PendingBoundaryCommands returns a run's queued boundary commands in creation order — the
+// pump's read. It carries send_message (delivered) and change_config (applied); Kind lets the
+// pump branch. A command that has left 'queued' never reappears — the deliver-once guarantee
+// (spec §9.2, §9.3).
+func (s *Store) PendingBoundaryCommands(ctx context.Context, tenant Tenant, runID string) ([]PendingCommand, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("PendingBoundaryCommands"), runID, tenant.Organization, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read pending commands: %w", err)
 	}
@@ -197,8 +238,34 @@ func (s *Store) PendingSendMessageCommands(ctx context.Context, tenant Tenant, r
 	for rows.Next() {
 		var c PendingCommand
 		var delivery *string
-		if err := rows.Scan(&c.ID, &delivery, &c.Payload); err != nil {
+		if err := rows.Scan(&c.ID, &c.Kind, &delivery, &c.Payload); err != nil {
 			return nil, fmt.Errorf("scan pending command: %w", err)
+		}
+		if delivery != nil {
+			c.Delivery = *delivery
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// PendingSessionConfigCommands returns a session's still-queued change_config commands in
+// creation order — the run-start drain's read, applied before the first model step so a switch
+// with no boundary in its own run (an idle-session change, or a single-step run) takes effect on
+// the next run (spec §9.3). Single-winner apply skips any already settled at a boundary or by the
+// interrupt watcher, so re-draining on a reclaimed attempt is a no-op.
+func (s *Store) PendingSessionConfigCommands(ctx context.Context, tenant Tenant, sessionID string) ([]PendingCommand, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("PendingSessionConfigCommands"), sessionID, tenant.Organization, tenant.Project)
+	if err != nil {
+		return nil, fmt.Errorf("read pending session config commands: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingCommand
+	for rows.Next() {
+		var c PendingCommand
+		var delivery *string
+		if err := rows.Scan(&c.ID, &c.Kind, &delivery, &c.Payload); err != nil {
+			return nil, fmt.Errorf("scan pending session config command: %w", err)
 		}
 		if delivery != nil {
 			c.Delivery = *delivery
@@ -275,22 +342,27 @@ func applyCommandInTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, 
 	return seq, nil
 }
 
-// PendingInterruptCommand returns the oldest queued interrupt for a run and its message, for
-// the in-flight-abort watcher (spec §9.2, §25.11). found is false when none is pending.
-func (s *Store) PendingInterruptCommand(ctx context.Context, tenant Tenant, runID string) (commandID, message string, found bool, err error) {
-	var payload []byte
+// PendingInterrupt is the in-flight-abort watcher's verdict: the queued command that demands
+// aborting the current model step. Kind branches the handler (send_message vs change_config);
+// Payload carries the command content (the message text, or the config change fields).
+type PendingInterrupt struct {
+	CommandID string
+	Kind      string
+	Payload   []byte
+}
+
+// PendingInterruptCommand returns the oldest queued command that demands aborting the current
+// model step, for the in-flight-abort watcher (spec §9.2, §9.3, §25.11) — a send_message
+// interrupt or a change_config immediate switch. found is false when none is pending.
+func (s *Store) PendingInterruptCommand(ctx context.Context, tenant Tenant, runID string) (hit PendingInterrupt, found bool, err error) {
 	switch err := s.pool.QueryRow(ctx, storage.Query("PendingInterruptCommand"), runID, tenant.Organization, tenant.Project).
-		Scan(&commandID, &payload); {
+		Scan(&hit.CommandID, &hit.Kind, &hit.Payload); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return "", "", false, nil
+		return PendingInterrupt{}, false, nil
 	case err != nil:
-		return "", "", false, fmt.Errorf("read pending interrupt: %w", err)
+		return PendingInterrupt{}, false, fmt.Errorf("read pending interrupt: %w", err)
 	}
-	var body struct {
-		Message string `json:"message"`
-	}
-	_ = json.Unmarshal(payload, &body)
-	return commandID, body.Message, true, nil
+	return hit, true, nil
 }
 
 // InterruptModelStep records an aborted model step and applies the interrupt command in one

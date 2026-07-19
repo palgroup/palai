@@ -253,16 +253,27 @@ func (s *Store) GetSession(ctx context.Context, scope middleware.Scope, id strin
 // miss (404). The command payload carries the send_message text as the command's own content;
 // the durable row and journal keep them apart from the response projection.
 func (s *Store) AcceptCommand(ctx context.Context, scope middleware.Scope, sessionID string, req contracts.CommandCreateRequest) (api.CommandResult, error) {
-	payload, err := json.Marshal(map[string]any{"message": req.Message})
-	if err != nil {
-		return api.CommandResult{}, err
-	}
-	cmd, err := s.spine.AcceptCommand(ctx, tenantOf(scope), sessionID, coordinator.CommandInput{
+	input := coordinator.CommandInput{
 		CommandID: string(req.CommandID),
 		Kind:      req.Kind,
 		Delivery:  req.Delivery,
-		Payload:   payload,
-	})
+	}
+	var err error
+	switch req.Kind {
+	case "change_config":
+		// An immediate switch aborts the in-flight step, so it carries the interrupt delivery the
+		// in-flight-abort watcher reads (spec §9.3); a normal switch stays a boundary command.
+		input.Payload, err = json.Marshal(map[string]any{"model": req.Model, "tools": req.Tools, "immediate": req.Immediate})
+		if req.Immediate {
+			input.Delivery = "interrupt"
+		}
+	default:
+		input.Payload, err = json.Marshal(map[string]any{"message": req.Message})
+	}
+	if err != nil {
+		return api.CommandResult{}, err
+	}
+	cmd, err := s.spine.AcceptCommand(ctx, tenantOf(scope), sessionID, input)
 	if err != nil {
 		return api.CommandResult{}, err
 	}

@@ -17,8 +17,16 @@ const (
 	// eventModelStepInterrupted is the partial record of an interrupt-aborted provider call: a
 	// user-initiated partial, NOT a failure (spec §25.11: "its outcome is recorded as partial",
 	// spec §9.2 interrupt). Distinct from model_step.failed.v1 so the journal never mislabels an
-	// interrupt as a failure.
+	// interrupt as a failure. Its payload carries the streamed-so-far output as the explicit
+	// partial item (spec §25.16), not None.
 	eventModelStepInterrupted = "model_step.interrupted.v1"
+	// eventConfigRevised journals a session config revision's content — the redacted, content-
+	// addressed ConfigSnapshot with provenance — at the boundary it applied (spec §9.3, §14).
+	eventConfigRevised = "config.revised.v1"
+	// eventWarningRaised marks an immediate config switch that interrupted the in-flight model
+	// step (spec §9.3, §25.16): the aborted attempt's state may be omitted, so the switch is not
+	// silently presented as a clean step boundary.
+	eventWarningRaised = "warning.raised.v1"
 )
 
 // toolCallCompletedEvent is the event the tool-call table emits on Executing->Completed,
@@ -34,6 +42,8 @@ var emittedEventTypes = []string{
 	eventModelStepCreated,
 	eventModelStepCompleted,
 	eventModelStepInterrupted,
+	eventConfigRevised,
+	eventWarningRaised,
 	toolCallCompletedEvent,
 }
 

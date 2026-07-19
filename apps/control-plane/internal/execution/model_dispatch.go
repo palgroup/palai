@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/palgroup/palai/packages/contracts"
@@ -19,11 +20,15 @@ import (
 const interruptPollInterval = 25 * time.Millisecond
 
 // interruptHit is the watcher's verdict for one model call: found reports whether a pending
-// interrupt was seen (and canceled the call), carrying its command id and message.
+// interrupt was seen (and canceled the call). kind branches the handler — a send_message folds
+// its message, a change_config applies its revision + warns (spec §9.2, §9.3). payload carries
+// the raw command content the handler decodes.
 type interruptHit struct {
 	found     bool
 	commandID string
+	kind      string
 	message   string
+	payload   []byte
 }
 
 // ModelRoute is the broker coordinates this kernel routes a model.request to: the
@@ -76,6 +81,15 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		return false, fmt.Errorf("model request %s: %w", requestID, err)
 	}
 
+	// Resolve the per-step effective model from the session's config revisions (spec §9.3,
+	// §25.16). A normal switch's revision applied at the previous boundary, and an immediate
+	// switch's applied at the interrupt boundary, so this step routes under the current config;
+	// the provider stays env-selected (E06 §7.3 carve-out) — only the model id moves.
+	effectiveModel, err := o.effectiveModel(ctx, st)
+	if err != nil {
+		return false, err
+	}
+
 	requestEvent, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID})
 	if err := o.spine.CommitModelRequest(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), requestID, eventModelStepCreated, requestEvent); err != nil {
 		return false, err
@@ -89,24 +103,34 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 	hitCh := make(chan interruptHit, 1)
 	go o.watchInterrupt(modelCtx, st, cancelModel, hitCh)
 
+	// Accumulate the streamed-so-far text so an interrupt can record it as the explicit partial
+	// item (spec §25.16), not None. onDelta runs synchronously inside Route on this goroutine,
+	// so a plain builder needs no lock.
+	var partial strings.Builder
+	onDelta := func(d modelbroker.Delta) {
+		if d.Text != "" {
+			partial.WriteString(d.Text)
+		}
+	}
+
 	result, err := o.models.Route(modelCtx, o.route.Provider, modelbroker.Request{
 		ModelRequestID: contracts.ModelRequestID(requestID),
 		// Stable across attempts: the same run and model-request identity re-derive the
 		// same key, so a reclaimed attempt that re-routes carries it and the provider
 		// settles one effect (spec §53.4, §35.3).
 		IdempotencyKey: string(st.attempt.RunID) + "/" + requestID,
-		Model:          o.route.Model,
+		Model:          effectiveModel,
 		Messages:       messages,
 		Reservation:    modelbroker.Reservation{},
 		Secret:         o.route.Secret,
-	}, nil)
+	}, onDelta)
 	cancelModel()
 	hit := <-hitCh
 	// An interrupt that actually aborted the in-flight call (canceled ctx) ends this step
-	// partial and resumes in a new one folding the message in (spec §9.2). An interrupt that
-	// raced a normal return leaves the command queued for a boundary delivery (degraded steer).
+	// partial and resumes in a new one, folding a message or applying the new config (spec §9.2,
+	// §9.3). An interrupt that raced a normal return leaves the command queued for a boundary.
 	if hit.found && errors.Is(err, context.Canceled) {
-		return false, o.handleInterrupt(ctx, st, frame, requestID, hit)
+		return false, o.handleInterrupt(ctx, st, frame, requestID, hit, partial.String())
 	}
 	if err != nil {
 		return false, fmt.Errorf("route model request %s: %w", requestID, err)
@@ -224,6 +248,20 @@ func addUsage(a, b contracts.Usage) contracts.Usage {
 	}
 }
 
+// effectiveModel resolves the model id this step routes under (spec §9.3, §25.16). A session
+// config revision's model wins; absent one, the deployment default. Only the model id moves —
+// the provider and its credential ref stay env-selected (E06 §7.3 carve-out).
+func (o *Orchestrator) effectiveModel(ctx context.Context, st *attemptState) (string, error) {
+	override, found, err := o.spine.LatestSessionConfig(ctx, st.tenant, st.sessionID)
+	if err != nil {
+		return "", err
+	}
+	if found && override.Model != "" {
+		return override.Model, nil
+	}
+	return o.route.Model, nil
+}
+
 // watchInterrupt polls for a pending interrupt while a model call is outstanding and cancels
 // the call if one arrives (the §25.11 in-flight-abort controller half). It reports exactly one
 // interruptHit when modelCtx ends: found when it aborted the call, empty when the caller
@@ -238,9 +276,13 @@ func (o *Orchestrator) watchInterrupt(ctx context.Context, st *attemptState, can
 			out <- interruptHit{}
 			return
 		case <-ticker.C:
-			cmdID, message, found, err := o.spine.PendingInterruptCommand(ctx, st.tenant, string(st.attempt.RunID))
+			pending, found, err := o.spine.PendingInterruptCommand(ctx, st.tenant, string(st.attempt.RunID))
 			if err == nil && found {
-				out <- interruptHit{found: true, commandID: cmdID, message: message}
+				message := ""
+				if pending.Kind == "send_message" {
+					message = decodeMessage(pending.Payload)
+				}
+				out <- interruptHit{found: true, commandID: pending.CommandID, kind: pending.Kind, message: message, payload: pending.Payload}
 				cancel()
 				return
 			}
@@ -249,24 +291,62 @@ func (o *Orchestrator) watchInterrupt(ctx context.Context, st *attemptState, can
 }
 
 // handleInterrupt ends an interrupt-aborted model step and resumes the run in a new one. It
-// records the partial step and applies the interrupt command atomically, delivers the message,
-// then tells the engine the step was interrupted so it re-requests the model folding the
-// message in (spec §9.2, §25.11). The synthetic model.result is ALWAYS sent once the call was
-// aborted — otherwise the engine, still awaiting a result, would hang. A command a boundary
-// already applied (the raced degraded path) skips the re-delivery but still resumes the engine.
-func (o *Orchestrator) handleInterrupt(ctx context.Context, st *attemptState, frame contracts.EngineFrame, requestID string, hit interruptHit) error {
-	partial, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID})
-	switch _, err := o.spine.InterruptModelStep(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), hit.commandID, eventModelStepInterrupted, partial); {
-	case errors.Is(err, coordinator.ErrCommandNotPending):
-		// Already applied by a boundary; the message is delivered — just resume the engine.
-	case err != nil:
-		return err
-	default:
-		deliver := o.frame(st, "message.deliver", map[string]any{"command_id": hit.commandID, "delivery": "interrupt", "message": hit.message}, "")
-		if err := st.ch.Send(ctx, deliver); err != nil {
+// records the partial step — carrying the streamed-so-far output as the explicit partial item
+// (spec §25.16), not None — applies the interrupt command atomically, then tells the engine the
+// step was interrupted so it re-requests the model. A send_message folds its delivered message
+// into the new step; a change_config applies its revision so the new step routes under the new
+// config, plus a warning (spec §9.2, §9.3). The synthetic model.result is ALWAYS sent once the
+// call was aborted — otherwise the engine, still awaiting a result, would hang — and carries the
+// partial output so the engine records it as the partial assistant turn. A command a boundary
+// already applied (the raced degraded path) skips the settle but still resumes the engine.
+func (o *Orchestrator) handleInterrupt(ctx context.Context, st *attemptState, frame contracts.EngineFrame, requestID string, hit interruptHit, partialOutput string) error {
+	partialData := map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID}
+	if partialOutput != "" {
+		partialData["output"] = partialOutput
+	}
+	partial, _ := json.Marshal(partialData)
+
+	if hit.kind == "change_config" {
+		if err := o.applyImmediateConfigChange(ctx, st, hit, partial); err != nil {
 			return err
 		}
+	} else {
+		switch _, err := o.spine.InterruptModelStep(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), hit.commandID, eventModelStepInterrupted, partial); {
+		case errors.Is(err, coordinator.ErrCommandNotPending):
+			// Already applied by a boundary; the message is delivered — just resume the engine.
+		case err != nil:
+			return err
+		default:
+			deliver := o.frame(st, "message.deliver", map[string]any{"command_id": hit.commandID, "delivery": "interrupt", "message": hit.message}, "")
+			if err := st.ch.Send(ctx, deliver); err != nil {
+				return err
+			}
+		}
 	}
-	interrupted := o.frame(st, "model.result", map[string]any{"model_request_id": requestID, "interrupted": true}, string(frame.ID))
+
+	resultData := map[string]any{"model_request_id": requestID, "interrupted": true}
+	if partialOutput != "" {
+		resultData["output"] = partialOutput
+	}
+	interrupted := o.frame(st, "model.result", resultData, string(frame.ID))
 	return st.ch.Send(ctx, interrupted)
+}
+
+// applyImmediateConfigChange settles an immediate config switch that aborted the in-flight step
+// (spec §9.3, §25.16): it resolves the new ConfigSnapshot, records the partial step, applies the
+// change (the config revision + config.revised.v1), and raises a warning — atomically. The
+// resumed model step then re-resolves and routes under the new config. A change a boundary
+// already applied returns ErrCommandNotPending and is a no-op.
+func (o *Orchestrator) applyImmediateConfigChange(ctx context.Context, st *attemptState, hit interruptHit, partial []byte) error {
+	plan, err := o.planConfigChange(ctx, st, hit.commandID, hit.payload)
+	if err != nil {
+		return err
+	}
+	warning, _ := json.Marshal(map[string]any{"command_id": hit.commandID, "code": "config_switch_interrupted", "detail": "the in-flight model step was interrupted for an immediate config switch"})
+	switch _, err := o.spine.InterruptForConfigChange(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), plan, hit.commandID, eventModelStepInterrupted, partial, eventWarningRaised, warning); {
+	case errors.Is(err, coordinator.ErrCommandNotPending):
+		return nil // already applied by a boundary; the resumed step still picks up the config
+	default:
+		return err
+	}
 }

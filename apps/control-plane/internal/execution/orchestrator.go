@@ -146,6 +146,14 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		return fmt.Errorf("send run.start: %w", err)
 	}
 
+	// Apply any config switch accepted for this session that had no boundary in its own run — an
+	// idle-session change_config, or a single-step run — so this run's first model step routes
+	// under it (spec §9.3, the cross-run config carry). Runs before the first model.request; a
+	// switch aimed at a mid-run boundary is untouched (it is applied by the pump/watcher instead).
+	if err := o.applyPendingSessionConfig(ctx, st); err != nil {
+		return abortIfTerminal(err)
+	}
+
 	for {
 		frame, err := ch.Receive(ctx)
 		if errors.Is(err, io.EOF) {

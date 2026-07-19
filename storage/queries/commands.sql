@@ -57,33 +57,53 @@ WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
 ORDER BY created_at DESC
 LIMIT 1;
 
--- PendingSendMessageCommands is the pump's boundary read: a run's queued send_message
--- commands in creation order. A command that has left 'queued' is already delivered, so it
--- never reappears — that is the deliver-once guarantee (spec §9.2). It includes interrupt
--- deliveries: an interrupt not caught in-flight degrades to a boundary delivery here.
--- name: PendingSendMessageCommands
-SELECT id, delivery, payload
+-- PendingBoundaryCommands is the pump's boundary read: a run's queued commands the pump
+-- applies at a safe boundary — send_message (queue/steer, and an interrupt that was not caught
+-- in-flight, which degrades to a boundary delivery) and change_config (a normal switch, or an
+-- immediate switch whose interrupt missed the in-flight window). A command that has left
+-- 'queued' never reappears — the deliver-once guarantee (spec §9.2, §9.3). kind lets the pump
+-- branch: deliver a message vs. apply a config revision.
+-- name: PendingBoundaryCommands
+SELECT id, kind, delivery, payload
 FROM commands
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
-  AND state = 'queued' AND kind = 'send_message'
+  AND state = 'queued' AND kind IN ('send_message', 'change_config')
 ORDER BY created_at;
 
 -- ExpireQueuedCommandsForRun expires a run's still-queued commands when the run terminalizes
 -- (spec §22.4 lifecycle): a command accepted mid-run that never reached a delivery boundary
--- must not sit queued forever. RETURNs the swept ids so each gets a command.expired.v1 event.
+-- must not sit queued forever. change_config is EXCLUDED — a config switch with no boundary in
+-- its run carries to the next run's start (the cross-run config carry, spec §9.3), so it stays
+-- queued for the session-config drain, not expired here. RETURNs the swept ids for command.expired.v1.
 -- name: ExpireQueuedCommandsForRun
 UPDATE commands
 SET state = 'expired', updated_at = clock_timestamp()
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'queued'
+  AND kind <> 'change_config'
 RETURNING id;
 
--- PendingInterruptCommand is the in-flight-abort watcher's read: the oldest queued interrupt
--- for a run (spec §9.2, §25.11). A found row means the current model step should be aborted;
--- the single-winner apply then decides whether the watcher or a boundary delivers it.
+-- PendingSessionConfigCommands is the run-start drain's read: the session's still-queued
+-- change_config commands, in creation order, applied before the first model step so the run
+-- routes under any switch that had no boundary in its own run — an idle-session change, or a
+-- single-step run (spec §9.3). Session-scoped (not run-scoped): it carries a change accepted
+-- against a now-terminal run OR with no run at all. Single-winner apply skips any a boundary or
+-- the interrupt watcher already settled.
+-- name: PendingSessionConfigCommands
+SELECT id, kind, delivery, payload
+FROM commands
+WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+  AND state = 'queued' AND kind = 'change_config'
+ORDER BY created_at;
+
+-- PendingInterruptCommand is the in-flight-abort watcher's read: the oldest queued command that
+-- demands aborting the current model step (spec §9.2, §9.3, §25.11) — a send_message interrupt,
+-- or a change_config immediate switch (both carry delivery = 'interrupt'). kind lets the handler
+-- branch: fold a delivered message vs. apply a config revision + warn. The single-winner apply
+-- then decides whether the watcher or a boundary settles it.
 -- name: PendingInterruptCommand
-SELECT id, payload
+SELECT id, kind, payload
 FROM commands
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
-  AND state = 'queued' AND kind = 'send_message' AND delivery = 'interrupt'
+  AND state = 'queued' AND delivery = 'interrupt' AND kind IN ('send_message', 'change_config')
 ORDER BY created_at
 LIMIT 1;

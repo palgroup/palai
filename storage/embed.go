@@ -38,6 +38,12 @@ var migrationUp4 string
 //go:embed migrations/000004_commands.down.sql
 var migrationDown4 string
 
+//go:embed migrations/000005_config_revisions.up.sql
+var migrationUp5 string
+
+//go:embed migrations/000005_config_revisions.down.sql
+var migrationDown5 string
+
 //go:embed queries/jobs.sql
 var jobsSQL string
 
@@ -56,19 +62,22 @@ var sessionsSQL string
 //go:embed queries/commands.sql
 var commandsSQL string
 
-// MigrationUp is the forward migration chain, applied in version order (000001..000004).
+//go:embed queries/config.sql
+var configSQL string
+
+// MigrationUp is the forward migration chain, applied in version order (000001..000005).
 // Each file is individually idempotent, so the whole chain is safe to re-run.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: each migration drops its added
 // objects before the earlier one drops the tables that carried them.
 func MigrationDown() string {
-	return migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
-var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL)
+var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL)
 
 // Query returns the SQL statement labelled "-- name: <name>" in storage/queries.
 // It panics on an unknown name because query names are compile-time constants.

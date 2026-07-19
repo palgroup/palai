@@ -28,11 +28,21 @@ import (
 // so the fix (a durable message row, or applied-undelivered redelivery at attempt start) is a
 // hard T4 prerequisite, not a T2 concern.
 func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState) error {
-	pending, err := o.spine.PendingSendMessageCommands(ctx, st.tenant, string(st.attempt.RunID))
+	pending, err := o.spine.PendingBoundaryCommands(ctx, st.tenant, string(st.attempt.RunID))
 	if err != nil {
 		return err
 	}
 	for _, cmd := range pending {
+		// A change_config applies at this boundary so the NEXT model step routes under the new
+		// config (the normal switch — spec §9.3); it emits no engine frame, the resolver reads
+		// the revision. An immediate switch normally settles in-flight (the watcher), but one
+		// that missed the window degrades here, same as a missed send_message interrupt.
+		if cmd.Kind == "change_config" {
+			if err := o.applyBoundaryConfigChange(ctx, st, cmd); err != nil {
+				return err
+			}
+			continue
+		}
 		_, err := o.spine.ApplyCommand(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), cmd.ID)
 		if errors.Is(err, coordinator.ErrCommandNotPending) {
 			continue // another boundary already delivered it
@@ -48,6 +58,43 @@ func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState) error
 			"message":    decodeMessage(cmd.Payload),
 		}, "")
 		if err := st.ch.Send(ctx, frame); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyBoundaryConfigChange applies a queued change_config at a safe boundary: it resolves the
+// new ConfigSnapshot and commits the revision (config.revised.v1) so the next model step routes
+// under it (spec §9.3). No engine frame — the effect is the resolver reading the revision at the
+// next step. A change a racing path already applied returns ErrCommandNotPending (a no-op).
+func (o *Orchestrator) applyBoundaryConfigChange(ctx context.Context, st *attemptState, cmd coordinator.PendingCommand) error {
+	plan, err := o.planConfigChange(ctx, st, cmd.ID, cmd.Payload)
+	if err != nil {
+		return err
+	}
+	switch _, err := o.spine.ApplyConfigChange(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), cmd.ID, plan); {
+	case errors.Is(err, coordinator.ErrCommandNotPending):
+		return nil
+	default:
+		return err
+	}
+}
+
+// applyPendingSessionConfig applies, at run start (before the first model.request), any
+// change_config accepted for this session that never reached a boundary in its own run — an
+// idle-session change, or a single-step run whose only step had no boundary to pump at (spec
+// §9.3, the cross-run config carry). It reuses applyBoundaryConfigChange, so the revision is
+// committed under the current run's active guard and the first step's resolver reads it. Each
+// apply is single-winner (WHERE state='queued'), so a change a boundary or the interrupt watcher
+// already settled is skipped, and a reclaimed attempt re-draining is a no-op.
+func (o *Orchestrator) applyPendingSessionConfig(ctx context.Context, st *attemptState) error {
+	pending, err := o.spine.PendingSessionConfigCommands(ctx, st.tenant, st.sessionID)
+	if err != nil {
+		return err
+	}
+	for _, cmd := range pending {
+		if err := o.applyBoundaryConfigChange(ctx, st, cmd); err != nil {
 			return err
 		}
 	}
