@@ -21,6 +21,7 @@ class State(str, Enum):
     BEFORE_MODEL = "before_model"
     AWAITING_MODEL = "awaiting_model"
     AWAITING_TOOLS = "awaiting_tools"
+    AWAITING_CHILDREN = "awaiting_children"
     VALIDATING_OUTPUT = "validating_output"
     TERMINAL = "terminal"
 
@@ -41,6 +42,12 @@ class Loop:
         self._step = 0
         self._model_request_id: str | None = None
         self._pending_tools: set[str] = set()
+        # Required delegations seeded from run.start (spec §25.18): the controller carries them in
+        # config so a real single-step run still delegates. Dispatched once, after the first model
+        # step, then folded back as child.result before the run's final step.
+        self._delegations: list[dict] = []
+        self._delegations_dispatched = False
+        self._pending_children: dict[str, dict] = {}
 
     def handle(self, frame: dict) -> list[dict]:
         type_ = frame.get("type")
@@ -68,10 +75,14 @@ class Loop:
             return self._on_model_result(frame)
         if self.state is State.AWAITING_TOOLS and type_ == "tool.result":
             return self._on_tool_result(frame)
+        if self.state is State.AWAITING_CHILDREN and type_ == "child.result":
+            return self._on_child_result(frame)
         return [self._error("unexpected_frame", f"{type_!r} is not accepted in {self.state.value}")]
 
     def _begin(self, frame: dict) -> list[dict]:
-        self.context.start(frame.get("data") or {})
+        data = frame.get("data") or {}
+        self._delegations = list(data.get("delegations") or [])
+        self.context.start(data)
         return self._request_model()
 
     def _request_model(self) -> list[dict]:
@@ -110,6 +121,11 @@ class Loop:
         tool_calls = data.get("tool_calls") or []
         if tool_calls:
             return self._request_tools(tool_calls, reply_to=frame.get("id"))
+        # Dispatch any required delegations before finishing (spec §25.18): the run gathers its
+        # child results, then a final model step folds them in. Skipped once dispatched, so the
+        # resumed final step finishes normally.
+        if self._delegations and not self._delegations_dispatched:
+            return self._request_children(reply_to=frame.get("id"))
         return self._finish(data, reply_to=frame.get("id"))
 
     def _request_tools(self, tool_calls: list[dict], *, reply_to: str | None) -> list[dict]:
@@ -133,6 +149,49 @@ class Loop:
             )
         self.state = State.AWAITING_TOOLS
         return frames
+
+    def _request_children(self, *, reply_to: str | None) -> list[dict]:
+        """Emit one child.request per seeded delegation (spec §25.18). The controller admits each
+        against depth/fan-out/budget/capability and dispatches a ChildRun, then replies child.result."""
+        self._delegations_dispatched = True
+        self._pending_children = {}
+        frames: list[dict] = []
+        for index, spec in enumerate(self._delegations):
+            child_id = protocol.child_request_id(self.emitter.run_id, self._step, index)
+            self._pending_children[child_id] = spec
+            self.log("safe_boundary", boundary="before_child", child_request_id=child_id)
+            data = {
+                "child_request_id": child_id,
+                "role": spec.get("role"),
+                "objective": spec.get("objective"),
+                "model": spec.get("model"),
+                "tools": spec.get("tools") or [],
+                "budget": spec.get("budget") or {},
+                "workspace_mode": spec.get("workspace_mode", "none"),
+                "required": bool(spec.get("required")),
+                "request_hash": protocol.content_hash([spec.get("role"), spec.get("objective"), spec.get("model")]),
+            }
+            if spec.get("deadline") is not None:
+                data["deadline"] = spec.get("deadline")
+            frames.append(self.emitter.build("child.request", data, reply_to=reply_to))
+        self.state = State.AWAITING_CHILDREN
+        return frames
+
+    def _on_child_result(self, frame: dict) -> list[dict]:
+        data = frame.get("data") or {}
+        child_id = data.get("child_request_id")
+        if child_id not in self._pending_children:
+            return [self._error("unknown_child_result", f"{child_id!r} is not an outstanding child request")]
+        spec = self._pending_children.pop(child_id)
+        self.log("safe_boundary", boundary="after_child", child_request_id=child_id)
+        # A required delegation that could not be served (denied/failed) terminates the run failed —
+        # no parent-only fake success (SUB-003, spec §25.18). An optional one is skipped and folded.
+        if data.get("status") != "completed" and spec.get("required"):
+            return [self._terminal("failed", reason=data.get("reason") or "required_delegation_unmet", reply_to=frame.get("id"))]
+        self.context.add_child_result(data, spec)
+        if self._pending_children:
+            return []  # still awaiting the remaining children
+        return self._request_model()  # resume: the final model step folds the child results in
 
     def _on_tool_result(self, frame: dict) -> list[dict]:
         data = frame.get("data") or {}

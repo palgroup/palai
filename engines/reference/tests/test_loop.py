@@ -169,6 +169,82 @@ def test_non_empty_partial_survives_an_interrupt() -> None:
     assert {"role": "assistant", "content": "partial so far", "interrupted": True} in out[0]["data"]["messages"]
 
 
+CHILD = re.compile(r"^chld_[A-Za-z0-9_-]+$")
+
+
+def run_start_with_delegations(delegations: list[dict], text: str = "delegate") -> dict:
+    return ctrl("run.start", {"input": text, "delegations": delegations}, frame_id="frm_start")
+
+
+def _first_model_result(loop: Loop, delegations: list[dict], output: str = "planning") -> list[dict]:
+    """Drive run.start (with delegations) through the first model step and return the frames the
+    no-tool model result triggers — the child.request dispatch (spec §25.18)."""
+    req = loop.handle(run_start_with_delegations(delegations))[0]
+    return loop.handle(ctrl("model.result", {"model_request_id": req["data"]["model_request_id"], "output": output}, "frm_mr"))
+
+
+def test_run_start_delegations_emit_child_requests_after_the_first_model_step() -> None:
+    # A run configured with required delegations emits one child.request per spec at the first
+    # safe boundary after its model step, carrying the spec the controller admits (spec §25.18).
+    loop = make_loop("run_del")
+    spec = {"role": "researcher", "objective": "summarize", "model": "cheap-1",
+            "tools": [], "budget": {"max_total_tokens": 100}, "workspace_mode": "none", "required": True}
+    out = _first_model_result(loop, [spec])
+    assert [f["type"] for f in out] == ["child.request"]
+    assert loop.state is State.AWAITING_CHILDREN
+    data = out[0]["data"]
+    assert CHILD.match(data["child_request_id"])
+    assert data["role"] == "researcher" and data["objective"] == "summarize"
+    assert data["model"] == "cheap-1" and data["required"] is True
+    assert data["workspace_mode"] == "none"
+
+
+def test_child_request_id_is_stable_across_resume() -> None:
+    spec = {"role": "r", "objective": "o", "model": "m", "required": True}
+    first = _first_model_result(make_loop("run_cs"), [spec])[0]
+    second = _first_model_result(make_loop("run_cs"), [spec])[0]
+    assert first["data"]["child_request_id"] == second["data"]["child_request_id"]
+
+
+def test_child_result_folds_as_typed_result_and_resumes_with_next_model_request() -> None:
+    # A completed child.result folds into context as a typed delegation result and the run resumes
+    # with the next model request — the parent's final step sees the child's output (spec §25.19).
+    loop = make_loop("run_cr")
+    creq = _first_model_result(loop, [{"role": "r", "objective": "o", "model": "m", "required": True}])[0]
+    crid = creq["data"]["child_request_id"]
+
+    out = loop.handle(ctrl("child.result", {
+        "child_request_id": crid, "status": "completed", "output": "42", "child_run_id": "run_child"}, "frm_cr"))
+    assert [f["type"] for f in out] == ["model.request"]
+    assert loop.state is State.AWAITING_MODEL
+    # The child's output and its run linkage are in the resumed request's conversation.
+    blob = json.dumps(out[0]["data"]["messages"])
+    assert "42" in blob and "run_child" in blob
+
+
+def test_required_child_that_cannot_be_served_terminates_the_run_failed() -> None:
+    # A required delegation the controller cannot route comes back denied; the parent must NOT
+    # fake a parent-only success — it terminates failed (SUB-003, spec §25.18).
+    loop = make_loop("run_rq")
+    creq = _first_model_result(loop, [{"role": "r", "objective": "o", "model": "nope", "required": True}])[0]
+    out = loop.handle(ctrl("child.result", {
+        "child_request_id": creq["data"]["child_request_id"], "status": "denied", "reason": "unroutable"}, "frm_cr"))
+    assert [f["type"] for f in out] == ["run.terminal"]
+    assert out[0]["data"]["outcome"] == "failed"
+    assert loop.state is State.TERMINAL
+
+
+def test_optional_child_that_cannot_be_served_is_skipped_and_the_run_continues() -> None:
+    # An optional delegation that cannot be served is skipped, not fatal — the run continues to its
+    # next model step (SUB-001, spec §25.18). The skip is observable in the folded context.
+    loop = make_loop("run_opt")
+    creq = _first_model_result(loop, [{"role": "r", "objective": "o", "model": "nope", "required": False}])[0]
+    out = loop.handle(ctrl("child.result", {
+        "child_request_id": creq["data"]["child_request_id"], "status": "denied", "reason": "unroutable"}, "frm_cr"))
+    assert [f["type"] for f in out] == ["model.request"]
+    assert loop.state is State.AWAITING_MODEL
+
+
 def test_message_deliver_before_run_start_is_rejected() -> None:
     loop = make_loop()
     out = loop.handle(ctrl("message.deliver", {"delivery": "queue", "message": "early"}, "frm_d"))

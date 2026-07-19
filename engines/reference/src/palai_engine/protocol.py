@@ -59,6 +59,12 @@ def tool_call_id(run_id: str, step: int, index: int) -> str:
     return _stable_id("tcall", "tool", run_id, str(step), str(index))
 
 
+def child_request_id(run_id: str, step: int, index: int) -> str:
+    """Stable logical child-request ID for a (step, index) delegation (spec §25.18), so a
+    resumed run re-derives the same id and a retransmitted child.request is idempotent."""
+    return _stable_id("chld", "child", run_id, str(step), str(index))
+
+
 def content_hash(payload: object) -> str:
     """Canonical hash of request content, used for the §25.9 same-ID/same-hash rule."""
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

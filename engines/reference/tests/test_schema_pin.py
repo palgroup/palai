@@ -22,13 +22,14 @@ def _schema() -> dict:
 
 SCHEMA = _schema()
 
-# The engine-to-controller types this engine actually emits (protocol.py / loop.py).
-EMITTED_TYPES = {"engine.ready", "model.request", "tool.request", "output.item", "run.terminal", "protocol.error"}
+# The engine-to-controller types this engine actually emits (protocol.py / loop.py). child.request
+# is the T5 addition — a required delegation seeded in run.start is emitted as a child.request.
+EMITTED_TYPES = {"engine.ready", "model.request", "tool.request", "child.request", "output.item", "run.terminal", "protocol.error"}
 
 # The controller-to-engine types the loop accepts and acts on (loop.py). message.deliver is
-# the T2 addition — a supported command frame must be a declared controller type, not envelope
-# rejected.
-HANDLED_CONTROLLER_TYPES = {"supervisor.hello", "run.start", "model.result", "tool.result", "run.cancel", "message.deliver"}
+# the T2 addition; child.result is the T5 addition — the controller replies a dispatched (or
+# denied) delegation as a child.result the loop folds back or fails on.
+HANDLED_CONTROLLER_TYPES = {"supervisor.hello", "run.start", "model.result", "tool.result", "run.cancel", "message.deliver", "child.result"}
 
 
 def test_emitter_envelope_matches_schema() -> None:

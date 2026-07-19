@@ -72,6 +72,18 @@ class Context:
             }
         )
 
+    def add_child_result(self, data: dict, spec: dict) -> None:
+        """Fold a delegation result into context as a TYPED result the parent's next model step
+        sees (spec §25.19) — a completed child's output, or an optional child's skip note. It is a
+        user-role turn (always a valid provider message, unlike a tool turn with no matching call)
+        carrying the child run linkage, so the parent's final output can identify the delegation."""
+        role, child_run = spec.get("role"), data.get("child_run_id")
+        if data.get("status") == "completed":
+            content = f"[delegation result role={role} child_run={child_run}] {data.get('output')}"
+        else:
+            content = f"[delegation skipped role={role} reason={data.get('reason')}]"
+        self._messages.append({"role": "user", "content": content, "child_run_id": child_run})
+
     def model_request(self) -> dict:
         """The brokered model call payload. Deterministic given the messages so far."""
         return {"messages": list(self._messages)}
