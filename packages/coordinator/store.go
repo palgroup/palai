@@ -219,9 +219,26 @@ func (s *Store) ApplyRunTransition(ctx context.Context, tenant Tenant, runID str
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	trans, err := applyRunTransitionTx(ctx, tx, tenant, runID, command)
+	if err != nil {
+		return Transition{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Transition{}, fmt.Errorf("commit transition: %w", err)
+	}
+	return trans, nil
+}
+
+// applyRunTransitionTx applies one RunTable transition within tx: it locks the run, asks the pure
+// table whether the command is legal, then writes the new state, the session event, and the
+// outbox row, sweeping the run's still-queued commands when the transition is terminal (spec
+// §21.1, §22.3, §22.4). It is the shared body of ApplyRunTransition and the composed lifecycle
+// paths (PauseRun's wait, resume's re-entry) that pair a run transition with a command-applied in
+// one transaction. A terminal run rejects with ErrRunTerminal.
+func applyRunTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string, command statemachines.RunCommand) (Transition, error) {
 	var sessionID, current string
 	var responseID *string
-	err = tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).Scan(&sessionID, &responseID, &current)
+	err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).Scan(&sessionID, &responseID, &current)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Transition{}, fmt.Errorf("run %s not found in tenant scope", runID)
 	}
@@ -270,10 +287,6 @@ func (s *Store) ApplyRunTransition(ctx context.Context, tenant Tenant, runID str
 		if err := sweepQueuedCommands(ctx, tx, tenant, sessionID, responseID, runID); err != nil {
 			return Transition{}, err
 		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return Transition{}, fmt.Errorf("commit transition: %w", err)
 	}
 	return Transition{To: next, Event: event, Sequence: seq}, nil
 }

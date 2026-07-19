@@ -70,6 +70,14 @@ func (p *gatedProvider) Execute(ctx context.Context, req modelbroker.Request, _ 
 	return res, nil
 }
 
+// callCount reports how many times the provider was invoked, so a test can prove a resumed
+// attempt replays a committed step (no re-call) rather than re-running it.
+func (p *gatedProvider) callCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.calls)
+}
+
 func (p *gatedProvider) sawUserMessage(substr string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()

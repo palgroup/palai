@@ -195,7 +195,12 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 			// messages here so they fold into the NEXT model request — the input boundary
 			// (spec §9.2). A final result has no next step, so nothing is delivered.
 			if continues {
-				if err := o.pumpCommands(ctx, st); err != nil {
+				switch err := o.pumpCommands(ctx, st); {
+				case errors.Is(err, errRunPaused):
+					// A pause landed at this boundary: the run is waiting, the attempt ends cleanly
+					// and releases its compute, and resume re-opens a fresh attempt (spec §22.3).
+					return nil
+				case err != nil:
 					return abortIfTerminal(err)
 				}
 			}

@@ -128,6 +128,18 @@ WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
   AND state = 'queued' AND kind = 'change_config'
 ORDER BY created_at;
 
+-- PendingPauseCommand is the boundary pump's pause read (spec §22.3, SES-009): the oldest queued
+-- pause command for a run. A pause pre-empts the boundary — the pump applies it and stops driving
+-- the loop, leaving every other queued command for resume to re-deliver — so it is read before the
+-- boundary delivery set, not mixed into it.
+-- name: PendingPauseCommand
+SELECT id
+FROM commands
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+  AND state = 'queued' AND kind = 'pause'
+ORDER BY created_at
+LIMIT 1;
+
 -- PendingInterruptCommand is the in-flight-abort watcher's read: the oldest queued command that
 -- demands aborting the current model step (spec §9.2, §9.3, §25.11) — a send_message interrupt,
 -- or a change_config immediate switch (both carry delivery = 'interrupt'). kind lets the handler

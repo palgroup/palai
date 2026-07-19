@@ -8,6 +8,12 @@ import (
 	"github.com/palgroup/palai/packages/coordinator"
 )
 
+// errRunPaused signals that a pending pause was applied at this boundary, so the orchestrator must
+// stop driving the loop — the run is now waiting and its compute is released when the attempt ends
+// (spec §22.3, SES-009). It is not a failure: ExecuteAttempt ends the attempt cleanly on it (like a
+// terminal run), leaving every other queued command for resume to re-deliver.
+var errRunPaused = errors.New("run_paused")
+
 // pumpCommands delivers a run's queued send_message commands at a safe boundary (spec §9.2,
 // §22.4). It is the orchestrator's correlate-commit-dispatch role applied to commands: it never
 // rewrites the engine loop — it reads the pending set, marks each command applied (durably,
@@ -21,13 +27,29 @@ import (
 // claimed returns ErrCommandNotPending and is skipped.
 //
 // ponytail: applied-but-not-folded message loss — after ApplyCommand commits, the delivered
-// message lives only in the engine subprocess's memory until the next model request folds it,
-// but run.start history is only prior-RESPONSE outputs, so a crash/reclaim between apply and
-// fold gives the fresh attempt no redelivery and command.applied.v1 claims an effect that is
-// lost. T4 pause/resume hits this on the NORMAL path (resume = new attempt from the journal),
-// so the fix (a durable message row, or applied-undelivered redelivery at attempt start) is a
-// hard T4 prerequisite, not a T2 concern.
+// message lives only in the engine subprocess's memory until the next model request folds it, and
+// run.start history is only prior-RESPONSE outputs, so a crash/reclaim between apply and fold gives
+// the fresh attempt no redelivery and command.applied.v1 claims an effect that is lost. T4
+// pause/resume does NOT hit this: pause PRE-EMPTS the boundary (below), leaving queued messages
+// unapplied so resume re-delivers them from the queue, while the committed model steps replay from
+// the journal (LookupModelResult). The residual loss — a message applied at a NORMAL boundary, then
+// the attempt crashes before the fold commits — is a reclaim-recovery gap deferred to E10's
+// recovery-ladder (plan §7.4): a durable delivered-message row, or applied-undelivered redelivery
+// at attempt start, closes it there.
 func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState) error {
+	// A pending pause pre-empts the boundary (spec §22.3, SES-009): apply it and stop driving —
+	// every other queued command stays queued for resume to re-deliver (faithful resume). Read
+	// before the delivery set so a pause queued after a message still wins the boundary.
+	switch pauseID, found, err := o.spine.PendingPauseCommand(ctx, st.tenant, string(st.attempt.RunID)); {
+	case err != nil:
+		return err
+	case found:
+		if _, err := o.spine.PauseRun(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), pauseID); err != nil {
+			return err
+		}
+		return errRunPaused
+	}
+
 	pending, err := o.spine.PendingBoundaryCommands(ctx, st.tenant, string(st.attempt.RunID))
 	if err != nil {
 		return err

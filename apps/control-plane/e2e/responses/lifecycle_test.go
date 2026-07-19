@@ -87,6 +87,114 @@ func TestCloseSessionSweepsQueuedSessionCommands(t *testing.T) {
 	}
 }
 
+// awaitRunState polls a run's durable state until it reaches want, so a test can wait for a
+// cooperative pause to land the run in waiting before asserting on it.
+func (h *harness) awaitRunState(runID, want string, within time.Duration) {
+	h.t.Helper()
+	deadline := time.Now().Add(within)
+	var last string
+	for time.Now().Before(deadline) {
+		if last = h.runState(runID); last == want {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	h.t.Fatalf("run %s state = %q after %s, want %q", runID, last, within, want)
+}
+
+// responseRunJobCount counts the durable response.run jobs enqueued for a run. Each attempt
+// generation is one job, so a resume that opens a fresh attempt on the same run adds a second.
+func (h *harness) responseRunJobCount(runID string) int {
+	h.t.Helper()
+	return h.count(`SELECT count(*) FROM durable_jobs WHERE payload->>'run_id'=$1 AND kind='response.run' AND organization_id=$2 AND project_id=$3`,
+		runID, h.tenant.Organization, h.tenant.Project)
+}
+
+// TestPauseReleasesComputeResumeSameRunNewAttempt proves the pause/resume lifecycle (SES-009,
+// the deterministic command/state half) and faithful resume (spec §22.3). pause is a cooperative
+// boundary stop: at a safe loop boundary the run goes to waiting, the attempt ends, and its
+// compute is released (the durable job settles) — but a message queued before the pause is
+// PRE-EMPTED, left queued for resume rather than delivered. resume opens a NEW attempt on the SAME
+// run (waiting -> running, a second response.run job): it replays the committed first step from
+// the journal (the provider is NOT re-called for it) and re-delivers the queued message, which
+// folds into the resumed run's next model step. The current response's committed transcript
+// survives the pause intact — the load-bearing faithful-resume invariant.
+func TestPauseReleasesComputeResumeSameRunNewAttempt(t *testing.T) {
+	h := newHarness(t)
+	gp, rec := newGatedProvider(), &deliverRecorder{}
+	dialer := subprocessDialer{engineDir: h.engineDir, onSend: rec.onSend}
+	stop := h.runWorker(h.newOrchestratorWithAdapter(dialer, gp))
+	defer stop()
+
+	respID, sessionID, runID := h.admitWith(`{"input":"first turn"}`, newID("idem"))
+
+	// Wait for the first (pre-tool) model step to start, then park it at the gate.
+	select {
+	case <-gp.started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("first model step never started")
+	}
+
+	// Queue a message (to survive the pause), then pause — both while the first step is gated.
+	msgID := newID("cmd")
+	if cmd := h.submitCommand(sessionID, `{"command_id":"`+msgID+`","kind":"send_message","delivery":"queue","message":"RESUME-FOLD"}`); cmd.Status != "queued" {
+		t.Fatalf("send_message status = %q, want queued", cmd.Status)
+	}
+	pauseID := newID("cmd")
+	if cmd := h.submitCommand(sessionID, `{"command_id":"`+pauseID+`","kind":"pause"}`); cmd.Status != "queued" {
+		t.Fatalf("pause status = %q, want queued (a live run should accept it)", cmd.Status)
+	}
+
+	// Release the first step: it completes (a tool call), the loop reaches a safe boundary, and
+	// the pending pause pre-empts it — the run goes to waiting and the attempt ends.
+	close(gp.release)
+
+	h.awaitRunState(runID, "waiting", 30*time.Second)
+	// Compute released: the paused attempt's durable job settled rather than holding its lease.
+	h.awaitJobStatus(runID, "completed", 30*time.Second)
+	// The pause applied; the queued message is PRE-EMPTED — still queued, never delivered.
+	if st, seq := h.commandRow(pauseID); st != "applied" || seq == nil {
+		t.Fatalf("pause state = %q applied_sequence = %v, want applied with a sequence", st, seq)
+	}
+	if st, _ := h.commandRow(msgID); st != "queued" {
+		t.Fatalf("queued message state after pause = %q, want queued (pre-empted, survives for resume)", st)
+	}
+	if count, _ := rec.snapshot(); count != 0 {
+		t.Fatalf("message.deliver frames before resume = %d, want 0 (the pause pre-empted delivery)", count)
+	}
+	if n := h.responseRunJobCount(runID); n != 1 {
+		t.Fatalf("response.run jobs after pause = %d, want 1 (one attempt so far)", n)
+	}
+
+	// Resume: the same run re-enters running under a NEW attempt (a second response.run job).
+	if cmd := h.submitCommand(sessionID, `{"command_id":"`+newID("cmd")+`","kind":"resume"}`); cmd.Status != "applied" {
+		t.Fatalf("resume status = %q, want applied", cmd.Status)
+	}
+	h.awaitResponseState(respID, "completed", 60*time.Second)
+
+	// A new attempt drove the resume (a second response.run job); the run id held throughout.
+	if n := h.responseRunJobCount(runID); n != 2 {
+		t.Fatalf("response.run jobs after resume = %d, want 2 (resume opened a new attempt on the same run)", n)
+	}
+	// Faithful resume: the first step was REPLAYED from the journal, so the provider was called
+	// exactly twice across both attempts (step 1 once in attempt 1, step 2 once in attempt 2) —
+	// never a third time re-running the already-committed first step.
+	if calls := gp.callCount(); calls != 2 {
+		t.Fatalf("provider calls across pause/resume = %d, want 2 (the committed first step is replayed, not re-run)", calls)
+	}
+	// The pre-empted message survived the pause, was re-delivered exactly once on resume, and
+	// folded into the resumed run's model context.
+	if count, last := rec.snapshot(); count != 1 || last != "RESUME-FOLD" {
+		t.Fatalf("message.deliver frames after resume = %d (last %q), want exactly 1 of RESUME-FOLD", count, last)
+	}
+	if !gp.sawUserMessage("RESUME-FOLD") {
+		t.Fatal("the queued message did not survive resume / never folded into the resumed run")
+	}
+	if st, seq := h.commandRow(msgID); st != "applied" || seq == nil {
+		t.Fatalf("queued message state after resume = %q applied_sequence = %v, want applied", st, seq)
+	}
+}
+
 // TestForkCopiesHistoryBoundaryIsolatesFuture proves fork_session (spec §22.8, SES-011): the fork
 // child is a new active session that reference-copies the parent's history up to the fork
 // boundary, and a response written to the PARENT after the fork is NOT in the child — the fork's

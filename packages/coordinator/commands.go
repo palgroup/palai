@@ -156,6 +156,12 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 		if err := applyForkSessionTx(ctx, tx, tenant, sessionID, in.ForkSessionID, in.CommandID); err != nil {
 			return Command{}, err
 		}
+	} else if in.Kind == "resume" {
+		// resume acts on a paused (waiting) run now — it re-enters running and enqueues a fresh
+		// attempt — rather than queuing for a boundary (there is no live loop to deliver to).
+		if err := applyResumeTx(ctx, tx, tenant, sessionID, responseID, runID, in.CommandID); err != nil {
+			return Command{}, err
+		}
 	} else {
 		reason := rejectionReason(in.Kind, runID)
 		if in.Kind == "change_config" {
@@ -195,6 +201,16 @@ func rejectionReason(kind, runID string) map[string]any {
 			// response's history; T2 rejects it (no live loop). That next-response-history carry
 			// is T4 work — it needs the run.start history assembly to fold a pending message.
 			return map[string]any{"code": "no_active_run", "detail": "the session has no active run to deliver to"}
+		}
+		return nil
+	case "pause":
+		// A pause needs a live run to cooperatively stop; with none it is a no-op rejection. It
+		// stays queued for the boundary pump otherwise (the pump applies it at the next safe
+		// boundary). ponytail: a pause on an already-waiting run (double-pause) queues and applies
+		// on the next resume's first boundary; guarding on running specifically needs the run state
+		// here — add it if double-pause ever becomes a real case.
+		if runID == "" {
+			return map[string]any{"code": "no_active_run", "detail": "the session has no active run to pause"}
 		}
 		return nil
 	case "change_config":
@@ -297,6 +313,49 @@ func applyForkSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, parentSes
 	if _, err := tx.Exec(ctx, storage.Query("SetCommandResult"),
 		commandID, tenant.Organization, tenant.Project, mustMarshal(map[string]any{"session_id": childSessionID})); err != nil {
 		return fmt.Errorf("set fork command result: %w", err)
+	}
+	return nil
+}
+
+// applyResumeTx applies a resume command (spec §22.3, SES-009): it re-enters a paused (waiting)
+// root run into running and enqueues a fresh response.run job, so a worker opens a NEW attempt on
+// the SAME run — one that replays the committed transcript from the journal and re-delivers any
+// message the pause left queued. Resume needs a paused run: with no live run, or a run that is not
+// waiting, it is a typed rejection (nothing to resume). The run transition, the job enqueue, and
+// the command-applied commit together, so the job becomes claimable only once the run is durably
+// running again (nothing dispatches before commit).
+func applyResumeTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, runID, commandID string) error {
+	if runID == "" {
+		return rejectCommandTx(ctx, tx, tenant, sessionID, responseID, commandID,
+			map[string]any{"code": "no_paused_run", "detail": "the session has no paused run to resume"})
+	}
+	var lockedSession, lockedState string
+	var lockedResponse *string
+	if err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).
+		Scan(&lockedSession, &lockedResponse, &lockedState); err != nil {
+		return fmt.Errorf("lock run for resume: %w", err)
+	}
+	if statemachines.RunState(lockedState) != statemachines.RunWaiting {
+		return rejectCommandTx(ctx, tx, tenant, sessionID, responseID, commandID,
+			map[string]any{"code": "not_paused", "detail": "the run is not paused"})
+	}
+	if _, err := applyRunTransitionTx(ctx, tx, tenant, runID, statemachines.RunCmdResume); err != nil {
+		return err
+	}
+	jobID, err := newJobID()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, storage.Query("EnqueueJob"),
+		jobID, tenant.Organization, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, runID))); err != nil {
+		return fmt.Errorf("enqueue resume job: %w", err)
+	}
+	resumeResponse := ""
+	if lockedResponse != nil {
+		resumeResponse = *lockedResponse
+	}
+	if _, err := applyCommandInTx(ctx, tx, tenant, lockedSession, resumeResponse, commandID); err != nil {
+		return err
 	}
 	return nil
 }
@@ -478,6 +537,47 @@ func applyCommandInTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, 
 	if _, err := tx.Exec(ctx, storage.Query("CompleteCommandApplied"),
 		commandID, tenant.Organization, tenant.Project, seq); err != nil {
 		return 0, fmt.Errorf("apply command: %w", err)
+	}
+	return seq, nil
+}
+
+// PendingPauseCommand returns the oldest queued pause command for a run — the boundary pump's
+// pause read (spec §22.3, SES-009). A pause pre-empts the boundary: the pump applies it and stops
+// driving the loop, so it is read before the boundary delivery set, not mixed into it. found is
+// false when none is pending.
+func (s *Store) PendingPauseCommand(ctx context.Context, tenant Tenant, runID string) (commandID string, found bool, err error) {
+	switch err := s.pool.QueryRow(ctx, storage.Query("PendingPauseCommand"), runID, tenant.Organization, tenant.Project).
+		Scan(&commandID); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("read pending pause: %w", err)
+	}
+	return commandID, true, nil
+}
+
+// PauseRun applies a pause command at a safe loop boundary (spec §22.3, SES-009): in one
+// transaction it drives the run running -> waiting (its compute is released once the attempt ends)
+// and marks the pause command applied, so the paused run and the applied pause commit together. It
+// is the cooperative half of pause — the orchestrator stops driving the loop once this returns.
+// Returns the pause's applied_sequence. A run already terminal (it finished on this step) rejects
+// with ErrRunTerminal, which the caller treats as "nothing to pause".
+func (s *Store) PauseRun(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID string) (int64, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return 0, fmt.Errorf("begin pause: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	if _, err := applyRunTransitionTx(ctx, tx, tenant, runID, statemachines.RunCmdWait); err != nil {
+		return 0, err
+	}
+	seq, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit pause: %w", err)
 	}
 	return seq, nil
 }
