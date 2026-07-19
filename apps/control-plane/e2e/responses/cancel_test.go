@@ -327,6 +327,99 @@ func TestLateTerminalDoesNotOverwriteCanceled(t *testing.T) {
 	}
 }
 
+// TestRepeatedCancelSingleMonotonicTerminal proves SES-010: a repeated cancel is a monotonic
+// no-op. The first cancel drives the running run to the single canceled terminal
+// (run.canceled.v1); a second cancel returns the same 202 + canceled projection but journals no
+// new event — there is exactly one terminal, never a duplicate (spec §22.3).
+func TestRepeatedCancelSingleMonotonicTerminal(t *testing.T) {
+	h := newHarness(t)
+	responseID, sessionID, runID := h.admit()
+
+	// Park an in-flight attempt at a boundary so the run is provably running at cancel time.
+	ch := &gatedChannel{
+		gate:   make(chan struct{}),
+		gateAt: 2,
+		frames: []contracts.EngineFrame{
+			scriptFrame("engine.ready", runID, 1, map[string]any{
+				"selected_protocol": "engine.v1", "engine": map[string]any{"name": "fake", "version": "0"},
+				"max_frame_bytes": 1024, "nonce": "n",
+			}),
+			scriptFrame("model.request", runID, 2, map[string]any{"model_request_id": newID("mreq")}),
+			scriptFrame("model.request", runID, 3, map[string]any{"model_request_id": newID("mreq")}),
+		},
+	}
+	// Drive the attempt directly (not the shared worker): the worker is not run-scoped, so it
+	// would claim a sibling test's stale job and consume this single gated channel on the wrong
+	// run. A direct ExecuteAttempt dials the gated channel only for this run (the e08a898 pattern).
+	orch := h.newOrchestrator(gatedDialer{ch: ch})
+	done := make(chan error, 1)
+	go func() { done <- orch.ExecuteAttempt(context.Background(), h.descriptor(runID, 1)) }()
+	h.awaitLastEvent(sessionID, "model_step.completed.v1", 20*time.Second)
+
+	// First cancel: the single monotonic terminal.
+	first := h.cancelResponse(responseID, h.token)
+	firstBody := readAll(t, first)
+	if first.StatusCode != http.StatusAccepted {
+		t.Fatalf("first cancel status = %d, want 202 (body=%s)", first.StatusCode, firstBody)
+	}
+	if got := decodeResp(t, firstBody); got.Status != "canceled" {
+		t.Fatalf("first cancel body status = %q, want canceled", got.Status)
+	}
+	afterFirst := h.events(sessionID)
+	if last := afterFirst[len(afterFirst)-1].typ; last != "run.canceled.v1" {
+		t.Fatalf("last event after first cancel = %q, want run.canceled.v1", last)
+	}
+
+	// Second cancel: a no-op. Same 202 + canceled projection, and NO new journal event —
+	// the canceled terminal is monotonic, never reopened for a second terminal (SES-010).
+	second := h.cancelResponse(responseID, h.token)
+	secondBody := readAll(t, second)
+	if second.StatusCode != http.StatusAccepted {
+		t.Fatalf("second cancel status = %d, want 202 (body=%s)", second.StatusCode, secondBody)
+	}
+	if got := decodeResp(t, secondBody); got.Status != "canceled" {
+		t.Fatalf("second cancel body status = %q, want canceled", got.Status)
+	}
+	if afterSecond := h.events(sessionID); len(afterSecond) != len(afterFirst) {
+		t.Fatalf("second cancel journaled %d new events, want 0 (single monotonic terminal, SES-010)", len(afterSecond)-len(afterFirst))
+	}
+
+	// Release the gate so the parked attempt unwinds cleanly (its post-terminal commit aborts).
+	close(ch.gate)
+	if err := <-done; err != nil {
+		t.Fatalf("attempt after cancel error = %v", err)
+	}
+}
+
+// TestCancelOnPurgedResponseIs410 proves cancel honors the retention tombstone: once a
+// store:false response is reaped, its content is gone, so the cancel endpoint answers 410
+// retention_expired (the same tombstone contract as GET), never a canceled projection over
+// reaped content (spec §8.3, §22.3 — the cancel-purge ledger minor).
+func TestCancelOnPurgedResponseIs410(t *testing.T) {
+	h := newHarness(t)
+	stop := h.runWorker(h.newOrchestrator(subprocessDialer{engineDir: h.engineDir}))
+	defer stop()
+
+	responseID, _, _ := h.admitWith(`{"input":"do the work","store":false}`, newID("idem"))
+	h.awaitResponseState(responseID, "completed", 60*time.Second)
+
+	reaper := execution.NewReaper(h.repo, 20*time.Millisecond)
+	reapUntilPurged(t, h, reaper, responseID, 10*time.Second)
+
+	resp := h.cancelResponse(responseID, h.token)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusGone {
+		t.Fatalf("cancel-on-purged status = %d, want 410", resp.StatusCode)
+	}
+	var problem contracts.Problem
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem error = %v", err)
+	}
+	if problem.Code != "retention_expired" {
+		t.Fatalf("code = %q, want retention_expired", problem.Code)
+	}
+}
+
 // awaitLastEvent polls the journal until its last event is want, so a test can wait for an
 // in-flight attempt to reach a known committed step before acting.
 func (h *harness) awaitLastEvent(sessionID, want string, within time.Duration) {

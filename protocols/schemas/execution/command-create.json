@@ -15,7 +15,7 @@
   },
   "additionalProperties": true,
   "$defs": {
-    "known_kinds": {"enum": ["send_message", "change_config", "approve", "deny"]},
+    "known_kinds": {"enum": ["send_message", "change_config", "approve", "deny", "pause", "resume", "fork_session", "close_session"]},
     "delivery_modes": {"enum": ["queue", "steer", "interrupt"]}
   }
 }

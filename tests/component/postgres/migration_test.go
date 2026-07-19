@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -230,6 +231,138 @@ func TestConfigRevisionsMigration(t *testing.T) {
 	}
 	if !tableExists(t, pool, "config_revisions") || !columnExists(t, pool, "projects", "config_policy") {
 		t.Fatal("after reapply, a 000005 object is missing")
+	}
+}
+
+// indexExists reports whether an index of the given name is present in the public schema.
+func indexExists(t *testing.T, pool *pgxpool.Pool, name string) bool {
+	t.Helper()
+	var reg *string
+	if err := pool.QueryRow(context.Background(), `SELECT to_regclass('public.' || $1)::text`, name).Scan(&reg); err != nil {
+		t.Fatalf("to_regclass(%s) error = %v", name, err)
+	}
+	return reg != nil
+}
+
+// TestOneActiveRootMigration proves 000006 adds its one-active-root index idempotently and
+// reverses cleanly: the index exists after apply (a re-apply is a clean no-op), is gone after
+// rollback, and returns after reapply (spec §22.3; migration re-run safety, the 000002/000003
+// pattern).
+func TestOneActiveRootMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE INDEX IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !indexExists(t, pool, "runs_one_active_root_per_session") {
+		t.Fatal("after apply, runs_one_active_root_per_session is missing")
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if indexExists(t, pool, "runs_one_active_root_per_session") {
+		t.Fatal("after rollback, runs_one_active_root_per_session still exists")
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !indexExists(t, pool, "runs_one_active_root_per_session") {
+		t.Fatal("after reapply, runs_one_active_root_per_session is missing")
+	}
+}
+
+// TestSecondConcurrentRootRunConflicts proves the one-active-root invariant is a DB constraint,
+// not an app-code race (spec §22.3): a session holds at most one non-terminal root run, so a
+// second concurrent root run for the same session is a unique_violation (23505). The slot frees
+// when the live root terminalizes, and it is per session. Mirrors TestActiveAttemptFenceIsUniquePerRun.
+func TestSecondConcurrentRootRunConflicts(t *testing.T) {
+	cs := openHarness(t)
+	pool := cs.Pool()
+	ctx := context.Background()
+	tenant, sessionID, runID := seedRun(t, pool)
+
+	insertRun := func(session, state string) error {
+		_, err := pool.Exec(ctx,
+			`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, $5)`,
+			newID("run"), tenant.Organization, tenant.Project, session, state)
+		return err
+	}
+
+	// seedRun's run is queued (non-terminal): it holds the session's single root slot. A second
+	// concurrent non-terminal root run for the same session is the one-active-root violation.
+	if got := pgCode(insertRun(sessionID, "running")); got != "23505" {
+		t.Fatalf("second concurrent root run code = %q, want 23505 unique_violation", got)
+	}
+	// Terminalizing the live root frees the slot: the session's next response may open a root run.
+	exec(t, pool, `UPDATE runs SET state='completed' WHERE id=$1`, runID)
+	if err := insertRun(sessionID, "queued"); err != nil {
+		t.Fatalf("root run after the live one terminalized error = %v", err)
+	}
+	// The slot is per session: a distinct session's root run is unaffected by the first's.
+	otherSession := newID("ses")
+	exec(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
+		otherSession, tenant.Organization, tenant.Project)
+	if err := insertRun(otherSession, "running"); err != nil {
+		t.Fatalf("root run in a distinct session error = %v", err)
+	}
+}
+
+// TestLateTerminalCannotOverwriteTerminalRow proves the permanent, DB-level class-fix for the
+// 2-tx cancel window (spec §22.3): once a response is finalized terminal, a later terminal
+// projection loses at the database, because UpdateResponse is conditional (WHERE state NOT IN
+// the terminal states). This is the durable form of the e08a898 app-guard — it holds even when
+// a process is killed between the run transition and the projection write, so a reclaimed or
+// in-flight attempt whose late run.terminal lands after a cancel cannot flip the canceled
+// response to completed. FinalizeResponse stays a silent idempotent no-op on the blocked write.
+func TestLateTerminalCannotOverwriteTerminalRow(t *testing.T) {
+	cs := openHarness(t)
+	pool := cs.Pool()
+	ctx := context.Background()
+	tenant, sessionID, runID := seedRun(t, pool)
+
+	// A response whose run a user cancel terminalized (run.canceled.v1) and whose projection the
+	// cancel finalized to canceled — the first, winning terminal write.
+	respID := newID("resp")
+	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'queued')`,
+		respID, tenant.Organization, tenant.Project, sessionID)
+	exec(t, pool, `UPDATE runs SET state='canceled' WHERE id=$1`, runID)
+	canceled, _ := json.Marshal(map[string]any{"output": []any{}, "model": ""})
+	if err := cs.FinalizeResponse(ctx, tenant, respID, "canceled", canceled); err != nil {
+		t.Fatalf("finalize canceled error = %v", err)
+	}
+
+	// The late terminal: an in-flight/reclaimed attempt that finished recovery just after the
+	// cancel now finalizes the same response to completed. The conditional UPDATE must drop it.
+	completed, _ := json.Marshal(map[string]any{"output": []any{map[string]any{"type": "message", "content": "late"}}, "model": "fake"})
+	if err := cs.FinalizeResponse(ctx, tenant, respID, "completed", completed); err != nil {
+		t.Fatalf("late finalize returned error = %v, want a silent no-op", err)
+	}
+
+	// The canceled terminal stands: the late completed projection lost at the DB level. The
+	// canceled projection carries an empty output; the completed one carried a "late" item, so
+	// an empty output array proves the completed write never landed (decoded, not byte-compared,
+	// because JSONB normalizes key order and spacing on round-trip).
+	var state string
+	var output []byte
+	if err := pool.QueryRow(ctx, `SELECT state, output FROM responses WHERE id=$1`, respID).Scan(&state, &output); err != nil {
+		t.Fatalf("read response error = %v", err)
+	}
+	if state != "canceled" {
+		t.Fatalf("response state after late terminal = %q, want canceled (a late completed overwrote the terminal row, §22.3)", state)
+	}
+	var proj struct {
+		Output []any `json:"output"`
+	}
+	if err := json.Unmarshal(output, &proj); err != nil {
+		t.Fatalf("decode response output %s error = %v", output, err)
+	}
+	if len(proj.Output) != 0 {
+		t.Fatalf("response output after late terminal = %s, want the empty canceled projection (the completed write leaked in)", output)
 	}
 }
 

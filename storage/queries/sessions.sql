@@ -25,6 +25,20 @@ SELECT id, state, created_at
 FROM sessions
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- LockSession reads and locks a session so a lifecycle transition (close) sees a stable state
+-- and concurrent closes serialize (mirrors LockRun for runs).
+-- name: LockSession
+SELECT state
+FROM sessions
+WHERE id = $1 AND organization_id = $2 AND project_id = $3
+FOR UPDATE;
+
+-- UpdateSessionState advances a session's lifecycle state (spec §22.1).
+-- name: UpdateSessionState
+UPDATE sessions
+SET state = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
 -- SessionHistory returns the prior responses of a session in creation order so run.start can
 -- carry them as conversation history (spec §22.2). A retained response yields its stored
 -- output projection; a purged one yields NULL output with purged = true, which the assembler

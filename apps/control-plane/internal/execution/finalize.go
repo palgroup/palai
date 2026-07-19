@@ -13,8 +13,9 @@ import (
 
 // problemTypePrefix namespaces stable codes into dereferenceable problem types,
 // matching the HTTP surface's middleware.WriteProblem so a stored terminal error and a
-// live problem document share one type URI.
-const problemTypePrefix = "https://docs.palai.dev/problems/"
+// live problem document share one type URI. Sourced from contracts so the prefix has one
+// definition across the finalize and cancel projections.
+const problemTypePrefix = contracts.ProblemTypePrefix
 
 // terminalCommands maps an engine run.terminal outcome to its canonical run command
 // and the terminal response status (spec §25.8, §22.3).
@@ -32,18 +33,24 @@ var terminalCommands = map[string]struct {
 // terminalProblems maps a non-completed terminal status to the sanitized RFC 9457
 // problem the Response projection carries as its error (spec §22.3, §8.3). Each detail
 // is a fixed human line — never raw provider or engine text. request_id is stamped at
-// retrieval, not here, since a terminal is finalized off any HTTP request.
+// retrieval, not here, since a terminal is finalized off any HTTP request. canceled is
+// NOT here — it is the single contracts.CanceledProblem the endpoint cancel and this
+// engine-terminal path share (the ledger's canonical-problem dedup).
 var terminalProblems = map[string]contracts.Problem{
 	"failed":          {Code: "internal_error", Title: "Internal error", Status: 500, Detail: "the run failed during execution", Retryable: true},
 	"timed_out":       {Code: "operation_timed_out", Title: "Operation timed out", Status: 504, Detail: "the run exceeded its execution deadline", Retryable: true},
 	"budget_exceeded": {Code: "quota_exceeded", Title: "Quota exceeded", Status: 429, Detail: "the run exhausted its allotted budget"},
-	"canceled":        {Code: "canceled", Title: "Canceled", Status: 409, Detail: "the run was canceled before completion"},
 }
 
 // terminalProblem returns the sanitized problem a non-completed terminal projects as
-// its error, or nil for a completed run (which carries no error). The type URI is
-// derived from the stable code so it stays consistent with the HTTP surface.
+// its error, or nil for a completed run (which carries no error). canceled projects the
+// single canonical contracts.CanceledProblem so the endpoint-cancel and engine-terminal
+// projections stay one document; the rest derive their type URI from the stable code.
 func terminalProblem(status string) *contracts.Problem {
+	if status == "canceled" {
+		p := contracts.CanceledProblem()
+		return &p
+	}
 	p, ok := terminalProblems[status]
 	if !ok {
 		return nil

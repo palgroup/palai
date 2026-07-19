@@ -75,9 +75,12 @@ type AdmitResult struct {
 	Conflict   bool
 	Purged     bool
 	// SessionNotFound is a chain onto an unknown or foreign session/response (404, no
-	// existence disclosure); SessionConflict a chain onto a non-active session (409).
-	SessionNotFound bool
-	SessionConflict bool
+	// existence disclosure); SessionConflict a chain onto a non-active session (409);
+	// ActiveRunConflict a chain onto a session that already has a live root run (409,
+	// one-active-root — spec §22.3).
+	SessionNotFound   bool
+	SessionConflict   bool
+	ActiveRunConflict bool
 }
 
 type responseHandler struct {
@@ -174,6 +177,12 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if out.SessionConflict {
 		middleware.WriteProblem(w, r, http.StatusConflict, "session_not_active", "the session is not active and cannot accept a new response")
+		return
+	}
+	// One-active-root (spec §22.3): the session already has a non-terminal root run, so a new
+	// response cannot open a second concurrent root. The client retries once the live run ends.
+	if out.ActiveRunConflict {
+		middleware.WriteProblem(w, r, http.StatusConflict, "active_run_exists", "the session already has an active run; wait for it to finish before starting another")
 		return
 	}
 	if out.Conflict {

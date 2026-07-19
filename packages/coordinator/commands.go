@@ -43,9 +43,12 @@ func mustCommandEvent(from statemachines.CommandState, cmd statemachines.Command
 // the command's own content (e.g. the send_message text) as customer content.
 type CommandInput struct {
 	CommandID string
-	Kind      string // send_message | approve | deny
+	Kind      string // send_message | change_config | approve | deny | pause | resume | fork_session | close_session
 	Delivery  string // queue | steer | interrupt (send_message only)
 	Payload   []byte
+	// ForkSessionID is the freshly minted child session id a fork_session opens; the store adapter
+	// mints it (one place mints session ids) and the coordinator creates it under the fork.
+	ForkSessionID string
 }
 
 // Command is the durable command projection. Replayed marks a duplicate command_id that
@@ -89,8 +92,10 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
 	// The session must be visible in scope; a foreign/unknown id is a 404, never an FK error.
+	// Its lifecycle state gates new work: a closed session rejects everything but its own exit.
+	var sessionState string
 	if err := tx.QueryRow(ctx, storage.Query("GetSessionInScope"), sessionID, tenant.Organization, tenant.Project).
-		Scan(new(string), new(string), new(time.Time)); errors.Is(err, pgx.ErrNoRows) {
+		Scan(new(string), &sessionState, new(time.Time)); errors.Is(err, pgx.ErrNoRows) {
 		return Command{SessionNotFound: true}, nil
 	} else if err != nil {
 		return Command{}, fmt.Errorf("resolve command session: %w", err)
@@ -132,21 +137,37 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 		return Command{}, err
 	}
 
-	// Synchronous resolution. approve/deny have no pending-approval source (E09 deferral); a
-	// send_message with no live run has no loop to steer; a change_config outside the project
-	// allowlist is denied before any revision is created (no silent fallback — SES-008). All are
-	// typed rejections. A permitted send_message on a live run stays queued for the pump/watcher;
-	// a permitted change_config is queued regardless of run state (it can carry to the next run).
-	reason := rejectionReason(in.Kind, runID)
-	if in.Kind == "change_config" {
-		reason, err = changeConfigRejection(ctx, tx, tenant, in.Payload)
-		if err != nil {
-			return Command{}, err
-		}
-	}
-	if reason != nil {
+	// Synchronous resolution. The session-lifecycle gate comes first: a non-active session rejects
+	// new work (spec §22.1), except close_session which is that exit. Then the per-kind rules:
+	// approve/deny have no approval source (E09); a send_message with no live run has no loop to
+	// steer; a change_config outside the allowlist is denied before any revision (no silent
+	// fallback — SES-008). close_session transitions the session and sweeps its queued commands
+	// (F1). A permitted send_message on a live run stays queued for the pump; a permitted
+	// change_config is queued regardless of run state (it can carry to the next run).
+	if reason := sessionStateRejection(in.Kind, sessionState); reason != nil {
 		if err := rejectCommandTx(ctx, tx, tenant, sessionID, responseID, in.CommandID, reason); err != nil {
 			return Command{}, err
+		}
+	} else if in.Kind == "close_session" {
+		if err := applyCloseSessionTx(ctx, tx, tenant, sessionID, runID, in.CommandID); err != nil {
+			return Command{}, err
+		}
+	} else if in.Kind == "fork_session" {
+		if err := applyForkSessionTx(ctx, tx, tenant, sessionID, in.ForkSessionID, in.CommandID); err != nil {
+			return Command{}, err
+		}
+	} else {
+		reason := rejectionReason(in.Kind, runID)
+		if in.Kind == "change_config" {
+			reason, err = changeConfigRejection(ctx, tx, tenant, in.Payload)
+			if err != nil {
+				return Command{}, err
+			}
+		}
+		if reason != nil {
+			if err := rejectCommandTx(ctx, tx, tenant, sessionID, responseID, in.CommandID, reason); err != nil {
+				return Command{}, err
+			}
 		}
 	}
 
@@ -206,6 +227,125 @@ func changeConfigRejection(ctx context.Context, tx pgx.Tx, tenant Tenant, payloa
 		return map[string]any{"code": "tool_not_allowed", "detail": "tool " + bad + " is outside the project allowlist"}, nil
 	}
 	return nil, nil
+}
+
+// sessionStateRejection gates a command by the session's lifecycle state (spec §22.1): a
+// non-active session rejects new work (send_message/change_config/fork/pause/resume), so a closed
+// session accepts nothing new. close_session is the lifecycle exit itself and is always allowed
+// (idempotent on an already-closed session), so it is never gated here.
+func sessionStateRejection(kind, state string) map[string]any {
+	if kind == "close_session" || state == string(statemachines.SessionActive) {
+		return nil
+	}
+	return map[string]any{"code": "session_not_active", "detail": "the session is not active and accepts no new commands"}
+}
+
+// applyCloseSessionTx applies a close_session command (spec §22.1, §22.4): it transitions the
+// session active/paused -> closing, sweeps its still-queued commands to expired (F1, closing the
+// change_config orphan T3 left), finishes the close to closed when no root run is live, and marks
+// the close command applied. The session row is locked so concurrent closes serialize, and an
+// already-closed session is an idempotent no-op that still applies the command.
+func applyCloseSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, activeRunID, commandID string) error {
+	var state string
+	if err := tx.QueryRow(ctx, storage.Query("LockSession"), sessionID, tenant.Organization, tenant.Project).Scan(&state); err != nil {
+		return fmt.Errorf("lock session %s: %w", sessionID, err)
+	}
+	if s := statemachines.SessionState(state); s == statemachines.SessionActive || s == statemachines.SessionPaused {
+		if err := applySessionTransitionTx(ctx, tx, tenant, sessionID, s, statemachines.SessionCmdClose); err != nil {
+			return err
+		}
+		if err := sweepQueuedSessionCommands(ctx, tx, tenant, sessionID, commandID); err != nil {
+			return err
+		}
+		// No live root run -> finish the close now; a live run keeps the session closing until it
+		// terminalizes (new work is already rejected at closing).
+		if activeRunID == "" {
+			if err := applySessionTransitionTx(ctx, tx, tenant, sessionID, statemachines.SessionClosing, statemachines.SessionCmdFinishClose); err != nil {
+				return err
+			}
+		}
+	}
+	// The close command is session-scoped (no response); mark it applied last so its
+	// applied_sequence is the final boundary of the close.
+	if _, err := applyCommandInTx(ctx, tx, tenant, sessionID, "", commandID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// applyForkSessionTx applies a fork_session command (spec §22.8): it opens a NEW active child
+// session (a fresh journal — its own session_sequences allocate from zero), reference-copies the
+// parent's immutable response history up to the fork boundary into the child, and marks the fork
+// command applied with the child session id as its result. No workspace, and no pending-approval
+// or lease is inherited (there is nothing to inherit — the child is a fresh session with only the
+// copied history). A response written to the parent after the fork is never copied, so the fork's
+// future is isolated.
+func applyForkSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, parentSessionID, childSessionID, commandID string) error {
+	if childSessionID == "" {
+		return fmt.Errorf("fork_session requires a child session id")
+	}
+	if _, err := tx.Exec(ctx, storage.Query("InsertSession"), childSessionID, tenant.Organization, tenant.Project); err != nil {
+		return fmt.Errorf("insert fork child session: %w", err)
+	}
+	if _, err := tx.Exec(ctx, storage.Query("ForkCopyResponses"), parentSessionID, tenant.Organization, tenant.Project, childSessionID); err != nil {
+		return fmt.Errorf("copy fork history: %w", err)
+	}
+	if _, err := applyCommandInTx(ctx, tx, tenant, parentSessionID, "", commandID); err != nil {
+		return err
+	}
+	// The result carries the child session id so the caller can address the fork.
+	if _, err := tx.Exec(ctx, storage.Query("SetCommandResult"),
+		commandID, tenant.Organization, tenant.Project, mustMarshal(map[string]any{"session_id": childSessionID})); err != nil {
+		return fmt.Errorf("set fork command result: %w", err)
+	}
+	return nil
+}
+
+// applySessionTransitionTx applies one SessionTable transition within tx: it advances the session
+// state and journals the session-scoped lifecycle event (response_id NULL — the event carries no
+// customer content). Mirrors ApplyRunTransition for runs (spec §22.1).
+func applySessionTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID string, current statemachines.SessionState, cmd statemachines.SessionCommand) error {
+	next, event, err := statemachines.Apply(current, cmd, statemachines.SessionTable)
+	if err != nil {
+		return fmt.Errorf("session %s transition %s: %w", sessionID, cmd, err)
+	}
+	if _, err := tx.Exec(ctx, storage.Query("UpdateSessionState"), sessionID, tenant.Organization, tenant.Project, string(next)); err != nil {
+		return fmt.Errorf("update session state: %w", err)
+	}
+	payload := mustMarshal(map[string]any{"session_id": sessionID, "state": next})
+	if _, err := appendEvent(ctx, tx, tenant, sessionID, "", event, payload); err != nil {
+		return err
+	}
+	return nil
+}
+
+// sweepQueuedSessionCommands expires the session's still-queued commands (except exceptID, the
+// close command being applied) and journals command.expired.v1 per swept command (spec §22.4
+// lifecycle — the F1 close-sweep). Mirrors sweepQueuedCommands for runs.
+func sweepQueuedSessionCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, exceptID string) error {
+	rows, err := tx.Query(ctx, storage.Query("ExpireQueuedSessionCommands"), sessionID, tenant.Organization, tenant.Project, exceptID)
+	if err != nil {
+		return fmt.Errorf("expire queued session commands: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan expired session command: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := appendEvent(ctx, tx, tenant, sessionID, "", commandExpiredEvent, mustMarshal(map[string]any{"command_id": id})); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // rejectCommandTx drives the command queued->rejected within tx and journals

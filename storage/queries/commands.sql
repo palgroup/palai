@@ -44,6 +44,27 @@ UPDATE commands
 SET state = 'rejected', result = $4, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- SetCommandResult stores a command's caller-facing result without changing its state — the
+-- fork_session apply uses it to carry the new child session id back to the caller.
+-- name: SetCommandResult
+UPDATE commands
+SET result = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- ForkCopyResponses reference-copies a parent session's immutable (terminal, unpurged) response
+-- history into the fork child up to the fork boundary — every response that exists at fork time
+-- (spec §22.8). Fresh ids (gen_random_uuid, core in PG13+); the child owns the copies, so its
+-- SessionHistory reads them unchanged and a response written to the PARENT after the fork is never
+-- copied — the fork's future is isolated. ponytail: purged tombstones are skipped (they carry no
+-- content); add a redacted_content copy if fork fidelity to §22.2 markers ever matters.
+-- name: ForkCopyResponses
+INSERT INTO responses (id, organization_id, project_id, session_id, state, input, output, store, created_at)
+SELECT 'resp_' || replace(gen_random_uuid()::text, '-', ''), organization_id, project_id, $4, state, input, output, store, created_at
+FROM responses
+WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+  AND state IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
+  AND purged_at IS NULL;
+
 -- ActiveRootRun resolves a session's live (non-terminal) root run and its response, so an
 -- accepted command targets the loop the pump will steer and the response its journal events
 -- belong to. No live run (all terminal) yields no row, which the accept path renders as a
@@ -80,6 +101,18 @@ UPDATE commands
 SET state = 'expired', updated_at = clock_timestamp()
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'queued'
   AND kind <> 'change_config'
+RETURNING id;
+
+-- ExpireQueuedSessionCommands expires a session's still-queued commands when the session closes
+-- (spec §22.1, §22.4 lifecycle — the F1 close-sweep). close_session is a session's lifecycle
+-- exit: a change_config queued for the cross-run carry (ExpireQueuedCommandsForRun excludes it)
+-- would otherwise sit queued forever once the session never runs again, so close sweeps every
+-- still-queued command. The close command itself ($4) is excluded — it is being applied, not
+-- expired. RETURNs the swept ids for command.expired.v1.
+-- name: ExpireQueuedSessionCommands
+UPDATE commands
+SET state = 'expired', updated_at = clock_timestamp()
+WHERE session_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'queued' AND id <> $4
 RETURNING id;
 
 -- PendingSessionConfigCommands is the run-start drain's read: the session's still-queued

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	statemachines "github.com/palgroup/palai/packages/state-machines"
@@ -376,6 +377,10 @@ type Admission struct {
 	// are decided before any resource is created, so the transaction leaves nothing behind.
 	SessionNotFound bool
 	SessionConflict bool
+	// ActiveRunConflict marks a chain onto a session that already has a non-terminal root run
+	// (409, one-active-root — spec §22.3). The DB partial unique index rejects the second root
+	// run insert (23505), so the whole admission rolls back and leaves nothing behind.
+	ActiveRunConflict bool
 }
 
 // AdmitResponse atomically reserves the idempotency key and, on a fresh key,
@@ -480,6 +485,13 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertRun"),
 		in.RunID, tenant.Organization, tenant.Project, sessionID, in.ResponseID); err != nil {
+		// The session already holds a non-terminal root run: one-active-root (spec §22.3). The
+		// partial unique index (runs_one_active_root_per_session) rejects the second root run at
+		// the DB, so a concurrent chain loses here rather than in an app-code check-then-insert
+		// race. The tx rolls back — no idempotency record, no response, no run persists.
+		if isUniqueViolation(err) {
+			return Admission{ActiveRunConflict: true}, nil
+		}
 		return Admission{}, fmt.Errorf("insert run: %w", err)
 	}
 
@@ -539,6 +551,14 @@ func withSessionID(body []byte, sessionID string) ([]byte, error) {
 		return nil, fmt.Errorf("encode response body: %w", err)
 	}
 	return out, nil
+}
+
+// isUniqueViolation reports whether err is a PostgreSQL unique_violation (SQLSTATE 23505),
+// so a caller can turn a partial-unique-index rejection into a typed conflict rather than an
+// opaque 500 (spec §22.3 one-active-root).
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 // nullableText maps an empty string to a SQL NULL, so a session-scoped event journals a

@@ -38,11 +38,16 @@ SELECT id
 FROM runs
 WHERE response_id = $1 AND organization_id = $2 AND project_id = $3;
 
--- UpdateResponse writes the terminal Response projection (status + output/usage JSON).
+-- UpdateResponse writes the terminal Response projection (status + output/usage JSON). The
+-- terminal states are excluded from the WHERE so the projection is monotonically terminal at the
+-- database: the first terminal write wins and a late-arriving one (a reclaimed or in-flight
+-- attempt whose run.terminal lands after a cancel) affects zero rows (spec §22.3). This is the
+-- permanent, kill-safe class-fix for the 2-tx cancel window the e08a898 app-guard patched.
 -- name: UpdateResponse
 UPDATE responses
 SET state = $4, output = $5, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+WHERE id = $1 AND organization_id = $2 AND project_id = $3
+  AND state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded');
 
 -- UpsertToolCall records a completed tool call. ON CONFLICT DO NOTHING makes a
 -- redelivered tool_call_id idempotent: the cached completion is authoritative and is

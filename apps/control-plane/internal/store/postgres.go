@@ -91,13 +91,14 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 		return api.AdmitResult{}, err
 	}
 	result := api.AdmitResult{
-		ResponseID:      responseID(adm.Body),
-		Body:            adm.Body,
-		Replayed:        adm.Replayed,
-		Conflict:        adm.Conflict,
-		Purged:          adm.Purged,
-		SessionNotFound: adm.SessionNotFound,
-		SessionConflict: adm.SessionConflict,
+		ResponseID:        responseID(adm.Body),
+		Body:              adm.Body,
+		Replayed:          adm.Replayed,
+		Conflict:          adm.Conflict,
+		Purged:            adm.Purged,
+		SessionNotFound:   adm.SessionNotFound,
+		SessionConflict:   adm.SessionConflict,
+		ActiveRunConflict: adm.ActiveRunConflict,
 	}
 	// On a purged replay the body is gone; the tombstone identity is the resource id.
 	if adm.Purged {
@@ -196,23 +197,16 @@ func (s *Store) CancelResponse(ctx context.Context, scope middleware.Scope, id s
 }
 
 // canceledProjection builds the terminal Response projection an endpoint-initiated cancel
-// finalizes: empty output/usage/model and the sanitized canceled problem. It mirrors the
-// canceled terminal execution/finalize.go projects (same fields, same stable RFC 9457
-// problem the HTTP surface uses), so a retrieval reads the same canceled terminal whichever
-// path canceled the run; the problem's request_id is stamped at retrieval, not here
-// (spec §22.3, §8.3).
+// finalizes: empty output/usage/model and the sanitized canceled problem. The problem is the
+// single contracts.CanceledProblem the engine-terminal path (execution/finalize.go) also
+// projects, so a retrieval reads the same canceled terminal whichever path canceled the run;
+// the problem's request_id is stamped at retrieval, not here (spec §22.3, §8.3).
 func canceledProjection() ([]byte, error) {
 	return json.Marshal(map[string]any{
 		"output": []contracts.ContentItem{},
 		"usage":  contracts.Usage{},
 		"model":  "",
-		"error": contracts.Problem{
-			Type:   "https://docs.palai.dev/problems/canceled",
-			Code:   "canceled",
-			Title:  "Canceled",
-			Status: 409,
-			Detail: "the run was canceled before completion",
-		},
+		"error":  contracts.CanceledProblem(),
 	})
 }
 
@@ -257,6 +251,10 @@ func (s *Store) AcceptCommand(ctx context.Context, scope middleware.Scope, sessi
 		CommandID: string(req.CommandID),
 		Kind:      req.Kind,
 		Delivery:  req.Delivery,
+	}
+	// fork_session opens a new child session; mint its id here (one place mints session ids).
+	if req.Kind == "fork_session" {
+		input.ForkSessionID = middleware.NewID("ses")
 	}
 	var err error
 	switch req.Kind {

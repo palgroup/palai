@@ -17,20 +17,17 @@ import (
 
 func TestSessionSequenceStrictlyAllocatedInTransaction(t *testing.T) {
 	cs := openHarness(t)
-	tenant, sessionID, firstRun := seedRun(t, cs.Pool())
+	_, sessionID, _ := seedRun(t, cs.Pool())
 	ctx := context.Background()
 
-	// Many queued runs in one session; each concurrent transition allocates one
-	// sequence through the real (tenant-gated) mutation path.
+	// One session's monotonic sequence allocator under concurrency. One-active-root (spec §22.3,
+	// migration 000006) forbids many concurrent live root runs in one session, so this drives the
+	// contention directly against the shared per-session allocator (AllocateSequence, events.sql)
+	// that every journaling path — ApplyRunTransition, appendEvent, the command pump — funnels
+	// through: N concurrent allocations must yield N unique, gap-free sequences, never a duplicate.
+	// The tenant-gated ApplyRunTransition path over this allocator is proven separately by
+	// TestTransitionCommitsStateEventAndOutboxAtomically.
 	const workers = 20
-	runs := make([]string, workers)
-	runs[0] = firstRun
-	for i := 1; i < workers; i++ {
-		runs[i] = newID("run")
-		exec(t, cs.Pool(), `INSERT INTO runs (id, organization_id, project_id, session_id) VALUES ($1, $2, $3, $4)`,
-			runs[i], tenant.Organization, tenant.Project, sessionID)
-	}
-
 	seqs := make([]int64, workers)
 	var wg sync.WaitGroup
 	var firstErr error
@@ -41,18 +38,22 @@ func TestSessionSequenceStrictlyAllocatedInTransaction(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			tr, err := cs.ApplyRunTransition(ctx, tenant, runs[i], statemachines.RunCmdProvision)
+			var seq int64
+			err := cs.Pool().QueryRow(ctx,
+				`INSERT INTO session_sequences (session_id, last_seq) VALUES ($1, 1)
+				 ON CONFLICT (session_id) DO UPDATE SET last_seq = session_sequences.last_seq + 1
+				 RETURNING last_seq`, sessionID).Scan(&seq)
 			if err != nil {
 				errOnce.Do(func() { firstErr = err })
 				return
 			}
-			seqs[i] = tr.Sequence
+			seqs[i] = seq
 		}(i)
 	}
 	close(start)
 	wg.Wait()
 	if firstErr != nil {
-		t.Fatalf("ApplyRunTransition() error = %v", firstErr)
+		t.Fatalf("AllocateSequence() error = %v", firstErr)
 	}
 
 	sorted := append([]int64(nil), seqs...)

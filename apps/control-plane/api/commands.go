@@ -119,11 +119,16 @@ func (h *sessionHandler) command(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out.Body)
 }
 
-// commandKinds and deliveryModes are the command surface through T3. change_config carries a
-// model and/or tool-set change (spec §9.3); the remaining lifecycle kinds (pause/resume/cancel/
-// fork/close) arrive with T4. approve/deny are accepted but rejected here (no approval source
-// until E09 — the store rejects them typed).
-var commandKinds = map[string]bool{"send_message": true, "change_config": true, "approve": true, "deny": true}
+// commandKinds and deliveryModes are the command surface. send_message carries queue/steer/
+// interrupt delivery (spec §9.2); change_config a model and/or tool-set change (spec §9.3); the
+// lifecycle kinds pause/resume (run wait/resume — spec §22.3), fork_session (§22.8), and
+// close_session (§22.1) arrive with T4. cancel stays the response-scoped endpoint, not a command
+// kind. approve/deny are accepted but rejected (no approval source until E09 — the store rejects
+// them typed).
+var commandKinds = map[string]bool{
+	"send_message": true, "change_config": true, "approve": true, "deny": true,
+	"pause": true, "resume": true, "fork_session": true, "close_session": true,
+}
 var deliveryModes = map[string]bool{"queue": true, "steer": true, "interrupt": true}
 
 // validateCommand enforces the request invariants a malformed body can violate before any
