@@ -98,6 +98,16 @@ var migrationUp13 string
 //go:embed migrations/000013_approvals_publications.down.sql
 var migrationDown13 string
 
+// 000014 adds the session→binding link to the workspaces table (E09 Task 10): the repository binding
+// + requested ref the root run's auto-provisioning resolves. It only ALTERs 000008's workspaces table,
+// so it merges cleanly onto every E09 sibling branch.
+//
+//go:embed migrations/000014_workspace_repository_link.up.sql
+var migrationUp14 string
+
+//go:embed migrations/000014_workspace_repository_link.down.sql
+var migrationDown14 string
+
 //go:embed queries/jobs.sql
 var jobsSQL string
 
@@ -143,16 +153,16 @@ var tasksSQL string
 //go:embed queries/publications.sql
 var publicationsSQL string
 
-// MigrationUp is the forward migration chain, applied in version order (000001..000013). Each file is
+// MigrationUp is the forward migration chain, applied in version order (000001..000014). Each file is
 // individually idempotent, so the whole chain is safe to re-run.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: each migration drops its added
 // objects before the earlier one drops the tables that carried them.
 func MigrationDown() string {
-	return migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
 var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL)
