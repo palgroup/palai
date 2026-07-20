@@ -206,6 +206,41 @@ def test_child_request_id_is_stable_across_resume() -> None:
     assert first["data"]["child_request_id"] == second["data"]["child_request_id"]
 
 
+def test_model_agent_tool_call_emits_child_request() -> None:
+    # DEL-001 (spec §25.18, master plan line 410): the model DRIVES delegation by calling the built-in
+    # `agent` tool. The engine turns that tool_call into a child.request — the same frame a config-seeded
+    # delegation emits, so the controller's admitChild/ChildRun path serves it — NOT a tool.request.
+    loop = make_loop("run_ma")
+    req = loop.handle(run_start())[0]
+    mrid = req["data"]["model_request_id"]
+    agent_call = {"name": "agent", "arguments": {
+        "role": "researcher", "objective": "find X", "model": "cheap-1",
+        "tools": [], "budget": {"max_total_tokens": 100}, "workspace_mode": "none", "required": True}}
+    out = loop.handle(ctrl("model.result", {"model_request_id": mrid, "tool_calls": [agent_call]}, "frm_mr"))
+    assert [f["type"] for f in out] == ["child.request"]
+    assert loop.state is State.AWAITING_CHILDREN
+    data = out[0]["data"]
+    assert CHILD.match(data["child_request_id"])
+    assert data["role"] == "researcher" and data["objective"] == "find X"
+    assert data["model"] == "cheap-1" and data["workspace_mode"] == "none" and data["required"] is True
+
+
+def test_spawn_alias_also_delegates_and_regular_tool_still_dispatches() -> None:
+    # `spawn` is an accepted alias for `agent`; a non-delegation tool in the same position still
+    # dispatches as an ordinary tool.request (the partition, not a blanket rewrite).
+    loop = make_loop("run_sa")
+    mrid = loop.handle(run_start())[0]["data"]["model_request_id"]
+    out = loop.handle(ctrl("model.result", {"model_request_id": mrid,
+        "tool_calls": [{"name": "spawn", "arguments": {"role": "r", "objective": "o", "model": "m"}}]}, "frm_mr"))
+    assert [f["type"] for f in out] == ["child.request"]
+
+    loop2 = make_loop("run_sb")
+    mrid2 = loop2.handle(run_start())[0]["data"]["model_request_id"]
+    out2 = loop2.handle(ctrl("model.result", {"model_request_id": mrid2,
+        "tool_calls": [{"name": "search", "arguments": {"q": "x"}}]}, "frm_mr"))
+    assert [f["type"] for f in out2] == ["tool.request"]
+
+
 def test_child_result_folds_as_typed_result_and_resumes_with_next_model_request() -> None:
     # A completed child.result folds into context as a typed delegation result and the run resumes
     # with the next model request — the parent's final step sees the child's output (spec §25.19).

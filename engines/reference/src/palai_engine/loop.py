@@ -30,6 +30,27 @@ def _noop(event: str, **fields: object) -> None:
     pass
 
 
+# The built-in tool names that mean "delegate to a child" (spec §25.18, master plan line 410). A
+# model tool_call with one of these becomes a child.request, not a tool.request.
+_AGENT_TOOL_NAMES = ("agent", "spawn")
+
+
+def _agent_call_to_spec(call: dict) -> dict:
+    """Map an `agent`/`spawn` tool_call's arguments onto the delegation spec _request_children emits
+    as a child.request — the same shape a config-seeded delegation carries (spec §25.18)."""
+    args = call.get("arguments") or {}
+    return {
+        "role": args.get("role"),
+        "objective": args.get("objective"),
+        "model": args.get("model"),
+        "tools": args.get("tools") or [],
+        "budget": args.get("budget") or {},
+        "workspace_mode": args.get("workspace_mode", "none"),
+        "required": bool(args.get("required")),
+        "deadline": args.get("deadline"),
+    }
+
+
 class Loop:
     """One run's state machine. ``handle`` consumes one controller frame and returns
     the engine frames it triggers. The loop starts after a successful handshake."""
@@ -119,13 +140,22 @@ class Loop:
         self.context.add_model_result(data)
 
         tool_calls = data.get("tool_calls") or []
-        if tool_calls:
-            return self._request_tools(tool_calls, reply_to=frame.get("id"))
-        # Dispatch any required delegations before finishing (spec §25.18): the run gathers its
+        # DEL-001 (spec §25.18, master plan line 410): an `agent`/`spawn` tool_call is MODEL-driven
+        # delegation — it becomes a child.request the controller admits (admitChild/ChildRun), not a
+        # tool.request. Ordinary tool_calls still dispatch as tools; a turn resolves its tools first
+        # and the model can delegate on the next step (one kind of turn at a time).
+        agent_calls = [c for c in tool_calls if c.get("name") in _AGENT_TOOL_NAMES]
+        other_calls = [c for c in tool_calls if c.get("name") not in _AGENT_TOOL_NAMES]
+        if other_calls:
+            return self._request_tools(other_calls, reply_to=frame.get("id"))
+        if agent_calls:
+            return self._request_children([_agent_call_to_spec(c) for c in agent_calls], reply_to=frame.get("id"))
+        # Dispatch any config-seeded delegations before finishing (spec §25.18): the run gathers its
         # child results, then a final model step folds them in. Skipped once dispatched, so the
         # resumed final step finishes normally.
         if self._delegations and not self._delegations_dispatched:
-            return self._request_children(reply_to=frame.get("id"))
+            self._delegations_dispatched = True
+            return self._request_children(self._delegations, reply_to=frame.get("id"))
         return self._finish(data, reply_to=frame.get("id"))
 
     def _request_tools(self, tool_calls: list[dict], *, reply_to: str | None) -> list[dict]:
@@ -150,13 +180,13 @@ class Loop:
         self.state = State.AWAITING_TOOLS
         return frames
 
-    def _request_children(self, *, reply_to: str | None) -> list[dict]:
-        """Emit one child.request per seeded delegation (spec §25.18). The controller admits each
-        against depth/fan-out/budget/capability and dispatches a ChildRun, then replies child.result."""
-        self._delegations_dispatched = True
+    def _request_children(self, specs: list[dict], *, reply_to: str | None) -> list[dict]:
+        """Emit one child.request per delegation spec (spec §25.18) — config-seeded or model-driven
+        (an agent tool_call). The controller admits each against depth/fan-out/budget/capability and
+        dispatches a ChildRun, then replies child.result."""
         self._pending_children = {}
         frames: list[dict] = []
-        for index, spec in enumerate(self._delegations):
+        for index, spec in enumerate(specs):
             child_id = protocol.child_request_id(self.emitter.run_id, self._step, index)
             self._pending_children[child_id] = spec
             self.log("safe_boundary", boundary="before_child", child_request_id=child_id)
