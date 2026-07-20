@@ -19,6 +19,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
+	tools "github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
@@ -91,7 +92,16 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 	handler := execution.AdvanceRun(spine)
 	if gateway != nil {
 		broker, route := modelBrokerFromEnv()
-		orch := execution.NewOrchestrator(repo, gateway, broker, toolbroker.New(toolbroker.ConformanceMathAdd()))
+		// Register the real coding tools alongside the conformance math tool: the workspace file and
+		// shell tools (spec §28.7-28.8) that E09's real tool round-trip dispatches. The file tool
+		// confines to the attempt's workspace; the shell tool runs behind the sandbox shell runner
+		// (injected where a sandbox driver is wired — SetShellRunner; nil fails a shell call cleanly).
+		toolBroker := toolbroker.New(
+			toolbroker.ConformanceMathAdd(),
+			tools.FileTool(),
+			tools.ShellTool(),
+		)
+		orch := execution.NewOrchestrator(repo, gateway, broker, toolBroker)
 		orch.SetModelRoute(route)
 		handler = execution.ExecuteRun(spine, repo, orch)
 	}

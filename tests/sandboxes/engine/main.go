@@ -137,8 +137,9 @@ func interactive(runID, attemptID string) {
 }
 
 // workspaceStream is the E09 Task 1 live-mount fixture: it completes the §25.6 handshake, reads the
-// seed the runner staged in the bind-mounted /workspace, requests one model step (the runner bridges
-// it to the REAL provider), then — after the real model.result returns — writes into the allocation
+// seed the runner staged in the bind-mounted /workspace, requests one model step (the runner
+// FORWARDS the model.request frame; the control plane routes it to the REAL provider), then — after
+// the real model.result returns — writes into the allocation
 // and terminates reporting what it saw. It proves the real /workspace mount is present and live
 // across a real provider round-trip. Honest ceiling: the engine is a deterministic fixture and the
 // model does not itself drive a file tool (that is E09 Task 4); the mount and the provider round-trip
