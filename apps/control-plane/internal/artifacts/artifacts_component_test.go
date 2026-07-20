@@ -276,51 +276,7 @@ func TestStoreFalsePurgeDeletesArtifactBytes(t *testing.T) {
 func TestPatchArtifactWrittenToObjectStore(t *testing.T) {
 	h := openArtifactsHarness(t)
 	ctx := context.Background()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not found: %v", err)
-	}
-
-	// A real workspace: <root>/repo is a git repo with a base commit and a working-tree edit to diff.
-	root := t.TempDir()
-	if r, err := filepath.EvalSymlinks(root); err == nil {
-		root = r
-	}
-	repoDir := filepath.Join(root, "repo")
-	if err := os.MkdirAll(repoDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	git := func(args ...string) string {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = repoDir
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e.test", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e.test")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
-		return strings.TrimSpace(string(out))
-	}
-	git("init", "-q", "-b", "main")
-	if err := os.WriteFile(filepath.Join(repoDir, "f.txt"), []byte("base\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	git("add", "f.txt")
-	git("commit", "-q", "-m", "base")
-	base := git("rev-parse", "HEAD")
-	if err := os.WriteFile(filepath.Join(repoDir, "added.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	org, project, session, runID := h.seedChangesetRun(t, base)
-	// The file-tool + shell-tool ledger the changeset compiles from.
-	h.exec(t, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, name, arguments, result)
-		VALUES ($1,$2,$3,$4,'palai.workspace.file',$5,$6)`,
-		newID("tc"), org, project, runID,
-		`{"op":"write","path":"repo/added.go","content":"package main\n"}`,
-		`{"path":"repo/added.go","before_hash":"","after_hash":"sha256:aa","created":true}`)
-	h.exec(t, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, name, arguments, result)
-		VALUES ($1,$2,$3,$4,'palai.workspace.shell',$5,$6)`,
-		newID("tc"), org, project, runID,
-		`{"argv":["go","test","./..."]}`, `{"exit_code":0,"stdout":"PASS\n"}`)
+	org, project, session, runID, root := h.seedChangesetScenario(t)
 
 	rec, compiled, err := execution.CompileChangeset(ctx, h.repo.Spine(), h.writer, execution.ChangesetInput{
 		Tenant: coordinator.Tenant{Organization: org, Project: project}, SessionID: session, RunID: runID, AllocationRoot: root,
@@ -386,6 +342,88 @@ func (h *artifactsHarness) seedChangesetRun(t *testing.T, base string) (org, pro
 	h.exec(t, `INSERT INTO preparation_receipts (id, repository_binding_id, organization_id, project_id, run_id, base_commit, tree_hash)
 		VALUES ($1,$2,$3,$4,$5,$6,'sha256:tree')`, newID("prep"), binding, org, project, runID, base)
 	return org, project, session, runID
+}
+
+// seedChangesetScenario builds a full changeset-compile scenario: a real <root>/repo git repo with a
+// base commit + a working-tree edit, the run + preparation receipt, and the file+shell tool ledger.
+func (h *artifactsHarness) seedChangesetScenario(t *testing.T) (org, project, session, runID, root string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+	root = t.TempDir()
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
+	repoDir := filepath.Join(root, "repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e.test", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e.test")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repoDir, "f.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "f.txt")
+	git("commit", "-q", "-m", "base")
+	base := git("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(repoDir, "added.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	org, project, session, runID = h.seedChangesetRun(t, base)
+	h.exec(t, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, name, arguments, result)
+		VALUES ($1,$2,$3,$4,'palai.workspace.file',$5,$6)`,
+		newID("tc"), org, project, runID,
+		`{"op":"write","path":"repo/added.go","content":"package main\n"}`,
+		`{"path":"repo/added.go","before_hash":"","after_hash":"sha256:aa","created":true}`)
+	h.exec(t, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, name, arguments, result)
+		VALUES ($1,$2,$3,$4,'palai.workspace.shell',$5,$6)`,
+		newID("tc"), org, project, runID,
+		`{"argv":["go","test","./..."]}`, `{"exit_code":0,"stdout":"PASS\n"}`)
+	return org, project, session, runID, root
+}
+
+// TestChangesetRecompileIsIdempotent proves the content-addressed id makes a re-compile idempotent
+// (spec §30.6 immutable; E10 replay safety): compiling the SAME ledger twice yields the same id and
+// leaves exactly ONE changeset row + one set of findings — no duplicate from the replay.
+func TestChangesetRecompileIsIdempotent(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	org, project, session, runID, root := h.seedChangesetScenario(t)
+	in := execution.ChangesetInput{
+		Tenant: coordinator.Tenant{Organization: org, Project: project}, SessionID: session, RunID: runID, AllocationRoot: root,
+	}
+
+	rec1, _, err := execution.CompileChangeset(ctx, h.repo.Spine(), h.writer, in)
+	if err != nil {
+		t.Fatalf("first CompileChangeset() error = %v", err)
+	}
+	rec2, _, err := execution.CompileChangeset(ctx, h.repo.Spine(), h.writer, in)
+	if err != nil {
+		t.Fatalf("second CompileChangeset() error = %v", err)
+	}
+	if rec1.ID != rec2.ID {
+		t.Fatalf("re-compile produced a different id: %q vs %q (id must be content-addressed)", rec1.ID, rec2.ID)
+	}
+
+	var rows int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM changesets WHERE run_id=$1 AND organization_id=$2 AND project_id=$3`,
+		runID, org, project).Scan(&rows); err != nil {
+		t.Fatalf("count changesets: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("changesets rows for run = %d, want exactly 1 (re-compile must dedupe)", rows)
+	}
 }
 
 func envOr(name, def string) string {

@@ -37,8 +37,9 @@ CREATE TABLE IF NOT EXISTS changesets (
     -- object is a prefix, so a reader knows the diff is not complete.
     patch_truncated BOOLEAN NOT NULL DEFAULT false,
     -- The content address of the changeset (spec §30.6 immutable summary; LP Task 11 content_hash):
-    -- a digest over base/final + the sorted file set + artifact keys + findings. Equal ledgers hash
-    -- equal; there is no UPDATE path, so the row is immutable once written.
+    -- a digest over base/final + the sorted file set + findings (NOT the random artifact ids). The id
+    -- is derived from it, so an equal ledger re-compiles to an equal id and the primary key dedupes a
+    -- replay; there is no UPDATE path, so the row is immutable once written.
     content_hash TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     FOREIGN KEY (organization_id, project_id) REFERENCES projects (organization_id, id)

@@ -125,6 +125,10 @@ func TestChangesetCompleteIndependentOfModelSummary(t *testing.T) {
 	if rec2.ContentHash != rec.ContentHash {
 		t.Fatalf("content hash not stable across compiles: %q vs %q", rec.ContentHash, rec2.ContentHash)
 	}
+	// The id is content-addressed, so it too is stable — the DB primary key dedupes a re-compile.
+	if rec2.ID != rec.ID || rec.ID == "" {
+		t.Fatalf("changeset id not stable across compiles: %q vs %q", rec.ID, rec2.ID)
+	}
 }
 
 // TestChangesetFlagsSecretFinding proves the changeset secret scan (spec §30.4/§30.6): a likely secret
@@ -155,6 +159,42 @@ func TestChangesetFlagsSecretFinding(t *testing.T) {
 	f := rec.Findings[0]
 	if f.Path != "repo/config.txt" || f.Rule == "" || f.Kind != "secret" {
 		t.Fatalf("finding = %+v, want path=repo/config.txt with a rule and kind=secret", f)
+	}
+}
+
+// TestChangesetFlagsShellWrittenSecret proves the §30.4 scan closes the shell-tool gap: a secret
+// written by the shell tool (echo secret > f) is absent from the file-tool ledger but PRESENT in the
+// patch, and scanning the patch flags it. Without the patch scan this secret would ship undetected.
+func TestChangesetFlagsShellWrittenSecret(t *testing.T) {
+	requireGit(t)
+	root, base := newAllocRepo(t)
+	repoDir := filepath.Join(root, "repo")
+
+	// A secret file that reached the worktree via a shell command — there is NO file-tool write for it.
+	secretContent := "token=\"Bearer " + strings.Repeat("a1b2c3d4", 3) + "\"\n"
+	writeFile(t, filepath.Join(repoDir, "secret.env"), secretContent)
+
+	ledger := &fakeChangesetLedger{
+		base: base, baseOK: true,
+		rows: []coordinator.ToolCallRow{shellRow("tc_1", []string{"sh", "-c", "echo secret > secret.env"}, 0, "")},
+	}
+	rec, compiled, err := CompileChangeset(context.Background(), ledger, &fakeArtifactWriter{},
+		ChangesetInput{Tenant: coordinator.Tenant{Organization: "org", Project: "prj"}, RunID: "run_1", AllocationRoot: root})
+	if err != nil || !compiled {
+		t.Fatalf("CompileChangeset() = compiled %v err %v", compiled, err)
+	}
+	// The file-tool ledger recorded nothing, but the shell-written secret is still flagged from the patch.
+	if len(rec.Files) != 0 {
+		t.Fatalf("files = %+v, want none (no file-tool write recorded)", rec.Files)
+	}
+	found := false
+	for _, f := range rec.Findings {
+		if f.Rule != "" && strings.Contains(f.Path, "secret.env") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("shell-written committed secret not flagged; findings = %+v", rec.Findings)
 	}
 }
 

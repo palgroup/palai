@@ -95,8 +95,10 @@ type ChangesetRecord struct {
 }
 
 // RecordChangeset persists an immutable changeset, its findings, and a changeset.compiled event in one
-// transaction (spec §30.6). The row is content-addressed and insert-once (ON CONFLICT DO NOTHING), so
-// a re-compile of the same ledger is idempotent. sessionID/responseID scope the journal event.
+// transaction (spec §30.6). The id is content-addressed (execution.changesetID), so a re-compile of
+// the same ledger inserts 0 rows on the primary key — genuinely idempotent: the findings and the
+// compiled event are emitted only on the FIRST record, never duplicated by an E10 replay.
+// sessionID/responseID scope the journal event.
 func (s *Store) RecordChangeset(ctx context.Context, tenant Tenant, sessionID, responseID string, rec ChangesetRecord) error {
 	files, err := json.Marshal(nonNilFiles(rec.Files))
 	if err != nil {
@@ -108,25 +110,30 @@ func (s *Store) RecordChangeset(ctx context.Context, tenant Tenant, sessionID, r
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	if _, err := tx.Exec(ctx, storage.Query("InsertChangeset"),
+	tag, err := tx.Exec(ctx, storage.Query("InsertChangeset"),
 		rec.ID, tenant.Organization, tenant.Project, rec.RunID, rec.BaseCommit, rec.FinalCommit,
 		rec.FinalTree, files, nullableText(rec.PatchArtifactID), nullableText(rec.TestLogArtifactID),
-		rec.PatchTruncated, rec.ContentHash); err != nil {
+		rec.PatchTruncated, rec.ContentHash)
+	if err != nil {
 		return fmt.Errorf("insert changeset: %w", err)
 	}
-	for _, f := range rec.Findings {
-		kind := f.Kind
-		if kind == "" {
-			kind = "secret"
+	// Findings + the compiled event ride the FIRST insert only. A re-compile conflicts on the id
+	// (0 rows), so this block is skipped and neither is duplicated.
+	if tag.RowsAffected() > 0 {
+		for _, f := range rec.Findings {
+			kind := f.Kind
+			if kind == "" {
+				kind = "secret"
+			}
+			if _, err := tx.Exec(ctx, storage.Query("InsertChangesetFinding"),
+				f.ID, rec.ID, tenant.Organization, tenant.Project, kind, f.Path, f.Rule); err != nil {
+				return fmt.Errorf("insert changeset finding: %w", err)
+			}
 		}
-		if _, err := tx.Exec(ctx, storage.Query("InsertChangesetFinding"),
-			f.ID, rec.ID, tenant.Organization, tenant.Project, kind, f.Path, f.Rule); err != nil {
-			return fmt.Errorf("insert changeset finding: %w", err)
+		payload, _ := json.Marshal(map[string]any{"run_id": rec.RunID, "changeset_id": rec.ID, "content_hash": rec.ContentHash})
+		if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, changesetCompiledEvent, payload); err != nil {
+			return err
 		}
-	}
-	payload, _ := json.Marshal(map[string]any{"run_id": rec.RunID, "changeset_id": rec.ID, "content_hash": rec.ContentHash})
-	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, changesetCompiledEvent, payload); err != nil {
-		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit changeset: %w", err)

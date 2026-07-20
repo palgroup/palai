@@ -79,9 +79,6 @@ func CompileChangeset(ctx context.Context, ledger ChangesetLedger, aw ArtifactWr
 		return coordinator.ChangesetRecord{}, false, err
 	}
 
-	files, contents := changedFiles(rows)
-	transcript := checksTranscript(rows)
-
 	repoDir := filepath.Join(in.AllocationRoot, workspace.RepoDir)
 	patch, truncated, err := repositories.WorkingDiff(ctx, repoDir, base, maxPatchBytes)
 	if err != nil {
@@ -92,31 +89,28 @@ func CompileChangeset(ctx context.Context, ledger ChangesetLedger, aw ArtifactWr
 		return coordinator.ChangesetRecord{}, false, fmt.Errorf("compile changeset head: %w", err)
 	}
 
-	id := "chg_" + randHex16()
-	provenance := map[string]any{"run_id": in.RunID, "changeset_id": id}
-
-	patchArtifactID, err := writeArtifact(ctx, aw, in, patch, "text/x-diff", "patch", provenance)
-	if err != nil {
-		return coordinator.ChangesetRecord{}, false, err
-	}
-	testLogArtifactID, err := writeArtifact(ctx, aw, in, transcript, "text/plain", "test-result", provenance)
-	if err != nil {
-		return coordinator.ChangesetRecord{}, false, err
-	}
-
 	rec := coordinator.ChangesetRecord{
-		ID:                id,
-		RunID:             in.RunID,
-		BaseCommit:        base,
-		FinalCommit:       finalCommit,
-		FinalTree:         finalTree,
-		Files:             files,
-		PatchArtifactID:   patchArtifactID,
-		TestLogArtifactID: testLogArtifactID,
-		PatchTruncated:    truncated,
-		Findings:          scanFindings(files, contents),
+		RunID:          in.RunID,
+		BaseCommit:     base,
+		FinalCommit:    finalCommit,
+		FinalTree:      finalTree,
+		Files:          changedFiles(rows),
+		PatchTruncated: truncated,
+		Findings:       scanPatchFindings(patch),
 	}
+	// Content-address the id so re-compiling the SAME ledger yields the SAME id — the insert then
+	// dedupes on the primary key and the changeset is genuinely immutable (E10 replay re-compiles).
+	// The hash excludes the id and the (random) artifact ids, so it is computable before either exists.
 	rec.ContentHash = changesetContentHash(rec)
+	rec.ID = changesetID(rec.ContentHash)
+
+	provenance := map[string]any{"run_id": in.RunID, "changeset_id": rec.ID}
+	if rec.PatchArtifactID, err = writeArtifact(ctx, aw, in, patch, "text/x-diff", "patch", provenance); err != nil {
+		return coordinator.ChangesetRecord{}, false, err
+	}
+	if rec.TestLogArtifactID, err = writeArtifact(ctx, aw, in, checksTranscript(rows), "text/plain", "test-result", provenance); err != nil {
+		return coordinator.ChangesetRecord{}, false, err
+	}
 
 	if err := ledger.RecordChangeset(ctx, in.Tenant, in.SessionID, in.ResponseID, rec); err != nil {
 		return coordinator.ChangesetRecord{}, false, err
@@ -124,14 +118,20 @@ func CompileChangeset(ctx context.Context, ledger ChangesetLedger, aw ArtifactWr
 	return rec, true, nil
 }
 
-// changedFiles projects the file-tool write ledger into the changeset's changed-file set and the
-// latest written content per path (for the secret scan). Rows are chronological, so a path written
-// twice resolves to its last write. A created file is "added"; a rewrite of an existing one is
-// "modified". This is the load-bearing REP-005 projection — derived from the ledger, not model prose.
-func changedFiles(rows []coordinator.ToolCallRow) ([]coordinator.ChangesetFile, map[string]string) {
+// changesetID derives a content-addressed changeset id from the content hash, so an equal ledger
+// re-compiles to an equal id (the primary key dedupes a replay). 128 bits of the digest is
+// collision-safe for a run's changesets.
+func changesetID(contentHash string) string {
+	return "chg_" + strings.TrimPrefix(contentHash, "sha256:")[:32]
+}
+
+// changedFiles projects the file-tool write ledger into the changeset's changed-file set. Rows are
+// chronological, so a path written twice resolves to its last write. A created file is "added"; a
+// rewrite of an existing one is "modified". This is the load-bearing REP-005 projection — the changed
+// set + provenance derived from the ledger, not model prose.
+func changedFiles(rows []coordinator.ToolCallRow) []coordinator.ChangesetFile {
 	byPath := map[string]*coordinator.ChangesetFile{}
 	var order []string
-	contents := map[string]string{}
 	for _, row := range rows {
 		if row.Name != fileToolName {
 			continue
@@ -160,7 +160,7 @@ func changedFiles(rows []coordinator.ToolCallRow) ([]coordinator.ChangesetFile, 
 		}
 		f := byPath[path]
 		// Keep the FIRST change kind (added stays added even after a later rewrite) but the LATEST
-		// hashes/content, so before_hash is the pre-run state and after_hash the final state.
+		// hashes, so before_hash is the pre-run state and after_hash the final state.
 		if change == "added" || f.Change == "" {
 			f.Change = change
 		}
@@ -169,15 +169,12 @@ func changedFiles(rows []coordinator.ToolCallRow) ([]coordinator.ChangesetFile, 
 			f.BeforeHash = before
 		}
 		f.ToolCallID = row.ID
-		if c, ok := args["content"].(string); ok {
-			contents[path] = c
-		}
 	}
 	out := make([]coordinator.ChangesetFile, 0, len(order))
 	for _, p := range order {
 		out = append(out, *byPath[p])
 	}
-	return out, contents
+	return out
 }
 
 // checksTranscript renders the run's shell-tool calls into a plain-text checks/test log (spec §30.6
@@ -205,15 +202,30 @@ func checksTranscript(rows []coordinator.ToolCallRow) string {
 	return b.String()
 }
 
-// scanFindings runs the committed-secret scanner over the latest content of each changed file (spec
-// §30.4), returning one finding per matched shape with the file path it hit.
-func scanFindings(files []coordinator.ChangesetFile, contents map[string]string) []coordinator.ChangesetFinding {
+// scanPatchFindings runs the committed-secret scanner over the ADDED lines of the compiled patch
+// (spec §30.4), attributing each hit to the file it lands in. Scanning the patch — not just file-tool
+// write contents — is the complete detection: the patch captures EVERY change entering the changeset,
+// including a secret written by the shell tool (echo secret > f), which never appears in the file-tool
+// ledger. A secret already in the base (an unchanged line) is not an added line, so it is not
+// re-flagged. Paths are prefixed with the repo subdir to match the ledger-derived file paths.
+func scanPatchFindings(patch string) []coordinator.ChangesetFinding {
 	var out []coordinator.ChangesetFinding
-	for _, f := range files {
-		for _, hit := range repositories.ScanSecrets(contents[f.Path]) {
-			out = append(out, coordinator.ChangesetFinding{
-				ID: "csf_" + randHex16(), Kind: "secret", Path: f.Path, Rule: hit.Rule,
-			})
+	seen := map[string]bool{}
+	path := ""
+	for _, line := range strings.Split(patch, "\n") {
+		if p, ok := strings.CutPrefix(line, "+++ b/"); ok {
+			path = filepath.ToSlash(filepath.Join(workspace.RepoDir, p))
+			continue
+		}
+		// Added content only ("+"), never the "+++" file header or a context/removed line.
+		if !strings.HasPrefix(line, "+") || strings.HasPrefix(line, "+++") {
+			continue
+		}
+		for _, hit := range repositories.ScanSecrets(line) {
+			if key := path + "\x00" + hit.Rule; !seen[key] {
+				seen[key] = true
+				out = append(out, coordinator.ChangesetFinding{ID: "csf_" + randHex16(), Kind: "secret", Path: path, Rule: hit.Rule})
+			}
 		}
 	}
 	return out
@@ -234,8 +246,9 @@ func writeArtifact(ctx context.Context, aw ArtifactWriter, in ChangesetInput, co
 }
 
 // changesetContentHash is the content address of a changeset (spec §30.6 immutable summary): a digest
-// over base/final + the sorted file set + artifact keys + sorted findings. Equal ledgers hash equal,
-// independent of the id and of any model output — the REP-005 immutability anchor.
+// over base/final + the sorted file set + sorted findings. It deliberately excludes the changeset id
+// and the (random per compile) artifact ids, so equal ledgers hash equal — the REP-005 immutability
+// anchor, and what makes the derived id stable across a re-compile.
 func changesetContentHash(rec coordinator.ChangesetRecord) string {
 	files := append([]coordinator.ChangesetFile(nil), rec.Files...)
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
