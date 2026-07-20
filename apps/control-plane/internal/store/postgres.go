@@ -338,8 +338,10 @@ func tenantOf(scope middleware.Scope) coordinator.Tenant {
 }
 
 // PurgeExpiredStoreFalse runs one retention sweep over the durable spine, reaping the
-// content of store=false responses whose terminal state has aged past ttl (spec §8.3).
-func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (int, error) {
+// content of store=false responses whose terminal state has aged past ttl (spec §8.3). It
+// returns the purged count and the object keys of the scrubbed artifacts so the reaper can
+// delete their bytes from the object store after the sweep commits (LP §7.2).
+func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (int, []string, error) {
 	return s.spine.PurgeExpiredStoreFalse(ctx, ttl)
 }
 

@@ -17,6 +17,7 @@ import (
 	fake "github.com/palgroup/palai/adapters/models/fake"
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
 	"github.com/palgroup/palai/apps/control-plane/api"
+	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
@@ -151,7 +152,47 @@ func startRetention(ctx context.Context, repo *store.Store, supervisor *coordina
 		return
 	}
 	reaper := execution.NewReaper(repo, ttl)
+	if artStore := artifactStoreFromEnv(ctx); artStore != nil {
+		reaper = reaper.WithArtifactStore(artStore)
+	}
 	go supervisor.Supervise(ctx, "retention-reaper", func(ctx context.Context) error { return reaper.Run(ctx, 30*time.Second) })
+}
+
+// artifactStoreFromEnv builds the control-plane's S3 artifact store from PALAI_S3_* when an
+// endpoint is configured, ensuring its bucket exists; it returns nil when no endpoint is set,
+// so retention then scrubs only the DB row (the object store is optional in deployments and
+// tests that do not run one). The S3 credential is read here and never leaves the control
+// plane (spec §24): it is redeemed for the object-store client, rides no request the engine
+// or runner sees, and is never logged.
+// ponytail: built inside startRetention because the reaper is its only consumer today; the
+// write-path consumer (T5 changeset artifacts) hoists this to main and shares one store.
+func artifactStoreFromEnv(ctx context.Context) *artifacts.Store {
+	endpoint := os.Getenv("PALAI_S3_ENDPOINT")
+	if endpoint == "" {
+		return nil
+	}
+	artStore, err := artifacts.NewStore(artifacts.Config{
+		Endpoint:  endpoint,
+		Bucket:    envDefault("PALAI_S3_BUCKET", "palai-artifacts"),
+		Region:    os.Getenv("PALAI_S3_REGION"),
+		AccessKey: os.Getenv("PALAI_S3_ACCESS_KEY"),
+		SecretKey: os.Getenv("PALAI_S3_SECRET_KEY"),
+	})
+	if err != nil {
+		log.Fatalf("bind artifact store: %v", err)
+	}
+	if err := artStore.EnsureBucket(ctx); err != nil {
+		log.Fatalf("ensure artifact bucket: %v", err)
+	}
+	return artStore
+}
+
+// envDefault reads a string env var, returning def when unset.
+func envDefault(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
 }
 
 // withSupervisorStatus serves GET /healthz/supervisor as the JSON restart-counter snapshot

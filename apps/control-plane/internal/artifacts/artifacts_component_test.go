@@ -17,9 +17,11 @@ import (
 	"encoding/hex"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 )
 
@@ -190,6 +192,76 @@ func TestArtifactReadIsTenantScoped(t *testing.T) {
 	}
 	if missingFound {
 		t.Fatalf("missing Read() found = true, want a miss")
+	}
+}
+
+// seedExpiredStoreFalseRun creates org -> project -> session -> store:false terminal
+// response (aged an hour, so any sub-hour TTL reaps it) -> run keyed to that response,
+// and returns the scope and run id an artifact produced by the run must reference.
+func (h *artifactsHarness) seedExpiredStoreFalseRun(t *testing.T) (org, project, runID string) {
+	t.Helper()
+	org, project = newID("org"), newID("prj")
+	session := newID("ses")
+	respID := newID("resp")
+	runID = newID("run")
+	h.exec(t, `INSERT INTO organizations (id) VALUES ($1)`, org)
+	h.exec(t, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
+	h.exec(t, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, org, project)
+	h.exec(t, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input, store, updated_at)
+		VALUES ($1, $2, $3, $4, 'completed', '{}', false, clock_timestamp() - interval '1 hour')`,
+		respID, org, project, session)
+	h.exec(t, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state)
+		VALUES ($1, $2, $3, $4, $5, 'completed')`, runID, org, project, session, respID)
+	return org, project, runID
+}
+
+// TestStoreFalsePurgeDeletesArtifactBytes proves the retention sweep genuinely erases the
+// object bytes of an expired store:false run, closing the step that was vacuous before this
+// task — the DB scrub cleared the row's object_key but the S3 object lingered. The reaper
+// wired with the real object store deletes the bytes and tombstones the row (spec §8.3, §20.9,
+// LP §7.2), the artifact parallel of the response-content purge.
+func TestStoreFalsePurgeDeletesArtifactBytes(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	org, project, runID := h.seedExpiredStoreFalseRun(t)
+
+	content := []byte("store:false run terminal output — must not survive retention")
+	art, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: runID, Content: content})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	// Precondition: the bytes are really in the object store before the sweep.
+	if _, found, err := h.s3.Get(ctx, art.ObjectKey); err != nil || !found {
+		t.Fatalf("precondition: artifact bytes absent before purge (found=%v, err=%v)", found, err)
+	}
+
+	// One sweep reaps the hour-old store:false response and deletes its artifact bytes.
+	reaper := execution.NewReaper(h.repo, time.Minute).WithArtifactStore(h.s3)
+	purged, err := reaper.Sweep(ctx)
+	if err != nil {
+		t.Fatalf("Sweep() error = %v", err)
+	}
+	if purged == 0 {
+		t.Fatalf("reaper purged 0 responses, want the expired store:false response reaped")
+	}
+
+	// The S3 object is gone — the byte-delete actually happened, not just the row scrub.
+	if _, found, err := h.s3.Get(ctx, art.ObjectKey); err != nil || found {
+		t.Fatalf("artifact bytes survived the store:false purge (found=%v, err=%v)", found, err)
+	}
+	// And the row is tombstoned: object_key cleared, size zeroed.
+	var (
+		objectKey string
+		size      int64
+	)
+	if err := h.pool.QueryRow(ctx,
+		`SELECT object_key, size_bytes FROM artifacts WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
+		art.ID, org, project).Scan(&objectKey, &size); err != nil {
+		t.Fatalf("read artifact row error = %v", err)
+	}
+	if objectKey != "" || size != 0 {
+		t.Fatalf("artifact row not scrubbed after purge: object_key=%q size=%d", objectKey, size)
 	}
 }
 
