@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	statemachines "github.com/palgroup/palai/packages/state-machines"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -53,6 +54,65 @@ type SnapshotInput struct {
 	FileChecksums []byte
 	Exclusions    []byte
 	Reason        string
+}
+
+// SessionWorkspace is a session's attached coding workspace (spec §29.7, E09 Task 10): the logical
+// workspace id the root run auto-provisions, the repository binding + requested ref it clones, and its
+// current lifecycle state (which the root run drives requested→provisioning→preparing→ready→leased).
+type SessionWorkspace struct {
+	WorkspaceID  string
+	BindingID    string
+	RequestedRef string
+	State        string
+}
+
+// WorkspaceForSession resolves the session's attached coding workspace within tenant scope. found is
+// false for a session with no attached binding — the root run then provisions nothing (pre-E09
+// behaviour). It is a by-session read the root run makes at start to learn what to provision.
+func (s *Store) WorkspaceForSession(ctx context.Context, tenant Tenant, sessionID string) (SessionWorkspace, bool, error) {
+	var ws SessionWorkspace
+	err := s.pool.QueryRow(ctx, storage.Query("WorkspaceForSession"), sessionID, tenant.Organization, tenant.Project).
+		Scan(&ws.WorkspaceID, &ws.BindingID, &ws.RequestedRef, &ws.State)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SessionWorkspace{}, false, nil
+	}
+	if err != nil {
+		return SessionWorkspace{}, false, fmt.Errorf("workspace for session %s: %w", sessionID, err)
+	}
+	return ws, true, nil
+}
+
+// AdvanceWorkspace applies one WorkspaceTable transition to a workspace's lifecycle state (spec §29.7),
+// the workspace analogue of ApplyRunTransition: it locks the row, asks the pure WorkspaceTable whether
+// the command is legal from the current state, and writes the new state — an illegal transition is
+// rejected before any write. It journals no session event (the workspace lifecycle is a projection, not
+// part of the session journal in E09) and takes no outbox row.
+func (s *Store) AdvanceWorkspace(ctx context.Context, tenant Tenant, workspaceID string, command statemachines.WorkspaceCommand) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin workspace transition: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	var current string
+	err = tx.QueryRow(ctx, storage.Query("WorkspaceState"), workspaceID, tenant.Organization, tenant.Project).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("advance workspace: %s not found in tenant scope", workspaceID)
+	}
+	if err != nil {
+		return fmt.Errorf("lock workspace: %w", err)
+	}
+	next, _, err := statemachines.Apply(statemachines.WorkspaceState(current), command, statemachines.WorkspaceTable)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, storage.Query("UpdateWorkspaceState"), workspaceID, tenant.Organization, tenant.Project, string(next)); err != nil {
+		return fmt.Errorf("update workspace state: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit workspace transition: %w", err)
+	}
+	return nil
 }
 
 // CreateWorkspace opens a logical workspace in the requested binding state (spec §29.7).

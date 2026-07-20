@@ -65,3 +65,42 @@ SELECT $1, a.workspace_id, a.id, a.organization_id, a.project_id, a.fence,
 FROM workspace_allocations a
 WHERE a.id = $2
   AND a.fence = (SELECT MAX(fence) FROM workspace_allocations WHERE workspace_id = a.workspace_id);
+
+-- name: AttachSessionWorkspace
+-- Attach a session-scoped coding workspace (spec §29.7, E09 Task 10): the logical workspace the root
+-- run auto-provisions, carrying the repository binding + requested ref resolved from the POST
+-- /v1/responses `repository` field. Idempotent PER SESSION — a second attach (a chained response in
+-- the same session) is a no-op via WHERE NOT EXISTS, so the session keeps ONE bound workspace and its
+-- edits persist across runs (the allocation is reused, not re-cloned). Runs inside the admission
+-- transaction, so the workspace is attached iff the response is admitted.
+INSERT INTO workspaces
+    (id, organization_id, project_id, session_id, state, repository_binding_id, requested_ref)
+SELECT $1, $2, $3, $4, 'requested', $5, $6
+WHERE NOT EXISTS (
+    SELECT 1 FROM workspaces
+    WHERE session_id = $4 AND organization_id = $2 AND project_id = $3 AND repository_binding_id <> ''
+);
+
+-- name: WorkspaceForSession
+-- The session's coding workspace (spec §29.7, E09 Task 10): its logical id, the bound repository +
+-- requested ref, and its current lifecycle state, so the root run resolves what to provision. A session
+-- with no attached binding returns no row — the run then provisions nothing (pre-E09 behaviour).
+SELECT id, repository_binding_id, requested_ref, state
+FROM workspaces
+WHERE session_id = $1 AND organization_id = $2 AND project_id = $3 AND repository_binding_id <> ''
+ORDER BY created_at
+LIMIT 1;
+
+-- name: WorkspaceState
+-- The workspace's current lifecycle state within tenant scope, LOCKED for a transition (spec §29.7),
+-- exactly as LockRun locks a run before a RunTable transition.
+SELECT state FROM workspaces
+WHERE id = $1 AND organization_id = $2 AND project_id = $3
+FOR UPDATE;
+
+-- name: UpdateWorkspaceState
+-- Advance the workspace's lifecycle state projection (spec §29.7). The legal transition is checked by
+-- the pure WorkspaceTable in Go before this write, exactly as UpdateRunState follows RunTable — the DB
+-- stores the current state, the state machine owns legality.
+UPDATE workspaces SET state = $4
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;

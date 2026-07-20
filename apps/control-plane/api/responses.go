@@ -64,6 +64,11 @@ type AdmitRequest struct {
 	// Delegations is the root run's required-delegation JSON ({"emit":[...],"budget":N}) or nil
 	// (spec §25.18). Resolved from the raw body, it seeds the run.start delegations the engine emits.
 	Delegations []byte
+	// RepositoryBindingID / RepositoryRef carry the contracted `repository` field (spec §30.1, E09
+	// Task 10): resolved from the raw body like Delegations, they attach a session-scoped coding
+	// workspace the root run auto-provisions. Empty leaves the response non-coding.
+	RepositoryBindingID string
+	RepositoryRef       string
 }
 
 // AdmitResult is the admission outcome. Conflict marks a key reused with a
@@ -125,6 +130,11 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	// the orchestrator seeds run.start, so a real single-step run still delegates.
 	delegations := resolveDelegations(raw)
 
+	// The coding session's repository attachment rides the contracted `repository` field (spec §30.1):
+	// {binding_id, ref}. Resolved here like delegations, it attaches the session-scoped workspace the
+	// root run auto-provisions (E09 Task 10). An absent field leaves the response non-coding.
+	bindingID, repositoryRef := resolveRepository(raw)
+
 	hash, err := canonicalRequestHash(req)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -159,20 +169,22 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := h.admitter.AdmitResponse(r.Context(), AdmitRequest{
-		Scope:              scope,
-		IdempotencyKey:     middleware.IdempotencyKey(r.Context()),
-		Method:             http.MethodPost,
-		Route:              createRoute,
-		RequestHash:        hash,
-		ResponseID:         responseID,
-		RunID:              runID,
-		SessionID:          sessionID,
-		RequestedSessionID: req.SessionID,
-		PreviousResponseID: req.PreviousResponseID,
-		Input:              input,
-		Body:               body,
-		Store:              store,
-		Delegations:        delegations,
+		Scope:               scope,
+		IdempotencyKey:      middleware.IdempotencyKey(r.Context()),
+		Method:              http.MethodPost,
+		Route:               createRoute,
+		RequestHash:         hash,
+		ResponseID:          responseID,
+		RunID:               runID,
+		SessionID:           sessionID,
+		RequestedSessionID:  req.SessionID,
+		PreviousResponseID:  req.PreviousResponseID,
+		Input:               input,
+		Body:                body,
+		Store:               store,
+		Delegations:         delegations,
+		RepositoryBindingID: bindingID,
+		RepositoryRef:       repositoryRef,
 	})
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -305,6 +317,23 @@ func resolveDelegations(raw []byte) []byte {
 		return nil
 	}
 	return out
+}
+
+// resolveRepository parses the coding session's repository attachment from the raw create body — the
+// already-contracted `repository` field (spec §30.1): {binding_id, ref}. Resolved raw like
+// resolveDelegations because it drives admission (attaching the session workspace), not the semantic
+// request hash. An absent field or empty binding_id yields "", "" — a non-coding response.
+func resolveRepository(raw []byte) (bindingID, ref string) {
+	var probe struct {
+		Repository struct {
+			BindingID string `json:"binding_id"`
+			Ref       string `json:"ref"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return "", ""
+	}
+	return probe.Repository.BindingID, probe.Repository.Ref
 }
 
 // validateCreate enforces the two request invariants a malformed body can violate
