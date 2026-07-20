@@ -9,6 +9,7 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 )
 
@@ -81,6 +82,7 @@ func createOptions(spec ContainerSpec, interactive bool) client.ContainerCreateO
 			ReadonlyRootfs: true,
 			CapDrop:        []string{"ALL"},
 			SecurityOpt:    []string{"no-new-privileges"},
+			Mounts:         workspaceMounts(spec.Mounts),
 			Resources: container.Resources{
 				Memory:     spec.Limits.MaxMemoryBytes,
 				MemorySwap: spec.Limits.MaxMemoryBytes,
@@ -89,6 +91,25 @@ func createOptions(spec ContainerSpec, interactive bool) client.ContainerCreateO
 			},
 		},
 	}
+}
+
+// workspaceMounts translates the driver's opaque host binds into Moby bind mounts. Only bind
+// mounts are ever attached (no volumes, no host sockets); the read-only rootfs and dropped
+// capabilities are unaffected, so a writable /workspace does not widen the sandbox (spec §29.9).
+func workspaceMounts(specs []Mount) []mount.Mount {
+	if len(specs) == 0 {
+		return nil
+	}
+	mounts := make([]mount.Mount, 0, len(specs))
+	for _, m := range specs {
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   m.Source,
+			Target:   m.Target,
+			ReadOnly: m.ReadOnly,
+		})
+	}
+	return mounts
 }
 
 // Run creates, starts, waits on, and destroys one hardened engine container. It always

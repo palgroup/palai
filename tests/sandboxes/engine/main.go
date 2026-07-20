@@ -47,6 +47,8 @@ func main() {
 		emit(runID, attemptID, map[string]any{"status": "completed"})
 	case "inspect":
 		emit(runID, attemptID, inspectAuthority())
+	case "workspace":
+		emit(runID, attemptID, probeWorkspace())
 	case "interactive":
 		interactive(runID, attemptID)
 	case "hang":
@@ -162,4 +164,24 @@ func inspectAuthority() map[string]any {
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// probeWorkspace reports what the engine container sees at the bind-mounted /workspace: whether
+// the mount is present, the seed file the control plane staged is readable, and whether a write
+// into the allocation succeeds (the runner reads it back on the host to prove persistence). It is
+// the fixture half of the E09 Task 1 real-mount proof — the model itself does not touch /workspace
+// yet (that is the file tool, E09 Task 4).
+func probeWorkspace() map[string]any {
+	seed, readErr := os.ReadFile("/workspace/repo/seed")
+	result := map[string]any{
+		"workspace_present": pathExists("/workspace"),
+		"seed_readable":     readErr == nil,
+		"seed_content":      string(seed),
+	}
+	writeErr := os.WriteFile("/workspace/scratch/out", []byte("engine-wrote-this"), 0o644)
+	result["wrote"] = writeErr == nil
+	if writeErr != nil {
+		result["write_error"] = writeErr.Error()
+	}
+	return result
 }

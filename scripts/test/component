@@ -7,7 +7,18 @@ set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
 
+# shellcheck source=scripts/test/runner-engine.sh
+source "$root/scripts/test/runner-engine.sh"
+
 suite="${TEST:-postgres}"
+
+# The runner suite proves a real workspace allocation is bind-mounted into a real, digest-pinned
+# engine container (spec §29.9, E09 Task 1). It reuses the fault/security fixture-engine harness,
+# which cross-builds the fixture, exports PALAI_RUNNER_ENGINE_IMAGE_ID, and verifies no sandbox
+# container leaks.
+run_runner() {
+  run_runner_suite component ./tests/component/runner
+}
 
 run_postgres() {
   # Immutable pinned image (matches the postgres-coordinator spike / ADR-0001).
@@ -86,8 +97,9 @@ run_postgres() {
 
 case "$suite" in
   postgres) run_postgres ;;
+  runner) run_runner ;;
   *)
-    echo "unknown component suite: $suite (known: postgres)" >&2
+    echo "unknown component suite: $suite (known: postgres, runner)" >&2
     exit 2
     ;;
 esac

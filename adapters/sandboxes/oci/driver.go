@@ -10,6 +10,7 @@ package oci
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"regexp"
 	"time"
 )
@@ -30,9 +31,20 @@ type Limits struct {
 	NanoCPUs        int64
 }
 
+// Mount is a host-directory bind into the sandbox. Source is an opaque host path — never shown
+// to the model, since exact host paths are hidden (spec §29.9); Target is the in-container path
+// (e.g. /workspace). ReadOnly binds a child's read-only snapshot; a root writer binds read-write
+// (spec §29.8). The rest of the rootfs stays read-only; a bind mount is independent of it.
+type Mount struct {
+	Source   string
+	Target   string
+	ReadOnly bool
+}
+
 // ContainerSpec is one engine attempt: the pinned image, the exact environment the
 // container receives (the driver adds nothing — no host inheritance), labels for
-// leak accounting, and the resource and per-stream output bounds.
+// leak accounting, the resource and per-stream output bounds, and any workspace bind
+// mounts the supervisor attaches (spec §29.9). Mounts is empty for a workspace-less run.
 type ContainerSpec struct {
 	ImageDigest    string
 	Env            []string
@@ -40,6 +52,7 @@ type ContainerSpec struct {
 	Limits         Limits
 	MaxStdoutBytes int64
 	MaxStderrBytes int64
+	Mounts         []Mount
 }
 
 // Outcome is the raw result of one sandboxed attempt. Stdout and Stderr are captured
@@ -79,6 +92,11 @@ func (spec ContainerSpec) validate() error {
 	if spec.Limits.WallTime <= 0 || spec.Limits.MaxMemoryBytes <= 0 ||
 		spec.Limits.MaxProcessCount <= 0 || spec.Limits.NanoCPUs <= 0 {
 		return errors.New("all sandbox resource bounds must be positive")
+	}
+	for _, m := range spec.Mounts {
+		if !filepath.IsAbs(m.Source) || !filepath.IsAbs(m.Target) {
+			return errors.New("mount source and target must be absolute paths")
+		}
 	}
 	return nil
 }
