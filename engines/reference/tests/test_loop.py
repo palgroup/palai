@@ -218,11 +218,59 @@ def test_model_agent_tool_call_emits_child_request() -> None:
         "tools": [], "budget": {"max_total_tokens": 100}, "workspace_mode": "none", "required": True}}
     out = loop.handle(ctrl("model.result", {"model_request_id": mrid, "tool_calls": [agent_call]}, "frm_mr"))
     assert [f["type"] for f in out] == ["child.request"]
-    assert loop.state is State.AWAITING_CHILDREN
+    # The agent tool_call is a tool the model called: the turn awaits its result like any tool, so a
+    # real provider gets a result for the tool_call (a child.request is its execution, spec §25.18).
+    assert loop.state is State.AWAITING_TOOLS
     data = out[0]["data"]
     assert CHILD.match(data["child_request_id"])
     assert data["role"] == "researcher" and data["objective"] == "find X"
     assert data["model"] == "cheap-1" and data["workspace_mode"] == "none" and data["required"] is True
+
+
+def test_agent_child_result_folds_as_tool_role_answering_the_tool_call() -> None:
+    # The live-wave contract: a model-driven agent tool_call MUST be answered by a tool-role result, or
+    # a real provider rejects the resumed request (an assistant tool_call with no matching tool result).
+    # The child's typed output is folded as that tool result, then the run resumes.
+    loop = make_loop("run_atr")
+    mrid = loop.handle(run_start())[0]["data"]["model_request_id"]
+    creq = loop.handle(ctrl("model.result", {"model_request_id": mrid,
+        "tool_calls": [{"name": "agent", "arguments": {"role": "r", "objective": "o", "model": "m"}}]}, "frm_mr"))[0]
+    crid = creq["data"]["child_request_id"]
+    out = loop.handle(ctrl("child.result", {"child_request_id": crid, "status": "completed",
+        "output": "child answer", "child_run_id": "run_child"}, "frm_cr"))
+    assert [f["type"] for f in out] == ["model.request"]
+    msgs = out[0]["data"]["messages"]
+    tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1  # the agent tool_call is answered as a tool result, not a user turn
+    assert "child answer" in tool_msgs[0]["content"] and "run_child" in tool_msgs[0]["content"]
+
+
+def test_mixed_turn_answers_both_ordinary_tool_and_agent_delegation() -> None:
+    # FINDING 4: a turn with BOTH an ordinary tool_call and an agent tool_call must not drop either —
+    # every tool_call gets a result (the real-provider "result per tool_call" contract). The ordinary
+    # dispatches a tool.request; the agent dispatches a child.request; the run resumes only once BOTH
+    # are answered, and both answers are tool-role results in the resumed request.
+    loop = make_loop("run_mix")
+    mrid = loop.handle(run_start())[0]["data"]["model_request_id"]
+    out = loop.handle(ctrl("model.result", {"model_request_id": mrid, "tool_calls": [
+        {"name": "search", "arguments": {"q": "x"}},
+        {"name": "agent", "arguments": {"role": "r", "objective": "o", "model": "m"}},
+    ]}, "frm_mr"))
+    assert sorted(f["type"] for f in out) == ["child.request", "tool.request"]
+    assert loop.state is State.AWAITING_TOOLS
+    tcall = next(f for f in out if f["type"] == "tool.request")["data"]["tool_call_id"]
+    crid = next(f for f in out if f["type"] == "child.request")["data"]["child_request_id"]
+
+    # Answer the ordinary tool: still awaiting the agent child, so no resume yet.
+    assert loop.handle(ctrl("tool.result", {"tool_call_id": tcall, "content": "42"}, "frm_tr")) == []
+    assert loop.state is State.AWAITING_TOOLS
+
+    # The agent child completes: now every tool_call is answered and the run resumes.
+    out3 = loop.handle(ctrl("child.result", {"child_request_id": crid, "status": "completed",
+        "output": "child ok", "child_run_id": "run_child"}, "frm_cr"))
+    assert [f["type"] for f in out3] == ["model.request"]
+    tool_msgs = [m for m in out3[0]["data"]["messages"] if m.get("role") == "tool"]
+    assert len(tool_msgs) == 2  # ordinary + agent, both answered — no tool_call left dangling
 
 
 def test_spawn_alias_also_delegates_and_regular_tool_still_dispatches() -> None:

@@ -91,9 +91,11 @@ func TestDurableTaskSurvivesContextReset(t *testing.T) {
 }
 
 // TestDurableTasksTwoReadersSeeSameOrderedJournal proves REG-002: durable task updates append to the
-// session's ordered event journal, so two attached clients reading it see the identical ordered
-// sequence (the same single-source per-session journal E08 attach replays). A create is task.created,
-// a later change to the same key is task.updated.
+// session's ordered event journal. The two readers here are two same-process reads of that journal,
+// asserting the SAME ordered sequence — the multi-client SSE fan-out itself (two attached clients
+// replaying identically) is the E08 attach harness's already-proven property, which these task
+// events ride transitively (single-source per-session seq). A create is task.created, a later change
+// to the same key is task.updated.
 func TestDurableTasksTwoReadersSeeSameOrderedJournal(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()

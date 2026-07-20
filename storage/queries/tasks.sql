@@ -1,7 +1,11 @@
 -- name: GetTaskByKey
+-- FOR UPDATE locks the row for the read-modify-write in UpsertTask, so two writers on the same
+-- session under DIFFERENT run locks (E10's detached child) cannot lost-update each other. A new-task
+-- create locks nothing here; the UNIQUE (session_id, task_key) index serializes concurrent creates.
 SELECT id, kind, title, status, detail
 FROM tasks
-WHERE session_id = $1 AND task_key = $2 AND organization_id = $3 AND project_id = $4;
+WHERE session_id = $1 AND task_key = $2 AND organization_id = $3 AND project_id = $4
+FOR UPDATE;
 
 -- name: InsertTask
 INSERT INTO tasks (id, organization_id, project_id, session_id, task_key, kind, title, status, detail)

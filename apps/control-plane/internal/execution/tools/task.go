@@ -43,10 +43,11 @@ func registryTool(name, kind string) toolbroker.Tool {
 			if env.Tasks == nil {
 				return nil, fmt.Errorf("%s tool: no durable task registry wired for this run", name)
 			}
-			op := map[string]any{"kind": kind}
+			op := map[string]any{}
 			for k, v := range args {
 				op[k] = v
 			}
+			op["kind"] = kind // set AFTER the args: the tool's kind is authoritative, a model-supplied kind cannot override it
 			return env.Tasks.ApplyTask(ctx, env.Scope, op)
 		},
 	}

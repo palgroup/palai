@@ -47,6 +47,19 @@ func TestTodoToolInjectsTodoKind(t *testing.T) {
 	}
 }
 
+// TestToolKindOverridesModelSuppliedKind proves the tool's kind is authoritative: a model that
+// passes kind:"task" to the TODO tool still writes a todo (no cross-kind clobber).
+func TestToolKindOverridesModelSuppliedKind(t *testing.T) {
+	reg := &fakeRegistry{}
+	if _, err := TodoTool().Exec(context.Background(), toolbroker.ExecEnv{Tasks: reg},
+		map[string]any{"key": "t1", "kind": "task"}); err != nil {
+		t.Fatalf("Exec() error = %v", err)
+	}
+	if reg.lastOp["kind"] != "todo" {
+		t.Fatalf("kind = %v, want todo (model-supplied kind must not override the tool's kind)", reg.lastOp["kind"])
+	}
+}
+
 // TestTaskToolWithoutRegistryFailsCleanly proves a task tool call on an attempt with no registry
 // wired fails cleanly rather than panicking or touching the control plane's own state.
 func TestTaskToolWithoutRegistryFailsCleanly(t *testing.T) {
