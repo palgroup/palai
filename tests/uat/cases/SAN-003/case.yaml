@@ -1,0 +1,7 @@
+id: SAN-003
+name: resource-exhaustion-bounded-termination-usage-recorded
+proof_class: fault-live
+provider: fake
+input: "a memory-exhausting command is OOM-killed by the real cgroup with bounded termination and recorded usage"
+expect_status: completed
+# proof: tests/fault/sandbox/exhaustion_test.go:TestResourceExhaustionBoundedTerminationUsageRecorded (real memory cgroup OOM, spec §28.8)

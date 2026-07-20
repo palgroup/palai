@@ -103,7 +103,7 @@ var liveProviderIDPattern = regexp.MustCompile(`^chatcmpl-[A-Za-z0-9_-]+$`)
 // A push receipt is the remote's own commit sha (40 hex); a pull-request receipt is the provider PR id
 // (GitHub node id "PR_..."/numeric) or its https URL. A fake/local placeholder matches none of these, so
 // an external-receipt case cannot pass with a fake remote — the whole point of the class.
-var externalReceiptPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64}|PR_[A-Za-z0-9]+|[0-9]+|https://[^\s]+/pull/[0-9]+)$`)
+var externalReceiptPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64}|PR_[A-Za-z0-9]+|https://[^\s]+/pull/[0-9]+)$`)
 
 // VerifyManifest checks one evidence manifest against the required-field and redaction
 // contract. It returns every finding; an empty slice is a clean pass. secrets are extra

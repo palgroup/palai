@@ -1,0 +1,7 @@
+id: SAN-004
+name: sandbox-denies-metadata-egress
+proof_class: component-real
+provider: fake
+input: "a command that dials the cloud metadata endpoint is denied by the no-network sandbox and a finding is emitted"
+expect_status: completed
+# proof: tests/security/sandbox/isolation_test.go:TestSandboxDeniesMetadataEgress (real OCI sandbox egress denial, spec §28.8)

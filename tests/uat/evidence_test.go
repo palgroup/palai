@@ -177,7 +177,8 @@ func TestExternalReceiptProofClass(t *testing.T) {
 	}
 
 	// A fake/non-receipt-shaped value fails — an external-receipt case must not pass with a fake remote.
-	for _, fake := range []string{"fake-local", "local", "receipt"} {
+	// A bare digit run is not a receipt either (both writers emit a node id or URL, never a bare number).
+	for _, fake := range []string{"fake-local", "local", "receipt", "12345", "9"} {
 		m = base()
 		caseOf(m)["external_receipt"] = fake
 		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
