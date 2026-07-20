@@ -46,7 +46,10 @@ func TestLocalLive(t *testing.T) {
 	release := envOr("PALAI_UAT_RELEASE", "local-live-0.1.0")
 	liveEnabled := os.Getenv("PALAI_UAT_PROVIDER") == "provider-one"
 
-	specs := loadCases(t)
+	// The local-live release owns exactly the LP-* cases. The coding release (make uat-coding) owns the
+	// REP/SAN/SUB/REG/DEL/APV cases under the same tests/uat/cases/ tree and captures them through its own
+	// journey, so this loader is scoped to LP-* — adding a coding case never rides the local-live tier.
+	specs := loadCases(t, "LP-")
 	det, live := partition(specs)
 
 	receipts := map[string]caseReceipt{}
@@ -117,6 +120,7 @@ type caseReceipt struct {
 	ImageDigest       string
 	ProviderRequestID string
 	MTLSEnroll        string
+	ExternalReceipt   string // real remote-ref/PR receipt for an external-receipt case (empty otherwise)
 	TerminalType      string
 	TerminalCount     int
 	Usage             map[string]int
@@ -136,8 +140,11 @@ func partition(specs []caseSpec) (det, live []caseSpec) {
 	return det, live
 }
 
-// loadCases reads every tests/uat/cases/*/case.yaml in sorted id order.
-func loadCases(t *testing.T) []caseSpec {
+// loadCases reads every tests/uat/cases/*/case.yaml whose id carries one of the given prefixes, in
+// sorted id order. Prefix scoping keeps one release's tier from picking up another's cases in the shared
+// cases/ tree (LP-* for local-live; the coding release owns REP/SAN/SUB/REG/DEL/APV). An empty prefix
+// list loads every case.
+func loadCases(t *testing.T, prefixes ...string) []caseSpec {
 	t.Helper()
 	root := filepath.Join(repoRoot(t), "tests", "uat", "cases")
 	entries, err := os.ReadDir(root)
@@ -157,10 +164,26 @@ func loadCases(t *testing.T) []caseSpec {
 		if err := yaml.Unmarshal(raw, &c); err != nil {
 			t.Fatalf("decode %s/case.yaml: %v", e.Name(), err)
 		}
+		if !hasAnyPrefix(c.ID, prefixes) {
+			continue
+		}
 		specs = append(specs, c)
 	}
 	sort.Slice(specs, func(i, j int) bool { return specs[i].ID < specs[j].ID })
 	return specs
+}
+
+// hasAnyPrefix reports whether id carries one of the prefixes; an empty prefix list matches every id.
+func hasAnyPrefix(id string, prefixes []string) bool {
+	if len(prefixes) == 0 {
+		return true
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(id, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildManifest rolls the receipts into the evidence manifest, in case order.
@@ -180,6 +203,7 @@ func buildManifest(t *testing.T, release string, specs []caseSpec, receipts map[
 			"image_digest":        r.ImageDigest,
 			"provider_request_id": r.ProviderRequestID,
 			"mtls_enroll":         r.MTLSEnroll,
+			"external_receipt":    r.ExternalReceipt,
 			"terminal":            map[string]any{"type": r.TerminalType, "count": r.TerminalCount},
 			"usage":               r.Usage,
 			"db_assertions":       r.DBAssertions,

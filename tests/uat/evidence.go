@@ -64,6 +64,7 @@ type evidenceCase struct {
 	ImageDigest       string         `json:"image_digest"`
 	ProviderRequestID string         `json:"provider_request_id"`
 	MTLSEnroll        string         `json:"mtls_enroll"`
+	ExternalReceipt   string         `json:"external_receipt"`
 	Terminal          evidenceTerm   `json:"terminal"`
 	Usage             map[string]int `json:"usage"`
 	DBAssertions      []string       `json:"db_assertions"`
@@ -79,6 +80,16 @@ type evidenceTerm struct {
 // credential fails the redaction scan even when the exact value is not supplied as a needle.
 var secretPattern = regexp.MustCompile(`sk-[A-Za-z0-9_-]{12,}`)
 
+// gitCredentialPatterns catch a leaked Git credential the coding release mints and pushes with (spec
+// §30.2, E09 exit-gate credential-absence scan): a classic/fine-grained PAT, a GitHub App user/
+// installation/refresh token (gho_/ghu_/ghs_/ghr_), and an App private-key PEM header. A plaintext hit
+// fails the bundle by construction, the ^chatcmpl-/needle discipline extended to the repository tier.
+var gitCredentialPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),  // fine-grained PAT
+	regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`),    // ghp_ PAT, gho_/ghu_ OAuth, ghs_ installation, ghr_ refresh
+	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY`), // a GitHub App private key committed in the clear
+}
+
 // checksumPattern is the required checksum shape (sha256:<64 hex>).
 var checksumPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
@@ -86,6 +97,13 @@ var checksumPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 // Today the only live adapter is provider-one (OpenAI Chat Completions, ids "chatcmpl-...");
 // widen the alternation when a second live adapter lands.
 var liveProviderIDPattern = regexp.MustCompile(`^chatcmpl-[A-Za-z0-9_-]+$`)
+
+// externalReceiptPattern is the real remote-ref/PR receipt shape an external-receipt case must carry
+// (spec §30.9-30.10, REP-006/008) — parallel to liveProviderIDPattern's ^chatcmpl- for live-provider.
+// A push receipt is the remote's own commit sha (40 hex); a pull-request receipt is the provider PR id
+// (GitHub node id "PR_..."/numeric) or its https URL. A fake/local placeholder matches none of these, so
+// an external-receipt case cannot pass with a fake remote — the whole point of the class.
+var externalReceiptPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64}|PR_[A-Za-z0-9]+|[0-9]+|https://[^\s]+/pull/[0-9]+)$`)
 
 // VerifyManifest checks one evidence manifest against the required-field and redaction
 // contract. It returns every finding; an empty slice is a clean pass. secrets are extra
@@ -101,6 +119,12 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	}
 	if secretPattern.Match(raw) {
 		findings = append(findings, Finding{Kind: "secret", Detail: "manifest contains a credential-shaped token (sk-...)"})
+	}
+	for _, pat := range gitCredentialPatterns {
+		if pat.Match(raw) {
+			findings = append(findings, Finding{Kind: "secret", Detail: "manifest contains a Git-credential-shaped token (PAT/App key/installation token)"})
+			break
+		}
 	}
 
 	var m evidenceManifest
@@ -120,16 +144,32 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	miss(len(m.Cases) == 0, "cases", "")
 
 	for _, c := range m.Cases {
+		// Every case, regardless of tier, carries an id, the run that produced it, its db assertions,
+		// and a well-formed checksum over the captured surface.
 		miss(c.ID == "", "id", c.ID)
 		miss(c.RunID == "", "run_id", c.ID)
-		miss(c.ImageDigest == "", "image_digest", c.ID)
-		miss(c.ProviderRequestID == "", "provider_request_id", c.ID)
-		miss(c.MTLSEnroll == "", "mtls_enroll", c.ID)
 		miss(len(c.DBAssertions) == 0, "db_assertions", c.ID)
 		miss(c.Checksum == "", "checksum", c.ID)
 		if c.Checksum != "" && !checksumPattern.MatchString(c.Checksum) {
 			findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "checksum is not sha256:<64 hex>"})
 		}
+
+		if c.ProofClass == "external-receipt" {
+			// A publication (push/PR) is not a model run: it carries a REAL remote-ref/PR receipt instead
+			// of a provider request id, image digest, mTLS enroll, or a run terminal. The receipt is the
+			// load-bearing proof, so it must be present and genuinely remote-shaped — a fake never passes.
+			miss(c.ExternalReceipt == "", "external_receipt", c.ID)
+			if c.ExternalReceipt != "" && !externalReceiptPattern.MatchString(c.ExternalReceipt) {
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: fmt.Sprintf("external_receipt %q is not a real remote-ref/PR receipt (want a git sha, provider PR id, or PR URL) for proof_class=external-receipt", c.ExternalReceipt)})
+			}
+			continue
+		}
+
+		// A model-run case (live-provider, e2e-deterministic, component-real): the engine-run receipt
+		// shape — image digest, provider request id, mTLS enroll, and a single terminal.
+		miss(c.ImageDigest == "", "image_digest", c.ID)
+		miss(c.ProviderRequestID == "", "provider_request_id", c.ID)
+		miss(c.MTLSEnroll == "", "mtls_enroll", c.ID)
 		if c.ProofClass == "live-provider" && c.ProviderRequestID != "" && !liveProviderIDPattern.MatchString(c.ProviderRequestID) {
 			findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: fmt.Sprintf("provider_request_id %q is not provider-shaped (want chatcmpl-...) for proof_class=live-provider", c.ProviderRequestID)})
 		}
