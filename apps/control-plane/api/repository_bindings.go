@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 )
@@ -73,6 +76,15 @@ func (h *bindingHandler) create(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body is not valid JSON")
 		return
 	}
+	// §24 trust-boundary: only an http(s) clone_url is accepted in production. A file: (or schemeless
+	// local-path) URL would let any API-key holder point the CP-side clone at another tenant's on-host
+	// allocation (same host on the collapsed compose), so it is refused unless PALAI_ALLOW_LOCAL_REPOSITORY
+	// is set for a dev/test stack. The deterministic harness registers local file remotes through the
+	// coordinator spine directly, so this gate never breaks it.
+	if !allowedCloneScheme(body.CloneURL) {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "clone_url must be an http(s) URL")
+		return
+	}
 
 	out, err := h.bindings.CreateRepositoryBinding(r.Context(), scope, RepositoryBindingCreate{
 		Provider:           body.Provider,
@@ -97,6 +109,25 @@ func (h *bindingHandler) create(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_, _ = w.Write(out.Body)
+}
+
+// allowedCloneScheme reports whether a clone_url may be registered over the HTTP endpoint (§24): only
+// http/https in production. PALAI_ALLOW_LOCAL_REPOSITORY (any non-empty value) opens it to local
+// transports for a dev/test stack. A missing/unparseable scheme is a bare local path — refused.
+func allowedCloneScheme(cloneURL string) bool {
+	if os.Getenv("PALAI_ALLOW_LOCAL_REPOSITORY") != "" {
+		return true
+	}
+	u, err := url.Parse(cloneURL)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		return true
+	default:
+		return false
+	}
 }
 
 // bindingIDOf reads the id from a binding projection for the Location header; "" if unparseable.
