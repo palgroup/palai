@@ -15,6 +15,7 @@ ModelRequestId = NewType("ModelRequestId", str)
 OpaqueId = NewType("OpaqueId", str)
 OrganizationId = NewType("OrganizationId", str)
 ProjectId = NewType("ProjectId", str)
+RepositoryBindingId = NewType("RepositoryBindingId", str)
 RequestId = NewType("RequestId", str)
 ResponseId = NewType("ResponseId", str)
 RunId = NewType("RunId", str)
@@ -32,6 +33,7 @@ MODEL_REQUEST_ID_PATTERN = re.compile(r"^mreq_[A-Za-z0-9_-]+$")
 OPAQUE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9]{1,11}_[A-Za-z0-9_-]+$")
 ORGANIZATION_ID_PATTERN = re.compile(r"^org_[A-Za-z0-9_-]+$")
 PROJECT_ID_PATTERN = re.compile(r"^prj_[A-Za-z0-9_-]+$")
+REPOSITORY_BINDING_ID_PATTERN = re.compile(r"^repo_[A-Za-z0-9_-]+$")
 REQUEST_ID_PATTERN = re.compile(r"^req_[A-Za-z0-9_-]+$")
 RESPONSE_ID_PATTERN = re.compile(r"^resp_[A-Za-z0-9_-]+$")
 RUN_ID_PATTERN = re.compile(r"^run_[A-Za-z0-9_-]+$")
@@ -78,6 +80,10 @@ def is_organization_id(value: str) -> bool:
 
 def is_project_id(value: str) -> bool:
     return PROJECT_ID_PATTERN.fullmatch(value) is not None
+
+
+def is_repository_binding_id(value: str) -> bool:
+    return REPOSITORY_BINDING_ID_PATTERN.fullmatch(value) is not None
 
 
 def is_request_id(value: str) -> bool:

@@ -11,6 +11,7 @@ export type MessageId = string;
 export type OpaqueId = string;
 export type OrganizationId = string;
 export type ProjectId = string;
+export type RepositoryBindingId = string;
 export type RequestId = string;
 export type ResponseId = string;
 export type RunId = string;
@@ -106,6 +107,14 @@ export interface PageParams {
   limit?: number;
 }
 
+export interface PreparationReceipt {
+  base_commit: string;
+  branch?: string;
+  prepared_at?: string;
+  requested_ref?: string;
+  tree_hash: string;
+}
+
 export interface Problem {
   code: string;
   context?: Record<string, unknown>;
@@ -117,6 +126,23 @@ export interface Problem {
   status: number;
   title: string;
   type: string;
+}
+
+export interface RepositoryBinding {
+  allowed_operations?: string[];
+  clone_url: string;
+  connection_ref?: string;
+  created_at?: string;
+  data_classification?: string;
+  default_branch: string;
+  id: RepositoryBindingId;
+  object: string;
+  organization_id?: OrganizationId;
+  policy?: Record<string, unknown>;
+  project_id?: ProjectId;
+  provider: string;
+  region_constraint?: string;
+  repository_identity: string;
 }
 
 export interface ResourceEnvelope {

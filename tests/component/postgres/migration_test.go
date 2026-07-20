@@ -35,6 +35,7 @@ var allTables = []string{
 	"tool_calls",
 	"artifacts",
 	"workspaces", "workspace_allocations", "workspace_leases", "workspace_snapshots",
+	"repository_bindings", "preparation_receipts",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -437,6 +438,44 @@ func TestLateTerminalCannotOverwriteTerminalRow(t *testing.T) {
 	}
 	if len(proj.Output) != 0 {
 		t.Fatalf("response output after late terminal = %s, want the empty canceled projection (the completed write leaked in)", output)
+	}
+}
+
+// TestRepositoryBindingsMigration proves 000009 adds its two tables idempotently and reverses
+// cleanly: repository_bindings and preparation_receipts exist after apply (a re-apply is a clean
+// no-op), are gone after rollback, and return after reapply (spec §30.1/§30.3; the 000007/000008
+// re-run-safety pattern).
+func TestRepositoryBindingsMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE TABLE IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"repository_bindings", "preparation_receipts"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after apply, %s is missing", name)
+		}
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, name := range []string{"repository_bindings", "preparation_receipts"} {
+		if tableExists(t, pool, name) {
+			t.Fatalf("after rollback, %s still exists", name)
+		}
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"repository_bindings", "preparation_receipts"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after reapply, %s is missing", name)
+		}
 	}
 }
 

@@ -15,6 +15,7 @@
     "event_id": {"type": "string", "pattern": "^evt_[A-Za-z0-9_-]+$"},
     "artifact_id": {"type": "string", "pattern": "^art_[A-Za-z0-9_-]+$"},
     "workspace_id": {"type": "string", "pattern": "^wksp_[A-Za-z0-9_-]+$"},
+    "repository_binding_id": {"type": "string", "pattern": "^repo_[A-Za-z0-9_-]+$"},
     "message_id": {"type": "string", "pattern": "^msg_[A-Za-z0-9_-]+$"},
     "request_id": {"type": "string", "pattern": "^req_[A-Za-z0-9_-]+$"},
     "frame_id": {"type": "string", "pattern": "^frm_[A-Za-z0-9_-]+$"},
