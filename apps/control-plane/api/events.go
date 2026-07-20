@@ -10,13 +10,15 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 )
 
-// EventReader is the journal seam the SSE endpoint reads through. execution.Journal
-// implements it in production; every method is tenant-scoped by org+project so a
-// session from another tenant is never readable (spec §39.2).
+// EventReader is the data seam the SSE endpoint uses. store.Store implements it in
+// production; every method is tenant-scoped by org+project so a session from another
+// tenant is never readable (spec §39.2). RecordAttachDenied is the one write: the endpoint
+// audits its own out-of-scope denials through the same seam.
 type EventReader interface {
 	SessionExists(ctx context.Context, org, project, sessionID string) (bool, error)
 	ResolveCursor(ctx context.Context, org, project, sessionID, eventID string) (int64, bool, error)
 	After(ctx context.Context, org, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error)
+	RecordAttachDenied(ctx context.Context, org, project, principal, sessionID string) error
 }
 
 // SSEConfig tunes the event-stream timers. Zero values take production defaults
@@ -81,8 +83,11 @@ func (h *eventsHandler) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !exists {
-		// A foreign or unknown session is a 404 — never a signal that the id exists
-		// in another tenant (spec §39.2).
+		// A foreign or unknown session is a 404 — never a signal that the id exists in
+		// another tenant (spec §39.2). Record a content-free denial keyed to the actor's
+		// tenant; the cross-tenant and unknown cases produce the identical row, so the audit
+		// discloses no existence. Best-effort: an audit hiccup must not change the 404.
+		_ = h.reader.RecordAttachDenied(ctx, scope.Organization, scope.Project, scope.Principal, sessionID)
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "the session does not exist")
 		return
 	}

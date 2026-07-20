@@ -77,6 +77,9 @@ var commandsSQL string
 //go:embed queries/config.sql
 var configSQL string
 
+//go:embed queries/audit.sql
+var auditSQL string
+
 // MigrationUp is the forward migration chain, applied in version order (000001..000007).
 // Each file is individually idempotent, so the whole chain is safe to re-run.
 func MigrationUp() string {
@@ -89,7 +92,7 @@ func MigrationDown() string {
 	return migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
-var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL)
+var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL, auditSQL)
 
 // Query returns the SQL statement labelled "-- name: <name>" in storage/queries.
 // It panics on an unknown name because query names are compile-time constants.

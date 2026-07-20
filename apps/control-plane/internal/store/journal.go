@@ -55,6 +55,18 @@ func (j *Journal) ResolveCursor(ctx context.Context, org, project, sessionID, ev
 	return seq, true, nil
 }
 
+// RecordAttachDenied appends a content-free denial to the append-only audit log when a
+// caller attaches to a session outside its verified scope (a foreign or unknown id). The row
+// is keyed to the ACTOR's tenant and names only the requested id, so a cross-tenant session
+// and an unknown one produce the identical denial — no existence is disclosed (spec §39.2,
+// §50.3).
+func (j *Journal) RecordAttachDenied(ctx context.Context, org, project, principal, sessionID string) error {
+	if _, err := j.pool.Exec(ctx, storage.Query("InsertAttachDenial"), org, project, principal, sessionID); err != nil {
+		return fmt.Errorf("record attach denial: %w", err)
+	}
+	return nil
+}
+
 // After returns up to limit events with sequence greater than afterSeq, in
 // ascending sequence order, as CloudEvents envelopes. Passing the last delivered
 // sequence tails the journal without gaps or duplicates.

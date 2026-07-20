@@ -110,6 +110,10 @@ func (f *fakeBackend) After(context.Context, string, string, string, int64, int)
 	return nil, nil
 }
 
+func (f *fakeBackend) RecordAttachDenied(context.Context, string, string, string, string) error {
+	return nil
+}
+
 // newTestServer starts the real router + middleware stack over a fresh fake
 // backend, so every test exercises genuine HTTP round-trips.
 func newTestServer(t *testing.T) *httptest.Server {

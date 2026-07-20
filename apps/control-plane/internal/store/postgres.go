@@ -360,6 +360,11 @@ func (s *Store) After(ctx context.Context, org, project, sessionID string, after
 	return s.journal.After(ctx, org, project, sessionID, afterSeq, limit)
 }
 
+// RecordAttachDenied records a content-free audit denial for an out-of-scope attach.
+func (s *Store) RecordAttachDenied(ctx context.Context, org, project, principal, sessionID string) error {
+	return s.journal.RecordAttachDenied(ctx, org, project, principal, sessionID)
+}
+
 // responseID reads the response id from a stored/created response body so both the
 // created and replayed paths yield the same Location.
 func responseID(body []byte) string {
