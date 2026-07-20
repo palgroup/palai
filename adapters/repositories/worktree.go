@@ -40,7 +40,10 @@ func ChildBranch(sessionShort, runShort string) string {
 // the child's commits land on its own branch, never the parent's. worktreePath must not exist yet.
 func AddIsolatedWorktree(ctx context.Context, repoDir, worktreePath, sessionShort, runShort, base string) (Worktree, error) {
 	branch := ChildBranch(sessionShort, runShort)
-	if _, err := gitIn(ctx, repoDir, "worktree", "add", "-b", branch, worktreePath, base); err != nil {
+	if err := rejectGitPositionals(map[string]string{"branch": branch, "worktree path": worktreePath, "base": base}); err != nil {
+		return Worktree{}, err
+	}
+	if _, err := gitIn(ctx, repoDir, "worktree", "add", "-b", branch, "--", worktreePath, base); err != nil {
 		return Worktree{}, err
 	}
 	return Worktree{Path: worktreePath, Branch: branch, Base: base, Writable: true}, nil
@@ -53,7 +56,10 @@ func AddIsolatedWorktree(ctx context.Context, repoDir, worktreePath, sessionShor
 // ponytail: FS perms are the read-only enforcement here; a container gets a ro bind mount and the
 // file tool (T4) also honors Writable=false — this is the layer available without either wired yet.
 func AddReadOnlyWorktree(ctx context.Context, repoDir, worktreePath, base string) (Worktree, error) {
-	if _, err := gitIn(ctx, repoDir, "worktree", "add", "--detach", worktreePath, base); err != nil {
+	if err := rejectGitPositionals(map[string]string{"worktree path": worktreePath, "base": base}); err != nil {
+		return Worktree{}, err
+	}
+	if _, err := gitIn(ctx, repoDir, "worktree", "add", "--detach", "--", worktreePath, base); err != nil {
 		return Worktree{}, err
 	}
 	if err := makeTreeReadOnly(worktreePath); err != nil {
@@ -66,7 +72,10 @@ func AddReadOnlyWorktree(ctx context.Context, repoDir, worktreePath, base string
 // §30.5, REP-011). On a conflict it records the conflicting paths and ABORTS the merge, so the
 // parent worktree is left exactly as it was — a conflict is reported, never silently resolved.
 func MergeBranch(ctx context.Context, repoDir, branch string) (MergeResult, error) {
-	if _, err := gitIn(ctx, repoDir, "merge", "--no-edit", "--no-ff", branch); err != nil {
+	if err := rejectFlagShaped("merge branch", branch); err != nil {
+		return MergeResult{}, err
+	}
+	if _, err := gitIn(ctx, repoDir, "merge", "--no-edit", "--no-ff", "--", branch); err != nil {
 		// A merge failure is a conflict when there are unmerged paths; abort to restore the parent.
 		conflicts, _ := gitIn(ctx, repoDir, "diff", "--name-only", "--diff-filter=U")
 		_, _ = gitIn(ctx, repoDir, "merge", "--abort")

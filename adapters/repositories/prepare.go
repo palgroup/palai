@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,6 +57,25 @@ func Prepare(ctx context.Context, broker Broker, req Request) (Result, error) {
 	if req.CloneURL == "" {
 		return Result{}, fmt.Errorf("prepare: clone URL is required")
 	}
+	// Untrusted-input guards (spec §30.4): a flag-shaped clone URL / ref / branch would be reparsed
+	// by git as an option (argument injection), so refuse it before git runs; the git invocations
+	// below also carry an explicit "--" end-of-options separator.
+	if err := rejectFlagShaped("clone url", req.CloneURL); err != nil {
+		return Result{}, fmt.Errorf("prepare: %w", err)
+	}
+	if err := validateRef(ref); err != nil {
+		return Result{}, fmt.Errorf("prepare: %w", err)
+	}
+	if req.WorkBranch != "" {
+		if err := rejectFlagShaped("work branch", req.WorkBranch); err != nil {
+			return Result{}, fmt.Errorf("prepare: %w", err)
+		}
+	}
+	// The credential-helper store must live OUTSIDE the engine-visible repo dir, or the token would
+	// land in the snapshot (structural, not just a caller contract).
+	if rel, err := filepath.Rel(req.TargetDir, req.SecretsDir); err == nil && (rel == "." || !strings.HasPrefix(rel, "..")) {
+		return Result{}, fmt.Errorf("prepare: secrets dir must be outside the workspace repo dir")
+	}
 
 	// The hooks/home/helper dirs live in the snapshot-excluded /secrets area, NEVER inside TargetDir
 	// (which the engine sees). An empty hooksDir means no repository-supplied hook can run (§30.4).
@@ -81,7 +101,13 @@ func Prepare(ctx context.Context, broker Broker, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("prepare: mint read credential: %w", err)
 	}
-	defer func() { _ = broker.Revoke(ctx, cred.Handle) }()
+	defer func() {
+		// A failed revoke leaves a real installation token valid until its ~1h expiry — log it so the
+		// failure is visible (the local broker's revoke is filesystem-only and effectively never fails).
+		if err := broker.Revoke(ctx, cred.Handle); err != nil {
+			log.Printf("repository preparation: revoke read credential %s failed: %v", cred.Handle, err)
+		}
+	}()
 	helperConfig, err := broker.writeHelper(cred.Handle, req.CloneURL, req.SecretsDir)
 	if err != nil {
 		return Result{}, fmt.Errorf("prepare: %w", err)
@@ -90,8 +116,9 @@ func Prepare(ctx context.Context, broker Broker, req Request) (Result, error) {
 	// active helper: the token reaches Git only here, never in argv or the remote URL (§30.2, REP-003).
 	fetchConfig := []string{"-c", "credential.helper=" + helperConfig}
 
-	// Step 4: fetch the exact commit/ref with bounded history (--depth=1). The remote URL is clean.
-	if _, err := git(fetchConfig, "fetch", "--depth=1", req.CloneURL, ref); err != nil {
+	// Step 4: fetch the exact commit/ref with bounded history (--depth=1). The remote URL is clean and
+	// the "--" separator prevents a flag-shaped URL/ref from being reparsed as an option (§30.4).
+	if _, err := git(fetchConfig, "fetch", "--depth=1", "--", req.CloneURL, ref); err != nil {
 		return Result{}, err
 	}
 
@@ -115,6 +142,9 @@ func Prepare(ctx context.Context, broker Broker, req Request) (Result, error) {
 
 	// Step 7 + 8: materialize allowed submodules/LFS (default: none), recording containment findings
 	// for anything the policy refuses. Hooks + unsafe filters are already disabled by the hardened env.
+	// ponytail: §30.4 committed-secret detection is deferred to the changeset secret-scan (E09 Task 5) —
+	// it is a tool-layer/outbound-disclosure concern orthogonal to the REP-003 credential exit gate,
+	// and shares the tests/security scanner seam there; naming it here so it is not silently lost.
 	findings, err := materializeSubmodules(git, req.TargetDir, req.Policy)
 	if err != nil {
 		return Result{}, err

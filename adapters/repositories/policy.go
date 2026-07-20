@@ -15,8 +15,10 @@ type Policy struct {
 	// AllowSubmodules materializes .gitmodules submodules whose URLs pass validateSubmoduleURL.
 	// Default false: submodules are recorded as findings, not fetched (§30.4).
 	AllowSubmodules bool
-	// AllowLFS materializes Git-LFS objects. Default false: LFS smudge is skipped (§30.4 size-limit /
-	// bounded-download posture; a hostile repo cannot force an unbounded LFS pull).
+	// AllowLFS is the binding's LFS policy knob (§30.1). ponytail: NOT yet wired — LFS smudge is
+	// ALWAYS skipped (hardenedEnv sets GIT_LFS_SKIP_SMUDGE=1 unconditionally), which is fail-closed
+	// (a hostile repo cannot force an unbounded LFS pull). Making AllowLFS=true actually materialize
+	// LFS is deferred to the changeset/artifact task (E09 Task 5) where the size-limit lives.
 	AllowLFS bool
 	// RequireSignedCommits verifies commit identity before checkout (§30.3 step 5). Default false.
 	RequireSignedCommits bool
@@ -97,7 +99,7 @@ func hardenedEnv(homeDir string) []string {
 		"GIT_TERMINAL_PROMPT=0",                      // never prompt for credentials
 		"GIT_ASKPASS=",                               // no askpass program
 		"GIT_ALLOW_PROTOCOL=file:git:http:https:ssh", // allowlist transports; ext:: excluded
-		"GIT_LFS_SKIP_SMUDGE=1",                      // LFS not materialized unless policy opts in (§30.4)
+		"GIT_LFS_SKIP_SMUDGE=1",                      // LFS smudge always skipped (fail-closed; AllowLFS wiring deferred, §30.4)
 		"PATH=" + os.Getenv("PATH"),                  // git must find itself and its credential helper
 	}
 }
