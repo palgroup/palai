@@ -23,9 +23,9 @@ func (blockingDriver) Start(ctx context.Context, _ oci.ContainerSpec) (oci.Proce
 
 type blockingProcess struct{ ctx context.Context }
 
-func (p blockingProcess) Stdin() io.WriteCloser { return nopWriteCloser{} }
-func (p blockingProcess) Stdout() io.Reader     { return ctxReader{p.ctx} }
-func (p blockingProcess) Stderr() io.Reader     { return ctxReader{p.ctx} }
+func (p blockingProcess) Stdin() io.WriteCloser    { return nopWriteCloser{} }
+func (p blockingProcess) Stdout() io.Reader        { return ctxReader{p.ctx} }
+func (p blockingProcess) Stderr() io.Reader        { return ctxReader{p.ctx} }
 func (blockingProcess) Kill(context.Context) error { return nil }
 func (p blockingProcess) Wait(ctx context.Context) (oci.Outcome, error) {
 	<-ctx.Done()
