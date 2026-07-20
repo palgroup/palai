@@ -86,7 +86,9 @@ def test_tool_result_resumes_with_the_next_model_request() -> None:
     tcall = treq["data"]["tool_call_id"]
 
     out = loop.handle(ctrl("tool.result", {"tool_call_id": tcall, "content": "42"}, "frm_tr"))
-    assert [f["type"] for f in out] == ["model.request"]
+    # A completed tool turn resumes with the next model request, and offers a checkpoint of the
+    # resulting post-tool boundary (spec §26.5) — see test_checkpoint for the offer's contract.
+    assert [f["type"] for f in out] == ["model.request", "checkpoint.offer"]
     assert out[0]["data"]["model_request_id"] != mrid
     assert loop.state is State.AWAITING_MODEL
 
