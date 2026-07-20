@@ -26,14 +26,12 @@ type ShellRunner interface {
 }
 
 // ShellCommand is one sandboxed execution request: the argv (never a shell string — the caller opts
-// into a shell explicitly), the workspace root to mount, whether it mounts read-only, and optional
-// stdin.
+// into a shell explicitly via Shell), the workspace root to mount, and whether it mounts read-only.
 type ShellCommand struct {
 	Argv          []string
 	WorkspaceRoot string
 	ReadOnly      bool
 	Shell         bool
-	StdinData     []byte
 }
 
 // ShellResult is the captured outcome of a sandboxed command: bounded, already-redacted output, the

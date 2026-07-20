@@ -103,21 +103,6 @@ func sandboxCommand(args []string) int {
 		time.Sleep(60 * time.Second)
 		_ = os.WriteFile(filepath.Join("/workspace/scratch", "child-"+idx+"-done"), []byte("done"), 0o644)
 		return 0
-	case "diskhog":
-		// Write until the workspace/disk bound stops it (best-effort — SAN-003 disk ceiling).
-		f, err := os.Create("/workspace/scratch/hog")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "diskhog: %v\n", err)
-			return 1
-		}
-		defer f.Close()
-		chunk := make([]byte, 4<<20)
-		for {
-			if _, err := f.Write(chunk); err != nil {
-				fmt.Fprintf(os.Stderr, "diskhog stopped: %v\n", err)
-				return 1
-			}
-		}
 	default:
 		fmt.Fprintf(os.Stderr, "san: unknown behaviour %q\n", args[0])
 		return 2

@@ -308,6 +308,13 @@ func (e *ShellExecutor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (t
 	if cmd.WorkspaceRoot == "" {
 		return toolbroker.ShellResult{}, errors.New("shell command requires a workspace root")
 	}
+	// Default argv-form runs the executable directly — no shell, no metacharacter interpretation.
+	// Explicit shell mode joins the argv into a shell command line for pipelines/redirection (spec
+	// §28.8); it requires a shell in the image, which the argv-form default does not.
+	runArgv := cmd.Argv
+	if cmd.Shell {
+		runArgv = []string{"/bin/sh", "-c", strings.Join(cmd.Argv, " ")}
+	}
 	spec := oci.ContainerSpec{
 		ImageDigest:    e.image,
 		Env:            shellEnv(),
@@ -315,7 +322,7 @@ func (e *ShellExecutor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (t
 		Limits:         e.limits,
 		MaxStdoutBytes: e.maxStdoutBytes,
 		MaxStderrBytes: e.maxStderrBytes,
-		Cmd:            cmd.Argv,
+		Cmd:            runArgv,
 		WorkingDir:     shellMountTarget,
 		Mounts:         []oci.Mount{{Source: cmd.WorkspaceRoot, Target: shellMountTarget, ReadOnly: cmd.ReadOnly}},
 	}
