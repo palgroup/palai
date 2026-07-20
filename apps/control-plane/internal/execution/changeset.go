@@ -63,9 +63,10 @@ type ChangesetInput struct {
 // object store, records the changeset, and returns it. compiled is false when the run prepared no
 // repository (no base to diff against) — the caller then has no changeset to record.
 //
-// It is a COMPOSED step (like PrepareRepository), driven by the live smoke + coding journey. ponytail:
-// auto-invocation at run finalize waits for workspace provisioning to land in the orchestrator (the
-// same gate PrepareRepository waits on, repository.go); this is the exact call finalize will make.
+// It is a COMPOSED step (like PrepareRepository) the orchestrator's finalize auto-invokes for a run that
+// bound a workspace (E09 Task 10): the changeset is compiled while the workspace is still on disk and the
+// writer lease still held, so a terminated coding run records its changeset without any caller driving it.
+// The live smoke + coding journey drive the same step against a real provider.
 func CompileChangeset(ctx context.Context, ledger ChangesetLedger, aw ArtifactWriter, in ChangesetInput) (coordinator.ChangesetRecord, bool, error) {
 	base, ok, err := ledger.RunBaseCommit(ctx, in.Tenant, in.RunID)
 	if err != nil {

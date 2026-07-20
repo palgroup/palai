@@ -46,10 +46,9 @@ type PreparedRepository struct {
 // preparation under a brokered short-lived read credential, and records the model-independent
 // receipt. The model never sees the credential (§30.2); the broker revokes it after the fetch.
 //
-// ponytail: auto-invocation on EVERY run waits for workspace provisioning to land in the production
-// run path — T1 proved the mount in component/live but left provisioning out of the orchestrator, so
-// there is no workspace-ready gate to hang this off yet. This is the composed step the coding journey
-// (T9) and the live smoke drive, and the exact call that provisioning will make once wired.
+// The root run's auto-provisioning (Orchestrator.provisionFreshAllocation, E09 Task 10) is the
+// production caller: it drives the workspace to preparing and calls this to clone @ the attached ref.
+// The coding journey (T9) and the live smoke drive the same composed step; nothing waits on it now.
 func PrepareRepository(ctx context.Context, store RepositoryStore, broker repositories.Broker, tenant coordinator.Tenant, in PrepareRepositoryInput) (PreparedRepository, error) {
 	binding, found, err := store.GetRepositoryBinding(ctx, tenant, in.BindingID)
 	if err != nil {
