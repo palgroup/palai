@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 
 	"github.com/palgroup/palai/adapters/repositories"
@@ -40,10 +41,16 @@ func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordi
 	}
 
 	var alloc coordinator.Allocation
-	if statemachines.WorkspaceState(ws.State) == statemachines.WorkspaceRequested {
-		alloc, err = o.provisionFreshAllocation(ctx, tenant, ws, runID, fence)
-	} else {
+	switch statemachines.WorkspaceState(ws.State) {
+	case statemachines.WorkspaceReady, statemachines.WorkspaceLeased:
+		// A later run in the session: ready = released by a prior run; leased = a prior attempt whose
+		// state-release lost the race to a crash. Reuse the current allocation — edits persist, the clone
+		// is not repeated.
 		alloc, err = o.reuseAllocation(ctx, tenant, ws, runID)
+	default:
+		// requested, or provisioning/preparing left by a crashed/failed clone (blocker 2): (re)provision
+		// fresh and idempotently — a partial allocation from a failed attempt is abandoned, a new one cloned.
+		alloc, err = o.provisionFreshAllocation(ctx, tenant, ws, runID, fence)
 	}
 	if err != nil {
 		return "", "", "", err
@@ -54,7 +61,13 @@ func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordi
 	if err := o.spine.AcquireWriterLease(ctx, leaseID, alloc.ID, runID); err != nil {
 		return "", "", "", err
 	}
-	if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, statemachines.WorkspaceCmdLease); err != nil {
+	// Drive ready→leased. A workspace already `leased` (the crash inconsistency above) has no Lease
+	// transition, so ErrInvalidState is tolerated — the physical lease we just acquired is the authority.
+	// Any OTHER failure would LEAK the just-acquired lease (no TTL until E10 recovery, so the session
+	// bricks forever — blocker 1), because the caller's defer release is not armed until this returns a
+	// leaseID; release it here before surfacing the error.
+	if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, statemachines.WorkspaceCmdLease); err != nil && !errors.Is(err, statemachines.ErrInvalidState) {
+		_ = o.spine.ReleaseWriterLease(context.Background(), leaseID)
 		return "", "", "", err
 	}
 	return alloc.HostPath, leaseID, ws.WorkspaceID, nil
@@ -70,14 +83,17 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, tenant coor
 	if err := workspace.Prepare(dir); err != nil {
 		return coordinator.Allocation{}, err
 	}
-	if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, statemachines.WorkspaceCmdProvision); err != nil {
-		return coordinator.Allocation{}, err
+	// Drive requested→provisioning→preparing idempotently: a retry after a failed clone re-enters from
+	// `provisioning` or `preparing`, so an already-applied transition (ErrInvalidState) is skipped —
+	// mirroring the run-transition loop in ExecuteAttempt. This is what lets a stuck-mid-provision
+	// workspace recover instead of bricking (blocker 2).
+	for _, cmd := range []statemachines.WorkspaceCommand{statemachines.WorkspaceCmdProvision, statemachines.WorkspaceCmdPrepare} {
+		if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, cmd); err != nil && !errors.Is(err, statemachines.ErrInvalidState) {
+			return coordinator.Allocation{}, err
+		}
 	}
 	alloc, err := o.spine.AllocateWorkspace(ctx, allocID, ws.WorkspaceID, dir)
 	if err != nil {
-		return coordinator.Allocation{}, err
-	}
-	if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, statemachines.WorkspaceCmdPrepare); err != nil {
 		return coordinator.Allocation{}, err
 	}
 	// The infrastructure-owned clone @ the exact ref, under a brokered read credential the model never
