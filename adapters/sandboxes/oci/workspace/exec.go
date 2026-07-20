@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -8,8 +9,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/palgroup/palai/adapters/sandboxes/oci"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
 // ErrPathEscape is returned when a requested path resolves outside the workspace root — a traversal,
@@ -263,4 +269,109 @@ func (w *WorkspaceFS) Checksum(rel string) (string, error) {
 func hashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// shellMountTarget is the in-sandbox path the workspace is mounted at and the shell command's
+// working directory — the same /workspace the engine sees (spec §29.9).
+const shellMountTarget = "/workspace"
+
+// ShellExecutor runs a workspace shell command inside a fresh, hardened OCI sandbox (spec §28.8,
+// SAN-002/003/004). It implements toolbroker.ShellRunner. Each Run launches, waits on, and destroys
+// one container from the pinned image: unprivileged uid 65532, no network (all egress denied),
+// read-only rootfs, every capability dropped, no-new-privileges, cgroup memory/pids/cpu(/disk)
+// bounds, and the workspace bind-mounted at /workspace as the working directory. Destroying the
+// container is the process-group kill — no descendant survives it. The container mounts no runtime
+// socket, so a command cannot reach the container runtime. Output is bounded and secret-redacted.
+type ShellExecutor struct {
+	driver         oci.Driver
+	image          string
+	limits         oci.Limits
+	maxStdoutBytes int64
+	maxStderrBytes int64
+}
+
+// NewShellExecutor binds a driver, the pinned command image, and the resource bounds a shell call
+// runs under. The output bounds default to 1 MiB stdout / 64 KiB stderr.
+func NewShellExecutor(driver oci.Driver, image string, limits oci.Limits) *ShellExecutor {
+	return &ShellExecutor{driver: driver, image: image, limits: limits, maxStdoutBytes: 1 << 20, maxStderrBytes: 1 << 16}
+}
+
+// Run executes one argv command in the sandbox and returns its bounded, redacted result. A non-zero
+// container exit is a normal shell outcome (the command failed), not an executor error; an error is
+// returned only for an infrastructure failure. A memory OOM, wall-time expiry, or process-group
+// destroy surfaces as a SIGKILL termination (exit 137), classified so the caller sees a bounded
+// termination rather than a silent non-zero exit (spec §28.8, SAN-003).
+func (e *ShellExecutor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbroker.ShellResult, error) {
+	if len(cmd.Argv) == 0 {
+		return toolbroker.ShellResult{}, errors.New("shell command requires an argv")
+	}
+	if cmd.WorkspaceRoot == "" {
+		return toolbroker.ShellResult{}, errors.New("shell command requires a workspace root")
+	}
+	spec := oci.ContainerSpec{
+		ImageDigest:    e.image,
+		Env:            shellEnv(),
+		Labels:         map[string]string{"io.palai.sandbox": "shell"},
+		Limits:         e.limits,
+		MaxStdoutBytes: e.maxStdoutBytes,
+		MaxStderrBytes: e.maxStderrBytes,
+		Cmd:            cmd.Argv,
+		WorkingDir:     shellMountTarget,
+		Mounts:         []oci.Mount{{Source: cmd.WorkspaceRoot, Target: shellMountTarget, ReadOnly: cmd.ReadOnly}},
+	}
+
+	start := time.Now()
+	outcome, err := e.driver.Run(ctx, spec)
+	result := toolbroker.ShellResult{
+		ExitCode:   int(outcome.ExitCode),
+		Stdout:     redactSecrets(string(outcome.Stdout)),
+		Stderr:     redactSecrets(string(outcome.Stderr)),
+		Truncated:  outcome.StdoutTruncated || outcome.StderrTruncated,
+		TimedOut:   outcome.TimedOut,
+		DurationMS: time.Since(start).Milliseconds(),
+	}
+	if outcome.TimedOut {
+		result.Signal = "KILL"
+	}
+	// exit 137 = 128 + SIGKILL(9): a cgroup OOM kill or a wall-time/process-group destroy. Classify
+	// it as a bounded termination; a mem-bounded kill is reported OOM. ponytail: exit-code heuristic
+	// — the daemon's OOM flag is not surfaced by the driver, and a mem-bounded 137 is the reliable
+	// OOM signal in practice.
+	if result.ExitCode == 137 {
+		result.Signal = "KILL"
+		if e.limits.MaxMemoryBytes > 0 {
+			result.OOMKilled = true
+		}
+	}
+	if err != nil {
+		return result, fmt.Errorf("sandbox shell: %w", err)
+	}
+	return result, nil
+}
+
+// shellEnv is the minimal environment a shell command receives: no host inheritance, no credential,
+// no runtime socket address. HOME points at the writable workspace so tools that scribble a dotfile
+// do not fail on the read-only rootfs.
+func shellEnv() []string {
+	return []string{"HOME=" + shellMountTarget, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+}
+
+// secretPatterns are the secret shapes masked in shell output before it is displayed or returned
+// (spec §28.8 secret redaction). ponytail: a focused set (provider keys, bearer tokens, GitHub
+// tokens) mirroring the supervisor's stderr redaction; extend it for a new shape rather than
+// reaching for a full-entropy scanner.
+var secretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`sk-[A-Za-z0-9._-]{6,}`),
+	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._-]{8,}`),
+	regexp.MustCompile(`gh[posu]_[A-Za-z0-9]{20,}`),
+	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),
+}
+
+// redactSecrets masks secret-shaped tokens in captured shell output. The command's own output is
+// untrusted; the executor does not rely on it having redacted itself.
+func redactSecrets(s string) string {
+	for _, pattern := range secretPatterns {
+		s = pattern.ReplaceAllString(s, "***")
+	}
+	return s
 }

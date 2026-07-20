@@ -39,45 +39,6 @@ type Tool struct {
 	Exec         func(ctx context.Context, env ExecEnv, args map[string]any) (map[string]any, error)
 }
 
-// ExecEnv is the per-attempt sandbox context a workspace-touching tool receives (spec §28.7-28.8):
-// the resolved workspace root every path confines to, and a ShellRunner for argv execution. A pure
-// conformance tool ignores it; a zero ExecEnv (no workspace bound) makes a workspace tool fail
-// cleanly rather than escape.
-type ExecEnv struct {
-	WorkspaceRoot string
-	ReadOnly      bool
-	Shell         ShellRunner
-}
-
-// ShellRunner runs one argv command inside the sandbox and returns its captured, bounded result.
-// The concrete implementation (an OCI-driver-backed sandbox) lives outside this dependency-light
-// package; the seam keeps the broker free of sandbox mechanics.
-type ShellRunner interface {
-	Run(ctx context.Context, cmd ShellCommand) (ShellResult, error)
-}
-
-// ShellCommand is one sandboxed execution request: the argv (never a shell string — the caller opts
-// into a shell explicitly), and whether the workspace is writable for this call.
-type ShellCommand struct {
-	Argv      []string
-	ReadOnly  bool
-	Shell     bool
-	StdinData []byte
-}
-
-// ShellResult is the captured outcome of a sandboxed command: bounded, already-redacted output, the
-// exit code / signal, and the resource usage the sandbox recorded.
-type ShellResult struct {
-	ExitCode   int
-	Signal     string
-	Stdout     string
-	Stderr     string
-	Truncated  bool
-	TimedOut   bool
-	OOMKilled  bool
-	DurationMS int64
-}
-
 // Outcome is the result of one Execute. Cached reports whether it replayed a
 // completed row (in which case the tool did not run and no new usage was emitted).
 type Outcome struct {
