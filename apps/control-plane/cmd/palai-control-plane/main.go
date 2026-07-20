@@ -78,6 +78,7 @@ func main() {
 
 	startDispatch(ctx, repo, gateway, supervisor, artStore)
 	startRetention(ctx, repo, supervisor, artStore)
+	startOrphanGC(ctx, repo, supervisor, artStore)
 
 	log.Printf("palai control-plane listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
@@ -305,6 +306,34 @@ func startRetention(ctx context.Context, repo *store.Store, supervisor *coordina
 		reaper = reaper.WithArtifactStore(artStore)
 	}
 	go supervisor.Supervise(ctx, "retention-reaper", func(ctx context.Context) error { return reaper.Run(ctx, 30*time.Second) })
+}
+
+// startOrphanGC launches the artifact orphan garbage-collector when an object store is
+// configured — the SAME gate as the retention reaper's byte-deleter, because the two write-path
+// gaps it closes (an object whose row insert never committed, and a retention delete that failed
+// after the row was tombstoned) only exist when there is an object store. It reconciles the bucket
+// against the artifacts index on an interval, reclaiming objects no live row references, so the
+// store cannot grow unbounded. A referenced object is never deleted, and the grace window —
+// comfortably wider than the write path's PUT→row-insert gap — spares an object whose row may still
+// be committing. Grace and interval are env-tunable (PALAI_ARTIFACT_GC_GRACE / _INTERVAL); the
+// defaults are safe (a wide grace, an hourly pass, since a full bucket-list is heavier than the
+// reaper's bounded DB purge). A killed process just misses ticks; the next run resumes the sweep.
+func startOrphanGC(ctx context.Context, repo *store.Store, supervisor *coordinator.Supervisor, artStore *artifacts.Store) {
+	if artStore == nil {
+		return // no object store: retention scrubs only the DB row, so there are no orphan bytes
+	}
+	grace := envDurationOr("PALAI_ARTIFACT_GC_GRACE", time.Hour)
+	interval := envDurationOr("PALAI_ARTIFACT_GC_INTERVAL", time.Hour)
+	gc := artifacts.NewCollector(artStore, repo.Spine().Pool(), grace)
+	go supervisor.Supervise(ctx, "artifact-orphan-gc", func(ctx context.Context) error { return gc.Run(ctx, interval) })
+}
+
+// envDurationOr reads a Go duration env var, returning def when unset or unparseable.
+func envDurationOr(name string, def time.Duration) time.Duration {
+	if d := envDuration(name); d > 0 {
+		return d
+	}
+	return def
 }
 
 // artifactStoreFromEnv builds the control-plane's S3 artifact store from PALAI_S3_* when an

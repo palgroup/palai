@@ -62,9 +62,10 @@ func NewWriter(store *Store, pool *pgxpool.Pool) *Writer {
 
 // Write commits an artifact's bytes to the object store and then records its row. The
 // object is written first so the row never points at absent bytes; a failure between the
-// two leaves an orphan object (no row references it), which retention never reaches.
-// ponytail: orphan objects from a mid-write crash are swept by the same list-vs-rows
-// reconcile the retention path defers — not a correctness break, the row is the index.
+// two leaves an orphan object (no row references it), which retention never reaches. That
+// orphan is not a leak: the artifact orphan-GC (Collector) reconciles the bucket against the
+// artifacts rows and reclaims any object no non-empty object_key row references — not a
+// correctness break either way, the row is the index.
 func (w *Writer) Write(ctx context.Context, req WriteRequest) (Artifact, error) {
 	if req.Organization == "" || req.Project == "" || req.RunID == "" {
 		return Artifact{}, errors.New("artifacts: write requires organization, project, and run")

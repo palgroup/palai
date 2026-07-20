@@ -42,12 +42,12 @@ func (r *Reaper) WithArtifactStore(a ArtifactDeleter) *Reaper {
 // Sweep runs one retention pass and returns the number of responses purged. The DB scrub
 // commits first with each victim's object_key cleared, so the keys it named are surfaced
 // here and their bytes deleted from the object store afterward. A delete error is returned
-// and logged by Run, but it is NOT retried: the scrub already committed the key away, so a
-// failed delete orphans that object exactly like the crash case below — no later tick can
-// re-reach those bytes. The purge itself is durable — the rows are correctly tombstoned.
-// ponytail: a crash between the commit and a delete orphans that object in S3 — a leaked
-// byte range, not a correctness break, swept by the same list-vs-rows reconcile the write
-// path defers; wiring an orphan GC now is speculative for a local dev store.
+// and logged by Run, but it is NOT retried here: the scrub already committed the key away, so
+// a failed delete orphans that object exactly like the crash case below. That is no longer a
+// lost byte — the artifact orphan-GC (artifacts.Collector, wired beside this reaper) reconciles
+// the bucket against the artifacts rows and reclaims any object no live, non-empty object_key
+// row references, so a failed delete self-heals on a later GC pass. The purge itself is durable
+// — the rows are correctly tombstoned regardless.
 func (r *Reaper) Sweep(ctx context.Context) (purged int, err error) {
 	purged, objectKeys, err := r.store.PurgeExpiredStoreFalse(ctx, r.storeFalseTTL)
 	if err != nil {
@@ -65,8 +65,9 @@ func (r *Reaper) Sweep(ctx context.Context) (purged int, err error) {
 
 // Run sweeps every interval until ctx is cancelled. A sweep error is logged (the reaper's
 // only failure surface) and non-fatal: the next tick retries the DB purge, because a
-// transient database blip must not stop retention. A delete failure is not retried — it
-// orphans the scrubbed object's bytes (see Sweep), so the log is its only trace.
+// transient database blip must not stop retention. A delete failure is not retried by the
+// reaper — it orphans the scrubbed object's bytes (see Sweep) — but the artifact orphan-GC
+// reclaims those bytes on a later reconcile, so the log is a trace, not a permanent leak.
 func (r *Reaper) Run(ctx context.Context, interval time.Duration) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
