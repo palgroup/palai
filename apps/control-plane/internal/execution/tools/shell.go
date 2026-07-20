@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
@@ -54,7 +56,7 @@ func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 	// through a resolving proxy; the no-network sandbox is the hard backstop.
 	var findings []any
 	for _, tok := range argv {
-		if allowed, f := ClassifyEgress(tok); !allowed && f != nil {
+		if allowed, f := ClassifyEgress(egressHost(tok)); !allowed && f != nil {
 			findings = append(findings, map[string]any{"host": f.Host, "reason": f.Reason})
 		}
 	}
@@ -85,6 +87,18 @@ func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 		out["egress_findings"] = findings
 	}
 	return out, nil
+}
+
+// egressHost extracts the host an argv token would reach: the host of a URL token, otherwise the
+// token itself (a bare host or host:port). It lets the egress classifier see the destination inside
+// a `curl http://169.254.169.254/…` form, not just a bare address.
+func egressHost(tok string) string {
+	if strings.Contains(tok, "://") {
+		if u, err := url.Parse(tok); err == nil && u.Host != "" {
+			return u.Host
+		}
+	}
+	return tok
 }
 
 // toArgv coerces the tool's argv argument — a JSON array of strings (or a Go []string) — into a

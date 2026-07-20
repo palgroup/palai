@@ -11,7 +11,9 @@
 run_runner_suite() {
   local build_tag="$1"
   local test_dir="$2"
-  local label="io.palai.sandbox=engine"
+  # Match any palai sandbox by label KEY (value engine or shell), so a leaked engine OR workspace
+  # shell-tool container (E09 Task 4) is caught by the same accounting.
+  local label="io.palai.sandbox"
   local image_tag="palai-runner-engine:${build_tag}"
   local build_dir="tests/sandboxes/engine/.build"
 
