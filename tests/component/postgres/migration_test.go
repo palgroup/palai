@@ -40,6 +40,7 @@ var allTables = []string{
 	"changesets", "changeset_findings",
 	"tasks",
 	"publications", "approvals",
+	"delivered_messages",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -322,6 +323,66 @@ func TestChildRunsMigration(t *testing.T) {
 		if !columnExists(t, pool, "runs", col) {
 			t.Fatalf("after reapply, runs.%s is missing", col)
 		}
+	}
+}
+
+// TestDeliveredMessagesMigration proves 000016 adds the durable delivered-message table (E10 Task 2,
+// spec §26.9) idempotently and reverses cleanly: the table, its columns, and its redelivery index
+// exist after apply (a re-apply is a clean no-op), are gone after rollback, and return after reapply
+// (the 000006/000007 re-run-safety pattern). A row keyed to a real command inserts, and one keyed to
+// a missing command is rejected — the FK to commands is the "content ref" the row carries.
+func TestDeliveredMessagesMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE TABLE/INDEX IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "delivered_messages") {
+		t.Fatal("after apply, delivered_messages is missing")
+	}
+	for _, col := range []string{"command_id", "run_id", "boundary_request_id", "applied_sequence", "fold_state"} {
+		if !columnExists(t, pool, "delivered_messages", col) {
+			t.Fatalf("after apply, delivered_messages.%s is missing", col)
+		}
+	}
+	if !indexExists(t, pool, "delivered_messages_run_boundary_idx") {
+		t.Fatal("after apply, delivered_messages_run_boundary_idx is missing")
+	}
+
+	// The row references a real command; a row for a missing command is rejected (FK to commands —
+	// the content ref). This proves the shape is usable and tenant-safe, not just present.
+	tenant, sessionID, runID := seedRun(t, pool)
+	cmdID := newID("cmd")
+	exec(t, pool,
+		`INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, delivery, payload, state, applied_sequence)
+		 VALUES ($1, $2, $3, $4, $5, 'send_message', 'steer', '{"message":"also do Y"}', 'applied', 7)`,
+		cmdID, tenant.Organization, tenant.Project, sessionID, runID)
+	exec(t, pool,
+		`INSERT INTO delivered_messages (command_id, organization_id, project_id, run_id, boundary_request_id, applied_sequence)
+		 VALUES ($1, $2, $3, $4, 'mr_step2', 7)`,
+		cmdID, tenant.Organization, tenant.Project, runID)
+	if got := pgCode(mustFail(pool.Exec(ctx,
+		`INSERT INTO delivered_messages (command_id, organization_id, project_id, run_id, applied_sequence)
+		 VALUES ('cmd_missing', $1, $2, $3, 1)`,
+		tenant.Organization, tenant.Project, runID))); got != "23503" {
+		t.Fatalf("delivered_messages for a missing command code = %q, want 23503 foreign_key_violation", got)
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if tableExists(t, pool, "delivered_messages") {
+		t.Fatal("after rollback, delivered_messages still exists")
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "delivered_messages") || !indexExists(t, pool, "delivered_messages_run_boundary_idx") {
+		t.Fatal("after reapply, a 000016 object is missing")
 	}
 }
 

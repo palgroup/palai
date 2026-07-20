@@ -108,6 +108,17 @@ var migrationUp14 string
 //go:embed migrations/000014_workspace_repository_link.down.sql
 var migrationDown14 string
 
+// 000016 adds durable delivered-message rows (E10 Task 2): a send_message delivered at a run's safe
+// boundary is journaled so a reclaimed/resumed attempt redelivers it at its original boundary
+// (spec §26.9). It only references commands/runs (000004/000001), so it merges cleanly onto every
+// E10 sibling branch. (000015 is E10 Task 1's recovery objects, added on that branch.)
+//
+//go:embed migrations/000016_delivered_messages.up.sql
+var migrationUp16 string
+
+//go:embed migrations/000016_delivered_messages.down.sql
+var migrationDown16 string
+
 //go:embed queries/jobs.sql
 var jobsSQL string
 
@@ -153,16 +164,17 @@ var tasksSQL string
 //go:embed queries/publications.sql
 var publicationsSQL string
 
-// MigrationUp is the forward migration chain, applied in version order (000001..000014). Each file is
-// individually idempotent, so the whole chain is safe to re-run.
+// MigrationUp is the forward migration chain, applied in version order (000001..000016). Each file is
+// individually idempotent, so the whole chain is safe to re-run. (000015 is added on E10 Task 1's
+// branch; this branch carries only its own 000016.)
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp16
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: each migration drops its added
 // objects before the earlier one drops the tables that carried them.
 func MigrationDown() string {
-	return migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown16 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
 var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL)
