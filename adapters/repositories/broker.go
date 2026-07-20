@@ -96,6 +96,67 @@ type mintedSecret struct {
 	helperPath string
 }
 
+// credentialVault is the shared, broker-agnostic secret store both brokers embed: it retains minted
+// secrets keyed by an opaque handle, materializes a secret into a 0600 Git credential-helper store on
+// demand, and removes both the secret and its helper file on revoke. Extracting it keeps ONE
+// implementation of the credential-materialization + removal path — the security-sensitive core (§30.2).
+type credentialVault struct {
+	mu      sync.Mutex
+	now     func() time.Time
+	secrets map[string]mintedSecret
+}
+
+func newVault() *credentialVault {
+	return &credentialVault{now: time.Now, secrets: map[string]mintedSecret{}}
+}
+
+// retain stores a minted secret under handle.
+func (v *credentialVault) retain(handle string, sec mintedSecret) {
+	v.mu.Lock()
+	v.secrets[handle] = sec
+	v.mu.Unlock()
+}
+
+// writeHelper materializes handle's secret into a 0600 Git credential store under dir and returns the
+// `credential.helper` config value Git reads it through (spec §30.2). It fails closed for an unknown,
+// revoked, or expired handle.
+func (v *credentialVault) writeHelper(handle, cloneURL, dir string) (string, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	sec, ok := v.secrets[handle]
+	if !ok {
+		return "", fmt.Errorf("credential helper: unknown or revoked handle")
+	}
+	if !sec.expiresAt.After(v.now()) {
+		return "", fmt.Errorf("credential helper: credential expired")
+	}
+	path, err := writeGitCredentialStore(dir, handle, sec.username, sec.token, cloneURL)
+	if err != nil {
+		return "", err
+	}
+	sec.helperPath = path
+	v.secrets[handle] = sec
+	return "store --file=" + path, nil
+}
+
+// revoke removes handle's secret and helper file, returning the secret so a broker can additionally
+// revoke it at the provider. ok is false for an unknown or already-revoked handle (idempotent).
+func (v *credentialVault) revoke(handle string) (mintedSecret, bool, error) {
+	v.mu.Lock()
+	sec, ok := v.secrets[handle]
+	delete(v.secrets, handle)
+	v.mu.Unlock()
+	if !ok {
+		return mintedSecret{}, false, nil
+	}
+	if sec.helperPath != "" {
+		if err := os.Remove(sec.helperPath); err != nil && !os.IsNotExist(err) {
+			return sec, true, fmt.Errorf("remove credential helper: %w", err)
+		}
+	}
+	return sec, true, nil
+}
+
 // LocalBroker is the deterministic broker for tests/CI and unauthenticated/local remotes. It mints
 // a random opaque token bound to (scope, audience) and retains it keyed by an opaque handle. It
 // authenticates a local/unauthenticated remote (which never challenges) and PROVES the
@@ -103,15 +164,13 @@ type mintedSecret struct {
 // provider-realness (REP-003 honest ceiling — the live tier confirms the same invariant with a real
 // installation token).
 type LocalBroker struct {
-	mu         sync.Mutex
-	now        func() time.Time
-	secrets    map[string]mintedSecret
+	*credentialVault
 	fixedToken string // empty = random per mint; set only by NewLocalBrokerWithToken (deterministic fixtures)
 }
 
 // NewLocalBroker returns a ready deterministic broker that mints random opaque tokens.
 func NewLocalBroker() *LocalBroker {
-	return &LocalBroker{now: time.Now, secrets: map[string]mintedSecret{}}
+	return &LocalBroker{credentialVault: newVault()}
 }
 
 // NewLocalBrokerWithToken returns a deterministic broker that mints a FIXED token. It exists for
@@ -119,7 +178,7 @@ func NewLocalBroker() *LocalBroker {
 // proves a specific brokered credential is absent from every surface, and the T9 faithful Git
 // double needs a stable token. It is not a production path; the live tier uses the GitHub App broker.
 func NewLocalBrokerWithToken(token string) *LocalBroker {
-	return &LocalBroker{now: time.Now, secrets: map[string]mintedSecret{}, fixedToken: token}
+	return &LocalBroker{credentialVault: newVault(), fixedToken: token}
 }
 
 // Mint issues a fresh opaque handle and a token bound to the scope + audience.
@@ -129,54 +188,15 @@ func (b *LocalBroker) Mint(_ context.Context, scope Scope, aud Audience) (Creden
 	if token == "" {
 		token = "palai-local-" + randHex(16) // opaque; the local remote never validates it
 	}
-	now := b.now()
-	expires := now.Add(tokenTTL)
-	b.mu.Lock()
-	b.secrets[handle] = mintedSecret{
-		username:  "x-access-token",
-		token:     token,
-		scope:     scope,
-		aud:       aud,
-		expiresAt: expires,
-	}
-	b.mu.Unlock()
+	expires := b.now().Add(tokenTTL)
+	b.retain(handle, mintedSecret{username: "x-access-token", token: token, scope: scope, aud: aud, expiresAt: expires})
 	return Credential{Handle: handle, Username: "x-access-token", Scope: scope, Audience: aud, ExpiresAt: expires}, nil
 }
 
 // Revoke drops the secret and removes its helper file so nothing can redeem the handle again.
 func (b *LocalBroker) Revoke(_ context.Context, handle string) error {
-	b.mu.Lock()
-	sec, ok := b.secrets[handle]
-	delete(b.secrets, handle)
-	b.mu.Unlock()
-	if !ok {
-		return nil // already revoked / never minted: idempotent
-	}
-	if sec.helperPath != "" {
-		if err := os.Remove(sec.helperPath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove credential helper: %w", err)
-		}
-	}
-	return nil
-}
-
-func (b *LocalBroker) writeHelper(handle, cloneURL, dir string) (string, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	sec, ok := b.secrets[handle]
-	if !ok {
-		return "", fmt.Errorf("credential helper: unknown or revoked handle")
-	}
-	if !sec.expiresAt.After(b.now()) {
-		return "", fmt.Errorf("credential helper: credential expired")
-	}
-	path, err := writeGitCredentialStore(dir, handle, sec.username, sec.token, cloneURL)
-	if err != nil {
-		return "", err
-	}
-	sec.helperPath = path
-	b.secrets[handle] = sec
-	return "store --file=" + path, nil
+	_, _, err := b.revoke(handle)
+	return err
 }
 
 // writeGitCredentialStore writes one 0600 git-credentials line (`<scheme>://<user>:<token>@<host>`)
