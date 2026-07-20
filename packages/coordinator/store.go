@@ -101,6 +101,16 @@ func (s *Store) Rollback(ctx context.Context) error {
 	return nil
 }
 
+// CurrentJournalSequence returns the highest event seq in the session's journal, or 0 for an empty
+// journal — the transcript boundary a checkpoint records (spec §26.1-26.2).
+func (s *Store) CurrentJournalSequence(ctx context.Context, tenant Tenant, sessionID string) (int64, error) {
+	var seq int64
+	if err := s.pool.QueryRow(ctx, storage.Query("CurrentJournalSequence"), sessionID, tenant.Organization, tenant.Project).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("read current journal sequence: %w", err)
+	}
+	return seq, nil
+}
+
 // Enqueue inserts a queued job.
 func (s *Store) Enqueue(ctx context.Context, tenant Tenant, jobID, kind string) error {
 	if strings.TrimSpace(jobID) == "" {

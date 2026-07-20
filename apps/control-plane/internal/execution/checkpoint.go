@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 )
 
@@ -95,6 +96,61 @@ func (s *CheckpointSink) Persist(ctx context.Context, meta CheckpointMeta, offer
 		ObjectKey:           key,
 		SizeBytes:           size,
 	})
+}
+
+// persistCheckpoint records a checkpoint.offer at a safe boundary (spec §26.2). It resolves the
+// control-plane-side provenance the opaque offer lacks — the effective config hash and the journal
+// boundary — and hands the sink the bytes. With no object store wired, an offer is advisory: it is
+// dropped, and no durable boundary is created (§26.5 — a checkpoint failure does not always fail the
+// run; a missing sink is that "no recoverable boundary" case for a non-pausing boundary).
+func (o *Orchestrator) persistCheckpoint(ctx context.Context, st *attemptState, frame contracts.EngineFrame) error {
+	if o.checkpoints == nil {
+		return nil
+	}
+	configHash, err := o.effectiveConfigHash(ctx, st)
+	if err != nil {
+		return fmt.Errorf("resolve config snapshot for checkpoint: %w", err)
+	}
+	transcriptSeq, err := o.spine.CurrentJournalSequence(ctx, st.tenant, st.sessionID)
+	if err != nil {
+		return fmt.Errorf("read journal boundary for checkpoint: %w", err)
+	}
+	// WorkspaceSnapshotID is empty in T1: a snapshot cut AT the boundary is T6. A checkpoint with no
+	// snapshot declares no workspace dependency (spec §26.4), stored as NULL.
+	return o.checkpoints.Persist(ctx, CheckpointMeta{
+		Organization:       st.tenant.Organization,
+		Project:            st.tenant.Project,
+		RunID:              string(st.attempt.RunID),
+		AttemptID:          string(st.attempt.AttemptID),
+		OfferSequence:      int64(frame.Sequence),
+		EngineDigest:       st.attempt.ImageDigest,
+		EngineVersion:      st.engineVersion,
+		ProtocolVersion:    st.protocolVersion,
+		ConfigSnapshotHash: configHash,
+		TranscriptSequence: transcriptSeq,
+	}, frame.Data)
+}
+
+// effectiveConfigHash resolves the run's effective ConfigSnapshot at this boundary and returns its
+// content hash (spec §14, §26.2) — the same layering effectiveModel/planConfigChange use, so the
+// checkpoint records the config the run is actually executing under.
+func (o *Orchestrator) effectiveConfigHash(ctx context.Context, st *attemptState) (string, error) {
+	override, _, err := o.spine.LatestSessionConfig(ctx, st.tenant, st.sessionID)
+	if err != nil {
+		return "", err
+	}
+	policy, err := o.spine.ProjectConfig(ctx, st.tenant)
+	if err != nil {
+		return "", err
+	}
+	snap := Resolve(ResolveInput{
+		DeploymentModel:  o.route.Model,
+		DeploymentSecret: string(o.route.Secret),
+		ProjectTools:     policy.DefaultTools,
+		SessionModel:     override.Model,
+		SessionTools:     override.Tools,
+	})
+	return snap.Hash, nil
 }
 
 // recoveryObjectID derives a stable id for a recovery object from the offer's identity, so a

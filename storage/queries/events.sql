@@ -35,6 +35,14 @@ SELECT seq
 FROM events
 WHERE id = $1 AND session_id = $2 AND organization_id = $3 AND project_id = $4;
 
+-- name: CurrentJournalSequence
+-- The current transcript boundary: the highest event seq in the session's journal, or 0 for an
+-- empty journal (spec §26.1 — where the canonical transcript stands when a checkpoint is cut).
+-- COALESCE so an empty session returns 0, not NULL.
+SELECT COALESCE(MAX(seq), 0)
+FROM events
+WHERE session_id = $1 AND organization_id = $2 AND project_id = $3;
+
 -- name: ReadEventsAfter
 SELECT id, seq, type, payload, created_at
 FROM events
