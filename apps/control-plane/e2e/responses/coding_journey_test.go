@@ -38,8 +38,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/packages/contracts"
-	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	"github.com/palgroup/palai/packages/coordinator"
+	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
@@ -98,7 +98,7 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 	// real tool round-trip against the prepared workspace, the deterministic mirror of the live T4 loop. ---
 	const marker = "CODING-JOURNEY-DET-8f3a2c"
 	orch := h.newOrchestratorWithTools(subprocessDialer{engineDir: h.engineDir},
-		&codingProvider{marker: marker}, tools.FileTool(), tools.ShellTool(), tools.TaskTool())
+		&codingProvider{marker: marker}, tools.FileTool(), tools.ShellTool(), tools.CommitTool(), tools.TaskTool())
 	orch.SetShellRunner(hostShellRunner{})
 
 	if err := orch.ExecuteAttempt(ctx, h.workspaceDescriptor(runID, 1, alloc)); err != nil {
@@ -119,6 +119,37 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 	}
 	if n := h.count(`SELECT count(*) FROM tool_calls WHERE run_id=$1 AND name='palai.workspace.shell'`, runID); n != 1 {
 		t.Fatalf("shell tool_call rows = %d, want 1", n)
+	}
+
+	// --- Step 10: compile the changeset + test evidence from the tool LEDGER, not the model's prose
+	// (REP-005). The changed-file set comes from the file-tool writes; the patch is the real working-tree
+	// diff against the preparation base; the test log is the shell-tool transcript. ---
+	aw := &recordingArtifactWriter{h: h}
+	changeset, compiled, err := execution.CompileChangeset(ctx, h.spine, aw, execution.ChangesetInput{
+		Tenant: h.tenant, SessionID: sessionID, ResponseID: responseID, RunID: runID, AllocationRoot: alloc,
+	})
+	if err != nil {
+		t.Fatalf("compile changeset: %v", err)
+	}
+	if !compiled {
+		t.Fatal("changeset did not compile — the run prepared a repository, so a changeset is expected")
+	}
+	if len(changeset.Files) != 1 || changeset.Files[0].Path != "repo/feature.txt" || changeset.Files[0].Change != "added" {
+		t.Fatalf("changeset files = %+v, want a single added repo/feature.txt (from the tool ledger)", changeset.Files)
+	}
+	if changeset.PatchArtifactID == "" || changeset.TestLogArtifactID == "" {
+		t.Fatalf("changeset artifacts = patch:%q test:%q, want both persisted", changeset.PatchArtifactID, changeset.TestLogArtifactID)
+	}
+	// The patch is the real diff (adds the marker line), and the test log is the shell transcript.
+	if !strings.Contains(aw.byType["patch"], marker) {
+		t.Fatalf("patch artifact does not contain the added marker line:\n%s", aw.byType["patch"])
+	}
+	if !strings.Contains(aw.byType["test-result"], "TESTS_PASS") {
+		t.Fatalf("test-log artifact does not carry the shell test output:\n%s", aw.byType["test-result"])
+	}
+	// The committed head advanced past the base — there is a head to publish in step 11.
+	if changeset.FinalCommit == "" || changeset.FinalCommit == changeset.BaseCommit {
+		t.Fatalf("changeset final commit = %q (base %q), want the committed head", changeset.FinalCommit, changeset.BaseCommit)
 	}
 }
 
@@ -156,9 +187,16 @@ func (p *codingProvider) Execute(_ context.Context, req modelbroker.Request, _ s
 			Arguments: fmt.Sprintf(`{"argv":["sh","-c","grep -q %s repo/feature.txt && echo TESTS_PASS"],"shell":true}`, p.marker),
 		}}
 		res.FinishReason = "tool_calls"
+	case 2: // commit the edit so there is a head to publish
+		res.ProviderRequestID = "prov_commit"
+		res.ToolCalls = []modelbroker.ToolCall{{
+			ID: "call_commit", Name: "palai.workspace.commit",
+			Arguments: `{"message":"Add feature.txt"}`,
+		}}
+		res.FinishReason = "tool_calls"
 	default: // summarize and finish
 		res.ProviderRequestID = "prov_final"
-		res.Output = "edited repo/feature.txt and the test passed"
+		res.Output = "edited repo/feature.txt, the test passed, committed"
 		res.FinishReason = "stop"
 	}
 	return res, nil
@@ -193,6 +231,29 @@ func (hostShellRunner) Run(ctx context.Context, cmd toolbroker.ShellCommand) (to
 		return toolbroker.ShellResult{}, err
 	}
 	return res, nil
+}
+
+// recordingArtifactWriter is the deterministic tier's ArtifactWriter double: it captures the changeset's
+// patch + test-log bytes by logical type (so the test can assert their content) and inserts the minimal
+// durable artifacts row the changeset's FK needs. The real object-store write-path (S3 bytes + checksum)
+// is proven by the T2 artifact component/live tiers; only the row + provenance matter to the changeset.
+type recordingArtifactWriter struct {
+	h      *harness
+	byType map[string]string
+}
+
+func (w *recordingArtifactWriter) WriteArtifact(ctx context.Context, org, project, runID string, content []byte, _, logicalType string, _ map[string]any) (string, error) {
+	if w.byType == nil {
+		w.byType = map[string]string{}
+	}
+	w.byType[logicalType] = string(content)
+	id := "art_" + newID(logicalType)
+	if _, err := w.h.spine.Pool().Exec(ctx,
+		`INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes) VALUES ($1,$2,$3,$4,$5,$6)`,
+		id, org, project, runID, "obj/"+id, len(content)); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // workspaceDescriptor is a single-attempt descriptor bound to a prepared workspace allocation, so the
