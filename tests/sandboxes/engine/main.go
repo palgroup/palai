@@ -49,6 +49,8 @@ func main() {
 		emit(runID, attemptID, inspectAuthority())
 	case "workspace":
 		emit(runID, attemptID, probeWorkspace())
+	case "workspace_stream":
+		workspaceStream(runID, attemptID)
 	case "interactive":
 		interactive(runID, attemptID)
 	case "hang":
@@ -125,6 +127,69 @@ func interactive(runID, attemptID string) {
 		os.Exit(1)
 	}
 	emitFrame("run.terminal", map[string]any{"outcome": "completed"})
+}
+
+// workspaceStream is the E09 Task 1 live-mount fixture: it completes the §25.6 handshake, reads the
+// seed the runner staged in the bind-mounted /workspace, requests one model step (the runner bridges
+// it to the REAL provider), then — after the real model.result returns — writes into the allocation
+// and terminates reporting what it saw. It proves the real /workspace mount is present and live
+// across a real provider round-trip. Honest ceiling: the engine is a deterministic fixture and the
+// model does not itself drive a file tool (that is E09 Task 4); the mount and the provider round-trip
+// are real.
+func workspaceStream(runID, attemptID string) {
+	seq := 0
+	emitFrame := func(typ string, data any) {
+		seq++
+		value := frame{
+			Protocol:  engineProtocol,
+			ID:        fmt.Sprintf("frm_workspace%d", seq),
+			Type:      typ,
+			RunID:     runID,
+			AttemptID: attemptID,
+			Sequence:  uint64(seq),
+			Time:      time.Now().UTC(),
+			Data:      data,
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(value); err != nil {
+			fmt.Fprintln(os.Stderr, "encode workspace frame")
+			os.Exit(2)
+		}
+	}
+
+	stdin := bufio.NewScanner(os.Stdin)
+	stdin.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	if !stdin.Scan() { // supervisor.hello
+		fmt.Fprintln(os.Stderr, "no supervisor.hello before run input")
+		os.Exit(1)
+	}
+	emitFrame("engine.ready", map[string]any{
+		"selected_protocol": engineProtocol,
+		"engine":            map[string]any{"name": "palai-workspace-fixture", "version": "0"},
+		"max_frame_bytes":   1048576,
+		"nonce":             "workspace-nonce",
+	})
+
+	// Read the seed the runner staged at /workspace/repo/seed before the model step.
+	seed, readErr := os.ReadFile("/workspace/repo/seed")
+
+	emitFrame("model.request", map[string]any{"model_request_id": "mreq_workspace1"})
+	if !stdin.Scan() { // block for the real provider's model.result
+		os.Exit(1)
+	}
+
+	// The mount is still live after the real model round-trip: echo the seed the engine read back
+	// into the allocation, so the single persisted file proves the mount was both readable (it
+	// carries the seed) and writable (the runner reads it back on the host). This does not rely on
+	// the final run.terminal frame, which a fast clean exit can race out of the streaming sink.
+	writeErr := os.WriteFile("/workspace/scratch/out", []byte("seed:"+string(seed)), 0o644)
+	emitFrame("run.terminal", map[string]any{
+		"outcome":           "completed",
+		"workspace_present": pathExists("/workspace"),
+		"seed_readable":     readErr == nil,
+		"seed_content":      string(seed),
+		"wrote":             writeErr == nil,
+	})
 }
 
 // inspectAuthority reports whether any credential, the Docker socket, or the runner

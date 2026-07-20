@@ -26,15 +26,28 @@ fi
 
 # Resolve the provider/case to a test package and a single test. Do this before
 # loading the secret so an unknown selector fails without touching the credential.
+# needs_engine=1 marks a case that also drives a real OCI engine container (the workspace-mount
+# smoke), so the harness cross-builds the fixture engine and exports its digest-pinned image ID in
+# addition to loading the credential.
+needs_engine=0
 case "$provider/$case_name" in
   provider-one/text-stream-tool-schema)
     pkg="./tests/live/provider"
     run="TestLiveProviderOneTextStreamToolSchema"
     required_key="OPENAI_API_KEY"
     ;;
+  provider-one/workspace-mount)
+    # E09 Task 1: a real provider run bound to a real workspace allocation; the engine container
+    # sees the real /workspace mount and the seeded file persists (proves the mount, not model
+    # behaviour). Needs both the credential and the fixture engine image.
+    pkg="./tests/live/workspace"
+    run="TestLiveWorkspaceMountRealProviderRun"
+    required_key="OPENAI_API_KEY"
+    needs_engine=1
+    ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount" >&2
     exit 2
     ;;
 esac
@@ -55,6 +68,15 @@ fi
 # The credential travels only in the environment — never in argv (ps-visible) and
 # never in a log. Leak protection is asserted inside the test process by an opaque
 # comparison that never prints the value.
-go test -tags=live -count=1 -run "$run" -v "$pkg"
+if test "$needs_engine" = 1; then
+  # The workspace-mount smoke drives a real, digest-pinned engine container. Reuse the fault/
+  # security fixture-engine harness: it cross-builds the fixture, exports PALAI_RUNNER_ENGINE_IMAGE_ID,
+  # runs the tagged test (inheriting the credential loaded above), and verifies no sandbox leaks.
+  # shellcheck source=scripts/test/runner-engine.sh
+  source "$root/scripts/test/runner-engine.sh"
+  run_runner_suite live "$pkg"
+else
+  go test -tags=live -count=1 -run "$run" -v "$pkg"
+fi
 
 echo "live_${provider//-/_}_${case_name//-/_}=PASS"
