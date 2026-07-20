@@ -205,12 +205,25 @@ run_artifacts() {
   echo "component_artifacts=PASS containers=$containers_after volumes=$volumes_after"
 }
 
+# The repository suite proves deterministic preparation (spec §30.3) and untrusted-repo containment
+# (§30.4) against the host's real git — no container: the "real backing service" is git itself. It
+# exercises the exact-commit receipt (REP-001) and the hostile-repo defenses (REP-002).
+run_repository() {
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git is required for the repository component suite" >&2
+    exit 1
+  fi
+  go test -tags=component -count="${COUNT:-1}" -v ./tests/component/repository
+  echo "component_repository=PASS"
+}
+
 case "$suite" in
   postgres) run_postgres ;;
   runner) run_runner ;;
   artifacts) run_artifacts ;;
+  repository) run_repository ;;
   *)
-    echo "unknown component suite: $suite (known: postgres, runner, artifacts)" >&2
+    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository)" >&2
     exit 2
     ;;
 esac
