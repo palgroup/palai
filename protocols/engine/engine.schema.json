@@ -116,6 +116,23 @@
           }
         }
       }
+    },
+    {
+      "if": {"required": ["type"], "properties": {"type": {"const": "child.request"}}},
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "workspace_mode": {
+                "description": "The workspace a delegated child receives (spec §29.8, §30.5): none = no workspace (the E08 default); read_only = a read-only snapshot of the parent's; isolated = an isolated copy-on-write branch/worktree. The value is declared here in E09 Task 1 (schema-pin) and enforced in Task 6; before E09 it rode the frame Go/Py-only.",
+                "type": "string",
+                "enum": ["none", "read_only", "isolated"]
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }
