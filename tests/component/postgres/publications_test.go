@@ -203,6 +203,45 @@ func TestMarkPublicationPublishedIdempotent(t *testing.T) {
 	}
 }
 
+// TestStaleApprovalHashLeavesPublicationPending proves REP-009 at the store level: an approve whose
+// one-shot request hash does NOT match the pending approval (a head that moved, or an edited request)
+// authorizes nothing — the publication stays pending_approval, never approved. The command still
+// settles, but no stale operation is published.
+func TestStaleApprovalHashLeavesPublicationPending(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, sessionID, runID := seedRun(t, pool)
+	exec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
+	respID := newID("resp")
+	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+		respID, tenant.Organization, tenant.Project, sessionID)
+	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
+
+	pub := requestPushPublication(t, cs, tenant, sessionID, runID, "abc123")
+	// The approve command is legitimately queued (a pending approval exists), but it carries a STALE
+	// request hash — the head moved after the request, so a new tool call would carry a new hash.
+	approveCmd := coordinator.CommandInput{CommandID: newID("cmd"), Kind: "approve", Payload: approvePayload("req_stale_mismatch")}
+	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, approveCmd); err != nil {
+		t.Fatalf("AcceptCommand(approve) error = %v", err)
+	}
+	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", "req_stale_mismatch"); err != nil {
+		t.Fatalf("ApplyApprovalDecision(stale hash) error = %v", err)
+	}
+
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, pub.ID).Scan(&state); err != nil {
+		t.Fatalf("read publication state error = %v", err)
+	}
+	if state != "pending_approval" {
+		t.Fatalf("publication state after stale approve = %q, want pending_approval (a stale hash authorizes nothing, REP-009)", state)
+	}
+	approved, _ := cs.ApprovedPublicationsForRun(ctx, tenant, runID)
+	if len(approved) != 0 {
+		t.Fatalf("approved publications after stale approve = %d, want 0", len(approved))
+	}
+}
+
 // requestPushPublication records a pending push publication for the run and returns its projection.
 func requestPushPublication(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, sessionID, runID, head string) coordinator.Publication {
 	t.Helper()

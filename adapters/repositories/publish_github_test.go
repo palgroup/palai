@@ -37,7 +37,9 @@ func TestGitHubPRClientFindBeforeCreate(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(out)
 		// Open: create exactly one PR and remember it so a later Find returns it.
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls"):
-			var body struct{ Draft bool `json:"draft"` }
+			var body struct {
+				Draft bool `json:"draft"`
+			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			sawDraft = body.Draft
 			opens++

@@ -43,9 +43,11 @@ CREATE TABLE IF NOT EXISTS publications (
     display TEXT NOT NULL DEFAULT '',
     args JSONB NOT NULL DEFAULT '{}',
     -- The publication lifecycle (§30.8-30.12): pending_approval -> approved (approve) -> published
-    -- (push.completed / pull_request.opened); or -> denied / -> expired. `approved` is NON-terminal and
-    -- retry-safe: a failed publish leaves it approved so the next drive re-reconciles (REP-007) — the
-    -- E10 detached-execution re-drive needs zero rework. There is no `failed` terminal by design.
+    -- (push.completed / pull_request.opened); or -> denied. `approved` is NON-terminal and retry-safe: a
+    -- failed publish leaves it approved so the next drive re-reconciles (REP-007) — the E10
+    -- detached-execution re-drive needs zero rework. There is no `failed` terminal by design.
+    -- `expired` is a forward-declaration: E09 sets no expiry (expires_at is always NULL) and never emits
+    -- approval.expired.v1 — the minutes-scale expiry (spec §22.4) lands with its enforcement in E10.
     state TEXT NOT NULL DEFAULT 'pending_approval'
         CHECK (state IN ('pending_approval', 'approved', 'published', 'denied', 'expired')),
     -- The external receipt once published (spec §30.9-30.10): the remote SHA for a push, the PR id/URL

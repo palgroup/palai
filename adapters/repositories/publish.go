@@ -30,7 +30,6 @@ type PublishOperation string
 const (
 	OpPushBranch      PublishOperation = "push_branch"
 	OpOpenPullRequest PublishOperation = "open_pull_request"
-	OpMerge           PublishOperation = "merge"
 )
 
 // ErrProtectedBranch is returned when a push targets a protected or default branch without an explicit
@@ -53,7 +52,7 @@ func IdempotencyKey(org, project, runID string, op PublishOperation, remote, bra
 	switch op {
 	case OpOpenPullRequest:
 		parts = []string{org, project, runID, string(op), remote, branch, base}
-	default: // push_branch, merge: the exact head is part of the operation identity
+	default: // push_branch: the exact head is part of the operation identity
 		parts = []string{org, project, runID, string(op), remote, branch, base, headSHA}
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
@@ -69,27 +68,6 @@ func IdempotencyKey(org, project, runID string, op PublishOperation, remote, bra
 func RequestHash(org, project, runID string, op PublishOperation, remote, branch, base, headSHA string) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{org, project, runID, string(op), remote, branch, base, headSHA}, "\x00")))
 	return "req_" + hex.EncodeToString(sum[:16])
-}
-
-// ApprovalMatchesHead reports whether an approval granted for approvedHead still authorizes the current
-// head (spec §30.11, REP-009): an approval is bound to the exact head it was granted for, so a head
-// that moved after approval makes the approval STALE and the action must be denied. An unknown current
-// head (empty) is never a match — fail closed.
-func ApprovalMatchesHead(approvedHead, currentHead string) bool {
-	return approvedHead != "" && approvedHead == currentHead
-}
-
-// MergeAllowed reports whether merge is permitted by policy (spec §30.8, §30.11). Merge, release, and
-// protected-branch push are EXCLUDED from the ordinary coding set and denied by default; a binding
-// enables merge only by listing it in allowedOperations. So a stale approval can never reach a merge in
-// the default posture (REP-009 belt-and-suspenders on top of ApprovalMatchesHead).
-func MergeAllowed(allowedOperations []string) bool {
-	for _, op := range allowedOperations {
-		if op == string(OpMerge) {
-			return true
-		}
-	}
-	return false
 }
 
 // PushRequest is the infrastructure-owned request to push a branch (spec §30.9). It is not
@@ -166,9 +144,15 @@ func PushBranch(ctx context.Context, broker Broker, req PushRequest) (PushReceip
 	// fast-forward-only without --force, so a diverged remote is rejected rather than overwritten.
 	refspec := req.HeadSHA + ":refs/heads/" + req.Branch
 	if _, perr := gitInConfigEnv(ctx, req.RepoDir, credConfig, nil, "push", "--", req.Remote, refspec); perr != nil {
-		// A non-fast-forward rejection means the remote moved (spec §30.12, REP-010): re-read the remote
-		// to confirm it still holds its diverged commit, and surface a typed divergence — never a force.
-		if after, ok, qerr := RemoteRef(ctx, req.RepoDir, req.Remote, req.Branch, credConfig); qerr == nil && ok && after != req.HeadSHA {
+		// The push was rejected: re-read the remote to distinguish the cases. A concurrent identical push
+		// (or a lost-ack retry) may have landed the SAME head between our reconcile read and our push — the
+		// remote is now at HeadSHA, so this is reconciled, not a failure. A DIFFERENT remote head means it
+		// moved (spec §30.12, REP-010): surface a typed divergence — never a force. Anything else is the
+		// raw push error.
+		if after, ok, qerr := RemoteRef(ctx, req.RepoDir, req.Remote, req.Branch, credConfig); qerr == nil && ok {
+			if after == req.HeadSHA {
+				return PushReceipt{Remote: req.Remote, Branch: req.Branch, RemoteSHA: after, Reconciled: true}, nil
+			}
 			return PushReceipt{}, fmt.Errorf("push %q: %w (remote at %s)", req.Branch, ErrRemoteDiverged, after)
 		}
 		return PushReceipt{}, fmt.Errorf("push %q: %w", req.Branch, perr)

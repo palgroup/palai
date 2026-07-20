@@ -21,6 +21,7 @@ const (
 	approvalDeniedEvent    = "approval.denied.v1"
 	pushCompletedEvent     = "push.completed.v1"
 	pullRequestOpenedEvent = "pull_request.opened.v1"
+	warningRaisedEvent     = "warning.raised.v1"
 )
 
 // PublicationRequest records one decomposed side-effect operation awaiting approval (spec §30.8). The
@@ -285,6 +286,27 @@ func (s *Store) MarkPublicationPublished(ctx context.Context, tenant Tenant, ses
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit mark published: %w", err)
+	}
+	return nil
+}
+
+// RecordPublicationWarning journals a warning.raised.v1 for a publication the approval pump could not
+// publish (spec §30.12, REP-010): a diverged remote or a policy denial the model/user must SEE, rather
+// than an invisible server-log retry. The publication row stays approved (retry-safe), so the warning
+// surfaces the choice (rebase/merge/wait) without silently dropping the operation. detail carries the
+// error text — a brokered credential never reaches git output, so it carries no secret.
+func (s *Store) RecordPublicationWarning(ctx context.Context, tenant Tenant, sessionID, responseID, publicationID, detail string) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin publication warning: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	payload := mustMarshal(map[string]any{"publication_id": publicationID, "detail": detail, "kind": "publication_failed"})
+	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, warningRaisedEvent, payload); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit publication warning: %w", err)
 	}
 	return nil
 }

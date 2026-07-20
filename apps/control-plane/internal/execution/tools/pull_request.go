@@ -13,9 +13,10 @@ import (
 // PullRequestTool is the built-in open-pull-request publication tool (spec §30.10, REP-008). Like the
 // push tool it does NOT act: it records a PENDING publication + approval for a DRAFT pull request from
 // the run's work branch to the binding's base, returning "pending_approval" to the model. The model's
-// proposed title/body are carried (policy-filtered downstream); the head/base are resolved from the
-// binding, not model-supplied. The idempotency key excludes the head, so a duplicate request dedupes to
-// one PR once approved (REP-008).
+// proposed title/body are RECORDED on the publication (args) for a later policy-filtered pass — E09
+// publishes with a deterministic default title/body. The head/base are resolved from the binding, not
+// model-supplied. The idempotency key excludes the head, so a duplicate request dedupes to one PR once
+// approved (REP-008).
 func PullRequestTool() toolbroker.Tool {
 	return toolbroker.Tool{
 		Name: "palai.publish.pull_request",

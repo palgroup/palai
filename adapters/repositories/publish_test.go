@@ -58,32 +58,6 @@ func TestRequestHashBindsHeadForApproval(t *testing.T) {
 	}
 }
 
-// TestApprovalMatchesHeadRejectsMovedHead proves REP-009's staleness rule: an approval granted for one
-// head does not authorize a different (moved) head, and an unknown current head never matches.
-func TestApprovalMatchesHeadRejectsMovedHead(t *testing.T) {
-	if !ApprovalMatchesHead("abc123", "abc123") {
-		t.Fatal("an approval must match its own approved head")
-	}
-	if ApprovalMatchesHead("abc123", "def456") {
-		t.Fatal("a moved head must invalidate the approval (REP-009)")
-	}
-	if ApprovalMatchesHead("abc123", "") || ApprovalMatchesHead("", "abc123") {
-		t.Fatal("an unknown head is never a match")
-	}
-}
-
-// TestMergeDeniedByDefault proves merge is excluded from the ordinary coding set (spec §30.8, §30.11):
-// merge/release/protected-branch push are DENY unless the policy explicitly enables them, so a stale
-// approval can never reach a merge in the default posture (REP-009 belt-and-suspenders).
-func TestMergeDeniedByDefault(t *testing.T) {
-	if MergeAllowed(nil) {
-		t.Fatal("merge must be denied by default (excluded from the ordinary coding set, §30.8)")
-	}
-	if !MergeAllowed([]string{"merge"}) {
-		t.Fatal("merge must be allowed only when the policy explicitly grants it")
-	}
-}
-
 // fakePRClient is a deterministic PullRequestClient: it records opened PRs in memory keyed by
 // (headBranch->base), so Find returns an existing PR and a duplicate Open is caught — the REP-008
 // find-before-create idempotency provable without a real Git provider.
