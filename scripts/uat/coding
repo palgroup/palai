@@ -52,7 +52,16 @@ if [ "$provider" = "provider-one" ]; then
   docker pull --quiet "$shell_ref" >/dev/null
   PALAI_SHELL_IMAGE_ID="$(docker image inspect "$shell_ref" --format '{{.Id}}')"
   export PALAI_SHELL_IMAGE_ID PALAI_UAT_PROVIDER=provider-one
-  # E2E_RUN scopes the responses e2e run to the live journey; scripts/test/e2e provisions the throwaway
-  # Postgres + engine dir the newHarness needs, and the go test child inherits the exported live env.
-  exec env E2E_RUN='TestCodingLiveJourney' TEST=responses COUNT=1 scripts/test/e2e
+  # Live tier 1 — SEAM: TestCodingLiveJourney reuses the responses e2e infra (throwaway Postgres +
+  # reference-engine dir) to drive a real provider + real Git through the real approve->publish path AT
+  # THE SEAM. E2E_RUN scopes the run; the go test child inherits the exported live env.
+  E2E_RUN='TestCodingLiveJourney' TEST=responses COUNT=1 scripts/test/e2e
+  # Live tier 2 — HTTP STACK (E09 T10): TestCodingHTTPStackLiveJourney drives the FULL production journey
+  # over HTTP against the packaged provider-one compose stack — create session -> POST
+  # /v1/repository-bindings -> POST /v1/responses with the `repository` field -> auto-provision -> real
+  # file/shell/commit tool round-trip -> changeset -> approved push (+ PR with a GitHub App). It brings up
+  # its own compose stack (uat build tag), so it runs directly, not through scripts/test/e2e. The compose
+  # control-plane must have the coding env (PALAI_WORKSPACE_ROOT + PALAI_SANDBOX_IMAGE + the repository
+  # broker) configured in deploy/compose; the test skips cleanly if the live Git destination is unset.
+  exec go test -tags uat -count=1 -timeout 30m -run TestCodingHTTPStackLiveJourney ./tests/uat -v
 fi
