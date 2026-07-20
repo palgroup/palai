@@ -1,0 +1,6 @@
+id: REP-011
+name: child-merge-conflict-parent-workspace-consistent
+proof_class: component-real
+provider: fake
+input: "a child worktree whose merge conflicts leaves the parent workspace consistent and surfaces the conflict for explicit resolution"
+expect_status: completed

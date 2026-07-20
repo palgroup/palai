@@ -1,0 +1,6 @@
+id: REP-001
+name: deterministic-clone-at-exact-commit-with-receipt
+proof_class: e2e-deterministic
+provider: fake
+input: "prepare an isolated workspace at an exact commit sha; the model-independent receipt records base commit, tree, and work branch"
+expect_status: completed

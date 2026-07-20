@@ -1,0 +1,6 @@
+id: REP-006
+name: approved-push-lands-exact-commit-once-token-destroyed
+proof_class: external-receipt
+provider: fake
+input: "an approved push writes exactly the approved commit to the agent branch once; the remote ref is the receipt and the scoped credential is destroyed"
+expect_status: completed

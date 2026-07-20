@@ -1,0 +1,6 @@
+id: REP-008
+name: duplicate-pr-request-opens-one-pull-request
+proof_class: external-receipt
+provider: provider-one
+input: "a duplicate open-pull-request request/callback finds the existing PR before creating, so exactly one PR opens with a stable external receipt"
+expect_status: completed

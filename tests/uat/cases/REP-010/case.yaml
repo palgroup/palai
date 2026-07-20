@@ -1,0 +1,6 @@
+id: REP-010
+name: base-movement-refused-no-dropped-remote-changes
+proof_class: external-receipt
+provider: fake
+input: "a push whose remote moved to a non-fast-forward commit is refused (never forced); the out-of-band remote change survives"
+expect_status: completed

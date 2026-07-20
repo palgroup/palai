@@ -1,0 +1,6 @@
+id: REP-005
+name: changeset-compiled-from-tool-ledger-not-model-prose
+proof_class: e2e-deterministic
+provider: fake
+input: "compile a changeset whose file set/patch/test-log derive from the file+shell tool ledger, independent of the model summary"
+expect_status: completed

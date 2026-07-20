@@ -1,0 +1,6 @@
+id: SUB-006
+name: child-isolated-worktree-conflict-aware-merge
+proof_class: live-provider
+provider: provider-one
+input: "a subagent mutates an isolated branch/worktree on a real repo; the merge back into the parent is explicit and conflict-aware"
+expect_status: completed
