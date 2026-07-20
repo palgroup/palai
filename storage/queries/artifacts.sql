@@ -5,11 +5,14 @@
 
 -- InsertArtifact records an immutable artifact row after its bytes are committed to the
 -- object store. object_key names the S3 object; size_bytes/checksum let a later read
--- verify integrity without re-fetching. The row is the durable index; the bytes live in
--- the control-plane-only object store (spec §24 — the engine/runner never see either).
+-- verify integrity without re-fetching. media_type/logical_type classify the object and
+-- provenance links it to its producer (spec §22.6); malware_scan_status carries the scan
+-- outcome ('not_scanned' until a scanner is wired). The row is the durable index; the bytes
+-- live in the control-plane-only object store (spec §24 — the engine/runner never see either).
 -- name: InsertArtifact
-INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes, checksum)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes, checksum,
+    media_type, logical_type, malware_scan_status, provenance)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 
 -- GetArtifact reads an artifact's row within the tenant scope. An unknown or foreign id
 -- returns no row, which the caller renders as a miss (404) — a foreign tenant cannot tell

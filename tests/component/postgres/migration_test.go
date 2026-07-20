@@ -37,6 +37,7 @@ var allTables = []string{
 	"workspaces", "workspace_allocations", "workspace_leases", "workspace_snapshots",
 	"repository_bindings", "preparation_receipts",
 	"merge_records",
+	"changesets", "changeset_findings",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -533,6 +534,48 @@ func TestRecordMergeRoundTrip(t *testing.T) {
 	}
 	if merged || source != childRun || conflicts != `["f.txt"]` {
 		t.Fatalf("merge record = merged:%v source:%s conflicts:%s, want false / %s / [\"f.txt\"]", merged, source, conflicts, childRun)
+	}
+}
+
+// TestChangesetsMigration proves 000010 adds its tables + the richer §22.6 artifact columns
+// idempotently and reverses cleanly (spec §30.6, §22.6; the 000009/000011 re-run-safety pattern).
+func TestChangesetsMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE/ADD COLUMN IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"changesets", "changeset_findings"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after apply, %s is missing", name)
+		}
+	}
+	// The richer §22.6 artifact columns land here (the T2 base row carried only id/object_key/size/checksum).
+	for _, col := range []string{"media_type", "logical_type", "malware_scan_status", "provenance"} {
+		if !columnExists(t, pool, "artifacts", col) {
+			t.Fatalf("after apply, artifacts.%s is missing", col)
+		}
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, name := range []string{"changesets", "changeset_findings"} {
+		if tableExists(t, pool, name) {
+			t.Fatalf("after rollback, %s still exists", name)
+		}
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"changesets", "changeset_findings"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after reapply, %s is missing", name)
+		}
 	}
 }
 

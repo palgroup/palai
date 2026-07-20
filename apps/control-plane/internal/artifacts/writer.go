@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -15,25 +16,37 @@ import (
 
 // Artifact is an immutable, versioned output persisted by the write-path (spec §22.6):
 // the durable row's identity, its object key, and the size/checksum that let a reader
-// verify integrity. The richer §22.6 fields (media type, logical type, malware-scan
-// status, provenance links) arrive with their first producer in T5's changeset path;
-// ponytail: no columns and no struct fields without a writer that fills them.
+// verify integrity, plus the §22.6 classification (media/logical type) its first producer
+// — T5's changeset patch/test-log — now fills.
 type Artifact struct {
-	ID        string
-	RunID     string
-	ObjectKey string
-	SizeBytes int64
-	Checksum  string
+	ID          string
+	RunID       string
+	ObjectKey   string
+	SizeBytes   int64
+	Checksum    string
+	MediaType   string
+	LogicalType string
 }
 
+// notScanned is the honest malware-scan status the write-path records: the §22.6 column
+// exists, but no malware scanner is wired yet, so an artifact is marked not-scanned rather
+// than claiming a clean result. ponytail: wiring a real scanner is a later concern; the
+// column is here so a producer never has to backfill it.
+const notScanned = "not_scanned"
+
 // WriteRequest is one artifact to persist: the verified tenant scope, the run that
-// produced it, and its bytes. Scope comes from the caller's identity, never a body
-// field (spec §39.2), which is why it is passed explicitly.
+// produced it, its bytes, and the §22.6 classification. Scope comes from the caller's
+// identity, never a body field (spec §39.2), which is why it is passed explicitly.
+// MediaType/LogicalType/Provenance are optional — a caller with no classification leaves
+// them zero and the row stores the empty defaults.
 type WriteRequest struct {
 	Organization string
 	Project      string
 	RunID        string
 	Content      []byte
+	MediaType    string         // e.g. text/x-diff, text/plain (§22.6)
+	LogicalType  string         // report/patch/diff/log/test-result (§22.6)
+	Provenance   map[string]any // links back to the producing changeset/run/tool (§22.6)
 }
 
 // Writer persists artifacts: bytes to the object Store, then an index row in Postgres.
@@ -62,11 +75,43 @@ func (w *Writer) Write(ctx context.Context, req WriteRequest) (Artifact, error) 
 	if err != nil {
 		return Artifact{}, err
 	}
+	provenance, err := json.Marshal(provenanceOrEmpty(req.Provenance))
+	if err != nil {
+		return Artifact{}, fmt.Errorf("marshal artifact provenance: %w", err)
+	}
 	if _, err := w.pool.Exec(ctx, storage.Query("InsertArtifact"),
-		id, req.Organization, req.Project, req.RunID, key, size, checksum); err != nil {
+		id, req.Organization, req.Project, req.RunID, key, size, checksum,
+		req.MediaType, req.LogicalType, notScanned, provenance); err != nil {
 		return Artifact{}, fmt.Errorf("record artifact row: %w", err)
 	}
-	return Artifact{ID: id, RunID: req.RunID, ObjectKey: key, SizeBytes: size, Checksum: checksum}, nil
+	return Artifact{
+		ID: id, RunID: req.RunID, ObjectKey: key, SizeBytes: size, Checksum: checksum,
+		MediaType: req.MediaType, LogicalType: req.LogicalType,
+	}, nil
+}
+
+// WriteArtifact is the primitive-arg write the changeset compiler drives through (its
+// execution.ArtifactWriter seam): it persists content with its §22.6 classification and returns the
+// artifact id. Keeping the params primitive lets execution depend on this without importing the
+// artifacts package (the same decoupling retention's ArtifactDeleter uses).
+func (w *Writer) WriteArtifact(ctx context.Context, org, project, runID string, content []byte, mediaType, logicalType string, provenance map[string]any) (string, error) {
+	art, err := w.Write(ctx, WriteRequest{
+		Organization: org, Project: project, RunID: runID, Content: content,
+		MediaType: mediaType, LogicalType: logicalType, Provenance: provenance,
+	})
+	if err != nil {
+		return "", err
+	}
+	return art.ID, nil
+}
+
+// provenanceOrEmpty returns a non-nil provenance map so the JSONB column is a `{}` object
+// rather than SQL null when a caller records no links.
+func provenanceOrEmpty(p map[string]any) map[string]any {
+	if p == nil {
+		return map[string]any{}
+	}
+	return p
 }
 
 // Read resolves an artifact within the tenant scope and returns its row and bytes. found

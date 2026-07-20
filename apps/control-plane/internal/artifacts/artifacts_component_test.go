@@ -16,6 +16,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +26,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 // artifactsHarness is a migrated durable spine plus a bucket-ensured object store and a
@@ -263,6 +267,125 @@ func TestStoreFalsePurgeDeletesArtifactBytes(t *testing.T) {
 	if objectKey != "" || size != 0 {
 		t.Fatalf("artifact row not scrubbed after purge: object_key=%q size=%d", objectKey, size)
 	}
+}
+
+// TestPatchArtifactWrittenToObjectStore proves the changeset write-path CONSUMES T2 (spec §30.6, the
+// first real artifact producer): CompileChangeset compiles a run's file-tool ledger into a changeset,
+// writes the patch + test-log artifacts to the REAL object store with their §22.6 classification, and
+// records the changeset row. The bytes land in SeaweedFS and the rows carry the logical types.
+func TestPatchArtifactWrittenToObjectStore(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+
+	// A real workspace: <root>/repo is a git repo with a base commit and a working-tree edit to diff.
+	root := t.TempDir()
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
+	repoDir := filepath.Join(root, "repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e.test", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e.test")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repoDir, "f.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "f.txt")
+	git("commit", "-q", "-m", "base")
+	base := git("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(repoDir, "added.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	org, project, session, runID := h.seedChangesetRun(t, base)
+	// The file-tool + shell-tool ledger the changeset compiles from.
+	h.exec(t, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, name, arguments, result)
+		VALUES ($1,$2,$3,$4,'palai.workspace.file',$5,$6)`,
+		newID("tc"), org, project, runID,
+		`{"op":"write","path":"repo/added.go","content":"package main\n"}`,
+		`{"path":"repo/added.go","before_hash":"","after_hash":"sha256:aa","created":true}`)
+	h.exec(t, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, name, arguments, result)
+		VALUES ($1,$2,$3,$4,'palai.workspace.shell',$5,$6)`,
+		newID("tc"), org, project, runID,
+		`{"argv":["go","test","./..."]}`, `{"exit_code":0,"stdout":"PASS\n"}`)
+
+	rec, compiled, err := execution.CompileChangeset(ctx, h.repo.Spine(), h.writer, execution.ChangesetInput{
+		Tenant: coordinator.Tenant{Organization: org, Project: project}, SessionID: session, RunID: runID, AllocationRoot: root,
+	})
+	if err != nil || !compiled {
+		t.Fatalf("CompileChangeset() = compiled %v err %v, want compiled", compiled, err)
+	}
+	if rec.PatchArtifactID == "" || rec.TestLogArtifactID == "" {
+		t.Fatalf("record = patch:%q test-log:%q, want both artifact ids", rec.PatchArtifactID, rec.TestLogArtifactID)
+	}
+
+	// The patch artifact: row carries logical_type=patch, and its S3 bytes are the real diff.
+	h.assertArtifact(t, org, project, rec.PatchArtifactID, "patch", "text/x-diff", "added.go")
+	// The test-log artifact: logical_type=test-result, bytes carry the checks transcript.
+	h.assertArtifact(t, org, project, rec.TestLogArtifactID, "test-result", "text/plain", "go test")
+
+	// The changeset row is recorded with its content hash.
+	var contentHash string
+	if err := h.pool.QueryRow(ctx, `SELECT content_hash FROM changesets WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		rec.ID, org, project).Scan(&contentHash); err != nil {
+		t.Fatalf("read changeset row: %v", err)
+	}
+	if contentHash != rec.ContentHash || contentHash == "" {
+		t.Fatalf("changeset row content_hash = %q, want %q", contentHash, rec.ContentHash)
+	}
+}
+
+// assertArtifact checks an artifact's row classification and that its S3 bytes contain want.
+func (h *artifactsHarness) assertArtifact(t *testing.T, org, project, id, wantLogical, wantMedia, wantSubstr string) {
+	t.Helper()
+	var objectKey, logical, media string
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT object_key, logical_type, media_type FROM artifacts WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		id, org, project).Scan(&objectKey, &logical, &media); err != nil {
+		t.Fatalf("read artifact %s row: %v", id, err)
+	}
+	if logical != wantLogical || media != wantMedia {
+		t.Fatalf("artifact %s = logical:%q media:%q, want %q/%q", id, logical, media, wantLogical, wantMedia)
+	}
+	body, found, err := h.s3.Get(context.Background(), objectKey)
+	if err != nil || !found {
+		t.Fatalf("artifact %s bytes absent from object store (found=%v err=%v)", id, found, err)
+	}
+	if !strings.Contains(string(body), wantSubstr) {
+		t.Fatalf("artifact %s bytes = %q, want to contain %q", id, body, wantSubstr)
+	}
+}
+
+// seedChangesetRun creates org -> project -> session -> run, a repository binding, and a preparation
+// receipt pinning base, so CompileChangeset resolves the run's base commit. Returns the scope + ids.
+func (h *artifactsHarness) seedChangesetRun(t *testing.T, base string) (org, project, session, runID string) {
+	t.Helper()
+	org, project = newID("org"), newID("prj")
+	session = newID("ses")
+	runID = newID("run")
+	binding := newID("rbn")
+	h.exec(t, `INSERT INTO organizations (id) VALUES ($1)`, org)
+	h.exec(t, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org)
+	h.exec(t, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, org, project)
+	h.exec(t, `INSERT INTO runs (id, organization_id, project_id, session_id) VALUES ($1, $2, $3, $4)`, runID, org, project, session)
+	h.exec(t, `INSERT INTO repository_bindings (id, organization_id, project_id, provider, repository_identity, clone_url)
+		VALUES ($1,$2,$3,'test','id','file:///tmp/x')`, binding, org, project)
+	h.exec(t, `INSERT INTO preparation_receipts (id, repository_binding_id, organization_id, project_id, run_id, base_commit, tree_hash)
+		VALUES ($1,$2,$3,$4,$5,$6,'sha256:tree')`, newID("prep"), binding, org, project, runID, base)
+	return org, project, session, runID
 }
 
 func envOr(name, def string) string {

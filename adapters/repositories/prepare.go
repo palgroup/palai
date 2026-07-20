@@ -87,7 +87,7 @@ func Prepare(ctx context.Context, broker Broker, req Request) (Result, error) {
 		}
 	}
 	git := func(extraConfig []string, args ...string) (string, error) {
-		return runGit(ctx, req.TargetDir, homeDir, hooksDir, extraConfig, args...)
+		return runGit(ctx, req.TargetDir, homeDir, hooksDir, extraConfig, nil, args...)
 	}
 
 	// Step 3: clean repository init with safe Git configuration (the hardened -c/env carry it).
@@ -228,16 +228,17 @@ func submoduleURLs(gitmodules string) []string {
 }
 
 // runGit runs one Git command under the untrusted-repo-hardened config + environment (spec §30.4).
-// cmd.Env is built from exactly hardenedEnv, so no ambient GIT_CONFIG_* / HOME / netrc can inject a
-// credential helper or a command. Output is captured (never streamed to a terminal), and the token
-// is structurally absent from argv — the credential enters only via the store helper file.
-func runGit(ctx context.Context, dir, homeDir, hooksDir string, extraConfig []string, args ...string) (string, error) {
+// cmd.Env is built from exactly hardenedEnv (plus any caller-supplied extraEnv, e.g. a throwaway
+// GIT_INDEX_FILE), so no ambient GIT_CONFIG_* / HOME / netrc can inject a credential helper or a
+// command. Output is captured (never streamed to a terminal), and the token is structurally absent
+// from argv — the credential enters only via the store helper file.
+func runGit(ctx context.Context, dir, homeDir, hooksDir string, extraConfig, extraEnv []string, args ...string) (string, error) {
 	full := append([]string{}, hardenedConfig(hooksDir)...)
 	full = append(full, extraConfig...)
 	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Dir = dir
-	cmd.Env = hardenedEnv(homeDir)
+	cmd.Env = append(hardenedEnv(homeDir), extraEnv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

@@ -95,6 +95,12 @@ func MergeBranch(ctx context.Context, repoDir, branch string) (MergeResult, erro
 // (hooks disabled, ambient config stripped) using ephemeral empty hooks/home dirs, so a committed
 // hook or ambient config cannot run during a worktree or merge operation.
 func gitIn(ctx context.Context, repoDir string, args ...string) (string, error) {
+	return gitInEnv(ctx, repoDir, nil, args...)
+}
+
+// gitInEnv is gitIn with extra environment (e.g. a throwaway GIT_INDEX_FILE) appended to the hardened
+// env, so a working-tree diff can stage into a scratch index without touching the repo's own index.
+func gitInEnv(ctx context.Context, repoDir string, extraEnv []string, args ...string) (string, error) {
 	scratch, err := os.MkdirTemp("", "palai-git-op-")
 	if err != nil {
 		return "", fmt.Errorf("git op scratch: %w", err)
@@ -108,7 +114,7 @@ func gitIn(ctx context.Context, repoDir string, args ...string) (string, error) 
 	if err := os.MkdirAll(homeDir, 0o700); err != nil {
 		return "", err
 	}
-	return runGit(ctx, repoDir, homeDir, hooksDir, nil, args...)
+	return runGit(ctx, repoDir, homeDir, hooksDir, nil, extraEnv, args...)
 }
 
 // makeTreeReadOnly strips write bits from every file and directory under root except the .git

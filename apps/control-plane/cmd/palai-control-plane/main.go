@@ -66,8 +66,15 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// The S3 artifact store is a single main-level instance shared by its consumers (spec §24 — the
+	// credential lives only here). Today the retention reaper's byte-deleter is the in-binary consumer;
+	// the changeset write-path (spec §30.6) is a composed step the live smoke + coding journey drive
+	// with their own Writer over this same store, and the exact consumer the finalize gate wires once
+	// workspace provisioning lands (repository.go deferral). nil when no PALAI_S3_ENDPOINT is set.
+	artStore := artifactStoreFromEnv(ctx)
+
 	startDispatch(ctx, repo, gateway, supervisor)
-	startRetention(ctx, repo, supervisor)
+	startRetention(ctx, repo, supervisor, artStore)
 
 	log.Printf("palai control-plane listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
@@ -100,6 +107,7 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			toolbroker.ConformanceMathAdd(),
 			tools.FileTool(),
 			tools.ShellTool(),
+			tools.CommitTool(),
 		)
 		orch := execution.NewOrchestrator(repo, gateway, broker, toolBroker)
 		orch.SetModelRoute(route)
@@ -156,13 +164,13 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 // (PALAI_RETENTION_STORE_FALSE_TTL). Unset disables it, so no arbitrary production
 // default is imposed here; UAT and operators set a short TTL to activate reaping (spec
 // §8.3, §20.9). A killed process just misses ticks; the next run resumes the sweep.
-func startRetention(ctx context.Context, repo *store.Store, supervisor *coordinator.Supervisor) {
+func startRetention(ctx context.Context, repo *store.Store, supervisor *coordinator.Supervisor, artStore *artifacts.Store) {
 	ttl := envDuration("PALAI_RETENTION_STORE_FALSE_TTL")
 	if ttl <= 0 {
 		return
 	}
 	reaper := execution.NewReaper(repo, ttl)
-	if artStore := artifactStoreFromEnv(ctx); artStore != nil {
+	if artStore != nil {
 		reaper = reaper.WithArtifactStore(artStore)
 	}
 	go supervisor.Supervise(ctx, "retention-reaper", func(ctx context.Context) error { return reaper.Run(ctx, 30*time.Second) })
@@ -173,9 +181,8 @@ func startRetention(ctx context.Context, repo *store.Store, supervisor *coordina
 // so retention then scrubs only the DB row (the object store is optional in deployments and
 // tests that do not run one). The S3 credential is read here and never leaves the control
 // plane (spec §24): it is redeemed for the object-store client, rides no request the engine
-// or runner sees, and is never logged.
-// ponytail: built inside startRetention because the reaper is its only consumer today; the
-// write-path consumer (T5 changeset artifacts) hoists this to main and shares one store.
+// or runner sees, and is never logged. Called once from main so the store is a single shared
+// instance (the T5 hoist — the retention deleter and the changeset write-path share it).
 func artifactStoreFromEnv(ctx context.Context) *artifacts.Store {
 	endpoint := os.Getenv("PALAI_S3_ENDPOINT")
 	if endpoint == "" {
