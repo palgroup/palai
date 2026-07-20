@@ -311,9 +311,12 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 			// After a model result is committed and delivered, this is a safe boundary
 			// (spec §25.11). When the run continues to another step, drain any queued/steered
 			// messages here so they fold into the NEXT model request — the input boundary
-			// (spec §9.2). A final result has no next step, so nothing is delivered.
+			// (spec §9.2). A final result has no next step, so nothing is delivered. The
+			// just-completed step's model_request_id keys this boundary durably, so a reclaimed
+			// attempt redelivers a message recorded here at the SAME boundary (spec §26.9, T2).
 			if continues {
-				switch err := o.pumpCommands(ctx, st); {
+				boundaryRequestID, _ := frame.Data["model_request_id"].(string)
+				switch err := o.pumpCommands(ctx, st, boundaryRequestID); {
 				case errors.Is(err, errRunPaused):
 					// A pause landed at this boundary: the run is waiting, the attempt ends cleanly
 					// and releases its compute, and resume re-opens a fresh attempt (spec §22.3).

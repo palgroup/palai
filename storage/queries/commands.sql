@@ -152,3 +152,35 @@ WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
   AND state = 'queued' AND delivery = 'interrupt' AND kind IN ('send_message', 'change_config')
 ORDER BY created_at
 LIMIT 1;
+
+-- InsertDeliveredMessage journals a boundary-delivered send_message durable at apply (spec §26.9,
+-- E10 Task 2), in the SAME transaction as command.applied.v1 — so an applied command always has its
+-- delivered-message row (variant-1's "applied lie" is closed). ON CONFLICT DO NOTHING makes it
+-- idempotent: a command applies once (single-winner), so this writes at most one row per command.
+-- name: InsertDeliveredMessage
+INSERT INTO delivered_messages (command_id, organization_id, project_id, run_id, boundary_request_id, applied_sequence)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (organization_id, project_id, command_id) DO NOTHING;
+
+-- MarkDeliveredMessagesFolded advances a run's still-'delivered' rows to 'folded' when a model step
+-- commits (spec §26.9): a message delivered at a prior boundary was folded into the request the
+-- committing step just answered. Runs in CommitModelResult's transaction, so the fold state and the
+-- committed result move together. Idempotent (already-folded rows are untouched).
+-- name: MarkDeliveredMessagesFolded
+UPDATE delivered_messages
+SET fold_state = 'folded', updated_at = clock_timestamp()
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND fold_state = 'delivered';
+
+-- RedeliverBoundaryMessages reads the messages a run recorded at one input boundary, so a fresh
+-- attempt redelivers them at that SAME boundary during reconstruction (spec §26.9). It joins the
+-- command for the content/delivery it references (the row itself keeps no customer content), in
+-- applied_sequence (canonical) order. Both 'delivered' (fold uncommitted — variant-1) and 'folded'
+-- (fold committed — R1) rows are returned: reconstructing the conversation folds the turn at its
+-- original boundary either way (uniform boundary-keyed redelivery).
+-- name: RedeliverBoundaryMessages
+SELECT d.command_id, c.delivery, c.payload, d.applied_sequence, d.fold_state
+FROM delivered_messages d
+JOIN commands c
+  ON c.organization_id = d.organization_id AND c.project_id = d.project_id AND c.id = d.command_id
+WHERE d.run_id = $1 AND d.organization_id = $2 AND d.project_id = $3 AND d.boundary_request_id = $4
+ORDER BY d.applied_sequence;

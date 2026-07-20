@@ -507,7 +507,15 @@ func (s *Store) PendingSessionConfigCommands(ctx context.Context, tenant Tenant,
 // state UPDATE is single-winner (WHERE state='queued'), so a redelivered boundary applies a
 // command exactly once. The caller sends the message.deliver frame only after this commits
 // (commit-before-deliver). A not-queued command returns ErrCommandNotPending.
-func (s *Store) ApplyCommand(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID string) (int64, error) {
+//
+// It is the boundary send_message apply (the only ApplyCommand caller), so it also journals the
+// durable delivered-message row in the SAME transaction (spec §26.9, E10 Task 2): boundaryRequestID
+// is the model_request_id of the step at whose boundary the message is delivered, the key a fresh
+// attempt redelivers it under. command.applied.v1 therefore now means the delivered message is
+// durable, not merely in the engine's memory — the crash-before-fold and pause/resume losses close.
+// The interrupt-path fold (InterruptModelStep) writes no such row; that recovery half is E10 Task 7
+// (ENG-012 outage command ordering), not this boundary path.
+func (s *Store) ApplyCommand(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, boundaryRequestID string) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin apply command: %w", err)
@@ -521,10 +529,49 @@ func (s *Store) ApplyCommand(ctx context.Context, tenant Tenant, sessionID, resp
 	if err != nil {
 		return 0, err
 	}
+	if _, err := tx.Exec(ctx, storage.Query("InsertDeliveredMessage"),
+		commandID, tenant.Organization, tenant.Project, runID, nullableText(boundaryRequestID), seq); err != nil {
+		return 0, fmt.Errorf("record delivered message: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit apply command: %w", err)
 	}
 	return seq, nil
+}
+
+// RedeliveredMessage is a delivered-message row read back for redelivery on a fresh attempt (spec
+// §26.9, E10 Task 2): the command it references, that command's delivery mode and content payload,
+// and the fold state at record time. The orchestrator folds it at the input boundary by re-sending
+// the message.deliver frame.
+type RedeliveredMessage struct {
+	CommandID       string
+	Delivery        string
+	Payload         []byte
+	AppliedSequence int64
+	FoldState       string
+}
+
+// RedeliverBoundaryMessages returns the messages a run recorded at one input boundary, in canonical
+// (applied_sequence) order, so a reconstructing attempt refolds them at that same boundary (spec
+// §26.9). Both delivered and folded rows are returned — reconstruction folds the turn at its
+// original boundary either way. The read is tenant-scoped; a boundary with no recorded message
+// returns no rows.
+func (s *Store) RedeliverBoundaryMessages(ctx context.Context, tenant Tenant, runID, boundaryRequestID string) ([]RedeliveredMessage, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("RedeliverBoundaryMessages"),
+		runID, tenant.Organization, tenant.Project, boundaryRequestID)
+	if err != nil {
+		return nil, fmt.Errorf("read boundary messages: %w", err)
+	}
+	defer rows.Close()
+	var out []RedeliveredMessage
+	for rows.Next() {
+		var m RedeliveredMessage
+		if err := rows.Scan(&m.CommandID, &m.Delivery, &m.Payload, &m.AppliedSequence, &m.FoldState); err != nil {
+			return nil, fmt.Errorf("scan boundary message: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // applyCommandInTx is the single-winner apply shared by the boundary pump (ApplyCommand) and

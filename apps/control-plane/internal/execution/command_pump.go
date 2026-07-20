@@ -46,7 +46,7 @@ var errRunPaused = errors.New("run_paused")
 // by run.start history assembly and re-deliverable on resume. The narrower "applied-undelivered
 // redelivery at attempt start" idea closes only the original: in R1 the message WAS delivered and
 // committed, so there is nothing undelivered to replay — only the durable row restores the lost turn.
-func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState) error {
+func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState, boundaryRequestID string) error {
 	// A pending pause pre-empts the boundary (spec §22.3, SES-009): apply it and stop driving —
 	// every other queued command stays queued for resume to re-deliver (faithful resume). Read
 	// before the delivery set so a pause queued after a message still wins the boundary.
@@ -84,7 +84,7 @@ func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState) error
 			}
 			continue
 		}
-		_, err := o.spine.ApplyCommand(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), cmd.ID)
+		_, err := o.spine.ApplyCommand(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), cmd.ID, boundaryRequestID)
 		if errors.Is(err, coordinator.ErrCommandNotPending) {
 			continue // another boundary already delivered it
 		}
