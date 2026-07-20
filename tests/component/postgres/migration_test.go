@@ -34,6 +34,7 @@ var allTables = []string{
 	"model_connections", "model_routes", "model_route_revisions",
 	"tool_calls",
 	"artifacts",
+	"workspaces", "workspace_allocations", "workspace_leases", "workspace_snapshots",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }

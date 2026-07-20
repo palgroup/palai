@@ -56,6 +56,12 @@ var migrationUp7 string
 //go:embed migrations/000007_child_runs.down.sql
 var migrationDown7 string
 
+//go:embed migrations/000008_workspaces.up.sql
+var migrationUp8 string
+
+//go:embed migrations/000008_workspaces.down.sql
+var migrationDown8 string
+
 //go:embed queries/jobs.sql
 var jobsSQL string
 
@@ -80,19 +86,22 @@ var configSQL string
 //go:embed queries/audit.sql
 var auditSQL string
 
-// MigrationUp is the forward migration chain, applied in version order (000001..000007).
+//go:embed queries/workspaces.sql
+var workspacesSQL string
+
+// MigrationUp is the forward migration chain, applied in version order (000001..000008).
 // Each file is individually idempotent, so the whole chain is safe to re-run.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: each migration drops its added
 // objects before the earlier one drops the tables that carried them.
 func MigrationDown() string {
-	return migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
-var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL, auditSQL)
+var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL)
 
 // Query returns the SQL statement labelled "-- name: <name>" in storage/queries.
 // It panics on an unknown name because query names are compile-time constants.

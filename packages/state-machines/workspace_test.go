@@ -5,6 +5,68 @@ import (
 	"testing"
 )
 
+// TestWorkspaceBindingTransitions walks the WorkspaceBinding lifecycle spine and every side
+// branch (spec §29.7), asserting each command maps to the exact destination and event, and that a
+// few illegal jumps are rejected. The registry-sync (TestEveryTableEventExistsInRegistry) and the
+// random-walk property (TestTerminalMonotonicityUnderRandomCommandSequences) already exercise the
+// table through allTables; this pins the named transitions the same way the run/response SM tests do.
+func TestWorkspaceBindingTransitions(t *testing.T) {
+	legal := []struct {
+		from    WorkspaceState
+		command WorkspaceCommand
+		to      WorkspaceState
+		event   string
+	}{
+		// Provisioning spine: requested → provisioning → preparing → ready → leased → ready.
+		{WorkspaceRequested, WorkspaceCmdProvision, WorkspaceProvisioning, "workspace.provisioning.v1"},
+		{WorkspaceProvisioning, WorkspaceCmdPrepare, WorkspacePreparing, "workspace.preparing.v1"},
+		{WorkspacePreparing, WorkspaceCmdMarkReady, WorkspaceReady, "workspace.ready.v1"},
+		{WorkspaceReady, WorkspaceCmdLease, WorkspaceLeased, "workspace.leased.v1"},
+		{WorkspaceLeased, WorkspaceCmdRelease, WorkspaceReady, "workspace.ready.v1"},
+		// Snapshot cycle off ready.
+		{WorkspaceReady, WorkspaceCmdSnapshot, WorkspaceSnapshotting, "workspace.snapshotting.v1"},
+		{WorkspaceSnapshotting, WorkspaceCmdFinishSnapshot, WorkspaceReady, "workspace.ready.v1"},
+		// Pause/restore branch from preparing and ready.
+		{WorkspacePreparing, WorkspaceCmdPause, WorkspacePaused, "workspace.paused.v1"},
+		{WorkspaceReady, WorkspaceCmdPause, WorkspacePaused, "workspace.paused.v1"},
+		{WorkspacePaused, WorkspaceCmdRestore, WorkspaceRestoring, "workspace.restoring.v1"},
+		{WorkspaceRestoring, WorkspaceCmdMarkReady, WorkspaceReady, "workspace.ready.v1"},
+		// Host loss → recovery → ready or failed.
+		{WorkspaceLeased, WorkspaceCmdLoseHost, WorkspaceHostLost, "workspace.host_lost.v1"},
+		{WorkspaceHostLost, WorkspaceCmdRecover, WorkspaceRecovering, "workspace.recovering.v1"},
+		{WorkspaceRecovering, WorkspaceCmdMarkReady, WorkspaceReady, "workspace.ready.v1"},
+		{WorkspaceRecovering, WorkspaceCmdFail, WorkspaceFailed, "workspace.failed.v1"},
+		// Destruction from ready/paused/failed → destroyed.
+		{WorkspaceReady, WorkspaceCmdDestroy, WorkspaceDestroying, "workspace.destroying.v1"},
+		{WorkspaceDestroying, WorkspaceCmdFinishDestroy, WorkspaceDestroyed, "workspace.destroyed.v1"},
+	}
+	for _, s := range legal {
+		to, event, err := Apply(s.from, s.command, WorkspaceTable)
+		if err != nil {
+			t.Fatalf("Apply(%v, %v): unexpected error: %v", s.from, s.command, err)
+		}
+		if to != s.to || event != s.event {
+			t.Errorf("Apply(%v, %v) = (%v, %q), want (%v, %q)", s.from, s.command, to, event, s.to, s.event)
+		}
+	}
+
+	// A logical workspace cannot lease before it is ready, cannot snapshot while leased, and a
+	// destroyed workspace accepts nothing further.
+	illegal := []struct {
+		from    WorkspaceState
+		command WorkspaceCommand
+	}{
+		{WorkspaceRequested, WorkspaceCmdLease},
+		{WorkspaceLeased, WorkspaceCmdSnapshot},
+		{WorkspaceDestroyed, WorkspaceCmdProvision},
+	}
+	for _, s := range illegal {
+		if _, _, err := Apply(s.from, s.command, WorkspaceTable); !errors.Is(err, ErrInvalidState) {
+			t.Errorf("Apply(%v, %v): got %v, want ErrInvalidState", s.from, s.command, err)
+		}
+	}
+}
+
 func TestWorkspaceLeaseCyclesThroughReadyAndSnapshotting(t *testing.T) {
 	// ready↔leased and ready↔snapshotting both return to ready (spec §29.7).
 	steps := []struct {
