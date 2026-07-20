@@ -160,7 +160,9 @@ VALUES ($1, $2, $3, $4, $5, 'queued', $6);
 -- organization/project, so a purge never crosses a tenant boundary. The data-modifying
 -- CTEs read the victims' pre-purge content (all CTEs share one snapshot), so the
 -- idempotency tombstone fingerprints the outcome before the row is scrubbed. $1 is the
--- TTL in milliseconds, $2 the batch bound.
+-- TTL in milliseconds, $2 the batch bound. It returns one row: the count of purged
+-- responses and the object keys of the artifacts it scrubbed, so the caller can delete
+-- those bytes from the object store after this transaction commits (LP §7.2).
 -- name: PurgeExpiredStoreFalse
 WITH victims AS (
     SELECT id, organization_id, project_id, state, output
@@ -172,6 +174,20 @@ WITH victims AS (
     ORDER BY updated_at
     FOR UPDATE SKIP LOCKED
     LIMIT $2
+),
+-- doomed_artifacts captures the victims' artifact object keys BEFORE purge_artifacts
+-- scrubs object_key to '' in this same statement. Every WITH sub-statement runs on one
+-- snapshot and cannot see another's writes, so this SELECT reads the pre-scrub keys. The
+-- caller deletes these bytes after commit; a scrubbed row no longer names its object, so
+-- surfacing the keys here is the only place the delete target survives.
+doomed_artifacts AS (
+    SELECT a.object_key
+    FROM artifacts a
+    JOIN runs r ON a.run_id = r.id
+    JOIN victims v ON r.response_id = v.id
+    WHERE a.organization_id = v.organization_id
+      AND a.project_id = v.project_id
+      AND a.object_key <> ''
 ),
 tombstone AS (
     UPDATE idempotency_records i
@@ -196,6 +212,8 @@ scrub_events AS (
       AND e.organization_id = v.organization_id
       AND e.project_id = v.project_id
 ),
+-- The row is scrubbed to an empty object_key (the DB index of the bytes is cleared); the
+-- bytes themselves are deleted by the caller from the keys doomed_artifacts surfaced.
 purge_artifacts AS (
     UPDATE artifacts a
     SET size_bytes = 0, object_key = '', checksum = ''
@@ -204,10 +222,16 @@ purge_artifacts AS (
       AND r.response_id = v.id
       AND a.organization_id = v.organization_id
       AND a.project_id = v.project_id
-)
+),
 -- input is NOT NULL, so its customer content is scrubbed to an empty object rather than
 -- nulled; output is nullable and cleared outright.
-UPDATE responses r
-SET input = '{}'::jsonb, output = NULL, purged_at = clock_timestamp()
-FROM victims v
-WHERE r.id = v.id;
+purged AS (
+    UPDATE responses r
+    SET input = '{}'::jsonb, output = NULL, purged_at = clock_timestamp()
+    FROM victims v
+    WHERE r.id = v.id
+    RETURNING r.id
+)
+SELECT
+    (SELECT count(*) FROM purged)::int AS purged_count,
+    coalesce((SELECT array_agg(object_key) FROM doomed_artifacts), ARRAY[]::text[]) AS object_keys;

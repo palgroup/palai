@@ -14,16 +14,28 @@ cd "$root"
 # shellcheck source=scripts/test/runner-engine.sh
 source "$root/scripts/test/runner-engine.sh"
 
-suite="${TEST:-runner}"
+# Default runs the engine-isolation suite and the E09 Task 4 workspace shell-tool suite; select one
+# with TEST=runner or TEST=sandbox.
+suites="${TEST:-runner sandbox}"
 
 run_runner() {
   run_runner_suite security ./tests/security/runner
 }
 
-case "$suite" in
-  runner) run_runner ;;
-  *)
-    echo "unknown security suite: $suite (known: runner)" >&2
-    exit 2
-    ;;
-esac
+# The sandbox suite proves the workspace shell tool's isolation (spec §28.8, SAN-002/004): argv-form,
+# unprivileged uid, no runtime socket, process-group kill on teardown, secret redaction, and metadata
+# egress findings — all inside a real hardened OCI sandbox. It reuses the fixture-engine harness.
+run_sandbox() {
+  run_runner_suite security ./tests/security/sandbox
+}
+
+for suite in $suites; do
+  case "$suite" in
+    runner) run_runner ;;
+    sandbox) run_sandbox ;;
+    *)
+      echo "unknown security suite: $suite (known: runner, sandbox)" >&2
+      exit 2
+      ;;
+  esac
+done

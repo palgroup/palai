@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
@@ -81,6 +82,28 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 		// A non-terminal state that cannot take this command still refreshes the projection below.
 	case err != nil:
 		return err
+	}
+
+	// Compile the run's changeset from the tool ledger while the workspace is still on disk and the
+	// writer lease still held (spec §30.6, E09 Task 10): the changed-file set + patch + test log come
+	// from the file/shell tool_calls the run issued, NOT model prose (REP-005). This is the exact call
+	// the changeset.go deferral named — now auto-invoked. It is a clean no-op when no artifact writer is
+	// wired or the run bound no workspace, and CompileChangeset itself skips a run that prepared no repo.
+	//
+	// A compile error (e.g. an S3 hiccup) is LOGGED, not fatal: the run has already transitioned to its
+	// terminal state above, so failing the attempt would only bail on the already-terminal run on retry
+	// (never recompiling) while dropping the response projection. The changeset is REP-005 evidence
+	// recomputable from the immutable ledger (E10 replay), so a completed run is not blocked on it.
+	if o.artifacts != nil && st.attempt.WorkspaceHostPath != "" {
+		if _, _, err := CompileChangeset(ctx, o.spine, o.artifacts, ChangesetInput{
+			Tenant:         st.tenant,
+			SessionID:      st.sessionID,
+			ResponseID:     st.responseID,
+			RunID:          string(st.attempt.RunID),
+			AllocationRoot: st.attempt.WorkspaceHostPath,
+		}); err != nil {
+			log.Printf("compile changeset for run %s: %v", st.attempt.RunID, err)
+		}
 	}
 
 	output := st.output

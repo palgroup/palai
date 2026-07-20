@@ -234,6 +234,45 @@ func TestRunStartCarriesInputAndHistory(t *testing.T) {
 	}
 }
 
+// TestChildRequestWorkspaceModeEnumPinned pins the child.request workspace_mode enum
+// (none/read_only/isolated) so the workspace a delegated child receives cannot silently drift its
+// shape (spec §29.8, §30.5; LP Task 9 schema-pin pattern). E09 Task 1 declares it in the contract;
+// Task 6 enforces it. Before E09 the field rode the frame Go/Py-only, unpinned.
+func TestChildRequestWorkspaceModeEnumPinned(t *testing.T) {
+	schema := readProtocolSchema(t, "engine/engine.schema.json")
+	data := engineBranchData(t, schema, "child.request")
+
+	props, _ := data["properties"].(map[string]any)
+	mode, ok := props["workspace_mode"].(map[string]any)
+	if !ok {
+		t.Fatal("child.request data.properties is missing workspace_mode")
+	}
+	if mode["type"] != "string" {
+		t.Fatalf("workspace_mode type = %v, want string", mode["type"])
+	}
+	got := schemaStrings(t, mode["enum"])
+	slices.Sort(got)
+	want := []string{"isolated", "none", "read_only"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("workspace_mode enum\n got = %v\nwant = %v", got, want)
+	}
+
+	// The generated envelope round-trips a child.request carrying an isolated workspace mode.
+	f := contracts.EngineFrame{
+		Protocol: "engine.v1",
+		ID:       contracts.FrameID("frm_abc123"),
+		Type:     "child.request",
+		Sequence: 3,
+		Time:     "2026-07-16T12:00:00Z",
+		Data:     map[string]any{"workspace_mode": "isolated"},
+	}
+	var round contracts.EngineFrame
+	roundTrip(t, f, &round)
+	if round.Data["workspace_mode"] != "isolated" {
+		t.Fatalf("round-trip lost workspace_mode: %+v", round.Data)
+	}
+}
+
 func TestRunnerLeaseMessagesRequireFence(t *testing.T) {
 	schema := readProtocolSchema(t, "runner/runner.schema.json")
 

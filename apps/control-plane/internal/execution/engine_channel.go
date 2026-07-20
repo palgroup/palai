@@ -16,6 +16,15 @@ type AttemptDescriptor struct {
 	Fence       uint64
 	ImageDigest string
 	Limits      runner.Limits
+	// WorkspaceHostPath is the host allocation directory this attempt's workspace tools confine to
+	// and the runner bind-mounts to /workspace (spec §29.9). Empty means no workspace bound — the
+	// pre-E09 behaviour. WorkspaceReadOnly binds a child's read-only snapshot (spec §29.8, T6).
+	WorkspaceHostPath string
+	WorkspaceReadOnly bool
+	// WorkspaceUnsafe marks a §30.13 unsafe-local-bind (REP-012): the host path is deliberately
+	// outside the runner's managed allocation root, so the runner skips its containment check. It
+	// defaults false — a normal allocation must sit under the runner's root.
+	WorkspaceUnsafe bool
 }
 
 // EngineChannel is a handshake-complete, single-attempt frame transport. The first

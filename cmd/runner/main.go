@@ -74,6 +74,12 @@ func main() {
 		// Default 1 (LP-0 + existing stacks unchanged); the delegation-capable stack sets 2 so a
 		// run's parent and its inline child each hold an engine on this runner (spec §25.18).
 		Concurrency: envIntDefault("PALAI_RUNNER_CONCURRENCY", 1),
+		// The managed allocation root every leased workspace path must sit under before this runner
+		// bind-mounts it (spec §30.13, carry (b)). Unset disables the check (pre-E09 behaviour).
+		WorkspaceRoot: os.Getenv("PALAI_WORKSPACE_ROOT"),
+		// Opt this runner into honouring a lease's §30.13 unsafe local bind (REP-012). Default off so a
+		// control plane alone cannot make the runner mount an arbitrary host path (§24 trust boundary).
+		AllowUnsafeBind: os.Getenv("PALAI_WORKSPACE_UNSAFE_BIND") == "1",
 	}.Serve(ctx)
 }
 

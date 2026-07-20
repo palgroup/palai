@@ -26,15 +26,72 @@ fi
 
 # Resolve the provider/case to a test package and a single test. Do this before
 # loading the secret so an unknown selector fails without touching the credential.
+# needs_engine=1 marks a case that also drives a real OCI engine container (the workspace-mount
+# smoke), so the harness cross-builds the fixture engine and exports its digest-pinned image ID in
+# addition to loading the credential.
+needs_engine=0
+needs_object_store=0
+needs_shell_image=0
 case "$provider/$case_name" in
   provider-one/text-stream-tool-schema)
     pkg="./tests/live/provider"
     run="TestLiveProviderOneTextStreamToolSchema"
     required_key="OPENAI_API_KEY"
     ;;
+  provider-one/workspace-mount)
+    # E09 Task 1: a real provider run bound to a real workspace allocation; the engine container
+    # sees the real /workspace mount and the seeded file persists (proves the mount, not model
+    # behaviour). Needs both the credential and the fixture engine image.
+    pkg="./tests/live/workspace"
+    run="TestLiveWorkspaceMountRealProviderRun"
+    required_key="OPENAI_API_KEY"
+    needs_engine=1
+    ;;
+  provider-one/subagents-isolated)
+    # E09 Task 6: a real provider round-trip for a parent + a distinct-model child (the config-driven
+    # delegation shape — two real chat-completion ids), plus T6's isolated-worktree + conflict-aware
+    # merge on a REAL git repo (SUB-006 + REP-011). Honest ceiling: workspace provisioning is unwired,
+    # so the provider calls and the worktree are not causally joined — enforcement is proven
+    # deterministically; model-driven spawn is T7, provisioning-into-live-worktree is T9.
+    pkg="./tests/live/subagents"
+    run="TestLiveSubagentIsolatedWorktreeRealProvider"
+    required_key="OPENAI_API_KEY"
+    ;;
+  provider-one/repository-clone)
+    # E09 Task 3: clone a REAL Git repository at an exact commit through the infrastructure-owned
+    # preparation and prove the brokered Git credential is absent from every surface (REP-003 live
+    # half). Gated on PALAI_GIT_REPO; when the GitHub App env is present it mints a REAL installation
+    # token. Honest ceiling: absence is the load-bearing invariant — an absence proof needs no
+    # provider-realness, so this confirms with a REAL token what the deterministic tier proves with
+    # a fake one. No provider completion is required (preparation is infrastructure-owned, §30.3).
+    pkg="./tests/live/repository"
+    run="TestLiveRepositoryCloneCredentialAbsent"
+    required_key="PALAI_GIT_REPO"
+    ;;
+  provider-one/artifact-write)
+    # E09 Task 2: a real provider completion's output is persisted as an artifact to a REAL
+    # SeaweedFS + Postgres, then read back to prove row+bytes+checksum agree (LP §7.2). Needs the
+    # credential and a throwaway object store + database. Honest ceiling: the LIVE element is a
+    # real run writing real bytes to real S3, NOT model reasoning (the artifact tool is T4/T5).
+    pkg="./apps/control-plane/internal/artifacts/live"
+    run="TestLiveArtifactWriteRealProviderRun"
+    required_key="OPENAI_API_KEY"
+    needs_object_store=1
+    ;;
+  provider-one/coding-tools)
+    # E09 Task 4: the FIRST real multi-step tool loop. A real provider is FORCED (tool_choice:
+    # required) to call the file tool then the shell tool; both execute through the production broker
+    # seam — the file tool writes a real workspace, the shell tool reads it back inside a real
+    # hardened OCI sandbox. Needs the credential and a pinned busybox shell image (the fixture engine
+    # is scratch/san-only; a real shell lets the model's argv run). Honest ceiling named in the test.
+    pkg="./apps/control-plane/internal/execution/tools/live"
+    run="TestLiveCodingToolRoundTrip"
+    required_key="OPENAI_API_KEY"
+    needs_shell_image=1
+    ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools" >&2
     exit 2
     ;;
 esac
@@ -52,9 +109,149 @@ if test -z "${!required_key:-}"; then
   exit 1
 fi
 
+# run_live_with_object_store stands up a throwaway Postgres + SeaweedFS (both under one label
+# so the leak check counts them), exports their URLs, and runs the tagged test — which inherits
+# the provider credential loaded above. Only the throwaway pg password rides a docker --env; the
+# provider secret reaches the go test process only, never a container's argv or environment.
+run_live_with_object_store() {
+  local test_pkg="$1" test_run="$2"
+  local pg_image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  # SeaweedFS digest matches ADR-0004 / deploy/compose/compose.yaml.
+  local s3_image="docker.io/chrislusf/seaweedfs@sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6"
+  local label="io.palai.live=artifact-write"
+  local run_id="$$-${RANDOM}"
+  local pg_container="palai-live-artifact-pg-$run_id"
+  local s3_container="palai-live-artifact-s3-$run_id"
+  local volume="palai-live-artifact-pg-$run_id"
+  local password="palai-live-${RANDOM}${RANDOM}"
+
+  count_containers() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_volumes() { docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$pg_container" "$s3_container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+  }
+  local containers_before volumes_before
+  containers_before="$(count_containers)"
+  volumes_before="$(count_volumes)"
+  trap cleanup EXIT
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never --name "$pg_container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 --volume "$volume:/var/lib/postgresql/data" "$pg_image" >/dev/null
+  docker run --detach --pull=never --name "$s3_container" --label "$label" \
+    --publish 127.0.0.1::8333 "$s3_image" server -s3 -dir=/data >/dev/null
+
+  local pg_ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$pg_container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then
+      pg_ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$pg_ready" -ne 1; then
+    docker logs "$pg_container" >&2 || true
+    echo "postgres live-artifact container did not become ready" >&2
+    exit 1
+  fi
+
+  local s3_binding s3_port
+  s3_binding="$(docker port "$s3_container" 8333/tcp)"
+  s3_port="${s3_binding##*:}"
+  local s3_ready=0
+  for _ in $(seq 1 120); do
+    if curl -s -o /dev/null "http://127.0.0.1:$s3_port/"; then
+      s3_ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$s3_ready" -ne 1; then
+    docker logs "$s3_container" >&2 || true
+    echo "seaweedfs live-artifact container did not become ready" >&2
+    exit 1
+  fi
+
+  local pg_binding pg_port url
+  pg_binding="$(docker port "$pg_container" 5432/tcp)"
+  pg_port="${pg_binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$pg_port/palai?sslmode=disable"
+
+  set +e
+  PALAI_COMPONENT_POSTGRES_URL="$url" \
+    PALAI_S3_ENDPOINT="http://127.0.0.1:$s3_port" \
+    PALAI_S3_BUCKET="palai-artifacts-live" \
+    PALAI_S3_ACCESS_KEY="palai" \
+    PALAI_S3_SECRET_KEY="palai" \
+    go test -tags=live -count=1 -run "$test_run" -v "$test_pkg"
+  local status=$?
+  set -e
+  if test "$status" -ne 0; then
+    docker logs "$pg_container" >&2 || true
+    docker logs "$s3_container" >&2 || true
+  fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers)"
+  volumes_after="$(count_volumes)"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "artifact-write live smoke leaked a container or volume" >&2
+    exit 1
+  fi
+  return "$status"
+}
+
+# run_live_with_shell_image pins a busybox shell image (the E09 Task 4 coding-tool smoke needs a real
+# shell so the model's argv runs — the fixture engine is scratch/san-only), exports its immutable
+# daemon-resolved id, runs the tagged test (inheriting the credential loaded above), and verifies no
+# sandbox container leaked. The provider secret reaches only the go test process, never a container.
+run_live_with_shell_image() {
+  local test_pkg="$1" test_run="$2"
+  # Pinned busybox multi-arch manifest digest; the driver verifies the daemon-resolved image id.
+  local shell_ref="busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
+  local label="io.palai.sandbox"
+  docker pull --quiet "$shell_ref" >/dev/null
+  local image_id
+  image_id="$(docker image inspect "$shell_ref" --format '{{.Id}}')"
+  if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "busybox shell image id is not immutable" >&2
+    exit 1
+  fi
+  count_sandboxes() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  local before after
+  before="$(count_sandboxes)"
+  set +e
+  PALAI_SHELL_IMAGE_ID="$image_id" go test -tags=live -count=1 -run "$test_run" -v "$test_pkg"
+  local status=$?
+  set -e
+  after="$(count_sandboxes)"
+  if test "$after" -ne "$before"; then
+    echo "coding-tools live smoke leaked a sandbox container" >&2
+    exit 1
+  fi
+  return "$status"
+}
+
 # The credential travels only in the environment — never in argv (ps-visible) and
 # never in a log. Leak protection is asserted inside the test process by an opaque
 # comparison that never prints the value.
-go test -tags=live -count=1 -run "$run" -v "$pkg"
+if test "$needs_object_store" = 1; then
+  run_live_with_object_store "$pkg" "$run"
+elif test "$needs_shell_image" = 1; then
+  run_live_with_shell_image "$pkg" "$run"
+elif test "$needs_engine" = 1; then
+  # The workspace-mount smoke drives a real, digest-pinned engine container. Reuse the fault/
+  # security fixture-engine harness: it cross-builds the fixture, exports PALAI_RUNNER_ENGINE_IMAGE_ID,
+  # runs the tagged test (inheriting the credential loaded above), and verifies no sandbox leaks.
+  # shellcheck source=scripts/test/runner-engine.sh
+  source "$root/scripts/test/runner-engine.sh"
+  run_runner_suite live "$pkg"
+else
+  go test -tags=live -count=1 -run "$run" -v "$pkg"
+fi
 
 echo "live_${provider//-/_}_${case_name//-/_}=PASS"

@@ -1,0 +1,6 @@
+id: REP-007
+name: lost-push-ack-reconciles-no-duplicate-force
+proof_class: external-receipt
+provider: fake
+input: "a re-driven push whose remote already holds the head reconciles against the remote ref — no duplicate push, no force"
+expect_status: completed

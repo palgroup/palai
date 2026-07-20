@@ -121,12 +121,20 @@ run_runner() {
   run_runner_suite fault ./tests/fault/runner
 }
 
+# The sandbox suite proves the workspace shell tool bounds resource exhaustion with a real memory
+# cgroup: a memory hog is OOM-killed, a neighbour sandbox is intact, and the terminated run records
+# its usage (spec §28.8, SAN-003). It reuses the fixture-engine harness.
+run_sandbox() {
+  run_runner_suite fault ./tests/fault/sandbox
+}
+
 case "$suite" in
   coordinator) run_coordinator ;;
   subagents) run_subagents ;;
   runner) run_runner ;;
+  sandbox) run_sandbox ;;
   *)
-    echo "unknown fault suite: $suite (known: coordinator, subagents, runner)" >&2
+    echo "unknown fault suite: $suite (known: coordinator, subagents, runner, sandbox)" >&2
     exit 2
     ;;
 esac

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/preparation-receipt.json",
+  "title": "PreparationReceipt",
+  "description": "The model-independent provenance an infrastructure-owned deterministic preparation records (spec §30.3 step 10, REP-001): the exact commit the requested ref resolved to, the tree hash of the checked-out worktree, and the generated work branch. Recorded before any model runs a Git command, so a later run can prove the exact tree the engine was handed.",
+  "type": "object",
+  "required": ["base_commit", "tree_hash"],
+  "properties": {
+    "requested_ref": {"type": "string"},
+    "base_commit": {"type": "string"},
+    "tree_hash": {"type": "string"},
+    "branch": {"type": "string"},
+    "prepared_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

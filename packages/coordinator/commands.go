@@ -164,8 +164,17 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 		}
 	} else {
 		reason := rejectionReason(in.Kind, runID)
-		if in.Kind == "change_config" {
+		switch in.Kind {
+		case "change_config":
 			reason, err = changeConfigRejection(ctx, tx, tenant, in.Payload)
+			if err != nil {
+				return Command{}, err
+			}
+		case "approve", "deny":
+			// The E08 devir closes here: approve/deny consult the pending-approval source (the first
+			// source is the push/PR publication). A pending approval keeps the command queued for the
+			// boundary pump; none preserves the E08 no_pending_approval rejection.
+			reason, err = approvalRejection(ctx, tx, tenant, sessionID)
 			if err != nil {
 				return Command{}, err
 			}
@@ -188,9 +197,9 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 }
 
 // rejectionReason returns the typed rejection a command earns at accept time, or nil to keep
-// it queued. approve/deny are unsupported until E09; a send_message needs a live root run.
-// change_config is resolved separately (changeConfigRejection) because its verdict needs the
-// project policy, so it is never routed through this pure switch.
+// it queued. approve/deny carry the no_pending_approval default here but are refined by approvalRejection
+// (it needs the pending-approval source). change_config is resolved separately (changeConfigRejection)
+// because its verdict needs the project policy, so neither is decided by this pure switch alone.
 func rejectionReason(kind, runID string) map[string]any {
 	switch kind {
 	case "approve", "deny":
@@ -241,6 +250,23 @@ func changeConfigRejection(ctx context.Context, tx pgx.Tx, tenant Tenant, payloa
 	}
 	if bad := policy.DeniedTool(req.Tools); bad != "" {
 		return map[string]any{"code": "tool_not_allowed", "detail": "tool " + bad + " is outside the project allowlist"}, nil
+	}
+	return nil, nil
+}
+
+// approvalRejection resolves an approve/deny command's typed rejection at accept, or nil to keep it
+// queued for the boundary pump (spec §22.4-22.5, APV-001). A side-effect tool (push/PR) records a
+// pending publication (RequestPublication); an approve/deny with a pending approval in the session is
+// queued and applied at the next boundary (ApplyApprovalDecision). With NO pending approval it is the
+// E08 no_pending_approval rejection — the closure of the E08 devir, preserving
+// TestApproveWithoutPendingApprovalRejected.
+func approvalRejection(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID string) (map[string]any, error) {
+	var pending bool
+	if err := tx.QueryRow(ctx, storage.Query("SessionHasPendingApproval"), sessionID, tenant.Organization, tenant.Project).Scan(&pending); err != nil {
+		return nil, fmt.Errorf("check pending approval: %w", err)
+	}
+	if !pending {
+		return map[string]any{"code": "no_pending_approval", "detail": "no approval is pending for this session"}, nil
 	}
 	return nil, nil
 }

@@ -1,0 +1,6 @@
+id: APV-001
+name: side-effect-tool-pending-approval-approve-proceeds-deny-blocks
+proof_class: e2e-deterministic
+provider: fake
+input: "a side-effect tool (push/PR) produces a pending approval with the exact operation display; approve proceeds at the boundary, deny blocks, and pending-absent still rejects"
+expect_status: completed

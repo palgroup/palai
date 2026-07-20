@@ -6,6 +6,7 @@
 package tools_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -16,8 +17,8 @@ import (
 
 func TestMathAddProducesStrictSum(t *testing.T) {
 	b := toolbroker.New(toolbroker.ConformanceMathAdd())
-	out, err := b.Execute(contracts.ToolCallID("tcall_add1"), "palai.conformance.math.add",
-		map[string]any{"a": 7, "b": 5}, 1)
+	out, err := b.Execute(context.Background(), contracts.ToolCallID("tcall_add1"), "palai.conformance.math.add",
+		map[string]any{"a": 7, "b": 5}, 1, toolbroker.ExecEnv{})
 	if err != nil {
 		t.Fatalf("execute add: %v", err)
 	}
@@ -52,13 +53,13 @@ func TestSameToolCallIDDoesNotReExecute(t *testing.T) {
 	b := toolbroker.New(add)
 
 	id := contracts.ToolCallID("tcall_dup1")
-	first, err := b.Execute(id, "palai.conformance.math.add", map[string]any{"a": 7, "b": 5}, 1)
+	first, err := b.Execute(context.Background(), id, "palai.conformance.math.add", map[string]any{"a": 7, "b": 5}, 1, toolbroker.ExecEnv{})
 	if err != nil {
 		t.Fatalf("first execute: %v", err)
 	}
 	// A higher fence on the same completed call still replays the cache: completion
 	// wins over a re-lease, so the tool never runs twice.
-	second, err := b.Execute(id, "palai.conformance.math.add", map[string]any{"a": 7, "b": 5}, 2)
+	second, err := b.Execute(context.Background(), id, "palai.conformance.math.add", map[string]any{"a": 7, "b": 5}, 2, toolbroker.ExecEnv{})
 	if err != nil {
 		t.Fatalf("duplicate execute: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestStrictSchemaRejectsBadInput(t *testing.T) {
 		"extra field": {"a": 7, "b": 5, "c": 9},
 	}
 	for name, args := range cases {
-		if _, err := b.Execute(contracts.ToolCallID("tcall_bad"), "palai.conformance.math.add", args, 1); err == nil {
+		if _, err := b.Execute(context.Background(), contracts.ToolCallID("tcall_bad"), "palai.conformance.math.add", args, 1, toolbroker.ExecEnv{}); err == nil {
 			t.Errorf("%s: strict schema accepted invalid input %v", name, args)
 		}
 	}
@@ -114,7 +115,7 @@ func TestOnlyExplicitConformanceToolsAreDiscoverable(t *testing.T) {
 	if b.Discoverable("palai.conformance.fs.delete") {
 		t.Error("an unregistered tool is discoverable")
 	}
-	if _, err := b.Execute(contracts.ToolCallID("tcall_x"), "palai.conformance.fs.delete", nil, 1); !errors.Is(err, toolbroker.ErrUnknownTool) {
+	if _, err := b.Execute(context.Background(), contracts.ToolCallID("tcall_x"), "palai.conformance.fs.delete", nil, 1, toolbroker.ExecEnv{}); !errors.Is(err, toolbroker.ErrUnknownTool) {
 		t.Errorf("executing an unknown tool: got %v, want ErrUnknownTool", err)
 	}
 

@@ -1,0 +1,7 @@
+id: SAN-001
+name: file-tool-denies-workspace-escape
+proof_class: component-real
+provider: fake
+input: "path traversal, an absolute path, and an escaping symlink are all denied outside the allocation root"
+expect_status: completed
+# proof: apps/control-plane/internal/execution/tools/file_test.go:TestFileToolDeniesWorkspaceEscape (real-filesystem confinement, spec §28.7)

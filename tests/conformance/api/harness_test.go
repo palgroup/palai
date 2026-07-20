@@ -119,9 +119,10 @@ func (f *fakeBackend) RecordAttachDenied(context.Context, string, string, string
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	backend := newFakeBackend()
-	// Sessions seam is nil: this Docker-free tier exercises only the response surface, so the
-	// standalone session/command routes stay unmounted here (proven in the e2e responses tier).
-	srv := httptest.NewServer(api.NewRouter(backend, backend, backend, nil, api.SSEConfig{}, nil))
+	// Sessions + bindings seams are nil: this Docker-free tier exercises only the response surface, so
+	// the standalone session/command + repository-binding routes stay unmounted here (proven in the e2e
+	// responses tier).
+	srv := httptest.NewServer(api.NewRouter(backend, backend, backend, nil, nil, api.SSEConfig{}, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }

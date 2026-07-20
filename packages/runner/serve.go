@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +37,17 @@ type ServeConfig struct {
 	// delegating run's parent hold its engine while an inline child dials its own on the same
 	// runner (spec §25.18), instead of deadlocking on a single lease slot.
 	Concurrency int
+	// WorkspaceRoot is the runner's managed allocation root: a lease's workspace host path must sit
+	// under it before the runner bind-mounts it, so a control plane cannot make the runner mount an
+	// arbitrary host path (spec §30.13). A §30.13 unsafe local bind (REP-012) is the only exception,
+	// and only when AllowUnsafeBind is set. Empty disables the under-root check — the pre-E09
+	// behaviour for a runner with no configured workspace root.
+	WorkspaceRoot string
+	// AllowUnsafeBind lets this runner honour a lease's WorkspaceUnsafe flag (a §30.13 direct host
+	// bind mount). Default false: a control plane alone cannot make the runner mount an arbitrary host
+	// path — the runner's OWN operator must opt in (PALAI_WORKSPACE_UNSAFE_BIND=1), preserving the §24
+	// trust boundary between control plane and runner.
+	AllowUnsafeBind bool
 }
 
 // Serve runs the runner's lease loop until ctx is cancelled: it parks for a lease, supervises
@@ -110,7 +123,7 @@ func (cfg ServeConfig) parkLoop(ctx context.Context, mu *sync.Mutex, identity *I
 			}
 			continue
 		}
-		serveLease(ctx, cfg.Supervisor, leaseSession, logf)
+		serveLease(ctx, cfg.Supervisor, leaseSession, cfg.WorkspaceRoot, cfg.AllowUnsafeBind, logf)
 	}
 }
 
@@ -194,10 +207,20 @@ func sleep(ctx context.Context, d time.Duration) error {
 // into the engine and engine frames back to the control plane, then reports lease completion.
 // A lease-scoped context stops the inbound relay goroutine so it never outlives the lease. A
 // failed lease is logged, not fatal, so one bad engine does not end the runner's service.
-func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession *LeaseSession, logf func(string, ...any)) {
+func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession *LeaseSession, allocationRoot string, allowUnsafeBind bool, logf func(string, ...any)) {
 	defer leaseSession.Close()
 	lease := leaseSession.Lease()
 	logf("received lease %s for run %s (fence %d)", lease.LeaseID, lease.RunID, lease.Fence)
+
+	// A normal allocation must sit under the runner's managed root before it is bind-mounted; an
+	// unsafe local bind requires the runner's own opt-in (spec §30.13, §24 boundary). Reject, don't mount.
+	if err := admitWorkspaceMount(lease, allocationRoot, allowUnsafeBind); err != nil {
+		logf("reject lease %s: %v", lease.LeaseID, err)
+		if cerr := leaseSession.Complete(ctx, "failed", ""); cerr != nil {
+			logf("report rejected lease completion for run %s: %v", lease.RunID, cerr)
+		}
+		return
+	}
 
 	leaseCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -225,11 +248,13 @@ func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession 
 	}
 
 	result, streamErr := supervisor.Stream(leaseCtx, EngineRequest{
-		ImageDigest: lease.ImageDigest,
-		RunID:       lease.RunID,
-		AttemptID:   lease.AttemptID,
-		Fence:       lease.Fence,
-		Limits:      lease.Limits,
+		ImageDigest:       lease.ImageDigest,
+		RunID:             lease.RunID,
+		AttemptID:         lease.AttemptID,
+		Fence:             lease.Fence,
+		Limits:            lease.Limits,
+		WorkspaceHostPath: lease.WorkspaceHostPath,
+		WorkspaceReadOnly: lease.WorkspaceReadOnly,
 	}, inbound, sink)
 
 	if err := leaseSession.Complete(ctx, OutcomeClass(streamErr), stderrDigest(result.Stderr)); err != nil {
@@ -241,6 +266,46 @@ func serveLease(ctx context.Context, supervisor *StreamSupervisor, leaseSession 
 		return
 	}
 	logf("engine completed for run %s: %d stdout bytes", lease.RunID, result.StdoutBytes)
+}
+
+// workspaceUnderRoot verifies a lease's workspace host path sits under the runner's managed
+// allocation root before it is bind-mounted, so a compromised or buggy control plane cannot make
+// the runner mount an arbitrary host path such as /etc (spec §30.13, carry (b)). An empty root
+// disables the check (no managed root configured); an empty path is a workspace-less lease. Both the
+// root and the path are symlink-resolved so a symlinked allocation cannot smuggle an out-of-root
+// target past the prefix comparison.
+// admitWorkspaceMount decides whether the runner may bind-mount a lease's workspace. A normal
+// allocation must sit under the runner's managed root, so a control plane cannot make the runner mount
+// an arbitrary host path (spec §30.13). An unsafe local bind (REP-012) is exempt from that check — but
+// ONLY when this runner's operator opted in (allowUnsafeBind), so a control plane alone cannot escalate
+// to an arbitrary host mount across the §24 trust boundary.
+func admitWorkspaceMount(lease Lease, allocationRoot string, allowUnsafeBind bool) error {
+	if lease.WorkspaceUnsafe {
+		if !allowUnsafeBind {
+			return errors.New("unsafe local bind requested but runner has not opted in (PALAI_WORKSPACE_UNSAFE_BIND=1)")
+		}
+		return nil
+	}
+	return workspaceUnderRoot(lease.WorkspaceHostPath, allocationRoot)
+}
+
+func workspaceUnderRoot(path, root string) error {
+	if path == "" || root == "" {
+		return nil
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve runner allocation root: %w", err)
+	}
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("resolve workspace path: %w", err)
+	}
+	rel, err := filepath.Rel(realRoot, realPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("workspace path is outside the runner allocation root")
+	}
+	return nil
 }
 
 // OutcomeClass maps a supervised streaming outcome to the lease.complete outcome class the

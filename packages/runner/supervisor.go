@@ -86,7 +86,18 @@ type EngineRequest struct {
 	Fence       uint64
 	Env         map[string]string
 	Limits      Limits
+	// WorkspaceHostPath, when set, is the host allocation directory bind-mounted to /workspace in
+	// the engine sandbox (spec §29.9). Empty means no workspace — the pre-E09 behaviour. ReadOnly
+	// binds a child's read-only snapshot; a root writer binds read-write (spec §29.8, enforced in
+	// E09 Task 6). The engine never learns the host path (§29.9 — exact host paths are hidden).
+	WorkspaceHostPath string
+	WorkspaceReadOnly bool
 }
+
+// workspaceMountTarget is the fixed in-sandbox mount point for a workspace allocation. The
+// documented logical paths (/workspace/repo, /workspace/scratch, /workspace/artifacts) live
+// beneath it (spec §29.9), laid out on the host allocation directory before the mount.
+const workspaceMountTarget = "/workspace"
 
 func (r EngineRequest) validate() error {
 	if !r.RunID.Valid() || !r.AttemptID.Valid() {
@@ -171,7 +182,7 @@ func (s *Supervisor) Run(ctx context.Context, request EngineRequest) (EngineResu
 // and the wall-time, memory, process, and per-stream output bounds. Sharing it keeps
 // the streaming path's isolation identical to the batch path's.
 func buildSpec(request EngineRequest) oci.ContainerSpec {
-	return oci.ContainerSpec{
+	spec := oci.ContainerSpec{
 		ImageDigest: request.ImageDigest,
 		Env:         buildEnv(request),
 		Labels:      engineLabels(),
@@ -184,6 +195,16 @@ func buildSpec(request EngineRequest) oci.ContainerSpec {
 		MaxStdoutBytes: request.Limits.MaxStdoutBytes,
 		MaxStderrBytes: request.Limits.MaxStderrBytes,
 	}
+	// Attach the workspace allocation to /workspace when the lease carries one. A workspace-less
+	// attempt (every pre-E09 run) mounts nothing and behaves exactly as before.
+	if request.WorkspaceHostPath != "" {
+		spec.Mounts = []oci.Mount{{
+			Source:   request.WorkspaceHostPath,
+			Target:   workspaceMountTarget,
+			ReadOnly: request.WorkspaceReadOnly,
+		}}
+	}
+	return spec
 }
 
 // engineLabels are the leak-accounting labels every engine sandbox carries: the base

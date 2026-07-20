@@ -10,6 +10,7 @@ export type ModelRequestId = string;
 export type OpaqueId = string;
 export type OrganizationId = string;
 export type ProjectId = string;
+export type RepositoryBindingId = string;
 export type RequestId = string;
 export type ResponseId = string;
 export type RunId = string;
@@ -27,6 +28,7 @@ export const modelRequestIdPattern = /^mreq_[A-Za-z0-9_-]+$/;
 export const opaqueIdPattern = /^[a-z][a-z0-9]{1,11}_[A-Za-z0-9_-]+$/;
 export const organizationIdPattern = /^org_[A-Za-z0-9_-]+$/;
 export const projectIdPattern = /^prj_[A-Za-z0-9_-]+$/;
+export const repositoryBindingIdPattern = /^repo_[A-Za-z0-9_-]+$/;
 export const requestIdPattern = /^req_[A-Za-z0-9_-]+$/;
 export const responseIdPattern = /^resp_[A-Za-z0-9_-]+$/;
 export const runIdPattern = /^run_[A-Za-z0-9_-]+$/;
@@ -63,6 +65,9 @@ export function isOrganizationId(value: string): boolean {
 }
 export function isProjectId(value: string): boolean {
   return projectIdPattern.test(value);
+}
+export function isRepositoryBindingId(value: string): boolean {
+  return repositoryBindingIdPattern.test(value);
 }
 export function isRequestId(value: string): boolean {
   return requestIdPattern.test(value);

@@ -7,7 +7,18 @@ set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
 
+# shellcheck source=scripts/test/runner-engine.sh
+source "$root/scripts/test/runner-engine.sh"
+
 suite="${TEST:-postgres}"
+
+# The runner suite proves a real workspace allocation is bind-mounted into a real, digest-pinned
+# engine container (spec §29.9, E09 Task 1). It reuses the fault/security fixture-engine harness,
+# which cross-builds the fixture, exports PALAI_RUNNER_ENGINE_IMAGE_ID, and verifies no sandbox
+# container leaks.
+run_runner() {
+  run_runner_suite component ./tests/component/runner
+}
 
 run_postgres() {
   # Immutable pinned image (matches the postgres-coordinator spike / ADR-0001).
@@ -84,10 +95,135 @@ run_postgres() {
   echo "component_postgres=PASS containers=$containers_after volumes=$volumes_after"
 }
 
+# The artifacts suite proves the S3 write-path (spec §22.6, LP §7.2 object-store carve-out)
+# against a real SeaweedFS plus a real Postgres for the index rows: an artifact PUT records a
+# row + object + checksum, a read is tenant-scoped, and the store:false retention purge deletes
+# the artifact bytes. Both throwaway containers share one label so the leak check counts them.
+run_artifacts() {
+  local pg_image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  # SeaweedFS digest matches ADR-0004 / deploy/compose/compose.yaml (doctor pins the same).
+  local s3_image="docker.io/chrislusf/seaweedfs@sha256:c7d6c721b30ae711db766bbbfd40192776e263d4e51e22f57baef7bef93c12c6"
+  local label="io.palai.component=artifacts"
+  local run_id="$$-${RANDOM}"
+  local pg_container="palai-component-artifacts-pg-$run_id"
+  local s3_container="palai-component-artifacts-s3-$run_id"
+  local volume="palai-component-artifacts-pg-$run_id"
+  # Throwaway local credential, generated per run; never written to a file.
+  local password="palai-component-${RANDOM}${RANDOM}"
+
+  count_containers() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_volumes() { docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$pg_container" "$s3_container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+  }
+
+  local containers_before volumes_before
+  containers_before="$(count_containers)"
+  volumes_before="$(count_volumes)"
+  trap cleanup EXIT
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never \
+    --name "$pg_container" \
+    --label "$label" \
+    --env POSTGRES_DB=palai \
+    --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 \
+    --volume "$volume:/var/lib/postgresql/data" \
+    "$pg_image" >/dev/null
+  # SeaweedFS S3 gateway, anonymous (no configured identities — the doctor ping treats the
+  # credential as immaterial); data lives in the container fs and is dropped on removal.
+  docker run --detach --pull=never \
+    --name "$s3_container" \
+    --label "$label" \
+    --publish 127.0.0.1::8333 \
+    "$s3_image" server -s3 -dir=/data >/dev/null
+
+  local pg_ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$pg_container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then
+      pg_ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$pg_ready" -ne 1; then
+    docker logs "$pg_container" >&2 || true
+    echo "postgres artifacts container did not become ready" >&2
+    exit 1
+  fi
+
+  local s3_binding s3_port
+  s3_binding="$(docker port "$s3_container" 8333/tcp)"
+  s3_port="${s3_binding##*:}"
+  local s3_ready=0
+  for _ in $(seq 1 120); do
+    if curl -s -o /dev/null "http://127.0.0.1:$s3_port/"; then
+      s3_ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$s3_ready" -ne 1; then
+    docker logs "$s3_container" >&2 || true
+    echo "seaweedfs artifacts container did not become ready" >&2
+    exit 1
+  fi
+
+  local pg_binding pg_port url
+  pg_binding="$(docker port "$pg_container" 5432/tcp)"
+  pg_port="${pg_binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$pg_port/palai?sslmode=disable"
+
+  set +e
+  PALAI_COMPONENT_POSTGRES_URL="$url" \
+    PALAI_S3_ENDPOINT="http://127.0.0.1:$s3_port" \
+    PALAI_S3_BUCKET="palai-artifacts-component" \
+    PALAI_S3_ACCESS_KEY="palai" \
+    PALAI_S3_SECRET_KEY="palai" \
+    go test -tags=component -count=1 -v ./apps/control-plane/internal/artifacts
+  local status=$?
+  set -e
+  if test "$status" -ne 0; then
+    docker logs "$pg_container" >&2 || true
+    docker logs "$s3_container" >&2 || true
+  fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers)"
+  volumes_after="$(count_volumes)"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "artifacts component suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then
+    exit "$status"
+  fi
+  echo "component_artifacts=PASS containers=$containers_after volumes=$volumes_after"
+}
+
+# The repository suite proves deterministic preparation (spec §30.3) and untrusted-repo containment
+# (§30.4) against the host's real git — no container: the "real backing service" is git itself. It
+# exercises the exact-commit receipt (REP-001) and the hostile-repo defenses (REP-002).
+run_repository() {
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git is required for the repository component suite" >&2
+    exit 1
+  fi
+  go test -tags=component -count="${COUNT:-1}" -v ./tests/component/repository
+  echo "component_repository=PASS"
+}
+
 case "$suite" in
   postgres) run_postgres ;;
+  runner) run_runner ;;
+  artifacts) run_artifacts ;;
+  repository) run_repository ;;
   *)
-    echo "unknown component suite: $suite (known: postgres)" >&2
+    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository)" >&2
     exit 2
     ;;
 esac

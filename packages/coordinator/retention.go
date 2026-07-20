@@ -19,16 +19,22 @@ const purgeBatch = 100
 // state has aged past ttl, leaving a tombstone (spec §8.3, §20.9). It is the retention
 // sibling of ReclaimExpired: a global maintenance sweep, bounded per call, that never
 // crosses a tenant boundary — every purge join in the query carries the victim's own
-// organization/project. It returns the number of responses purged this pass.
-func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (int, error) {
+// organization/project. It returns the number of responses purged this pass and the
+// object keys of the artifacts it scrubbed, so the caller can delete those bytes from the
+// object store after this transaction has committed (LP §7.2).
+func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (int, []string, error) {
 	if ttl < 0 {
-		return 0, errors.New("retention TTL must not be negative")
+		return 0, nil, errors.New("retention TTL must not be negative")
 	}
-	tag, err := s.pool.Exec(ctx, storage.Query("PurgeExpiredStoreFalse"), ttl.Milliseconds(), purgeBatch)
-	if err != nil {
-		return 0, fmt.Errorf("purge expired store-false responses: %w", err)
+	var (
+		purged     int
+		objectKeys []string
+	)
+	if err := s.pool.QueryRow(ctx, storage.Query("PurgeExpiredStoreFalse"), ttl.Milliseconds(), purgeBatch).
+		Scan(&purged, &objectKeys); err != nil {
+		return 0, nil, fmt.Errorf("purge expired store-false responses: %w", err)
 	}
-	return int(tag.RowsAffected()), nil
+	return purged, objectKeys, nil
 }
 
 // ResponseView is a response's retrievable projection (spec §22.3). Found is false for

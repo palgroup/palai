@@ -16,8 +16,13 @@ import (
 
 	fake "github.com/palgroup/palai/adapters/models/fake"
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
+	"github.com/palgroup/palai/adapters/repositories"
+	"github.com/palgroup/palai/adapters/sandboxes/oci"
+	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/apps/control-plane/api"
+	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
+	tools "github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
@@ -60,12 +65,19 @@ func main() {
 		// (Task 12 binds the local CA and that listener); the public API server carries no
 		// runner routes, so it is passed nil here. The handler is wrapped so `palai doctor`
 		// can surface the supervisor's restart counters over /healthz/supervisor.
-		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, sseConfigFromEnv(), nil), supervisor),
+		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, sseConfigFromEnv(), nil), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	startDispatch(ctx, repo, gateway, supervisor)
-	startRetention(ctx, repo, supervisor)
+	// The S3 artifact store is a single main-level instance shared by its consumers (spec §24 — the
+	// credential lives only here). Today the retention reaper's byte-deleter is the in-binary consumer;
+	// the changeset write-path (spec §30.6) is a composed step the live smoke + coding journey drive
+	// with their own Writer over this same store, and the exact consumer the finalize gate wires once
+	// workspace provisioning lands (repository.go deferral). nil when no PALAI_S3_ENDPOINT is set.
+	artStore := artifactStoreFromEnv(ctx)
+
+	startDispatch(ctx, repo, gateway, supervisor, artStore)
+	startRetention(ctx, repo, supervisor, artStore)
 
 	log.Printf("palai control-plane listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
@@ -79,7 +91,7 @@ func main() {
 // the read-path SSE e2e drives (no broker/engine racing it). A killed worker's lease lapses
 // and its job is reclaimed at a higher fence, so no graceful shutdown is needed.
 // PALAI_DISPATCH_WORKERS sets the worker count (default 1); 0 disables dispatch.
-func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor) {
+func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor, artStore *artifacts.Store) {
 	workers := envIntDefault("PALAI_DISPATCH_WORKERS", 1)
 	if workers <= 0 {
 		return
@@ -90,8 +102,48 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 	handler := execution.AdvanceRun(spine)
 	if gateway != nil {
 		broker, route := modelBrokerFromEnv()
-		orch := execution.NewOrchestrator(repo, gateway, broker, toolbroker.New(toolbroker.ConformanceMathAdd()))
+		// Register the real coding tools alongside the conformance math tool: the workspace file and
+		// shell tools (spec §28.7-28.8) that E09's real tool round-trip dispatches. The file tool
+		// confines to the attempt's workspace; the shell tool runs behind the sandbox shell runner
+		// (injected where a sandbox driver is wired — SetShellRunner; nil fails a shell call cleanly).
+		toolBroker := toolbroker.New(
+			toolbroker.ConformanceMathAdd(),
+			tools.FileTool(),
+			tools.ShellTool(),
+			tools.CommitTool(),
+			tools.PushTool(),
+			tools.PullRequestTool(),
+		)
+		orch := execution.NewOrchestrator(repo, gateway, broker, toolBroker)
 		orch.SetModelRoute(route)
+		// Wire the repository publisher the approval pump publishes through (spec §30.9-30.10), gated on
+		// the GitHub App environment. Absent it, an approved publication waits (the pump is a no-op) — no
+		// push happens without a configured destination. ponytail: the live wave sets the env; the
+		// deterministic tier proves the pump with a fake publisher.
+		if publisher := repositoryPublisherFromEnv(); publisher != nil {
+			orch.SetPublisher(publisher)
+		}
+		// Wire the root run's workspace auto-provisioning + coding-tool sandbox, gated on
+		// PALAI_WORKSPACE_ROOT (spec §29.7-30.3, E09 Task 10). This is what makes a coding session
+		// reachable from a plain HTTP request: the root run clones @ the attached ref under a brokered
+		// credential (CP-side — the model/sandbox never see it, §30.2), the shell tool runs in a
+		// credential-free OCI sandbox, and finalize compiles the changeset into the object store.
+		// Unset ⇒ no coding workspace (a run with a binding gets no mount, the tools fail clean).
+		//
+		// §24 ceiling: the E09 collapsed compose co-locates CP + runner on a SHARED PALAI_WORKSPACE_ROOT,
+		// so the tools run CP-side against the same host allocation the runner bind-mounts. A split
+		// CP≠runner deploy (control plane and runner on different hosts, not sharing a filesystem) needs a
+		// runner-relay seam — the CP-side tool dispatch would ship the file/shell op to the runner that
+		// holds the mount — a NAMED FUTURE split-deploy hardening, not built here.
+		if root := os.Getenv("PALAI_WORKSPACE_ROOT"); root != "" {
+			orch.SetWorkspaceProvisioner(root, repositoryBrokerFromEnv())
+			if artStore != nil {
+				orch.SetChangesetWriter(artifacts.NewWriter(artStore, spine.Pool()))
+			}
+			if shell := shellRunnerFromEnv(); shell != nil {
+				orch.SetShellRunner(shell)
+			}
+		}
 		handler = execution.ExecuteRun(spine, repo, orch)
 	}
 
@@ -141,17 +193,154 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 	return broker, execution.ModelRoute{Provider: "fake", Model: "fake", Secret: modelbroker.SecretRef("fake")}
 }
 
+// repositoryBrokerFromEnv builds the credential broker the root-run clone runs behind (spec §30.2-30.3):
+// the GitHub App broker when the App environment is configured (private repos), else the local broker —
+// filesystem credential helpers for a local/dev Git remote or a public repo. The broker stays CP-side;
+// the minted read credential feeds only a Git credential helper and is revoked after the fetch, so the
+// model and the sandbox never see it. A misconfigured App falls back to the local broker rather than
+// disabling provisioning, so a dev/compose stack still clones its local double.
+func repositoryBrokerFromEnv() repositories.Broker {
+	appID := os.Getenv("PALAI_GITHUB_APP_ID")
+	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
+	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
+	if appID == "" || installID == "" || keyFile == "" {
+		return repositories.NewLocalBroker()
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		log.Printf("repository broker: read app key file: %v (using local broker)", err)
+		return repositories.NewLocalBroker()
+	}
+	cfg := repositories.GitHubAppConfig{AppID: appID, InstallationID: installID, PrivateKeyPEM: keyPEM}
+	if slug := os.Getenv("PALAI_GITHUB_REPO"); strings.IndexByte(slug, '/') > 0 {
+		cfg.Repositories = []string{slug[strings.IndexByte(slug, '/')+1:]}
+	}
+	broker, err := repositories.NewGitHubAppBroker(cfg)
+	if err != nil {
+		log.Printf("repository broker: app broker: %v (using local broker)", err)
+		return repositories.NewLocalBroker()
+	}
+	return broker
+}
+
+// shellRunnerFromEnv builds the credential-free OCI shell sandbox the workspace shell tool runs through
+// (spec §28.8, SAN-002/003/004), gated on PALAI_SANDBOX_IMAGE (the pinned command image) and a working
+// Docker driver. Absent either it returns nil, so a shell tool call fails cleanly (no runner) rather
+// than escaping — the SetShellRunner discipline. The sandbox mounts no credential/DB/S3: the credential
+// broker stays CP-side (§24), so the engine and the sandbox never see cred/DB/S3.
+func shellRunnerFromEnv() toolbroker.ShellRunner {
+	image := os.Getenv("PALAI_SANDBOX_IMAGE")
+	if image == "" {
+		return nil
+	}
+	driver, err := oci.NewDockerDriver()
+	if err != nil {
+		log.Printf("shell sandbox: bind docker driver: %v (shell tool disabled)", err)
+		return nil
+	}
+	limits := oci.Limits{
+		WallTime:        envDuration("PALAI_SANDBOX_WALL_TIME"),
+		MaxMemoryBytes:  int64(envIntDefault("PALAI_SANDBOX_MAX_MEMORY_BYTES", 1<<30)),
+		MaxProcessCount: int64(envIntDefault("PALAI_SANDBOX_MAX_PROCS", 128)),
+		NanoCPUs:        int64(envIntDefault("PALAI_SANDBOX_NANO_CPUS", 1_000_000_000)),
+	}
+	return workspace.NewShellExecutor(driver, image, limits)
+}
+
+// repositoryPublisherFromEnv builds the repository publisher the approval pump publishes through (spec
+// §30.9-30.10), gated on the GitHub App environment. The App private key arrives via the LP-0
+// file-secret bridge (PALAI_GITHUB_APP_PRIVATE_KEY_FILE — a PATH, never inline), sealed at rest by E13;
+// this process only mints short-lived scoped tokens against it and never logs it. Absent any required
+// var it returns nil, so an approved publication simply waits — no push without a configured
+// destination. ponytail: env gating like modelBrokerFromEnv; the live wave sets these, the deterministic
+// tier proves the pump with a fake publisher.
+func repositoryPublisherFromEnv() execution.Publisher {
+	appID := os.Getenv("PALAI_GITHUB_APP_ID")
+	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
+	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
+	if appID == "" || installID == "" || keyFile == "" {
+		return nil
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		log.Printf("repository publisher: read app key file: %v (publication disabled)", err)
+		return nil
+	}
+	owner, repo := "", ""
+	if slug := os.Getenv("PALAI_GITHUB_REPO"); strings.IndexByte(slug, '/') > 0 {
+		i := strings.IndexByte(slug, '/')
+		owner, repo = slug[:i], slug[i+1:]
+	}
+	cfg := repositories.GitHubAppConfig{AppID: appID, InstallationID: installID, PrivateKeyPEM: keyPEM}
+	if repo != "" {
+		cfg.Repositories = []string{repo}
+	}
+	broker, err := repositories.NewGitHubAppBroker(cfg)
+	if err != nil {
+		log.Printf("repository publisher: app broker: %v (publication disabled)", err)
+		return nil
+	}
+	publisher := &execution.RepositoryPublisher{Broker: broker}
+	if owner != "" && repo != "" {
+		if prClient, err := repositories.NewGitHubPullRequestClient(cfg, owner, repo); err != nil {
+			log.Printf("repository publisher: pr client: %v (pull requests disabled)", err)
+		} else {
+			publisher.PRClient = prClient
+		}
+	}
+	return publisher
+}
+
 // startRetention launches the store:false retention reaper when a TTL is configured
 // (PALAI_RETENTION_STORE_FALSE_TTL). Unset disables it, so no arbitrary production
 // default is imposed here; UAT and operators set a short TTL to activate reaping (spec
 // §8.3, §20.9). A killed process just misses ticks; the next run resumes the sweep.
-func startRetention(ctx context.Context, repo *store.Store, supervisor *coordinator.Supervisor) {
+func startRetention(ctx context.Context, repo *store.Store, supervisor *coordinator.Supervisor, artStore *artifacts.Store) {
 	ttl := envDuration("PALAI_RETENTION_STORE_FALSE_TTL")
 	if ttl <= 0 {
 		return
 	}
 	reaper := execution.NewReaper(repo, ttl)
+	if artStore != nil {
+		reaper = reaper.WithArtifactStore(artStore)
+	}
 	go supervisor.Supervise(ctx, "retention-reaper", func(ctx context.Context) error { return reaper.Run(ctx, 30*time.Second) })
+}
+
+// artifactStoreFromEnv builds the control-plane's S3 artifact store from PALAI_S3_* when an
+// endpoint is configured, ensuring its bucket exists; it returns nil when no endpoint is set,
+// so retention then scrubs only the DB row (the object store is optional in deployments and
+// tests that do not run one). The S3 credential is read here and never leaves the control
+// plane (spec §24): it is redeemed for the object-store client, rides no request the engine
+// or runner sees, and is never logged. Called once from main so the store is a single shared
+// instance (the T5 hoist — the retention deleter and the changeset write-path share it).
+func artifactStoreFromEnv(ctx context.Context) *artifacts.Store {
+	endpoint := os.Getenv("PALAI_S3_ENDPOINT")
+	if endpoint == "" {
+		return nil
+	}
+	artStore, err := artifacts.NewStore(artifacts.Config{
+		Endpoint:  endpoint,
+		Bucket:    envDefault("PALAI_S3_BUCKET", "palai-artifacts"),
+		Region:    os.Getenv("PALAI_S3_REGION"),
+		AccessKey: os.Getenv("PALAI_S3_ACCESS_KEY"),
+		SecretKey: os.Getenv("PALAI_S3_SECRET_KEY"),
+	})
+	if err != nil {
+		log.Fatalf("bind artifact store: %v", err)
+	}
+	if err := artStore.EnsureBucket(ctx); err != nil {
+		log.Fatalf("ensure artifact bucket: %v", err)
+	}
+	return artStore
+}
+
+// envDefault reads a string env var, returning def when unset.
+func envDefault(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
 }
 
 // withSupervisorStatus serves GET /healthz/supervisor as the JSON restart-counter snapshot

@@ -336,6 +336,13 @@ func leaseOffer(attempt AttemptDescriptor, now time.Time) ([]byte, error) {
 			"limits":       attempt.Limits,
 		},
 	}
+	// Carry the workspace allocation the runner bind-mounts to /workspace (spec §29.9, FLAG A). Only
+	// when the attempt holds one, so a workspace-less lease is byte-for-byte the pre-E09 offer.
+	if attempt.WorkspaceHostPath != "" {
+		message.Data["workspace_host_path"] = attempt.WorkspaceHostPath
+		message.Data["workspace_read_only"] = attempt.WorkspaceReadOnly
+		message.Data["workspace_unsafe"] = attempt.WorkspaceUnsafe
+	}
 	return json.Marshal(message)
 }
 

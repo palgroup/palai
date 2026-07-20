@@ -10,6 +10,7 @@ package oci
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"regexp"
 	"time"
 )
@@ -22,17 +23,34 @@ var ErrMutableImage = errors.New("engine image must be pinned to an immutable sh
 // engine image reference the driver will run. Mutable tags are rejected.
 var immutableDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
-// Limits are the sandbox resource bounds the driver enforces on the container.
+// Limits are the sandbox resource bounds the driver enforces on the container (spec §28.8, SAN-003).
+// WallTime, MaxMemoryBytes (memory cgroup), MaxProcessCount (pids cgroup), and NanoCPUs (cpu cgroup)
+// are hard kernel-enforced bounds. MaxDiskBytes bounds the container writable layer when the daemon
+// storage driver supports a size quota; it is best-effort and skipped when zero. ponytail: disk quota
+// is unavailable on some daemons (overlay2 without pquota) — memory/pids/cpu are the reliable
+// termination guarantees, disk is the documented ceiling.
 type Limits struct {
 	WallTime        time.Duration
 	MaxMemoryBytes  int64
 	MaxProcessCount int64
 	NanoCPUs        int64
+	MaxDiskBytes    int64
+}
+
+// Mount is a host-directory bind into the sandbox. Source is an opaque host path — never shown
+// to the model, since exact host paths are hidden (spec §29.9); Target is the in-container path
+// (e.g. /workspace). ReadOnly binds a child's read-only snapshot; a root writer binds read-write
+// (spec §29.8). The rest of the rootfs stays read-only; a bind mount is independent of it.
+type Mount struct {
+	Source   string
+	Target   string
+	ReadOnly bool
 }
 
 // ContainerSpec is one engine attempt: the pinned image, the exact environment the
 // container receives (the driver adds nothing — no host inheritance), labels for
-// leak accounting, and the resource and per-stream output bounds.
+// leak accounting, the resource and per-stream output bounds, and any workspace bind
+// mounts the supervisor attaches (spec §29.9). Mounts is empty for a workspace-less run.
 type ContainerSpec struct {
 	ImageDigest    string
 	Env            []string
@@ -40,6 +58,14 @@ type ContainerSpec struct {
 	Limits         Limits
 	MaxStdoutBytes int64
 	MaxStderrBytes int64
+	Mounts         []Mount
+	// Cmd overrides the image command with an explicit argv (spec §28.8 argv-form shell tool). Empty
+	// runs the image's own entrypoint/command — the engine-attempt behaviour. A workspace shell tool
+	// passes the exact argv here; it is never a shell string, so no shell metacharacter is interpreted.
+	Cmd []string
+	// WorkingDir sets the container working directory (spec §28.8 — a shell command runs in the
+	// workspace). Empty keeps the image default; the shell tool sets /workspace.
+	WorkingDir string
 }
 
 // Outcome is the raw result of one sandboxed attempt. Stdout and Stderr are captured
@@ -79,6 +105,11 @@ func (spec ContainerSpec) validate() error {
 	if spec.Limits.WallTime <= 0 || spec.Limits.MaxMemoryBytes <= 0 ||
 		spec.Limits.MaxProcessCount <= 0 || spec.Limits.NanoCPUs <= 0 {
 		return errors.New("all sandbox resource bounds must be positive")
+	}
+	for _, m := range spec.Mounts {
+		if !filepath.IsAbs(m.Source) || !filepath.IsAbs(m.Target) {
+			return errors.New("mount source and target must be absolute paths")
+		}
 	}
 	return nil
 }

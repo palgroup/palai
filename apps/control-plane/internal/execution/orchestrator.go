@@ -15,6 +15,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
@@ -40,6 +41,32 @@ type Orchestrator struct {
 	models *modelbroker.Broker
 	tools  *toolbroker.Broker
 	route  ModelRoute
+	// shell runs argv commands for the workspace shell tool inside the sandbox (spec §28.8). Nil
+	// when no sandbox driver is wired into this control plane — a shell tool call then fails
+	// cleanly rather than escaping. main.go injects it via SetShellRunner where a driver exists.
+	shell toolbroker.ShellRunner
+	// tasks is the durable session-scoped task/todo registry the task/todo tools persist through
+	// (spec §11). It is always the spine (the control plane owns the DB), so it is wired at
+	// construction; a stack opts into the durable primitives by registering the task/todo tools.
+	tasks toolbroker.TaskRegistry
+	// publications is the durable publication registry the push/PR tools record a pending approval
+	// through (spec §30.8). Like tasks it is always the spine (the control plane owns the DB), so it is
+	// wired at construction; a stack opts in by registering the push/PR tools.
+	publications toolbroker.PublicationRegistry
+	// publisher executes approved publications (push branch / open PR) at a safe boundary (spec
+	// §30.9-30.10). Nil disables the approval pump — a stack with no repository publication wired
+	// (every non-publication test) simply never publishes. main.go injects it via SetPublisher.
+	publisher Publisher
+	// provisionRoot + provisionBroker drive the root run's workspace auto-provisioning (spec §29.7-30.3,
+	// E09 Task 10): the host dir allocations are minted under, and the broker the clone's read credential
+	// comes from. Both unset ⇒ no provisioning (a run with a binding gets no workspace, tools fail clean).
+	// main.go injects them env-gated via SetWorkspaceProvisioner.
+	provisionRoot   string
+	provisionBroker repositories.Broker
+	// artifacts is the object-store write-path the finalize changeset compile persists the patch +
+	// test-log through (spec §30.6). Nil ⇒ no changeset is compiled (a stack with no artifact store
+	// wired). main.go injects it via SetChangesetWriter.
+	artifacts ArtifactWriter
 	// DialHandshakeDeadline bounds the dial + engine.ready handshake per attempt. Zero uses
 	// dialHandshakeDeadline; NewOrchestrator sets the default. Tests shorten it.
 	DialHandshakeDeadline time.Duration
@@ -49,13 +76,22 @@ type Orchestrator struct {
 // brokers into one kernel. The model route defaults to the deterministic fake provider;
 // main.go overrides it for a live provider via SetModelRoute.
 func NewOrchestrator(st *store.Store, dialer EngineDialer, models *modelbroker.Broker, tools *toolbroker.Broker) *Orchestrator {
-	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
+	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, tasks: newTaskRegistry(st.Spine()), publications: newPublicationRegistry(st.Spine()), route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
 }
 
 // SetModelRoute points the kernel at a non-default provider/model/secret selected by the
 // composition root (main.go) from the environment. ponytail: a setter, not a model_routes
 // lookup — the DB-backed routing is the deferred E-series carve-out.
 func (o *Orchestrator) SetModelRoute(r ModelRoute) { o.route = r }
+
+// SetShellRunner injects the sandbox shell runner the workspace shell tool executes through. Left
+// unset, a shell tool call fails cleanly (no runner) rather than escaping the sandbox.
+func (o *Orchestrator) SetShellRunner(s toolbroker.ShellRunner) { o.shell = s }
+
+// SetChangesetWriter injects the object-store write-path the finalize changeset compile persists the
+// patch + test-log through (spec §30.6). Left unset, a terminated coding run compiles no changeset —
+// the same discipline as SetPublisher.
+func (o *Orchestrator) SetChangesetWriter(aw ArtifactWriter) { o.artifacts = aw }
 
 // attemptState is the per-attempt working set threaded through the dispatch handlers.
 type attemptState struct {
@@ -82,6 +118,10 @@ type attemptState struct {
 	budgetBounded bool
 	childReserved int
 	childRunIDs   []string
+	// Workspace provisioning state (spec §29.7-29.8, E09 Task 10): the logical workspace the root run
+	// provisioned and its writer lease, released at attempt end. Empty on a run with no attached binding.
+	workspaceID      string
+	workspaceLeaseID string
 }
 
 // budgetRemaining reports the parent budget a child may still intersect against: the total less
@@ -128,6 +168,35 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		}
 	}
 
+	// Read this run's delegation context (spec §25.18): its depth, the required delegations a root
+	// run seeds into run.start, its parent budget children intersect against, and — for a ChildRun
+	// — its own model and budget. A plain run carries none and behaves exactly as before. Read here
+	// (before the dial) because the ROOT-run workspace provisioning below is depth-gated.
+	depth, delegationRaw, err := o.spine.RunDelegation(ctx, string(attempt.RunID))
+	if err != nil {
+		return fmt.Errorf("read run delegation: %w", err)
+	}
+	deleg := parseRunDelegation(delegationRaw)
+
+	// Auto-provision the coding workspace for the ROOT run when the session has an attached binding
+	// (spec §29.7-30.3, E09 Task 10): resolve the binding, allocate the host dir, clone @ the ref under
+	// a brokered credential, acquire the single writer lease, and set the mount BEFORE the engine dials
+	// (the tools and the runner bind-mount need it known at dial time; the lease spans the whole run).
+	// Only the root run (depth 0) provisions + leases — a child (depth>0) already carries the workspace
+	// dispatchChild resolved for it (read-only snapshot / isolated worktree, no second writer lease).
+	// A run with no attachment, or no provisioner wired, gets no workspace — the pre-E09 behaviour.
+	var workspaceID, workspaceLeaseID string
+	if depth == 0 && attempt.WorkspaceHostPath == "" && o.provisionRoot != "" && o.provisionBroker != nil {
+		hostPath, leaseID, wsID, perr := o.provisionRootWorkspace(ctx, tenant, sessionID, string(attempt.RunID), attempt.Fence)
+		if perr != nil {
+			return fmt.Errorf("provision workspace: %w", perr)
+		}
+		attempt.WorkspaceHostPath, workspaceLeaseID, workspaceID = hostPath, leaseID, wsID
+	}
+	// Release the writer lease + return the workspace to ready on EVERY exit (terminal, error, pause):
+	// a fresh attempt (resume) re-leases the same allocation, and edits persist across runs.
+	defer o.releaseWorkspace(tenant, workspaceID, workspaceLeaseID)
+
 	// Bound the dial + engine.ready handshake with an attempt-scoped deadline: a runner that
 	// connects but whose handshake wedges (or a gateway with no available runner) must fail
 	// the attempt — routed through retry / dead-letter — not hang it silently. The deadline
@@ -145,16 +214,9 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	st := &attemptState{
 		attempt: attempt, tenant: tenant, sessionID: sessionID, responseID: responseID,
 		ch: ch, ledger: runner.NewFrameLedger(),
+		workspaceID: workspaceID, workspaceLeaseID: workspaceLeaseID,
 	}
 
-	// Read this run's delegation context (spec §25.18): its depth, the required delegations a root
-	// run seeds into run.start, its parent budget children intersect against, and — for a ChildRun
-	// — its own model and budget. A plain run carries none and behaves exactly as before.
-	depth, delegationRaw, err := o.spine.RunDelegation(ctx, string(attempt.RunID))
-	if err != nil {
-		return fmt.Errorf("read run delegation: %w", err)
-	}
-	deleg := parseRunDelegation(delegationRaw)
 	st.depth = depth
 	if deleg.Spec != nil {
 		st.childModel = deleg.Spec.Model

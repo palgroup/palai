@@ -34,6 +34,12 @@ var allTables = []string{
 	"model_connections", "model_routes", "model_route_revisions",
 	"tool_calls",
 	"artifacts",
+	"workspaces", "workspace_allocations", "workspace_leases", "workspace_snapshots",
+	"repository_bindings", "preparation_receipts",
+	"merge_records",
+	"changesets", "changeset_findings",
+	"tasks",
+	"publications", "approvals",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -436,6 +442,142 @@ func TestLateTerminalCannotOverwriteTerminalRow(t *testing.T) {
 	}
 	if len(proj.Output) != 0 {
 		t.Fatalf("response output after late terminal = %s, want the empty canceled projection (the completed write leaked in)", output)
+	}
+}
+
+// TestRepositoryBindingsMigration proves 000009 adds its two tables idempotently and reverses
+// cleanly: repository_bindings and preparation_receipts exist after apply (a re-apply is a clean
+// no-op), are gone after rollback, and return after reapply (spec §30.1/§30.3; the 000007/000008
+// re-run-safety pattern).
+func TestRepositoryBindingsMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE TABLE IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"repository_bindings", "preparation_receipts"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after apply, %s is missing", name)
+		}
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, name := range []string{"repository_bindings", "preparation_receipts"} {
+		if tableExists(t, pool, name) {
+			t.Fatalf("after rollback, %s still exists", name)
+		}
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"repository_bindings", "preparation_receipts"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after reapply, %s is missing", name)
+		}
+	}
+}
+
+// TestMergeRecordsMigration proves 000011 adds its table idempotently and reverses cleanly (spec
+// §30.5; the 000009 re-run-safety pattern).
+func TestMergeRecordsMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "merge_records") {
+		t.Fatal("after apply, merge_records is missing")
+	}
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if tableExists(t, pool, "merge_records") {
+		t.Fatal("after rollback, merge_records still exists")
+	}
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "merge_records") {
+		t.Fatal("after reapply, merge_records is missing")
+	}
+}
+
+// TestRecordMergeRoundTrip proves an explicit merge outcome is durably recorded with its source
+// child run + conflict paths (spec §30.5, REP-011).
+func TestRecordMergeRoundTrip(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, sessionID, parentRun := seedRun(t, pool)
+	childRun := newID("run")
+	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth) VALUES ($1,$2,$3,$4,'completed',$5,1)`,
+		childRun, tenant.Organization, tenant.Project, sessionID, parentRun)
+
+	if err := cs.RecordMerge(ctx, tenant, coordinator.MergeRecordInput{
+		MergeID: newID("mrg"), ParentRunID: parentRun, SourceChildRunID: childRun,
+		ChildBranch: "agent/ses/run", Merged: false, ConflictPaths: []string{"f.txt"},
+	}); err != nil {
+		t.Fatalf("RecordMerge() error = %v", err)
+	}
+
+	var merged bool
+	var source, conflicts string
+	if err := pool.QueryRow(ctx, `SELECT merged, source_child_run_id, conflict_paths::text FROM merge_records WHERE parent_run_id=$1`, parentRun).
+		Scan(&merged, &source, &conflicts); err != nil {
+		t.Fatalf("read merge record: %v", err)
+	}
+	if merged || source != childRun || conflicts != `["f.txt"]` {
+		t.Fatalf("merge record = merged:%v source:%s conflicts:%s, want false / %s / [\"f.txt\"]", merged, source, conflicts, childRun)
+	}
+}
+
+// TestChangesetsMigration proves 000010 adds its tables + the richer §22.6 artifact columns
+// idempotently and reverses cleanly (spec §30.6, §22.6; the 000009/000011 re-run-safety pattern).
+func TestChangesetsMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE/ADD COLUMN IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"changesets", "changeset_findings"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after apply, %s is missing", name)
+		}
+	}
+	// The richer §22.6 artifact columns land here (the T2 base row carried only id/object_key/size/checksum).
+	for _, col := range []string{"media_type", "logical_type", "malware_scan_status", "provenance"} {
+		if !columnExists(t, pool, "artifacts", col) {
+			t.Fatalf("after apply, artifacts.%s is missing", col)
+		}
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, name := range []string{"changesets", "changeset_findings"} {
+		if tableExists(t, pool, name) {
+			t.Fatalf("after rollback, %s still exists", name)
+		}
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"changesets", "changeset_findings"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after reapply, %s is missing", name)
+		}
 	}
 }
 

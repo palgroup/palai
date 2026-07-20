@@ -1,0 +1,6 @@
+id: REG-001
+name: durable-task-survives-context-reset
+proof_class: e2e-deterministic
+provider: fake
+input: "the model writes a durable session-scoped task through the task tool; the DB-backed row survives a context reset and is read back from durable state"
+expect_status: completed

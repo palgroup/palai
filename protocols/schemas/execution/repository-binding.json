@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/repository-binding.json",
+  "title": "RepositoryBinding",
+  "type": "object",
+  "required": ["id", "object", "provider", "repository_identity", "clone_url", "default_branch"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/repository_binding_id"},
+    "object": {"type": "string", "const": "repository_binding"},
+    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
+    "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
+    "provider": {"type": "string"},
+    "repository_identity": {"type": "string"},
+    "clone_url": {"type": "string"},
+    "default_branch": {"type": "string"},
+    "connection_ref": {"type": "string"},
+    "allowed_operations": {"type": "array", "items": {"type": "string"}},
+    "policy": {"type": "object"},
+    "data_classification": {"type": "string"},
+    "region_constraint": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

@@ -33,6 +33,9 @@ type OrganizationID string
 // ProjectID is an opaque, prefixed, URL-safe identifier (schema $def project_id).
 type ProjectID string
 
+// RepositoryBindingID is an opaque, prefixed, URL-safe identifier (schema $def repository_binding_id).
+type RepositoryBindingID string
+
 // RequestID is an opaque, prefixed, URL-safe identifier (schema $def request_id).
 type RequestID string
 
@@ -52,22 +55,23 @@ type ToolCallID string
 type WorkspaceID string
 
 var (
-	artifactIDPattern     = regexp.MustCompile(`^art_[A-Za-z0-9_-]+$`)
-	attemptIDPattern      = regexp.MustCompile(`^att_[A-Za-z0-9_-]+$`)
-	commandIDPattern      = regexp.MustCompile(`^cmd_[A-Za-z0-9_-]+$`)
-	eventIDPattern        = regexp.MustCompile(`^evt_[A-Za-z0-9_-]+$`)
-	frameIDPattern        = regexp.MustCompile(`^frm_[A-Za-z0-9_-]+$`)
-	messageIDPattern      = regexp.MustCompile(`^msg_[A-Za-z0-9_-]+$`)
-	modelRequestIDPattern = regexp.MustCompile(`^mreq_[A-Za-z0-9_-]+$`)
-	opaqueIDPattern       = regexp.MustCompile(`^[a-z][a-z0-9]{1,11}_[A-Za-z0-9_-]+$`)
-	organizationIDPattern = regexp.MustCompile(`^org_[A-Za-z0-9_-]+$`)
-	projectIDPattern      = regexp.MustCompile(`^prj_[A-Za-z0-9_-]+$`)
-	requestIDPattern      = regexp.MustCompile(`^req_[A-Za-z0-9_-]+$`)
-	responseIDPattern     = regexp.MustCompile(`^resp_[A-Za-z0-9_-]+$`)
-	runIDPattern          = regexp.MustCompile(`^run_[A-Za-z0-9_-]+$`)
-	sessionIDPattern      = regexp.MustCompile(`^ses_[A-Za-z0-9_-]+$`)
-	toolCallIDPattern     = regexp.MustCompile(`^tcall_[A-Za-z0-9_-]+$`)
-	workspaceIDPattern    = regexp.MustCompile(`^wksp_[A-Za-z0-9_-]+$`)
+	artifactIDPattern          = regexp.MustCompile(`^art_[A-Za-z0-9_-]+$`)
+	attemptIDPattern           = regexp.MustCompile(`^att_[A-Za-z0-9_-]+$`)
+	commandIDPattern           = regexp.MustCompile(`^cmd_[A-Za-z0-9_-]+$`)
+	eventIDPattern             = regexp.MustCompile(`^evt_[A-Za-z0-9_-]+$`)
+	frameIDPattern             = regexp.MustCompile(`^frm_[A-Za-z0-9_-]+$`)
+	messageIDPattern           = regexp.MustCompile(`^msg_[A-Za-z0-9_-]+$`)
+	modelRequestIDPattern      = regexp.MustCompile(`^mreq_[A-Za-z0-9_-]+$`)
+	opaqueIDPattern            = regexp.MustCompile(`^[a-z][a-z0-9]{1,11}_[A-Za-z0-9_-]+$`)
+	organizationIDPattern      = regexp.MustCompile(`^org_[A-Za-z0-9_-]+$`)
+	projectIDPattern           = regexp.MustCompile(`^prj_[A-Za-z0-9_-]+$`)
+	repositoryBindingIDPattern = regexp.MustCompile(`^repo_[A-Za-z0-9_-]+$`)
+	requestIDPattern           = regexp.MustCompile(`^req_[A-Za-z0-9_-]+$`)
+	responseIDPattern          = regexp.MustCompile(`^resp_[A-Za-z0-9_-]+$`)
+	runIDPattern               = regexp.MustCompile(`^run_[A-Za-z0-9_-]+$`)
+	sessionIDPattern           = regexp.MustCompile(`^ses_[A-Za-z0-9_-]+$`)
+	toolCallIDPattern          = regexp.MustCompile(`^tcall_[A-Za-z0-9_-]+$`)
+	workspaceIDPattern         = regexp.MustCompile(`^wksp_[A-Za-z0-9_-]+$`)
 )
 
 // Valid reports whether id matches the canonical artifact_id pattern.
@@ -99,6 +103,9 @@ func (id OrganizationID) Valid() bool { return organizationIDPattern.MatchString
 
 // Valid reports whether id matches the canonical project_id pattern.
 func (id ProjectID) Valid() bool { return projectIDPattern.MatchString(string(id)) }
+
+// Valid reports whether id matches the canonical repository_binding_id pattern.
+func (id RepositoryBindingID) Valid() bool { return repositoryBindingIDPattern.MatchString(string(id)) }
 
 // Valid reports whether id matches the canonical request_id pattern.
 func (id RequestID) Valid() bool { return requestIDPattern.MatchString(string(id)) }

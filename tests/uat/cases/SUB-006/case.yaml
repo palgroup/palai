@@ -1,0 +1,10 @@
+id: SUB-006
+name: child-isolated-worktree-conflict-aware-merge
+proof_class: live-provider
+provider: provider-one
+input: "a subagent mutates an isolated branch/worktree on a real repo; the merge back into the parent is explicit and conflict-aware"
+expect_status: completed
+# proof: tests/live/subagents/live_test.go:TestLiveSubagentIsolatedWorktreeRealProvider (real provider + real worktree/merge)
+# ceiling (LP-005/009 pattern): workspace provisioning is unwired, so the real provider calls and the
+# isolated-worktree merge are NOT causally joined — enforcement (isolated branch + conflict-aware merge)
+# is proven on a real repo; provisioning-into-a-live-worktree lands with E09 T10 (execute_run.go descriptor).

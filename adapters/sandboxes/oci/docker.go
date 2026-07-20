@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 )
 
@@ -63,6 +65,25 @@ func (d *dockerDriver) verifyImage(ctx context.Context, digest string) (string, 
 // is otherwise identical, so the batch hardening cannot drift from the streaming one.
 func createOptions(spec ContainerSpec, interactive bool) client.ContainerCreateOptions {
 	processLimit := spec.Limits.MaxProcessCount
+	hostConfig := &container.HostConfig{
+		NetworkMode:    container.NetworkMode("none"),
+		ReadonlyRootfs: true,
+		CapDrop:        []string{"ALL"},
+		SecurityOpt:    []string{"no-new-privileges"},
+		Mounts:         workspaceMounts(spec.Mounts),
+		Resources: container.Resources{
+			Memory:     spec.Limits.MaxMemoryBytes,
+			MemorySwap: spec.Limits.MaxMemoryBytes,
+			NanoCPUs:   spec.Limits.NanoCPUs,
+			PidsLimit:  &processLimit,
+		},
+	}
+	// Bound the writable layer when a disk limit is set and the daemon storage driver supports a
+	// size quota (spec §28.8). Best-effort: a daemon that rejects the option surfaces as a create
+	// error the caller classifies, never a silently unbounded sandbox.
+	if spec.Limits.MaxDiskBytes > 0 {
+		hostConfig.StorageOpt = map[string]string{"size": strconv.FormatInt(spec.Limits.MaxDiskBytes, 10)}
+	}
 	return client.ContainerCreateOptions{
 		Image: spec.ImageDigest,
 		Config: &container.Config{
@@ -75,20 +96,30 @@ func createOptions(spec ContainerSpec, interactive bool) client.ContainerCreateO
 			NetworkDisabled: true,
 			Env:             spec.Env,
 			Labels:          spec.Labels,
+			Cmd:             spec.Cmd,
+			WorkingDir:      spec.WorkingDir,
 		},
-		HostConfig: &container.HostConfig{
-			NetworkMode:    container.NetworkMode("none"),
-			ReadonlyRootfs: true,
-			CapDrop:        []string{"ALL"},
-			SecurityOpt:    []string{"no-new-privileges"},
-			Resources: container.Resources{
-				Memory:     spec.Limits.MaxMemoryBytes,
-				MemorySwap: spec.Limits.MaxMemoryBytes,
-				NanoCPUs:   spec.Limits.NanoCPUs,
-				PidsLimit:  &processLimit,
-			},
-		},
+		HostConfig: hostConfig,
 	}
+}
+
+// workspaceMounts translates the driver's opaque host binds into Moby bind mounts. Only bind
+// mounts are ever attached (no volumes, no host sockets); the read-only rootfs and dropped
+// capabilities are unaffected, so a writable /workspace does not widen the sandbox (spec §29.9).
+func workspaceMounts(specs []Mount) []mount.Mount {
+	if len(specs) == 0 {
+		return nil
+	}
+	mounts := make([]mount.Mount, 0, len(specs))
+	for _, m := range specs {
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   m.Source,
+			Target:   m.Target,
+			ReadOnly: m.ReadOnly,
+		})
+	}
+	return mounts
 }
 
 // Run creates, starts, waits on, and destroys one hardened engine container. It always

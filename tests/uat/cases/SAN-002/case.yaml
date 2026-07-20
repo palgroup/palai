@@ -1,0 +1,7 @@
+id: SAN-002
+name: shell-argv-sandbox-user-limits-process-group-kill
+proof_class: component-real
+provider: fake
+input: "the shell tool runs an explicit argv as an unprivileged user in the hardened OCI sandbox; the process group is killed on teardown"
+expect_status: completed
+# proof: tests/security/sandbox/isolation_test.go:TestShellToolArgvFormSandboxUserLimitsProcessGroupKill (real OCI sandbox, spec §28.8)

@@ -83,7 +83,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	token := newID("e2e-tok")
 	tenant := seedTenantWithKey(t, repo.Spine().Pool(), token)
-	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, repo, api.SSEConfig{}, nil))
+	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, repo, repo, api.SSEConfig{}, nil))
 	t.Cleanup(srv.Close)
 
 	return &harness{
@@ -191,11 +191,17 @@ func (h *harness) newOrchestrator(dialer execution.EngineDialer) *execution.Orch
 // newOrchestratorWithAdapter builds the kernel over a caller-supplied model adapter — the
 // reclaim fault proof swaps in an idempotent, crash-injecting provider.
 func (h *harness) newOrchestratorWithAdapter(dialer execution.EngineDialer, adapter modelbroker.ModelAdapter) *execution.Orchestrator {
+	return h.newOrchestratorWithTools(dialer, adapter)
+}
+
+// newOrchestratorWithTools is newOrchestratorWithAdapter with extra tools registered beyond the
+// conformance math add — a stack opts into the model-facing task/todo/file tools this way.
+func (h *harness) newOrchestratorWithTools(dialer execution.EngineDialer, adapter modelbroker.ModelAdapter, extra ...toolbroker.Tool) *execution.Orchestrator {
 	models := modelbroker.New(modelbroker.Config{
 		Adapters: map[string]modelbroker.ModelAdapter{"fake": adapter},
 		Secrets:  modelbroker.StaticResolver{modelbroker.SecretRef("model"): "unused"},
 	})
-	tools := toolbroker.New(toolbroker.ConformanceMathAdd())
+	tools := toolbroker.New(append([]toolbroker.Tool{toolbroker.ConformanceMathAdd()}, extra...)...)
 	return execution.NewOrchestrator(h.repo, dialer, models, tools)
 }
 

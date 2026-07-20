@@ -5,8 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 
+	"github.com/palgroup/palai/adapters/repositories"
+	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 )
@@ -21,6 +25,77 @@ const (
 	// unbounded subagents.
 	maxChildFanout = 4
 )
+
+// Child workspace modes (spec §29.8, §30.5), pinned in the child.request contract in E09 Task 1 and
+// ENFORCED here (Task 6 — the T1 declare-only debt closes): none = no workspace (the E08 default);
+// read_only = a read-only snapshot (the child cannot mutate it); isolated = an isolated
+// copy-on-write worktree on the child's own branch (mutable, merged back only explicitly).
+const (
+	workspaceModeNone     = "none"
+	workspaceModeReadOnly = "read_only"
+	workspaceModeIsolated = "isolated"
+)
+
+// childWorkspace is the resolved workspace plan a delegated child runs under (spec §30.5). It is what
+// provisioning realizes: read_only → a read-only snapshot (Writable false, denied a writer lease);
+// isolated → a mutable worktree on agent/<session>/<run> (Writable true); none → no workspace.
+type childWorkspace struct {
+	Mode     string
+	Writable bool
+}
+
+// resolveChildWorkspace validates and resolves a child's workspace_mode (spec §30.5). An empty mode
+// is the E08 default (none); an unrecognized value is rejected — the workspace a child receives can
+// never be an unknown mode. The isolated/read_only worktree is REALIZED by realizeChildWorkspace
+// (below) via the repositories worktree mechanics (AddIsolatedWorktree / AddReadOnlyWorktree) when the
+// parent holds a workspace — a child never takes a second writer lease (spec §29.8), it branches the
+// parent's checkout copy-on-write and merges back only explicitly (E09 Task 10 closes the T6 debt).
+func resolveChildWorkspace(mode string) (childWorkspace, bool) {
+	switch mode {
+	case "", workspaceModeNone:
+		return childWorkspace{Mode: workspaceModeNone, Writable: false}, true
+	case workspaceModeReadOnly:
+		return childWorkspace{Mode: workspaceModeReadOnly, Writable: false}, true
+	case workspaceModeIsolated:
+		return childWorkspace{Mode: workspaceModeIsolated, Writable: true}, true
+	default:
+		return childWorkspace{}, false
+	}
+}
+
+// realizeChildWorkspace materializes a delegated child's workspace off the PARENT's checkout (spec
+// §30.5): a copy-on-write git worktree at <parent-allocation>/children/<child>/repo, on the child's own
+// branch (isolated, writable) or detached + write-denied (read_only). It shares the parent's git object
+// store, so there is NO clone and NO second writer lease — the child's edits reach the parent only via an
+// explicit merge (REP-011). It returns the child's allocation root (its tools' WorkspaceRoot; the
+// worktree is its repo dir).
+// ponytail: the worktree is left in place under the parent allocation until the allocation is destroyed
+// (E10) — cheap (shared objects) and each child dir is unique (child run id), so nothing collides.
+// ponytail ceiling: git worktree writes a .git FILE pointing at the parent repo's HOST-ABSOLUTE path
+// (gitdir: <parent>/.git/worktrees/<name>), so raw `git` inside a child SANDBOX with a different mount
+// path cannot resolve it — a split CP≠runner sandbox needs the worktree rebased to the mount path. The
+// CP-side commit tool operates on the host path directly, so it is unaffected here (collapsed compose).
+func (o *Orchestrator) realizeChildWorkspace(ctx context.Context, st *attemptState, childRunID string, ws childWorkspace) (string, error) {
+	parentRepo := filepath.Join(st.attempt.WorkspaceHostPath, workspace.RepoDir)
+	base, _, err := repositories.Head(ctx, parentRepo)
+	if err != nil {
+		return "", err
+	}
+	childRoot := filepath.Join(st.attempt.WorkspaceHostPath, "children", childRunID)
+	if err := os.MkdirAll(childRoot, 0o755); err != nil {
+		return "", err
+	}
+	worktreePath := filepath.Join(childRoot, workspace.RepoDir)
+	if ws.Writable {
+		_, err = repositories.AddIsolatedWorktree(ctx, parentRepo, worktreePath, st.sessionID, childRunID, base)
+	} else {
+		_, err = repositories.AddReadOnlyWorktree(ctx, parentRepo, worktreePath, base)
+	}
+	if err != nil {
+		return "", err
+	}
+	return childRoot, nil
+}
 
 // childSpec is one delegation the engine asked the controller to admit and dispatch — the
 // child.request frame decoded (spec §25.18). Budget is the requested max_total_tokens (0 =
@@ -56,6 +131,11 @@ func admitChild(spec childSpec, parentDepth, fanoutUsed, parentRemaining int, pa
 	}
 	if fanoutUsed >= maxChildFanout {
 		return childAdmission{Denied: true, Reason: "fanout_exceeded"}
+	}
+	// Workspace mode is enforced at the gate: an unrecognized mode is rejected rather than
+	// dispatched with an unknown workspace (spec §30.5; the T1 declare-only enum is enforced here).
+	if _, ok := resolveChildWorkspace(spec.WorkspaceMode); !ok {
+		return childAdmission{Denied: true, Reason: "invalid_workspace_mode"}
 	}
 	if denied := capabilityDeniedTool(spec.Tools, parentTools, policy); denied != "" {
 		return childAdmission{Denied: true, Reason: "capability_denied"}
@@ -134,7 +214,8 @@ func parseRunDelegation(raw []byte) runDelegation {
 }
 
 // emitFrames renders the seeded delegations as the run.start data.delegations the engine emits as
-// child.request frames (the workspace_mode default is carried in the contract, enforced by E09).
+// child.request frames. The workspace_mode default is carried in the contract; admitChild now
+// validates it and resolveChildWorkspace resolves the plan (Task 6).
 func (d runDelegation) emitFrames() []map[string]any {
 	out := make([]map[string]any, 0, len(d.Emit))
 	for _, s := range d.Emit {
@@ -220,13 +301,28 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 	st.childRunIDs = append(st.childRunIDs, childRunID)
 	st.childReserved += admission.EffectiveBudget
 
+	// Realize the child's workspace when it asked for one and the parent holds one (spec §30.5, §29.8):
+	// a copy-on-write worktree off the parent's checkout — isolated (writable, own branch) or read_only
+	// (write-denied snapshot) — set on the child's descriptor so its file/shell tools confine to it. The
+	// child never takes a writer lease: ExecuteAttempt's root-only (depth 0) provisioning gate skips a
+	// depth-1 child, and the worktree shares the parent's object store without a second single-writer slot.
+	childDesc := AttemptDescriptor{
+		RunID: contracts.RunID(childRunID), AttemptID: newAttemptID(), Fence: st.attempt.Fence,
+		ImageDigest: st.attempt.ImageDigest, Limits: defaultAttemptLimits,
+	}
+	childWS, _ := resolveChildWorkspace(spec.WorkspaceMode) // admitChild already validated the mode
+	if childWS.Mode != workspaceModeNone && st.attempt.WorkspaceHostPath != "" {
+		hostPath, err := o.realizeChildWorkspace(ctx, st, childRunID, childWS)
+		if err != nil {
+			return err
+		}
+		childDesc.WorkspaceHostPath, childDesc.WorkspaceReadOnly = hostPath, !childWS.Writable
+	}
+
 	// Run the child inline on the existing execution path. A child error (its own dial/loop
 	// failure) is not the parent's — the child run row is authoritative, so we read its committed
 	// outcome regardless and report it to the engine, which decides required-vs-optional.
-	_ = o.ExecuteAttempt(ctx, AttemptDescriptor{
-		RunID: contracts.RunID(childRunID), AttemptID: newAttemptID(), Fence: st.attempt.Fence,
-		ImageDigest: st.attempt.ImageDigest, Limits: defaultAttemptLimits,
-	})
+	_ = o.ExecuteAttempt(ctx, childDesc)
 
 	runState, output, err := o.spine.ChildRunOutcome(ctx, st.tenant, childRunID)
 	if err != nil {

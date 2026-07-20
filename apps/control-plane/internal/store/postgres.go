@@ -73,33 +73,36 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 	adm, err := s.spine.AdmitResponse(ctx,
 		coordinator.Tenant{Organization: req.Scope.Organization, Project: req.Scope.Project},
 		coordinator.AdmissionInput{
-			Principal:          req.Scope.Principal,
-			IdempotencyKey:     req.IdempotencyKey,
-			Method:             req.Method,
-			Route:              req.Route,
-			RequestHash:        req.RequestHash,
-			ResponseID:         req.ResponseID,
-			RunID:              req.RunID,
-			SessionID:          req.SessionID,
-			RequestedSessionID: req.RequestedSessionID,
-			PreviousResponseID: req.PreviousResponseID,
-			Input:              req.Input,
-			Body:               req.Body,
-			Store:              req.Store,
-			Delegations:        req.Delegations,
+			Principal:           req.Scope.Principal,
+			IdempotencyKey:      req.IdempotencyKey,
+			Method:              req.Method,
+			Route:               req.Route,
+			RequestHash:         req.RequestHash,
+			ResponseID:          req.ResponseID,
+			RunID:               req.RunID,
+			SessionID:           req.SessionID,
+			RequestedSessionID:  req.RequestedSessionID,
+			PreviousResponseID:  req.PreviousResponseID,
+			Input:               req.Input,
+			Body:                req.Body,
+			Store:               req.Store,
+			Delegations:         req.Delegations,
+			RepositoryBindingID: req.RepositoryBindingID,
+			RepositoryRef:       req.RepositoryRef,
 		})
 	if err != nil {
 		return api.AdmitResult{}, err
 	}
 	result := api.AdmitResult{
-		ResponseID:        responseID(adm.Body),
-		Body:              adm.Body,
-		Replayed:          adm.Replayed,
-		Conflict:          adm.Conflict,
-		Purged:            adm.Purged,
-		SessionNotFound:   adm.SessionNotFound,
-		SessionConflict:   adm.SessionConflict,
-		ActiveRunConflict: adm.ActiveRunConflict,
+		ResponseID:                responseID(adm.Body),
+		Body:                      adm.Body,
+		Replayed:                  adm.Replayed,
+		Conflict:                  adm.Conflict,
+		Purged:                    adm.Purged,
+		SessionNotFound:           adm.SessionNotFound,
+		SessionConflict:           adm.SessionConflict,
+		ActiveRunConflict:         adm.ActiveRunConflict,
+		RepositoryBindingNotFound: adm.RepositoryBindingNotFound,
 	}
 	// On a purged replay the body is gone; the tombstone identity is the resource id.
 	if adm.Purged {
@@ -253,6 +256,44 @@ func (s *Store) GetSession(ctx context.Context, scope middleware.Scope, id strin
 	return api.SessionResult{Body: body, Found: true}, nil
 }
 
+// CreateRepositoryBinding registers a repository binding within the request's verified scope (spec
+// §30.1). The id is minted here (one place mints binding ids); the coordinator inserts it and the
+// read-back renders the resource the handler returns. A missing required field is a 400 (Invalid),
+// resolved before any write so a malformed request persists nothing.
+func (s *Store) CreateRepositoryBinding(ctx context.Context, scope middleware.Scope, req api.RepositoryBindingCreate) (api.BindingResult, error) {
+	if req.Provider == "" || req.RepositoryIdentity == "" || req.CloneURL == "" {
+		return api.BindingResult{Invalid: true}, nil
+	}
+	tenant := tenantOf(scope)
+	bindingID := middleware.NewID("repo")
+	if err := s.spine.CreateRepositoryBinding(ctx, tenant, coordinator.RepositoryBindingInput{
+		BindingID:          bindingID,
+		Provider:           req.Provider,
+		RepositoryIdentity: req.RepositoryIdentity,
+		CloneURL:           req.CloneURL,
+		DefaultBranch:      req.DefaultBranch,
+		ConnectionRef:      req.ConnectionRef,
+		AllowedOperations:  req.AllowedOperations,
+		Policy:             req.Policy,
+		DataClassification: req.DataClassification,
+		RegionConstraint:   req.RegionConstraint,
+	}); err != nil {
+		return api.BindingResult{}, err
+	}
+	binding, found, err := s.spine.GetRepositoryBinding(ctx, tenant, bindingID)
+	if err != nil {
+		return api.BindingResult{}, err
+	}
+	if !found {
+		return api.BindingResult{}, fmt.Errorf("repository binding %s vanished after create", bindingID)
+	}
+	body, err := json.Marshal(binding)
+	if err != nil {
+		return api.BindingResult{}, fmt.Errorf("marshal repository binding: %w", err)
+	}
+	return api.BindingResult{Body: body}, nil
+}
+
 // AcceptCommand records a durable command within the request's verified scope (spec §22.4).
 // A duplicate command_id returns the original resource; an unknown or foreign session is a
 // miss (404). The command payload carries the send_message text as the command's own content;
@@ -338,8 +379,10 @@ func tenantOf(scope middleware.Scope) coordinator.Tenant {
 }
 
 // PurgeExpiredStoreFalse runs one retention sweep over the durable spine, reaping the
-// content of store=false responses whose terminal state has aged past ttl (spec §8.3).
-func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (int, error) {
+// content of store=false responses whose terminal state has aged past ttl (spec §8.3). It
+// returns the purged count and the object keys of the scrubbed artifacts so the reaper can
+// delete their bytes from the object store after the sweep commits (LP §7.2).
+func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (int, []string, error) {
 	return s.spine.PurgeExpiredStoreFalse(ctx, ttl)
 }
 

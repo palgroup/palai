@@ -63,7 +63,7 @@ func TestReaperPurgesOnlyExpiredStoreFalseResponses(t *testing.T) {
 	// Retained (store=true): never purged regardless of age.
 	retained := seedTerminalResponse(t, pool, tenant, sessionID, true, time.Hour)
 
-	purged, err := cs.PurgeExpiredStoreFalse(ctx, time.Minute)
+	purged, _, err := cs.PurgeExpiredStoreFalse(ctx, time.Minute)
 	if err != nil {
 		t.Fatalf("PurgeExpiredStoreFalse() error = %v", err)
 	}
@@ -105,7 +105,7 @@ func TestPurgeKeepsTombstoneRequestHashAndFingerprint(t *testing.T) {
 		tenant.Organization, tenant.Project, principal, newID("idem"), requestHash,
 		[]byte(`{"id":"`+respID+`","status":"completed","output":[{"type":"message","content":"secret output"}]}`))
 
-	if _, err := cs.PurgeExpiredStoreFalse(ctx, time.Minute); err != nil {
+	if _, _, err := cs.PurgeExpiredStoreFalse(ctx, time.Minute); err != nil {
 		t.Fatalf("PurgeExpiredStoreFalse() error = %v", err)
 	}
 
@@ -183,7 +183,7 @@ func TestStoreFalsePurgeLeavesSiblingResponseEvents(t *testing.T) {
 	seedEvent(t, pool, tenant, sessionID, sibling, 3, `{"content":"sibling content"}`)
 	seedEvent(t, pool, tenant, sessionID, sibling, 4, `{"content":"sibling content 2"}`)
 
-	purged, err := cs.PurgeExpiredStoreFalse(ctx, time.Minute)
+	purged, _, err := cs.PurgeExpiredStoreFalse(ctx, time.Minute)
 	if err != nil {
 		t.Fatalf("PurgeExpiredStoreFalse() error = %v", err)
 	}
@@ -224,7 +224,7 @@ func TestPurgeReplacesEventPayloadsButKeepsSequence(t *testing.T) {
 		seedEvent(t, pool, tenant, sessionID, respID, seq, `{"content":"secret message body"}`)
 	}
 
-	if _, err := cs.PurgeExpiredStoreFalse(ctx, time.Minute); err != nil {
+	if _, _, err := cs.PurgeExpiredStoreFalse(ctx, time.Minute); err != nil {
 		t.Fatalf("PurgeExpiredStoreFalse() error = %v", err)
 	}
 

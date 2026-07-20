@@ -307,6 +307,14 @@ func newJobID() (string, error) {
 	return "job_" + hex.EncodeToString(raw[:]), nil
 }
 
+func newWorkspaceID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate workspace id: %w", err)
+	}
+	return "ws_" + hex.EncodeToString(raw[:]), nil
+}
+
 // Identity is the tenant an API key resolves to (spec §39.2).
 type Identity struct {
 	Organization string
@@ -376,6 +384,11 @@ type AdmissionInput struct {
 	// Delegations is the root run's required-delegation JSON ({"emit":[...],"budget":N}) or nil,
 	// persisted on the run so the orchestrator seeds run.start (spec §25.18).
 	Delegations []byte
+	// RepositoryBindingID / RepositoryRef carry the contracted `repository` field (spec §30.1, E09
+	// Task 10): when the binding is set, admission attaches a session-scoped coding workspace so the
+	// root run auto-provisions it. Empty leaves the response non-coding — the pre-E09 behaviour.
+	RepositoryBindingID string
+	RepositoryRef       string
 }
 
 // Admission is the committed, replayed, conflicting, or purged admission outcome.
@@ -397,6 +410,10 @@ type Admission struct {
 	// (409, one-active-root — spec §22.3). The DB partial unique index rejects the second root
 	// run insert (23505), so the whole admission rolls back and leaves nothing behind.
 	ActiveRunConflict bool
+	// RepositoryBindingNotFound marks a `repository` field naming an unknown or foreign binding (404,
+	// no existence disclosure). Verified before the idempotency reserve, so a bad binding leaves nothing
+	// behind — a coding run never starts against a binding the clone could not resolve (spec §30.1).
+	RepositoryBindingNotFound bool
 }
 
 // AdmitResponse atomically reserves the idempotency key and, on a fresh key,
@@ -440,6 +457,19 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 			return Admission{SessionConflict: true}, nil
 		}
 		sessionID, createSession = existingID, false
+	}
+
+	// Verify a `repository` attachment names a real in-scope binding before reserving idempotency, so a
+	// bad or foreign binding_id is a clean 404 here (no idempotency record, no run) rather than a run that
+	// fails when the clone cannot resolve the binding (spec §30.1, E09 Task 10).
+	if in.RepositoryBindingID != "" {
+		switch err := tx.QueryRow(ctx, storage.Query("RepositoryBindingExists"),
+			in.RepositoryBindingID, tenant.Organization, tenant.Project).Scan(new(int)); {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Admission{RepositoryBindingNotFound: true}, nil
+		case err != nil:
+			return Admission{}, fmt.Errorf("verify repository binding: %w", err)
+		}
 	}
 
 	// The response body carries the resolved session id (the minted one is only correct for a
@@ -509,6 +539,26 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 			return Admission{ActiveRunConflict: true}, nil
 		}
 		return Admission{}, fmt.Errorf("insert run: %w", err)
+	}
+
+	// Attach the session's coding workspace when the request carried a repository binding (spec §30.1,
+	// E09 Task 10): the session→binding link the root run auto-provisions from. Idempotent per session
+	// (WHERE NOT EXISTS), so a chained response reuses the one workspace it already has — edits persist
+	// across runs. In the SAME transaction as the run, so the workspace is attached iff the run is.
+	// ponytail: WHERE NOT EXISTS is a lock-free read-then-act — two concurrent first-attaches to one
+	// session could both insert (no session unique index), and a chained response naming a DIFFERENT
+	// binding/ref is silently ignored (a session keeps its ONE workspace). Both are benign here (one
+	// active root run per session serializes attaches in practice); a partial unique index on
+	// workspaces(session_id) WHERE repository_binding_id<>'' hardens the race if concurrency grows.
+	if in.RepositoryBindingID != "" {
+		workspaceID, err := newWorkspaceID()
+		if err != nil {
+			return Admission{}, err
+		}
+		if _, err := tx.Exec(ctx, storage.Query("AttachSessionWorkspace"),
+			workspaceID, tenant.Organization, tenant.Project, sessionID, in.RepositoryBindingID, in.RepositoryRef); err != nil {
+			return Admission{}, fmt.Errorf("attach session workspace: %w", err)
+		}
 	}
 
 	var seq int64

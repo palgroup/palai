@@ -1,0 +1,6 @@
+id: REG-002
+name: durable-task-visible-in-ordered-journal
+proof_class: e2e-deterministic
+provider: fake
+input: "a durable task write emits an ordered task.created.v1 event on the response journal, so every attached client sees the update"
+expect_status: completed

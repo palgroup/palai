@@ -1,0 +1,6 @@
+id: DEL-001
+name: model-driven-agent-toolcall-dispatches-child-cheaper-route
+proof_class: e2e-deterministic
+provider: fake
+input: "a model-driven agent tool_call becomes a child.request — a real ChildRun on its own cheaper model id whose typed result folds back and whose run the parent links"
+expect_status: completed
