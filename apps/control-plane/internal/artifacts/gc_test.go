@@ -158,14 +158,12 @@ func TestGCNeverDeletesReferencedOrInGraceObject(t *testing.T) {
 		t.Fatalf("Put() error = %v", err)
 	}
 
-	// Wide grace: every object in the bucket is younger than it, so nothing is reclaimed —
-	// the referenced object is spared by its row, the fresh orphan by the grace window.
-	reclaimed, err := NewCollector(h.s3, h.pool, time.Hour).Collect(ctx)
-	if err != nil {
+	// Wide grace: this run's referenced object is spared by its row and its fresh orphan by
+	// the grace window. The reclaimed count is bucket-wide (a shared, persistent bucket may
+	// hold a stale orphan from a crashed prior run), so the proof is the per-key presence
+	// below, not a global zero-count.
+	if _, err := NewCollector(h.s3, h.pool, time.Hour).Collect(ctx); err != nil {
 		t.Fatalf("Collect(grace=1h) error = %v", err)
-	}
-	if reclaimed != 0 {
-		t.Fatalf("Collect(grace=1h) reclaimed = %d, want 0 (everything is either referenced or in-grace)", reclaimed)
 	}
 	if !h.objectPresent(t, referenced.ObjectKey) {
 		t.Fatalf("referenced object %q was reclaimed under a wide grace window", referenced.ObjectKey)

@@ -164,6 +164,12 @@ type ObjectInfo struct {
 // holds only this control-plane's artifacts, so the full listing is the left side of the
 // orphan-GC reconcile (E10 Task 3). It stays control-plane-internal (spec §24): the S3
 // credential never leaves, and only keys/timestamps — no bytes, no tenant data — are read.
+//
+// CONSTRAINT for a second S3 write-path (E10 Task 6 workspace-snapshot restore): the GC
+// deletes any listed object no artifacts row references, so a snapshot object written to
+// THIS bucket without an artifacts row would be reclaimed as an orphan after its grace —
+// destroying an authoritative snapshot. T6 must write snapshots to a separate bucket/prefix,
+// or add its objects to the reference set the reconcile subtracts (referencedKeys).
 func (s *Store) List(ctx context.Context) ([]ObjectInfo, error) {
 	var objects []ObjectInfo
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: aws.String(s.bucket)})

@@ -57,8 +57,8 @@ func (c *Collector) Collect(ctx context.Context) (int, error) {
 		if _, ok := referenced[obj.Key]; ok {
 			continue // referenced by a live row — never deleted (the safety invariant)
 		}
-		if obj.LastModified.After(cutoff) {
-			continue // inside the grace window — a row may still be committing
+		if withinGrace(obj.LastModified, cutoff) {
+			continue // inside the grace window (or unknown mtime) — a row may still be committing
 		}
 		if derr := c.store.Delete(ctx, obj.Key); derr != nil {
 			if err == nil {
@@ -69,6 +69,14 @@ func (c *Collector) Collect(ctx context.Context) (int, error) {
 		reclaimed++
 	}
 	return reclaimed, err
+}
+
+// withinGrace reports whether an object is too fresh to reclaim: newer than the cutoff, or
+// with an UNKNOWN modified time (zero). Treating unknown as in-grace makes the guard fail
+// CLOSED — a listing that omits the timestamp never triggers a delete, rather than reading
+// as infinitely old and being reclaimed on sight.
+func withinGrace(lastModified, cutoff time.Time) bool {
+	return lastModified.IsZero() || lastModified.After(cutoff)
 }
 
 // referencedKeys is the set of object keys a live artifacts row still points at. A tombstoned

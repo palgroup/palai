@@ -322,10 +322,28 @@ func startOrphanGC(ctx context.Context, repo *store.Store, supervisor *coordinat
 	if artStore == nil {
 		return // no object store: retention scrubs only the DB row, so there are no orphan bytes
 	}
-	grace := envDurationOr("PALAI_ARTIFACT_GC_GRACE", time.Hour)
+	configured := envDurationOr("PALAI_ARTIFACT_GC_GRACE", time.Hour)
+	grace := artifactGCGrace(configured)
+	if grace != configured {
+		log.Printf("PALAI_ARTIFACT_GC_GRACE=%s is below the %s floor; flooring it to protect in-flight writes", configured, grace)
+	}
 	interval := envDurationOr("PALAI_ARTIFACT_GC_INTERVAL", time.Hour)
 	gc := artifacts.NewCollector(artStore, repo.Spine().Pool(), grace)
 	go supervisor.Supervise(ctx, "artifact-orphan-gc", func(ctx context.Context) error { return gc.Run(ctx, interval) })
+}
+
+// minArtifactGCGrace floors PALAI_ARTIFACT_GC_GRACE: a typo'd sub-floor value (e.g. "1s")
+// would collapse the GC's primary write-safety guard and let a live in-flight write be
+// reclaimed before its row commits. envDurationOr rejects negative/zero but not a small
+// positive, so the floor is enforced here.
+const minArtifactGCGrace = 5 * time.Minute
+
+// artifactGCGrace clamps a configured grace window up to minArtifactGCGrace.
+func artifactGCGrace(configured time.Duration) time.Duration {
+	if configured < minArtifactGCGrace {
+		return minArtifactGCGrace
+	}
+	return configured
 }
 
 // envDurationOr reads a Go duration env var, returning def when unset or unparseable.
