@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Repository-coding UAT — the E09 exit gate. One target, two tiers:
+#   deterministic (always): TestCodingJourneyDeterministic composes the §63.2 coding journey
+#     (bind -> prepare@exact-commit -> file/shell tool round-trip -> changeset -> model-driven
+#     research child -> approved push + draft PR once) through the REAL orchestrator + tools +
+#     composed steps against a FAITHFUL Git double, with the FAKE adapter and NO credential. It
+#     writes + self-verifies the coding-0.1.0 bundle (the CI-provable external-receipt push +
+#     the credential-absence scan). Routed through the responses e2e infra it already provisions.
+#   live (PROVIDER=provider-one only): TestCodingLiveJourney drives the SAME journey against real
+#     OpenAI + a real Git destination, THROUGH the real approve-command -> approval-pump -> push+PR
+#     boundary, and overwrites coding-0.1.0 with the real provider (chatcmpl) + real-GitHub
+#     receipts. The credential loads from the git-ignored .env.local into this process env only —
+#     never argv, log, or manifest. Without PROVIDER the live test skip-guards itself, so this
+#     target is green in CI without a key. uat-local-live and uat-interactive stay untouched.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+provider="${PROVIDER:-fake}"
+
+# Deterministic tier: the coding journey through the responses e2e infra (throwaway Postgres +
+# reference-engine subprocess, fake provider, faithful Git double). Reuse, not a second harness.
+E2E_RUN='TestCodingJourneyDeterministic' TEST=responses scripts/test/e2e
+
+# Live tier: only under provider-one; the credential + Git destination ride env only. The live test
+# asserts the credential absent from the bundle by construction and needs a real Git destination
+# (PALAI_GIT_REPO + a GitHub App installation) to open a real draft PR.
+if [ "$provider" = "provider-one" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "OPENAI_API_KEY is unset; provider-one needs it in .env.local" >&2
+    exit 1
+  fi
+  if [ -z "${PALAI_GIT_REPO:-}" ]; then
+    echo "PALAI_GIT_REPO is unset; the live coding journey pushes to a real Git destination (set it in .env.local)" >&2
+    exit 1
+  fi
+  export PALAI_UAT_PROVIDER=provider-one
+  # -count=1 so the one-use enrollment token and one-shot lease are never replayed from cache.
+  exec go test -tags uat -count=1 -timeout 30m -run TestCodingLiveJourney ./tests/uat -v
+fi

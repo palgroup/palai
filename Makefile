@@ -99,6 +99,13 @@ uat-interactive:
 	@test -x scripts/uat/interactive || { echo "interactive UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' scripts/uat/interactive
 
+# E09 exit gate: the deterministic coding journey (always) + the live coding journey
+# (PROVIDER=provider-one, key + Git destination from .env.local). uat-local-live and
+# uat-interactive above stay untouched.
+uat-coding:
+	@test -x scripts/uat/coding || { echo "coding UAT not implemented" >&2; exit 2; }
+	@PROVIDER='$(PROVIDER)' scripts/uat/coding
+
 evidence-verify:
 	@test -x scripts/evidence/verify || { echo "evidence verifier not implemented" >&2; exit 2; }
 	@RELEASE='$(RELEASE)' scripts/evidence/verify
