@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
@@ -41,7 +42,9 @@ func (r *Reaper) WithArtifactStore(a ArtifactDeleter) *Reaper {
 // Sweep runs one retention pass and returns the number of responses purged. The DB scrub
 // commits first with each victim's object_key cleared, so the keys it named are surfaced
 // here and their bytes deleted from the object store afterward. A delete error is returned
-// (the tick is counted failed and retried), but the rows are already tombstoned.
+// and logged by Run, but it is NOT retried: the scrub already committed the key away, so a
+// failed delete orphans that object exactly like the crash case below — no later tick can
+// re-reach those bytes. The purge itself is durable — the rows are correctly tombstoned.
 // ponytail: a crash between the commit and a delete orphans that object in S3 — a leaked
 // byte range, not a correctness break, swept by the same list-vs-rows reconcile the write
 // path defers; wiring an orphan GC now is speculative for a local dev store.
@@ -60,8 +63,10 @@ func (r *Reaper) Sweep(ctx context.Context) (purged int, err error) {
 	return purged, err
 }
 
-// Run sweeps every interval until ctx is cancelled. A sweep error is non-fatal: the
-// next tick retries, because a transient database blip must not stop retention.
+// Run sweeps every interval until ctx is cancelled. A sweep error is logged (the reaper's
+// only failure surface) and non-fatal: the next tick retries the DB purge, because a
+// transient database blip must not stop retention. A delete failure is not retried — it
+// orphans the scrubbed object's bytes (see Sweep), so the log is its only trace.
 func (r *Reaper) Run(ctx context.Context, interval time.Duration) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -70,7 +75,9 @@ func (r *Reaper) Run(ctx context.Context, interval time.Duration) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			_, _ = r.Sweep(ctx)
+			if _, err := r.Sweep(ctx); err != nil {
+				log.Printf("retention reaper sweep failed: %v", err)
+			}
 		}
 	}
 }
