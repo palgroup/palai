@@ -40,13 +40,10 @@ func TestCapabilities(t *testing.T) {
 		if body.Capabilities["responses"] != "preview" {
 			t.Errorf("responses capability = %q, want preview", body.Capabilities["responses"])
 		}
-		if body.Capabilities["sessions"] != "unavailable" {
-			t.Errorf("sessions should be unavailable: %+v", body.Capabilities)
-		}
-		// Coding workspaces are reachable end to end once auto-provisioning landed (E09 T10): a session
-		// attaches a binding and the root run provisions the workspace, so the coding tools run.
-		if body.Capabilities["workspaces"] != "available" {
-			t.Errorf("workspaces should be available: %+v", body.Capabilities)
+		// Workspaces is derived from PALAI_WORKSPACE_ROOT (E09 T10): this Docker-free tier configures no
+		// coding stack, so both sessions and workspaces are unavailable here.
+		if body.Capabilities["sessions"] != "unavailable" || body.Capabilities["workspaces"] != "unavailable" {
+			t.Errorf("sessions/workspaces should be unavailable without a coding stack: %+v", body.Capabilities)
 		}
 		if body.Retention.StoreFalseTTLSeconds != 0 {
 			t.Errorf("default store_false_ttl_seconds = %d, want 0 (disabled)", body.Retention.StoreFalseTTLSeconds)

@@ -42,15 +42,26 @@ func capabilities(w http.ResponseWriter, r *http.Request) {
 		Capabilities: map[string]string{
 			"responses": "preview",
 			"sessions":  "unavailable",
-			// Coding workspaces are now reachable end to end: a session attaches a repository binding
-			// (POST /v1/repository-bindings then the `repository` field) and the root run auto-provisions
-			// the workspace, so the file/shell/commit/publish tools run against a real checkout (E09 T10).
-			"workspaces": "available",
+			// Coding workspaces are reachable end to end (a session attaches a repository binding, the root
+			// run auto-provisions — E09 T10) only where the deployment configured a host allocation root, so
+			// discovery derives it from PALAI_WORKSPACE_ROOT the same way it reads the retention TTL — a
+			// deployment with no coding stack never advertises a capability it cannot serve.
+			"workspaces": workspacesCapability(),
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// workspacesCapability reports whether this deployment can serve coding workspaces: "available" when
+// PALAI_WORKSPACE_ROOT is configured (the same knob main.go gates SetWorkspaceProvisioner on), else
+// "unavailable" — so a control plane with no coding stack does not advertise workspaces it cannot mount.
+func workspacesCapability() string {
+	if os.Getenv("PALAI_WORKSPACE_ROOT") != "" {
+		return "available"
+	}
+	return "unavailable"
 }
 
 // configuredRetentionTTL parses the reaper's TTL env var, returning 0 (disabled) when

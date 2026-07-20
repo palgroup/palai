@@ -545,6 +545,11 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	// E09 Task 10): the session→binding link the root run auto-provisions from. Idempotent per session
 	// (WHERE NOT EXISTS), so a chained response reuses the one workspace it already has — edits persist
 	// across runs. In the SAME transaction as the run, so the workspace is attached iff the run is.
+	// ponytail: WHERE NOT EXISTS is a lock-free read-then-act — two concurrent first-attaches to one
+	// session could both insert (no session unique index), and a chained response naming a DIFFERENT
+	// binding/ref is silently ignored (a session keeps its ONE workspace). Both are benign here (one
+	// active root run per session serializes attaches in practice); a partial unique index on
+	// workspaces(session_id) WHERE repository_binding_id<>'' hardens the race if concurrency grows.
 	if in.RepositoryBindingID != "" {
 		workspaceID, err := newWorkspaceID()
 		if err != nil {

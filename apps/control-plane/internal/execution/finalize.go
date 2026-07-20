@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
@@ -88,6 +89,11 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 	// from the file/shell tool_calls the run issued, NOT model prose (REP-005). This is the exact call
 	// the changeset.go deferral named — now auto-invoked. It is a clean no-op when no artifact writer is
 	// wired or the run bound no workspace, and CompileChangeset itself skips a run that prepared no repo.
+	//
+	// A compile error (e.g. an S3 hiccup) is LOGGED, not fatal: the run has already transitioned to its
+	// terminal state above, so failing the attempt would only bail on the already-terminal run on retry
+	// (never recompiling) while dropping the response projection. The changeset is REP-005 evidence
+	// recomputable from the immutable ledger (E10 replay), so a completed run is not blocked on it.
 	if o.artifacts != nil && st.attempt.WorkspaceHostPath != "" {
 		if _, _, err := CompileChangeset(ctx, o.spine, o.artifacts, ChangesetInput{
 			Tenant:         st.tenant,
@@ -96,7 +102,7 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 			RunID:          string(st.attempt.RunID),
 			AllocationRoot: st.attempt.WorkspaceHostPath,
 		}); err != nil {
-			return fmt.Errorf("compile changeset: %w", err)
+			log.Printf("compile changeset for run %s: %v", st.attempt.RunID, err)
 		}
 	}
 

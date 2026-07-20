@@ -71,6 +71,10 @@ func resolveChildWorkspace(mode string) (childWorkspace, bool) {
 // worktree is its repo dir).
 // ponytail: the worktree is left in place under the parent allocation until the allocation is destroyed
 // (E10) — cheap (shared objects) and each child dir is unique (child run id), so nothing collides.
+// ponytail ceiling: git worktree writes a .git FILE pointing at the parent repo's HOST-ABSOLUTE path
+// (gitdir: <parent>/.git/worktrees/<name>), so raw `git` inside a child SANDBOX with a different mount
+// path cannot resolve it — a split CP≠runner sandbox needs the worktree rebased to the mount path. The
+// CP-side commit tool operates on the host path directly, so it is unaffected here (collapsed compose).
 func (o *Orchestrator) realizeChildWorkspace(ctx context.Context, st *attemptState, childRunID string, ws childWorkspace) (string, error) {
 	parentRepo := filepath.Join(st.attempt.WorkspaceHostPath, workspace.RepoDir)
 	base, _, err := repositories.Head(ctx, parentRepo)

@@ -3,6 +3,8 @@ package execution
 import (
 	"context"
 	"errors"
+	"log"
+	"os"
 	"path/filepath"
 
 	"github.com/palgroup/palai/adapters/repositories"
@@ -110,6 +112,13 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, tenant coor
 	}); err != nil {
 		return coordinator.Allocation{}, err
 	}
+	// Defense-in-depth (§24): the credential helper + git home PrepareRepository wrote into <alloc>/secrets
+	// are useless now (the read credential is already revoked), but the shell sandbox rw-mounts the
+	// allocation ROOT, so remove the secrets staging area rather than leave even revoked-token residue in
+	// the sandbox-visible tree. It is snapshot-excluded regardless, so removing it changes no snapshot.
+	if err := os.RemoveAll(filepath.Join(dir, provisionSecretsDir)); err != nil {
+		return coordinator.Allocation{}, err
+	}
 	if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, statemachines.WorkspaceCmdMarkReady); err != nil {
 		return coordinator.Allocation{}, err
 	}
@@ -123,6 +132,14 @@ func (o *Orchestrator) reuseAllocation(ctx context.Context, tenant coordinator.T
 	alloc, err := o.spine.CurrentAllocation(ctx, ws.WorkspaceID)
 	if err != nil {
 		return coordinator.Allocation{}, err
+	}
+	// A pause/resume re-enters this for the SAME run: recording a second receipt at the (advanced) head
+	// would make RunBaseCommit pick the newest and the changeset miss the pre-pause commits (REP-005). A
+	// run keeps the ONE base it started from, so skip when this run already recorded a receipt.
+	if _, found, err := o.spine.GetPreparationReceipt(ctx, ws.BindingID, runID); err != nil {
+		return coordinator.Allocation{}, err
+	} else if found {
+		return alloc, nil
 	}
 	head, tree, err := repositories.Head(ctx, filepath.Join(alloc.HostPath, workspace.RepoDir))
 	if err != nil {
@@ -150,8 +167,12 @@ func (o *Orchestrator) releaseWorkspace(tenant coordinator.Tenant, workspaceID, 
 		return
 	}
 	ctx := context.Background()
-	_ = o.spine.ReleaseWriterLease(ctx, leaseID)
-	_ = o.spine.AdvanceWorkspace(ctx, tenant, workspaceID, statemachines.WorkspaceCmdRelease)
+	if err := o.spine.ReleaseWriterLease(ctx, leaseID); err != nil {
+		log.Printf("release writer lease %s: %v", leaseID, err)
+	}
+	if err := o.spine.AdvanceWorkspace(ctx, tenant, workspaceID, statemachines.WorkspaceCmdRelease); err != nil {
+		log.Printf("release workspace %s: %v", workspaceID, err)
+	}
 }
 
 // provisionSecretsDir is the snapshot-excluded /secrets staging area under an allocation the credential
