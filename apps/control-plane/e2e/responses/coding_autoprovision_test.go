@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
@@ -109,4 +110,20 @@ func TestCodingAutoProvisionDeterministic(t *testing.T) {
 	if n := h.count(`SELECT count(*) FROM changesets WHERE run_id=$1`, runID); n != 1 {
 		t.Fatalf("changeset rows = %d, want 1 (finalize compiles a changeset for a run that prepared a repo)", n)
 	}
+}
+
+// allocationRootFor reads the host path of the session workspace's current allocation — where the root
+// run auto-provisioned the repo (at <root>/repo), so the test can confirm the tools touched it.
+func (h *harness) allocationRootFor(sessionID string) string {
+	h.t.Helper()
+	var hostPath string
+	if err := h.spine.Pool().QueryRow(context.Background(),
+		`SELECT a.host_path FROM workspace_allocations a
+		 JOIN workspaces w ON w.id = a.workspace_id
+		 WHERE w.session_id = $1 AND w.organization_id = $2 AND w.project_id = $3
+		 ORDER BY a.fence DESC LIMIT 1`,
+		sessionID, h.tenant.Organization, h.tenant.Project).Scan(&hostPath); err != nil {
+		h.t.Fatalf("read allocation host path: %v", err)
+	}
+	return hostPath
 }

@@ -83,6 +83,23 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 		return err
 	}
 
+	// Compile the run's changeset from the tool ledger while the workspace is still on disk and the
+	// writer lease still held (spec §30.6, E09 Task 10): the changed-file set + patch + test log come
+	// from the file/shell tool_calls the run issued, NOT model prose (REP-005). This is the exact call
+	// the changeset.go deferral named — now auto-invoked. It is a clean no-op when no artifact writer is
+	// wired or the run bound no workspace, and CompileChangeset itself skips a run that prepared no repo.
+	if o.artifacts != nil && st.attempt.WorkspaceHostPath != "" {
+		if _, _, err := CompileChangeset(ctx, o.spine, o.artifacts, ChangesetInput{
+			Tenant:         st.tenant,
+			SessionID:      st.sessionID,
+			ResponseID:     st.responseID,
+			RunID:          string(st.attempt.RunID),
+			AllocationRoot: st.attempt.WorkspaceHostPath,
+		}); err != nil {
+			return fmt.Errorf("compile changeset: %w", err)
+		}
+	}
+
 	output := st.output
 	if len(output) == 0 {
 		if value, ok := frame.Data["output"]; ok && value != nil {
