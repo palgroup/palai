@@ -17,6 +17,8 @@ import (
 	fake "github.com/palgroup/palai/adapters/models/fake"
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
 	"github.com/palgroup/palai/adapters/repositories"
+	"github.com/palgroup/palai/adapters/sandboxes/oci"
+	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
@@ -74,7 +76,7 @@ func main() {
 	// workspace provisioning lands (repository.go deferral). nil when no PALAI_S3_ENDPOINT is set.
 	artStore := artifactStoreFromEnv(ctx)
 
-	startDispatch(ctx, repo, gateway, supervisor)
+	startDispatch(ctx, repo, gateway, supervisor, artStore)
 	startRetention(ctx, repo, supervisor, artStore)
 
 	log.Printf("palai control-plane listening on %s", addr)
@@ -89,7 +91,7 @@ func main() {
 // the read-path SSE e2e drives (no broker/engine racing it). A killed worker's lease lapses
 // and its job is reclaimed at a higher fence, so no graceful shutdown is needed.
 // PALAI_DISPATCH_WORKERS sets the worker count (default 1); 0 disables dispatch.
-func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor) {
+func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor, artStore *artifacts.Store) {
 	workers := envIntDefault("PALAI_DISPATCH_WORKERS", 1)
 	if workers <= 0 {
 		return
@@ -120,6 +122,27 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// deterministic tier proves the pump with a fake publisher.
 		if publisher := repositoryPublisherFromEnv(); publisher != nil {
 			orch.SetPublisher(publisher)
+		}
+		// Wire the root run's workspace auto-provisioning + coding-tool sandbox, gated on
+		// PALAI_WORKSPACE_ROOT (spec §29.7-30.3, E09 Task 10). This is what makes a coding session
+		// reachable from a plain HTTP request: the root run clones @ the attached ref under a brokered
+		// credential (CP-side — the model/sandbox never see it, §30.2), the shell tool runs in a
+		// credential-free OCI sandbox, and finalize compiles the changeset into the object store.
+		// Unset ⇒ no coding workspace (a run with a binding gets no mount, the tools fail clean).
+		//
+		// §24 ceiling: the E09 collapsed compose co-locates CP + runner on a SHARED PALAI_WORKSPACE_ROOT,
+		// so the tools run CP-side against the same host allocation the runner bind-mounts. A split
+		// CP≠runner deploy (control plane and runner on different hosts, not sharing a filesystem) needs a
+		// runner-relay seam — the CP-side tool dispatch would ship the file/shell op to the runner that
+		// holds the mount — a NAMED FUTURE split-deploy hardening, not built here.
+		if root := os.Getenv("PALAI_WORKSPACE_ROOT"); root != "" {
+			orch.SetWorkspaceProvisioner(root, repositoryBrokerFromEnv())
+			if artStore != nil {
+				orch.SetChangesetWriter(artifacts.NewWriter(artStore, spine.Pool()))
+			}
+			if shell := shellRunnerFromEnv(); shell != nil {
+				orch.SetShellRunner(shell)
+			}
 		}
 		handler = execution.ExecuteRun(spine, repo, orch)
 	}
@@ -168,6 +191,60 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 		Secrets: modelbroker.StaticResolver{modelbroker.SecretRef("fake"): "unused"},
 	})
 	return broker, execution.ModelRoute{Provider: "fake", Model: "fake", Secret: modelbroker.SecretRef("fake")}
+}
+
+// repositoryBrokerFromEnv builds the credential broker the root-run clone runs behind (spec §30.2-30.3):
+// the GitHub App broker when the App environment is configured (private repos), else the local broker —
+// filesystem credential helpers for a local/dev Git remote or a public repo. The broker stays CP-side;
+// the minted read credential feeds only a Git credential helper and is revoked after the fetch, so the
+// model and the sandbox never see it. A misconfigured App falls back to the local broker rather than
+// disabling provisioning, so a dev/compose stack still clones its local double.
+func repositoryBrokerFromEnv() repositories.Broker {
+	appID := os.Getenv("PALAI_GITHUB_APP_ID")
+	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
+	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
+	if appID == "" || installID == "" || keyFile == "" {
+		return repositories.NewLocalBroker()
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		log.Printf("repository broker: read app key file: %v (using local broker)", err)
+		return repositories.NewLocalBroker()
+	}
+	cfg := repositories.GitHubAppConfig{AppID: appID, InstallationID: installID, PrivateKeyPEM: keyPEM}
+	if slug := os.Getenv("PALAI_GITHUB_REPO"); strings.IndexByte(slug, '/') > 0 {
+		cfg.Repositories = []string{slug[strings.IndexByte(slug, '/')+1:]}
+	}
+	broker, err := repositories.NewGitHubAppBroker(cfg)
+	if err != nil {
+		log.Printf("repository broker: app broker: %v (using local broker)", err)
+		return repositories.NewLocalBroker()
+	}
+	return broker
+}
+
+// shellRunnerFromEnv builds the credential-free OCI shell sandbox the workspace shell tool runs through
+// (spec §28.8, SAN-002/003/004), gated on PALAI_SANDBOX_IMAGE (the pinned command image) and a working
+// Docker driver. Absent either it returns nil, so a shell tool call fails cleanly (no runner) rather
+// than escaping — the SetShellRunner discipline. The sandbox mounts no credential/DB/S3: the credential
+// broker stays CP-side (§24), so the engine and the sandbox never see cred/DB/S3.
+func shellRunnerFromEnv() toolbroker.ShellRunner {
+	image := os.Getenv("PALAI_SANDBOX_IMAGE")
+	if image == "" {
+		return nil
+	}
+	driver, err := oci.NewDockerDriver()
+	if err != nil {
+		log.Printf("shell sandbox: bind docker driver: %v (shell tool disabled)", err)
+		return nil
+	}
+	limits := oci.Limits{
+		WallTime:        envDuration("PALAI_SANDBOX_WALL_TIME"),
+		MaxMemoryBytes:  int64(envIntDefault("PALAI_SANDBOX_MAX_MEMORY_BYTES", 1<<30)),
+		MaxProcessCount: int64(envIntDefault("PALAI_SANDBOX_MAX_PROCS", 128)),
+		NanoCPUs:        int64(envIntDefault("PALAI_SANDBOX_NANO_CPUS", 1_000_000_000)),
+	}
+	return workspace.NewShellExecutor(driver, image, limits)
 }
 
 // repositoryPublisherFromEnv builds the repository publisher the approval pump publishes through (spec
