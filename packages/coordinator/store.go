@@ -410,6 +410,10 @@ type Admission struct {
 	// (409, one-active-root — spec §22.3). The DB partial unique index rejects the second root
 	// run insert (23505), so the whole admission rolls back and leaves nothing behind.
 	ActiveRunConflict bool
+	// RepositoryBindingNotFound marks a `repository` field naming an unknown or foreign binding (404,
+	// no existence disclosure). Verified before the idempotency reserve, so a bad binding leaves nothing
+	// behind — a coding run never starts against a binding the clone could not resolve (spec §30.1).
+	RepositoryBindingNotFound bool
 }
 
 // AdmitResponse atomically reserves the idempotency key and, on a fresh key,
@@ -453,6 +457,19 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 			return Admission{SessionConflict: true}, nil
 		}
 		sessionID, createSession = existingID, false
+	}
+
+	// Verify a `repository` attachment names a real in-scope binding before reserving idempotency, so a
+	// bad or foreign binding_id is a clean 404 here (no idempotency record, no run) rather than a run that
+	// fails when the clone cannot resolve the binding (spec §30.1, E09 Task 10).
+	if in.RepositoryBindingID != "" {
+		switch err := tx.QueryRow(ctx, storage.Query("RepositoryBindingExists"),
+			in.RepositoryBindingID, tenant.Organization, tenant.Project).Scan(new(int)); {
+		case errors.Is(err, pgx.ErrNoRows):
+			return Admission{RepositoryBindingNotFound: true}, nil
+		case err != nil:
+			return Admission{}, fmt.Errorf("verify repository binding: %w", err)
+		}
 	}
 
 	// The response body carries the resolved session id (the minted one is only correct for a

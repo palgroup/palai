@@ -94,14 +94,15 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 		return api.AdmitResult{}, err
 	}
 	result := api.AdmitResult{
-		ResponseID:        responseID(adm.Body),
-		Body:              adm.Body,
-		Replayed:          adm.Replayed,
-		Conflict:          adm.Conflict,
-		Purged:            adm.Purged,
-		SessionNotFound:   adm.SessionNotFound,
-		SessionConflict:   adm.SessionConflict,
-		ActiveRunConflict: adm.ActiveRunConflict,
+		ResponseID:                responseID(adm.Body),
+		Body:                      adm.Body,
+		Replayed:                  adm.Replayed,
+		Conflict:                  adm.Conflict,
+		Purged:                    adm.Purged,
+		SessionNotFound:           adm.SessionNotFound,
+		SessionConflict:           adm.SessionConflict,
+		ActiveRunConflict:         adm.ActiveRunConflict,
+		RepositoryBindingNotFound: adm.RepositoryBindingNotFound,
 	}
 	// On a purged replay the body is gone; the tombstone identity is the resource id.
 	if adm.Purged {

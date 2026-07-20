@@ -85,10 +85,12 @@ type AdmitResult struct {
 	// SessionNotFound is a chain onto an unknown or foreign session/response (404, no
 	// existence disclosure); SessionConflict a chain onto a non-active session (409);
 	// ActiveRunConflict a chain onto a session that already has a live root run (409,
-	// one-active-root — spec §22.3).
-	SessionNotFound   bool
-	SessionConflict   bool
-	ActiveRunConflict bool
+	// one-active-root — spec §22.3). RepositoryBindingNotFound is a `repository` field
+	// naming an unknown or foreign binding (404, spec §30.1).
+	SessionNotFound           bool
+	SessionConflict           bool
+	ActiveRunConflict         bool
+	RepositoryBindingNotFound bool
 }
 
 type responseHandler struct {
@@ -194,6 +196,11 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	// disclosure); a chain onto a non-active session is a 409 (spec §9, §22.1).
 	if out.SessionNotFound {
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such session in this project")
+		return
+	}
+	// A `repository` field naming an unknown or foreign binding is a tenant-scoped 404 (spec §30.1).
+	if out.RepositoryBindingNotFound {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such repository binding in this project")
 		return
 	}
 	if out.SessionConflict {

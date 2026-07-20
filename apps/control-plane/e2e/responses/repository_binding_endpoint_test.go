@@ -55,3 +55,15 @@ func TestRepositoryBindingRejectsLocalCloneURL(t *testing.T) {
 		t.Fatalf("POST https clone_url status = %d, want 201", resp.StatusCode)
 	}
 }
+
+// TestCodingResponseRejectsUnknownBinding (blocker 2, admit half): a response whose `repository`
+// field names a binding that does not exist (or belongs to another tenant) is refused at admit with a
+// 404, rather than admitted and left to fail the run after the clone can't resolve the binding.
+func TestCodingResponseRejectsUnknownBinding(t *testing.T) {
+	h := newHarness(t)
+	resp := h.postResponse(`{"input":"x","repository":{"binding_id":"bnd_does_not_exist","ref":"main"}}`, newID("idem"), h.token)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST with unknown binding_id status = %d, want 404 (no such binding in scope)", resp.StatusCode)
+	}
+}

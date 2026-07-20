@@ -43,3 +43,9 @@ JOIN repository_bindings rb ON rb.id = pr.repository_binding_id
 WHERE pr.run_id = $1 AND pr.organization_id = $2 AND pr.project_id = $3
 ORDER BY pr.prepared_at DESC, pr.id DESC
 LIMIT 1;
+
+-- name: RepositoryBindingExists
+-- Existence check within tenant scope (spec §30.1, §39.2): a response's `repository` field is verified
+-- at admit so a bad or foreign binding_id is a 404 there, not a run that fails when the clone cannot
+-- resolve the binding. Returns no row for an unknown OR foreign id (existence not disclosed cross-tenant).
+SELECT 1 FROM repository_bindings WHERE id = $1 AND organization_id = $2 AND project_id = $3;
