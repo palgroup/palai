@@ -47,6 +47,10 @@ var defaultProtectedBranches = []string{"main", "master"}
 // DirectWorkAllowed reports whether an agent may do direct mutable work on branch (spec §30.5).
 // Direct work on a protected or default branch is denied by default — mutable work uses a generated
 // agent/<session>/<run> branch instead (ChildBranch). protected widens the default set from policy.
+// ponytail: pure guard, unit-tested (broker_test.go); its production caller is the push/PR tool in
+// E09 Task 8 (REP-004, protected/default-branch write DENY) — the first mutable-publication path. No
+// caller yet by design: worktree branch selection already uses ChildBranch, so there is no earlier
+// call site to wire without inventing one.
 func DirectWorkAllowed(branch string, protected []string) bool {
 	if strings.TrimSpace(branch) == "" {
 		return false

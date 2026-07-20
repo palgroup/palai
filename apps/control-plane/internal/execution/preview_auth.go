@@ -113,6 +113,10 @@ func (p *PreviewProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			resp.Header.Set("X-Content-Type-Options", "nosniff")
 			resp.Header.Set("X-Frame-Options", "DENY")
 			resp.Header.Del("Content-Security-Policy-Report-Only")
+			// Drop any cookie the untrusted sandbox tries to set: a Set-Cookie response header is
+			// honoured by the browser regardless of CSP, so without this the sandbox could plant a
+			// cookie on the first-party control-plane origin (spec §29.16 — no cookie-injection vector).
+			resp.Header.Del("Set-Cookie")
 			// Bound the UNTRUSTED direction — the response the sandbox streams back to the client.
 			// Reject a declared oversize outright; cap an unknown-length (chunked) body as it streams.
 			if resp.ContentLength > p.maxResponseBytes {

@@ -8,14 +8,18 @@ import "context"
 // workspace, drops all capabilities, disables the network, and bounds cgroup resources) lives in the
 // oci adapter and is injected per attempt through ExecEnv.
 
-// ExecEnv is the per-attempt sandbox context a workspace-touching tool receives: the resolved
-// workspace root every path confines to, whether this attempt holds a read-only snapshot, and a
-// ShellRunner for argv execution. A pure conformance tool ignores it; a zero ExecEnv (no workspace
-// bound) makes a workspace tool fail cleanly rather than escape.
+// ExecEnv is the per-attempt context a control-plane-backed tool receives. A workspace-touching tool
+// (file/shell) reads WorkspaceRoot/ReadOnly/Shell; a durable-registry tool (task/todo) reads
+// Scope/Tasks. A pure conformance tool ignores it; a zero ExecEnv (no workspace/registry wired) makes
+// such a tool fail cleanly rather than escape or touch the control plane's own state.
 type ExecEnv struct {
 	WorkspaceRoot string
 	ReadOnly      bool
 	Shell         ShellRunner
+	// Scope binds a durable task/todo operation to its tenant and session; Tasks is the durable
+	// registry it persists through. Both zero on an attempt with no registry wired.
+	Scope TaskScope
+	Tasks TaskRegistry
 }
 
 // ShellRunner runs one argv command inside the sandbox and returns its captured, bounded result. The

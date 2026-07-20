@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -135,5 +136,72 @@ func TestChildWorkspaceModeReadOnlyDeniesWrite(t *testing.T) {
 	// Creating a new file is denied too.
 	if err := os.WriteFile(filepath.Join(roPath, "NEW.md"), []byte("x\n"), 0o644); err == nil {
 		t.Fatal("create in a read-only worktree succeeded; want denied")
+	}
+}
+
+// gitTry runs git in dir and returns its combined output + error WITHOUT failing the test, for setup
+// steps expected to exit non-zero (a conflicting merge).
+func gitTry(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.test",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.test")
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// seedConflict builds a repo whose parent worktree and child branch edit README.md differently, then
+// leaves the PARENT mid-merge (a real conflict: MERGE_HEAD + an unmerged README.md) — the exact state
+// MergeBranch's recovery path must handle.
+func seedConflict(t *testing.T) (repoDir, branch string) {
+	t.Helper()
+	requireGit(t)
+	repo := newLocalRemote(t)
+	run := gitRunner(t, repo.url)
+	wt, err := repositories.AddIsolatedWorktree(context.Background(), repo.url, filepath.Join(t.TempDir(), "child"), "ses1", "run1", repo.head)
+	if err != nil {
+		t.Fatalf("AddIsolatedWorktree: %v", err)
+	}
+	child := gitRunner(t, wt.Path)
+	_ = os.WriteFile(filepath.Join(wt.Path, "README.md"), []byte("child version\n"), 0o644)
+	child("add", "README.md")
+	child("commit", "-q", "-m", "child change")
+	_ = os.WriteFile(filepath.Join(repo.url, "README.md"), []byte("parent version\n"), 0o644)
+	run("add", "README.md")
+	run("commit", "-q", "-m", "parent change")
+	if _, err := gitTry(repo.url, "merge", "--no-edit", "--no-ff", wt.Branch); err == nil {
+		t.Fatal("seed merge unexpectedly succeeded; wanted a conflict")
+	}
+	if _, err := os.Stat(filepath.Join(repo.url, ".git", "MERGE_HEAD")); err != nil {
+		t.Fatalf("seed did not leave a merge in progress: %v", err)
+	}
+	return repo.url, wt.Branch
+}
+
+// TestMergeRecoveryRestoresParentDespiteCanceledContext proves REP-011's parent-consistency invariant
+// survives a canceled operation context: the conflict recovery (diff + abort) runs on a FRESH context,
+// so a merge whose ctx already expired still restores the parent instead of leaving it mid-merge.
+func TestMergeRecoveryRestoresParentDespiteCanceledContext(t *testing.T) {
+	repoDir, branch := seedConflict(t)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel() // the operation's context has already expired when recovery must run
+	_, _ = repositories.MergeBranch(canceled, repoDir, branch)
+	if _, err := os.Stat(filepath.Join(repoDir, ".git", "MERGE_HEAD")); err == nil {
+		t.Fatal("parent left mid-merge (MERGE_HEAD present) after a canceled-context merge — recovery ran on the dead context")
+	}
+}
+
+// TestMergeAbortFailureReturnsErrorNotConflict proves that when the abort cannot restore the parent,
+// MergeBranch surfaces an ERROR rather than reporting a clean typed conflict — a half-merged parent is
+// never recorded as a consistent conflict (REP-011). MERGE_HEAD is dropped so the abort fails while the
+// unmerged index entries persist.
+func TestMergeAbortFailureReturnsErrorNotConflict(t *testing.T) {
+	repoDir, branch := seedConflict(t)
+	if err := os.Remove(filepath.Join(repoDir, ".git", "MERGE_HEAD")); err != nil {
+		t.Fatalf("remove MERGE_HEAD: %v", err)
+	}
+	if _, err := repositories.MergeBranch(context.Background(), repoDir, branch); err == nil {
+		t.Fatal("MergeBranch returned nil error though the abort could not restore the parent — a half-merged parent was reported as a clean conflict")
 	}
 }

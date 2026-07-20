@@ -30,6 +30,38 @@ def _noop(event: str, **fields: object) -> None:
     pass
 
 
+# The built-in tool names that mean "delegate to a child" (spec §25.18, master plan line 410). A
+# model tool_call with one of these becomes a child.request, not a tool.request.
+_AGENT_TOOL_NAMES = ("agent", "spawn")
+
+
+def _agent_call_to_spec(call: dict) -> dict:
+    """Map an `agent`/`spawn` tool_call's arguments onto the delegation spec _request_children emits
+    as a child.request — the same shape a config-seeded delegation carries (spec §25.18)."""
+    args = call.get("arguments") or {}
+    return {
+        "role": args.get("role"),
+        "objective": args.get("objective"),
+        "model": args.get("model"),
+        "tools": args.get("tools") or [],
+        "budget": args.get("budget") or {},
+        "workspace_mode": args.get("workspace_mode", "none"),
+        "required": bool(args.get("required")),
+        "deadline": args.get("deadline"),
+    }
+
+
+def _delegation_content(data: dict, spec: dict) -> str:
+    """The typed delegation result string a child folds back as (spec §25.19): a completed child's
+    output with its run linkage, or an optional child's skip note — so the parent can identify the
+    delegation and its child_run. Mirrors context.add_child_result's user-role form for the tool-role
+    answer a model-driven agent tool_call gets."""
+    role, child_run = spec.get("role"), data.get("child_run_id")
+    if data.get("status") == "completed":
+        return f"[delegation result role={role} child_run={child_run}] {data.get('output')}"
+    return f"[delegation skipped role={role} reason={data.get('reason')}]"
+
+
 class Loop:
     """One run's state machine. ``handle`` consumes one controller frame and returns
     the engine frames it triggers. The loop starts after a successful handshake."""
@@ -48,6 +80,10 @@ class Loop:
         self._delegations: list[dict] = []
         self._delegations_dispatched = False
         self._pending_children: dict[str, dict] = {}
+        # Model-driven agent tool_calls (spec §25.18, DEL-001): child_request_id -> (tool_call_id, spec).
+        # Their child result answers the originating tool_call as a tool-role result, so the turn awaits
+        # them alongside ordinary tools and no tool_call is left unanswered on a real provider.
+        self._agent_children: dict[str, tuple[str, dict]] = {}
 
     def handle(self, frame: dict) -> list[dict]:
         type_ = frame.get("type")
@@ -75,7 +111,9 @@ class Loop:
             return self._on_model_result(frame)
         if self.state is State.AWAITING_TOOLS and type_ == "tool.result":
             return self._on_tool_result(frame)
-        if self.state is State.AWAITING_CHILDREN and type_ == "child.result":
+        # child.result is accepted while awaiting children (config-seeded) OR while awaiting tools (a
+        # model-driven agent tool_call's child answers its tool_call in a possibly-mixed tool turn).
+        if type_ == "child.result" and self.state in (State.AWAITING_CHILDREN, State.AWAITING_TOOLS):
             return self._on_child_result(frame)
         return [self._error("unexpected_frame", f"{type_!r} is not accepted in {self.state.value}")]
 
@@ -119,21 +157,37 @@ class Loop:
         self.context.add_model_result(data)
 
         tool_calls = data.get("tool_calls") or []
+        # A turn's tool_calls are dispatched together (spec §25.18, DEL-001): ordinary ones as
+        # tool.requests, `agent`/`spawn` ones as child.requests whose result answers the tool_call.
+        # Mixed turns are handled in one place, so no agent tool_call is ever dropped/unanswered.
         if tool_calls:
             return self._request_tools(tool_calls, reply_to=frame.get("id"))
-        # Dispatch any required delegations before finishing (spec §25.18): the run gathers its
+        # Dispatch any config-seeded delegations before finishing (spec §25.18): the run gathers its
         # child results, then a final model step folds them in. Skipped once dispatched, so the
         # resumed final step finishes normally.
         if self._delegations and not self._delegations_dispatched:
-            return self._request_children(reply_to=frame.get("id"))
+            self._delegations_dispatched = True
+            return self._request_children(self._delegations, reply_to=frame.get("id"))
         return self._finish(data, reply_to=frame.get("id"))
 
     def _request_tools(self, tool_calls: list[dict], *, reply_to: str | None) -> list[dict]:
+        """Dispatch a turn's tool_calls (spec §25.18). An ordinary call becomes a tool.request; an
+        `agent`/`spawn` call becomes a child.request whose result answers the SAME tool_call as a
+        tool-role result. The whole turn awaits in _pending_tools, so a mixed turn resumes only once
+        every tool_call — ordinary and agent alike — is answered (no dropped/unanswered tool_call)."""
         self._pending_tools.clear()
+        self._agent_children = {}
         frames: list[dict] = []
         for index, call in enumerate(tool_calls):
             call_id = protocol.tool_call_id(self.emitter.run_id, self._step, index)
             self._pending_tools.add(call_id)
+            if call.get("name") in _AGENT_TOOL_NAMES:
+                child_id = protocol.child_request_id(self.emitter.run_id, self._step, index)
+                spec = _agent_call_to_spec(call)
+                self._agent_children[child_id] = (call_id, spec)
+                self.log("safe_boundary", boundary="before_child", child_request_id=child_id)
+                frames.append(self._child_request_frame(child_id, spec, reply_to))
+                continue
             self.log("safe_boundary", boundary="before_tool", tool_call_id=call_id)
             frames.append(
                 self.emitter.build(
@@ -150,36 +204,56 @@ class Loop:
         self.state = State.AWAITING_TOOLS
         return frames
 
-    def _request_children(self, *, reply_to: str | None) -> list[dict]:
-        """Emit one child.request per seeded delegation (spec §25.18). The controller admits each
-        against depth/fan-out/budget/capability and dispatches a ChildRun, then replies child.result."""
-        self._delegations_dispatched = True
+    def _request_children(self, specs: list[dict], *, reply_to: str | None) -> list[dict]:
+        """Emit one child.request per CONFIG-SEEDED delegation spec (spec §25.18). The controller
+        admits each against depth/fan-out/budget/capability and dispatches a ChildRun, then replies
+        child.result, which folds as a typed user-role result. (Model-driven agent tool_calls go
+        through _request_tools, where their result answers the tool_call instead.)"""
         self._pending_children = {}
         frames: list[dict] = []
-        for index, spec in enumerate(self._delegations):
+        for index, spec in enumerate(specs):
             child_id = protocol.child_request_id(self.emitter.run_id, self._step, index)
             self._pending_children[child_id] = spec
             self.log("safe_boundary", boundary="before_child", child_request_id=child_id)
-            data = {
-                "child_request_id": child_id,
-                "role": spec.get("role"),
-                "objective": spec.get("objective"),
-                "model": spec.get("model"),
-                "tools": spec.get("tools") or [],
-                "budget": spec.get("budget") or {},
-                "workspace_mode": spec.get("workspace_mode", "none"),
-                "required": bool(spec.get("required")),
-                "request_hash": protocol.content_hash([spec.get("role"), spec.get("objective"), spec.get("model")]),
-            }
-            if spec.get("deadline") is not None:
-                data["deadline"] = spec.get("deadline")
-            frames.append(self.emitter.build("child.request", data, reply_to=reply_to))
+            frames.append(self._child_request_frame(child_id, spec, reply_to))
         self.state = State.AWAITING_CHILDREN
         return frames
+
+    def _child_request_frame(self, child_id: str, spec: dict, reply_to: str | None) -> dict:
+        """Build one child.request frame from a delegation spec (shared by the config-seeded and
+        model-driven delegation paths)."""
+        data = {
+            "child_request_id": child_id,
+            "role": spec.get("role"),
+            "objective": spec.get("objective"),
+            "model": spec.get("model"),
+            "tools": spec.get("tools") or [],
+            "budget": spec.get("budget") or {},
+            "workspace_mode": spec.get("workspace_mode", "none"),
+            "required": bool(spec.get("required")),
+            "request_hash": protocol.content_hash([spec.get("role"), spec.get("objective"), spec.get("model")]),
+        }
+        if spec.get("deadline") is not None:
+            data["deadline"] = spec.get("deadline")
+        return self.emitter.build("child.request", data, reply_to=reply_to)
 
     def _on_child_result(self, frame: dict) -> list[dict]:
         data = frame.get("data") or {}
         child_id = data.get("child_request_id")
+        # Model-driven delegation (DEL-001): the child answers an agent tool_call. A required child
+        # that could not be served fails the run (SUB-003); otherwise its typed output folds as the
+        # tool-role RESULT of that tool_call, and the turn resumes once every tool_call is answered.
+        if child_id in self._agent_children:
+            call_id, spec = self._agent_children.pop(child_id)
+            self.log("safe_boundary", boundary="after_child", child_request_id=child_id)
+            if data.get("status") != "completed" and spec.get("required"):
+                return [self._terminal("failed", reason=data.get("reason") or "required_delegation_unmet", reply_to=frame.get("id"))]
+            self.context.add_tool_result({"tool_call_id": call_id, "content": _delegation_content(data, spec)})
+            self._pending_tools.discard(call_id)
+            if self._pending_tools:
+                return []  # still awaiting other tool results in this turn
+            return self._request_model()
+        # Config-seeded delegation (spec §25.18): folds as a typed user-role result.
         if child_id not in self._pending_children:
             return [self._error("unknown_child_result", f"{child_id!r} is not an outstanding child request")]
         spec = self._pending_children.pop(child_id)

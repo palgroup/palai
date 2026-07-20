@@ -76,12 +76,22 @@ func MergeBranch(ctx context.Context, repoDir, branch string) (MergeResult, erro
 		return MergeResult{}, err
 	}
 	if _, err := gitIn(ctx, repoDir, "merge", "--no-edit", "--no-ff", "--", branch); err != nil {
-		// A merge failure is a conflict when there are unmerged paths; abort to restore the parent.
-		conflicts, _ := gitIn(ctx, repoDir, "diff", "--name-only", "--diff-filter=U")
-		_, _ = gitIn(ctx, repoDir, "merge", "--abort")
+		// The merge failed. Inspect and recover on a FRESH context: the caller's ctx may already be
+		// canceled (timeout/interrupt), and recovery that ran on a dead ctx could not run at all —
+		// leaving the parent worktree mid-merge while we falsely reported a clean, aborted conflict.
+		recoverCtx := context.Background()
+		conflicts, _ := gitIn(recoverCtx, repoDir, "diff", "--name-only", "--diff-filter=U")
 		if strings.TrimSpace(conflicts) != "" {
+			// A real conflict: abort to restore the parent. If the abort ITSELF fails the parent is not
+			// consistent, so surface an error instead of a clean conflict a caller would record as OK.
+			if _, abortErr := gitIn(recoverCtx, repoDir, "merge", "--abort"); abortErr != nil {
+				return MergeResult{}, fmt.Errorf("merge %s conflicted and abort failed, parent worktree may be inconsistent: %w", branch, abortErr)
+			}
 			return MergeResult{Merged: false, ConflictPaths: strings.Split(strings.TrimSpace(conflicts), "\n")}, nil
 		}
+		// Non-conflict failure (e.g. canceled before touching the index): best-effort cleanup of any
+		// partial merge, then report the original error. The parent is unchanged.
+		_, _ = gitIn(recoverCtx, repoDir, "merge", "--abort")
 		return MergeResult{}, fmt.Errorf("merge %s: %w", branch, err)
 	}
 	head, err := gitIn(ctx, repoDir, "rev-parse", "HEAD")

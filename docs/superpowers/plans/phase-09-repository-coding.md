@@ -41,7 +41,7 @@ LP-0'ın compose'da sağlıklı çalışan ama tüketilmeyen SeaweedFS'i (§7.2 
 ### Dahil değil
 
 - **journey 63.2'nin kill+recovery yarısı** (adım 8-9), workspace snapshot **RESTORE**, checkpoint/replay ladder, SAN-005 restore-half + SAN-006 host-kill-half, SAN-007/008 → E10 (`phase-10-recovery-replay.md`). E09 fencing/lease + snapshot CREATE + create-side checksum/exclusion'ı kanıtlar; host-loss ve restore E10'dur (E08'in SES-009/010 checkpoint yarısını E10'a bırakması ile aynı disiplin).
-- **Parent-detached durable child + parent-child agent conversation'ın DURABLE yarısı** (child `waiting` idle, `run.restore` ile parent-detached long-lived) → E10 (master plan line 431). E09 yalnız model-facing yarısını (agent tool → child.request, send_to_agent, child-idle event) lands; detach + durable-conversation birleşimi E10.
+- **Parent-detached durable child + parent-child agent conversation'ın DURABLE yarısı** (child `waiting` idle, `run.restore` ile parent-detached long-lived) → E10 (master plan line 431). E09 yalnız DEL-001'i (agent tool → child.request → typed result, §25.18) lands; DEL-002'nin concurrent round-trip'i (`send_to_agent` → RUNNING child + child-idle → parent) inline `dispatchChild`'da yapısal imkânsız (canlı/idle child yok) → detach + durable-conversation ile birlikte E10 (T7 review-adjudicated defer).
 - **DB-backed model routing + LiteLLM model adapter** → E06 (`phase-06-reference-execution.md`, LP §7.3). Journey adım 7'nin "ucuz route"'u E08'in `ModelRoute.Model` per-step efektif model-id'siyle (AYNI provider içinde) kanıtlanır; gerçek route/connection seçimi ve LiteLLM'in controller-side model ADAPTER entegrasyonu E06'nın işidir — **fork, bu plana katlanmaz**.
 - **AgentProfile/AgentRevision, triggers, schedules** → E11. Durable `task`/`todo` registry AgentProfile DEĞİLDİR — session/run-scoped runtime primitive'lerdir; kalıcı publish-edilen AgentProfile E11'dir. (SUB-006 hariç SUB-001..005 E08-owned; delegation'ın MODEL-driven varyantı burada, config-driven E08'de kanıtlı.)
 - **MCP/skills/hooks/remote tools** → E12. Buradaki tool yüzeyi yalnız BUILT-IN tool'lardır (`task`/`agent`/`todo`/file/shell/git); external tool extension SDK'sı E12.
@@ -77,7 +77,7 @@ Exit gate (master plan §8/E09; §63.2 pass condition): **journey 63.2 kill OLMA
 | REG-001 (authored) | durable `task` state context reset/yeni attempt sonrası DB'den okunur; AI "ne bitti/ne bitmedi"yi kaybetmeden devam eder | e2e-deterministic | T7 |
 | REG-002 (authored) | durable `task`/`todo` iki client'a AYNI görünür + update'ler ordered journal'da | e2e-deterministic | T7 |
 | DEL-001 (authored) | model `agent`/`spawn` tool_call → engine `child.request` emit → child terminal → parent'a typed result | live-provider (gerçek model tool_call) + e2e-deterministic | T7 |
-| DEL-002 (authored) | `send_to_agent`/`agent_message` + child-idle event → parent↔child model-facing mesaj round-trip | e2e-deterministic | T7 |
+| DEL-002 (authored) | `send_to_agent`/`agent_message` + child-idle event → parent↔child model-facing mesaj round-trip | e2e-deterministic | **→ E10** (concurrent round-trip: inline `dispatchChild`'ın canlı/idle child'ı yok → detached-durable child ön koşul; DEL-001 typed-result özünü E09'da teslim eder) |
 | APV-001 (authored) | side-effect tool pending-approval üretir → `approve` sonraki boundary'de ilerletir, `deny` bloklar; pending yokken E08 `command.rejected` KORUNUR | e2e-deterministic | T8 |
 
 ## 4. Runtime topology delta

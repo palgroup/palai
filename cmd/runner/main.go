@@ -77,6 +77,9 @@ func main() {
 		// The managed allocation root every leased workspace path must sit under before this runner
 		// bind-mounts it (spec §30.13, carry (b)). Unset disables the check (pre-E09 behaviour).
 		WorkspaceRoot: os.Getenv("PALAI_WORKSPACE_ROOT"),
+		// Opt this runner into honouring a lease's §30.13 unsafe local bind (REP-012). Default off so a
+		// control plane alone cannot make the runner mount an arbitrary host path (§24 trust boundary).
+		AllowUnsafeBind: os.Getenv("PALAI_WORKSPACE_UNSAFE_BIND") == "1",
 	}.Serve(ctx)
 }
 
