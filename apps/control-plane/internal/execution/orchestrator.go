@@ -44,6 +44,10 @@ type Orchestrator struct {
 	// when no sandbox driver is wired into this control plane — a shell tool call then fails
 	// cleanly rather than escaping. main.go injects it via SetShellRunner where a driver exists.
 	shell toolbroker.ShellRunner
+	// tasks is the durable session-scoped task/todo registry the task/todo tools persist through
+	// (spec §11). It is always the spine (the control plane owns the DB), so it is wired at
+	// construction; a stack opts into the durable primitives by registering the task/todo tools.
+	tasks toolbroker.TaskRegistry
 	// DialHandshakeDeadline bounds the dial + engine.ready handshake per attempt. Zero uses
 	// dialHandshakeDeadline; NewOrchestrator sets the default. Tests shorten it.
 	DialHandshakeDeadline time.Duration
@@ -53,7 +57,7 @@ type Orchestrator struct {
 // brokers into one kernel. The model route defaults to the deterministic fake provider;
 // main.go overrides it for a live provider via SetModelRoute.
 func NewOrchestrator(st *store.Store, dialer EngineDialer, models *modelbroker.Broker, tools *toolbroker.Broker) *Orchestrator {
-	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
+	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, tasks: newTaskRegistry(st.Spine()), route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
 }
 
 // SetModelRoute points the kernel at a non-default provider/model/secret selected by the

@@ -47,5 +47,10 @@ func (o *Orchestrator) execEnv(st *attemptState) toolbroker.ExecEnv {
 		WorkspaceRoot: st.attempt.WorkspaceHostPath,
 		ReadOnly:      st.attempt.WorkspaceReadOnly,
 		Shell:         o.shell,
+		Tasks:         o.tasks,
+		Scope: toolbroker.TaskScope{
+			Org: st.tenant.Organization, Project: st.tenant.Project,
+			SessionID: st.sessionID, RunID: string(st.attempt.RunID), ResponseID: st.responseID,
+		},
 	}
 }

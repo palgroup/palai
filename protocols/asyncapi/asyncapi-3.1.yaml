@@ -119,6 +119,8 @@ components:
         - child.requested.v1
         - child.completed.v1
         - child.denied.v1
+        - task.created.v1
+        - task.updated.v1
         - artifact.created.v1
         - usage.updated.v1
         - warning.raised.v1

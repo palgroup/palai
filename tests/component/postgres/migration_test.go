@@ -37,6 +37,7 @@ var allTables = []string{
 	"workspaces", "workspace_allocations", "workspace_leases", "workspace_snapshots",
 	"repository_bindings", "preparation_receipts",
 	"merge_records",
+	"tasks",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
