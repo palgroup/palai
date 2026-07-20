@@ -26,26 +26,20 @@ var errRunPaused = errors.New("run_paused")
 // deliver — the same guard the model/tool commits use. A command another attempt already
 // claimed returns ErrCommandNotPending and is skipped.
 //
-// ponytail: delivered-message loss across reclaim/resume — after ApplyCommand commits, the
-// delivered message lives only in the engine subprocess's memory until a model request folds it,
-// and run.start history reassembles from prior-RESPONSE outputs only (history.go), never a mid-run
-// user turn. Two variants survive T4, both in the reclaim class (T4 did not invent either).
-// The ORIGINAL variant: a message applied at a NORMAL boundary, then the attempt crashes BEFORE the
-// folding model step commits — the fresh attempt gets no redelivery (the command is already drained,
-// ApplyCommand is single-winner WHERE state='queued') and command.applied.v1 claims an effect that
-// is lost. The R1 variant: a message applied+folded+COMMITTED at a NORMAL boundary, then the run
-// pauses and RESUMES — the committed step's answer survives, but the fresh attempt's context drops
-// that user turn on every post-resume step, because run.start carries prior responses only, the
-// applied message is not redelivered, and step replay keys solely on model_request_id(run,step) with
-// no request_hash check (LookupModelResult), so the diverged context is never caught. Unlike the
-// original, R1 needs no crash: pause→resume triggers it user-initiated, crash-free.
-// T4 pause/resume does NOT hit the original: pause PRE-EMPTS the boundary (below), leaving queued
-// messages unapplied so resume re-delivers them from the queue, while committed model steps replay
-// from the journal (LookupModelResult). Both variants are deferred to E10's recovery ladder (plan
-// §7.4). The fix that closes BOTH is a durable delivered-message row — journaled at delivery, read
-// by run.start history assembly and re-deliverable on resume. The narrower "applied-undelivered
-// redelivery at attempt start" idea closes only the original: in R1 the message WAS delivered and
-// committed, so there is nothing undelivered to replay — only the durable row restores the lost turn.
+// Reclaim-crash-mid-fold (spec §26.9, E10 Task 2): a delivered message lives only in the engine
+// subprocess's memory until a model request folds it, and run.start reassembles from prior-RESPONSE
+// outputs only (history.go), never a mid-run user turn — so a fresh attempt used to drop it two ways.
+// (variant-1) applied then the attempt crashes BEFORE the folding step commits: the command is
+// drained (single-winner WHERE state='queued'), so nothing redelivered it and command.applied.v1
+// claimed a lost effect. (R1) applied+folded+COMMITTED, then pause→resume: the committed answer
+// survives, but the fresh attempt's context dropped that user turn on every post-resume step. BOTH
+// close with one mechanism: ApplyCommand journals a durable delivered_messages row keyed by the
+// boundary's deterministic model_request_id, and redeliverBoundaryMessages (below) refolds it at that
+// SAME input boundary as the loop re-walks — variant-1 refolds live, R1 refolds into a replayed step's
+// request, both at the input boundary (never inside a reconstructed step) and exactly once per
+// reconstructed conversation. run.start is left UNCHANGED: a mid-run turn belongs at its boundary, not
+// front-seeded among prior responses. Interrupt-path folds (InterruptModelStep) record no row — that
+// recovery half is E10 Task 7 (ENG-012 outage ordering), not this boundary path.
 func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState, boundaryRequestID string) error {
 	// A pending pause pre-empts the boundary (spec §22.3, SES-009): apply it and stop driving —
 	// every other queued command stays queued for resume to re-deliver (faithful resume). Read
@@ -64,6 +58,10 @@ func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState, bound
 	if err != nil {
 		return err
 	}
+	// Commands this pump call delivers fresh from the queue at this boundary. A reclaimed attempt
+	// finds these already applied (drained), so they only appear here on the attempt that first
+	// delivered them — the redelivery below skips them so the original attempt never double-delivers.
+	justApplied := map[string]bool{}
 	for _, cmd := range pending {
 		// A change_config applies at this boundary so the NEXT model step routes under the new
 		// config (the normal switch — spec §9.3); it emits no engine frame, the resolver reads
@@ -93,6 +91,7 @@ func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState, bound
 		}
 		// The applied_sequence is journaled in command.applied.v1 (ApplyCommand); the engine
 		// only needs the message and its delivery mode to fold it in at the input boundary.
+		justApplied[cmd.ID] = true
 		frame := o.frame(st, "message.deliver", map[string]any{
 			"command_id": cmd.ID,
 			"delivery":   cmd.Delivery,
@@ -102,10 +101,49 @@ func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState, bound
 			return err
 		}
 	}
+	// Redeliver any message a PRIOR attempt recorded at this boundary (spec §26.9, E10 Task 2): a
+	// crash between apply and the folding step's commit (variant-1) or a pause/resume after it (R1)
+	// left the applied command drained, so the queue read above returns nothing — the durable
+	// delivered_messages row is the only trace. Re-sending message.deliver here folds it at the SAME
+	// input boundary the deterministic model_request_id identifies, so the reconstructed conversation
+	// carries the turn in canonical position; the engine folds at flush_deliveries, never inside a
+	// reconstructed step. Rows this same call just delivered from the queue are skipped (no double).
+	if err := o.redeliverBoundaryMessages(ctx, st, boundaryRequestID, justApplied); err != nil {
+		return err
+	}
 	// After the queued commands settle (an approve may have just driven a publication to approved),
 	// publish any approved publication at this same boundary (spec §30.9-30.10, APV-001). A no-op
 	// without a wired publisher.
 	return o.pumpApprovedPublications(ctx, st)
+}
+
+// redeliverBoundaryMessages refolds, at this input boundary, every send_message a prior attempt
+// durably delivered here but a crash/pause dropped from the engine's memory (spec §26.9, E10 Task 2).
+// It keys on the boundary's deterministic model_request_id, so each message refolds at exactly its
+// original position, and skips any command this pump call already delivered fresh from the queue so
+// the attempt that first delivered a message never redelivers it. Sent once per boundary per attempt
+// (the boundary recurs once as the loop re-walks), the reconstructed conversation carries the turn
+// exactly once. Interrupt-delivered messages have no such row (E10 Task 7, ENG-012), so they are not
+// redelivered here.
+func (o *Orchestrator) redeliverBoundaryMessages(ctx context.Context, st *attemptState, boundaryRequestID string, justApplied map[string]bool) error {
+	redeliver, err := o.spine.RedeliverBoundaryMessages(ctx, st.tenant, string(st.attempt.RunID), boundaryRequestID)
+	if err != nil {
+		return err
+	}
+	for _, m := range redeliver {
+		if justApplied[m.CommandID] {
+			continue // this attempt delivered it fresh from the queue above
+		}
+		frame := o.frame(st, "message.deliver", map[string]any{
+			"command_id": m.CommandID,
+			"delivery":   m.Delivery,
+			"message":    decodeMessage(m.Payload),
+		}, "")
+		if err := st.ch.Send(ctx, frame); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // applyBoundaryConfigChange applies a queued change_config at a safe boundary: it resolves the

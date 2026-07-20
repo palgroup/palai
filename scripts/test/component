@@ -75,6 +75,14 @@ run_postgres() {
   PALAI_COMPONENT_POSTGRES_URL="$url" \
     go test -tags=component -count=1 -v ./tests/component/postgres
   local status=$?
+  # The E10 Task 2 redelivery-wiring tests drive the boundary pump against this same real spine
+  # (unexported pumpCommands ⇒ package execution). -run selects only the component-tagged behavior
+  # tests, so the package's Docker-free unit tests are not re-run here.
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v -run 'TestApplied|TestRedelivery' ./apps/control-plane/internal/execution
+    status=$?
+  fi
   set -e
   if test "$status" -ne 0; then
     docker logs "$container" >&2 || true
