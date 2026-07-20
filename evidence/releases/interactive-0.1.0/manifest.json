@@ -1,0 +1,192 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-20T07:43:06Z",
+  "cases": [
+    {
+      "checksum": "sha256:254c3d04bd7d2a35b92ec75d340f85480c7f6ab5c26ae8a992d7e2de8fd8cca2",
+      "db_assertions": [
+        "runs.state=completed on the real provider (chaining root)",
+        "model_requests.result.model=gpt-4o-mini-2024-07-18 (deployment default, the OLD model)",
+        "model_requests.provider_request_id present (chatcmpl)",
+        "the codename lives in the response OUTPUT, so the response-2 echo is a genuine history-carry proof"
+      ],
+      "id": "INT-CHAIN-OLD",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T07:47:39Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3cw5mG1GWBuWYzr849QgvL5SYLUG",
+      "run_id": "run_ab674c5fb2d993ff86e54ad39d06d3cd",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:4faff7f96c3ccc5005eb115d85b71f018a91ee93ec6289b24e2bed01c0e10ab7",
+      "db_assertions": [
+        "runs.state=completed on the switched NEW model",
+        "model_requests.result.model=gpt-4o-2024-08-06 — the consecutive row after gpt-4o-mini-2024-07-18 proves the normal switch old→new (§9.3)",
+        "model_requests.provider_request_id present (chatcmpl), distinct from response-1",
+        "response-2 was created via previous_response_id and its OUTPUT echoed the response-1 codename (history carried, §22.2)"
+      ],
+      "id": "INT-SWITCH-HISTORY",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T07:47:39Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3cw7P5gebbzCnq0tQPcYDjUdLx1g",
+      "run_id": "run_416b56c32528d82d9cbdfd6ff384c13d",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:70140ae3c799510da465f48b52f10a4b9227f734de6a835fb30c7f2c99fce100",
+      "db_assertions": [
+        "runs.state=completed after a real in-flight abort (model_step.interrupted.v1 journaled)",
+        "command.applied.v1 applied_sequence=22 lands BETWEEN two real model_step.created.v1 events (§22.4, §25.11)",
+        "model_requests.provider_request_id present (chatcmpl) — the resumed real call",
+        "the delivered interrupt message steered the resumed call (output carried the redirect token)"
+      ],
+      "id": "INT-INTERRUPT",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T07:47:39Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3cwBbaxSFhUPYZPP5SKyqeNPMRsd",
+      "run_id": "run_d8f311e7e90415e73f6cf6c735770f22",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:fb9b57c0e52b1ef2afc96a127278d70fdb06b07e9b681515f6de4f14724d0afc",
+      "db_assertions": [
+        "parent runs.state=completed on the switched NEW model; provider_request_id is a chatcmpl",
+        "the parent required-delegated a child and its terminal links the child run id (§25.19)",
+        "parent model gpt-4o-2024-08-06 is distinct from the child's cheaper id (independent routing)"
+      ],
+      "id": "INT-CHILD-PARENT",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T07:47:39Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3cwDra6vijlnsoag1gLOjdlEqxfQ",
+      "run_id": "run_f980568e7af1a8aac2709d69d96d069f",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:564b7f57e64ccd29a832cccd8fd6f6ec0048b326ca9c0d442cb70243e3ce618b",
+      "db_assertions": [
+        "child runs.state=completed as its OWN run on the real provider (SUB-002)",
+        "child provider_request_id is a genuine chatcmpl, DISTINCT from the parent's",
+        "child routed its own cheaper model id (gpt-4o-mini), not the parent's"
+      ],
+      "id": "INT-CHILD",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T07:47:39Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3cwErql1TsLfJdXPR5haADMrKMzv",
+      "run_id": "run_5ae41a4d88e8b042",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:254c3d04bd7d2a35b92ec75d340f85480c7f6ab5c26ae8a992d7e2de8fd8cca2",
+      "db_assertions": [
+        "two authorized clients attached to the session and saw the identical ordered journal",
+        "both computed the identical journal hash sha256:90a23a1b4252cda9daf8ec0b51b0a710fbd1fb36cf80af31c07cb42d835d9c5d over 6 frames (SES-001)",
+        "the attached journal is response-1's real engine-driven run (its chatcmpl is the real-wire proof); the stream closes at the first run terminal"
+      ],
+      "id": "INT-ATTACH",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T07:47:39Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3cw5mG1GWBuWYzr849QgvL5SYLUG",
+      "run_id": "run_ab674c5fb2d993ff86e54ad39d06d3cd",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:49409a3e3f662a599b186e7ad129b7756bf06a2fd9ded5e12fbec2828fd01c39",
+      "db_assertions": [
+        "a chained long generation was canceled after its real model call started",
+        "run.state=canceled; run.canceled.v1 is the single terminal for the response (§22.3)",
+        "the canceled run commits no result of its own; provider_request_id is a prior real same-session call (real-wire proof)"
+      ],
+      "id": "INT-CANCEL",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T07:47:39Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3cw7P5gebbzCnq0tQPcYDjUdLx1g",
+      "run_id": "run_aa08d4943051ffd7efa54f04e43b232e",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.canceled"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:01557ac5b2e0ab750c9ac53c6a50bcea2a2f766c28fd167ea1401de9cd7816fb",
+      "db_assertions": [
+        "fork_session applied; the child session is active (a reference copy of the pre-fork history, §22.8)",
+        "the fork ran its OWN real response-3 to completion; provider_request_id is its own chatcmpl",
+        "the fork's committed response carried a real output token, not just a chatcmpl id (a live child session)"
+      ],
+      "id": "INT-FORK",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T07:47:39Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3cwSeuojtW8pGUqJbiLyagUq53Ur",
+      "run_id": "run_d8350c04b094031cf0ddc31e2a0be3fb",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:70140ae3c799510da465f48b52f10a4b9227f734de6a835fb30c7f2c99fce100",
+      "db_assertions": [
+        "close_session applied; session state=closed (§22.1)",
+        "the closed session rejects a new response (409 session_not_active) and a new command (typed rejection)",
+        "close makes no model call; provider_request_id is a prior real same-session call (real-wire proof)"
+      ],
+      "id": "INT-CLOSE",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T07:47:39Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3cwBbaxSFhUPYZPP5SKyqeNPMRsd",
+      "run_id": "run_d8f311e7e90415e73f6cf6c735770f22",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    }
+  ],
+  "git_sha": "4bdbaf5",
+  "migration": "000007_child_runs",
+  "release": "interactive-0.1.0"
+}
