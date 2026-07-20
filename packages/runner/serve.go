@@ -30,6 +30,11 @@ type ServeConfig struct {
 	Now     func() time.Time
 	Log     func(format string, args ...any)
 	Backoff time.Duration // between a failed dial/renewal and the next attempt; zero = 1s
+	// Concurrency is how many leases the runner parks at once on its shared enrolled identity.
+	// Zero or one is the sequential one-lease-at-a-time default (LP-0 unchanged); >1 lets a
+	// delegating run's parent hold its engine while an inline child dials its own on the same
+	// runner (spec §25.18), instead of deadlocking on a single lease slot.
+	Concurrency int
 }
 
 // Serve runs the runner's lease loop until ctx is cancelled: it parks for a lease, supervises
@@ -64,15 +69,31 @@ func (cfg ServeConfig) Serve(ctx context.Context) {
 			cfg.renewLoop(ctx, &mu, &identity, now, logf, backoff)
 		})
 	}
-	defer wg.Wait()
 
+	// Park N leases concurrently on the shared identity (default 1 = the sequential LP-0
+	// behaviour). >1 lets a delegating run hold its parent engine while an inline child dials
+	// its own on the same runner (spec §25.18), rather than deadlocking on one lease slot.
+	loops := cfg.Concurrency
+	if loops < 1 {
+		loops = 1
+	}
+	for range loops {
+		wg.Go(func() { cfg.parkLoop(ctx, &mu, &identity, logf, backoff) })
+	}
+	wg.Wait()
+}
+
+// parkLoop parks for one lease at a time and supervises the leased engine until ctx is
+// cancelled, re-reading the shared (renewable) identity for each dial. N of these run
+// concurrently per Serve's Concurrency, each an independent lease slot on one runner identity.
+func (cfg ServeConfig) parkLoop(ctx context.Context, mu *sync.Mutex, identity *Identity, logf func(string, ...any), backoff time.Duration) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		mu.Lock()
 		session := cfg.Session
-		session.Identity = identity
+		session.Identity = *identity
 		mu.Unlock()
 
 		leaseSession, err := session.OpenLease(ctx)

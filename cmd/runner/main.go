@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -70,6 +71,9 @@ func main() {
 		Renew:      renew,
 		Now:        time.Now,
 		Log:        log.Printf,
+		// Default 1 (LP-0 + existing stacks unchanged); the delegation-capable stack sets 2 so a
+		// run's parent and its inline child each hold an engine on this runner (spec §25.18).
+		Concurrency: envIntDefault("PALAI_RUNNER_CONCURRENCY", 1),
 	}.Serve(ctx)
 }
 
@@ -109,4 +113,12 @@ func mustEnv(name string) string {
 		log.Fatalf("%s is required", name)
 	}
 	return value
+}
+
+// envIntDefault reads a positive integer env var, falling back to def when unset or unparseable.
+func envIntDefault(name string, def int) int {
+	if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
+		return n
+	}
+	return def
 }

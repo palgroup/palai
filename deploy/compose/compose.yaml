@@ -105,6 +105,9 @@ services:
       # One-use; consumed at connect, never persisted by the runner.
       PALAI_ENROLLMENT_TOKEN_FILE: /palai/runner-token
       PALAI_ENGINE_IMAGE: ${PALAI_ENGINE_IMAGE}
+      # Concurrent lease slots on this runner. Default 1 (LP-0 + existing stacks unchanged); the
+      # delegation smoke sets 2 so a run's parent and its inline child each hold an engine (§25.18).
+      PALAI_RUNNER_CONCURRENCY: ${PALAI_RUNNER_CONCURRENCY:-1}
       # The compose project this runner belongs to; it labels every engine sandbox it
       # launches so `palai local down` reaps exactly this stack's orphaned engines (H4).
       PALAI_COMPOSE_PROJECT: ${PALAI_COMPOSE_PROJECT}
