@@ -98,7 +98,8 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 	// real tool round-trip against the prepared workspace, the deterministic mirror of the live T4 loop. ---
 	const marker = "CODING-JOURNEY-DET-8f3a2c"
 	orch := h.newOrchestratorWithTools(subprocessDialer{engineDir: h.engineDir},
-		&codingProvider{marker: marker}, tools.FileTool(), tools.ShellTool(), tools.CommitTool(), tools.TaskTool())
+		&codingProvider{marker: marker}, tools.FileTool(), tools.ShellTool(), tools.CommitTool(),
+		tools.TaskTool(), tools.PushTool(), tools.PullRequestTool())
 	orch.SetShellRunner(hostShellRunner{})
 
 	if err := orch.ExecuteAttempt(ctx, h.workspaceDescriptor(runID, 1, alloc)); err != nil {
@@ -151,6 +152,82 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 	if changeset.FinalCommit == "" || changeset.FinalCommit == changeset.BaseCommit {
 		t.Fatalf("changeset final commit = %q (base %q), want the committed head", changeset.FinalCommit, changeset.BaseCommit)
 	}
+
+	// --- Step 11: an approved branch push + a draft PR happen exactly once (REP-006/008, APV-001). The
+	// push + PR tools created PENDING publications during the run — their destination (remote/branch/base)
+	// resolved from the BINDING, not the model. The publish half then drives the approved rows through the
+	// REAL RepositoryPublisher to the faithful remote (a genuine external receipt) and a stub PR client. ---
+	if n := h.count(`SELECT count(*) FROM publications WHERE run_id=$1 AND state='pending_approval'`, runID); n != 2 {
+		t.Fatalf("pending publications = %d, want 2 (push + PR)", n)
+	}
+	// The push destination came from the binding + preparation receipt, not the model: the exact remote,
+	// the agent work branch, and the committed head.
+	var pushRemote, pushBranch, pushHead string
+	if err := h.spine.Pool().QueryRow(ctx,
+		`SELECT remote, branch, head_sha FROM publications WHERE run_id=$1 AND operation='push_branch'`, runID).
+		Scan(&pushRemote, &pushBranch, &pushHead); err != nil {
+		t.Fatalf("read pending push publication: %v", err)
+	}
+	if pushRemote != remote.url || pushBranch != workBranch || pushHead != changeset.FinalCommit {
+		t.Fatalf("pending push = remote:%q branch:%q head:%q, want the binding's %q / %q / committed %q (model cannot redirect)",
+			pushRemote, pushBranch, pushHead, remote.url, workBranch, changeset.FinalCommit)
+	}
+
+	// Approve both publications (approve->approved). The approve COMMAND boundary is proven by T8's
+	// ApplyApprovalDecision; here the run has already terminated, so the journey flips the durable rows to
+	// approved directly and drives the pump, exactly as an approve arriving at a boundary would leave them.
+	if _, err := h.spine.Pool().Exec(ctx,
+		`UPDATE publications SET state='approved' WHERE run_id=$1 AND state='pending_approval'`, runID); err != nil {
+		t.Fatalf("approve publications: %v", err)
+	}
+
+	publisher := &execution.RepositoryPublisher{Broker: repositories.NewLocalBrokerWithToken("palai-DET-push-secret"), PRClient: &countingPRClient{}}
+	// pump drains the run's approved-but-unpublished publications through the REAL publisher + store, the
+	// same loop the orchestrator's boundary pump runs. A re-drive after everything is published drains an
+	// empty set — that is the idempotency proof.
+	pump := func() {
+		approved, err := h.spine.ApprovedPublicationsForRun(ctx, h.tenant, runID)
+		if err != nil {
+			t.Fatalf("read approved publications: %v", err)
+		}
+		for _, pub := range approved {
+			receipt, err := publisher.Publish(ctx, execution.PublishTarget{
+				Publication: pub, WorkspaceRoot: alloc,
+				Org: h.tenant.Organization, Project: h.tenant.Project, AttemptFence: 1,
+			})
+			if err != nil {
+				t.Fatalf("publish %s: %v", pub.Operation, err)
+			}
+			if err := h.spine.MarkPublicationPublished(ctx, h.tenant, sessionID, responseID, pub.ID, pub.Operation, receipt); err != nil {
+				t.Fatalf("mark published %s: %v", pub.Operation, err)
+			}
+		}
+	}
+	pump()
+
+	// External receipt: the faithful remote's agent branch now points at exactly the approved head.
+	if got := remote.branchSHA(t, workBranch); got != changeset.FinalCommit {
+		t.Fatalf("remote ref = %q, want the approved head %q (external receipt)", got, changeset.FinalCommit)
+	}
+	if n := h.count(`SELECT count(*) FROM publications WHERE run_id=$1 AND state='published' AND operation='push_branch'`, runID); n != 1 {
+		t.Fatalf("published push rows = %d, want 1", n)
+	}
+	if n := h.count(`SELECT count(*) FROM publications WHERE run_id=$1 AND state='published' AND operation='open_pull_request'`, runID); n != 1 {
+		t.Fatalf("published PR rows = %d, want 1 (a single draft PR)", n)
+	}
+
+	// Idempotency (REP-007/008): a re-driven pump (a lost ack, or E10's detached execution) republishes
+	// NOTHING — the durable rows are already published — so there is no duplicate push and no second PR.
+	pump()
+	if got := remote.branchSHA(t, workBranch); got != changeset.FinalCommit {
+		t.Fatalf("remote ref after re-drive = %q, want the unchanged head %q (no duplicate/force push)", got, changeset.FinalCommit)
+	}
+	if n := h.count(`SELECT count(*) FROM publications WHERE run_id=$1 AND state='published'`, runID); n != 2 {
+		t.Fatalf("published rows after re-drive = %d, want exactly 2 (push + PR, once each)", n)
+	}
+	if pr := publisher.PRClient.(*countingPRClient); pr.opens != 1 {
+		t.Fatalf("PR client opened %d PRs, want exactly 1 (a duplicate request must not open a second)", pr.opens)
+	}
 }
 
 // --- fake coding provider + faithful shell double --------------------------------------------------
@@ -194,9 +271,20 @@ func (p *codingProvider) Execute(_ context.Context, req modelbroker.Request, _ s
 			Arguments: `{"message":"Add feature.txt"}`,
 		}}
 		res.FinishReason = "tool_calls"
+	case 3: // request a branch push (a gated side effect -> pending approval)
+		res.ProviderRequestID = "prov_push"
+		res.ToolCalls = []modelbroker.ToolCall{{ID: "call_push", Name: "palai.publish.push", Arguments: `{}`}}
+		res.FinishReason = "tool_calls"
+	case 4: // request a draft pull request (pending approval)
+		res.ProviderRequestID = "prov_pr"
+		res.ToolCalls = []modelbroker.ToolCall{{
+			ID: "call_pr", Name: "palai.publish.pull_request",
+			Arguments: `{"title":"Add feature","body":"adds feature.txt"}`,
+		}}
+		res.FinishReason = "tool_calls"
 	default: // summarize and finish
 		res.ProviderRequestID = "prov_final"
-		res.Output = "edited repo/feature.txt, the test passed, committed"
+		res.Output = "edited repo/feature.txt, the test passed, committed, requested push + PR"
 		res.FinishReason = "stop"
 	}
 	return res, nil
@@ -264,6 +352,28 @@ func (h *harness) workspaceDescriptor(runID string, fence int64, allocationRoot 
 	return d
 }
 
+// countingPRClient is a deterministic PullRequestClient that does genuine find-before-create: the first
+// Open records the PR; a later Find returns it (so a duplicate request adopts the existing PR, REP-008).
+// opens counts real creations, so the test proves at most one PR is ever opened.
+type countingPRClient struct {
+	opens int
+	pr    *repositories.PullRequest
+}
+
+func (c *countingPRClient) Find(_ context.Context, _, _ string) (repositories.PullRequest, bool, error) {
+	if c.pr != nil {
+		return *c.pr, true, nil
+	}
+	return repositories.PullRequest{}, false, nil
+}
+
+func (c *countingPRClient) Open(_ context.Context, in repositories.OpenPRInput) (repositories.PullRequest, error) {
+	c.opens++
+	pr := repositories.PullRequest{ID: "PR_det9", URL: "https://git.example.test/acme/widgets/pull/9", Number: 9, Draft: in.Draft}
+	c.pr = &pr
+	return pr, nil
+}
+
 // --- faithful Git double + workspace fixtures ------------------------------------------------------
 
 // codingRemote is a real local git remote that serves the exact clone commit by sha AND receives the
@@ -285,6 +395,12 @@ func newCodingRemote(t *testing.T) codingRemote {
 	run("add", "README.md")
 	run("commit", "-q", "-m", "initial commit")
 	return codingRemote{url: dir, head: run("rev-parse", "HEAD")}
+}
+
+// branchSHA reads the sha the remote's branch points at — the external receipt after a push.
+func (r codingRemote) branchSHA(t *testing.T, branch string) string {
+	t.Helper()
+	return codingGit(t, r.url)("rev-parse", "refs/heads/"+branch)
 }
 
 // newAllocationRoot creates a workspace allocation root the journey clones the repo into (at <root>/repo)
