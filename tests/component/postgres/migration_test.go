@@ -36,6 +36,7 @@ var allTables = []string{
 	"artifacts",
 	"workspaces", "workspace_allocations", "workspace_leases", "workspace_snapshots",
 	"repository_bindings", "preparation_receipts",
+	"merge_records",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -476,6 +477,62 @@ func TestRepositoryBindingsMigration(t *testing.T) {
 		if !tableExists(t, pool, name) {
 			t.Fatalf("after reapply, %s is missing", name)
 		}
+	}
+}
+
+// TestMergeRecordsMigration proves 000011 adds its table idempotently and reverses cleanly (spec
+// §30.5; the 000009 re-run-safety pattern).
+func TestMergeRecordsMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "merge_records") {
+		t.Fatal("after apply, merge_records is missing")
+	}
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if tableExists(t, pool, "merge_records") {
+		t.Fatal("after rollback, merge_records still exists")
+	}
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "merge_records") {
+		t.Fatal("after reapply, merge_records is missing")
+	}
+}
+
+// TestRecordMergeRoundTrip proves an explicit merge outcome is durably recorded with its source
+// child run + conflict paths (spec §30.5, REP-011).
+func TestRecordMergeRoundTrip(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, sessionID, parentRun := seedRun(t, pool)
+	childRun := newID("run")
+	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth) VALUES ($1,$2,$3,$4,'completed',$5,1)`,
+		childRun, tenant.Organization, tenant.Project, sessionID, parentRun)
+
+	if err := cs.RecordMerge(ctx, tenant, coordinator.MergeRecordInput{
+		MergeID: newID("mrg"), ParentRunID: parentRun, SourceChildRunID: childRun,
+		ChildBranch: "agent/ses/run", Merged: false, ConflictPaths: []string{"f.txt"},
+	}); err != nil {
+		t.Fatalf("RecordMerge() error = %v", err)
+	}
+
+	var merged bool
+	var source, conflicts string
+	if err := pool.QueryRow(ctx, `SELECT merged, source_child_run_id, conflict_paths::text FROM merge_records WHERE parent_run_id=$1`, parentRun).
+		Scan(&merged, &source, &conflicts); err != nil {
+		t.Fatalf("read merge record: %v", err)
+	}
+	if merged || source != childRun || conflicts != `["f.txt"]` {
+		t.Fatalf("merge record = merged:%v source:%s conflicts:%s, want false / %s / [\"f.txt\"]", merged, source, conflicts, childRun)
 	}
 }
 

@@ -74,6 +74,26 @@ func TestBrokerExpiredCredentialFailsClosed(t *testing.T) {
 	}
 }
 
+// TestProtectedBranchDirectWorkDenied proves the branch policy (spec §30.5): direct mutable work on
+// a protected/default branch is denied, while a generated agent/<...> or feature branch is allowed.
+func TestProtectedBranchDirectWorkDenied(t *testing.T) {
+	denied := []string{"main", "master", "release"} // release via the widened protected set
+	for _, b := range denied {
+		if DirectWorkAllowed(b, []string{"release"}) {
+			t.Errorf("DirectWorkAllowed(%q) = true, want denied", b)
+		}
+	}
+	allowed := []string{ChildBranch("ses1", "run1"), "feature/x", "agent/ses2/run2"}
+	for _, b := range allowed {
+		if !DirectWorkAllowed(b, []string{"release"}) {
+			t.Errorf("DirectWorkAllowed(%q) = false, want allowed", b)
+		}
+	}
+	if DirectWorkAllowed("", nil) {
+		t.Error("DirectWorkAllowed(\"\") = true, want denied (no branch)")
+	}
+}
+
 // TestValidateSubmoduleURLRejectsRCEVectors proves the untrusted-submodule transport allowlist
 // (spec §30.4): ext:: (arbitrary command) and file:// (local escape) are rejected, https/ssh and
 // relative URLs pass.

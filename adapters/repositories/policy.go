@@ -38,6 +38,30 @@ type Finding struct {
 // — the two classic untrusted-submodule vectors (§30.4).
 var defaultSubmoduleSchemes = []string{"https", "ssh", "git"}
 
+// defaultProtectedBranches are the branches direct agent work is denied on by default (spec §30.5):
+// the common default branches. A binding's branch policy may widen the protected set.
+var defaultProtectedBranches = []string{"main", "master"}
+
+// DirectWorkAllowed reports whether an agent may do direct mutable work on branch (spec §30.5).
+// Direct work on a protected or default branch is denied by default — mutable work uses a generated
+// agent/<session>/<run> branch instead (ChildBranch). protected widens the default set from policy.
+func DirectWorkAllowed(branch string, protected []string) bool {
+	if strings.TrimSpace(branch) == "" {
+		return false
+	}
+	for _, p := range defaultProtectedBranches {
+		if branch == p {
+			return false
+		}
+	}
+	for _, p := range protected {
+		if branch == p {
+			return false
+		}
+	}
+	return true
+}
+
 // hardenedConfig is the `-c` override list every Git invocation in a preparation carries. Together
 // with hardenedEnv they neutralize the untrusted-repo attack surface (spec §30.4): hooks are
 // disabled, arbitrary-command transports/filters are refused, and neither repository nor ambient

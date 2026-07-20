@@ -29,6 +29,31 @@ func TestAdmitChildDepthAndFanoutBounded(t *testing.T) {
 	}
 }
 
+// TestAdmitChildEnforcesWorkspaceMode proves the E09 Task 6 enforcement of the T1 declare-only enum
+// (spec §30.5): a valid workspace_mode (none/read_only/isolated, or empty = none) is admitted and
+// resolves to the right writability; an unrecognized mode is denied rather than dispatched with an
+// unknown workspace.
+func TestAdmitChildEnforcesWorkspaceMode(t *testing.T) {
+	var policy coordinator.ConfigPolicy // unrestricted
+
+	for _, mode := range []string{"", "none", "read_only", "isolated"} {
+		if got := admitChild(childSpec{Model: "m", WorkspaceMode: mode}, 0, 0, 0, false, policy, nil); got.Denied {
+			t.Fatalf("workspace_mode %q admission = %+v, want admitted", mode, got)
+		}
+	}
+	if got := admitChild(childSpec{Model: "m", WorkspaceMode: "wide-open"}, 0, 0, 0, false, policy, nil); !got.Denied || got.Reason != "invalid_workspace_mode" {
+		t.Fatalf("invalid workspace_mode admission = %+v, want denied invalid_workspace_mode", got)
+	}
+
+	// Resolution: read_only is not writable, isolated is, none is not.
+	for mode, wantWritable := range map[string]bool{"none": false, "read_only": false, "isolated": true} {
+		plan, ok := resolveChildWorkspace(mode)
+		if !ok || plan.Writable != wantWritable {
+			t.Fatalf("resolveChildWorkspace(%q) = %+v ok=%v, want writable=%v", mode, plan, ok, wantWritable)
+		}
+	}
+}
+
 // TestAdmitChildBudgetIntersectsParentRemainder proves the budget half (SUB-004, spec §25.18):
 // a child's requested budget is intersected with the parent's remainder — clamped when it
 // over-requests, passed through under an unbounded parent, and denied when the parent is exhausted.

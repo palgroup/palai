@@ -22,6 +22,43 @@ const (
 	maxChildFanout = 4
 )
 
+// Child workspace modes (spec §29.8, §30.5), pinned in the child.request contract in E09 Task 1 and
+// ENFORCED here (Task 6 — the T1 declare-only debt closes): none = no workspace (the E08 default);
+// read_only = a read-only snapshot (the child cannot mutate it); isolated = an isolated
+// copy-on-write worktree on the child's own branch (mutable, merged back only explicitly).
+const (
+	workspaceModeNone     = "none"
+	workspaceModeReadOnly = "read_only"
+	workspaceModeIsolated = "isolated"
+)
+
+// childWorkspace is the resolved workspace plan a delegated child runs under (spec §30.5). It is what
+// provisioning realizes: read_only → a read-only snapshot (Writable false, denied a writer lease);
+// isolated → a mutable worktree on agent/<session>/<run> (Writable true); none → no workspace.
+type childWorkspace struct {
+	Mode     string
+	Writable bool
+}
+
+// resolveChildWorkspace validates and resolves a child's workspace_mode (spec §30.5). An empty mode
+// is the E08 default (none); an unrecognized value is rejected — the workspace a child receives can
+// never be an unknown mode. The isolated/read_only worktree is REALIZED by the repositories worktree
+// mechanics (AddIsolatedWorktree / AddReadOnlyWorktree) when the child's workspace is provisioned.
+// ponytail: children run inline with no workspace provisioned yet (same gap as repository preparation
+// in T3) — this resolves + gates the mode; provisioning wires the realization where it lands (T9).
+func resolveChildWorkspace(mode string) (childWorkspace, bool) {
+	switch mode {
+	case "", workspaceModeNone:
+		return childWorkspace{Mode: workspaceModeNone, Writable: false}, true
+	case workspaceModeReadOnly:
+		return childWorkspace{Mode: workspaceModeReadOnly, Writable: false}, true
+	case workspaceModeIsolated:
+		return childWorkspace{Mode: workspaceModeIsolated, Writable: true}, true
+	default:
+		return childWorkspace{}, false
+	}
+}
+
 // childSpec is one delegation the engine asked the controller to admit and dispatch — the
 // child.request frame decoded (spec §25.18). Budget is the requested max_total_tokens (0 =
 // unbounded request); Required marks a delegation whose failure fails the parent (SUB-003).
@@ -56,6 +93,11 @@ func admitChild(spec childSpec, parentDepth, fanoutUsed, parentRemaining int, pa
 	}
 	if fanoutUsed >= maxChildFanout {
 		return childAdmission{Denied: true, Reason: "fanout_exceeded"}
+	}
+	// Workspace mode is enforced at the gate: an unrecognized mode is rejected rather than
+	// dispatched with an unknown workspace (spec §30.5; the T1 declare-only enum is enforced here).
+	if _, ok := resolveChildWorkspace(spec.WorkspaceMode); !ok {
+		return childAdmission{Denied: true, Reason: "invalid_workspace_mode"}
 	}
 	if denied := capabilityDeniedTool(spec.Tools, parentTools, policy); denied != "" {
 		return childAdmission{Denied: true, Reason: "capability_denied"}
@@ -134,7 +176,8 @@ func parseRunDelegation(raw []byte) runDelegation {
 }
 
 // emitFrames renders the seeded delegations as the run.start data.delegations the engine emits as
-// child.request frames (the workspace_mode default is carried in the contract, enforced by E09).
+// child.request frames. The workspace_mode default is carried in the contract; admitChild now
+// validates it and resolveChildWorkspace resolves the plan (Task 6).
 func (d runDelegation) emitFrames() []map[string]any {
 	out := make([]map[string]any, 0, len(d.Emit))
 	for _, s := range d.Emit {
