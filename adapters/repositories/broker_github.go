@@ -62,11 +62,7 @@ func NewGitHubAppBroker(cfg GitHubAppConfig) (Broker, error) {
 // Mint exchanges a freshly-signed App JWT for a repository-scoped installation token whose permissions
 // match the scope. The token is retained opaquely by handle; the caller never sees it (§30.2).
 func (b *githubAppBroker) Mint(ctx context.Context, scope Scope, aud Audience) (Credential, error) {
-	jwt, err := b.appJWT()
-	if err != nil {
-		return Credential{}, err
-	}
-	token, expires, err := b.createInstallationToken(ctx, jwt, scope)
+	token, expires, err := mintGitHubInstallationToken(ctx, b.cfg, b.key, b.now(), scope)
 	if err != nil {
 		return Credential{}, err
 	}
@@ -88,39 +84,47 @@ func (b *githubAppBroker) Revoke(ctx context.Context, handle string) error {
 	return b.revokeInstallationToken(ctx, sec.token)
 }
 
-// appJWT builds and RS256-signs the short-lived (≤10 min) App JWT the token endpoint requires. iat is
-// backdated 60s for clock skew; the token itself never leaves this process.
-func (b *githubAppBroker) appJWT() (string, error) {
-	now := b.now()
+// githubAppJWT builds and RS256-signs the short-lived (≤10 min) App JWT the token endpoint requires.
+// iat is backdated 60s for clock skew; the token itself never leaves this process. A free function so
+// both the App broker and the pull-request client (publish.go) sign against the same key without one
+// depending on the other.
+func githubAppJWT(now time.Time, appID string, key *rsa.PrivateKey) (string, error) {
 	claims, err := json.Marshal(map[string]any{
 		"iat": now.Add(-60 * time.Second).Unix(),
 		"exp": now.Add(9 * time.Minute).Unix(),
-		"iss": b.cfg.AppID,
+		"iss": appID,
 	})
 	if err != nil {
 		return "", fmt.Errorf("encode app jwt claims: %w", err)
 	}
 	signingInput := b64(`{"alg":"RS256","typ":"JWT"}`) + "." + b64(string(claims))
 	sum := sha256.Sum256([]byte(signingInput))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, b.key, crypto.SHA256, sum[:])
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, sum[:])
 	if err != nil {
 		return "", fmt.Errorf("sign app jwt: %w", err)
 	}
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
-// createInstallationToken POSTs the JWT to the installation access-token endpoint, scoping the token to
-// this broker's repositories and the scope's permissions (spec §30.2 separately-scoped credentials).
-func (b *githubAppBroker) createInstallationToken(ctx context.Context, jwt string, scope Scope) (string, time.Time, error) {
+// mintGitHubInstallationToken signs an App JWT and POSTs it to the installation access-token endpoint,
+// scoping the token to cfg.Repositories and the scope's permissions (spec §30.2 separately-scoped
+// credentials). Shared by the App broker (Git credential path) and the pull-request client (API path),
+// so one minting implementation serves both. The token is returned to the immediate caller, which keeps
+// it inside the broker vault or a one-shot Authorization header — never a log or the model context.
+func mintGitHubInstallationToken(ctx context.Context, cfg GitHubAppConfig, key *rsa.PrivateKey, now time.Time, scope Scope) (string, time.Time, error) {
+	jwt, err := githubAppJWT(now, cfg.AppID, key)
+	if err != nil {
+		return "", time.Time{}, err
+	}
 	body := map[string]any{"permissions": permissionsForScope(scope)}
-	if len(b.cfg.Repositories) > 0 {
-		body["repositories"] = b.cfg.Repositories
+	if len(cfg.Repositories) > 0 {
+		body["repositories"] = cfg.Repositories
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("encode token request: %w", err)
 	}
-	endpoint := strings.TrimRight(b.cfg.BaseURL, "/") + "/app/installations/" + b.cfg.InstallationID + "/access_tokens"
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/app/installations/" + cfg.InstallationID + "/access_tokens"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("build token request: %w", err)
@@ -128,7 +132,7 @@ func (b *githubAppBroker) createInstallationToken(ctx context.Context, jwt strin
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	resp, err := b.cfg.HTTPClient.Do(req)
+	resp, err := cfg.HTTPClient.Do(req)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("create installation token: %w", err)
 	}
@@ -149,7 +153,7 @@ func (b *githubAppBroker) createInstallationToken(ctx context.Context, jwt strin
 		return "", time.Time{}, fmt.Errorf("installation token response carried no token")
 	}
 	if out.ExpiresAt.IsZero() {
-		out.ExpiresAt = b.now().Add(time.Hour) // installation tokens expire in ~1h
+		out.ExpiresAt = now.Add(time.Hour) // installation tokens expire in ~1h
 	}
 	return out.Token, out.ExpiresAt, nil
 }

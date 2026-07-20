@@ -39,6 +39,7 @@ var allTables = []string{
 	"merge_records",
 	"changesets", "changeset_findings",
 	"tasks",
+	"publications", "approvals",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }

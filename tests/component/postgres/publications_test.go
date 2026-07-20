@@ -1,0 +1,226 @@
+//go:build component
+
+package postgres
+
+import (
+	"context"
+	"testing"
+
+	"github.com/palgroup/palai/adapters/repositories"
+	"github.com/palgroup/palai/packages/coordinator"
+)
+
+// TestApprovalsPublicationsMigration proves 000013 adds its two tables idempotently and reverses
+// cleanly (spec §30.8; the 000010/000012 re-run-safety pattern).
+func TestApprovalsPublicationsMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"publications", "approvals"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after apply, %s is missing", name)
+		}
+	}
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, name := range []string{"publications", "approvals"} {
+		if tableExists(t, pool, name) {
+			t.Fatalf("after rollback, %s still exists", name)
+		}
+	}
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"publications", "approvals"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after reapply, %s is missing", name)
+		}
+	}
+}
+
+// TestRequestPublicationIdempotent proves the operation-level idempotency (spec §30.8, decision (b)): a
+// duplicate request (same idempotency key) resolves to the ORIGINAL pending publication rather than
+// stacking a second approval.
+func TestRequestPublicationIdempotent(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, sessionID, runID := seedRun(t, pool)
+
+	key := repositories.IdempotencyKey(tenant.Organization, tenant.Project, runID, repositories.OpPushBranch, "git@h:o/r", "agent/s/r", "main", "abc123")
+	in := coordinator.PublicationRequest{
+		PublicationID: newID("pub"), ApprovalID: newID("apr"), SessionID: sessionID, RunID: runID,
+		Operation: "push_branch", Remote: "git@h:o/r", Branch: "agent/s/r", Base: "main", HeadSHA: "abc123",
+		IdempotencyKey: key, RequestHash: "req_1", Display: "push agent/s/r",
+	}
+	first, err := cs.RequestPublication(ctx, tenant, in)
+	if err != nil {
+		t.Fatalf("first RequestPublication error = %v", err)
+	}
+	if first.Replayed {
+		t.Fatal("a first request must not be a replay")
+	}
+	dup := in
+	dup.PublicationID = newID("pub") // a different row id, but the SAME idempotency key
+	dup.ApprovalID = newID("apr")
+	second, err := cs.RequestPublication(ctx, tenant, dup)
+	if err != nil {
+		t.Fatalf("duplicate RequestPublication error = %v", err)
+	}
+	if !second.Replayed || second.ID != first.ID {
+		t.Fatalf("duplicate request = {id:%s replayed:%v}, want the original id %s replayed", second.ID, second.Replayed, first.ID)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM publications WHERE run_id=$1`, runID).Scan(&count); err != nil {
+		t.Fatalf("count publications error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("publications for run = %d, want 1 (idempotent request records no second)", count)
+	}
+}
+
+// TestPendingApprovalApproveProceedsDenyBlocks proves APV-001: a side-effect tool's pending publication
+// makes an approve/deny PROCEED (queued for the boundary) instead of the E08 rejection; approve drives
+// the publication to a durable approved state (the pump's drain sees it); deny blocks it; and with NO
+// pending approval the E08 no_pending_approval rejection is preserved.
+func TestPendingApprovalApproveProceedsDenyBlocks(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, sessionID, runID := seedRun(t, pool)
+	// A live session + running root run with a response the approve/deny journal scopes to.
+	exec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
+	respID := newID("resp")
+	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+		respID, tenant.Organization, tenant.Project, sessionID)
+	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
+
+	// 1. No pending approval: an approve is accepted-but-rejected (E08 preserved).
+	rej, err := cs.AcceptCommand(ctx, tenant, sessionID, coordinator.CommandInput{CommandID: newID("cmd"), Kind: "approve", Payload: []byte(`{}`)})
+	if err != nil {
+		t.Fatalf("AcceptCommand(approve, no pending) error = %v", err)
+	}
+	if rej.State != "rejected" {
+		t.Fatalf("approve with no pending = %q, want rejected (E08 preserved)", rej.State)
+	}
+
+	// 2. A side-effect tool records a pending publication.
+	pub := requestPushPublication(t, cs, tenant, sessionID, runID, "abc123")
+
+	// 3. The approve now PROCEEDS: it is queued for the boundary, not rejected.
+	approveCmd := coordinator.CommandInput{CommandID: newID("cmd"), Kind: "approve", Payload: approvePayload(pub.RequestHash)}
+	acc, err := cs.AcceptCommand(ctx, tenant, sessionID, approveCmd)
+	if err != nil {
+		t.Fatalf("AcceptCommand(approve, pending) error = %v", err)
+	}
+	if acc.State != "queued" {
+		t.Fatalf("approve with a pending approval = %q, want queued (proceeds)", acc.State)
+	}
+
+	// 4. Applied at the boundary: the publication reaches the durable approved state the pump drains.
+	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", pub.RequestHash); err != nil {
+		t.Fatalf("ApplyApprovalDecision(approve) error = %v", err)
+	}
+	approved, err := cs.ApprovedPublicationsForRun(ctx, tenant, runID)
+	if err != nil {
+		t.Fatalf("ApprovedPublicationsForRun error = %v", err)
+	}
+	if len(approved) != 1 || approved[0].ID != pub.ID {
+		t.Fatalf("approved publications = %+v, want exactly the approved publication %s", approved, pub.ID)
+	}
+
+	// 5. deny BLOCKS a fresh pending publication: it never enters the approved (publishable) set.
+	pub2 := requestPushPublication(t, cs, tenant, sessionID, runID, "def456")
+	denyCmd := coordinator.CommandInput{CommandID: newID("cmd"), Kind: "deny", Payload: approvePayload(pub2.RequestHash)}
+	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, denyCmd); err != nil {
+		t.Fatalf("AcceptCommand(deny) error = %v", err)
+	}
+	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, denyCmd.CommandID, "deny", pub2.RequestHash); err != nil {
+		t.Fatalf("ApplyApprovalDecision(deny) error = %v", err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, pub2.ID).Scan(&state); err != nil {
+		t.Fatalf("read denied publication error = %v", err)
+	}
+	if state != "denied" {
+		t.Fatalf("denied publication state = %q, want denied (deny blocks)", state)
+	}
+	// The approved set still holds only the first (approved) publication — the denied one never joined.
+	approvedAfter, _ := cs.ApprovedPublicationsForRun(ctx, tenant, runID)
+	if len(approvedAfter) != 1 {
+		t.Fatalf("approved publications after deny = %d, want 1 (deny did not publish)", len(approvedAfter))
+	}
+}
+
+// TestMarkPublicationPublishedIdempotent proves the approval pump's mark step (spec §30.9-30.10): an
+// approved publication reaches published with its external receipt and one push.completed.v1 event, and
+// a re-drive (a lost-ack retry that re-reconciled the remote) updates 0 rows and re-journals nothing —
+// so E10's detached execution re-driving the SAME publish never double-journals.
+func TestMarkPublicationPublishedIdempotent(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, sessionID, runID := seedRun(t, pool)
+	respID := newID("resp")
+	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+		respID, tenant.Organization, tenant.Project, sessionID)
+
+	pub := requestPushPublication(t, cs, tenant, sessionID, runID, "abc123")
+	exec(t, pool, `UPDATE publications SET state='approved' WHERE id=$1`, pub.ID)
+
+	receipt := map[string]any{"remote_sha": "abc123", "branch": "agent/s/r"}
+	if err := cs.MarkPublicationPublished(ctx, tenant, sessionID, respID, pub.ID, "push_branch", receipt); err != nil {
+		t.Fatalf("MarkPublicationPublished error = %v", err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, pub.ID).Scan(&state); err != nil {
+		t.Fatalf("read published state error = %v", err)
+	}
+	if state != "published" {
+		t.Fatalf("publication state = %q, want published", state)
+	}
+	eventCount := func() int {
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE session_id=$1 AND type='push.completed.v1'`, sessionID).Scan(&n); err != nil {
+			t.Fatalf("count push.completed events error = %v", err)
+		}
+		return n
+	}
+	if eventCount() != 1 {
+		t.Fatalf("push.completed.v1 events = %d, want 1", eventCount())
+	}
+	// Re-drive: idempotent, no second event, still published.
+	if err := cs.MarkPublicationPublished(ctx, tenant, sessionID, respID, pub.ID, "push_branch", receipt); err != nil {
+		t.Fatalf("re-drive MarkPublicationPublished error = %v", err)
+	}
+	if eventCount() != 1 {
+		t.Fatalf("push.completed.v1 events after re-drive = %d, want 1 (idempotent)", eventCount())
+	}
+}
+
+// requestPushPublication records a pending push publication for the run and returns its projection.
+func requestPushPublication(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, sessionID, runID, head string) coordinator.Publication {
+	t.Helper()
+	remote, branch, base := "git@h:o/r", "agent/s/r", "main"
+	pub, err := cs.RequestPublication(context.Background(), tenant, coordinator.PublicationRequest{
+		PublicationID: newID("pub"), ApprovalID: newID("apr"), SessionID: sessionID, RunID: runID,
+		Operation: "push_branch", Remote: remote, Branch: branch, Base: base, HeadSHA: head,
+		IdempotencyKey: repositories.IdempotencyKey(tenant.Organization, tenant.Project, runID, repositories.OpPushBranch, remote, branch, base, head),
+		RequestHash:    repositories.RequestHash(tenant.Organization, tenant.Project, runID, repositories.OpPushBranch, remote, branch, base, head),
+		Display:        "push " + branch,
+	})
+	if err != nil {
+		t.Fatalf("requestPushPublication error = %v", err)
+	}
+	return pub
+}
+
+// approvePayload builds an approve/deny command payload carrying the one-shot request hash.
+func approvePayload(requestHash string) []byte {
+	return []byte(`{"request_hash":"` + requestHash + `"}`)
+}

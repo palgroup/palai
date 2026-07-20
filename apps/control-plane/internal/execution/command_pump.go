@@ -75,6 +75,15 @@ func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState) error
 			}
 			continue
 		}
+		// approve/deny transition the session's pending publication (spec §22.4-22.5, APV-001): the
+		// approve drives it to a DURABLE approved state and the deny blocks it. The approval PUMP
+		// (pumpApprovedPublications) then publishes an approved operation at this same boundary.
+		if cmd.Kind == "approve" || cmd.Kind == "deny" {
+			if err := o.applyBoundaryApproval(ctx, st, cmd); err != nil {
+				return err
+			}
+			continue
+		}
 		_, err := o.spine.ApplyCommand(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), cmd.ID)
 		if errors.Is(err, coordinator.ErrCommandNotPending) {
 			continue // another boundary already delivered it
@@ -93,7 +102,10 @@ func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState) error
 			return err
 		}
 	}
-	return nil
+	// After the queued commands settle (an approve may have just driven a publication to approved),
+	// publish any approved publication at this same boundary (spec §30.9-30.10, APV-001). A no-op
+	// without a wired publisher.
+	return o.pumpApprovedPublications(ctx, st)
 }
 
 // applyBoundaryConfigChange applies a queued change_config at a safe boundary: it resolves the
@@ -133,6 +145,21 @@ func (o *Orchestrator) applyPendingSessionConfig(ctx context.Context, st *attemp
 	return nil
 }
 
+// applyBoundaryApproval applies a queued approve/deny at a safe boundary: it transitions the session's
+// pending publication (approve -> approved, deny -> denied) and marks the command applied in one
+// transaction (spec §22.4-22.5, APV-001). The approve carries the one-shot request hash it authorizes; a
+// stale hash (a moved head or an edited request) settles the command without approving. A command a
+// racing path already applied returns ErrCommandNotPending (a no-op).
+func (o *Orchestrator) applyBoundaryApproval(ctx context.Context, st *attemptState, cmd coordinator.PendingCommand) error {
+	switch _, err := o.spine.ApplyApprovalDecision(ctx, st.tenant, st.sessionID, st.responseID,
+		string(st.attempt.RunID), cmd.ID, cmd.Kind, decodeApprovalRequestHash(cmd.Payload)); {
+	case errors.Is(err, coordinator.ErrCommandNotPending):
+		return nil
+	default:
+		return err
+	}
+}
+
 // decodeMessage reads the send_message text from a command payload ({"message": "..."}). A
 // malformed payload yields the empty string; the API validates a non-empty message at accept.
 func decodeMessage(payload []byte) string {
@@ -141,4 +168,15 @@ func decodeMessage(payload []byte) string {
 	}
 	_ = json.Unmarshal(payload, &body)
 	return body.Message
+}
+
+// decodeApprovalRequestHash reads the one-shot request hash from an approve/deny command payload
+// ({"request_hash": "..."}) — the token binding the decision to the exact operation it authorizes
+// (spec §22.4). Empty (a bare approve) authorizes the session's sole pending approval.
+func decodeApprovalRequestHash(payload []byte) string {
+	var body struct {
+		RequestHash string `json:"request_hash"`
+	}
+	_ = json.Unmarshal(payload, &body)
+	return body.RequestHash
 }

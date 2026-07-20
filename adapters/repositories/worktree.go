@@ -111,6 +111,13 @@ func gitIn(ctx context.Context, repoDir string, args ...string) (string, error) 
 // gitInEnv is gitIn with extra environment (e.g. a throwaway GIT_INDEX_FILE) appended to the hardened
 // env, so a working-tree diff can stage into a scratch index without touching the repo's own index.
 func gitInEnv(ctx context.Context, repoDir string, extraEnv []string, args ...string) (string, error) {
+	return gitInConfigEnv(ctx, repoDir, nil, extraEnv, args...)
+}
+
+// gitInConfigEnv is gitInEnv with extra `-c` config (e.g. a brokered credential.helper for a push or
+// ls-remote) prepended to the hardened config. The publication path passes the credential-helper
+// config here so the token reaches Git ONLY via the store helper file, never in argv (spec §30.2).
+func gitInConfigEnv(ctx context.Context, repoDir string, extraConfig, extraEnv []string, args ...string) (string, error) {
 	scratch, err := os.MkdirTemp("", "palai-git-op-")
 	if err != nil {
 		return "", fmt.Errorf("git op scratch: %w", err)
@@ -124,7 +131,7 @@ func gitInEnv(ctx context.Context, repoDir string, extraEnv []string, args ...st
 	if err := os.MkdirAll(homeDir, 0o700); err != nil {
 		return "", err
 	}
-	return runGit(ctx, repoDir, homeDir, hooksDir, nil, extraEnv, args...)
+	return runGit(ctx, repoDir, homeDir, hooksDir, extraConfig, extraEnv, args...)
 }
 
 // makeTreeReadOnly strips write bits from every file and directory under root except the .git

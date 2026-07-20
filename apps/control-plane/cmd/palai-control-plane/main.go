@@ -16,6 +16,7 @@ import (
 
 	fake "github.com/palgroup/palai/adapters/models/fake"
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
+	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
@@ -108,9 +109,18 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			tools.FileTool(),
 			tools.ShellTool(),
 			tools.CommitTool(),
+			tools.PushTool(),
+			tools.PullRequestTool(),
 		)
 		orch := execution.NewOrchestrator(repo, gateway, broker, toolBroker)
 		orch.SetModelRoute(route)
+		// Wire the repository publisher the approval pump publishes through (spec §30.9-30.10), gated on
+		// the GitHub App environment. Absent it, an approved publication waits (the pump is a no-op) — no
+		// push happens without a configured destination. ponytail: the live wave sets the env; the
+		// deterministic tier proves the pump with a fake publisher.
+		if publisher := repositoryPublisherFromEnv(); publisher != nil {
+			orch.SetPublisher(publisher)
+		}
 		handler = execution.ExecuteRun(spine, repo, orch)
 	}
 
@@ -158,6 +168,50 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 		Secrets: modelbroker.StaticResolver{modelbroker.SecretRef("fake"): "unused"},
 	})
 	return broker, execution.ModelRoute{Provider: "fake", Model: "fake", Secret: modelbroker.SecretRef("fake")}
+}
+
+// repositoryPublisherFromEnv builds the repository publisher the approval pump publishes through (spec
+// §30.9-30.10), gated on the GitHub App environment. The App private key arrives via the LP-0
+// file-secret bridge (PALAI_GITHUB_APP_PRIVATE_KEY_FILE — a PATH, never inline), sealed at rest by E13;
+// this process only mints short-lived scoped tokens against it and never logs it. Absent any required
+// var it returns nil, so an approved publication simply waits — no push without a configured
+// destination. ponytail: env gating like modelBrokerFromEnv; the live wave sets these, the deterministic
+// tier proves the pump with a fake publisher.
+func repositoryPublisherFromEnv() execution.Publisher {
+	appID := os.Getenv("PALAI_GITHUB_APP_ID")
+	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
+	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
+	if appID == "" || installID == "" || keyFile == "" {
+		return nil
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		log.Printf("repository publisher: read app key file: %v (publication disabled)", err)
+		return nil
+	}
+	owner, repo := "", ""
+	if slug := os.Getenv("PALAI_GITHUB_REPO"); strings.IndexByte(slug, '/') > 0 {
+		i := strings.IndexByte(slug, '/')
+		owner, repo = slug[:i], slug[i+1:]
+	}
+	cfg := repositories.GitHubAppConfig{AppID: appID, InstallationID: installID, PrivateKeyPEM: keyPEM}
+	if repo != "" {
+		cfg.Repositories = []string{repo}
+	}
+	broker, err := repositories.NewGitHubAppBroker(cfg)
+	if err != nil {
+		log.Printf("repository publisher: app broker: %v (publication disabled)", err)
+		return nil
+	}
+	publisher := &execution.RepositoryPublisher{Broker: broker}
+	if owner != "" && repo != "" {
+		if prClient, err := repositories.NewGitHubPullRequestClient(cfg, owner, repo); err != nil {
+			log.Printf("repository publisher: pr client: %v (pull requests disabled)", err)
+		} else {
+			publisher.PRClient = prClient
+		}
+	}
+	return publisher
 }
 
 // startRetention launches the store:false retention reaper when a TTL is configured

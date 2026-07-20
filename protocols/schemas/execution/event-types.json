@@ -23,6 +23,8 @@
     "config.revised.v1",
     "child.requested.v1", "child.completed.v1", "child.denied.v1",
     "task.created.v1", "task.updated.v1",
-    "artifact.created.v1", "changeset.compiled.v1", "usage.updated.v1", "warning.raised.v1", "policy.denied.v1"
+    "artifact.created.v1", "changeset.compiled.v1", "usage.updated.v1", "warning.raised.v1", "policy.denied.v1",
+    "approval.requested.v1", "approval.approved.v1", "approval.denied.v1", "approval.expired.v1",
+    "push.completed.v1", "pull_request.opened.v1"
   ]
 }

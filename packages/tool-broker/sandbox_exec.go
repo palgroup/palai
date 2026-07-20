@@ -20,6 +20,10 @@ type ExecEnv struct {
 	// registry it persists through. Both zero on an attempt with no registry wired.
 	Scope TaskScope
 	Tasks TaskRegistry
+	// Publications is the seam a side-effect tool (push/PR) records a pending publication + approval
+	// through (spec §30.8). Nil on an attempt with no repository publication wired — the tool then
+	// fails cleanly rather than acting.
+	Publications PublicationRegistry
 }
 
 // ShellRunner runs one argv command inside the sandbox and returns its captured, bounded result. The

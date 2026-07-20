@@ -48,6 +48,14 @@ type Orchestrator struct {
 	// (spec §11). It is always the spine (the control plane owns the DB), so it is wired at
 	// construction; a stack opts into the durable primitives by registering the task/todo tools.
 	tasks toolbroker.TaskRegistry
+	// publications is the durable publication registry the push/PR tools record a pending approval
+	// through (spec §30.8). Like tasks it is always the spine (the control plane owns the DB), so it is
+	// wired at construction; a stack opts in by registering the push/PR tools.
+	publications toolbroker.PublicationRegistry
+	// publisher executes approved publications (push branch / open PR) at a safe boundary (spec
+	// §30.9-30.10). Nil disables the approval pump — a stack with no repository publication wired
+	// (every non-publication test) simply never publishes. main.go injects it via SetPublisher.
+	publisher Publisher
 	// DialHandshakeDeadline bounds the dial + engine.ready handshake per attempt. Zero uses
 	// dialHandshakeDeadline; NewOrchestrator sets the default. Tests shorten it.
 	DialHandshakeDeadline time.Duration
@@ -57,7 +65,7 @@ type Orchestrator struct {
 // brokers into one kernel. The model route defaults to the deterministic fake provider;
 // main.go overrides it for a live provider via SetModelRoute.
 func NewOrchestrator(st *store.Store, dialer EngineDialer, models *modelbroker.Broker, tools *toolbroker.Broker) *Orchestrator {
-	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, tasks: newTaskRegistry(st.Spine()), route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
+	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, tasks: newTaskRegistry(st.Spine()), publications: newPublicationRegistry(st.Spine()), route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
 }
 
 // SetModelRoute points the kernel at a non-default provider/model/secret selected by the
