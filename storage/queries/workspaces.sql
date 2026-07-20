@@ -37,11 +37,15 @@ LIMIT 1;
 -- The workspace_leases_one_active_writer partial unique index rejects a second concurrent active
 -- lease with 23505 — single-writer is a DB constraint, not an app race (spec §29.8). The
 -- workspace, tenant, and fence are derived from the allocation so a lease cannot name a foreign one.
+-- The fence-currency guard (like CreateWorkspaceSnapshot) rejects a lease on a SUPERSEDED allocation
+-- once a host move has advanced the fence: a non-current allocation affects zero rows, so a stale
+-- writer cannot acquire authority at the DB level (spec §29.8), not in check-then-act app code.
 INSERT INTO workspace_leases
     (id, workspace_id, allocation_id, organization_id, project_id, run_id, state, fence)
 SELECT $1, a.workspace_id, a.id, a.organization_id, a.project_id, $3, 'active', a.fence
 FROM workspace_allocations a
-WHERE a.id = $2;
+WHERE a.id = $2
+  AND a.fence = (SELECT MAX(fence) FROM workspace_allocations WHERE workspace_id = a.workspace_id);
 
 -- name: ReleaseWriterLease
 -- Release the lease so the single-writer slot frees for the next writer (spec §29.8).
