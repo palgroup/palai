@@ -65,6 +65,25 @@ def test_engine_ready_advertises_the_checkpoint_format_it_writes() -> None:
     assert checkpoint.FORMAT_ID == "reference-kernel/1"
 
 
+def _checkpoint_offer_required() -> set[str]:
+    """The data fields engine.schema.json requires on a checkpoint.offer frame."""
+    for branch in SCHEMA["allOf"]:
+        if branch.get("if", {}).get("properties", {}).get("type", {}).get("const") == "checkpoint.offer":
+            return set(branch["then"]["properties"]["data"]["required"])
+    raise AssertionError("engine.schema.json declares no checkpoint.offer data shape")
+
+
+def test_checkpoint_offer_carries_the_schema_required_fields() -> None:
+    # The offer the loop actually emits must satisfy the schema's declared data contract, so the
+    # canonical schema and the engine cannot drift on what a checkpoint.offer carries.
+    from palai_engine import checkpoint
+
+    offer = checkpoint.offer_data({"step": 1}, "request")
+    required = _checkpoint_offer_required()
+    assert required <= offer.keys(), f"checkpoint.offer missing schema-required fields: {required - offer.keys()}"
+    assert required == {"format", "format_version", "state"}
+
+
 def test_engine_ready_announces_the_supported_commands() -> None:
     # engine.ready.commands must declare exactly the command kinds the engine really applies
     # (spec §9.1); a drift here is a false capability advertisement.
