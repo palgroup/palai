@@ -27,12 +27,16 @@ package responses
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
@@ -41,6 +45,7 @@ import (
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+	"github.com/palgroup/palai/tests/uat"
 )
 
 func TestCodingJourneyDeterministic(t *testing.T) {
@@ -228,6 +233,130 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 	if pr := publisher.PRClient.(*countingPRClient); pr.opens != 1 {
 		t.Fatalf("PR client opened %d PRs, want exactly 1 (a duplicate request must not open a second)", pr.opens)
 	}
+
+	// --- Step 7: a required research child runs on a cheaper route via a MODEL-driven agent tool_call
+	// (§63.2 step 7, DEL-001/SUB-002). The parent's agent tool_call becomes a child.request — a real
+	// ChildRun on its own cheaper model id — whose typed result folds back and whose run the parent links.
+	// A worker executes the parent + the dispatched child (the coding run above already terminated, so the
+	// worker's terminal-run no-op claim of its stale job is harmless). ---
+	childAnswer := "child-research-" + newID("mark")
+	stopChild := h.runWorker(h.newOrchestratorWithAdapter(subprocessDialer{engineDir: h.engineDir},
+		agentDelegatingProvider{childModel: "fake-child", childAnswer: childAnswer}))
+	childRespID, _, parentRunID := h.admitWith(`{"input":"research the approach then implement"}`, newID("idem"))
+	h.awaitResponseState(childRespID, "completed", 90*time.Second)
+	stopChild()
+
+	childRun, childResp := h.childRunOf(parentRunID)
+	if state := h.runState(childRun); state != "completed" {
+		t.Fatalf("research child state = %q, want completed", state)
+	}
+	if got := h.modelOfRun(childResp); got != "fake-child" {
+		t.Fatalf("research child model = %q, want the cheaper fake-child (its own route)", got)
+	}
+	if links := h.childRunsLink(childRespID); len(links) != 1 || links[0] != childRun {
+		t.Fatalf("parent projection child_runs = %v, want [%s] (the child run is linked, not a hidden transcript)", links, childRun)
+	}
+
+	// --- Evidence: write + self-verify the coding-0.1.0 bundle. The deterministic tier records the
+	// genuinely CI-provable external receipt — the real remote ref the approved push landed — and the
+	// verifier asserts the bundle clean with NO leaked credential (sk-/PAT/App key). The live wave
+	// overwrites this with the real-provider (chatcmpl) + real-GitHub receipts. ---
+	h.writeAndVerifyCodingEvidence(t, codingReceipt{
+		runID: runID, pushRemoteSHA: changeset.FinalCommit, workBranch: workBranch,
+	})
+}
+
+// codingReceipt is the deterministic journey's captured evidence for the coding-0.1.0 bundle.
+type codingReceipt struct {
+	runID         string
+	pushRemoteSHA string // the remote ref the approved push landed — the genuine external receipt
+	workBranch    string
+}
+
+// writeAndVerifyCodingEvidence writes the coding-0.1.0 manifest from the journey's external receipt and
+// verifies it clean through the shared verifier: the external-receipt rule holds (a real remote ref, not
+// a fake) and the credential-absence scan finds nothing (0 secret findings — no sk-, PAT, or App key).
+func (h *harness) writeAndVerifyCodingEvidence(t *testing.T, r codingReceipt) {
+	t.Helper()
+	release := "coding-0.1.0"
+	root := strings.TrimSpace(mustGit(t, "rev-parse", "--show-toplevel"))
+	manifest := map[string]any{
+		"release":     release,
+		"git_sha":     strings.TrimSpace(mustGit(t, "-C", root, "rev-parse", "--short", "HEAD")),
+		"api_version": "v1",
+		"migration":   latestMigrationName(t, root),
+		"captured_at": time.Now().UTC().Format(time.RFC3339),
+		"cases": []any{
+			map[string]any{
+				"id": "REP-006", "status": "PASS", "proof_class": "external-receipt",
+				"run_id":           r.runID,
+				"external_receipt": r.pushRemoteSHA,
+				"db_assertions": []string{
+					"the approved push landed the agent branch at exactly the committed head",
+					"the remote ref " + r.workBranch + " = " + r.pushRemoteSHA + " (a genuine external receipt, not a fake remote)",
+					"a re-driven pump republished nothing — no duplicate push, no second PR",
+					"the push credential was destroyed after the operation; absent from every surface",
+				},
+				"checksum": hashCoding(r.runID, r.pushRemoteSHA, r.workBranch),
+			},
+		},
+	}
+	dir := filepath.Join(root, "evidence", "releases", release)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("make release dir: %v", err)
+	}
+	raw, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal coding manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), append(raw, '\n'), 0o644); err != nil {
+		t.Fatalf("write coding manifest: %v", err)
+	}
+	summary, err := uat.VerifyRelease(dir, nil)
+	if err != nil {
+		t.Fatalf("verify coding bundle: %v", err)
+	}
+	if !summary.OK() || summary.SecretFindings != 0 {
+		t.Fatalf("coding-0.1.0 evidence did not verify clean: %v", summary.Findings)
+	}
+	t.Logf("evidence (coding-0.1.0): %s", summary.String())
+}
+
+func mustGit(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return string(out)
+}
+
+// latestMigrationName returns the highest migration version, e.g. 000013_approvals_publications.
+func latestMigrationName(t *testing.T, root string) string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root, "storage", "migrations"))
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	latest := ""
+	for _, e := range entries {
+		if name, ok := strings.CutSuffix(e.Name(), ".up.sql"); ok && name > latest {
+			latest = name
+		}
+	}
+	if latest == "" {
+		t.Fatal("no migrations found")
+	}
+	return latest
+}
+
+func hashCoding(parts ...string) string {
+	h := sha256.New()
+	for _, p := range parts {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
 // --- fake coding provider + faithful shell double --------------------------------------------------

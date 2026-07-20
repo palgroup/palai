@@ -1,0 +1,23 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-20T18:59:05Z",
+  "cases": [
+    {
+      "checksum": "sha256:9f39c62dec39b73899abb9b417ec51573ee4f429908eac6152be9144c8915331",
+      "db_assertions": [
+        "the approved push landed the agent branch at exactly the committed head",
+        "the remote ref agent/ses_4447747b155f3b55b4b36e470c9ce7c0/run_a357451d6be9b0192a50ee55a7a04df6 = 40a6df052a0d2b6a333c127b64474d38baeeac47 (a genuine external receipt, not a fake remote)",
+        "a re-driven pump republished nothing — no duplicate push, no second PR",
+        "the push credential was destroyed after the operation; absent from every surface"
+      ],
+      "external_receipt": "40a6df052a0d2b6a333c127b64474d38baeeac47",
+      "id": "REP-006",
+      "proof_class": "external-receipt",
+      "run_id": "run_a357451d6be9b0192a50ee55a7a04df6",
+      "status": "PASS"
+    }
+  ],
+  "git_sha": "d6012b3",
+  "migration": "000013_approvals_publications",
+  "release": "coding-0.1.0"
+}
