@@ -222,10 +222,12 @@ run_responses() {
   url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
 
   set +e
+  # E2E_RUN narrows the suite to a subset (e.g. the exit gate's multi-client tests);
+  # the default `.` matches every test name, a no-op for the full-suite callers.
   PALAI_E2E_POSTGRES_URL="$url" \
     PALAI_ENGINE_DIR="$root/engines/reference" \
     PALAI_REFERENCE_ENGINE_IMAGE="$reference_image_id" \
-    go test -tags=e2e -count="${COUNT:-1}" -v ./apps/control-plane/e2e/responses
+    go test -tags=e2e -count="${COUNT:-1}" -run "${E2E_RUN:-.}" -v ./apps/control-plane/e2e/responses
   local status=$?
   set -e
   if test "$status" -ne 0; then

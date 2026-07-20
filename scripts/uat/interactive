@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Interactive-sessions UAT — the E08 exit gate. One target, two tiers:
+#   deterministic (always): the SES-001/SES-002/AGT-003 multi-client attach + tenant-scoped
+#     denial + profile-free tests run with the FAKE adapter through the e2e responses infra,
+#     proving the journey shape with NO credential (CI-safe, key-free).
+#   live (PROVIDER=provider-one only): TestInteractiveLiveJourney chains every T1-T5 feature
+#     through ONE real-OpenAI durable session and captures the interactive-0.1.0 evidence. The
+#     credential loads from the git-ignored .env.local into this process env only — never into
+#     argv, logs, or the manifest. Without PROVIDER the live test skip-guards itself, so this
+#     target is green in CI without a key.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+provider="${PROVIDER:-fake}"
+
+# Deterministic tier: exactly the three multi-client tests, fake adapter, no credential. Routed
+# through the e2e responses infra (throwaway Postgres + reference-engine subprocess) it already
+# provisions — reuse, not a second harness. The full per-leg deterministic suite is `make test-e2e`.
+E2E_RUN='TestTwoClientsSeeIdenticalOrderedJournal|TestUnauthorizedAttachIsTenantScoped404WithAuditDenial|TestProfileFreeSessionRunsAllCoreFeatures' \
+  TEST=responses scripts/test/e2e
+
+# Live tier: only under provider-one; the credential rides env only, asserted absent from the bundle.
+if [ "$provider" = "provider-one" ]; then
+  if [ -f .env.local ]; then
+    set -a; . ./.env.local; set +a
+  fi
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "OPENAI_API_KEY is unset; provider-one needs it in .env.local" >&2
+    exit 1
+  fi
+  export PALAI_UAT_PROVIDER=provider-one
+fi
+# -count=1 so the one-use enrollment token and one-shot lease are never replayed from cache.
+exec go test -tags uat -count=1 -timeout 30m -run TestInteractiveLiveJourney ./tests/uat -v

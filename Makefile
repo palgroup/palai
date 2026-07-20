@@ -5,7 +5,7 @@ SHELL := /bin/bash
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
 	test-fault test-security test-live-provider test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
-	evidence-verify
+	uat-interactive evidence-verify
 
 bootstrap:
 	go mod download
@@ -92,6 +92,12 @@ local-doctor:
 uat-local-live:
 	@test -x scripts/uat/local-live || { echo "local live UAT not implemented" >&2; exit 2; }
 	@RELEASE='$(RELEASE)' PROVIDER='$(PROVIDER)' scripts/uat/local-live
+
+# E08 exit gate: the deterministic multi-client tier (always) + the live interactive journey
+# (PROVIDER=provider-one, key from .env.local). uat-local-live above stays untouched.
+uat-interactive:
+	@test -x scripts/uat/interactive || { echo "interactive UAT not implemented" >&2; exit 2; }
+	@PROVIDER='$(PROVIDER)' scripts/uat/interactive
 
 evidence-verify:
 	@test -x scripts/evidence/verify || { echo "evidence verifier not implemented" >&2; exit 2; }
