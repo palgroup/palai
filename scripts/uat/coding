@@ -21,9 +21,14 @@ provider="${PROVIDER:-fake}"
 # reference-engine subprocess, fake provider, faithful Git double). Reuse, not a second harness.
 E2E_RUN='TestCodingJourneyDeterministic' TEST=responses scripts/test/e2e
 
-# Live tier: only under provider-one; the credential + Git destination ride env only. The live test
-# asserts the credential absent from the bundle by construction and needs a real Git destination
-# (PALAI_GIT_REPO + a GitHub App installation) to open a real draft PR.
+# Live tier: only under provider-one. TestCodingLiveJourney is a seam-level e2e test (it reuses the
+# responses newHarness for a real Postgres + a real run row, then drives a real provider + real Git
+# destination through the real approve->publish path), so it rides the responses e2e infra (throwaway
+# Postgres + reference-engine dir) via scripts/test/e2e — with the live credential + Git destination +
+# shell image loaded into the environment the go test child inherits. The credential rides env only and
+# the test asserts it absent from the bundle by construction. Real draft PRs need a GitHub App
+# installation (PALAI_GITHUB_APP_ID/INSTALLATION_ID/PRIVATE_KEY_FILE + PALAI_GITHUB_REPO=owner/repo);
+# without the App env the journey does a push-only external receipt against PALAI_GIT_REPO.
 if [ "$provider" = "provider-one" ]; then
   if [ -f .env.local ]; then
     set -a
@@ -39,7 +44,12 @@ if [ "$provider" = "provider-one" ]; then
     echo "PALAI_GIT_REPO is unset; the live coding journey pushes to a real Git destination (set it in .env.local)" >&2
     exit 1
   fi
-  export PALAI_UAT_PROVIDER=provider-one
-  # -count=1 so the one-use enrollment token and one-shot lease are never replayed from cache.
-  exec go test -tags uat -count=1 -timeout 30m -run TestCodingLiveJourney ./tests/uat -v
+  # Pin the busybox shell image the OCI shell tool runs the model's argv in (matches scripts/test/live-provider).
+  shell_ref="busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
+  docker pull --quiet "$shell_ref" >/dev/null
+  PALAI_SHELL_IMAGE_ID="$(docker image inspect "$shell_ref" --format '{{.Id}}')"
+  export PALAI_SHELL_IMAGE_ID PALAI_UAT_PROVIDER=provider-one
+  # E2E_RUN scopes the responses e2e run to the live journey; scripts/test/e2e provisions the throwaway
+  # Postgres + engine dir the newHarness needs, and the go test child inherits the exported live env.
+  exec env E2E_RUN='TestCodingLiveJourney' TEST=responses COUNT=1 scripts/test/e2e
 fi
