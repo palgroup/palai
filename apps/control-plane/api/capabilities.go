@@ -40,9 +40,12 @@ func capabilities(w http.ResponseWriter, r *http.Request) {
 		Isolation: "development",
 		Retention: retentionBody{StoreFalseTTLSeconds: int(configuredRetentionTTL().Seconds())},
 		Capabilities: map[string]string{
-			"responses":  "preview",
-			"sessions":   "unavailable",
-			"workspaces": "unavailable",
+			"responses": "preview",
+			"sessions":  "unavailable",
+			// Coding workspaces are now reachable end to end: a session attaches a repository binding
+			// (POST /v1/repository-bindings then the `repository` field) and the root run auto-provisions
+			// the workspace, so the file/shell/commit/publish tools run against a real checkout (E09 T10).
+			"workspaces": "available",
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")

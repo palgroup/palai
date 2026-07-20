@@ -255,6 +255,44 @@ func (s *Store) GetSession(ctx context.Context, scope middleware.Scope, id strin
 	return api.SessionResult{Body: body, Found: true}, nil
 }
 
+// CreateRepositoryBinding registers a repository binding within the request's verified scope (spec
+// §30.1). The id is minted here (one place mints binding ids); the coordinator inserts it and the
+// read-back renders the resource the handler returns. A missing required field is a 400 (Invalid),
+// resolved before any write so a malformed request persists nothing.
+func (s *Store) CreateRepositoryBinding(ctx context.Context, scope middleware.Scope, req api.RepositoryBindingCreate) (api.BindingResult, error) {
+	if req.Provider == "" || req.RepositoryIdentity == "" || req.CloneURL == "" {
+		return api.BindingResult{Invalid: true}, nil
+	}
+	tenant := tenantOf(scope)
+	bindingID := middleware.NewID("repo")
+	if err := s.spine.CreateRepositoryBinding(ctx, tenant, coordinator.RepositoryBindingInput{
+		BindingID:          bindingID,
+		Provider:           req.Provider,
+		RepositoryIdentity: req.RepositoryIdentity,
+		CloneURL:           req.CloneURL,
+		DefaultBranch:      req.DefaultBranch,
+		ConnectionRef:      req.ConnectionRef,
+		AllowedOperations:  req.AllowedOperations,
+		Policy:             req.Policy,
+		DataClassification: req.DataClassification,
+		RegionConstraint:   req.RegionConstraint,
+	}); err != nil {
+		return api.BindingResult{}, err
+	}
+	binding, found, err := s.spine.GetRepositoryBinding(ctx, tenant, bindingID)
+	if err != nil {
+		return api.BindingResult{}, err
+	}
+	if !found {
+		return api.BindingResult{}, fmt.Errorf("repository binding %s vanished after create", bindingID)
+	}
+	body, err := json.Marshal(binding)
+	if err != nil {
+		return api.BindingResult{}, fmt.Errorf("marshal repository binding: %w", err)
+	}
+	return api.BindingResult{Body: body}, nil
+}
+
 // AcceptCommand records a durable command within the request's verified scope (spec §22.4).
 // A duplicate command_id returns the original resource; an unknown or foreign session is a
 // miss (404). The command payload carries the send_message text as the command's own content;
