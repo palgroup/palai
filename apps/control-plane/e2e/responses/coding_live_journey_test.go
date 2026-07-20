@@ -59,6 +59,11 @@ func TestCodingLiveJourney(t *testing.T) {
 	if repoURL == "" || shellImage == "" {
 		t.Skip("PALAI_GIT_REPO + PALAI_SHELL_IMAGE_ID are required for the live coding journey")
 	}
+	// Fail before the URL reaches a log, the binding row, or the clone: a credential-embedded remote
+	// (https://x:ghp_...@host) would leak the token. The broker MINTS the credential — the URL is clean.
+	if strings.ContainsRune(repoURL, '@') {
+		t.Fatal("PALAI_GIT_REPO must not embed a credential (contains '@'); the broker mints the push/fetch token")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git not found: %v", err)
 	}
@@ -181,12 +186,10 @@ func TestCodingLiveJourney(t *testing.T) {
 	}
 	t.Logf("live external receipt: %s = %s on %s; PR=%s", workBranch, safePrefixLive(pushRemoteSHA), repoURL, prURL)
 
-	// Leak scan by construction: the provider credential must appear on no captured surface.
-	for name, buf := range map[string][]byte{"streamed deltas": captured.Bytes(), "shell result": liveJSON(shellOut.Result)} {
-		if bytes.Contains(buf, []byte(secret)) {
-			t.Fatalf("%s contains the credential value", name)
-		}
-	}
+	// Leak scan by construction: neither the provider credential value NOR any Git-credential SHAPE
+	// (PAT/App key/token/credential-in-URL) may appear on a captured surface — defence in depth.
+	assertNoCredentialLeak(t, "streamed deltas", captured.Bytes(), secret)
+	assertNoCredentialLeak(t, "shell result", liveJSON(shellOut.Result), secret)
 
 	// --- Evidence: overwrite coding-0.1.0 with the LIVE receipts — the real provider (chatcmpl) coding
 	// turn and the real external receipt — verified clean with the credential proven absent. ---

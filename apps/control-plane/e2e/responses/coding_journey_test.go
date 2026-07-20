@@ -30,6 +30,7 @@ package responses
 // exercises the same coding spine against a real provider + a real Git destination.
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -38,6 +39,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -51,6 +53,10 @@ import (
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/tests/uat"
 )
+
+// detPushSecret is the throwaway token the deterministic tier's local push broker mints. It is asserted
+// absent from the evidence bundle (as a needle) — the run's own credential, self-checked.
+const detPushSecret = "palai-DET-push-secret"
 
 func TestCodingJourneyDeterministic(t *testing.T) {
 	h := newHarness(t)
@@ -190,7 +196,7 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 		t.Fatalf("approve publications: %v", err)
 	}
 
-	publisher := &execution.RepositoryPublisher{Broker: repositories.NewLocalBrokerWithToken("palai-DET-push-secret"), PRClient: &countingPRClient{}}
+	publisher := &execution.RepositoryPublisher{Broker: repositories.NewLocalBrokerWithToken(detPushSecret), PRClient: &countingPRClient{}}
 	// pump drains the run's approved-but-unpublished publications through the REAL publisher + store, the
 	// same loop the orchestrator's boundary pump runs. A re-drive after everything is published drains an
 	// empty set — that is the idempotency proof.
@@ -277,9 +283,15 @@ type codingReceipt struct {
 	workBranch    string
 }
 
-// writeAndVerifyCodingEvidence writes the coding-0.1.0 manifest from the journey's external receipt and
+// writeAndVerifyCodingEvidence builds the coding-0.1.0 manifest from the journey's external receipt and
 // verifies it clean through the shared verifier: the external-receipt rule holds (a real remote ref, not
-// a fake) and the credential-absence scan finds nothing (0 secret findings — no sk-, PAT, or App key).
+// a fake) and the credential-absence scan finds nothing (0 secret findings — including the run's own
+// push token as a needle, so the "credential absent from every surface" claim is self-checked).
+//
+// It writes to a TEMP dir, NOT the tracked evidence/releases path: the manifest carries a fresh run_id +
+// commit sha every run, so writing the tracked file would dirty the tree after `make uat-coding` and fail
+// the §6 clean-tree exit gate. The tracked coding-0.1.0 snapshot is written + committed by the live wave
+// (writeAndVerifyLiveCodingEvidence); this tier only proves the verifier + release format hold in CI.
 func (h *harness) writeAndVerifyCodingEvidence(t *testing.T, r codingReceipt) {
 	t.Helper()
 	release := "coding-0.1.0"
@@ -305,10 +317,7 @@ func (h *harness) writeAndVerifyCodingEvidence(t *testing.T, r codingReceipt) {
 			},
 		},
 	}
-	dir := filepath.Join(root, "evidence", "releases", release)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("make release dir: %v", err)
-	}
+	dir := t.TempDir()
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal coding manifest: %v", err)
@@ -316,7 +325,8 @@ func (h *harness) writeAndVerifyCodingEvidence(t *testing.T, r codingReceipt) {
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), append(raw, '\n'), 0o644); err != nil {
 		t.Fatalf("write coding manifest: %v", err)
 	}
-	summary, err := uat.VerifyRelease(dir, nil)
+	// Self-check the run's OWN push token as a needle: the manifest must not carry it anywhere.
+	summary, err := uat.VerifyRelease(dir, []string{detPushSecret})
 	if err != nil {
 		t.Fatalf("verify coding bundle: %v", err)
 	}
@@ -361,6 +371,33 @@ func hashCoding(parts ...string) string {
 		h.Write([]byte{0})
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// credentialShapes match a real credential on any captured surface: an OpenAI key, a GitHub token
+// (ghp_/gho_/ghu_/ghs_/ghr_/github_pat_), an App private-key PEM header, or a credential embedded in a
+// URL (user:secret@host / x-access-token:...@). None may appear on a streamed/tool surface.
+var credentialShapes = []*regexp.Regexp{
+	regexp.MustCompile(`sk-[A-Za-z0-9_-]{12,}`),
+	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),
+	regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`),
+	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY`),
+	regexp.MustCompile(`x-access-token:[^@\s]+@`),
+	regexp.MustCompile(`://[^/@\s:]+:[^@\s/]+@`),
+}
+
+// assertNoCredentialLeak fails the test if buf carries the exact secret OR any credential SHAPE — the
+// defence-in-depth scan on top of the exact-needle check (a brokered token is opaque, so shape is the
+// only signal it would leave).
+func assertNoCredentialLeak(t *testing.T, surface string, buf []byte, secret string) {
+	t.Helper()
+	if secret != "" && bytes.Contains(buf, []byte(secret)) {
+		t.Fatalf("%s contains the credential value", surface)
+	}
+	for _, re := range credentialShapes {
+		if re.Match(buf) {
+			t.Fatalf("%s contains a credential shape (%s)", surface, re.String())
+		}
+	}
 }
 
 // --- fake coding provider + faithful shell double --------------------------------------------------
