@@ -230,3 +230,39 @@ func TestFencedStaleWriterSnapshotRejected(t *testing.T) {
 		t.Fatalf("persisted snapshots = %d, want 2 (the stale upload was rejected)", count)
 	}
 }
+
+// TestAcquireWriterLeaseRejectsNonCurrentAllocation proves the writer-lease fence-currency guard
+// (spec §29.8): once a host move advances the fence, a writer lease on the superseded allocation is
+// rejected at the DB — a fenced-out writer cannot re-acquire authority. The current allocation still
+// leases. This is the lease counterpart of the snapshot fence guard, landed now that the real tool
+// round-trip acquires a writer lease (E09 Task 4).
+func TestAcquireWriterLeaseRejectsNonCurrentAllocation(t *testing.T) {
+	cs := openHarness(t)
+	pool := cs.Pool()
+	ctx := context.Background()
+	tenant, sessionID, runID := seedRun(t, pool)
+	wsID := newID("wsp")
+	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{
+		WorkspaceID: wsID, SessionID: sessionID, RunID: runID, State: "ready",
+	}); err != nil {
+		t.Fatalf("CreateWorkspace() error = %v", err)
+	}
+	a1, err := cs.AllocateWorkspace(ctx, newID("wal"), wsID, "/host/a1")
+	if err != nil {
+		t.Fatalf("first AllocateWorkspace() error = %v", err)
+	}
+	// A host move advances the fence: a2 supersedes a1.
+	a2, err := cs.AllocateWorkspace(ctx, newID("wal"), wsID, "/host/a2")
+	if err != nil {
+		t.Fatalf("second AllocateWorkspace() error = %v", err)
+	}
+
+	// The stale a1 can no longer take a writer lease.
+	if err := cs.AcquireWriterLease(ctx, newID("wls"), a1.ID, runID); !errors.Is(err, coordinator.ErrStaleAllocation) {
+		t.Fatalf("stale-allocation writer lease = %v, want ErrStaleAllocation (rejected at DB)", err)
+	}
+	// The current a2 still can.
+	if err := cs.AcquireWriterLease(ctx, newID("wls"), a2.ID, runID); err != nil {
+		t.Fatalf("current-allocation writer lease error = %v", err)
+	}
+}

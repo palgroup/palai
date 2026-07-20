@@ -40,6 +40,10 @@ type Orchestrator struct {
 	models *modelbroker.Broker
 	tools  *toolbroker.Broker
 	route  ModelRoute
+	// shell runs argv commands for the workspace shell tool inside the sandbox (spec §28.8). Nil
+	// when no sandbox driver is wired into this control plane — a shell tool call then fails
+	// cleanly rather than escaping. main.go injects it via SetShellRunner where a driver exists.
+	shell toolbroker.ShellRunner
 	// DialHandshakeDeadline bounds the dial + engine.ready handshake per attempt. Zero uses
 	// dialHandshakeDeadline; NewOrchestrator sets the default. Tests shorten it.
 	DialHandshakeDeadline time.Duration
@@ -56,6 +60,10 @@ func NewOrchestrator(st *store.Store, dialer EngineDialer, models *modelbroker.B
 // composition root (main.go) from the environment. ponytail: a setter, not a model_routes
 // lookup — the DB-backed routing is the deferred E-series carve-out.
 func (o *Orchestrator) SetModelRoute(r ModelRoute) { o.route = r }
+
+// SetShellRunner injects the sandbox shell runner the workspace shell tool executes through. Left
+// unset, a shell tool call fails cleanly (no runner) rather than escaping the sandbox.
+func (o *Orchestrator) SetShellRunner(s toolbroker.ShellRunner) { o.shell = s }
 
 // attemptState is the per-attempt working set threaded through the dispatch handlers.
 type attemptState struct {

@@ -5,9 +5,9 @@
 // cross-builds the fixture engine into a digest-pinned image (PALAI_RUNNER_ENGINE_IMAGE_ID) and
 // loads the real provider credential from .env.local. In ONE real run it proves: a real workspace
 // allocation is bind-mounted into a real, hardened OCI engine container; the engine reads a seed
-// staged there; a real provider-one chat completion happens mid-run (the runner bridges the
-// engine's model.request to the real provider); and the file the engine writes persists in the
-// host allocation after the container is destroyed.
+// staged there; a real provider-one chat completion happens mid-run (the runner FORWARDS the
+// engine's model.request frame, and the test harness below routes it to the real provider); and the
+// file the engine writes persists in the host allocation after the container is destroyed.
 //
 // HONEST CEILING: this proves the REAL mount and a REAL provider round-trip, NOT model behaviour.
 // The engine is a deterministic fixture and the model does not itself drive a file tool — that is

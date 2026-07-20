@@ -103,7 +103,9 @@ func (s *Store) CurrentAllocation(ctx context.Context, workspaceID string) (Allo
 
 // AcquireWriterLease takes the single active writer lease for the allocation's workspace, held by
 // runID (spec §29.8). A second concurrent active lease is rejected by the partial unique index;
-// this maps that 23505 to ErrWriterLeaseHeld.
+// this maps that 23505 to ErrWriterLeaseHeld. A lease on a SUPERSEDED allocation — one a host move
+// has fenced out — affects zero rows via the query's fence-currency guard and is rejected as a stale
+// allocation, so a fenced-out writer cannot re-acquire authority (spec §29.8, SAN-006).
 func (s *Store) AcquireWriterLease(ctx context.Context, leaseID, allocationID, runID string) error {
 	tag, err := s.pool.Exec(ctx, storage.Query("AcquireWriterLease"), leaseID, allocationID, runID)
 	if isUniqueViolation(err) {
@@ -113,7 +115,7 @@ func (s *Store) AcquireWriterLease(ctx context.Context, leaseID, allocationID, r
 		return fmt.Errorf("acquire writer lease: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("acquire writer lease: allocation %s not found", allocationID)
+		return ErrStaleAllocation
 	}
 	return nil
 }

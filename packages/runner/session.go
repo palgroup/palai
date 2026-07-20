@@ -44,6 +44,12 @@ type Lease struct {
 	Fence       uint64
 	ImageDigest string
 	Limits      Limits
+	// WorkspaceHostPath is the host allocation directory the supervisor bind-mounts to /workspace
+	// (spec §29.9, FLAG A); empty for a workspace-less lease. WorkspaceReadOnly binds it read-only.
+	// WorkspaceUnsafe marks a §30.13 unsafe-local-bind that is exempt from the allocation-root check.
+	WorkspaceHostPath string
+	WorkspaceReadOnly bool
+	WorkspaceUnsafe   bool
 }
 
 // Session is the runner's outbound leasing connection. It dials the control plane with
@@ -306,13 +312,19 @@ func ParseLeaseOffer(message contracts.RunnerMessage) (Lease, error) {
 	if err != nil {
 		return Lease{}, err
 	}
+	hostPath, _ := message.Data["workspace_host_path"].(string)
+	readOnly, _ := message.Data["workspace_read_only"].(bool)
+	unsafe, _ := message.Data["workspace_unsafe"].(bool)
 	return Lease{
-		LeaseID:     message.LeaseID,
-		RunID:       message.RunID,
-		AttemptID:   message.AttemptID,
-		Fence:       uint64(message.Fence),
-		ImageDigest: digest,
-		Limits:      limits,
+		LeaseID:           message.LeaseID,
+		RunID:             message.RunID,
+		AttemptID:         message.AttemptID,
+		Fence:             uint64(message.Fence),
+		ImageDigest:       digest,
+		Limits:            limits,
+		WorkspaceHostPath: hostPath,
+		WorkspaceReadOnly: readOnly,
+		WorkspaceUnsafe:   unsafe,
 	}, nil
 }
 

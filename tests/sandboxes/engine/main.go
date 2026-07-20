@@ -32,6 +32,13 @@ type frame struct {
 }
 
 func main() {
+	// The E09 Task 4 sandbox shell suites drive this same image with an explicit argv (`san <behavior>
+	// ...`) rather than the PALAI_ENGINE_MODE env switch, so one fixture backs both the engine-protocol
+	// tiers and the workspace shell-tool tiers.
+	if len(os.Args) > 1 && os.Args[1] == "san" {
+		os.Exit(sandboxCommand(os.Args[2:]))
+	}
+
 	mode := os.Getenv("PALAI_ENGINE_MODE")
 	runID := os.Getenv("PALAI_RUN_ID")
 	attemptID := os.Getenv("PALAI_ATTEMPT_ID")
@@ -130,8 +137,9 @@ func interactive(runID, attemptID string) {
 }
 
 // workspaceStream is the E09 Task 1 live-mount fixture: it completes the §25.6 handshake, reads the
-// seed the runner staged in the bind-mounted /workspace, requests one model step (the runner bridges
-// it to the REAL provider), then — after the real model.result returns — writes into the allocation
+// seed the runner staged in the bind-mounted /workspace, requests one model step (the runner
+// FORWARDS the model.request frame; the control plane routes it to the REAL provider), then — after
+// the real model.result returns — writes into the allocation
 // and terminates reporting what it saw. It proves the real /workspace mount is present and live
 // across a real provider round-trip. Honest ceiling: the engine is a deterministic fixture and the
 // model does not itself drive a file tool (that is E09 Task 4); the mount and the provider round-trip

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/palgroup/palai/packages/contracts"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
 // dispatchTool handles a tool.request: it runs the fenced, schema-checked tool through
@@ -17,7 +18,7 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	name, _ := frame.Data["name"].(string)
 	args, _ := frame.Data["arguments"].(map[string]any)
 
-	outcome, err := o.tools.Execute(contracts.ToolCallID(callID), name, args, st.attempt.Fence)
+	outcome, err := o.tools.Execute(ctx, contracts.ToolCallID(callID), name, args, st.attempt.Fence, o.execEnv(st))
 	if err != nil {
 		return fmt.Errorf("execute tool %q (%s): %w", name, callID, err)
 	}
@@ -35,4 +36,16 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	// structured result to a JSON string rather than a nested object.
 	data := map[string]any{"tool_call_id": callID, "content": string(result)}
 	return st.ch.Send(ctx, o.frame(st, "tool.result", data, string(frame.ID)))
+}
+
+// execEnv is the per-attempt sandbox context the broker hands a workspace-touching tool: the
+// allocation root every path confines to, whether this attempt holds a read-only snapshot, and the
+// shell runner. A workspace-less attempt (no host path) yields a zero root, so a workspace tool
+// fails cleanly instead of touching the control plane's own filesystem.
+func (o *Orchestrator) execEnv(st *attemptState) toolbroker.ExecEnv {
+	return toolbroker.ExecEnv{
+		WorkspaceRoot: st.attempt.WorkspaceHostPath,
+		ReadOnly:      st.attempt.WorkspaceReadOnly,
+		Shell:         o.shell,
+	}
 }
