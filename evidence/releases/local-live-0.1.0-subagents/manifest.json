@@ -1,0 +1,69 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-20T06:42:28Z",
+  "cases": [
+    {
+      "checksum": "sha256:eef0bfa47f088799c278c7aff27460f3dd58c0915fcf00ebd60c763e786664bf",
+      "db_assertions": [
+        "parent runs.state=completed on the real provider; provider_request_id is a chatcmpl",
+        "the parent required-delegated a child and its terminal links the child run id (§25.19)",
+        "parent model id is distinct from the child's (independent routing)"
+      ],
+      "id": "SUB-002-PARENT",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T06:47:21Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3bzjzCpqbwZyo3hrlsXfsd0mz5NK",
+      "run_id": "run_c4e2ea39e7a604eb42e5a980c62fd40a",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:bbc823c87ca15ee144a20aaa079c37b57fbaafec284ac77fb9905135e6036c29",
+      "db_assertions": [
+        "child runs.state=completed as its OWN run on the real provider (SUB-002)",
+        "child provider_request_id is a genuine chatcmpl, DISTINCT from the parent's",
+        "child routed its own cheaper model id (gpt-4o-mini), not the parent's"
+      ],
+      "id": "SUB-002-CHILD",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T06:47:21Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3bzk868Z4kkVqE6qQ6gUB2lcsc1F",
+      "run_id": "run_9a05553e079dc085",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.completed"
+      },
+      "usage": {}
+    },
+    {
+      "checksum": "sha256:abaf8ee4362964c0c62088b68957ebd95a04ab1c09183e1021b4abd99ffa3193",
+      "db_assertions": [
+        "parent committed a real model step (chatcmpl) then delegated a required child running a long real generation",
+        "canceling the parent mid-run propagated to the live child: child run.state=canceled (SUB-005)",
+        "child run.canceled.v1 is the single terminal; a repeated cancel is a monotonic no-op (consistent accounting)"
+      ],
+      "id": "SUB-005-CANCEL",
+      "image_digest": "sha256:d80540ef6fe6c5a72dfe5b3ba941ffcbc033d11c63bd5ea99da51113efd0ad94",
+      "mtls_enroll": "enrolled runner runner-local; identity valid until 2026-07-20T06:47:21Z",
+      "proof_class": "live-provider",
+      "provider_request_id": "chatcmpl-E3bznGqEnBdrn0HvbzsLPC6Fs3Z4i",
+      "run_id": "run_1a83fd923d35814d07e0deb5179d0445",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "run.canceled"
+      },
+      "usage": {}
+    }
+  ],
+  "git_sha": "7c1b004",
+  "migration": "000007_child_runs",
+  "release": "local-live-0.1.0-subagents"
+}

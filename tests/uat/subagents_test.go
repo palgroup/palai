@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,6 +41,10 @@ func TestLocalLiveSubagents(t *testing.T) {
 	// distinct model id (both proven accessible by the T3 switch smoke).
 	t.Setenv("PALAI_MODEL", envOr("PALAI_UAT_PARENT_MODEL", "gpt-4o"))
 	childModel := envOr("PALAI_UAT_CHILD_MODEL", "gpt-4o-mini")
+	// Inline delegation holds the parent's engine while the child dials its own, so the runner
+	// needs 2 concurrent lease slots (children are sequential + depth is capped at 1, so 2 is the
+	// ceiling regardless of fan-out). The default stays 1 for every non-delegating stack.
+	t.Setenv("PALAI_RUNNER_CONCURRENCY", envOr("PALAI_RUNNER_CONCURRENCY", "2"))
 
 	s := newUATStack(t, "provider-one", key)
 	proofs := []liveProof{}
@@ -60,6 +65,7 @@ func (s *uatStack) proveRequiredChildOnCheaperModel(t *testing.T, childModel str
 	respID, parentRun := s.createResponseWithDelegation(sessionID, "Reply with exactly one word and nothing else: SUMMIT.", delegations)
 
 	if final := s.awaitTerminal(respID, 180*time.Second); final.Status != "completed" {
+		s.dumpDelegationFailure(respID, parentRun)
 		t.Fatalf("SUB-002: parent response %s status = %q, want completed", respID, final.Status)
 	}
 	childRun := s.childRunOf(parentRun)
@@ -79,9 +85,11 @@ func (s *uatStack) proveRequiredChildOnCheaperModel(t *testing.T, childModel str
 	if parentChat == childChat {
 		t.Fatalf("SUB-002: parent and child share chatcmpl %s — the child did not make its own real call", parentChat)
 	}
-	// The child routed its OWN cheaper model id, distinct from the parent's.
-	if childModelUsed != childModel || parentModel == childModelUsed {
-		t.Fatalf("SUB-002: child model = %q (want %q, distinct from parent %q)", childModelUsed, childModel, parentModel)
+	// The child routed its OWN cheaper model family, distinct from the parent's (the provider
+	// returns a dated id, e.g. gpt-4o-mini-2024-07-18, so match the family prefix). The parent
+	// must NOT carry the child's family — that is what proves independent routing.
+	if !strings.HasPrefix(childModelUsed, childModel) || strings.HasPrefix(parentModel, childModel) {
+		t.Fatalf("SUB-002: child model = %q (want the cheaper %q family, distinct from parent %q)", childModelUsed, childModel, parentModel)
 	}
 	// The parent's terminal projection links the child run id (spec §25.19).
 	if links := s.query(fmt.Sprintf("SELECT output->'child_runs' FROM responses WHERE id='%s'", respID)); links == "" || links == "null" {
@@ -156,6 +164,25 @@ func (s *uatStack) proveParentCancelPropagatesToChild(t *testing.T, childModel s
 		"canceling the parent mid-run propagated to the live child: child run.state=canceled (SUB-005)",
 		"child run.canceled.v1 is the single terminal; a repeated cancel is a monotonic no-op (consistent accounting)",
 	}, "run.canceled"}
+}
+
+// dumpDelegationFailure prints redacted diagnostics for a delegation run that did not complete —
+// the parent's error, every model_requests row (model + provider request id + any sanitized error),
+// the child run and its model call, and the last journaled events — so a live-provider failure is
+// diagnosable without re-running. Every value is redacted of the credential.
+func (s *uatStack) dumpDelegationFailure(respID, parentRun string) {
+	r := func(v string) string { return redactBytes(v, s.secret) }
+	fmt.Printf("DELEGATION-FAIL: parent response error = %s\n", r(s.query(fmt.Sprintf("SELECT output->'error' FROM responses WHERE id='%s'", respID))))
+	fmt.Printf("DELEGATION-FAIL: parent model_requests = %s\n", r(s.query(fmt.Sprintf(
+		"SELECT json_agg(json_build_object('state',state,'model',result->>'model','prov',result->>'provider_request_id','err',result->'error')) FROM model_requests WHERE run_id='%s'", parentRun))))
+	childRun := s.childRunOf(parentRun)
+	fmt.Printf("DELEGATION-FAIL: child run = %s state = %s\n", childRun, s.query(fmt.Sprintf("SELECT state FROM runs WHERE id='%s'", childRun)))
+	if childRun != "" {
+		fmt.Printf("DELEGATION-FAIL: child model_requests = %s\n", r(s.query(fmt.Sprintf(
+			"SELECT json_agg(json_build_object('state',state,'model',result->>'model','prov',result->>'provider_request_id','err',result->'error')) FROM model_requests WHERE run_id='%s'", childRun))))
+	}
+	fmt.Printf("DELEGATION-FAIL: last events = %s\n", r(s.query(fmt.Sprintf(
+		"SELECT json_agg(type ORDER BY seq) FROM (SELECT type, seq FROM events WHERE response_id='%s' ORDER BY seq DESC LIMIT 12) e", respID))))
 }
 
 // createResponseWithDelegation admits a response chained into the session carrying required
