@@ -15,15 +15,19 @@ package responses
 // internal orchestrator + tools + composed steps, which Go's internal rule forbids importing from
 // tests/ — the same constraint that put the E08 newHarness here, which this reuses rather than clones.
 //
-// The journey, on one session, no kill:
+// This test proves the §63.2 CODING SPINE — the novel half this task composes end to end:
 //  1. create session + repository binding;
 //  2. prepare an isolated workspace at the exact commit (preparation receipt);
 //  3. the agent edits a file and runs a test through the real file/shell tools (real tool round-trip);
-//  4. a second client observes the identical ordered journal;
-//  5-6. queue/steer + model switch fold in at a boundary;
 //  7. a required research child runs on a cheaper model via a MODEL-driven agent tool_call;
 //  10. the changeset + test evidence are compiled from the tool ledger, not model prose;
 //  11. an approved branch push + a draft PR happen exactly once (external receipt + idempotency).
+//
+// §63.2 steps 4-6 (a second client observing the identical journal; queue/steer; model switch) are NOT
+// re-proven here — they are E08 session features this task does not touch, proven deterministically by
+// their owner tests in this package: attach_test.go (multi-client journal), commands_test.go
+// (queue/steer/interrupt), config_test.go (model switch). The live journey (TestCodingLiveJourney)
+// exercises the same coding spine against a real provider + a real Git destination.
 
 import (
 	"context"
@@ -429,12 +433,9 @@ func (p *codingProvider) Execute(_ context.Context, req modelbroker.Request, _ s
 type hostShellRunner struct{}
 
 func (hostShellRunner) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbroker.ShellResult, error) {
-	var c *exec.Cmd
-	if cmd.Shell && len(cmd.Argv) >= 3 {
-		c = exec.CommandContext(ctx, cmd.Argv[0], cmd.Argv[1:]...) // e.g. sh -c "<line>"
-	} else {
-		c = exec.CommandContext(ctx, cmd.Argv[0], cmd.Argv[1:]...)
-	}
+	// The argv is already an explicit command (shell mode passes ["sh","-c","<line>"]), so it runs the
+	// same way regardless of cmd.Shell — the sandbox double never re-parses a shell string.
+	c := exec.CommandContext(ctx, cmd.Argv[0], cmd.Argv[1:]...)
 	c.Dir = cmd.WorkspaceRoot
 	var stdout, stderr strings.Builder
 	c.Stdout, c.Stderr = &stdout, &stderr

@@ -7,11 +7,14 @@
 #     writes + self-verifies the coding-0.1.0 bundle (the CI-provable external-receipt push +
 #     the credential-absence scan). Routed through the responses e2e infra it already provisions.
 #   live (PROVIDER=provider-one only): TestCodingLiveJourney drives the SAME journey against real
-#     OpenAI + a real Git destination, THROUGH the real approve-command -> approval-pump -> push+PR
-#     boundary, and overwrites coding-0.1.0 with the real provider (chatcmpl) + real-GitHub
-#     receipts. The credential loads from the git-ignored .env.local into this process env only —
-#     never argv, log, or manifest. Without PROVIDER the live test skip-guards itself, so this
-#     target is green in CI without a key. uat-local-live and uat-interactive stay untouched.
+#     OpenAI + a real Git destination AT THE SEAM — the durable publication flows through the real
+#     store (RequestPublication -> approved -> ApprovedPublicationsForRun -> RepositoryPublisher.Publish
+#     -> real remote ref). The approve step is a direct durable-row transition, NOT the run-boundary
+#     approve COMMAND (that boundary is proven deterministically + by T8 APV-001; wiring it into the
+#     production HTTP run loop is E09 T10). It overwrites coding-0.1.0 with the real provider (chatcmpl)
+#     + real external receipts. The credential loads from the git-ignored .env.local into this process
+#     env only — never argv, log, or manifest. Without PROVIDER the live test skip-guards itself, so
+#     this target is green in CI without a key. uat-local-live and uat-interactive stay untouched.
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
