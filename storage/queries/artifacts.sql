@@ -21,3 +21,12 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 SELECT run_id, object_key, size_bytes, checksum
 FROM artifacts
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- ReferencedArtifactObjectKeys lists every object key a live artifacts row still points at
+-- — the reference set the orphan GC subtracts from the bucket listing (E10 Task 3). A
+-- tombstoned row (retention cleared object_key to '') is excluded by the non-empty filter,
+-- so its once-referenced object is reclaimed like any other orphan. Deliberately bucket-wide
+-- with NO tenant scope: the GC's delete decision is the pure absence of a referencing row,
+-- and the set must be complete across every tenant or GC could delete a live foreign object.
+-- name: ReferencedArtifactObjectKeys
+SELECT object_key FROM artifacts WHERE object_key <> '';

@@ -152,6 +152,43 @@ func (s *Store) Get(ctx context.Context, key string) (body []byte, found bool, e
 	return data, true, nil
 }
 
+// ObjectInfo is a stored object's key and server-recorded last-modified time — the two
+// facts the orphan reconcile needs: the key to join against the artifacts index, and the
+// modified time to spare an object still inside the write grace window.
+type ObjectInfo struct {
+	Key          string
+	LastModified time.Time
+}
+
+// List returns every object in the bucket, following pagination to completion. The bucket
+// holds only this control-plane's artifacts, so the full listing is the left side of the
+// orphan-GC reconcile (E10 Task 3). It stays control-plane-internal (spec §24): the S3
+// credential never leaves, and only keys/timestamps — no bytes, no tenant data — are read.
+//
+// CONSTRAINT for a second S3 write-path (E10 Task 6 workspace-snapshot restore): the GC
+// deletes any listed object no artifacts row references, so a snapshot object written to
+// THIS bucket without an artifacts row would be reclaimed as an orphan after its grace —
+// destroying an authoritative snapshot. T6 must write snapshots to a separate bucket/prefix,
+// or add its objects to the reference set the reconcile subtracts (referencedKeys).
+func (s *Store) List(ctx context.Context) ([]ObjectInfo, error) {
+	var objects []ObjectInfo
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: aws.String(s.bucket)})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list objects in %q: %w", s.bucket, err)
+		}
+		for _, obj := range page.Contents {
+			info := ObjectInfo{Key: aws.ToString(obj.Key)}
+			if obj.LastModified != nil {
+				info.LastModified = *obj.LastModified
+			}
+			objects = append(objects, info)
+		}
+	}
+	return objects, nil
+}
+
 // Delete removes the object at key. S3 delete is idempotent — deleting an absent key is
 // not an error — so a retried retention sweep can re-issue it safely.
 func (s *Store) Delete(ctx context.Context, key string) error {
