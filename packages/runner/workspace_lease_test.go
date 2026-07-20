@@ -90,3 +90,28 @@ func TestWorkspaceUnderRoot(t *testing.T) {
 		t.Fatalf("empty path (workspace-less lease) should pass: %v", err)
 	}
 }
+
+// TestAdmitWorkspaceMountRequiresRunnerOptInForUnsafeBind proves the §30.13 unsafe-bind trust
+// boundary (§24): a control plane setting WorkspaceUnsafe does NOT by itself let the runner mount an
+// arbitrary host path — the runner's own operator must also opt in. A normal allocation still goes
+// through the under-root check.
+func TestAdmitWorkspaceMountRequiresRunnerOptInForUnsafeBind(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "alloc-1")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := admitWorkspaceMount(Lease{WorkspaceHostPath: inside}, root, false); err != nil {
+		t.Fatalf("under-root allocation rejected: %v", err)
+	}
+	if err := admitWorkspaceMount(Lease{WorkspaceHostPath: t.TempDir()}, root, false); err == nil {
+		t.Fatal("allocation outside the runner root admitted; want rejected")
+	}
+	unsafe := Lease{WorkspaceHostPath: "/anywhere/on/host", WorkspaceUnsafe: true}
+	if err := admitWorkspaceMount(unsafe, root, false); err == nil {
+		t.Fatal("unsafe bind admitted without runner opt-in; a control plane alone escalated to an arbitrary host mount")
+	}
+	if err := admitWorkspaceMount(unsafe, root, true); err != nil {
+		t.Fatalf("unsafe bind rejected despite runner opt-in: %v", err)
+	}
+}

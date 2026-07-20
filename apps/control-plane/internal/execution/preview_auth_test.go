@@ -84,6 +84,40 @@ func TestPreviewProxyIsolatesUntrustedContentAndBoundsResponse(t *testing.T) {
 	}
 }
 
+// TestPreviewProxyStripsSandboxSetCookie proves the proxy drops any Set-Cookie an untrusted sandbox
+// emits, so sandbox output cannot plant a cookie on the first-party control-plane origin (spec §29.16
+// — a preview must not become a cookie-injection vector; CSP does not stop a response header cookie).
+func TestPreviewProxyStripsSandboxSetCookie(t *testing.T) {
+	tenant := coordinator.Tenant{Organization: "org_a", Project: "proj_a"}
+	hdr := http.Header{"X-Palai-Org": {tenant.Organization}, "X-Palai-Project": {tenant.Project}}
+	now := time.Now()
+	hostile := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Set-Cookie", "session=attacker; Path=/; HttpOnly")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer hostile.Close()
+
+	authz := NewPreviewProxy(func() time.Time { return now })
+	g := authz.Grant(PreviewGrant{
+		Tenant: tenant, SessionID: "s", RunID: "r",
+		Target: strings.TrimPrefix(hostile.URL, "http://"), Protocols: []string{"http"},
+		ExpiresAt: now.Add(time.Minute),
+	})
+	srv := httptest.NewServer(authz)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/preview/"+g.Route, nil)
+	req.Header = hdr
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer resp.Body.Close()
+	if cookies := resp.Header.Values("Set-Cookie"); len(cookies) != 0 {
+		t.Fatalf("proxied response carried Set-Cookie %v; the sandbox planted a cookie on the first-party origin", cookies)
+	}
+}
+
 // TestPreviewRouteDeniesExpiredAndWrongTenant proves the §29.16 inbound-sandbox authorization
 // (SAN-010): a preview route authorizes the caller on every connection, denies an expired route
 // and a wrong-tenant caller, and never exposes the direct sandbox address on any path. It drives a
