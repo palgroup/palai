@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,78 @@ import (
 
 	"github.com/palgroup/palai/packages/coordinator"
 )
+
+// TestPreviewProxyIsolatesUntrustedContentAndBoundsResponse proves the two SAN-010 hardenings: the
+// proxy neutralises untrusted sandbox output against the first-party origin (a strict sandbox CSP +
+// nosniff on EVERY proxied response, so hostile HTML/JS cannot script the API origin), and it bounds
+// the UNTRUSTED direction — the sandbox response streamed back to the client — not the request.
+func TestPreviewProxyIsolatesUntrustedContentAndBoundsResponse(t *testing.T) {
+	tenant := coordinator.Tenant{Organization: "org_a", Project: "proj_a"}
+	hdr := http.Header{"X-Palai-Org": {tenant.Organization}, "X-Palai-Project": {tenant.Project}}
+	now := time.Now()
+
+	// Hostile sandbox content on an HTML content-type — the classic stored-XSS payload.
+	hostile := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, `<script>fetch('/steal?c='+document.cookie)</script>`)
+	}))
+	defer hostile.Close()
+
+	authz := NewPreviewProxy(func() time.Time { return now })
+	g := authz.Grant(PreviewGrant{
+		Tenant: tenant, SessionID: "s", RunID: "r",
+		Target: strings.TrimPrefix(hostile.URL, "http://"), Protocols: []string{"http"},
+		ExpiresAt: now.Add(time.Minute),
+	})
+	srv := httptest.NewServer(authz)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/preview/"+g.Route, nil)
+	req.Header = hdr
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	// Every proxied response carries the isolation headers, so the untrusted body cannot script
+	// against the control-plane origin regardless of its content-type.
+	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "sandbox") {
+		t.Fatalf("proxied response CSP = %q, want a sandboxing policy", csp)
+	}
+	if nosniff := resp.Header.Get("X-Content-Type-Options"); nosniff != "nosniff" {
+		t.Fatalf("proxied response X-Content-Type-Options = %q, want nosniff", nosniff)
+	}
+	resp.Body.Close()
+
+	// The bound is on the RESPONSE (sandbox -> client): an oversized sandbox response is not
+	// delivered to the client.
+	big := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		payload := strings.Repeat("A", 4096)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer big.Close()
+
+	authz.maxResponseBytes = 64 // tiny bound for the test
+	g2 := authz.Grant(PreviewGrant{
+		Tenant: tenant, SessionID: "s", RunID: "r",
+		Target: strings.TrimPrefix(big.URL, "http://"), Protocols: []string{"http"},
+		ExpiresAt: now.Add(time.Minute),
+	})
+	req2, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/preview/"+g2.Route, nil)
+	req2.Header = hdr
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("do oversized: %v", err)
+	}
+	defer resp2.Body.Close()
+	body, _ := io.ReadAll(resp2.Body)
+	if resp2.StatusCode < 400 && int64(len(body)) > authz.maxResponseBytes {
+		t.Fatalf("oversized sandbox response delivered %d bytes (status %d); the response direction is not bounded", len(body), resp2.StatusCode)
+	}
+	if strings.Contains(string(body), strings.Repeat("A", 100)) {
+		t.Fatalf("oversized sandbox payload leaked through the bound")
+	}
+}
 
 // TestPreviewRouteDeniesExpiredAndWrongTenant proves the §29.16 inbound-sandbox authorization
 // (SAN-010): a preview route authorizes the caller on every connection, denies an expired route
