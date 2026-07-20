@@ -7,6 +7,7 @@
 package toolbroker
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -25,13 +26,56 @@ var (
 	ErrInvalidArguments = errors.New("invalid_arguments")
 )
 
-// Tool is a pure in-process conformance tool. Invoke is deterministic and has no
-// side effects beyond producing its result.
+// Tool is a broker-fenced tool. A pure conformance tool sets Invoke (deterministic, no side
+// effects). A workspace-touching tool (file/shell, spec §28.7-28.8) sets Exec instead: the broker
+// prefers Exec, handing it the per-attempt sandbox context so the effect confines to the workspace
+// while still riding the same fenced-row, idempotent-replay, schema, and usage machinery. Exactly
+// one of Invoke/Exec is set.
 type Tool struct {
 	Name         string
 	InputSchema  map[string]any
 	OutputSchema map[string]any
 	Invoke       func(args map[string]any) (map[string]any, error)
+	Exec         func(ctx context.Context, env ExecEnv, args map[string]any) (map[string]any, error)
+}
+
+// ExecEnv is the per-attempt sandbox context a workspace-touching tool receives (spec §28.7-28.8):
+// the resolved workspace root every path confines to, and a ShellRunner for argv execution. A pure
+// conformance tool ignores it; a zero ExecEnv (no workspace bound) makes a workspace tool fail
+// cleanly rather than escape.
+type ExecEnv struct {
+	WorkspaceRoot string
+	ReadOnly      bool
+	Shell         ShellRunner
+}
+
+// ShellRunner runs one argv command inside the sandbox and returns its captured, bounded result.
+// The concrete implementation (an OCI-driver-backed sandbox) lives outside this dependency-light
+// package; the seam keeps the broker free of sandbox mechanics.
+type ShellRunner interface {
+	Run(ctx context.Context, cmd ShellCommand) (ShellResult, error)
+}
+
+// ShellCommand is one sandboxed execution request: the argv (never a shell string — the caller opts
+// into a shell explicitly), and whether the workspace is writable for this call.
+type ShellCommand struct {
+	Argv      []string
+	ReadOnly  bool
+	Shell     bool
+	StdinData []byte
+}
+
+// ShellResult is the captured outcome of a sandboxed command: bounded, already-redacted output, the
+// exit code / signal, and the resource usage the sandbox recorded.
+type ShellResult struct {
+	ExitCode   int
+	Signal     string
+	Stdout     string
+	Stderr     string
+	Truncated  bool
+	TimedOut   bool
+	OOMKilled  bool
+	DurationMS int64
 }
 
 // Outcome is the result of one Execute. Cached reports whether it replayed a
@@ -80,7 +124,7 @@ func (b *Broker) Discoverable(name string) bool {
 // validates its arguments strictly before any side effect, advances the row along
 // the canonical table under a strictly increasing fence, invokes the tool,
 // validates the output, and caches the completed result with one usage event.
-func (b *Broker) Execute(callID contracts.ToolCallID, name string, args map[string]any, fence uint64) (Outcome, error) {
+func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name string, args map[string]any, fence uint64, env ExecEnv) (Outcome, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -119,7 +163,7 @@ func (b *Broker) Execute(callID contracts.ToolCallID, name string, args map[stri
 		return Outcome{}, err
 	}
 
-	result, err := tool.Invoke(args)
+	result, err := tool.invoke(ctx, env, args)
 	if err != nil {
 		r.state, _, _ = statemachines.Apply(state, statemachines.ToolCallCmdFail, statemachines.ToolCallTable)
 		return Outcome{State: r.state, Hash: r.hash}, fmt.Errorf("tool %s: %w", name, err)
@@ -135,6 +179,20 @@ func (b *Broker) Execute(callID contracts.ToolCallID, name string, args map[stri
 	r.state = state
 	r.result = result
 	return Outcome{Result: result, State: r.state, Usage: contracts.Usage{ToolCalls: 1}, Hash: r.hash}, nil
+}
+
+// invoke runs the tool through whichever surface it defines: a workspace-touching Exec receives the
+// per-attempt sandbox context, a pure conformance Invoke does not. A tool with neither is a
+// registration bug caught here rather than as a nil-call panic.
+func (t Tool) invoke(ctx context.Context, env ExecEnv, args map[string]any) (map[string]any, error) {
+	switch {
+	case t.Exec != nil:
+		return t.Exec(ctx, env, args)
+	case t.Invoke != nil:
+		return t.Invoke(args)
+	default:
+		return nil, fmt.Errorf("tool %s has no invoke surface", t.Name)
+	}
 }
 
 // requestHash is the canonical hash of a tool call. json.Marshal sorts map keys,
