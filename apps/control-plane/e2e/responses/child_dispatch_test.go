@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,6 +102,81 @@ func (h *harness) setProjectAllowedModels(models ...string) {
 		`UPDATE projects SET config_policy=$1 WHERE id=$2 AND organization_id=$3`,
 		policy, h.tenant.Project, h.tenant.Organization); err != nil {
 		h.t.Fatalf("set project allowed models error = %v", err)
+	}
+}
+
+// agentDelegatingProvider is the MODEL-driven delegation fake (DEL-001): on the parent's first step
+// it calls the built-in `agent` tool, which the engine turns into a child.request; the child (its own
+// model id) answers in one step; the parent's next step, seeing the child's answer folded in, finishes.
+// The child answer is a unique marker so the parent detects the fold reliably, not by message count.
+type agentDelegatingProvider struct{ childModel, childAnswer string }
+
+func (p agentDelegatingProvider) Execute(_ context.Context, req modelbroker.Request, _ string, _ func(modelbroker.Delta)) (modelbroker.Result, error) {
+	res := modelbroker.Result{
+		ModelRequestID: req.ModelRequestID, Model: req.Model,
+		Usage: contracts.Usage{InputTokens: 5, OutputTokens: 3, TotalTokens: 8}, Attempts: 1,
+	}
+	// The child run answers in a single step, on its own model id.
+	if req.Model == p.childModel {
+		res.ProviderRequestID = "prov_" + req.Model
+		res.Output = p.childAnswer
+		res.FinishReason = "stop"
+		return res, nil
+	}
+	// The parent: once the child's answer has folded in, finish.
+	for _, m := range req.Messages {
+		if strings.Contains(m.Content, p.childAnswer) {
+			res.ProviderRequestID = "prov_parent_final"
+			res.Output = "parent folded the child result"
+			res.FinishReason = "stop"
+			return res, nil
+		}
+	}
+	// The parent's first step DELEGATES via the agent tool — model-driven, not config-seeded.
+	res.ProviderRequestID = "prov_parent_delegate"
+	res.ToolCalls = []modelbroker.ToolCall{{
+		ID: "call_agent", Name: "agent",
+		Arguments: fmt.Sprintf(`{"role":"researcher","objective":"find x","model":%q,"required":true}`, p.childModel),
+	}}
+	res.FinishReason = "tool_calls"
+	return res, nil
+}
+
+// TestModelAgentToolCallDispatchesChildRun proves DEL-001 (spec §25.18, master plan line 410): the
+// model DRIVES delegation with an `agent` tool_call — the engine emits a child.request (not a
+// tool.request), the controller runs a real ChildRun on its own model id, and its typed result folds
+// back into the parent, whose projection links the child run. No config-seeded delegation involved.
+func TestModelAgentToolCallDispatchesChildRun(t *testing.T) {
+	h := newHarness(t)
+	marker := "child-research-" + newID("mark")
+	stop := h.runWorker(h.newOrchestratorWithAdapter(subprocessDialer{engineDir: h.engineDir},
+		agentDelegatingProvider{childModel: "fake-child", childAnswer: marker}))
+	defer stop()
+
+	respID, _, runID := h.admitWith(`{"input":"delegate this"}`, newID("idem"))
+	h.awaitResponseState(respID, "completed", 90*time.Second)
+
+	// A real ChildRun ran on the agent tool_call's model — not a tool.request.
+	childRun, childResp := h.childRunOf(runID)
+	if state := h.runState(childRun); state != "completed" {
+		t.Fatalf("child run state = %q, want completed", state)
+	}
+	if got := h.modelOfRun(childResp); got != "fake-child" {
+		t.Fatalf("child model = %q, want fake-child (the agent tool_call's model)", got)
+	}
+	// The parent journal carries the child lifecycle + typed result, and links the child run.
+	if n := h.count(`SELECT count(*) FROM events WHERE response_id=$1 AND type='child.requested.v1'`, respID); n != 1 {
+		t.Fatalf("child.requested.v1 = %d, want 1", n)
+	}
+	if n := h.count(`SELECT count(*) FROM events WHERE response_id=$1 AND type='child.completed.v1'`, respID); n != 1 {
+		t.Fatalf("child.completed.v1 = %d, want 1", n)
+	}
+	if links := h.childRunsLink(respID); len(links) != 1 || links[0] != childRun {
+		t.Fatalf("parent projection child_runs = %v, want [%s]", links, childRun)
+	}
+	// The agent call never became a broker tool.request: no tool_call events on the parent stream.
+	if n := h.count(`SELECT count(*) FROM events WHERE response_id=$1 AND type LIKE 'tool_call.%'`, respID); n != 0 {
+		t.Fatalf("tool_call events on parent = %d, want 0 (the agent call became a child.request, not a tool.request)", n)
 	}
 }
 
