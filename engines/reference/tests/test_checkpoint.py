@@ -15,7 +15,7 @@ import base64
 from palai_engine import checkpoint
 from palai_engine.loop import State
 
-from test_loop import ctrl, make_loop, run_start
+from test_loop import _first_model_result, ctrl, make_loop, run_start
 
 
 def _drive_to_pending_tool(run_id: str = "run_cp") -> tuple:
@@ -96,6 +96,29 @@ def test_completed_tool_boundary_offers_a_checkpoint() -> None:
     captured = checkpoint.decode(base64.b64decode(offer["data"]["state"]))
     assert captured["step"] == step_at_boundary
     assert out[1]["data"]["model_request_id"] != offer  # the next model step follows the offer
+
+
+def test_child_completion_offers_checkpoint_boundary() -> None:
+    # Every completed step is a §26.5 checkpoint boundary — tool OR delegation — so the newest
+    # checkpoint always sits at the last committed step. A delegation-completion resume that did NOT
+    # offer would leave the checkpoint >=1 committed step behind; after a restore the controller's
+    # restored-boundary gate would then mislabel a REPLAYED step's boundary as live, folding a fresh
+    # message into a replayed step (§26.9 silent divergence). So child completion must offer, like tool
+    # completion (MUST-FIX #1).
+    loop = make_loop("run_childcp")
+    spec = {"role": "r", "objective": "o", "model": "m", "required": False}
+    out = _first_model_result(loop, [spec])
+    child_req = next(f for f in out if f["type"] == "child.request")
+    resume = loop.handle(
+        ctrl(
+            "child.result",
+            {"child_request_id": child_req["data"]["child_request_id"], "status": "completed", "output": "done", "child_run_id": "run_kid"},
+            "frm_cr",
+        )
+    )
+    types = [f["type"] for f in resume]
+    assert "checkpoint.offer" in types, f"child completion must offer a checkpoint boundary, got {types}"
+    assert types.index("checkpoint.offer") < types.index("model.request")
 
 
 def test_migrate_v1_to_v2_preserves_original() -> None:

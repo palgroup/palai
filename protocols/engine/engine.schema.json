@@ -145,7 +145,7 @@
             "properties": {
               "format": {"type": "string"},
               "format_version": {"type": "integer", "minimum": 1},
-              "boundary_kind": {"type": "string", "enum": ["tool", "pause", "request"]},
+              "boundary_kind": {"type": "string", "enum": ["tool", "child", "pause", "request"]},
               "state": {"type": "string", "description": "base64 of the opaque checkpoint bytes"}
             }
           }

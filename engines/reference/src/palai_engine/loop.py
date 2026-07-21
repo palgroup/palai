@@ -270,7 +270,11 @@ class Loop:
             self._pending_tools.discard(call_id)
             if self._pending_tools:
                 return []  # still awaiting other tool results in this turn
-            return self._request_model()
+            # A completed delegation turn is a §26.5 checkpoint boundary too — offer BEFORE the next
+            # model step so the newest checkpoint always sits at the last committed step (MUST-FIX #1).
+            # Without it, consecutive delegation steps leave the checkpoint behind committed steps, and
+            # a restore's boundary gate would mislabel a replayed step's boundary as live (§26.9).
+            return [self._checkpoint_offer("child"), *self._request_model()]
         # Config-seeded delegation (spec §25.18): folds as a typed user-role result.
         if child_id not in self._pending_children:
             return [self._error("unknown_child_result", f"{child_id!r} is not an outstanding child request")]
@@ -283,7 +287,10 @@ class Loop:
         self.context.add_child_result(data, spec)
         if self._pending_children:
             return []  # still awaiting the remaining children
-        return self._request_model()  # resume: the final model step folds the child results in
+        # Offer a checkpoint at this completed-delegation boundary before resuming (MUST-FIX #1): the
+        # newest checkpoint must stay at the last committed step so a restore resumes at the live
+        # frontier, never behind replayed steps.
+        return [self._checkpoint_offer("child"), *self._request_model()]  # resume: fold the child results in
 
     def _on_tool_result(self, frame: dict) -> list[dict]:
         data = frame.get("data") or {}

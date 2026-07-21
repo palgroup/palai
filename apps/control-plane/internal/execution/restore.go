@@ -138,9 +138,13 @@ func (o *Orchestrator) consultCheckpointLadder(ctx context.Context, st *attemptS
 }
 
 // boundaryIsLive reports whether the boundary after the just-dispatched model step precedes a LIVE
-// step (spec §26.9). A restore resumed past every prior step, so every boundary is live. Otherwise
-// the next step (modelStepIndex+1) is a replay while modelStepIndex < M, so the boundary is live
-// exactly once modelStepIndex reaches the committed watermark M (the last replayed step's boundary).
+// step (spec §26.9). A restore resumed at the checkpoint boundary; the st.restored short-circuit is
+// sound ONLY because the engine offers a checkpoint at EVERY completed step — tool AND delegation
+// (loop.py _on_tool_result + _on_child_result, MUST-FIX #1) — so the newest checkpoint always sits at
+// the last committed step and the restore resumes at the live frontier, never behind replayed steps.
+// Otherwise (transcript reconstruction) the next step (modelStepIndex+1) is a replay while
+// modelStepIndex < M, so the boundary is live exactly once modelStepIndex reaches the committed
+// watermark M (the last replayed step's boundary).
 func (o *Orchestrator) boundaryIsLive(st *attemptState) bool {
 	return st.restored || st.modelStepIndex >= st.committedStepWatermark
 }
