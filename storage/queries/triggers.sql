@@ -49,7 +49,7 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- InsertDelivery accepts a delivery, PINNING trigger_revision_id at accept (AGT-002) and recording the
 -- accepting principal (so a deferred resume admits under the same principal). Born 'received' (the
 -- state-machine genesis); the pipeline advances it from here.
--- name: InsertDelivery
+-- name: InsertTriggerDelivery
 INSERT INTO trigger_deliveries (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id)
 VALUES ($1, $2, $3, $4, $5, $6);
 
@@ -60,6 +60,24 @@ VALUES ($1, $2, $3, $4, $5, $6);
 UPDATE trigger_deliveries
 SET state = 'admitted', response_id = $4, run_id = $5, session_id = $6, mapped_input = $7, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- SetDeliveryCorrelationHash records the delivery's correlation-key HASH (only the hash is stored, never
+-- the raw key — spec §20.2.2). The hash is (project, trigger_revision, source_tenant)-scoped by its input.
+-- name: SetDeliveryCorrelationHash
+UPDATE trigger_deliveries
+SET correlation_key_hash = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- FindCorrelatedSession resolves the session a bounded_key_reuse / reject_if_active delivery correlates
+-- onto: the most recent OTHER delivery (of this trigger, in scope) that carries the same correlation hash
+-- and a resolved session. Only THIS tenant's deliveries are queried, so a correlation can never reach a
+-- foreign session (authz is not bypassed).
+-- name: FindCorrelatedSession
+SELECT session_id FROM trigger_deliveries
+WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
+  AND correlation_key_hash = $4 AND session_id <> '' AND id <> $5
+ORDER BY received_at DESC
+LIMIT 1;
 
 -- GetDeliveryPin reads a delivery's pinned revision + state (the AGT-002 assertion + pipeline read).
 -- name: GetDeliveryPin

@@ -29,6 +29,9 @@ const createRoute = "/v1/responses"
 // package stays below api in the import graph.
 type RunAdmitter interface {
 	AdmitResponse(ctx context.Context, tenant coordinator.Tenant, in coordinator.AdmissionInput) (coordinator.Admission, error)
+	// AcceptCommand is the send_message accept path a named_session delivery appends through (spec
+	// §20.2.2 correlation named_session — no new command kind, no new run). The coordinator implements it.
+	AcceptCommand(ctx context.Context, tenant coordinator.Tenant, sessionID string, in coordinator.CommandInput) (coordinator.Command, error)
 }
 
 // DeliveryResult is the outcome of accepting + processing a delivery. State is the terminal (or current)
@@ -67,7 +70,7 @@ func (s *TriggerStore) CreateDelivery(ctx context.Context, org, project, princip
 	}
 
 	deliveryID := newID("tdel")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertDelivery"), deliveryID, org, project, triggerID, rev.ID, principal); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertTriggerDelivery"), deliveryID, org, project, triggerID, rev.ID, principal); err != nil {
 		return DeliveryResult{}, fmt.Errorf("insert delivery: %w", err)
 	}
 
@@ -153,8 +156,153 @@ func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []
 		return DeliveryResult{}, err
 	}
 
-	// Admit (spec §20.2.2): born via the SAME §20.9 admission path a POST /v1/responses takes.
-	return s.admit(ctx, sc, cfg, mappedInput)
+	// Correlate + act (spec §20.2.2): the correlation mode decides the target session — a fresh one
+	// (per_event), a chained one (bounded_key_reuse), an existing named session the mapped input is
+	// appended to (named_session), or a rejection when the correlated session is busy (reject_if_active).
+	return s.correlate(ctx, sc, cfg, source, mappedInput)
+}
+
+// correlate resolves the target session per the revision's correlation mode and runs the shared admit /
+// append / reject action. A bounded correlation key is SHA-256'd with the (project, trigger_revision,
+// source_tenant) scope; ONLY the hash is stored (the raw key never lands in the DB). A correlation query
+// touches only THIS tenant's deliveries, so it can never reach a foreign session (authz is not bypassed),
+// and admission still enforces retention/scope on the resolved session.
+func (s *TriggerStore) correlate(ctx context.Context, sc deliveryScope, cfg revisionConfig, source map[string]any, mappedInput []byte) (DeliveryResult, error) {
+	switch cfg.CorrelationMode {
+	case "named_session":
+		key, err := boundedKey(cfg.CorrelationKeyExpr, source)
+		if err != nil {
+			return DeliveryResult{}, err
+		}
+		return s.appendToNamedSession(ctx, sc, key, mappedInput)
+	case "bounded_key_reuse", "reject_if_active":
+		hash, err := s.correlationHash(ctx, sc, cfg.CorrelationKeyExpr, source)
+		if err != nil {
+			return DeliveryResult{}, err
+		}
+		var prior string
+		if hash != "" {
+			if prior, err = s.findCorrelatedSession(ctx, sc, hash); err != nil {
+				return DeliveryResult{}, err
+			}
+		}
+		if cfg.CorrelationMode == "reject_if_active" && prior != "" {
+			active, err := s.hasActiveRootRun(ctx, sc, prior)
+			if err != nil {
+				return DeliveryResult{}, err
+			}
+			if active {
+				return s.reject(ctx, sc, statemachines.TriggerDeliveryMapped, "correlated session has an active root run")
+			}
+		}
+		var requested *string
+		if prior != "" {
+			requested = &prior
+		}
+		return s.admitChained(ctx, sc, cfg, mappedInput, requested)
+	default: // per_event
+		return s.admit(ctx, sc, cfg, mappedInput)
+	}
+}
+
+// correlationHash computes and records the delivery's bounded correlation-key hash — SHA-256 over the
+// (project, trigger_revision, source_tenant, raw-key) tuple, so only the hash is stored. An empty key
+// expr yields "" (no correlation), recorded as the empty hash.
+func (s *TriggerStore) correlationHash(ctx context.Context, sc deliveryScope, expr string, source map[string]any) (string, error) {
+	key, err := CompileExpr(expr, nil)
+	if err != nil {
+		return "", err
+	}
+	raw, err := key.EvalString(source)
+	if err != nil {
+		return "", err
+	}
+	if raw == "" {
+		return "", nil
+	}
+	// source_tenant is '' in T2 (manual/api carries no signed source envelope — T5).
+	scoped := sc.project + "\x00" + sc.revisionID + "\x00" + "" + "\x00" + raw
+	sum := sha256.Sum256([]byte(scoped))
+	hash := hex.EncodeToString(sum[:])
+	if _, err := s.pool.Exec(ctx, storage.Query("SetDeliveryCorrelationHash"), sc.deliveryID, sc.org, sc.project, hash); err != nil {
+		return "", fmt.Errorf("record correlation hash: %w", err)
+	}
+	return hash, nil
+}
+
+// findCorrelatedSession resolves the session a prior delivery with the same correlation hash landed in.
+func (s *TriggerStore) findCorrelatedSession(ctx context.Context, sc deliveryScope, hash string) (string, error) {
+	var session string
+	switch err := s.pool.QueryRow(ctx, storage.Query("FindCorrelatedSession"),
+		sc.triggerID, sc.org, sc.project, hash, sc.deliveryID).Scan(&session); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("resolve correlated session: %w", err)
+	}
+	return session, nil
+}
+
+// hasActiveRootRun reports whether a session holds a non-terminal root run (the reject_if_active gate).
+func (s *TriggerStore) hasActiveRootRun(ctx context.Context, sc deliveryScope, sessionID string) (bool, error) {
+	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveRootRun"), sessionID, sc.org, sc.project).Scan(new(string), new(string)); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("check active root run: %w", err)
+	}
+	return true, nil
+}
+
+// appendToNamedSession appends the mapped input to an EXISTING named session's active root run via the
+// send_message accept path (no new command kind, no new run — spec §20.2.2 named_session). A missing
+// session or one with no live run fails the delivery (there is no loop to receive the message).
+func (s *TriggerStore) appendToNamedSession(ctx context.Context, sc deliveryScope, sessionID string, mappedInput []byte) (DeliveryResult, error) {
+	if s.admitter == nil {
+		return DeliveryResult{}, errors.New("automation: delivery admitter is not wired")
+	}
+	if sessionID == "" {
+		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, "named_session correlation produced no session id")
+	}
+	tenant := coordinator.Tenant{Organization: sc.org, Project: sc.project}
+	// Resolve the target run BEFORE the send, so the delivery records the run it joined.
+	var runID, responseID string
+	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveRootRun"), sessionID, sc.org, sc.project).Scan(&runID, &responseID); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, "named session has no active run to receive the message")
+	case err != nil:
+		return DeliveryResult{}, fmt.Errorf("resolve named session run: %w", err)
+	}
+	payload, err := json.Marshal(map[string]any{"message": string(mappedInput)})
+	if err != nil {
+		return DeliveryResult{}, err
+	}
+	cmd, err := s.admitter.AcceptCommand(ctx, tenant, sessionID, coordinator.CommandInput{
+		CommandID: "trigger-delivery:" + sc.deliveryID,
+		Kind:      "send_message",
+		Delivery:  "queue",
+		Payload:   payload,
+	})
+	if err != nil {
+		return DeliveryResult{}, fmt.Errorf("append to named session: %w", err)
+	}
+	if cmd.SessionNotFound {
+		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, "named session not found in scope")
+	}
+	if cmd.State == "rejected" {
+		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, "named session rejected the message (no live run)")
+	}
+	if _, err := s.pool.Exec(ctx, storage.Query("RecordDeliveryAdmitted"),
+		sc.deliveryID, sc.org, sc.project, responseID, runID, sessionID, mappedInput); err != nil {
+		return DeliveryResult{}, fmt.Errorf("record named-session delivery: %w", err)
+	}
+	if _, err := s.transition(ctx, sc, statemachines.TriggerDeliveryAdmitted, statemachines.TriggerDeliveryCmdCreateRun); err != nil {
+		return DeliveryResult{}, err
+	}
+	return DeliveryResult{
+		ID: sc.deliveryID, State: string(statemachines.TriggerDeliveryRunCreated),
+		ResponseID: responseID, RunID: runID, SessionID: sessionID,
+	}, nil
 }
 
 // admit builds a coordinator.AdmissionInput from the mapped canonical input + the pinned run target and
