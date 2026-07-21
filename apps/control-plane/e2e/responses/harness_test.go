@@ -222,7 +222,12 @@ func (h *harness) runWorkerWithRetry(orch *execution.Orchestrator, retry coordin
 		if err := json.Unmarshal(payload, &body); err != nil {
 			return "", err
 		}
-		if err := orch.ExecuteAttempt(ctx, h.descriptor(body.RunID, claim.Fence)); err != nil {
+		// Carry the claimed job id, so the recovery ladder's exact rung excludes this attempt's OWN
+		// live lease (mirrors execute_run.go). Without it a worker attempt would see its own job as a
+		// live sibling and wrongly stand down.
+		desc := h.descriptor(body.RunID, claim.Fence)
+		desc.JobID = claim.JobID
+		if err := orch.ExecuteAttempt(ctx, desc); err != nil {
 			return "", err
 		}
 		return "run:" + body.RunID + ":executed", nil

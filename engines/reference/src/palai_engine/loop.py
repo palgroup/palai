@@ -8,6 +8,7 @@ construction.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable
 from enum import Enum
 
@@ -111,6 +112,8 @@ class Loop:
                 return [self._error("unexpected_frame", "message.deliver before run.start")]
             return commands.deliver(self.context, frame)
 
+        if self.state is State.AWAITING_START and type_ == "run.restore":
+            return self._restore(frame)
         if self.state is State.AWAITING_START and type_ == "run.start":
             return self._begin(frame)
         if self.state is State.AWAITING_MODEL and type_ == "model.result":
@@ -136,8 +139,14 @@ class Loop:
         # so a queued/steered message becomes part of this step's context (spec §9.2).
         self.context.flush_deliveries()
         self.log("safe_boundary", boundary="before_model", step=self._step)
-        payload = self.context.model_request()
         self._model_request_id = protocol.model_request_id(self.emitter.run_id, self._step)
+        return [self._model_request_frame()]
+
+    def _model_request_frame(self) -> dict:
+        """Build the model.request for the CURRENT step and enter AWAITING_MODEL. Shared by the
+        forward path (after _request_model advances the step) and restore (re-emitting the model
+        step a checkpoint was awaiting, at the SAME step — no re-advance, no re-flush)."""
+        payload = self.context.model_request()
         data = {
             "model_request_id": self._model_request_id,
             "request_hash": protocol.content_hash(payload),
@@ -145,7 +154,7 @@ class Loop:
         }
         frame = self.emitter.build("model.request", data)
         self.state = State.AWAITING_MODEL
-        return [frame]
+        return frame
 
     def _on_model_result(self, frame: dict) -> list[dict]:
         data = frame.get("data") or {}
@@ -195,20 +204,23 @@ class Loop:
                 frames.append(self._child_request_frame(child_id, spec, reply_to))
                 continue
             self.log("safe_boundary", boundary="before_tool", tool_call_id=call_id)
-            frames.append(
-                self.emitter.build(
-                    "tool.request",
-                    {
-                        "tool_call_id": call_id,
-                        "name": call.get("name"),
-                        "arguments": call.get("arguments") or {},
-                        "request_hash": protocol.content_hash([call.get("name"), call.get("arguments") or {}]),
-                    },
-                    reply_to=reply_to,
-                )
-            )
+            frames.append(self._tool_request_frame(call_id, call, reply_to))
         self.state = State.AWAITING_TOOLS
         return frames
+
+    def _tool_request_frame(self, call_id: str, call: dict, reply_to: str | None) -> dict:
+        """Build one tool.request frame (shared by the forward dispatch and the restore re-emit, so
+        a re-derived request is byte-identical in name/arguments/request_hash to the original)."""
+        return self.emitter.build(
+            "tool.request",
+            {
+                "tool_call_id": call_id,
+                "name": call.get("name"),
+                "arguments": call.get("arguments") or {},
+                "request_hash": protocol.content_hash([call.get("name"), call.get("arguments") or {}]),
+            },
+            reply_to=reply_to,
+        )
 
     def _request_children(self, specs: list[dict], *, reply_to: str | None) -> list[dict]:
         """Emit one child.request per CONFIG-SEEDED delegation spec (spec §25.18). The controller
@@ -258,7 +270,11 @@ class Loop:
             self._pending_tools.discard(call_id)
             if self._pending_tools:
                 return []  # still awaiting other tool results in this turn
-            return self._request_model()
+            # A completed delegation turn is a §26.5 checkpoint boundary too — offer BEFORE the next
+            # model step so the newest checkpoint always sits at the last committed step (MUST-FIX #1).
+            # Without it, consecutive delegation steps leave the checkpoint behind committed steps, and
+            # a restore's boundary gate would mislabel a replayed step's boundary as live (§26.9).
+            return [self._checkpoint_offer("child"), *self._request_model()]
         # Config-seeded delegation (spec §25.18): folds as a typed user-role result.
         if child_id not in self._pending_children:
             return [self._error("unknown_child_result", f"{child_id!r} is not an outstanding child request")]
@@ -271,7 +287,10 @@ class Loop:
         self.context.add_child_result(data, spec)
         if self._pending_children:
             return []  # still awaiting the remaining children
-        return self._request_model()  # resume: the final model step folds the child results in
+        # Offer a checkpoint at this completed-delegation boundary before resuming (MUST-FIX #1): the
+        # newest checkpoint must stay at the last committed step so a restore resumes at the live
+        # frontier, never behind replayed steps.
+        return [self._checkpoint_offer("child"), *self._request_model()]  # resume: fold the child results in
 
     def _on_tool_result(self, frame: dict) -> list[dict]:
         data = frame.get("data") or {}
@@ -291,8 +310,8 @@ class Loop:
         # loop re-derives the next model request from the captured context (model_request_id is
         # deterministic per (run, step)). Every completed-tool offer is honest; which to persist
         # (external side-effecting tools only) is the control plane's call — per-tool side-effect
-        # classification is T7. Delegation-completion resumes do not offer — a child spawn is not the
-        # external side-effecting tool §26.5 names.
+        # classification is T7. Delegation completions offer too (_on_child_result, MUST-FIX #1), so
+        # the newest checkpoint always sits at the last committed step.
         offer = self._checkpoint_offer("tool")
         return [offer, *self._request_model()]  # resume: next model request for the next step
 
@@ -341,6 +360,68 @@ class Loop:
         self._pending_children = dict(state["pending_children"])
         self._agent_children = {cid: (pair[0], pair[1]) for cid, pair in state["agent_children"].items()}
         self.context.restore(state["context"])
+
+    def _restore(self, frame: dict) -> list[dict]:
+        """Reconstruct a fresh loop from a run.restore frame and re-derive the awaited boundary
+        (spec §26.3 portable-checkpoint restore). The format_version is checked FIRST: an unknown
+        one is a protocol.error and the loop is left untouched at AWAITING_START — never a silent
+        half-restore. `state` is base64 of the opaque checkpoint bytes the control plane held."""
+        data = frame.get("data") or {}
+        fmt, version = data.get("format"), data.get("format_version")
+        if fmt != checkpoint.FORMAT or version != checkpoint.FORMAT_VERSION:
+            return [self._error("incompatible_checkpoint", f"cannot restore {fmt}/{version}: this engine writes {checkpoint.FORMAT_ID}")]
+        try:
+            captured = checkpoint.decode(base64.b64decode(data.get("state") or ""))
+            # restore_state is INSIDE the try: a decodable-but-malformed state (a missing/typed key)
+            # must be a protocol.error, never a KeyError that crashes the engine — "no silent
+            # half-restore" (MUST-FIX #1 sibling, minor 7).
+            self.restore_state(captured)
+        except (ValueError, KeyError, TypeError) as exc:
+            return [self._error("invalid_checkpoint", f"checkpoint state is not restorable: {exc}")]
+        self.log("restored", state=self.state.value, step=self._step)
+        return self._resume_frames()
+
+    def _resume_frames(self) -> list[dict]:
+        """Re-derive exactly the frames the run was awaiting when the checkpoint was cut (spec
+        §26.3). Every awaiting_* state is a safe boundary; the resume re-emits only what the
+        controller still needs to make progress, so completed effects are never replayed. On restore
+        the model_request_id/tool_call_ids are deterministic per (run, step[, index]), so a
+        re-derived request is idempotent with the original."""
+        if self.state is State.AWAITING_MODEL:
+            return [self._model_request_frame()]
+        if self.state is State.AWAITING_TOOLS:
+            if self._pending_tools:
+                return self._reemit_pending_tools()
+            # The tool turn was fully answered at the boundary → resume into the next model step.
+            return self._request_model()
+        if self.state is State.AWAITING_CHILDREN:
+            # Empty pending set = the child turn was fully answered at the boundary (the 'child'
+            # checkpoint offer, MUST-FIX #1) → resume the next model step, exactly like AWAITING_TOOLS.
+            # Without this the loop returns [] and hangs at awaiting_children (re-review FIX A).
+            return self._reemit_pending_children() if self._pending_children else self._request_model()
+        return [self._error("unrestorable_state", f"cannot resume from {self.state.value}")]
+
+    def _reemit_pending_tools(self) -> list[dict]:
+        """Re-derive the tool.request (or child.request) for every STILL-outstanding call, from the
+        last assistant turn's tool_calls filtered to _pending_tools — a completed tool was discarded
+        from the set, so it gets no frame (no double-run). Agent tool_calls re-emit as child.requests
+        (their answer is a tool-role result), ordinary ones as tool.requests."""
+        agent_by_call = {call_id: (child_id, spec) for child_id, (call_id, spec) in self._agent_children.items()}
+        frames: list[dict] = []
+        for index, call in enumerate(self.context.last_tool_calls()):
+            call_id = protocol.tool_call_id(self.emitter.run_id, self._step, index)
+            if call_id not in self._pending_tools:
+                continue
+            if call_id in agent_by_call:
+                child_id, spec = agent_by_call[call_id]
+                frames.append(self._child_request_frame(child_id, spec, None))
+            else:
+                frames.append(self._tool_request_frame(call_id, call, None))
+        return frames
+
+    def _reemit_pending_children(self) -> list[dict]:
+        """Re-derive the child.request for every outstanding config-seeded delegation (spec §25.18)."""
+        return [self._child_request_frame(cid, spec, None) for cid, spec in self._pending_children.items()]
 
     def _cancel(self, frame: dict) -> list[dict]:
         reason = (frame.get("data") or {}).get("reason", "canceled")

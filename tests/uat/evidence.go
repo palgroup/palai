@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+
+	"github.com/palgroup/palai/packages/coordinator/recovery"
 )
 
 // Finding is one reason an evidence bundle fails verification. Case is "" for a
@@ -69,6 +71,11 @@ type evidenceCase struct {
 	Usage             map[string]int `json:"usage"`
 	DBAssertions      []string       `json:"db_assertions"`
 	Checksum          string         `json:"checksum"`
+	// RecoveryClaim is a non-empty "continued"/"resumed" marker when the case claims its run survived a
+	// kill/pause and was recovered (REC-006, spec §26.12). RecoveryProof is the §26.12 evidence that
+	// claim requires — a marker alone is NEVER proof.
+	RecoveryClaim string                  `json:"recovery_claim"`
+	RecoveryProof *recovery.RecoveryProof `json:"recovery_proof"`
 }
 
 type evidenceTerm struct {
@@ -152,6 +159,19 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 		miss(c.Checksum == "", "checksum", c.ID)
 		if c.Checksum != "" && !checksumPattern.MatchString(c.Checksum) {
 			findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "checksum is not sha256:<64 hex>"})
+		}
+
+		// REC-006 (spec §26.12): a case that CLAIMS recovery (a "continued"/"resumed" marker) must carry
+		// a COMPLETE RecoveryProof — the marker alone is never evidence. A missing proof is a "missing"
+		// finding; a proof missing any of the eight §26.12 field groups is "invalid". Reuses
+		// recovery.RecoveryProof.Complete, the same completeness gate the orchestrator emits under.
+		if c.RecoveryClaim != "" {
+			switch {
+			case c.RecoveryProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "recovery_proof (a recovery claim requires a §26.12 RecoveryProof; a 'continued'/'resumed' marker is not proof)"})
+			case !c.RecoveryProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "recovery_proof is incomplete — a §26.12 field group is missing (REC-006)"})
+			}
 		}
 
 		if c.ProofClass == "external-receipt" {

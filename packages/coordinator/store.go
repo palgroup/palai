@@ -111,6 +111,124 @@ func (s *Store) CurrentJournalSequence(ctx context.Context, tenant Tenant, sessi
 	return seq, nil
 }
 
+// RunCheckpoint is a run's newest durable checkpoint plus the §26.4 compatibility inputs the
+// recovery ladder weighs (spec §26.3-26.4, E10 T4). WorkspaceSnapshotID is "" when the checkpoint
+// declared NO workspace dependency (stored NULL); the ObjectKey/ContentChecksum locate + verify the
+// opaque bytes the control plane fetches for a restore.
+type RunCheckpoint struct {
+	CheckpointID        string
+	BoundaryID          string
+	AttemptID           string
+	Format              string
+	FormatVersion       int
+	ConfigSnapshotHash  string
+	ProtocolVersion     string
+	TranscriptSequence  int64
+	WorkspaceSnapshotID string
+	ContentChecksum     string
+	ObjectKey           string
+	SizeBytes           int64
+}
+
+// LatestRunCheckpoint reads a run's newest checkpoint (spec §26.3-26.4). found is false — with a nil
+// error — for a run that has no checkpoint, so the ladder falls to transcript reconstruction rather
+// than a phantom restore. The read is index-backed (checkpoints_by_run) and tenant-scoped.
+//
+// ponytail ceiling: newest-ONLY (LIMIT 1). If a migration wrote a v2 row a v1-only engine can't
+// restore, the newest v2 shadows the still-valid v1 and the ladder drops to transcript rather than
+// rolling back to v1. Harmless while production stays single-format v1; when a real format bump lands,
+// return an ordered candidate list here and let the ladder fall to the next on a rejected-newest.
+func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID string) (RunCheckpoint, bool, error) {
+	var cp RunCheckpoint
+	var workspaceSnapshot *string
+	err := s.pool.QueryRow(ctx, storage.Query("LatestRunCheckpoint"), runID, tenant.Organization, tenant.Project).
+		Scan(&cp.CheckpointID, &cp.BoundaryID, &cp.AttemptID, &cp.Format, &cp.FormatVersion,
+			&cp.ConfigSnapshotHash, &cp.ProtocolVersion, &cp.TranscriptSequence, &workspaceSnapshot,
+			&cp.ContentChecksum, &cp.ObjectKey, &cp.SizeBytes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RunCheckpoint{}, false, nil
+	}
+	if err != nil {
+		return RunCheckpoint{}, false, fmt.Errorf("read latest run checkpoint: %w", err)
+	}
+	if workspaceSnapshot != nil {
+		cp.WorkspaceSnapshotID = *workspaceSnapshot
+	}
+	return cp, true, nil
+}
+
+// RecordAttempt records the run attempt row (spec §26.1, E10 T4): the durable anchor the checkpoint,
+// transcript-boundary, and workspace-snapshot FKs reference. Idempotent on id (a reclaim re-recording
+// the same attempt is a no-op). Called at attempt start so a checkpoint offered mid-run can persist.
+func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attemptID string) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin record attempt: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	// Supersede any prior non-terminal attempt for this run (marked 'preempted' — superseded by a
+	// newer attempt, not falsely 'lost') so the one-active-per-run index admits this attempt. The
+	// exact rung already ruled out a live original, so this only reconciles a stale predecessor's row.
+	if _, err := tx.Exec(ctx, storage.Query("SupersedeActiveAttempts"),
+		runID, tenant.Organization, tenant.Project, attemptID); err != nil {
+		return fmt.Errorf("supersede prior attempts: %w", err)
+	}
+	// Fence is computed RUN-monotonic inside the query (not the job claim fence, which restarts per
+	// job) so a resume's fresh-job attempt does not collide on (run_id, fence).
+	if _, err := tx.Exec(ctx, storage.Query("UpsertAttempt"),
+		attemptID, tenant.Organization, tenant.Project, runID); err != nil {
+		return fmt.Errorf("record attempt: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit record attempt: %w", err)
+	}
+	return nil
+}
+
+// RunHasLiveResponseJob reports whether the run has a response.run job — other than excludeJobID —
+// still claimed with a non-expired lease by DB clock (spec §26.3 rung 1, E10 T4). True means the
+// original attempt is still driving the run, so a new attempt takes the "exact" rung and stands
+// down. excludeJobID is the caller's own claimed job ("" for a direct-drive attempt with no job).
+func (s *Store) RunHasLiveResponseJob(ctx context.Context, tenant Tenant, runID, excludeJobID string) (bool, error) {
+	var live bool
+	if err := s.pool.QueryRow(ctx, storage.Query("RunHasLiveResponseJob"), runID, tenant.Organization, tenant.Project, excludeJobID).Scan(&live); err != nil {
+		return false, fmt.Errorf("read run live response job: %w", err)
+	}
+	return live, nil
+}
+
+// CommittedModelStepCount is the replay watermark M: how many model steps the run has already
+// committed (spec §26.9, E10 T4). On a reconstruction the engine re-walks steps 1..M as replays, so
+// a fresh queued message folds at the boundary preceding step M+1 (the first live step), never into
+// a replayed step. Captured once at attempt start, before this attempt commits any new step.
+func (s *Store) CommittedModelStepCount(ctx context.Context, tenant Tenant, runID string) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, storage.Query("CommittedModelStepCount"), runID, tenant.Organization, tenant.Project).Scan(&n); err != nil {
+		return 0, fmt.Errorf("read committed model step count: %w", err)
+	}
+	return n, nil
+}
+
+// RecordRecoveryEvent journals a standalone recovery event (attempt.recovering.v1,
+// checkpoint.rejected.v1, checkpoint.migrated.v1, recovery.proof.v1 — spec §26.3, §26.12, E10 T4).
+// It is a plain diagnostic append with no run-active guard: the record must survive whatever the
+// recovery does next (a stand-down under a live sibling, a restore, or an imminent explicit failure).
+func (s *Store) RecordRecoveryEvent(ctx context.Context, tenant Tenant, sessionID, responseID, eventType string, payload []byte) (int64, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return 0, fmt.Errorf("begin recovery event: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	seq, err := appendEvent(ctx, tx, tenant, sessionID, responseID, eventType, payload)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit recovery event: %w", err)
+	}
+	return seq, nil
+}
+
 // Enqueue inserts a queued job.
 func (s *Store) Enqueue(ctx context.Context, tenant Tenant, jobID, kind string) error {
 	if strings.TrimSpace(jobID) == "" {

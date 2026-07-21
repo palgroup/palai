@@ -115,6 +115,42 @@ SELECT state, result
 FROM model_requests
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- CommittedModelStepCount is the recovery replay watermark (spec §26.9, E10 T4): how many model
+-- steps this run has already committed. On a run.start reconstruction the engine re-walks steps
+-- 1..M (all replayed by LookupModelResult), so a fresh queued message must fold at the boundary that
+-- precedes the FIRST live step (M+1), never into a replayed step's request. Committed steps are a
+-- contiguous prefix, so the count IS the last replayed step's index.
+-- name: SupersedeActiveAttempts
+-- A new attempt on a run supersedes any prior NON-TERMINAL attempt, clearing the one-active-per-run
+-- index so the new attempt can record. Marked 'preempted' (superseded by a newer attempt), NOT 'lost':
+-- the predecessor may have cleanly paused or crashed, and this path does not know which — 'preempted'
+-- is honest for the supersede itself, where 'lost' would falsely assert a crash. Only reachable once
+-- the exact rung ruled out a still-live original (§26.3), so it never steals an active lease.
+-- ponytail ceiling: a cleanly-SUCCEEDED attempt still has no path writing a terminal state on its row
+-- (attempt-lifecycle terminal writes are T5/T6) — such a row is only reconciled here if a later attempt
+-- supersedes it; the run's final attempt can linger non-terminal. Wire attempt.succeed on finalize in T5/T6.
+UPDATE attempts SET state = 'preempted', updated_at = clock_timestamp()
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND id <> $4
+  AND state IN ('assigned', 'starting', 'active', 'draining');
+
+-- name: UpsertAttempt
+-- Record the run attempt row (spec §26.1, E10 T4): the durable anchor the checkpoint /
+-- transcript-boundary / workspace-snapshot FKs reference. Idempotent on id (a reclaim re-recording
+-- the same attempt is a no-op). The fence is RUN-monotonic (MAX(fence)+1 over the run), NOT the job
+-- claim fence: a resume mints a fresh job whose claim fence restarts at 1, so using it would collide
+-- on the (run_id, fence) uniqueness — the run-scoped max keeps attempt fences strictly increasing
+-- per run (spec §53.5). Runs under the supersede in one tx, and live attempts are serialized by the
+-- exact rung, so the MAX read is race-free.
+INSERT INTO attempts (id, organization_id, project_id, run_id, fence)
+SELECT $1, $2, $3, $4, COALESCE(MAX(a.fence), 0) + 1
+FROM attempts a
+WHERE a.run_id = $4 AND a.organization_id = $2 AND a.project_id = $3
+ON CONFLICT (id) DO NOTHING;
+
+-- name: CommittedModelStepCount
+SELECT count(*) FROM model_requests
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'completed';
+
 -- CompleteModelRequest stores the model result so a later attempt replays it.
 -- name: CompleteModelRequest
 UPDATE model_requests

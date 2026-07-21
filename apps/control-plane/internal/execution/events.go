@@ -33,6 +33,15 @@ const (
 	eventChildRequested = "child.requested.v1"
 	eventChildCompleted = "child.completed.v1"
 	eventChildDenied    = "child.denied.v1"
+	// The recovery ladder's visible record (spec §26.3, §26.12, E10 T4). attempt.recovering.v1
+	// journals the chosen rung so a transcript reconstruction is never silently labelled an exact
+	// resume; checkpoint.rejected.v1 records WHY a checkpoint was not restored (incompatible/corrupt);
+	// checkpoint.migrated.v1 links a v1 checkpoint to its migrated successor (ENG-011); recovery.proof.v1
+	// carries the §26.12 evidence — "resumed" is never proof on its own (REC-006).
+	eventAttemptRecovering  = "attempt.recovering.v1"
+	eventCheckpointRejected = "checkpoint.rejected.v1"
+	eventCheckpointMigrated = "checkpoint.migrated.v1"
+	eventRecoveryProof      = "recovery.proof.v1"
 )
 
 // toolCallCompletedEvent is the event the tool-call table emits on Executing->Completed,
@@ -53,6 +62,10 @@ var emittedEventTypes = []string{
 	eventChildRequested,
 	eventChildCompleted,
 	eventChildDenied,
+	eventAttemptRecovering,
+	eventCheckpointRejected,
+	eventCheckpointMigrated,
+	eventRecoveryProof,
 	toolCallCompletedEvent,
 }
 

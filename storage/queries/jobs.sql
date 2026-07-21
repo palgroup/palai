@@ -168,3 +168,35 @@ SET status = 'dead',
     updated_at = clock_timestamp()
 FROM abandoned
 WHERE job.id = abandoned.id;
+
+-- name: RunHasLiveResponseJob
+-- The recovery ladder's "exact" reconnect-ack (spec §26.3 rung 1, E10 T4): does the run have a
+-- response.run job — OTHER than $4, the caller's own claimed job — that is still claimed and whose
+-- lease has NOT lapsed by DATABASE clock (never a worker clock, so a paused host can't self-certify a
+-- live lease)? If so the original process is still driving the run and a new attempt stands down.
+SELECT EXISTS (
+    SELECT 1 FROM durable_jobs
+    WHERE kind = 'response.run'
+      AND payload->>'run_id' = $1
+      AND organization_id = $2 AND project_id = $3
+      AND id <> $4
+      AND status = 'running'
+      AND lease_expires_at IS NOT NULL
+      AND lease_expires_at > clock_timestamp()
+);
+
+-- name: RequeueJobSoft
+-- Soft-requeue a claimed job WITHOUT consuming its attempt budget (spec §26.3, E10 T4 MUST-FIX #2): an
+-- exact stand-down is not a failed attempt, so it must not dead-letter a run whose live sibling simply
+-- outlasts MaxAttempts. Undoes the claim's attempt_count increment and re-queues behind a small
+-- jittered delay, so a standby politely waits (requeuing) until the sibling reaches terminal — then a
+-- later claim finds the run terminal and exits cleanly. Fenced to the holder, like FailJob; a
+-- superseded worker matches nothing.
+UPDATE durable_jobs
+SET status = 'queued',
+    lease_owner = NULL,
+    lease_expires_at = NULL,
+    ready_at = clock_timestamp() + ($4::bigint * interval '1 millisecond'),
+    attempt_count = GREATEST(attempt_count - 1, 0),
+    updated_at = clock_timestamp()
+WHERE id = $1 AND fence = $2 AND lease_owner = $3 AND status = 'running';

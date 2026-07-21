@@ -129,6 +129,15 @@ func (w *Worker) process(ctx context.Context, claim Claim, payload []byte) error
 		return ctx.Err()
 	}
 	if handlerErr != nil {
+		// A soft requeue (an exact stand-down) is not a failed attempt: requeue WITHOUT consuming the
+		// attempt budget, so a standby never dead-letters a run whose live sibling outlasts MaxAttempts
+		// (MUST-FIX #2). Any other error routes through the ordinary retry / dead-letter policy.
+		if errors.Is(handlerErr, ErrSoftRequeue) {
+			if err := w.store.RequeueSoft(ctx, claim); err != nil && !errors.Is(err, ErrStaleFence) {
+				return err
+			}
+			return nil
+		}
 		if _, err := w.store.Fail(ctx, claim, w.cfg.Retry); err != nil && !errors.Is(err, ErrStaleFence) {
 			return err
 		}

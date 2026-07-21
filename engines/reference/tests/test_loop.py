@@ -243,8 +243,9 @@ def test_agent_child_result_folds_as_tool_role_answering_the_tool_call() -> None
     crid = creq["data"]["child_request_id"]
     out = loop.handle(ctrl("child.result", {"child_request_id": crid, "status": "completed",
         "output": "child answer", "child_run_id": "run_child"}, "frm_cr"))
-    assert [f["type"] for f in out] == ["model.request"]
-    msgs = out[0]["data"]["messages"]
+    # The completed-delegation boundary offers a checkpoint before the next model step (MUST-FIX #1).
+    assert [f["type"] for f in out] == ["checkpoint.offer", "model.request"]
+    msgs = next(f for f in out if f["type"] == "model.request")["data"]["messages"]
     tool_msgs = [m for m in msgs if m.get("role") == "tool"]
     assert len(tool_msgs) == 1  # the agent tool_call is answered as a tool result, not a user turn
     assert "child answer" in tool_msgs[0]["content"] and "run_child" in tool_msgs[0]["content"]
@@ -273,8 +274,10 @@ def test_mixed_turn_answers_both_ordinary_tool_and_agent_delegation() -> None:
     # The agent child completes: now every tool_call is answered and the run resumes.
     out3 = loop.handle(ctrl("child.result", {"child_request_id": crid, "status": "completed",
         "output": "child ok", "child_run_id": "run_child"}, "frm_cr"))
-    assert [f["type"] for f in out3] == ["model.request"]
-    tool_msgs = [m for m in out3[0]["data"]["messages"] if m.get("role") == "tool"]
+    # The completed-delegation boundary offers a checkpoint before the next model step (MUST-FIX #1).
+    assert [f["type"] for f in out3] == ["checkpoint.offer", "model.request"]
+    req = next(f for f in out3 if f["type"] == "model.request")
+    tool_msgs = [m for m in req["data"]["messages"] if m.get("role") == "tool"]
     assert len(tool_msgs) == 2  # ordinary + agent, both answered — no tool_call left dangling
 
 
@@ -303,10 +306,12 @@ def test_child_result_folds_as_typed_result_and_resumes_with_next_model_request(
 
     out = loop.handle(ctrl("child.result", {
         "child_request_id": crid, "status": "completed", "output": "42", "child_run_id": "run_child"}, "frm_cr"))
-    assert [f["type"] for f in out] == ["model.request"]
+    # The completed-delegation boundary offers a checkpoint before the next model step (MUST-FIX #1).
+    assert [f["type"] for f in out] == ["checkpoint.offer", "model.request"]
     assert loop.state is State.AWAITING_MODEL
     # The child's output and its run linkage are in the resumed request's conversation.
-    blob = json.dumps(out[0]["data"]["messages"])
+    req = next(f for f in out if f["type"] == "model.request")
+    blob = json.dumps(req["data"]["messages"])
     assert "42" in blob and "run_child" in blob
 
 
@@ -329,7 +334,8 @@ def test_optional_child_that_cannot_be_served_is_skipped_and_the_run_continues()
     creq = _first_model_result(loop, [{"role": "r", "objective": "o", "model": "nope", "required": False}])[0]
     out = loop.handle(ctrl("child.result", {
         "child_request_id": creq["data"]["child_request_id"], "status": "denied", "reason": "unroutable"}, "frm_cr"))
-    assert [f["type"] for f in out] == ["model.request"]
+    # The completed-delegation boundary offers a checkpoint before the next model step (MUST-FIX #1).
+    assert [f["type"] for f in out] == ["checkpoint.offer", "model.request"]
     assert loop.state is State.AWAITING_MODEL
 
 

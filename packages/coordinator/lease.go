@@ -103,6 +103,32 @@ func (s *Store) Fail(ctx context.Context, claim Claim, policy RetryPolicy) (bool
 	return status == "dead", nil
 }
 
+// ErrSoftRequeue marks a handler outcome that requeues the job WITHOUT consuming its attempt budget:
+// the job is not failing, it is politely waiting (spec §26.3, E10 T4 MUST-FIX #2). The worker
+// soft-requeues on it (RequeueSoft) instead of Fail, so a standby exact stand-down never dead-letters
+// a run whose live sibling outlasts MaxAttempts. execution.ErrExactStandDown wraps it.
+var ErrSoftRequeue = errors.New("soft_requeue")
+
+// RequeueSoft re-queues a claimed job behind a small jittered delay WITHOUT counting the attempt
+// (MUST-FIX #2): it undoes the claim's attempt_count increment, so repeated stand-downs never exhaust
+// the budget and dead-letter a live run. Fenced to the holder; a superseded worker matches nothing
+// and returns ErrStaleFence. The jitter breaks a mutual-standoff symmetry so one sibling proceeds.
+func (s *Store) RequeueSoft(ctx context.Context, claim Claim) error {
+	if claim.JobID == "" || claim.Fence < 1 || claim.Owner == "" {
+		return errors.New("valid claim is required")
+	}
+	delay := 50*time.Millisecond + time.Duration(rand.Int64N(int64(100*time.Millisecond)))
+	tag, err := s.pool.Exec(ctx, storage.Query("RequeueJobSoft"),
+		claim.JobID, claim.Fence, claim.Owner, delay.Milliseconds())
+	if err != nil {
+		return fmt.Errorf("soft requeue job: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrStaleFence
+	}
+	return nil
+}
+
 // ReclaimExpired dead-letters jobs whose lease has lapsed and whose attempts are
 // exhausted — the safety net for workers killed every attempt that never self-report.
 // An expired lease still under its ceiling is left for the next claim, which reclaims

@@ -29,8 +29,9 @@ EMITTED_TYPES = {"engine.ready", "model.request", "tool.request", "child.request
 
 # The controller-to-engine types the loop accepts and acts on (loop.py). message.deliver is
 # the T2 addition; child.result is the T5 addition; checkpoint.request is the E10 T1 addition —
-# the controller asks for a checkpoint before a pause/drain and on demand.
-HANDLED_CONTROLLER_TYPES = {"supervisor.hello", "run.start", "model.result", "tool.result", "run.cancel", "message.deliver", "child.result", "checkpoint.request"}
+# the controller asks for a checkpoint before a pause/drain and on demand. run.restore is the
+# E10 T4 addition — it reconstructs a fresh loop from a portable checkpoint (spec §26.3 rung 2).
+HANDLED_CONTROLLER_TYPES = {"supervisor.hello", "run.start", "run.restore", "model.result", "tool.result", "run.cancel", "message.deliver", "child.result", "checkpoint.request"}
 
 
 def test_emitter_envelope_matches_schema() -> None:
@@ -82,6 +83,30 @@ def test_checkpoint_offer_carries_the_schema_required_fields() -> None:
     required = _checkpoint_offer_required()
     assert required <= offer.keys(), f"checkpoint.offer missing schema-required fields: {required - offer.keys()}"
     assert required == {"format", "format_version", "state"}
+
+
+def _run_restore_required() -> set[str]:
+    """The data fields engine.schema.json requires on a run.restore frame."""
+    for branch in SCHEMA["allOf"]:
+        if branch.get("if", {}).get("properties", {}).get("type", {}).get("const") == "run.restore":
+            return set(branch["then"]["properties"]["data"]["required"])
+    raise AssertionError("engine.schema.json declares no run.restore data shape")
+
+
+def test_run_restore_data_contract_mirrors_the_offer() -> None:
+    # run.restore is the inbound mirror of checkpoint.offer: the control plane hands back the same
+    # {format, format_version, state} it stored, so the two contracts must require the same fields
+    # (spec §26.3). This keeps the schema and the loop's _restore handler from drifting.
+    required = _run_restore_required()
+    assert required == {"format", "format_version", "state"}
+    offer = checkpoint_offer_state()
+    assert required <= offer.keys(), f"run.restore cannot be built from an offer: missing {required - offer.keys()}"
+
+
+def checkpoint_offer_state() -> dict:
+    from palai_engine import checkpoint
+
+    return checkpoint.offer_data({"step": 1, "state": "awaiting_model"}, "pause")
 
 
 def test_engine_ready_announces_the_supported_commands() -> None:

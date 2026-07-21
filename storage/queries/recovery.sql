@@ -19,6 +19,18 @@ INSERT INTO checkpoints
      content_checksum, object_key, size_bytes)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17);
 
+-- name: LatestRunCheckpoint
+-- The recovery ladder's read (spec §26.3-26.4, E10 T4): a run's NEWEST checkpoint with the §26.4
+-- compatibility inputs. Index-backed by checkpoints_by_run (run_id, created_at DESC). No row for a
+-- run without a checkpoint -> the caller falls to transcript reconstruction, never a phantom restore.
+SELECT id, boundary_id, attempt_id, format, format_version, config_snapshot_hash,
+       protocol_version, transcript_sequence, workspace_snapshot_id, content_checksum,
+       object_key, size_bytes
+FROM checkpoints
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+ORDER BY created_at DESC
+LIMIT 1;
+
 -- name: ReferencedCheckpointObjectKeys
 -- The checkpoint half of the orphan-GC reference set (E10 T1<->T3). Checkpoint bytes live in the
 -- SAME bucket as artifacts under <org>/<proj>/<run>/checkpoints/<id> but are tracked here, NOT in

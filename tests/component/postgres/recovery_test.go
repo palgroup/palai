@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -100,6 +101,104 @@ func TestRecoveryObjectsAppendOnlyToApplicationRole(t *testing.T) {
 	}
 	if got := pgCode(mustFail(conn.Exec(ctx, `UPDATE transcript_boundaries SET transcript_sequence = 999`))); got != "42501" {
 		t.Fatalf("transcript_boundaries UPDATE code = %q, want 42501 (immutable, UPDATE withheld)", got)
+	}
+}
+
+// TestSoftRequeueNeverDeadLettersAcrossManyStandDowns proves MUST-FIX #2 FIX B: an exact stand-down
+// soft-requeues WITHOUT consuming the attempt budget, so a standby facing a long-lived live sibling
+// requeues past MaxAttempts rounds and NEVER dead-letters the run. RequeueSoft undoes the claim's
+// attempt increment, so the count stays flat and the job stays queued.
+func TestSoftRequeueNeverDeadLettersAcrossManyStandDowns(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	tenant, _, _ := seedRun(t, cs.Pool())
+	jobID := newID("job")
+	if err := cs.Enqueue(ctx, tenant, jobID, "response.run"); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+
+	for round := 0; round < 6; round++ { // well past a MaxAttempts of 3-5
+		claim, err := cs.Claim(ctx, tenant, jobID, newID("owner"), 2*time.Second)
+		if err != nil {
+			t.Fatalf("claim round %d: %v", round, err)
+		}
+		if err := cs.RequeueSoft(ctx, claim); err != nil {
+			t.Fatalf("soft requeue round %d: %v", round, err)
+		}
+		snap, err := cs.Snapshot(ctx, tenant, jobID)
+		if err != nil {
+			t.Fatalf("snapshot round %d: %v", round, err)
+		}
+		if snap.Status == "dead" {
+			t.Fatalf("job dead-lettered at round %d — a soft requeue must not consume the attempt budget", round)
+		}
+		if snap.AttemptCount > 1 {
+			t.Fatalf("attempt_count = %d at round %d — a soft requeue must undo the claim's increment", snap.AttemptCount, round)
+		}
+		time.Sleep(150 * time.Millisecond) // past the soft-requeue's small ready_at delay
+	}
+}
+
+// TestLatestRunCheckpointReadsNewestWithBoundary proves the recovery ladder's read (spec §26.3-26.4,
+// E10 Task 4): LatestRunCheckpoint returns a run's newest checkpoint with the §26.4 compatibility
+// inputs (format/version, config hash, protocol, transcript boundary), and reports found=false for a
+// run that has no checkpoint at all (so the ladder falls to reconstruction, never a phantom restore).
+func TestLatestRunCheckpointReadsNewestWithBoundary(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, _, runID := seedRun(t, pool)
+	attemptID := seedAttempt(t, pool, tenant, runID)
+	obj := recovery.New(pool)
+
+	// An older checkpoint, then a newer one. Force created_at so "newest" is unambiguous regardless
+	// of clock resolution (the index is checkpoints_by_run (run_id, created_at DESC)).
+	older := baseCheckpointInput(tenant, runID, attemptID)
+	older.TranscriptSequence = 7
+	older.ContentChecksum = "sha256:older"
+	if err := obj.Persist(ctx, older); err != nil {
+		t.Fatalf("Persist(older) error = %v", err)
+	}
+	exec(t, pool, `UPDATE checkpoints SET created_at = clock_timestamp() - interval '1 hour' WHERE id=$1`, older.CheckpointID)
+
+	newer := baseCheckpointInput(tenant, runID, attemptID)
+	newer.TranscriptSequence = 11
+	newer.ContentChecksum = "sha256:newer"
+	newer.ConfigSnapshotHash = "sha256:cfg-new"
+	if err := obj.Persist(ctx, newer); err != nil {
+		t.Fatalf("Persist(newer) error = %v", err)
+	}
+
+	got, found, err := cs.LatestRunCheckpoint(ctx, tenant, runID)
+	if err != nil {
+		t.Fatalf("LatestRunCheckpoint() error = %v", err)
+	}
+	if !found {
+		t.Fatal("LatestRunCheckpoint found=false, want the newest checkpoint")
+	}
+	if got.CheckpointID != newer.CheckpointID {
+		t.Fatalf("CheckpointID = %q, want the newest %q", got.CheckpointID, newer.CheckpointID)
+	}
+	if got.BoundaryID != newer.BoundaryID {
+		t.Fatalf("BoundaryID = %q, want %q", got.BoundaryID, newer.BoundaryID)
+	}
+	if got.TranscriptSequence != 11 || got.ContentChecksum != "sha256:newer" || got.ConfigSnapshotHash != "sha256:cfg-new" {
+		t.Fatalf("newest row §26.4 fields wrong: seq=%d checksum=%q config=%q", got.TranscriptSequence, got.ContentChecksum, got.ConfigSnapshotHash)
+	}
+	if got.Format != "reference-kernel" || got.FormatVersion != 1 || got.ProtocolVersion != "engine.v1" {
+		t.Fatalf("newest row format fields wrong: %q/%d proto=%q", got.Format, got.FormatVersion, got.ProtocolVersion)
+	}
+	if got.WorkspaceSnapshotID != "" {
+		t.Fatalf("checkpoint with no snapshot must read empty workspace id, got %q", got.WorkspaceSnapshotID)
+	}
+	if got.ObjectKey == "" {
+		t.Fatal("newest row must carry its object key for the bytes fetch")
+	}
+
+	// A run with no checkpoint reads found=false — the ladder falls to reconstruction.
+	_, _, freshRun := seedRun(t, pool)
+	if _, found, err := cs.LatestRunCheckpoint(ctx, tenant, freshRun); err != nil || found {
+		t.Fatalf("LatestRunCheckpoint(no checkpoints) = found %v err %v, want found=false", found, err)
 	}
 }
 
