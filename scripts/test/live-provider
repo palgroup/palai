@@ -173,9 +173,22 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_postgres=1
     ;;
+  provider-one/cron-fires-once)
+    # E11 Task 3 (AUT-006/007/008): a due per-minute cron schedule on a cron trigger pinned to a published
+    # AgentRevision fires through the SAME §20.2.2 pipeline; in the observed window EXACTLY ONE occurrence
+    # bears EXACTLY ONE real provider-one run — a broker-seam request-count counter proves count ==
+    # occurrence count. Needs the credential + a throwaway Postgres (exactly-once is a single-PG invariant).
+    # Honest ceiling (named in the test): single machine, replicas share one PG (multi-host is E14); the run
+    # is single-step + real (E08 pin); this case makes NO model→tool claim, so it does NOT touch
+    # PALAI_LIVE_TOOL_ADVERTISING.
+    pkg="./apps/control-plane/internal/automation/live"
+    run="TestLiveCronFiresOnce"
+    required_key="OPENAI_API_KEY"
+    needs_postgres=1
+    ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once" >&2
     exit 2
     ;;
 esac
