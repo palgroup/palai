@@ -622,12 +622,18 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 	// idempotency record, no run started against config a draft could still change. At most one pin is
 	// set (the API rejects both).
 	if in.AgentRevisionID != "" {
-		if adm, ok := verifyPublishedRevision(ctx, tx, "AgentRevisionPublished", in.AgentRevisionID, tenant); !ok {
+		switch adm, ok, err := verifyPublishedRevision(ctx, tx, "AgentRevisionPublished", in.AgentRevisionID, tenant); {
+		case err != nil:
+			return Admission{}, err
+		case !ok:
 			return adm, nil
 		}
 	}
 	if in.RunTemplateRevisionID != "" {
-		if adm, ok := verifyPublishedRevision(ctx, tx, "RunTemplateRevisionPublished", in.RunTemplateRevisionID, tenant); !ok {
+		switch adm, ok, err := verifyPublishedRevision(ctx, tx, "RunTemplateRevisionPublished", in.RunTemplateRevisionID, tenant); {
+		case err != nil:
+			return Admission{}, err
+		case !ok:
 			return adm, nil
 		}
 	}
@@ -781,21 +787,22 @@ func withSessionID(body []byte, sessionID string) ([]byte, error) {
 }
 
 // verifyPublishedRevision checks a pinned revision (agent or template) exists in scope and is
-// published, using the given publish-state query. It returns ok=true to continue admission, or
-// ok=false with the typed Admission to return: PinnedRevisionNotFound on no rows (404), or
-// PinnedRevisionNotPublished when the row exists but is a draft (409). It runs inside the admission tx.
-func verifyPublishedRevision(ctx context.Context, tx pgx.Tx, query, revisionID string, tenant Tenant) (Admission, bool) {
+// published, using the given publish-state query. ok=true continues admission; ok=false carries the
+// typed Admission to return (PinnedRevisionNotFound=404 on no rows, PinnedRevisionNotPublished=409 on a
+// draft). An unexpected query error is RETURNED, not swallowed (matching the RepositoryBindingExists
+// arm), so admission fails closed with a 500 rather than committing a fake success. Runs in the tx.
+func verifyPublishedRevision(ctx context.Context, tx pgx.Tx, query, revisionID string, tenant Tenant) (Admission, bool, error) {
 	var published bool
 	switch err := tx.QueryRow(ctx, storage.Query(query), revisionID, tenant.Organization, tenant.Project).Scan(&published); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return Admission{PinnedRevisionNotFound: true}, false
+		return Admission{PinnedRevisionNotFound: true}, false, nil
 	case err != nil:
-		return Admission{}, false // an unexpected error; the caller surfaces the rollback as a 500 upstream
+		return Admission{}, false, fmt.Errorf("verify pinned revision: %w", err)
 	}
 	if !published {
-		return Admission{PinnedRevisionNotPublished: true}, false
+		return Admission{PinnedRevisionNotPublished: true}, false, nil
 	}
-	return Admission{}, true
+	return Admission{}, true, nil
 }
 
 // PinnedExecConfig resolves a run's pinned executable config (spec §14, AGT-001): the model and tool

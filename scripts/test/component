@@ -92,6 +92,13 @@ run_postgres() {
       go test -tags=component -count=1 -v ./apps/control-plane/internal/automation
     status=$?
   fi
+  # The coordinator's admission pin-check (verifyPublishedRevision) has same-package component tests
+  # that drive its query-error propagation against the real spine.
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v -run 'TestVerifyPublishedRevision' ./packages/coordinator
+    status=$?
+  fi
   set -e
   if test "$status" -ne 0; then
     docker logs "$container" >&2 || true
