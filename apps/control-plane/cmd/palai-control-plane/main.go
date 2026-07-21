@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/palgroup/palai/adapters/integrations/webhook"
 	fake "github.com/palgroup/palai/adapters/models/fake"
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
 	"github.com/palgroup/palai/adapters/repositories"
@@ -21,6 +23,7 @@ import (
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
+	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	tools "github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
@@ -51,6 +54,10 @@ func main() {
 
 	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"))
 
+	// The outbound-webhook store is shared by the HTTP surface (endpoint registration + the delivery
+	// view) and the delivery pump (spec §21.4-21.6). It rides the durable spine's pool.
+	webhookStore := automation.NewWebhookStore(repo.Spine().Pool())
+
 	// One supervisor keeps the dispatch workers, reconciler, and retention reaper alive: a
 	// background loop that returns a transient error is logged, counted, and restarted rather
 	// than silently dying and stalling dispatch (H2; LP-15 — no restart cap).
@@ -66,7 +73,7 @@ func main() {
 		// (Task 12 binds the local CA and that listener); the public API server carries no
 		// runner routes, so it is passed nil here. The handler is wrapped so `palai doctor`
 		// can surface the supervisor's restart counters over /healthz/supervisor.
-		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, sseConfigFromEnv(), nil), supervisor),
+		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, sseConfigFromEnv(), nil), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -78,6 +85,7 @@ func main() {
 	artStore := artifactStoreFromEnv(ctx)
 
 	startDispatch(ctx, repo, gateway, supervisor, artStore)
+	startWebhookPump(ctx, webhookStore, supervisor)
 	startRetention(ctx, repo, supervisor, artStore)
 	startOrphanGC(ctx, repo, supervisor, artStore)
 
@@ -309,6 +317,50 @@ func repositoryPublisherFromEnv() execution.Publisher {
 		}
 	}
 	return publisher
+}
+
+// startWebhookPump launches the supervised outbound-webhook delivery pump (spec §21.4-21.6). It is a
+// system loop that serves every project's endpoints and is inert until an endpoint is registered, so
+// it runs unconditionally (like the retention/GC sweeps) — a killed process just misses ticks; the
+// next run resumes from each endpoint's durable cursor. A delivery never blocks a run (AUT-011).
+func startWebhookPump(ctx context.Context, store *automation.WebhookStore, supervisor *coordinator.Supervisor) {
+	pump := automation.NewWebhookPump(store, webhook.NewSender(), webhookSecretResolver, automation.PumpConfig{
+		Tick:        envDurationOr("PALAI_WEBHOOK_TICK", time.Second),
+		BaseBackoff: envDurationOr("PALAI_WEBHOOK_BACKOFF_BASE", 30*time.Second),
+		MaxBackoff:  envDurationOr("PALAI_WEBHOOK_BACKOFF_MAX", time.Hour),
+	}, log.Printf)
+	go supervisor.Supervise(ctx, "webhook-pump", pump.Run)
+}
+
+// webhookSecretResolver bridges an endpoint's SecretRef handle to the signing-secret bytes at delivery
+// time (the E09 credential-broker hand-off pattern): PALAI_WEBHOOK_SECRET_FILE_<ORG>__<REF> holds a
+// FILE PATH, never the secret inline, and the bytes are read only here and never logged (E13 seals the
+// file at rest). The env key is scoped by the endpoint's ORG so a tenant's SigningSecretRef can only
+// name a secret provisioned under its OWN org — a foreign ref resolves to no env var (F2). The org is
+// server-minted (never tenant-forgeable), so the org prefix is a hard tenant boundary. An unresolved
+// ref fails the attempt (a retry), never an unsigned delivery.
+func webhookSecretResolver(org, ref string) ([]byte, error) {
+	if org == "" || ref == "" {
+		return nil, errors.New("empty webhook secret org/ref")
+	}
+	path := os.Getenv("PALAI_WEBHOOK_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	if path == "" {
+		return nil, fmt.Errorf("no secret bridge configured for webhook ref under org %q", org)
+	}
+	return os.ReadFile(path)
+}
+
+// secretEnvKey normalizes a SecretRef into an env-var suffix (upper alphanumerics, others to '_').
+func secretEnvKey(ref string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(ref) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // startRetention launches the store:false retention reaper when a TTL is configured

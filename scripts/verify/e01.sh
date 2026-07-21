@@ -106,7 +106,9 @@ for report in "${expected_reports[@]}"; do
 done
 
 credential_assignment_pattern='(^|[^[:alnum:]_])"?([[:alpha:]][[:alnum:]_]*(API_?KEY|SECRET(_ACCESS)?_KEY|ACCESS_?KEY(_ID)?|TOKEN|PASSWORD|CREDENTIALS?)|DATABASE_URL)"?[[:space:]]*[:=][[:space:]]*"?[^[:space:]",}]+'
-secret_marker_pattern='(Authorization:[[:space:]]*Bearer|BEGIN[[:space:]]+PRIVATE[[:space:]]+KEY|(^|[^[:alnum:]])sk-[[:alnum:]]|/Users/|/home/)'
+# whsec_ is the outbound-webhook signing-secret prefix (E11 Task 4, §21.5): a leaked webhook secret in
+# any scanned artifact is caught here alongside sk-*, bearer tokens, and private keys.
+secret_marker_pattern='(Authorization:[[:space:]]*Bearer|BEGIN[[:space:]]+PRIVATE[[:space:]]+KEY|(^|[^[:alnum:]])sk-[[:alnum:]]|(^|[^[:alnum:]])whsec_[[:alnum:]]|/Users/|/home/)'
 scan_files=("$index")
 for report in "${expected_reports[@]}"; do
   scan_files+=("$report_dir/$report")

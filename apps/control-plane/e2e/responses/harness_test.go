@@ -83,7 +83,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	token := newID("e2e-tok")
 	tenant := seedTenantWithKey(t, repo.Spine().Pool(), token)
-	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, repo, repo, repo, api.SSEConfig{}, nil))
+	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, repo, repo, repo, nil, api.SSEConfig{}, nil))
 	t.Cleanup(srv.Close)
 
 	return &harness{

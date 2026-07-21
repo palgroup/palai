@@ -85,8 +85,10 @@ run_postgres() {
         ./apps/control-plane/internal/execution
     status=$?
   fi
-  # The E11 Task 1 automation surface (agent profiles / immutable revisions / templates + pin
-  # resolution) drives its management writes and admission validation against this same real spine.
+  # The E11 automation package drives against this same real spine: Task 1's agent-profile /
+  # immutable-revision / template management + pin-resolution writes, and Task 4's webhook pump
+  # fan-out -> signed real-HTTP delivery -> retry/dead-letter/redeliver state machine with real local
+  # httptest receivers that verify the HMAC server-side (spec §21.4-21.6). Component-tagged.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v ./apps/control-plane/internal/automation

@@ -44,6 +44,7 @@ var allTables = []string{
 	"delivered_messages",
 	"host_quarantine",
 	"agent_profiles", "agent_revisions", "run_template_revisions",
+	"webhook_endpoints", "webhook_deliveries", "delivery_attempts",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -835,6 +836,80 @@ func TestAgentsMigration(t *testing.T) {
 	}
 	if !columnExists(t, pool, "runs", "run_template_revision_id") {
 		t.Fatal("after reapply, runs.run_template_revision_id rider is missing")
+	}
+}
+
+// TestWebhooksMigration proves 000020 adds the outbound-webhook tables plus the events journal_id
+// IDENTITY cursor rider (E11 Task 4, spec §21.4-21.6) idempotently and reverses cleanly: the tables +
+// the rider column exist after apply (a re-apply is a clean no-op), are gone after rollback, and
+// return after reapply (the 000016/000018 re-run-safety pattern). The IDENTITY cursor is monotonic —
+// two journal events get strictly increasing journal_ids — and a delivery keyed to a real endpoint
+// round-trips while a duplicate (endpoint, event) is rejected (the fan-out dedupe, §21.6).
+func TestWebhooksMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE TABLE / ADD COLUMN IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"webhook_endpoints", "webhook_deliveries", "delivery_attempts"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after apply, %s is missing", name)
+		}
+	}
+	if !columnExists(t, pool, "events", "journal_id") {
+		t.Fatal("after apply, the events.journal_id cursor rider is missing")
+	}
+
+	// The IDENTITY cursor is globally monotonic: two appended events get strictly increasing journal_ids.
+	tenant, sessionID, _ := seedRun(t, pool)
+	var j1, j2 int64
+	exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type) VALUES ($1,$2,$3,$4,1,'run.completed.v1')`,
+		newID("evt"), tenant.Organization, tenant.Project, sessionID)
+	if err := pool.QueryRow(ctx, `SELECT max(journal_id) FROM events WHERE session_id=$1`, sessionID).Scan(&j1); err != nil {
+		t.Fatalf("read first journal_id error = %v", err)
+	}
+	exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type) VALUES ($1,$2,$3,$4,2,'run.failed.v1')`,
+		newID("evt"), tenant.Organization, tenant.Project, sessionID)
+	if err := pool.QueryRow(ctx, `SELECT max(journal_id) FROM events WHERE session_id=$1`, sessionID).Scan(&j2); err != nil {
+		t.Fatalf("read second journal_id error = %v", err)
+	}
+	if j2 <= j1 {
+		t.Fatalf("journal_id not monotonic: second=%d <= first=%d", j2, j1)
+	}
+
+	// A delivery keyed to a real endpoint inserts; a duplicate (endpoint, event) is the fan-out dedupe.
+	endpointID := newID("whe")
+	exec(t, pool, `INSERT INTO webhook_endpoints (id, organization_id, project_id, url) VALUES ($1,$2,$3,'https://hooks.example.com/x')`,
+		endpointID, tenant.Organization, tenant.Project)
+	deliveryID := newID("whd")
+	exec(t, pool, `INSERT INTO webhook_deliveries (id, organization_id, project_id, endpoint_id, session_id, event_id, event_type) VALUES ($1,$2,$3,$4,$5,'evt_x','run.completed.v1')`,
+		deliveryID, tenant.Organization, tenant.Project, endpointID, sessionID)
+	if got := pgCode(mustFail(pool.Exec(ctx,
+		`INSERT INTO webhook_deliveries (id, organization_id, project_id, endpoint_id, session_id, event_id, event_type) VALUES ($1,$2,$3,$4,$5,'evt_x','run.completed.v1')`,
+		newID("whd"), tenant.Organization, tenant.Project, endpointID, sessionID))); got != "23505" {
+		t.Fatalf("duplicate (endpoint, event) delivery code = %q, want 23505 unique_violation", got)
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, name := range []string{"webhook_endpoints", "webhook_deliveries", "delivery_attempts"} {
+		if tableExists(t, pool, name) {
+			t.Fatalf("after rollback, %s still exists", name)
+		}
+	}
+	if columnExists(t, pool, "events", "journal_id") {
+		t.Fatal("after rollback, events.journal_id rider still exists")
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "webhook_deliveries") || !columnExists(t, pool, "events", "journal_id") {
+		t.Fatal("after reapply, a 000020 object is missing")
 	}
 }
 

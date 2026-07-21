@@ -4,6 +4,7 @@
 package api
 
 import (
+	"net"
 	"net/http"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -20,7 +21,7 @@ import (
 // correlation middleware, because it carries its own one-use-token and mTLS identity.
 // It is served over a separate mutually-authenticated listener; binding the CA and that
 // listener is Task 12, so production passes nil until then.
-func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, sse SSEConfig, runner http.Handler) http.Handler {
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, sse SSEConfig, runner http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
@@ -52,6 +53,18 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}
 	mux.HandleFunc("GET /v1/sessions/{session_id}/events", stream.stream)
+
+	// Outbound webhook endpoints + deliveries (spec §21.4-21.6). Durable project configuration and an
+	// operator-facing delivery view + idempotent redelivery — nil in tiers that do not exercise
+	// webhooks (the Docker-free conformance HTTP tier, the SSE read-path e2e).
+	if webhooks != nil {
+		wh := &webhookHandler{webhooks: webhooks, resolver: net.DefaultResolver}
+		mux.HandleFunc("POST /v1/webhook-endpoints", wh.createEndpoint)
+		mux.HandleFunc("GET /v1/webhook-endpoints", wh.listEndpoints)
+		mux.HandleFunc("GET /v1/webhook-deliveries", wh.listDeliveries)
+		mux.HandleFunc("GET /v1/webhook-deliveries/{delivery_id}", wh.getDelivery)
+		mux.HandleFunc("POST /v1/webhook-deliveries/{delivery_id}/redeliver", wh.redeliver)
+	}
 
 	// The standalone session resource and its durable commands (spec §9.1, §22.4). Commands
 	// carry their own idempotency (command_id), so the POST needs no Idempotency-Key header.
