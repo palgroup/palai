@@ -65,7 +65,7 @@ func TestAgentRevisionPublishIsImmutable(t *testing.T) {
 	}
 
 	// Publish v1, then snapshot its committed config.
-	published, err := s.PublishRevision(ctx, org, project, v1.ID)
+	published, _, err := s.PublishRevision(ctx, org, project, v1.ID)
 	if err != nil || !published {
 		t.Fatalf("publish v1 = %v err = %v, want published", published, err)
 	}
@@ -98,7 +98,7 @@ func TestAgentRevisionPublishIsImmutable(t *testing.T) {
 	}
 
 	// Publish is once-only: re-publishing v1 is a no-op (already published), never a re-stamp.
-	again, err := s.PublishRevision(ctx, org, project, v1.ID)
+	again, _, err := s.PublishRevision(ctx, org, project, v1.ID)
 	if err != nil {
 		t.Fatalf("re-publish v1: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestRunTemplateRevisionRejectsIdentityAndDelegation(t *testing.T) {
 	if tr.RevisionNumber != 1 {
 		t.Fatalf("template revision number = %d, want 1", tr.RevisionNumber)
 	}
-	published, err := s.PublishTemplateRevision(ctx, org, project, tr.ID)
+	published, _, err := s.PublishTemplateRevision(ctx, org, project, tr.ID)
 	if err != nil || !published {
 		t.Fatalf("publish template = %v err = %v, want published", published, err)
 	}

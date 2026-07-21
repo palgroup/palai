@@ -102,16 +102,11 @@ func (s *Store) CreateRevision(ctx context.Context, org, project, profileID stri
 	return Revision{ID: id, RevisionNumber: number, Model: in.Model, Tools: in.Tools, Instructions: in.Instructions}, nil
 }
 
-// PublishRevision flips a draft revision to published exactly once. It reports whether this call did the
-// publish (false = unknown revision or already published), so publish stays idempotent and irreversible.
-func (s *Store) PublishRevision(ctx context.Context, org, project, revisionID string) (bool, error) {
-	switch err := s.pool.QueryRow(ctx, storage.Query("PublishAgentRevision"), revisionID, org, project).Scan(new(string)); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return false, nil
-	case err != nil:
-		return false, fmt.Errorf("publish agent revision: %w", err)
-	}
-	return true, nil
+// PublishRevision flips a draft revision to published exactly once. published is true only when THIS
+// call did the flip; exists distinguishes an unknown revision (false) from one already published
+// (true) — so the caller can 404 an unknown id while treating a re-publish as an idempotent success.
+func (s *Store) PublishRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
+	return s.publish(ctx, "PublishAgentRevision", "AgentRevisionPublished", revisionID, org, project)
 }
 
 // GetRevision reads a revision's committed shape, or found=false when it is absent from the scope.
@@ -152,14 +147,27 @@ func (s *Store) CreateTemplateRevision(ctx context.Context, org, project, templa
 }
 
 // PublishTemplateRevision flips a draft template revision to published exactly once (see PublishRevision).
-func (s *Store) PublishTemplateRevision(ctx context.Context, org, project, revisionID string) (bool, error) {
-	switch err := s.pool.QueryRow(ctx, storage.Query("PublishRunTemplateRevision"), revisionID, org, project).Scan(new(string)); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return false, nil
-	case err != nil:
-		return false, fmt.Errorf("publish run template revision: %w", err)
+func (s *Store) PublishTemplateRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
+	return s.publish(ctx, "PublishRunTemplateRevision", "RunTemplateRevisionPublished", revisionID, org, project)
+}
+
+// publish is the shared once-only flip: try the conditional UPDATE, and on no flip disambiguate an
+// unknown revision from an already-published one via the publish-state read (both agent and template).
+func (s *Store) publish(ctx context.Context, flipQuery, stateQuery, revisionID, org, project string) (published, exists bool, err error) {
+	switch e := s.pool.QueryRow(ctx, storage.Query(flipQuery), revisionID, org, project).Scan(new(string)); {
+	case e == nil:
+		return true, true, nil
+	case !errors.Is(e, pgx.ErrNoRows):
+		return false, false, fmt.Errorf("publish revision: %w", e)
 	}
-	return true, nil
+	// No flip: the revision is unknown or already published. The state read tells them apart.
+	switch e := s.pool.QueryRow(ctx, storage.Query(stateQuery), revisionID, org, project).Scan(new(bool)); {
+	case errors.Is(e, pgx.ErrNoRows):
+		return false, false, nil
+	case e != nil:
+		return false, false, fmt.Errorf("read revision publish state: %w", e)
+	}
+	return false, true, nil
 }
 
 // marshalTools keeps a nil ceiling NULL (no ceiling) and a non-nil set — even empty — a stored ceiling.
