@@ -165,17 +165,22 @@ func (s *Sender) pinnedDial(allowPrivate bool) func(context.Context, string, str
 	}
 }
 
-// VetDestinationURL enforces the static egress policy (spec §21.4): only http(s), and a literal-IP
-// host must pass the same IP vet the per-attempt dialer applies. A hostname is not resolved here —
-// its resolution is vetted at connect time (VetDestinationURL guards create-time; pinnedDial guards
-// attempt-time), so a name that resolves private is caught even if it looked benign at create.
+// VetDestinationURL enforces the static egress policy (spec §21.4): the scheme must be https (http is
+// a downgrade allowed only for a self-host/dev receiver via the allowlist flag), and a literal-IP host
+// must pass the same IP vet the per-attempt dialer applies. A hostname is NOT resolved here — this is
+// the cheap static gate on the hot send path; hostname resolution is vetted for real at connect time
+// by pinnedDial (the authoritative layer) and, fail-fast, at registration by VetDestination.
 func VetDestinationURL(rawURL string, allowPrivate bool) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("parse destination: %w", err)
 	}
 	switch u.Scheme {
-	case "http", "https":
+	case "https":
+	case "http":
+		if !allowPrivate {
+			return fmt.Errorf("%w: http is not allowed for a public destination (use https)", errEgressDenied)
+		}
 	default:
 		return fmt.Errorf("%w: scheme %q not allowed", errEgressDenied, u.Scheme)
 	}
@@ -184,6 +189,36 @@ func VetDestinationURL(rawURL string, allowPrivate bool) error {
 	}
 	if ip := net.ParseIP(u.Hostname()); ip != nil {
 		return vetIP(ip, allowPrivate)
+	}
+	return nil
+}
+
+// VetDestination is the fail-fast registration gate (AUT-012): the static VetDestinationURL check PLUS,
+// when the host is a name, a DNS resolution whose every answer is vetted — so a hostname that ALREADY
+// points at a private/loopback/metadata range is rejected at registration rather than only at the
+// first delivery. Resolution failure is NOT a rejection: DNS can rebind, so the authoritative check is
+// pinnedDial at connect time; registration only rejects a name it can prove resolves internal. The
+// resolver is injectable for tests; nil uses net.DefaultResolver.
+func VetDestination(ctx context.Context, resolver Resolver, rawURL string, allowPrivate bool) error {
+	if err := VetDestinationURL(rawURL, allowPrivate); err != nil {
+		return err
+	}
+	u, _ := url.Parse(rawURL) // VetDestinationURL already proved it parses
+	host := u.Hostname()
+	if net.ParseIP(host) != nil {
+		return nil // a literal IP was already vetted by VetDestinationURL
+	}
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+	addrs, err := resolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil // cannot resolve now — connect-time pinnedDial is the authoritative gate
+	}
+	for _, a := range addrs {
+		if err := vetIP(a.IP, allowPrivate); err != nil {
+			return fmt.Errorf("%w: host resolves to a blocked address", errEgressDenied)
+		}
 	}
 	return nil
 }

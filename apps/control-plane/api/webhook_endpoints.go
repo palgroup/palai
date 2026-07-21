@@ -27,6 +27,9 @@ type WebhookAPI interface {
 
 type webhookHandler struct {
 	webhooks WebhookAPI
+	// resolver vets a registration-time hostname against the egress policy (fail-fast SSRF gate). It
+	// is injectable so a test drives a deterministic resolution; production uses net.DefaultResolver.
+	resolver webhook.Resolver
 }
 
 // createEndpoint registers a webhook endpoint (spec §21.4 POST /v1/webhook-endpoints). The URL is
@@ -64,9 +67,13 @@ func (h *webhookHandler) createEndpoint(w http.ResponseWriter, r *http.Request) 
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "url is required")
 		return
 	}
-	// Create-time egress gate: a private/loopback/metadata destination is denied unless the self-host
-	// allowlist flag is set (spec §21.4). Attempt-time re-resolution (the pump) closes rebinding.
-	if err := webhook.VetDestinationURL(body.URL, body.AllowPrivateDestination); err != nil {
+	// Create-time egress gate (AUT-012 fail-fast half): https is required (http only with the flag),
+	// and a private/loopback/link-local/metadata destination — a literal IP OR a host that already
+	// resolves into one of those ranges — is denied unless the self-host allowlist flag is set (spec
+	// §21.4). Attempt-time re-resolution + IP pinning (the pump's sender) is the authoritative gate
+	// that closes DNS rebinding; this one is fast operator feedback. The rejection is typed and never
+	// echoes the target URL back.
+	if err := webhook.VetDestination(r.Context(), h.resolver, body.URL, body.AllowPrivateDestination); err != nil {
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "url is not an allowed webhook destination")
 		return
 	}

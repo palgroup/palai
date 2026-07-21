@@ -4,6 +4,7 @@
 package api
 
 import (
+	"net"
 	"net/http"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -45,7 +46,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// operator-facing delivery view + idempotent redelivery — nil in tiers that do not exercise
 	// webhooks (the Docker-free conformance HTTP tier, the SSE read-path e2e).
 	if webhooks != nil {
-		wh := &webhookHandler{webhooks: webhooks}
+		wh := &webhookHandler{webhooks: webhooks, resolver: net.DefaultResolver}
 		mux.HandleFunc("POST /v1/webhook-endpoints", wh.createEndpoint)
 		mux.HandleFunc("GET /v1/webhook-endpoints", wh.listEndpoints)
 		mux.HandleFunc("GET /v1/webhook-deliveries", wh.listDeliveries)

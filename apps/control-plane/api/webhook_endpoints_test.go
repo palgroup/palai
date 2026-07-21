@@ -64,25 +64,36 @@ func post(t *testing.T, url, body string) *http.Response {
 }
 
 // TestCreateEndpointRejectsPrivateDestinationAtTheAPI proves the create-time egress gate is wired into
-// the router (AUT-012 static half): a private/loopback URL without the allowlist flag is a 400 and
-// never reaches the store, while a public URL is created 201.
+// the router (AUT-012 fail-fast half): the named SSRF vectors — the cloud metadata IP, a loopback name
+// (localhost), a literal private IP, and http to a private host — are each a 400 that never reaches the
+// store, while a literal public https destination is created 201.
 func TestCreateEndpointRejectsPrivateDestinationAtTheAPI(t *testing.T) {
 	fake := &fakeWebhookAPI{}
 	srv := webhookTestServer(t, fake)
 
-	resp := post(t, srv.URL+"/v1/webhook-endpoints", `{"url":"http://169.254.169.254/hook"}`)
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("private destination create status = %d, want 400", resp.StatusCode)
+	// Each of these is a distinct SSRF vector the endpoint must refuse without dialing.
+	for _, attack := range []string{
+		`{"url":"http://169.254.169.254/latest/meta-data"}`, // cloud metadata (literal link-local)
+		`{"url":"http://localhost/hook"}`,                   // hostname resolving to loopback
+		`{"url":"http://10.0.0.5/hook"}`,                    // literal RFC1918
+		`{"url":"http://[::1]/hook"}`,                       // literal IPv6 loopback
+		`{"url":"https://169.254.169.254/x"}`,               // metadata even over https
+	} {
+		resp := post(t, srv.URL+"/v1/webhook-endpoints", attack)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("SSRF create %s status = %d, want 400", attack, resp.StatusCode)
+		}
 	}
 	if fake.created != nil {
-		t.Fatal("a rejected create still reached the store")
+		t.Fatal("a rejected SSRF create still reached the store")
 	}
 
-	resp = post(t, srv.URL+"/v1/webhook-endpoints", `{"url":"https://hooks.example.com/x","event_filter":["run.completed.v1"]}`)
+	// A literal public https destination is created (no DNS needed, so the happy path is offline-clean).
+	resp := post(t, srv.URL+"/v1/webhook-endpoints", `{"url":"https://93.184.216.34/x","event_filter":["run.completed.v1"]}`)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("public destination create status = %d, want 201", resp.StatusCode)
 	}
-	if fake.created == nil || fake.created.URL != "https://hooks.example.com/x" {
+	if fake.created == nil || fake.created.URL != "https://93.184.216.34/x" {
 		t.Fatalf("store did not receive the created endpoint: %+v", fake.created)
 	}
 

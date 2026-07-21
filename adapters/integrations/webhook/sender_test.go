@@ -46,9 +46,58 @@ func TestPrivateAndLoopbackDestinationsDeniedByDefault(t *testing.T) {
 	if err := VetDestinationURL("http://169.254.169.254/latest/meta-data", true); err == nil {
 		t.Error("VetDestinationURL(metadata IP, allowPrivate=true) = nil, want still denied")
 	}
-	// A public destination passes.
+	// A public destination passes over https.
 	if err := VetDestinationURL("https://hooks.example.com/x", false); err != nil {
-		t.Errorf("VetDestinationURL(public) = %v, want allowed", err)
+		t.Errorf("VetDestinationURL(public https) = %v, want allowed", err)
+	}
+	// http to a public host is a downgrade: denied unless the self-host flag opts in.
+	if err := VetDestinationURL("http://hooks.example.com/x", false); err == nil {
+		t.Error("VetDestinationURL(public http, no flag) = nil, want denied (https required)")
+	}
+	if err := VetDestinationURL("http://hooks.example.com/x", true); err != nil {
+		t.Errorf("VetDestinationURL(http + flag) = %v, want allowed (self-host)", err)
+	}
+}
+
+// TestSSRFRegistrationVetRejectsResolvedInternalTargets is the fail-fast registration gate (AUT-012):
+// a hostname that ALREADY resolves into a private/loopback/link-local/metadata range is rejected at
+// registration — not only at delivery. Resolution failure is permissive (the pinned dial at send time
+// is the authoritative gate), and a public resolution passes. The rejection carries no target in it.
+func TestSSRFRegistrationVetRejectsResolvedInternalTargets(t *testing.T) {
+	internal := map[string]net.IP{
+		"localhost.attacker.example": net.ParseIP("127.0.0.1"),
+		"private.attacker.example":   net.ParseIP("10.0.0.5"),
+		"lan.attacker.example":       net.ParseIP("192.168.1.10"),
+		"metadata.attacker.example":  net.ParseIP("169.254.169.254"), // cloud metadata via DNS
+		"ula.attacker.example":       net.ParseIP("fc00::1"),
+		"public.example":             net.ParseIP("93.184.216.34"),
+	}
+	resolver := resolverFunc(func(_ context.Context, host string) ([]net.IPAddr, error) {
+		if ip, ok := internal[host]; ok {
+			return []net.IPAddr{{IP: ip}}, nil
+		}
+		return nil, errors.New("NXDOMAIN")
+	})
+
+	for _, host := range []string{"localhost.attacker.example", "private.attacker.example", "lan.attacker.example", "metadata.attacker.example", "ula.attacker.example"} {
+		if err := VetDestination(context.Background(), resolver, "https://"+host+"/hook", false); err == nil {
+			t.Errorf("VetDestination(%s -> internal) = nil, want rejected at registration", host)
+		} else if strings.Contains(err.Error(), host) {
+			t.Errorf("VetDestination error leaked the target host: %v", err)
+		}
+	}
+	// A host that resolves public is allowed.
+	if err := VetDestination(context.Background(), resolver, "https://public.example/hook", false); err != nil {
+		t.Errorf("VetDestination(public) = %v, want allowed", err)
+	}
+	// A name that cannot be resolved now is allowed — the authoritative gate is the pinned dial at
+	// send time, which re-resolves and re-vets (a rebind cannot smuggle an internal IP past it).
+	if err := VetDestination(context.Background(), resolver, "https://unresolvable.example/hook", false); err != nil {
+		t.Errorf("VetDestination(unresolvable) = %v, want allowed (send-time is authoritative)", err)
+	}
+	// 'localhost' the literal name resolves to loopback through the real resolver — proven unreachable.
+	if err := VetDestination(context.Background(), nil, "http://localhost/hook", false); err == nil {
+		t.Error("VetDestination(http://localhost) = nil, want rejected")
 	}
 }
 
@@ -123,6 +172,35 @@ func TestRedirectNotFollowed(t *testing.T) {
 	}
 	if locationHit {
 		t.Fatal("the redirect Location was requested — redirects must not be followed")
+	}
+}
+
+// TestRedirectToInternalTargetNotDialed proves a public receiver cannot bounce a delivery into the
+// cloud metadata IP via a 302: the redirect is a terminal deny and the metadata address is never
+// dialed (AUT-012 — the redirect vector cannot reach an internal target).
+func TestRedirectToInternalTargetNotDialed(t *testing.T) {
+	var dialedMetadata bool
+	dial := func(_ context.Context, _, addr string) (net.Conn, error) {
+		// The redirector itself is legitimately dialed at 127.0.0.1; only a dial to the metadata IP
+		// (the redirect target) proves the SSRF vector opened.
+		if strings.HasPrefix(addr, "169.254.169.254:") {
+			dialedMetadata = true
+		}
+		return (&net.Dialer{}).DialContext(context.Background(), "tcp", addr)
+	}
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "http://169.254.169.254/latest/meta-data")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	sender := NewSender(WithDialContext(dial))
+	res := sender.Deliver(context.Background(), Destination{URL: redirector.URL, AllowPrivate: true, TimeoutMS: 2000}, []byte("{}"))
+	if !res.Terminal {
+		t.Fatalf("redirect to metadata = %+v, want a terminal deny", res)
+	}
+	if dialedMetadata {
+		t.Fatal("the metadata IP was dialed via the redirect — SSRF redirect vector is open")
 	}
 }
 
