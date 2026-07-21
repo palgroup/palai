@@ -81,6 +81,35 @@ SELECT id, response_id
 FROM subtree
 WHERE state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded');
 
+-- LookupChildByRequest resolves the child a parent already spawned for a child_request_id (E10 T8,
+-- DET-001): a restored parent re-emits the SAME deterministic child.request, so the controller must
+-- RE-BIND the existing child rather than clone it. The linkage rides the child's delegation.spec JSONB
+-- (child_request_id + the detached flag) — no separate column, no migration. Tenant-scoped; one row.
+-- name: LookupChildByRequest
+SELECT id, state, response_id, coalesce((delegation->'spec'->>'detached')::boolean, false)
+FROM runs
+WHERE parent_run_id = $1 AND organization_id = $2 AND project_id = $3
+  AND delegation->'spec'->>'child_request_id' = $4
+LIMIT 1;
+
+-- RunParentRun reads a run's parent_run_id (NULL for a root run) so the child-terminal wake can find
+-- the parent to resume (E10 T8, DET-001). Tenant-scoped by primary key.
+-- name: RunParentRun
+SELECT parent_run_id
+FROM runs
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- HasNonTerminalChildRun reports whether a parent still has any non-terminal child (E10 T8): the
+-- detached-parent wake only re-enters the parent once EVERY child is terminal, so its resume re-emits
+-- each child.request to a finished child (a clean fold, never a re-spawn). Direct children only —
+-- depth is capped at 1, so a recursive walk is unnecessary here.
+-- name: HasNonTerminalChildRun
+SELECT EXISTS (
+    SELECT 1 FROM runs
+    WHERE parent_run_id = $1 AND organization_id = $2 AND project_id = $3
+      AND state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
+);
+
 -- UpdateResponse writes the terminal Response projection (status + output/usage JSON). The
 -- terminal states are excluded from the WHERE so the projection is monotonically terminal at the
 -- database: the first terminal write wins and a late-arriving one (a reclaimed or in-flight

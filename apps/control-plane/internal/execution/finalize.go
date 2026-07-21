@@ -125,5 +125,18 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 	if err != nil {
 		return fmt.Errorf("marshal response projection: %w", err)
 	}
-	return o.spine.FinalizeResponse(ctx, st.tenant, st.responseID, terminal.status, projection)
+	if err := o.spine.FinalizeResponse(ctx, st.tenant, st.responseID, terminal.status, projection); err != nil {
+		return err
+	}
+
+	// A terminal CHILD wakes its detached parent (spec §25.18-19, E10 T8 DET-001): if this run has a
+	// parent released to waiting and no non-terminal sibling remains, WakeParentOfChild re-enters the
+	// parent and enqueues its response.run job — single-winner, so a redelivered terminal wakes it once.
+	// A no-op for a root run (no parent) or an inline child (its parent never released). Best-effort:
+	// the run's own terminal already committed, so a wake hiccup is logged, not fatal — the parent's own
+	// post-release self-wake and job reclaim are the backstops.
+	if _, err := o.spine.WakeParentOfChild(ctx, st.tenant, string(st.attempt.RunID)); err != nil {
+		log.Printf("wake detached parent of child %s: %v", st.attempt.RunID, err)
+	}
+	return nil
 }

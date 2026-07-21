@@ -20,6 +20,18 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 INSERT INTO outbox (organization_id, project_id, topic, dedupe_key, payload)
 VALUES ($1, $2, $3, $4, $5);
 
+-- ChildLifecycleEventExists reports whether a child-lifecycle event of a given type was already
+-- journaled for a specific child_run_id under a response (E10 T8, DET-001 exactly-once fold): a
+-- detached parent that restores re-emits the child.request and re-folds the terminal child, so the
+-- child.completed.v1 journal is guarded by this so the parent's stream carries it EXACTLY once even
+-- across repeated restores. Tenant-scoped.
+-- name: ChildLifecycleEventExists
+SELECT EXISTS (
+    SELECT 1 FROM events
+    WHERE response_id = $1 AND organization_id = $2 AND project_id = $3
+      AND type = $4 AND payload->>'child_run_id' = $5
+);
+
 -- Journal reads for the resumable event stream (spec §21.1). Every read is
 -- tenant-scoped: a session_id from another tenant matches no row, so a caller
 -- cannot stream another tenant's journal by guessing an ID.

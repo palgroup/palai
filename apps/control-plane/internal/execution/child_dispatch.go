@@ -109,6 +109,10 @@ type childSpec struct {
 	Budget         int
 	WorkspaceMode  string
 	Required       bool
+	// Detach requests the child run as a DETACHED durable job (spec §25.18-19, E10 T8 DET-001): the
+	// parent releases its compute at this boundary and the child terminal wakes it, rather than the
+	// parent holding the engine idle while the child runs inline. It rides the child.request frame.
+	Detach bool
 }
 
 // childAdmission is the deterministic verdict on one delegation. Denied carries a stable reason
@@ -192,6 +196,14 @@ type delegationSpec struct {
 	Budget        int      `json:"budget,omitempty"`
 	WorkspaceMode string   `json:"workspace_mode,omitempty"`
 	Required      bool     `json:"required,omitempty"`
+	// Detach (on a root run's emit spec) requests the child run detached (E10 T8, DET-001). It rides
+	// the run.start delegations verbatim, so a config-seeded delegation can detach.
+	Detach bool `json:"detach,omitempty"`
+	// ChildRequestID + Detached ride a CHILD run's own spec (not an emit spec): the linkage a restored
+	// parent's re-emitted child.request rebinds by, so a detached parent-resume never clones the child
+	// (E10 T8 keystone). Stored in the child's delegation.spec JSONB — no separate column, no migration.
+	ChildRequestID string `json:"child_request_id,omitempty"`
+	Detached       bool   `json:"detached,omitempty"`
 }
 
 // runDelegation is a run's delegation column (spec §25.18): Emit (+ the parent Budget children
@@ -223,11 +235,17 @@ func (d runDelegation) emitFrames() []map[string]any {
 		if mode == "" {
 			mode = "none"
 		}
-		out = append(out, map[string]any{
+		frame := map[string]any{
 			"role": s.Role, "objective": s.Objective, "model": s.Model,
 			"tools": s.Tools, "budget": map[string]any{"max_total_tokens": s.Budget},
 			"workspace_mode": mode, "required": s.Required,
-		})
+		}
+		// Carry the detach request only when set, so a non-detaching delegation's child.request stays
+		// byte-identical to before (E10 T8) — the request_hash and existing golden frames are unchanged.
+		if s.Detach {
+			frame["detach"] = true
+		}
+		out = append(out, frame)
 	}
 	return out
 }
@@ -241,6 +259,7 @@ func decodeChildSpec(data map[string]any) childSpec {
 	spec.Model, _ = data["model"].(string)
 	spec.WorkspaceMode, _ = data["workspace_mode"].(string)
 	spec.Required, _ = data["required"].(bool)
+	spec.Detach, _ = data["detach"].(bool)
 	if tools, ok := data["tools"].([]any); ok {
 		for _, t := range tools {
 			if s, ok := t.(string); ok {
@@ -256,16 +275,25 @@ func decodeChildSpec(data map[string]any) childSpec {
 	return spec
 }
 
-// dispatchChild handles a child.request (spec §25.18-19): it scores the delegation against the
-// parent's depth/fan-out/budget/capability, and on a deny journals child.denied.v1 and replies a
-// denied child.result the engine folds (required → fail, optional → skip). On an admit it creates a
-// ChildRun (parent_run_id, its own model/budget), runs it INLINE through the existing ExecuteAttempt
-// path — a nested run with its own attempt, engine, and model call (its own chatcmpl), never a
-// second queued job a single worker would deadlock on — then journals child.completed.v1 and replies
-// the child's typed result (status + output + child run id). No secret ever reaches the child: it
-// routes the same broker the parent does.
+// dispatchChild handles a child.request (spec §25.18-19). It is the single home of two paths (E10 T8
+// fork 5): a FRESH request is scored against the parent's depth/fan-out/budget/capability and either
+// denied (child.denied.v1 + a denied child.result the engine folds) or admitted into a ChildRun; a
+// RE-EMITTED request — a restored parent re-emits the SAME deterministic child.request — is REBOUND to
+// the existing child rather than cloned (the DET-001 keystone). An admitted child runs INLINE by
+// default (a nested ExecuteAttempt on this goroutine) OR, when it asks to detach (E10 T8), as a durable
+// job while the parent releases its compute. No secret ever reaches the child: it routes the same
+// broker the parent does.
 func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, frame contracts.EngineFrame) error {
 	spec := decodeChildSpec(frame.Data)
+
+	// Re-emit rebind (the keystone): a parent restore re-emits its pending child.request with the SAME
+	// deterministic child_request_id. If a child already exists for it, bind that one — never a second
+	// ChildRun — folding its terminal result now, or re-releasing while it still runs.
+	if existing, found, err := o.spine.LookupChildByRequest(ctx, st.tenant, string(st.attempt.RunID), spec.ChildRequestID); err != nil {
+		return err
+	} else if found {
+		return o.rebindChild(ctx, st, spec, existing, frame)
+	}
 
 	policy, err := o.spine.ProjectConfig(ctx, st.tenant)
 	if err != nil {
@@ -284,11 +312,21 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 		}, string(frame.ID)))
 	}
 
+	childWS, _ := resolveChildWorkspace(spec.WorkspaceMode) // admitChild already validated the mode
+	// Detach is honored only for a workspace-less child and only when a checkpoint sink is wired (§26.5:
+	// no durable boundary ⇒ no release). A detach request that cannot be honored falls through to the
+	// inline path — the safe default. ponytail: isolated/read_only + detach (the child's worktree lives
+	// under the parent allocation the release would tear down) is a named ceiling, inline for now.
+	detach := spec.Detach && childWS.Mode == workspaceModeNone && o.checkpoints != nil
+
 	childRunID, childResponseID := newExecID("run"), newExecID("resp")
 	childInput, _ := json.Marshal(spec.Objective)
 	childDelegation, _ := json.Marshal(runDelegation{Spec: &delegationSpec{
 		Role: spec.Role, Objective: spec.Objective, Model: spec.Model, Tools: spec.Tools,
 		Budget: admission.EffectiveBudget, WorkspaceMode: spec.WorkspaceMode, Required: spec.Required,
+		// The child carries its own linkage so a restored parent rebinds it (E10 T8): the request id it
+		// answers and whether it was detached, both on its delegation.spec JSONB (no separate column).
+		ChildRequestID: spec.ChildRequestID, Detached: detach,
 	}})
 	requested, _ := json.Marshal(map[string]any{"child_run_id": childRunID, "child_request_id": spec.ChildRequestID, "role": spec.Role, "model": spec.Model, "required": spec.Required})
 	if err := o.spine.CreateChildRun(ctx, st.tenant, coordinator.ChildRunInput{
@@ -301,6 +339,16 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 	st.childRunIDs = append(st.childRunIDs, childRunID)
 	st.childReserved += admission.EffectiveBudget
 
+	// Detached path (E10 T8, DET-001): enqueue the child as a durable response.run job and RELEASE the
+	// parent — checkpoint this awaiting-children boundary, drive the run to waiting, and end the attempt.
+	// The child terminal wakes the parent (finalize → WakeParentOfChild), which restores here and rebinds.
+	if detach {
+		if err := o.spine.EnqueueRunJob(ctx, st.tenant, childRunID); err != nil {
+			return err
+		}
+		return o.releaseParentForDetach(ctx, st)
+	}
+
 	// Realize the child's workspace when it asked for one and the parent holds one (spec §30.5, §29.8):
 	// a copy-on-write worktree off the parent's checkout — isolated (writable, own branch) or read_only
 	// (write-denied snapshot) — set on the child's descriptor so its file/shell tools confine to it. The
@@ -310,7 +358,6 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 		RunID: contracts.RunID(childRunID), AttemptID: newAttemptID(), Fence: st.attempt.Fence,
 		ImageDigest: st.attempt.ImageDigest, Limits: defaultAttemptLimits,
 	}
-	childWS, _ := resolveChildWorkspace(spec.WorkspaceMode) // admitChild already validated the mode
 	if childWS.Mode != workspaceModeNone && st.attempt.WorkspaceHostPath != "" {
 		hostPath, err := o.realizeChildWorkspace(ctx, st, childRunID, childWS)
 		if err != nil {
@@ -323,20 +370,53 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 	// failure) is not the parent's — the child run row is authoritative, so we read its committed
 	// outcome regardless and report it to the engine, which decides required-vs-optional.
 	_ = o.ExecuteAttempt(ctx, childDesc)
+	return o.foldChildResult(ctx, st, spec.ChildRequestID, childRunID, frame)
+}
 
+// rebindChild handles a re-emitted child.request whose child already exists (E10 T8, DET-001 keystone):
+// a terminal child folds its typed result now (never a re-spawn), a still-running detached child re-
+// releases the parent (a later child terminal re-wakes it). It appends the child to this attempt's
+// linkage set so the restored parent's terminal projection still links it.
+func (o *Orchestrator) rebindChild(ctx context.Context, st *attemptState, spec childSpec, existing coordinator.ChildRunLookup, frame contracts.EngineFrame) error {
+	if !slices.Contains(st.childRunIDs, existing.RunID) {
+		st.childRunIDs = append(st.childRunIDs, existing.RunID)
+	}
+	if childRunTerminal(existing.State) {
+		return o.foldChildResult(ctx, st, spec.ChildRequestID, existing.RunID, frame)
+	}
+	// The child is still running (e.g. the parent was woken by a child→parent event before terminal, or
+	// a fan-out sibling is still working): release the parent again and wait for the terminal wake.
+	return o.releaseParentForDetach(ctx, st)
+}
+
+// foldChildResult reads a finished child's committed outcome, journals child.completed.v1 on the
+// parent (exactly-once across restores), and replies the typed child.result the engine folds (spec
+// §25.19). Shared by the inline dispatch and the detached rebind so the fold is one code path.
+func (o *Orchestrator) foldChildResult(ctx context.Context, st *attemptState, childRequestID, childRunID string, frame contracts.EngineFrame) error {
 	runState, output, err := o.spine.ChildRunOutcome(ctx, st.tenant, childRunID)
 	if err != nil {
 		return err
 	}
 	status := childStatus(runState)
-	completed, _ := json.Marshal(map[string]any{"child_run_id": childRunID, "child_request_id": spec.ChildRequestID, "status": status})
-	if err := o.spine.JournalChildEvent(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), eventChildCompleted, completed); err != nil {
+	completed, _ := json.Marshal(map[string]any{"child_run_id": childRunID, "child_request_id": childRequestID, "status": status})
+	if err := o.spine.JournalChildCompletionOnce(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), eventChildCompleted, childRunID, completed); err != nil {
 		return err
 	}
 	return st.ch.Send(ctx, o.frame(st, "child.result", map[string]any{
-		"child_request_id": spec.ChildRequestID, "status": status, "child_run_id": childRunID,
+		"child_request_id": childRequestID, "status": status, "child_run_id": childRunID,
 		"output": childOutputText(output),
 	}, string(frame.ID)))
+}
+
+// childRunTerminal reports whether a run state is terminal, so a rebind folds a finished child rather
+// than waiting on it (E10 T8).
+func childRunTerminal(state string) bool {
+	switch state {
+	case "completed", "failed", "canceled", "timed_out", "budget_exceeded":
+		return true
+	default:
+		return false
+	}
 }
 
 // parentTools is the parent's effective capability, which a child's tool subset must stay within

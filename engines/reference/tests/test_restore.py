@@ -116,6 +116,29 @@ def test_restore_from_child_boundary_resumes_next_model_step() -> None:
     assert rout[0]["data"]["model_request_id"] == protocol.model_request_id(run_id, step + 1)
 
 
+def test_restore_reemits_pending_detached_child_request() -> None:
+    # E10 T8 (DET-001) keystone: a parent checkpointed while AWAITING a detached child (pending, NOT
+    # folded) must, on restore, re-emit the SAME child.request — same deterministic child_request_id and
+    # the detach flag intact — so the controller REBINDS the existing child rather than cloning it.
+    run_id = "run_detach_restore"
+    loop = make_loop(run_id)
+    spec = {"role": "r", "objective": "o", "model": "m", "required": True, "detach": True}
+    out = _first_model_result(loop, [spec])
+    child_req = next(f for f in out if f["type"] == "child.request")
+    assert child_req["data"]["detach"] is True
+    assert loop.state is State.AWAITING_CHILDREN
+    # The controller checkpoints THIS awaiting-children boundary (checkpoint.request) before releasing.
+    offer = loop.handle(ctrl("checkpoint.request", {}, "frm_cpr"))[0]
+
+    restored = make_loop(run_id)
+    rout = restored.handle(_restore_frame(offer))
+
+    assert [f["type"] for f in rout] == ["child.request"], f"detach-boundary restore must re-emit the child, got {[f['type'] for f in rout]}"
+    assert rout[0]["data"]["child_request_id"] == child_req["data"]["child_request_id"]
+    assert rout[0]["data"]["detach"] is True
+    assert restored.state is State.AWAITING_CHILDREN
+
+
 def test_restore_rejects_malformed_state() -> None:
     # A decodable-but-malformed state (missing required keys) is a protocol.error, not a KeyError that
     # crashes the engine — restore_state is inside the try (minor 7).

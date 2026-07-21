@@ -49,6 +49,9 @@ def _agent_call_to_spec(call: dict) -> dict:
         "workspace_mode": args.get("workspace_mode", "none"),
         "required": bool(args.get("required")),
         "deadline": args.get("deadline"),
+        # Detach requests the child as a durable job while the parent releases its compute (E10 T8).
+        # The controller acts on it; the engine only carries it through and re-emits it on restore.
+        "detach": bool(args.get("detach")),
     }
 
 
@@ -253,6 +256,10 @@ class Loop:
         }
         if spec.get("deadline") is not None:
             data["deadline"] = spec.get("deadline")
+        # Carry detach only when set (E10 T8), so a non-detaching child.request stays byte-identical to
+        # before and the request_hash — role/objective/model only — is unaffected either way.
+        if spec.get("detach"):
+            data["detach"] = True
         return self.emitter.build("child.request", data, reply_to=reply_to)
 
     def _on_child_result(self, frame: dict) -> list[dict]:

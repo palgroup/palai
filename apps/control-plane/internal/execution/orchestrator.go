@@ -417,7 +417,13 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 				return abortIfTerminal(err)
 			}
 		case "child.request":
-			if err := o.dispatchChild(ctx, st, frame); err != nil {
+			switch err := o.dispatchChild(ctx, st, frame); {
+			case errors.Is(err, errRunReleased):
+				// A detached child was enqueued and the parent released its compute (spec §26.5, E10
+				// T8): the run is waiting, this attempt ends cleanly, and the child terminal reopens a
+				// fresh attempt to fold the result — exactly as a pause ends and resume reopens.
+				return nil
+			case err != nil:
 				return abortIfTerminal(err)
 			}
 		case "output.item":
