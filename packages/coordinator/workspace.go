@@ -231,6 +231,22 @@ func (s *Store) CreateWorkspaceSnapshot(ctx context.Context, in SnapshotInput) e
 	return nil
 }
 
+// LatestRestorableWorkspaceSnapshot returns the id of the workspace's newest snapshot that carries
+// archived bytes (spec §29.10, REC-005) — the boundary a host-lost recovery restores from. found is
+// false when the workspace has no byte-archived snapshot: the recovery then has no boundary to restore
+// and must fail explicitly rather than resume on an empty tree.
+func (s *Store) LatestRestorableWorkspaceSnapshot(ctx context.Context, tenant Tenant, workspaceID string) (string, bool, error) {
+	var id string
+	err := s.pool.QueryRow(ctx, storage.Query("LatestRestorableWorkspaceSnapshot"), workspaceID, tenant.Organization, tenant.Project).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("latest restorable snapshot: %w", err)
+	}
+	return id, true, nil
+}
+
 // LoadWorkspaceSnapshot reads a snapshot's byte-archive location + create-side manifest within tenant
 // scope, so a restore fetches the archived bytes and verifies the restored tree (spec §29.10, SAN-005).
 func (s *Store) LoadWorkspaceSnapshot(ctx context.Context, tenant Tenant, snapshotID string) (WorkspaceSnapshotRecord, error) {

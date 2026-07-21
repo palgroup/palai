@@ -78,6 +78,16 @@ SELECT workspace_id, object_key, archive_checksum, size_bytes,
 FROM workspace_snapshots
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- name: LatestRestorableWorkspaceSnapshot
+-- The newest snapshot of a workspace that carries archived BYTES (object_key <> ''), so a host-lost
+-- recovery restores from the most recent durable boundary (spec §29.7-29.10, REC-005, E10 Task 6). A
+-- manifest-only (E09) snapshot is skipped — it has no bytes to restore. No row -> the recovery has no
+-- boundary to restore from and fails EXPLICITLY (recovering→failed), never a silent empty tree.
+SELECT id FROM workspace_snapshots
+WHERE workspace_id = $1 AND organization_id = $2 AND project_id = $3 AND object_key <> ''
+ORDER BY created_at DESC
+LIMIT 1;
+
 -- name: ReferencedSnapshotObjectKeys
 -- The snapshot half of the orphan-GC reference set (E10 Task 6 <-> Task 3). Snapshot byte-archives live
 -- in the SAME object-store bucket as artifacts + checkpoints under <org>/<proj>/<ws>/snapshots/<id>, but
