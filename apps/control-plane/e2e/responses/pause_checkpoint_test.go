@@ -19,6 +19,11 @@ import (
 // the pre-empted queued message folded in. Only step 1 gates, so a resume (which restores PAST step
 // 1) never blocks. It backs the SES-009 round-trip: pause captures a checkpoint at step 1's tool
 // boundary; resume restores it, runs the drained tool for the first time, and folds the message.
+//
+// CEILING (T7/ENG-012 owns it — do NOT build here): step 2 CONTINUES on purpose. On the restore
+// path a pre-empted queued message folds only if the resumed run reaches a continuing model step
+// (a pump boundary). If the resumed run's next step were terminal, the message would have no fold
+// boundary — that terminal-next-step queued-message fold is outage command ordering, T7/ENG-012.
 type pauseResumeProvider struct {
 	started chan struct{}
 	release chan struct{}
