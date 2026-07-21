@@ -193,12 +193,22 @@ func (o *Orchestrator) effectiveConfigHash(ctx context.Context, st *attemptState
 	if err != nil {
 		return "", err
 	}
+	// The run's pinned agent/template revision (spec §14, AGT-001) — read per boundary. The pin is
+	// immutable on the run row, so this resolves to the SAME config even after a later revision of the
+	// same profile is published, keeping a checkpointed run's config hash reproducible.
+	revID, revModel, revTools, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	if err != nil {
+		return "", err
+	}
 	snap := Resolve(ResolveInput{
-		DeploymentModel:  o.route.Model,
-		DeploymentSecret: string(o.route.Secret),
-		ProjectTools:     policy.DefaultTools,
-		SessionModel:     override.Model,
-		SessionTools:     override.Tools,
+		DeploymentModel:    o.route.Model,
+		DeploymentSecret:   string(o.route.Secret),
+		ProjectTools:       policy.DefaultTools,
+		AgentRevisionID:    revID,
+		AgentRevisionModel: revModel,
+		AgentRevisionTools: revTools,
+		SessionModel:       override.Model,
+		SessionTools:       override.Tools,
 	})
 	return snap.Hash, nil
 }
