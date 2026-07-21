@@ -12,6 +12,9 @@
 #   runner       supervises the fixture engine in a real digest-pinned OCI container
 #                and proves a hung engine is force-killed and classified terminal, and
 #                that malformed or oversized stdout fails the attempt safely.
+#   recovery     supervises the fixture engine in a real container and proves the E10 kill
+#                matrix's container half: a fast-exit engine's run.terminal is never lost in
+#                the drain race (REC-001), and an external `docker rm -f` is classified lost.
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
@@ -128,13 +131,22 @@ run_sandbox() {
   run_runner_suite fault ./tests/fault/sandbox
 }
 
+# The recovery suite proves the E10 kill matrix's container half against the real fixture engine: a
+# fast-exit engine's run.terminal is never lost in the OCI drain race (REC-001), and an external
+# `docker rm -f` mid-run is classified lost, never a false success (ENG-005 streaming half). It
+# reuses the same digest-pinned fixture-engine harness.
+run_recovery() {
+  run_runner_suite fault ./tests/fault/recovery
+}
+
 case "$suite" in
   coordinator) run_coordinator ;;
   subagents) run_subagents ;;
   runner) run_runner ;;
   sandbox) run_sandbox ;;
+  recovery) run_recovery ;;
   *)
-    echo "unknown fault suite: $suite (known: coordinator, subagents, runner, sandbox)" >&2
+    echo "unknown fault suite: $suite (known: coordinator, subagents, runner, sandbox, recovery)" >&2
     exit 2
     ;;
 esac

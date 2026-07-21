@@ -103,9 +103,23 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_object_store=1
     ;;
+  provider-one/container-kill-recovery)
+    # E10 Task 5: a real provider forced-tool run persists a tool-boundary checkpoint to REAL S3, the
+    # engine is abruptly killed post-persist, and a fresh attempt RESTORES it (ladder rung 2) and
+    # completes on the real provider — two DISTINCT chatcmpl ids + a complete §26.12 RecoveryProof +
+    # the completed tool not re-run. Needs the credential + a throwaway object store (PG + SeaweedFS) +
+    # the engine dir. Honest ceilings (named in the test): the container-kill dimension itself is proven
+    # DETERMINISTICALLY against a real container in tests/fault/recovery (REC-001 + ENG-005); this tier
+    # confirms the ladder-restore completes with a REAL provider. Shares checkpoint-restore's
+    # tool-advertising gate (dispatchModel omits Tools) — SKIPs until that live-harness wiring lands.
+    pkg="./apps/control-plane/internal/execution/live"
+    run="TestLiveContainerKillRecoveryRealProvider"
+    required_key="OPENAI_API_KEY"
+    needs_object_store=1
+    ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=checkpoint-restore" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery" >&2
     exit 2
     ;;
 esac

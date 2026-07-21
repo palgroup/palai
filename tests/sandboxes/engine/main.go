@@ -60,6 +60,8 @@ func main() {
 		workspaceStream(runID, attemptID)
 	case "interactive":
 		interactive(runID, attemptID)
+	case "fastexit":
+		fastExit(runID, attemptID)
 	case "hang":
 		time.Sleep(30 * time.Second)
 	default:
@@ -134,6 +136,50 @@ func interactive(runID, attemptID string) {
 		os.Exit(1)
 	}
 	emitFrame("run.terminal", map[string]any{"outcome": "completed"})
+}
+
+// fastExit is the REC-001 tail-frame fixture: it completes the §25.6 handshake, emits engine.ready
+// and run.terminal back-to-back, then RETURNS immediately so the container exits the instant after
+// the terminal is written. The engine's teardown races the supervisor's stream drain: without
+// drain-then-reap in the OCI destroy path, the container's buffered run.terminal can be severed
+// before the supervisor scans it, and the terminal is lost. Emitting the terminal as the last act
+// before exit maximizes that race window. Sequences are contiguous (1,2) as the monotonic gate
+// requires.
+func fastExit(runID, attemptID string) {
+	seq := 0
+	emitFrame := func(typ string, data any) {
+		seq++
+		value := frame{
+			Protocol:  engineProtocol,
+			ID:        fmt.Sprintf("frm_fastexit%d", seq),
+			Type:      typ,
+			RunID:     runID,
+			AttemptID: attemptID,
+			Sequence:  uint64(seq),
+			Time:      time.Now().UTC(),
+			Data:      data,
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(value); err != nil {
+			fmt.Fprintln(os.Stderr, "encode fastexit frame")
+			os.Exit(2)
+		}
+	}
+
+	stdin := bufio.NewScanner(os.Stdin)
+	stdin.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	if !stdin.Scan() { // supervisor.hello
+		fmt.Fprintln(os.Stderr, "no supervisor.hello before fast exit")
+		os.Exit(1)
+	}
+	emitFrame("engine.ready", map[string]any{
+		"selected_protocol": engineProtocol,
+		"engine":            map[string]any{"name": "palai-fastexit-fixture", "version": "0"},
+		"max_frame_bytes":   1048576,
+		"nonce":             "fastexit-nonce",
+	})
+	emitFrame("run.terminal", map[string]any{"outcome": "completed"})
+	// Return immediately: the process exits and the container stops the instant after the
+	// terminal is on the wire — the tail-frame race the OCI drain must win.
 }
 
 // workspaceStream is the E09 Task 1 live-mount fixture: it completes the §25.6 handshake, reads the
