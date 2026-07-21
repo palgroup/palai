@@ -212,6 +212,35 @@ func TestWakeDetachedParentWaitsForAllChildren(t *testing.T) {
 	}
 }
 
+// TestDeadLetteredDetachedChildWakesParent proves MF-1 (E10 T8 liveness): a detached child whose job
+// DEAD-LETTERS (its every attempt hit a deterministic failure, so it never self-reports run.terminal)
+// must still wake its released parent. The dead-letter sweep drives the child→failed; without a wake
+// there, the parent — whose own self-wake already no-op'd while the child was live — stays WAITING
+// forever. The sweep is the last available waker.
+func TestDeadLetteredDetachedChildWakesParent(t *testing.T) {
+	store := openStore(t)
+	pool := store.Pool()
+	ctx := context.Background()
+	tenant, parentRun, _, childRun, _ := seedParent(t, pool, "waiting", "running", true)
+	// The child's response.run job dead-lettered (exhausted its attempts without self-reporting).
+	exec(t, pool, `INSERT INTO durable_jobs (id, organization_id, project_id, kind, status, payload) VALUES ($1,$2,$3,'response.run','dead',$4)`,
+		newID("job"), tenant.Organization, tenant.Project, fmt.Sprintf(`{"run_id":%q}`, childRun))
+
+	if _, err := store.SweepDeadLetteredRuns(ctx); err != nil {
+		t.Fatalf("SweepDeadLetteredRuns error = %v", err)
+	}
+	if s := runState(t, pool, childRun); s != "failed" {
+		t.Fatalf("dead-lettered child state = %q, want failed", s)
+	}
+	// The parent was woken to make progress — not left WAITING forever.
+	if s := runState(t, pool, parentRun); s != "running" {
+		t.Fatalf("parent state after child dead-letter = %q, want running (woken; the sweep is the last waker)", s)
+	}
+	if n := count(t, pool, `SELECT count(*) FROM durable_jobs WHERE kind='response.run' AND payload->>'run_id'=$1`, parentRun); n != 1 {
+		t.Fatalf("parent resume jobs after dead-letter wake = %d, want 1", n)
+	}
+}
+
 // TestChildCompletionJournaledOnceAcrossRefold proves the exactly-once fold survives a repeated parent
 // restore (E10 T8, the DET kill-recovery property): if a detached parent restores more than once — its
 // resume attempt killed after folding but before completing, then reclaimed — it re-emits the

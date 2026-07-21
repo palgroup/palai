@@ -196,6 +196,15 @@ func (s *Store) SweepDeadLetteredRuns(ctx context.Context) (int, error) {
 		if err := s.FinalizeResponse(ctx, d.tenant, d.responseID, string(statemachines.RunFailed), deadLetterProjection); err != nil {
 			return driven, err
 		}
+		// A dead-lettered DETACHED child must still wake its released parent (E10 T8, MF-1): the child
+		// never self-reported run.terminal, so its finalize wake never ran, and the parent's own
+		// post-release self-wake already no-op'd while the child was live — this sweep is the last waker.
+		// Idempotent (a no-op for a root or a non-waiting parent), so it is safe on every swept run.
+		// ponytail: a transient failure here returns and the run is now terminal (excluded from re-sweep);
+		// the general stuck-waiting-parent backstop is the E11 reconciliation loop, not this bridge.
+		if _, err := s.WakeParentOfChild(ctx, d.tenant, d.runID); err != nil {
+			return driven, err
+		}
 		driven++
 	}
 	return driven, nil
