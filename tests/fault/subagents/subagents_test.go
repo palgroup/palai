@@ -17,6 +17,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 
@@ -83,6 +84,15 @@ func runState(t *testing.T, pool *pgxpool.Pool, runID string) string {
 // live ChildRun + response, both running. Returns the tenant and the run/response ids.
 func seedParentWithChild(t *testing.T, pool *pgxpool.Pool) (tenant coordinator.Tenant, parentRun, parentResp, childRun, childResp string) {
 	t.Helper()
+	return seedParent(t, pool, "running", "running", false)
+}
+
+// seedParent creates org -> project -> session -> a root run + response and one ChildRun + response in
+// the given run states. detached marks the child's delegation.spec so the E10 T8 wake/rebind paths see
+// it. The session id lives on the parent's session; the child is created strictly AFTER the parent, so
+// its created_at is later (the detached-window addressing relies on latest-live-run).
+func seedParent(t *testing.T, pool *pgxpool.Pool, parentState, childState string, detached bool) (tenant coordinator.Tenant, parentRun, parentResp, childRun, childResp string) {
+	t.Helper()
 	tenant = coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
 	sessionID := newID("ses")
 	parentRun, parentResp = newID("run"), newID("resp")
@@ -92,14 +102,151 @@ func seedParentWithChild(t *testing.T, pool *pgxpool.Pool) (tenant coordinator.T
 	exec(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Organization, tenant.Project)
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'in_progress','{}')`,
 		parentResp, tenant.Organization, tenant.Project, sessionID)
-	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'running')`,
-		parentRun, tenant.Organization, tenant.Project, sessionID, parentResp)
-	// The ChildRun shares the session (parent_run_id set, so it does not consume the root slot).
+	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,$6)`,
+		parentRun, tenant.Organization, tenant.Project, sessionID, parentResp, parentState)
+	// The ChildRun shares the session (parent_run_id set, so it does not consume the root slot). Its
+	// delegation.spec carries the child_request_id + detached flag exactly as dispatchChild writes them.
+	deleg := fmt.Sprintf(`{"spec":{"child_request_id":%q,"detached":%t}}`, "creq_"+childRun, detached)
 	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'in_progress','{}')`,
 		childResp, tenant.Organization, tenant.Project, sessionID)
-	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, parent_run_id, depth) VALUES ($1,$2,$3,$4,$5,'running',$6,1)`,
-		childRun, tenant.Organization, tenant.Project, sessionID, childResp, parentRun)
+	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, parent_run_id, depth, delegation) VALUES ($1,$2,$3,$4,$5,$6,$7,1,$8)`,
+		childRun, tenant.Organization, tenant.Project, sessionID, childResp, childState, parentRun, deleg)
 	return tenant, parentRun, parentResp, childRun, childResp
+}
+
+// sessionOf reads a run's session id.
+func sessionOf(t *testing.T, pool *pgxpool.Pool, runID string) string {
+	t.Helper()
+	var s string
+	if err := pool.QueryRow(context.Background(), `SELECT session_id FROM runs WHERE id=$1`, runID).Scan(&s); err != nil {
+		t.Fatalf("read session of %s error = %v", runID, err)
+	}
+	return s
+}
+
+// TestChildTargetedSendMessageAddressesDetachedChild proves DET-002 child-addressing (spec §25.18-19,
+// E10 T8): during a detached child's window the parent is WAITING and the child is the session's live
+// run, so a send_message accepted on the parent's session binds to the CHILD's run — the existing
+// send_message spine + delivered-message pump reach the child with no new command kind. The exactly-
+// once fold is E10 T2's delivered_messages, which the pump applies run-generically to the child.
+func TestChildTargetedSendMessageAddressesDetachedChild(t *testing.T) {
+	store := openStore(t)
+	pool := store.Pool()
+	ctx := context.Background()
+	// Parent released (waiting), child running detached.
+	tenant, _, _, childRun, _ := seedParent(t, pool, "waiting", "running", true)
+	sessionID := sessionOf(t, pool, childRun)
+
+	payload, _ := json.Marshal(map[string]any{"message": "keep going"})
+	cmd, err := store.AcceptCommand(ctx, tenant, sessionID, coordinator.CommandInput{
+		CommandID: newID("cmd"), Kind: "send_message", Delivery: "queue", Payload: payload,
+	})
+	if err != nil {
+		t.Fatalf("AcceptCommand error = %v", err)
+	}
+	if cmd.State != "queued" {
+		t.Fatalf("send_message state = %q, want queued (the live child accepts it)", cmd.State)
+	}
+	// The command bound to the CHILD run, so the child's boundary pump delivers it.
+	pending, err := store.PendingBoundaryCommands(ctx, tenant, childRun)
+	if err != nil {
+		t.Fatalf("PendingBoundaryCommands error = %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != cmd.ID {
+		t.Fatalf("child pending boundary commands = %+v, want the send_message bound to the child run", pending)
+	}
+}
+
+// TestWakeDetachedParentIsSingleWinner proves the exactly-once wake primitive (DET-001): a released
+// (waiting) parent whose child is terminal is re-entered into running and given ONE response.run job by
+// the first wake; a second wake (a redelivered child terminal, or the parent's own self-wake racing the
+// child's) sees a running parent and no-ops — so the parent resumes exactly once.
+func TestWakeDetachedParentIsSingleWinner(t *testing.T) {
+	store := openStore(t)
+	pool := store.Pool()
+	ctx := context.Background()
+	tenant, parentRun, _, _, _ := seedParent(t, pool, "waiting", "completed", true)
+
+	woken, err := store.WakeDetachedParent(ctx, tenant, parentRun)
+	if err != nil || !woken {
+		t.Fatalf("first WakeDetachedParent = (%v, %v), want (true, nil)", woken, err)
+	}
+	if s := runState(t, pool, parentRun); s != "running" {
+		t.Fatalf("parent state after wake = %q, want running", s)
+	}
+	if n := count(t, pool, `SELECT count(*) FROM durable_jobs WHERE kind='response.run' AND payload->>'run_id'=$1`, parentRun); n != 1 {
+		t.Fatalf("enqueued parent jobs after wake = %d, want 1", n)
+	}
+	// A second wake (double terminal / self-wake race) is a no-op: no second job, no second resume.
+	again, err := store.WakeDetachedParent(ctx, tenant, parentRun)
+	if err != nil || again {
+		t.Fatalf("second WakeDetachedParent = (%v, %v), want (false, nil) — single-winner", again, err)
+	}
+	if n := count(t, pool, `SELECT count(*) FROM durable_jobs WHERE kind='response.run' AND payload->>'run_id'=$1`, parentRun); n != 1 {
+		t.Fatalf("enqueued parent jobs after double wake = %d, want 1 (exactly-once)", n)
+	}
+}
+
+// TestWakeDetachedParentWaitsForAllChildren proves the wake holds until EVERY child is terminal (fan-out
+// safety): a waiting parent with one terminal and one still-running child is NOT woken, so its resume
+// never re-emits a child.request to a still-running child (which would re-release anyway).
+func TestWakeDetachedParentWaitsForAllChildren(t *testing.T) {
+	store := openStore(t)
+	pool := store.Pool()
+	ctx := context.Background()
+	tenant, parentRun, _, _, _ := seedParent(t, pool, "waiting", "completed", true)
+	// A second child, still running, under the same parent.
+	sessionID := sessionOf(t, pool, parentRun)
+	secondResp, secondRun := newID("resp"), newID("run")
+	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'in_progress','{}')`,
+		secondResp, tenant.Organization, tenant.Project, sessionID)
+	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, parent_run_id, depth) VALUES ($1,$2,$3,$4,$5,'running',$6,1)`,
+		secondRun, tenant.Organization, tenant.Project, sessionID, secondResp, parentRun)
+
+	woken, err := store.WakeDetachedParent(ctx, tenant, parentRun)
+	if err != nil || woken {
+		t.Fatalf("WakeDetachedParent with a live sibling = (%v, %v), want (false, nil)", woken, err)
+	}
+	if s := runState(t, pool, parentRun); s != "waiting" {
+		t.Fatalf("parent state = %q, want waiting (a live child remains)", s)
+	}
+}
+
+// TestParentCancelPropagatesToDetachedChild proves SUB-005's detached variant (spec §25.18-19, E10 T8):
+// canceling a parent that RELEASED its compute (waiting) still propagates the cancel to its detached,
+// still-running child — the cancel walks parent_run_id regardless of detach — and the child-terminal
+// wake never fires for the canceled (terminal) parent, so no spurious resume job is enqueued.
+func TestParentCancelPropagatesToDetachedChild(t *testing.T) {
+	store := openStore(t)
+	pool := store.Pool()
+	ctx := context.Background()
+	tenant, parentRun, parentResp, childRun, childResp := seedParent(t, pool, "waiting", "running", true)
+	canceled, _ := json.Marshal(map[string]any{"output": []any{}, "usage": map[string]any{}, "model": ""})
+
+	if _, err := store.ApplyRunTransition(ctx, tenant, parentRun, statemachines.RunCmdCancel); err != nil {
+		t.Fatalf("cancel waiting parent error = %v", err)
+	}
+	if err := store.FinalizeResponse(ctx, tenant, parentResp, "canceled", canceled); err != nil {
+		t.Fatalf("finalize parent canceled error = %v", err)
+	}
+	n, err := store.CancelChildren(ctx, tenant, parentRun, canceled)
+	if err != nil || n != 1 {
+		t.Fatalf("CancelChildren = (%d, %v), want (1, nil) — the detached child is canceled", n, err)
+	}
+	if s := runState(t, pool, childRun); s != "canceled" {
+		t.Fatalf("detached child state = %q, want canceled (propagation reaches a released parent's child)", s)
+	}
+	if c := count(t, pool, `SELECT count(*) FROM events WHERE response_id=$1 AND type='run.canceled.v1'`, childResp); c != 1 {
+		t.Fatalf("child run.canceled.v1 = %d, want 1 (single terminal)", c)
+	}
+	// The canceled parent is terminal, so the child terminal wakes nothing — no spurious resume job.
+	woken, err := store.WakeParentOfChild(ctx, tenant, childRun)
+	if err != nil || woken {
+		t.Fatalf("WakeParentOfChild for a canceled parent = (%v, %v), want (false, nil)", woken, err)
+	}
+	if c := count(t, pool, `SELECT count(*) FROM durable_jobs WHERE kind='response.run' AND payload->>'run_id'=$1`, parentRun); c != 0 {
+		t.Fatalf("resume jobs for a canceled parent = %d, want 0", c)
+	}
 }
 
 // TestParentCancelPropagatesToChildren proves SUB-005 (spec §25.18-19): canceling a parent run
