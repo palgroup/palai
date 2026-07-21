@@ -364,6 +364,12 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		if err := o.applyPendingSessionConfig(ctx, st); err != nil {
 			return abortIfTerminal(err)
 		}
+		// Carry any send_message that survived a prior run's terminal (E10 T7 ENG-012 fork 3): re-scope
+		// it to this run so the ordinary boundary pump delivers it at this run's first input boundary. A
+		// no-op when none carried. Only on run.start — a restore resumed past the boundary.
+		if _, err := o.spine.CarrySessionSendMessages(ctx, st.tenant, st.sessionID, string(st.attempt.RunID)); err != nil {
+			return abortIfTerminal(err)
+		}
 		// A checkpoint that existed but was rejected fell to transcript reconstruction: record the
 		// rejection reason + the chosen rung (spec §26.3-26.4). No checkpoint => not engaged (fork 7).
 		if plan.present {

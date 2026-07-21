@@ -730,6 +730,11 @@ func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID
 // was queued on the final step) must not sit queued forever. ApplyRunTransition calls it inside
 // the terminal transition's tx, so the run's terminality and its commands' expiry commit
 // together. Journals command.expired.v1 per swept command so attached clients see the lifecycle.
+//
+// send_message and change_config are NOT expired — they carry to the next response (E10 T7 ENG-012 fork
+// 3). A surviving send_message that never folded into THIS response gets a warning.raised.v1 so the user
+// SEES it will carry rather than silently vanish; the actual carry re-scopes it at the next run.start
+// (CarrySessionSendMessages).
 func sweepQueuedCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID string, responseID *string, runID string) error {
 	rows, err := tx.Query(ctx, storage.Query("ExpireQueuedCommandsForRun"), runID, tenant.Organization, tenant.Project)
 	if err != nil {
@@ -757,7 +762,53 @@ func sweepQueuedCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionI
 			return err
 		}
 	}
+	return warnSurvivingSendMessages(ctx, tx, tenant, sessionID, resp, runID)
+}
+
+// warnSurvivingSendMessages journals warning.raised.v1 for each send_message still queued on a terminal
+// run (E10 T7 fork 3): the message did not fold into this response and will carry to the next — the user
+// sees it, not a silent drop. The commands stay queued; CarrySessionSendMessages re-scopes them at the
+// next run.start so the ordinary boundary pump delivers them there.
+func warnSurvivingSendMessages(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, runID string) error {
+	rows, err := tx.Query(ctx, storage.Query("SurvivingQueuedSendMessagesForRun"), runID, tenant.Organization, tenant.Project)
+	if err != nil {
+		return fmt.Errorf("read surviving send messages: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan surviving send message: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		payload := mustMarshal(map[string]any{"command_id": id, "code": "message_carried_to_next_response",
+			"detail": "the message did not fold into this response before it terminated; it stays queued and carries to the next response's input boundary"})
+		if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, warningRaisedEvent, payload); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// CarrySessionSendMessages re-scopes a session's still-queued send_message commands to the run starting
+// now (E10 T7 ENG-012 fork 3, the cross-run carry): a message queued on a prior terminal run — one that
+// never folded into that response — becomes a normal queued command on this run, so this run's ordinary
+// boundary pump delivers it at its first input boundary. It is the send_message analogue of the
+// change_config carry (PendingSessionConfigCommands) and reuses the entire delivery path — no new frame.
+// Run at run.start (never on a restore, which resumes past the boundary). Returns how many carried.
+func (s *Store) CarrySessionSendMessages(ctx context.Context, tenant Tenant, sessionID, runID string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, storage.Query("CarrySessionSendMessages"), sessionID, tenant.Organization, tenant.Project, runID)
+	if err != nil {
+		return 0, fmt.Errorf("carry session send messages: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // readCommand reads a command's projection within tx.

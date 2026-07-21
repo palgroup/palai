@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/palgroup/palai/packages/coordinator"
+	statemachines "github.com/palgroup/palai/packages/state-machines"
 )
 
 // decodeSeededMessage reads the {"message": "..."} text a command payload carries.
@@ -184,6 +185,87 @@ func TestRedeliverBoundaryMessagesReturnsBoundaryRowsInCanonicalOrder(t *testing
 	}
 	if len(none) != 0 {
 		t.Fatalf("empty boundary returned %d messages, want 0", len(none))
+	}
+}
+
+// TestQueuedMessageOnTerminalStepNotLost pins the E10 T7 ENG-012 fork-3 behavior BY NAME (spec §22.4,
+// §9.2): a send_message queued during a run that then TERMINATES on a step with no delivery boundary is
+// NOT silently dropped. It stays queued (not expired like other commands), a warning.raised.v1 marks
+// that it will carry, and CarrySessionSendMessages re-scopes it to the next run so that run's ordinary
+// boundary pump delivers it at its first input boundary — no injection into the terminated response, no
+// forced extra step (the rejected alternative). change_config's cross-run carry is unchanged.
+func TestQueuedMessageOnTerminalStepNotLost(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, sessionID, run1 := seedRun(t, pool)
+	respID := newID("resp")
+	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+		respID, tenant.Organization, tenant.Project, sessionID)
+	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, run1, respID)
+
+	// A message queued mid-run, plus a non-carry command (a pause) that DOES expire on terminal.
+	msgID := seedQueuedSendMessage(t, cs, tenant, sessionID, run1, "queue", "please also do Y")
+	pauseID := newID("cmd")
+	exec(t, pool, `INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, state) VALUES ($1,$2,$3,$4,$5,'pause','queued')`,
+		pauseID, tenant.Organization, tenant.Project, sessionID, run1)
+
+	// The run terminates on a final step (no boundary pumped the message).
+	if _, err := cs.ApplyRunTransition(ctx, tenant, run1, statemachines.RunCmdComplete); err != nil {
+		t.Fatalf("ApplyRunTransition(complete) error = %v", err)
+	}
+
+	// The send_message SURVIVES queued (not lost); the pause expired (ordinary lifecycle).
+	var msgState, pauseState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM commands WHERE id=$1`, msgID).Scan(&msgState); err != nil {
+		t.Fatalf("read send_message state error = %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM commands WHERE id=$1`, pauseID).Scan(&pauseState); err != nil {
+		t.Fatalf("read pause state error = %v", err)
+	}
+	if msgState != "queued" {
+		t.Fatalf("send_message after terminal = %q, want queued (not lost, fork 3)", msgState)
+	}
+	if pauseState != "expired" {
+		t.Fatalf("pause after terminal = %q, want expired (ordinary sweep)", pauseState)
+	}
+	// A warning.raised.v1 tells the user it will carry (not a silent drop).
+	var warns int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM events WHERE session_id=$1 AND type='warning.raised.v1' AND payload->>'code'='message_carried_to_next_response'`,
+		sessionID).Scan(&warns); err != nil {
+		t.Fatalf("count carry warnings error = %v", err)
+	}
+	if warns != 1 {
+		t.Fatalf("carry warnings = %d, want 1 (the surviving message is visibly warned)", warns)
+	}
+
+	// The next response opens a fresh run; the carry re-scopes the queued message to it, so that run's
+	// ordinary pump delivers it at its first input boundary.
+	run2 := newID("run")
+	exec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'running')`,
+		run2, tenant.Organization, tenant.Project, sessionID)
+	carried, err := cs.CarrySessionSendMessages(ctx, tenant, sessionID, run2)
+	if err != nil {
+		t.Fatalf("CarrySessionSendMessages error = %v", err)
+	}
+	if carried != 1 {
+		t.Fatalf("carried %d messages, want 1", carried)
+	}
+	var carriedRun, carriedState string
+	if err := pool.QueryRow(ctx, `SELECT run_id, state FROM commands WHERE id=$1`, msgID).Scan(&carriedRun, &carriedState); err != nil {
+		t.Fatalf("read carried message error = %v", err)
+	}
+	if carriedRun != run2 || carriedState != "queued" {
+		t.Fatalf("carried message = {run:%q state:%q}, want {%s queued} (deliverable by run2's pump)", carriedRun, carriedState, run2)
+	}
+	// The pending set for run2 now includes the carried message — the ordinary boundary pump will deliver it.
+	pending, err := cs.PendingBoundaryCommands(ctx, tenant, run2)
+	if err != nil {
+		t.Fatalf("PendingBoundaryCommands(run2) error = %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != msgID {
+		t.Fatalf("run2 pending = %+v, want the carried message %s", pending, msgID)
 	}
 }
 

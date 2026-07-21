@@ -96,12 +96,34 @@ ORDER BY created_at;
 -- must not sit queued forever. change_config is EXCLUDED — a config switch with no boundary in
 -- its run carries to the next run's start (the cross-run config carry, spec §9.3), so it stays
 -- queued for the session-config drain, not expired here. RETURNs the swept ids for command.expired.v1.
+-- ExpireQueuedCommandsForRun expires a terminal run's still-queued commands (spec §22.4 lifecycle),
+-- EXCEPT the two cross-run carries: change_config (applied at the next run's start) and send_message (a
+-- message that never reached a boundary is not silently dropped — it stays queued, is warned, and is
+-- carried to the next response's input boundary, E10 T7 ENG-012 fork 3).
 -- name: ExpireQueuedCommandsForRun
 UPDATE commands
 SET state = 'expired', updated_at = clock_timestamp()
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'queued'
-  AND kind <> 'change_config'
+  AND kind NOT IN ('change_config', 'send_message')
 RETURNING id;
+
+-- SurvivingQueuedSendMessagesForRun returns the send_message commands that survive a run's terminal
+-- (they carry to the next response, E10 T7 fork 3) so the terminal sweep can journal warning.raised.v1
+-- for each — the user SEES that a mid-run message did not fold into this response and will carry.
+-- name: SurvivingQueuedSendMessagesForRun
+SELECT id FROM commands
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'queued' AND kind = 'send_message'
+ORDER BY created_at, id;
+
+-- CarrySessionSendMessages re-scopes a session's still-queued send_message commands to a fresh run at
+-- its run.start (E10 T7 fork 3, the cross-run carry — the send_message analogue of the change_config
+-- carry): a message queued on a prior terminal run becomes a normal queued command on the new run, so
+-- the new run's ordinary boundary pump delivers it at its first input boundary. No new delivery path.
+-- name: CarrySessionSendMessages
+UPDATE commands
+SET run_id = $4, updated_at = clock_timestamp()
+WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+  AND state = 'queued' AND kind = 'send_message' AND run_id <> $4;
 
 -- ExpireQueuedSessionCommands expires a session's still-queued commands when the session closes
 -- (spec §22.1, §22.4 lifecycle — the F1 close-sweep). close_session is a session's lifecycle
