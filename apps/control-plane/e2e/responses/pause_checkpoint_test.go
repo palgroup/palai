@@ -82,7 +82,6 @@ type pauseFixture struct {
 	stop      func()
 	provider  *pauseResumeProvider
 	tool      *countingTool
-	rec       *deliverRecorder
 	store     *memCheckpointStore
 	respID    string
 	sessionID string
@@ -97,8 +96,8 @@ type pauseFixture struct {
 // worker keeps running (stop tears it down) so the validity test can resume the same run.
 func (h *harness) pauseAtToolBoundaryWithSink() pauseFixture {
 	h.t.Helper()
-	f := pauseFixture{provider: newPauseResumeProvider(), tool: &countingTool{}, rec: &deliverRecorder{}, store: newMemCheckpointStore()}
-	dialer := subprocessDialer{engineDir: h.engineDir, onSend: f.rec.onSend}
+	f := pauseFixture{provider: newPauseResumeProvider(), tool: &countingTool{}, store: newMemCheckpointStore()}
+	dialer := subprocessDialer{engineDir: h.engineDir}
 	orch := h.newOrchestratorWithTools(dialer, f.provider, f.tool.tool())
 	orch.SetCheckpointSink(h.checkpointSink(f.store))
 	f.stop = h.runWorker(orch)
@@ -133,10 +132,9 @@ func TestPauseProducesValidCheckpointBeforeComputeRelease(t *testing.T) {
 	f := h.pauseAtToolBoundaryWithSink()
 	defer f.stop()
 
-	// A valid checkpoint persisted: bytes in the store + an immutable row with a checksum.
-	if f.store.objectCount() != 1 {
-		t.Fatalf("checkpoint objects = %d, want 1 (a checkpoint persisted at the pause boundary)", f.store.objectCount())
-	}
+	// A valid checkpoint persisted for THIS run: an immutable row with a checksum + object key, and
+	// the opaque bytes present in the store under that key. Assertions are run-scoped — the shared
+	// worker may service other tests' runs through this store, so a global object count is not a proof.
 	cp, found, err := h.spine.LatestRunCheckpoint(context.Background(), h.tenant, f.runID)
 	if err != nil || !found {
 		t.Fatalf("LatestRunCheckpoint found=%v err=%v, want a persisted checkpoint", found, err)
@@ -144,11 +142,12 @@ func TestPauseProducesValidCheckpointBeforeComputeRelease(t *testing.T) {
 	if cp.ContentChecksum == "" || cp.ObjectKey == "" {
 		t.Fatalf("checkpoint row missing integrity fields: checksum=%q key=%q", cp.ContentChecksum, cp.ObjectKey)
 	}
-
-	// The in-flight tool.request was DRAINED, not dispatched: the tool never ran, no tool_call row.
-	if f.tool.runs() != 0 {
-		t.Fatalf("tool ran %d times during the pause drain, want 0 (drained, not dispatched)", f.tool.runs())
+	if _, ok, gerr := f.store.Get(context.Background(), cp.ObjectKey); gerr != nil || !ok {
+		t.Fatalf("checkpoint bytes absent for %s: found=%v err=%v", cp.ObjectKey, ok, gerr)
 	}
+
+	// The in-flight tool.request was DRAINED, not dispatched: no tool_call committed for THIS run
+	// (run-scoped, so a leaked sibling run's tool cannot mask the drain).
 	if n := h.count(`SELECT count(*) FROM tool_calls WHERE run_id=$1 AND organization_id=$2 AND project_id=$3`, f.runID, h.tenant.Organization, h.tenant.Project); n != 0 {
 		t.Fatalf("tool_calls committed during pause = %d, want 0 (the drained request never commits)", n)
 	}
@@ -162,12 +161,13 @@ func TestPauseProducesValidCheckpointBeforeComputeRelease(t *testing.T) {
 		t.Fatalf("checkpoint transcript seq %d is not < pause event seq %d (persist must precede PauseRun)", cp.TranscriptSequence, *pauseSeq)
 	}
 
-	// The queued message is pre-empted (still queued), and nothing was delivered before resume.
+	// The queued message is pre-empted (still queued), and nothing was delivered for this run before
+	// resume (run-scoped: no delivered_messages row yet).
 	if st, _ := h.commandRow(f.msgID); st != "queued" {
 		t.Fatalf("queued message state = %q, want queued (pre-empted for resume)", st)
 	}
-	if count, _ := f.rec.snapshot(); count != 0 {
-		t.Fatalf("message.deliver frames before resume = %d, want 0", count)
+	if n := h.count(`SELECT count(*) FROM delivered_messages WHERE run_id=$1 AND organization_id=$2 AND project_id=$3`, f.runID, h.tenant.Organization, h.tenant.Project); n != 0 {
+		t.Fatalf("delivered_messages for the run before resume = %d, want 0 (pause pre-empted delivery)", n)
 	}
 }
 
@@ -194,17 +194,20 @@ func TestResumeRestoresFromValidCheckpoint(t *testing.T) {
 		t.Fatalf("resume fell to transcript reconstruction instead of the valid checkpoint; levels = %v", levels)
 	}
 
-	// The engine re-derived the pending tool.request: the drained tool ran for the FIRST time.
-	if f.tool.runs() != 1 {
-		t.Fatalf("tool ran %d times, want 1 (first execution on resume, re-derived from the restored checkpoint)", f.tool.runs())
+	// The engine re-derived the pending tool.request: the drained counting tool ran for the FIRST
+	// time on the restored attempt — exactly one committed recovery.count for THIS run (run-scoped,
+	// so a shared-worker sibling run cannot inflate the count).
+	if n := h.count(`SELECT count(*) FROM tool_calls WHERE run_id=$1 AND name='recovery.count' AND organization_id=$2 AND project_id=$3`, f.runID, h.tenant.Organization, h.tenant.Project); n != 1 {
+		t.Fatalf("recovery.count executions for the run = %d, want 1 (first run on resume, re-derived from the checkpoint)", n)
 	}
 
-	// The pre-empted message folded at a live boundary, exactly once, into the resumed run.
+	// The pre-empted message folded into the resumed run's model context (the final step saw it) and
+	// was delivered exactly once at a live boundary (run-scoped: one delivered_messages row for it).
 	if !f.provider.foldedMessage() {
 		t.Fatal("the pre-empted queued message did not fold into the resumed run")
 	}
-	if count, last := f.rec.snapshot(); count != 1 || last != "PAUSE-FOLD" {
-		t.Fatalf("message.deliver frames after resume = %d (last %q), want exactly 1 of PAUSE-FOLD", count, last)
+	if n := h.count(`SELECT count(*) FROM delivered_messages WHERE run_id=$1 AND command_id=$2 AND organization_id=$3 AND project_id=$4`, f.runID, f.msgID, h.tenant.Organization, h.tenant.Project); n != 1 {
+		t.Fatalf("delivered_messages rows for the queued message = %d, want exactly 1", n)
 	}
 	if st, seq := h.commandRow(f.msgID); st != "applied" || seq == nil {
 		t.Fatalf("queued message state after resume = %q seq=%v, want applied", st, seq)
