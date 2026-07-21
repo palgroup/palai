@@ -576,11 +576,15 @@ func (s *Store) ReenqueueResponseRun(ctx context.Context, tenant Tenant, runID s
 	return nil
 }
 
-// UncertainToolCall is one uncertain tool_call the reconcile loop must resolve (spec §26.7, E10 T7).
+// UncertainToolCall is one uncertain tool_call the reconcile loop must resolve (spec §26.7, E10 T7). It
+// carries the session/response the resolution event is journaled under and the run the reconcile
+// re-enqueues.
 type UncertainToolCall struct {
 	CallID      string
 	Tenant      Tenant
 	RunID       string
+	SessionID   string
+	ResponseID  string
 	Name        string
 	ReplayClass string
 	ExternalKey string
@@ -597,7 +601,7 @@ func (s *Store) UncertainToolCalls(ctx context.Context, limit int) ([]UncertainT
 	var out []UncertainToolCall
 	for rows.Next() {
 		var u UncertainToolCall
-		if err := rows.Scan(&u.CallID, &u.Tenant.Organization, &u.Tenant.Project, &u.RunID, &u.Name, &u.ReplayClass, &u.ExternalKey); err != nil {
+		if err := rows.Scan(&u.CallID, &u.Tenant.Organization, &u.Tenant.Project, &u.RunID, &u.SessionID, &u.ResponseID, &u.Name, &u.ReplayClass, &u.ExternalKey); err != nil {
 			return nil, fmt.Errorf("scan uncertain tool call: %w", err)
 		}
 		out = append(out, u)

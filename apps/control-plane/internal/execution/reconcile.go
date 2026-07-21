@@ -70,7 +70,7 @@ func (r *UncertainReconciler) Sweep(ctx context.Context) (int, error) {
 		if err != nil {
 			return resolved, err
 		}
-		if err := r.store.ReconcileToolCall(ctx, call.Tenant, "", "", call.RunID, call.CallID, resolution, result); err != nil {
+		if err := r.store.ReconcileToolCall(ctx, call.Tenant, call.SessionID, call.ResponseID, call.RunID, call.CallID, resolution, result); err != nil {
 			return resolved, err
 		}
 		resolved++

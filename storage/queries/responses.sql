@@ -165,12 +165,15 @@ SET state = $4, reconciliation_state = $5, result = COALESCE($6, result), update
 WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'uncertain';
 
 -- SelectUncertainToolCalls returns the uncertain tool_calls awaiting reconciliation, oldest first — the
--- reconcile loop's read (spec §26.7, E10 T7). It carries the scope the resolver + re-enqueue need.
+-- reconcile loop's read (spec §26.7, E10 T7). It joins the run for the session/response the resolution
+-- event is journaled under and the re-enqueue needs.
 -- name: SelectUncertainToolCalls
-SELECT id, organization_id, project_id, run_id, name, replay_class, external_idempotency_key
-FROM tool_calls
-WHERE state = 'uncertain' AND reconciliation_state = 'reconciling'
-ORDER BY created_at, id
+SELECT t.id, t.organization_id, t.project_id, t.run_id, r.session_id, coalesce(r.response_id, ''),
+       t.name, t.replay_class, t.external_idempotency_key
+FROM tool_calls t
+JOIN runs r ON r.id = t.run_id
+WHERE t.state = 'uncertain' AND t.reconciliation_state = 'reconciling'
+ORDER BY t.created_at, t.id
 LIMIT $1;
 
 -- RunResolvedToolCalls returns a run's resolved tool_calls with their replay class — the class-labelled
