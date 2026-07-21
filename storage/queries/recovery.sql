@@ -18,3 +18,13 @@ INSERT INTO checkpoints
      config_snapshot_hash, transcript_sequence, workspace_snapshot_id,
      content_checksum, object_key, size_bytes)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17);
+
+-- name: ReferencedCheckpointObjectKeys
+-- The checkpoint half of the orphan-GC reference set (E10 T1<->T3). Checkpoint bytes live in the
+-- SAME bucket as artifacts under <org>/<proj>/<run>/checkpoints/<id> but are tracked here, NOT in
+-- artifacts — so the GC must UNION these keys with ReferencedArtifactObjectKeys, or it reclaims
+-- every live checkpoint as an orphan and destroys the recovery bytes T1 depends on. Deliberately
+-- bucket-wide with NO tenant scope, matching the artifacts query: the delete decision is the pure
+-- absence of a referencing row, so the set must be complete across every tenant. The <> '' filter
+-- mirrors the artifacts query (checkpoints are immutable, so no tombstone-scrub clears object_key).
+SELECT object_key FROM checkpoints WHERE object_key <> '';

@@ -79,30 +79,47 @@ func withinGrace(lastModified, cutoff time.Time) bool {
 	return lastModified.IsZero() || lastModified.After(cutoff)
 }
 
-// referencedKeys is the set of object keys a live artifacts row still points at. A tombstoned
-// row (retention scrubbed object_key to ”) is intentionally excluded, so its once-referenced
-// object joins the orphan set exactly like a write-side orphan. The scan is bucket-wide across
-// every tenant — the reference set must be complete, or GC could delete a live foreign object.
+// referencedKeys is the UNION of the object keys every authoritative class in the bucket still
+// points at: a live artifacts row (ReferencedArtifactObjectKeys) OR a live checkpoints row
+// (ReferencedCheckpointObjectKeys, E10 T1 — checkpoint bytes share this bucket under
+// checkpoints/<id>). A key referenced by EITHER is never an orphan. A tombstoned artifacts row
+// (retention scrubbed object_key to ”) is intentionally excluded, so its once-referenced object
+// joins the orphan set exactly like a write-side orphan. Each scan is bucket-wide across every
+// tenant — the reference set must be COMPLETE, or GC could delete a live foreign object.
+//
+// HAZARD when T6 lands: workspace_snapshots (E10 T6) write to this SAME bucket and carry the same
+// data-loss risk — their object keys MUST join this union (or T6 must use a separate bucket/prefix)
+// or GC will reclaim live snapshot bytes, mirroring the note at store.go List().
 // ponytail: the referenced set is held in memory; fine for the local/single-bucket scale, a
 // streaming anti-join is the upgrade path if the index ever outgrows one map.
 func (c *Collector) referencedKeys(ctx context.Context) (map[string]struct{}, error) {
-	rows, err := c.pool.Query(ctx, storage.Query("ReferencedArtifactObjectKeys"))
+	keys := map[string]struct{}{}
+	for _, query := range []string{"ReferencedArtifactObjectKeys", "ReferencedCheckpointObjectKeys"} {
+		if err := c.addReferencedKeys(ctx, keys, query); err != nil {
+			return nil, err
+		}
+	}
+	return keys, nil
+}
+
+// addReferencedKeys runs one reference query and folds its object keys into the shared set.
+func (c *Collector) addReferencedKeys(ctx context.Context, keys map[string]struct{}, query string) error {
+	rows, err := c.pool.Query(ctx, storage.Query(query))
 	if err != nil {
-		return nil, fmt.Errorf("orphan-gc: query referenced keys: %w", err)
+		return fmt.Errorf("orphan-gc: %s: query referenced keys: %w", query, err)
 	}
 	defer rows.Close()
-	keys := map[string]struct{}{}
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("orphan-gc: scan referenced key: %w", err)
+			return fmt.Errorf("orphan-gc: %s: scan referenced key: %w", query, err)
 		}
 		keys[key] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("orphan-gc: iterate referenced keys: %w", err)
+		return fmt.Errorf("orphan-gc: %s: iterate referenced keys: %w", query, err)
 	}
-	return keys, nil
+	return nil
 }
 
 // Rounds is the number of reconcile passes Run has completed — the counter that makes a
