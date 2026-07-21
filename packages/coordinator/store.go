@@ -111,6 +111,47 @@ func (s *Store) CurrentJournalSequence(ctx context.Context, tenant Tenant, sessi
 	return seq, nil
 }
 
+// RunCheckpoint is a run's newest durable checkpoint plus the §26.4 compatibility inputs the
+// recovery ladder weighs (spec §26.3-26.4, E10 T4). WorkspaceSnapshotID is "" when the checkpoint
+// declared NO workspace dependency (stored NULL); the ObjectKey/ContentChecksum locate + verify the
+// opaque bytes the control plane fetches for a restore.
+type RunCheckpoint struct {
+	CheckpointID        string
+	BoundaryID          string
+	AttemptID           string
+	Format              string
+	FormatVersion       int
+	ConfigSnapshotHash  string
+	ProtocolVersion     string
+	TranscriptSequence  int64
+	WorkspaceSnapshotID string
+	ContentChecksum     string
+	ObjectKey           string
+	SizeBytes           int64
+}
+
+// LatestRunCheckpoint reads a run's newest checkpoint (spec §26.3-26.4). found is false — with a nil
+// error — for a run that has no checkpoint, so the ladder falls to transcript reconstruction rather
+// than a phantom restore. The read is index-backed (checkpoints_by_run) and tenant-scoped.
+func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID string) (RunCheckpoint, bool, error) {
+	var cp RunCheckpoint
+	var workspaceSnapshot *string
+	err := s.pool.QueryRow(ctx, storage.Query("LatestRunCheckpoint"), runID, tenant.Organization, tenant.Project).
+		Scan(&cp.CheckpointID, &cp.BoundaryID, &cp.AttemptID, &cp.Format, &cp.FormatVersion,
+			&cp.ConfigSnapshotHash, &cp.ProtocolVersion, &cp.TranscriptSequence, &workspaceSnapshot,
+			&cp.ContentChecksum, &cp.ObjectKey, &cp.SizeBytes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RunCheckpoint{}, false, nil
+	}
+	if err != nil {
+		return RunCheckpoint{}, false, fmt.Errorf("read latest run checkpoint: %w", err)
+	}
+	if workspaceSnapshot != nil {
+		cp.WorkspaceSnapshotID = *workspaceSnapshot
+	}
+	return cp, true, nil
+}
+
 // Enqueue inserts a queued job.
 func (s *Store) Enqueue(ctx context.Context, tenant Tenant, jobID, kind string) error {
 	if strings.TrimSpace(jobID) == "" {
