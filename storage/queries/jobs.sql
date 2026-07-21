@@ -184,3 +184,19 @@ SELECT EXISTS (
       AND lease_expires_at IS NOT NULL
       AND lease_expires_at > clock_timestamp()
 );
+
+-- name: RequeueJobSoft
+-- Soft-requeue a claimed job WITHOUT consuming its attempt budget (spec §26.3, E10 T4 MUST-FIX #2): an
+-- exact stand-down is not a failed attempt, so it must not dead-letter a run whose live sibling simply
+-- outlasts MaxAttempts. Undoes the claim's attempt_count increment and re-queues behind a small
+-- jittered delay, so a standby politely waits (requeuing) until the sibling reaches terminal — then a
+-- later claim finds the run terminal and exits cleanly. Fenced to the holder, like FailJob; a
+-- superseded worker matches nothing.
+UPDATE durable_jobs
+SET status = 'queued',
+    lease_owner = NULL,
+    lease_expires_at = NULL,
+    ready_at = clock_timestamp() + ($4::bigint * interval '1 millisecond'),
+    attempt_count = GREATEST(attempt_count - 1, 0),
+    updated_at = clock_timestamp()
+WHERE id = $1 AND fence = $2 AND lease_owner = $3 AND status = 'running';
