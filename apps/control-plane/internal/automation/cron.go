@@ -212,6 +212,26 @@ func (s CronSchedule) Next(after time.Time, loc *time.Location) (time.Time, erro
 	return time.Time{}, ErrNoCronOccurrence
 }
 
+// nextReal is Next with DST spring-forward gaps SKIPPED: a cron-matched wall time that never occurs is
+// passed over (the schedule resumes at the next real instant — a nonexistent instant has nothing to fire),
+// and the first real matching instant strictly after `after` is returned. The ticker uses this to compute
+// next_fire_at and to enumerate missed instants; the raw Next (which surfaces ErrNonexistentLocalTime) is
+// the primitive it is built on. Bounded gap-skips guard against pathological zone data.
+func (s CronSchedule) nextReal(after time.Time, loc *time.Location) (time.Time, error) {
+	for i := 0; i < 64; i++ {
+		t, err := s.Next(after, loc)
+		if err == nil {
+			return t, nil
+		}
+		if errors.Is(err, ErrNonexistentLocalTime) {
+			after = t // t is the moved instant, past the gap — resume scanning from there
+			continue
+		}
+		return time.Time{}, err
+	}
+	return time.Time{}, ErrNoCronOccurrence
+}
+
 // resolveInstant maps a wall-clock Y-M-D-H-M in loc to a real UTC instant, applying the §33.2 DST rules
 // WITHOUT trusting time.Date's "not well-defined" gap/duplicate choice:
 //   - GAP (spring-forward): time.Date normalizes the nonexistent wall time to a different clock value —
@@ -222,7 +242,9 @@ func (s CronSchedule) Next(after time.Time, loc *time.Location) (time.Time, erro
 func resolveInstant(y, mo, d, h, mi int, loc *time.Location) (time.Time, error) {
 	t := time.Date(y, time.Month(mo), d, h, mi, 0, 0, loc)
 	if t.Year() != y || int(t.Month()) != mo || t.Day() != d || t.Hour() != h || t.Minute() != mi {
-		return time.Time{}, ErrNonexistentLocalTime // normalization moved it → the wall time never occurs
+		// Normalization moved it → the wall time never occurs. Return the MOVED instant with the error so a
+		// gap-skipping caller (nextReal) can resume scanning past the gap.
+		return t.UTC(), ErrNonexistentLocalTime
 	}
 	wallSecs := time.Date(y, time.Month(mo), d, h, mi, 0, 0, time.UTC).Unix()
 	_, offBefore := t.Add(-time.Hour).Zone()
