@@ -335,6 +335,15 @@ func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID,
 		requestID, tenant.Organization, tenant.Project, result); err != nil {
 		return 0, fmt.Errorf("complete model request: %w", err)
 	}
+	// A committed step folds every message delivered at a prior boundary into the request it just
+	// answered, so mark the run's still-'delivered' rows 'folded' in this same transaction (spec
+	// §26.9, E10 Task 2): the fold state and the result it belongs to move together. This is what
+	// distinguishes variant-1 (crash before this commit — the row stays 'delivered') from R1 (crash
+	// after — 'folded'); redelivery refolds either at its boundary, but the state is the honest record.
+	if _, err := tx.Exec(ctx, storage.Query("MarkDeliveredMessagesFolded"),
+		runID, tenant.Organization, tenant.Project); err != nil {
+		return 0, fmt.Errorf("mark delivered messages folded: %w", err)
+	}
 	seq, err := appendEvent(ctx, tx, tenant, sessionID, responseID, eventType, payload)
 	if err != nil {
 		return 0, err
