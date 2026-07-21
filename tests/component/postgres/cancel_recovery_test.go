@@ -96,6 +96,67 @@ func TestCancelDuringKillReconcilesChildrenSingleTerminal(t *testing.T) {
 	}
 }
 
+// TestCancelDuringCompletionGapDoesNotClobberOutput proves the MUST-#2 regression is closed (spec §22.3):
+// finalize.go applies run→completed then compiles the changeset BEFORE finalizing the response, so a
+// DELETE landing in that gap sees run=completed but the response still open. CancelRunReconciled must NOT
+// write an empty canceled projection over that — it finalizes the response only when the run is GENUINELY
+// canceled. Here the run completed concurrently, so the cancel is a no-op on the response and the
+// completion's output survives — no run/response divergence.
+func TestCancelDuringCompletionGapDoesNotClobberOutput(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, sessionID, runID := seedRun(t, pool)
+	respID := newID("resp")
+	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+		respID, tenant.Organization, tenant.Project, sessionID)
+	// The completion gap: the run reached completed, but the response is still open (changeset compiling).
+	exec(t, pool, `UPDATE runs SET state='completed', response_id=$2 WHERE id=$1`, runID, respID)
+
+	terminal, err := cs.CancelRunReconciled(ctx, tenant, respID, runID, canceledProj(), uncertainProj())
+	if err != nil {
+		t.Fatalf("CancelRunReconciled error = %v", err)
+	}
+	// The cancel did NOT finalize the response canceled — it stays open for the completion to finish.
+	if terminal == "canceled" || terminal == "failed_with_uncertain_side_effect" {
+		t.Fatalf("cancel-in-gap terminal = %q, want the response left open (not clobbered)", terminal)
+	}
+	var respState, runState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM responses WHERE id=$1`, respID).Scan(&respState); err != nil {
+		t.Fatalf("read response state error = %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM runs WHERE id=$1`, runID).Scan(&runState); err != nil {
+		t.Fatalf("read run state error = %v", err)
+	}
+	if respState == "canceled" {
+		t.Fatalf("response was clobbered to canceled over a completed run (divergence + lost output)")
+	}
+	if runState != "completed" {
+		t.Fatalf("run state = %q, want completed (untouched)", runState)
+	}
+
+	// finalize.go finishes: it now finalizes the response completed with its output — no divergence.
+	completed, _ := json.Marshal(map[string]any{"output": []any{map[string]any{"type": "message", "content": "the answer"}}, "model": "fake"})
+	if err := cs.FinalizeResponse(ctx, tenant, respID, "completed", completed); err != nil {
+		t.Fatalf("completion FinalizeResponse error = %v", err)
+	}
+	var finalState string
+	var output []byte
+	if err := pool.QueryRow(ctx, `SELECT state, output FROM responses WHERE id=$1`, respID).Scan(&finalState, &output); err != nil {
+		t.Fatalf("read final response error = %v", err)
+	}
+	if finalState != "completed" {
+		t.Fatalf("final response state = %q, want completed (the cancel did not block the completion)", finalState)
+	}
+	var proj struct {
+		Output []any `json:"output"`
+	}
+	_ = json.Unmarshal(output, &proj)
+	if len(proj.Output) != 1 {
+		t.Fatalf("completed output = %s, want the preserved answer (not empty-canceled)", output)
+	}
+}
+
 // TestCancelDuringKillCleanTerminalIsCanceled proves the clean SES-010 branch: with NO unresolved
 // uncertain side effect, a cancel during kill reaches the plain `canceled` terminal (no false
 // uncertainty claim). A resolved (reconciled_completed) op does not make the terminal uncertain.

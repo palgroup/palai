@@ -52,7 +52,10 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 			return errToolUncertainWait
 		case "executing", "leased":
 			// A kill left this in-flight. A class that must not silently re-run enters uncertain and
-			// STOPS; pure/idempotent fall through to a safe (re-)execute.
+			// STOPS; pure/idempotent fall through to a safe (re-)execute. ponytail: the content-divergence
+			// hash guard above covers only COMMITTED replays — a pure/idempotent executing-row re-drive
+			// with diverged args re-executes unchecked (harmless for pure; idempotent settles one object).
+			// Add a hash check here if a diverged executing re-drive ever needs rejecting.
 			if toolbroker.BlocksReplayAfterKill(toolbroker.ReplayClass(storedClass)) {
 				if _, err := o.spine.MarkToolCallUncertain(ctx, st.tenant, st.sessionID, st.responseID, runID, callID); err != nil {
 					return err

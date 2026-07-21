@@ -225,9 +225,10 @@ func (s *Store) CancelChildren(ctx context.Context, tenant Tenant, parentRunID s
 // uncertain (its effect may have landed; the run must NOT claim a clean cancel). It drives the run to
 // canceled (monotonic — a run a racing terminal already finished is left alone), propagates the cancel to
 // children (each to a single terminal, E08 SUB-005), and finalizes the response with the caller's
-// projection for the chosen terminal (the RFC-problem shapes live in the store/contracts layer). It
-// returns the response's ACTUAL terminal after the write, so a racing terminal that won is reflected —
-// the run terminalizes once. It is the single production cancel path (CancelResponse routes here).
+// projection — but ONLY if the run is genuinely canceled: a run that COMPLETED/failed concurrently keeps
+// its own projection (no empty-canceled clobber of a completion's output). It returns the response's
+// ACTUAL terminal, so a racing completion is reflected honestly. It is the single production cancel path
+// (CancelResponse routes here).
 func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, responseID, runID string, canceledProjection, uncertainProjection []byte) (string, error) {
 	uncertain, err := s.hasUncertainSideEffect(ctx, tenant, runID)
 	if err != nil {
@@ -237,24 +238,36 @@ func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, response
 	if uncertain {
 		terminal, projection = "failed_with_uncertain_side_effect", uncertainProjection
 	}
-	// Drive the run canceled, monotonically. Already terminal (a racing kill won) is fine — the response
-	// is already finalized and the writes below are no-ops.
+	// Drive the run canceled, monotonically. A run a racing terminal already finished is left alone
+	// (ErrRunTerminal) — it may have COMPLETED concurrently, which the finalize step below must respect.
 	switch _, err := s.ApplyRunTransition(ctx, tenant, runID, statemachines.RunCmdCancel); {
 	case errors.Is(err, ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
 	case err != nil:
 		return "", err
 	}
 	// Propagate the cancel to descendants (E08 SUB-005): a child is canceled (not uncertain), so it gets
-	// the canonical canceled projection.
+	// the canonical canceled projection. Runs regardless — a re-cancel reconciles a child a first missed.
 	if _, err := s.CancelChildren(ctx, tenant, runID, canceledProjection); err != nil {
 		return "", err
 	}
-	// Finalize the response — the conditional UpdateResponse makes this a monotonic no-op if a racing
-	// terminal already wrote one (the late-terminal DB guard, now covering the new terminal too).
-	if err := s.FinalizeResponse(ctx, tenant, responseID, terminal, projection); err != nil {
-		return "", err
+	// Finalize the response as canceled/uncertain ONLY if the run is GENUINELY canceled. finalize.go
+	// applies run→completed and then compiles the changeset BEFORE finalizing the response, so a cancel
+	// landing in that gap sees run=completed but response still open; writing an empty canceled projection
+	// then would clobber the completion's output (run/response divergence + lost output). Read the run's
+	// actual terminal and skip the finalize when it completed/failed — leave the completion's projection.
+	var runState string
+	if err := s.pool.QueryRow(ctx, `SELECT state FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		runID, tenant.Organization, tenant.Project).Scan(&runState); err != nil {
+		return "", fmt.Errorf("read run state for cancel finalize: %w", err)
 	}
-	// Return the ACTUAL terminal (whatever won), so a racing terminal is reflected — one terminal, honest.
+	if runState == string(statemachines.RunCanceled) {
+		// The conditional UpdateResponse still makes this a monotonic no-op if the response was already
+		// finalized by another cancel path (the late-terminal DB guard).
+		if err := s.FinalizeResponse(ctx, tenant, responseID, terminal, projection); err != nil {
+			return "", err
+		}
+	}
+	// Return the ACTUAL response terminal (whatever won), so a racing completion is reflected honestly.
 	var actual string
 	if err := s.pool.QueryRow(ctx, `SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		responseID, tenant.Organization, tenant.Project).Scan(&actual); err != nil {
