@@ -56,15 +56,37 @@ UPDATE workspace_leases SET state = 'released' WHERE id = $1 AND state = 'active
 -- current (max-fence) allocation. A stale allocation whose fence a host move has superseded
 -- affects zero rows — the DB-level reject of a stale authoritative snapshot (spec §29.8 line
 -- 3070, SAN-006). The fence equality is evaluated inside the DB, so app code cannot bypass it,
--- exactly as the conditional-write fence guard on job completion does. RESTORE is E10.
+-- exactly as the conditional-write fence guard on job completion does. object_key/archive_checksum/
+-- size_bytes (000017) record WHERE the byte-archive lives and how to verify it (E10 Task 6, SAN-005);
+-- they are '' / 0 for a manifest-only (E09) snapshot with no archived bytes.
 INSERT INTO workspace_snapshots
     (id, workspace_id, allocation_id, organization_id, project_id, fencing_token,
-     tree_checksum, index_checksum, file_checksums, exclusions, reason)
+     tree_checksum, index_checksum, file_checksums, exclusions, reason,
+     object_key, archive_checksum, size_bytes)
 SELECT $1, a.workspace_id, a.id, a.organization_id, a.project_id, a.fence,
-       $3, $4, $5, $6, $7
+       $3, $4, $5, $6, $7, $8, $9, $10
 FROM workspace_allocations a
 WHERE a.id = $2
   AND a.fence = (SELECT MAX(fence) FROM workspace_allocations WHERE workspace_id = a.workspace_id);
+
+-- name: LoadWorkspaceSnapshot
+-- Read a snapshot's byte-archive location + create-side manifest checksums, so a restore fetches the
+-- archived bytes and verifies the restored tree re-derives EQUAL (spec §29.10, SAN-005 restore, E10
+-- Task 6). Scoped by id + tenant. object_key is '' for a manifest-only (E09) snapshot with no bytes.
+SELECT workspace_id, object_key, archive_checksum, size_bytes,
+       tree_checksum, index_checksum, file_checksums, exclusions
+FROM workspace_snapshots
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- name: ReferencedSnapshotObjectKeys
+-- The snapshot half of the orphan-GC reference set (E10 Task 6 <-> Task 3). Snapshot byte-archives live
+-- in the SAME object-store bucket as artifacts + checkpoints under <org>/<proj>/<ws>/snapshots/<id>, but
+-- are tracked HERE — so the GC must UNION these keys with the artifact + checkpoint sets, or it reclaims
+-- every live snapshot as an orphan and destroys the restore bytes SAN-005 depends on. Deliberately
+-- bucket-wide with NO tenant scope, matching the artifacts + checkpoints queries: the delete decision is
+-- the pure absence of a referencing row, so the set must be complete across every tenant. The <> ''
+-- filter skips manifest-only rows (no archived bytes to protect).
+SELECT object_key FROM workspace_snapshots WHERE object_key <> '';
 
 -- name: AttachSessionWorkspace
 -- Attach a session-scoped coding workspace (spec §29.7, E09 Task 10): the logical workspace the root

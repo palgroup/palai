@@ -45,15 +45,34 @@ type Allocation struct {
 }
 
 // SnapshotInput is a create-side workspace snapshot manifest (spec §29.10). The checksums and
-// exclusions are computed over the real allocation filesystem; RESTORE is E10.
+// exclusions are computed over the real allocation filesystem. ObjectKey/ArchiveChecksum/SizeBytes
+// locate + verify the byte-archive (E10 Task 6, SAN-005 restore); they are empty/0 for a manifest-only
+// (E09) snapshot with no archived bytes.
 type SnapshotInput struct {
-	SnapshotID    string
-	AllocationID  string
-	TreeChecksum  string
-	IndexChecksum string
-	FileChecksums []byte
-	Exclusions    []byte
-	Reason        string
+	SnapshotID      string
+	AllocationID    string
+	TreeChecksum    string
+	IndexChecksum   string
+	FileChecksums   []byte
+	Exclusions      []byte
+	Reason          string
+	ObjectKey       string
+	ArchiveChecksum string
+	SizeBytes       int64
+}
+
+// WorkspaceSnapshotRecord is a persisted snapshot's byte-archive location plus its create-side manifest
+// checksums (spec §29.10) — the facts a restore needs to fetch the archived bytes and verify the
+// restored tree re-derives EQUAL (SAN-005). ObjectKey is empty for a manifest-only (E09) snapshot.
+type WorkspaceSnapshotRecord struct {
+	WorkspaceID     string
+	ObjectKey       string
+	ArchiveChecksum string
+	SizeBytes       int64
+	TreeChecksum    string
+	IndexChecksum   string
+	FileChecksums   []byte
+	Exclusions      []byte
 }
 
 // SessionWorkspace is a session's attached coding workspace (spec §29.7, E09 Task 10): the logical
@@ -201,7 +220,8 @@ func (s *Store) CreateWorkspaceSnapshot(ctx context.Context, in SnapshotInput) e
 		exclusions = []byte("[]")
 	}
 	tag, err := s.pool.Exec(ctx, storage.Query("CreateWorkspaceSnapshot"),
-		in.SnapshotID, in.AllocationID, in.TreeChecksum, in.IndexChecksum, fileChecksums, exclusions, in.Reason)
+		in.SnapshotID, in.AllocationID, in.TreeChecksum, in.IndexChecksum, fileChecksums, exclusions, in.Reason,
+		in.ObjectKey, in.ArchiveChecksum, in.SizeBytes)
 	if err != nil {
 		return fmt.Errorf("create workspace snapshot: %w", err)
 	}
@@ -209,4 +229,20 @@ func (s *Store) CreateWorkspaceSnapshot(ctx context.Context, in SnapshotInput) e
 		return ErrStaleAllocation
 	}
 	return nil
+}
+
+// LoadWorkspaceSnapshot reads a snapshot's byte-archive location + create-side manifest within tenant
+// scope, so a restore fetches the archived bytes and verifies the restored tree (spec §29.10, SAN-005).
+func (s *Store) LoadWorkspaceSnapshot(ctx context.Context, tenant Tenant, snapshotID string) (WorkspaceSnapshotRecord, error) {
+	var rec WorkspaceSnapshotRecord
+	err := s.pool.QueryRow(ctx, storage.Query("LoadWorkspaceSnapshot"), snapshotID, tenant.Organization, tenant.Project).
+		Scan(&rec.WorkspaceID, &rec.ObjectKey, &rec.ArchiveChecksum, &rec.SizeBytes,
+			&rec.TreeChecksum, &rec.IndexChecksum, &rec.FileChecksums, &rec.Exclusions)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkspaceSnapshotRecord{}, fmt.Errorf("load workspace snapshot: %s not found in tenant scope", snapshotID)
+	}
+	if err != nil {
+		return WorkspaceSnapshotRecord{}, fmt.Errorf("load workspace snapshot: %w", err)
+	}
+	return rec, nil
 }

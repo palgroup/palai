@@ -130,6 +130,17 @@ var migrationUp16 string
 //go:embed migrations/000016_delivered_messages.down.sql
 var migrationDown16 string
 
+// 000017 adds host_quarantine (E10 Task 6, SAN-008), the workspace_snapshots byte-archive rider
+// (object_key/archive_checksum/size_bytes for the SAN-005 restore), and the merge_records
+// parent_run_id index (the E09 Task 6 M3 deferral). It only references merge_records (000011) and
+// ALTERs workspace_snapshots (000008), so it merges cleanly onto the E10 tip.
+//
+//go:embed migrations/000017_host_quarantine.up.sql
+var migrationUp17 string
+
+//go:embed migrations/000017_host_quarantine.down.sql
+var migrationDown17 string
+
 //go:embed queries/jobs.sql
 var jobsSQL string
 
@@ -178,16 +189,16 @@ var publicationsSQL string
 //go:embed queries/recovery.sql
 var recoverySQL string
 
-// MigrationUp is the forward migration chain, applied in version order (000001..000016). Each file is
+// MigrationUp is the forward migration chain, applied in version order (000001..000017). Each file is
 // individually idempotent, so the whole chain is safe to re-run.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp17
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: each migration drops its added
 // objects before the earlier one drops the tables that carried them.
 func MigrationDown() string {
-	return migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown17 + "\n" + migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
 var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL)

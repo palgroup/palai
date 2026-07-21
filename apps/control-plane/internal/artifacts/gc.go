@@ -81,20 +81,22 @@ func withinGrace(lastModified, cutoff time.Time) bool {
 
 // referencedKeys is the UNION of the object keys every authoritative class in the bucket still
 // points at: a live artifacts row (ReferencedArtifactObjectKeys) OR a live checkpoints row
-// (ReferencedCheckpointObjectKeys, E10 T1 — checkpoint bytes share this bucket under
-// checkpoints/<id>). A key referenced by EITHER is never an orphan. A tombstoned artifacts row
-// (retention scrubbed object_key to ”) is intentionally excluded, so its once-referenced object
-// joins the orphan set exactly like a write-side orphan. Each scan is bucket-wide across every
+// (ReferencedCheckpointObjectKeys, E10 T1 — checkpoint bytes share this bucket under checkpoints/<id>)
+// OR a live workspace_snapshots row (ReferencedSnapshotObjectKeys, E10 T6 — snapshot byte-archives
+// share this bucket under snapshots/<id>). A key referenced by ANY is never an orphan. A tombstoned
+// artifacts row (retention scrubbed object_key to ”) is intentionally excluded, so its once-referenced
+// object joins the orphan set exactly like a write-side orphan. Each scan is bucket-wide across every
 // tenant — the reference set must be COMPLETE, or GC could delete a live foreign object.
 //
-// HAZARD when T6 lands: workspace_snapshots (E10 T6) write to this SAME bucket and carry the same
-// data-loss risk — their object keys MUST join this union (or T6 must use a separate bucket/prefix)
-// or GC will reclaim live snapshot bytes, mirroring the note at store.go List().
+// The snapshot union closes the hazard the store.go List() note named: a snapshot byte-archive with no
+// referencing row would otherwise be reclaimed after its grace, destroying an authoritative snapshot the
+// SAN-005 restore depends on. It mirrors the checkpoint union exactly (one bucket, one GC — a separate
+// bucket was the rejected alternative, a second GC + credential surface).
 // ponytail: the referenced set is held in memory; fine for the local/single-bucket scale, a
 // streaming anti-join is the upgrade path if the index ever outgrows one map.
 func (c *Collector) referencedKeys(ctx context.Context) (map[string]struct{}, error) {
 	keys := map[string]struct{}{}
-	for _, query := range []string{"ReferencedArtifactObjectKeys", "ReferencedCheckpointObjectKeys"} {
+	for _, query := range []string{"ReferencedArtifactObjectKeys", "ReferencedCheckpointObjectKeys", "ReferencedSnapshotObjectKeys"} {
 		if err := c.addReferencedKeys(ctx, keys, query); err != nil {
 			return nil, err
 		}
