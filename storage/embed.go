@@ -130,6 +130,18 @@ var migrationUp16 string
 //go:embed migrations/000016_delivered_messages.down.sql
 var migrationDown16 string
 
+// 000018 adds the tool-call replay ledger rider (E10 Task 7): replay_class + reconciliation columns on
+// 000001's tool_calls, so a kill-after-execute row is classified and an uncertain row is reconciled
+// before its result re-enters reasoning (spec §26.6-26.7). It only ALTERs tool_calls, so it merges
+// cleanly onto every E10 sibling branch. NOTE: 000017 belongs to sibling Task 6 and is absent on this
+// branch, so the chain has an intentional gap here that integration resolves in version order.
+//
+//go:embed migrations/000018_tool_call_ledger.up.sql
+var migrationUp18 string
+
+//go:embed migrations/000018_tool_call_ledger.down.sql
+var migrationDown18 string
+
 //go:embed queries/jobs.sql
 var jobsSQL string
 
@@ -178,16 +190,17 @@ var publicationsSQL string
 //go:embed queries/recovery.sql
 var recoverySQL string
 
-// MigrationUp is the forward migration chain, applied in version order (000001..000016). Each file is
-// individually idempotent, so the whole chain is safe to re-run.
+// MigrationUp is the forward migration chain, applied in version order (000001..000016, then 000018 —
+// 000017 is sibling Task 6's, slotted in by integration). Each file is individually idempotent, so the
+// whole chain is safe to re-run.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp18
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: each migration drops its added
 // objects before the earlier one drops the tables that carried them.
 func MigrationDown() string {
-	return migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown18 + "\n" + migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
 var namedQueries = parseNamedQueries(jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL)
