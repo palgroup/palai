@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -100,6 +101,41 @@ func TestRecoveryObjectsAppendOnlyToApplicationRole(t *testing.T) {
 	}
 	if got := pgCode(mustFail(conn.Exec(ctx, `UPDATE transcript_boundaries SET transcript_sequence = 999`))); got != "42501" {
 		t.Fatalf("transcript_boundaries UPDATE code = %q, want 42501 (immutable, UPDATE withheld)", got)
+	}
+}
+
+// TestSoftRequeueNeverDeadLettersAcrossManyStandDowns proves MUST-FIX #2 FIX B: an exact stand-down
+// soft-requeues WITHOUT consuming the attempt budget, so a standby facing a long-lived live sibling
+// requeues past MaxAttempts rounds and NEVER dead-letters the run. RequeueSoft undoes the claim's
+// attempt increment, so the count stays flat and the job stays queued.
+func TestSoftRequeueNeverDeadLettersAcrossManyStandDowns(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	tenant, _, _ := seedRun(t, cs.Pool())
+	jobID := newID("job")
+	if err := cs.Enqueue(ctx, tenant, jobID, "response.run"); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+
+	for round := 0; round < 6; round++ { // well past a MaxAttempts of 3-5
+		claim, err := cs.Claim(ctx, tenant, jobID, newID("owner"), 2*time.Second)
+		if err != nil {
+			t.Fatalf("claim round %d: %v", round, err)
+		}
+		if err := cs.RequeueSoft(ctx, claim); err != nil {
+			t.Fatalf("soft requeue round %d: %v", round, err)
+		}
+		snap, err := cs.Snapshot(ctx, tenant, jobID)
+		if err != nil {
+			t.Fatalf("snapshot round %d: %v", round, err)
+		}
+		if snap.Status == "dead" {
+			t.Fatalf("job dead-lettered at round %d — a soft requeue must not consume the attempt budget", round)
+		}
+		if snap.AttemptCount > 1 {
+			t.Fatalf("attempt_count = %d at round %d — a soft requeue must undo the claim's increment", snap.AttemptCount, round)
+		}
+		time.Sleep(150 * time.Millisecond) // past the soft-requeue's small ready_at delay
 	}
 }
 
