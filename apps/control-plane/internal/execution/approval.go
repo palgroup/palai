@@ -51,6 +51,10 @@ type PublicationPump interface {
 	ApprovedPublicationsForRun(ctx context.Context, tenant coordinator.Tenant, runID string) ([]coordinator.Publication, error)
 	MarkPublicationPublished(ctx context.Context, tenant coordinator.Tenant, sessionID, responseID, publicationID, operation string, receipt map[string]any) error
 	RecordPublicationWarning(ctx context.Context, tenant coordinator.Tenant, sessionID, responseID, publicationID, detail string) error
+	// ExpireApprovalIfElapsed is the consume-time expiry guard (spec §22.4, E10 T7): before a publish, an
+	// approved publication whose one-shot approval elapsed is expired + journaled and reported true, so
+	// the pump skips it. A live approval reports false and publishes unchanged.
+	ExpireApprovalIfElapsed(ctx context.Context, tenant coordinator.Tenant, sessionID, responseID, publicationID string) (bool, error)
 }
 
 // SetPublisher injects the repository publisher the approval pump publishes through. Left unset, an
@@ -79,6 +83,15 @@ func publishApproved(ctx context.Context, spine PublicationPump, publisher Publi
 		return err
 	}
 	for _, pub := range approved {
+		// Consume-time expiry guard (spec §22.4, E10 T7): an approval that elapsed between approval and
+		// this boundary is expired + journaled here, and the publish is skipped — an expired approval
+		// never pushes. A live approval reports false and publishes exactly as before (bit-unchanged).
+		switch expired, err := spine.ExpireApprovalIfElapsed(ctx, tenant, sessionID, responseID, pub.ID); {
+		case err != nil:
+			return err
+		case expired:
+			continue
+		}
 		pubCtx, cancel := context.WithTimeout(ctx, publishTimeout)
 		receipt, perr := publisher.Publish(pubCtx, PublishTarget{
 			Publication: pub, WorkspaceRoot: workspaceRoot,

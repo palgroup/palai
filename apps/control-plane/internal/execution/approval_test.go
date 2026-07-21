@@ -20,10 +20,14 @@ type fakePublicationPump struct {
 	approved  []coordinator.Publication
 	published map[string]map[string]any
 	warned    map[string]string
+	// expired names publication ids whose one-shot approval has elapsed: the consume-time guard reports
+	// them expired (and records that it was asked), so the pump skips the publish (E10 T7).
+	expired    map[string]bool
+	expireSeen []string
 }
 
 func newFakePump(approved ...coordinator.Publication) *fakePublicationPump {
-	return &fakePublicationPump{approved: approved, published: map[string]map[string]any{}, warned: map[string]string{}}
+	return &fakePublicationPump{approved: approved, published: map[string]map[string]any{}, warned: map[string]string{}, expired: map[string]bool{}}
 }
 
 func (f *fakePublicationPump) ApprovedPublicationsForRun(context.Context, coordinator.Tenant, string) ([]coordinator.Publication, error) {
@@ -38,6 +42,61 @@ func (f *fakePublicationPump) MarkPublicationPublished(_ context.Context, _ coor
 func (f *fakePublicationPump) RecordPublicationWarning(_ context.Context, _ coordinator.Tenant, _, _, pubID, detail string) error {
 	f.warned[pubID] = detail
 	return nil
+}
+
+func (f *fakePublicationPump) ExpireApprovalIfElapsed(_ context.Context, _ coordinator.Tenant, _, _, pubID string) (bool, error) {
+	f.expireSeen = append(f.expireSeen, pubID)
+	return f.expired[pubID], nil
+}
+
+// TestApprovalPumpSkipsExpiredApproval proves the pump-side consume-time expiry guard (spec §22.4, E10
+// T7): an approved publication whose one-shot approval elapsed is checked, reported expired, and NOT
+// published — an expired approval never pushes. A concurrent non-expired approved publication in the same
+// drain publishes unchanged, so the guard is per-row, not a blanket skip.
+func TestApprovalPumpSkipsExpiredApproval(t *testing.T) {
+	requireGitExec(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	head := seedWorkspaceRepo(t, root)
+	bare := seedBareRemote(t)
+
+	live := coordinator.Publication{
+		ID: "pub_live", RunID: "run_1", Operation: "push_branch",
+		Remote: bare, Branch: "agent/ses/live", HeadSHA: head, State: "approved",
+	}
+	stale := coordinator.Publication{
+		ID: "pub_stale", RunID: "run_1", Operation: "push_branch",
+		Remote: bare, Branch: "agent/ses/stale", HeadSHA: head, State: "approved",
+	}
+	pump := newFakePump(live, stale)
+	pump.expired["pub_stale"] = true // its approval elapsed between approval and this boundary
+	publisher := &RepositoryPublisher{Broker: repositories.NewLocalBroker()}
+
+	if err := publishApproved(ctx, pump, publisher, coordinator.Tenant{Organization: "org", Project: "prj"}, "run_1", "ses_1", "resp_1", root, 7); err != nil {
+		t.Fatalf("publishApproved() error = %v", err)
+	}
+	// The expired one was checked but never published, and its branch never reached the remote.
+	if _, published := pump.published["pub_stale"]; published {
+		t.Fatal("an expired approval must not be published (E10 T7 consume-time guard)")
+	}
+	if _, err := repoRef(bare, "agent/ses/stale"); err == nil {
+		t.Fatal("the expired publication's branch reached the remote; want no push")
+	}
+	// The live one published exactly as before — the guard is per-row.
+	if _, published := pump.published["pub_live"]; !published {
+		t.Fatalf("a live approval must still publish; expireSeen=%v warned=%v", pump.expireSeen, pump.warned)
+	}
+}
+
+// repoRef reports whether a branch exists on a bare remote, and its sha if so.
+func repoRef(remote, branch string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "refs/heads/"+branch)
+	cmd.Dir = remote
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // TestApprovalPumpPublishesApprovedPushToRemote proves APV-001's publish half deterministically: the

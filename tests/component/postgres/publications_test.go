@@ -242,6 +242,153 @@ func TestStaleApprovalHashLeavesPublicationPending(t *testing.T) {
 	}
 }
 
+// TestExpiredApprovalNeverPublishesAndEmitsExpiredEvent proves the approval-expiry enforcement rider
+// (spec §22.4, E10 T7): the schema (expires_at + the 'expired' publication state) was forward-declared in
+// 000013 and unreachable — T7 adds only the ENFORCEMENT. An APPROVED publication whose one-shot approval
+// passed its expiry is expired by the pump's consume-time guard (ExpireApprovalIfElapsed): it never
+// publishes, its state becomes 'expired', and exactly one approval.expired.v1 is journaled — while a
+// concurrent non-expired approved row is bit-unchanged (still approved, still publishable).
+func TestExpiredApprovalNeverPublishesAndEmitsExpiredEvent(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, sessionID, runID := seedRun(t, pool)
+	respID := newID("resp")
+	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+		respID, tenant.Organization, tenant.Project, sessionID)
+
+	// Two approved publications; only the first's approval has elapsed.
+	stale := requestPushPublication(t, cs, tenant, sessionID, runID, "aaa111")
+	live := requestPushPublication(t, cs, tenant, sessionID, runID, "bbb222")
+	exec(t, pool, `UPDATE publications SET state='approved' WHERE id IN ($1,$2)`, stale.ID, live.ID)
+	exec(t, pool, `UPDATE approvals SET expires_at = clock_timestamp() - interval '1 minute' WHERE publication_id=$1`, stale.ID)
+
+	// The pump's consume-time guard expires the elapsed one and reports it, so the pump skips its publish.
+	expired, err := cs.ExpireApprovalIfElapsed(ctx, tenant, sessionID, respID, stale.ID)
+	if err != nil {
+		t.Fatalf("ExpireApprovalIfElapsed(stale) error = %v", err)
+	}
+	if !expired {
+		t.Fatal("an elapsed approval must report expired=true (the pump skips the publish)")
+	}
+	// The live one is untouched — reported not-expired, state unchanged.
+	liveExpired, err := cs.ExpireApprovalIfElapsed(ctx, tenant, sessionID, respID, live.ID)
+	if err != nil {
+		t.Fatalf("ExpireApprovalIfElapsed(live) error = %v", err)
+	}
+	if liveExpired {
+		t.Fatal("a non-elapsed approval must report expired=false (bit-unchanged, still publishable)")
+	}
+
+	var staleState, liveState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, stale.ID).Scan(&staleState); err != nil {
+		t.Fatalf("read stale state error = %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, live.ID).Scan(&liveState); err != nil {
+		t.Fatalf("read live state error = %v", err)
+	}
+	if staleState != "expired" {
+		t.Fatalf("stale publication state = %q, want expired", staleState)
+	}
+	if liveState != "approved" {
+		t.Fatalf("live publication state = %q, want approved (bit-unchanged)", liveState)
+	}
+	// Exactly one approval.expired.v1, for the stale publication only.
+	var expiredEvents int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE session_id=$1 AND type='approval.expired.v1'`, sessionID).Scan(&expiredEvents); err != nil {
+		t.Fatalf("count approval.expired events error = %v", err)
+	}
+	if expiredEvents != 1 {
+		t.Fatalf("approval.expired.v1 events = %d, want 1 (only the stale one)", expiredEvents)
+	}
+	// The pump's drain no longer offers the expired publication; only the live one remains publishable.
+	approved, err := cs.ApprovedPublicationsForRun(ctx, tenant, runID)
+	if err != nil {
+		t.Fatalf("ApprovedPublicationsForRun error = %v", err)
+	}
+	if len(approved) != 1 || approved[0].ID != live.ID {
+		t.Fatalf("approved set after expiry = %+v, want only the live publication %s", approved, live.ID)
+	}
+	// A second guard call on the already-expired row is an idempotent no-op — no second event.
+	if again, err := cs.ExpireApprovalIfElapsed(ctx, tenant, sessionID, respID, stale.ID); err != nil || again {
+		t.Fatalf("re-expire = (%v, %v), want (false, nil) — idempotent no-op", again, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE session_id=$1 AND type='approval.expired.v1'`, sessionID).Scan(&expiredEvents); err != nil {
+		t.Fatalf("recount approval.expired events error = %v", err)
+	}
+	if expiredEvents != 1 {
+		t.Fatalf("approval.expired.v1 events after re-expire = %d, want 1 (idempotent)", expiredEvents)
+	}
+}
+
+// TestExpiredApprovalSweepAndConsumeGuard proves the two other enforcement points (spec §22.4, E10 T7):
+// the reconcile SWEEP expires an approval that elapsed while idle (no consume observed it), and the
+// consume-time guard in ApplyApprovalDecision rejects an approve that arrives after expiry — an expired
+// approval authorizes nothing but still settles the command.
+func TestExpiredApprovalSweepAndConsumeGuard(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, sessionID, runID := seedRun(t, pool)
+	exec(t, pool, `UPDATE sessions SET state='active' WHERE id=$1`, sessionID)
+	respID := newID("resp")
+	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+		respID, tenant.Organization, tenant.Project, sessionID)
+	exec(t, pool, `UPDATE runs SET state='running', response_id=$2 WHERE id=$1`, runID, respID)
+
+	// (a) Idle sweep: a pending approval elapses with no approve/publish observing it.
+	idle := requestPushPublication(t, cs, tenant, sessionID, runID, "ccc333")
+	exec(t, pool, `UPDATE approvals SET expires_at = clock_timestamp() - interval '1 minute' WHERE publication_id=$1`, idle.ID)
+	swept, err := cs.SweepExpiredApprovals(ctx)
+	if err != nil {
+		t.Fatalf("SweepExpiredApprovals error = %v", err)
+	}
+	if swept != 1 {
+		t.Fatalf("swept expired approvals = %d, want 1", swept)
+	}
+	var idleState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, idle.ID).Scan(&idleState); err != nil {
+		t.Fatalf("read idle state error = %v", err)
+	}
+	if idleState != "expired" {
+		t.Fatalf("idle-swept publication state = %q, want expired", idleState)
+	}
+	// A second sweep is an idempotent no-op (the row already left the pending/approved set).
+	if swept, err := cs.SweepExpiredApprovals(ctx); err != nil || swept != 0 {
+		t.Fatalf("re-sweep = (%d, %v), want (0, nil)", swept, err)
+	}
+
+	// (b) Consume-time guard: an approve command arrives after the pending approval expired. It settles
+	// the command but authorizes nothing — the publication goes to expired, never approved.
+	late := requestPushPublication(t, cs, tenant, sessionID, runID, "ddd444")
+	exec(t, pool, `UPDATE approvals SET expires_at = clock_timestamp() - interval '1 minute' WHERE publication_id=$1`, late.ID)
+	approveCmd := coordinator.CommandInput{CommandID: newID("cmd"), Kind: "approve", Payload: approvePayload(late.RequestHash)}
+	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, approveCmd); err != nil {
+		t.Fatalf("AcceptCommand(approve) error = %v", err)
+	}
+	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", late.RequestHash); err != nil {
+		t.Fatalf("ApplyApprovalDecision(expired) error = %v", err)
+	}
+	var lateState, cmdState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, late.ID).Scan(&lateState); err != nil {
+		t.Fatalf("read late state error = %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM commands WHERE id=$1`, approveCmd.CommandID).Scan(&cmdState); err != nil {
+		t.Fatalf("read command state error = %v", err)
+	}
+	if lateState != "expired" {
+		t.Fatalf("publication after expired approve = %q, want expired (authorizes nothing)", lateState)
+	}
+	if cmdState != "applied" {
+		t.Fatalf("expired approve command state = %q, want applied (still settles)", cmdState)
+	}
+	// It never joined the publishable set.
+	approved, _ := cs.ApprovedPublicationsForRun(ctx, tenant, runID)
+	if len(approved) != 0 {
+		t.Fatalf("approved publications after expired approve = %d, want 0", len(approved))
+	}
+}
+
 // requestPushPublication records a pending push publication for the run and returns its projection.
 func requestPushPublication(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, sessionID, runID, head string) coordinator.Publication {
 	t.Helper()
