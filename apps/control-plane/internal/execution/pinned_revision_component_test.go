@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/palgroup/palai/packages/contracts"
@@ -18,6 +20,96 @@ func pinnedID(prefix string) string {
 	var raw [8]byte
 	_, _ = rand.Read(raw[:])
 	return prefix + "_" + hex.EncodeToString(raw[:])
+}
+
+// openPinnedSpine opens a migrated spine + seeds a tenant, returning the store and exec helper.
+func openPinnedSpine(t *testing.T) (*coordinator.Store, coordinator.Tenant, func(string, ...any)) {
+	t.Helper()
+	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
+	if url == "" {
+		t.Skip("PALAI_COMPONENT_POSTGRES_URL is required; run make test-component TEST=postgres")
+	}
+	ctx := context.Background()
+	cs, err := coordinator.Open(ctx, url)
+	if err != nil {
+		t.Fatalf("coordinator.Open() error = %v", err)
+	}
+	t.Cleanup(cs.Close)
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
+	pool := cs.Pool()
+	exec := func(sql string, args ...any) {
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("exec %q: %v", sql, err)
+		}
+	}
+	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
+	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
+	return cs, tenant, exec
+}
+
+// TestPinnedRevisionFlowsIntoConfigChangeSnapshot proves planConfigChange resolves through the SAME
+// pinned-revision layer effectiveConfigHash uses (checkpoint.go:185-186's promise): on a pinned run, a
+// change_config's journaled config.revised.v1 snapshot (a) carries the agent_revision provenance,
+// (b) has tools intersected to the ceiling, and (c) has a SnapshotHash equal to effectiveConfigHash for
+// the identical state — so a checkpoint and a config revision can never record divergent config.
+func TestPinnedRevisionFlowsIntoConfigChangeSnapshot(t *testing.T) {
+	cs, tenant, exec := openPinnedSpine(t)
+	ctx := context.Background()
+
+	// A pinned run whose revision declares a tool ceiling of {file}; the project baseline also offers
+	// {web}. The session never overrode tools, so only the revision layer can cap them.
+	sessionID := pinnedID("ses")
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`UPDATE projects SET config_policy = '{"default_tools":["file","web"]}' WHERE id=$1 AND organization_id=$2`, tenant.Project, tenant.Organization)
+	profileID, revID, runID := pinnedID("aprof"), pinnedID("arev"), pinnedID("run")
+	exec(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
+		profileID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, published_at)
+	      VALUES ($1,$2,$3,$4,1,'model-pinned','["file"]', clock_timestamp())`,
+		revID, tenant.Organization, tenant.Project, profileID)
+	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
+		runID, tenant.Organization, tenant.Project, sessionID, revID)
+
+	orch := &Orchestrator{spine: cs, route: ModelRoute{Model: "deployment-default", Secret: "model"}}
+	st := &attemptState{
+		attempt:   AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID(pinnedID("att"))},
+		tenant:    tenant,
+		sessionID: sessionID,
+	}
+
+	// A no-op change_config (no model/tools change): the resolved snapshot is the current effective
+	// config, so its hash must equal effectiveConfigHash for the same state.
+	plan, err := orch.planConfigChange(ctx, st, pinnedID("cmd"), []byte(`{}`))
+	if err != nil {
+		t.Fatalf("planConfigChange: %v", err)
+	}
+	var payload struct {
+		Snapshot ConfigSnapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(plan.RevisedPayload, &payload); err != nil {
+		t.Fatalf("decode revised payload: %v", err)
+	}
+	snap := payload.Snapshot
+
+	if snap.Provenance["agent_revision"] != revID {
+		t.Fatalf("config.revised snapshot provenance = %v, want agent_revision %s", snap.Provenance, revID)
+	}
+	if !slices.Equal(snap.Tools, []string{"file"}) {
+		t.Fatalf("config.revised snapshot tools = %v, want the ceiling [file] (web must be capped out)", snap.Tools)
+	}
+	if snap.Model != "model-pinned" {
+		t.Fatalf("config.revised snapshot model = %q, want the pinned model", snap.Model)
+	}
+	effective, err := orch.effectiveConfigHash(ctx, st)
+	if err != nil {
+		t.Fatalf("effectiveConfigHash: %v", err)
+	}
+	if plan.SnapshotHash != effective {
+		t.Fatalf("config.revised hash %q != effectiveConfigHash %q — a checkpoint and a config revision would record divergent config", plan.SnapshotHash, effective)
+	}
 }
 
 // TestPinnedRevisionConfigHashReflectsRevision proves the ExecutionSpec-resolution seam (spec §14,

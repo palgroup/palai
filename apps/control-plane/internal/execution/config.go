@@ -154,12 +154,24 @@ func (o *Orchestrator) planConfigChange(ctx context.Context, st *attemptState, c
 		return coordinator.ConfigChangePlan{}, err
 	}
 
+	// The run's pinned agent/template revision (spec §14, AGT-001) — the SAME layer effectiveConfigHash
+	// and effectiveModel resolve through, so a config.revised snapshot and a checkpoint never record
+	// divergent config for the same state (the checkpoint.go:185-186 promise). Without this a pinned
+	// run's config.revised would drop the ceiling and the provenance and diverge from the checkpoint hash.
+	revID, revModel, revTools, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	if err != nil {
+		return coordinator.ConfigChangePlan{}, err
+	}
+
 	snap := Resolve(ResolveInput{
-		DeploymentModel:  o.route.Model,
-		DeploymentSecret: string(o.route.Secret),
-		ProjectTools:     policy.DefaultTools,
-		SessionModel:     sessionModel,
-		SessionTools:     sessionTools,
+		DeploymentModel:    o.route.Model,
+		DeploymentSecret:   string(o.route.Secret),
+		ProjectTools:       policy.DefaultTools,
+		AgentRevisionID:    revID,
+		AgentRevisionModel: revModel,
+		AgentRevisionTools: revTools,
+		SessionModel:       sessionModel,
+		SessionTools:       sessionTools,
 	})
 
 	// The row stores the session-level override; nil tools stay NULL (untouched), not [].
