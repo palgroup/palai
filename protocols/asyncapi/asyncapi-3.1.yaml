@@ -141,3 +141,14 @@ components:
         - pull_request.opened.v1
         - webhook.delivery.succeeded.v1
         - webhook.delivery.dead_lettered.v1
+        - trigger.delivery.received.v1
+        - trigger.delivery.authenticated.v1
+        - trigger.delivery.deduplicated.v1
+        - trigger.delivery.mapped.v1
+        - trigger.delivery.admitted.v1
+        - trigger.delivery.run_created.v1
+        - trigger.delivery.rejected.v1
+        - trigger.delivery.duplicate.v1
+        - trigger.delivery.failed.v1
+        - trigger.delivery.deferred.v1
+        - trigger.delivery.skipped.v1
