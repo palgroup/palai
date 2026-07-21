@@ -106,18 +106,18 @@ func (c *Collector) referencedKeys(ctx context.Context) (map[string]struct{}, er
 func (c *Collector) addReferencedKeys(ctx context.Context, keys map[string]struct{}, query string) error {
 	rows, err := c.pool.Query(ctx, storage.Query(query))
 	if err != nil {
-		return fmt.Errorf("orphan-gc: query referenced keys: %w", err)
+		return fmt.Errorf("orphan-gc: %s: query referenced keys: %w", query, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
-			return fmt.Errorf("orphan-gc: scan referenced key: %w", err)
+			return fmt.Errorf("orphan-gc: %s: scan referenced key: %w", query, err)
 		}
 		keys[key] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("orphan-gc: iterate referenced keys: %w", err)
+		return fmt.Errorf("orphan-gc: %s: iterate referenced keys: %w", query, err)
 	}
 	return nil
 }
