@@ -123,6 +123,23 @@ WHERE session_id = $1 AND organization_id = $2 AND project_id = $3 AND repositor
 ORDER BY created_at
 LIMIT 1;
 
+-- name: QuarantineHost
+-- Mark a host poisoned by an allocation-destroy failure (spec §29 SAN-008, E10 Task 6). Idempotent on
+-- host_id — a repeat failure re-quarantines the same host without error. In the local tier the host_id
+-- is the provision-root / runner identity the destroy failed under (there is no hosts registry).
+INSERT INTO host_quarantine (host_id, reason) VALUES ($1, $2)
+ON CONFLICT (host_id) DO NOTHING;
+
+-- name: IsHostQuarantined
+-- Whether a host is quarantined — the placement guard consults it before minting a NEW allocation on
+-- that host and refuses a quarantined one (spec §29 SAN-008). A run already executing there is untouched.
+SELECT EXISTS (SELECT 1 FROM host_quarantine WHERE host_id = $1);
+
+-- name: ListQuarantinedHosts
+-- Every quarantined host with its reason + time, newest first — the doctor's quarantine visibility
+-- (spec §29 SAN-008). A control-plane-internal read (spec §24): host identities, no tenant data.
+SELECT host_id, reason, quarantined_at FROM host_quarantine ORDER BY quarantined_at DESC;
+
 -- name: WorkspaceState
 -- The workspace's current lifecycle state within tenant scope, LOCKED for a transition (spec §29.7),
 -- exactly as LockRun locks a run before a RunTable transition.

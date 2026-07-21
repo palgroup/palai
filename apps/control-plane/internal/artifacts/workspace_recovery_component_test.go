@@ -8,6 +8,9 @@ package artifacts
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
@@ -179,6 +182,113 @@ func TestRecoveringFailsExplicitlyWhenRestoreImpossible(t *testing.T) {
 	if state != "failed" {
 		t.Fatalf("workspace state = %q, want failed (explicit, not silent)", state)
 	}
+}
+
+// TestAllocationReuseLeavesNoTenantResidue (SAN-007): destroying an allocation REMOVES its on-host
+// bytes — repo, scratch, and any credential — so a later allocation on the same host substrate inherits
+// nothing. Honest ceiling: the local tier mints a fresh dir per allocation, so residue-freedom is
+// structural + this proves the destroy actually reclaims the prior tenant's bytes (a warm-pool reusing
+// the SAME dir is SAN-009 / E15).
+func TestAllocationReuseLeavesNoTenantResidue(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	org, project, workspaceID, _, hostPath := h.seedAllocationOnDisk(t)
+	tenant := coordinator.Tenant{Organization: org, Project: project}
+	// The prior tenant left a credential in the allocation's secrets staging area.
+	credential := filepath.Join(hostPath, "secrets", "token")
+	if _, err := os.Stat(credential); err != nil {
+		t.Fatalf("precondition: tenant credential absent before destroy: %v", err)
+	}
+
+	// The workspace is 'leased' from the seed; drive it to a destroyable state first (release→ready).
+	if err := h.repo.Spine().AdvanceWorkspace(ctx, tenant, workspaceID, "release"); err != nil {
+		t.Fatalf("release workspace: %v", err)
+	}
+	recovery := execution.NewWorkspaceRecovery(h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), t.TempDir())
+	if err := recovery.DestroyAllocation(ctx, tenant, execution.DestroyInput{
+		WorkspaceID: workspaceID, SessionID: sessionOf(t, h, workspaceID), HostPath: hostPath,
+	}); err != nil {
+		t.Fatalf("DestroyAllocation() error = %v", err)
+	}
+
+	// Every byte of the prior tenant is gone — no residue for a reused substrate to leak.
+	if _, err := os.Stat(hostPath); !os.IsNotExist(err) {
+		t.Fatalf("allocation dir survived destroy (stat err=%v) — tenant residue would leak", err)
+	}
+	if _, err := os.Stat(credential); !os.IsNotExist(err) {
+		t.Fatal("tenant credential survived destroy — a reused substrate would leak it")
+	}
+	// The workspace reached destroyed (the teardown completed), and the host is NOT quarantined.
+	var state string
+	if err := h.pool.QueryRow(ctx, `SELECT state FROM workspaces WHERE id=$1`, workspaceID).Scan(&state); err != nil {
+		t.Fatalf("read workspace state: %v", err)
+	}
+	if state != "destroyed" {
+		t.Fatalf("workspace state = %q, want destroyed", state)
+	}
+}
+
+// TestFailedDestroyQuarantinesHost (SAN-008): a destroy whose physical teardown FAILS quarantines the
+// host — its bytes may still hold tenant data — records a host_quarantine row + a host.quarantined.v1
+// event, and thereafter DENIES placement of a new allocation on that host (ErrHostQuarantined). The
+// doctor sees it via ListQuarantinedHosts.
+func TestFailedDestroyQuarantinesHost(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	org, project, workspaceID, _, hostPath := h.seedAllocationOnDisk(t)
+	tenant := coordinator.Tenant{Organization: org, Project: project}
+	if err := h.repo.Spine().AdvanceWorkspace(ctx, tenant, workspaceID, "release"); err != nil {
+		t.Fatalf("release workspace: %v", err)
+	}
+
+	// A shared provision root == host id, so the quarantine denies a later recovery on the SAME host.
+	hostRoot := t.TempDir()
+	recovery := execution.NewWorkspaceRecovery(h.repo.Spine(), execution.NewSnapshotSink(h.s3, h.repo.Spine()), hostRoot)
+	recovery.SetTeardown(func(string) error { return errors.New("injected teardown failure") })
+
+	if err := recovery.DestroyAllocation(ctx, tenant, execution.DestroyInput{
+		WorkspaceID: workspaceID, SessionID: sessionOf(t, h, workspaceID), HostPath: hostPath,
+	}); err == nil {
+		t.Fatal("DestroyAllocation() with a failing teardown returned nil, want the failure surfaced")
+	}
+
+	// The host is quarantined (row + event), and the doctor sees it.
+	quarantined, err := h.repo.Spine().IsHostQuarantined(ctx, hostRoot)
+	if err != nil || !quarantined {
+		t.Fatalf("IsHostQuarantined(%q) = %v, %v; want true", hostRoot, quarantined, err)
+	}
+	hosts, err := h.repo.Spine().ListQuarantinedHosts(ctx)
+	if err != nil {
+		t.Fatalf("ListQuarantinedHosts() error = %v", err)
+	}
+	if !containsHost(hosts, hostRoot) {
+		t.Fatalf("quarantined host %q not visible to the doctor (list=%v)", hostRoot, hosts)
+	}
+	var events int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE type='host.quarantined.v1' AND payload->>'host_id'=$1`, hostRoot).Scan(&events); err != nil {
+		t.Fatalf("count quarantine events: %v", err)
+	}
+	if events != 1 {
+		t.Fatalf("host.quarantined.v1 events = %d, want 1", events)
+	}
+
+	// Placement DENY: a recovery onto the quarantined host is refused (SAN-008).
+	_, rerr := recovery.RecoverWorkspace(ctx, tenant, execution.RecoverInput{
+		WorkspaceID: workspaceID, RunID: newID("run"), SessionID: sessionOf(t, h, workspaceID),
+	})
+	if !errors.Is(rerr, execution.ErrHostQuarantined) {
+		t.Fatalf("RecoverWorkspace on quarantined host = %v, want ErrHostQuarantined", rerr)
+	}
+}
+
+// containsHost reports whether the quarantine list holds hostID.
+func containsHost(hosts []coordinator.QuarantinedHost, hostID string) bool {
+	for _, h := range hosts {
+		if h.HostID == hostID {
+			return true
+		}
+	}
+	return false
 }
 
 // sessionOf reads the session a workspace belongs to (for journaling the recovery event).

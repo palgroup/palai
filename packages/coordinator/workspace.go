@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -229,6 +230,50 @@ func (s *Store) CreateWorkspaceSnapshot(ctx context.Context, in SnapshotInput) e
 		return ErrStaleAllocation
 	}
 	return nil
+}
+
+// QuarantinedHost is one poisoned host: its identity, why it was quarantined, and when (spec §29
+// SAN-008). In the local tier the id is the provision-root / runner identity a destroy failed under.
+type QuarantinedHost struct {
+	HostID        string
+	Reason        string
+	QuarantinedAt time.Time
+}
+
+// QuarantineHost marks a host poisoned by an allocation-destroy failure so no new allocation is placed
+// on it (spec §29 SAN-008). Idempotent on host_id — a repeat failure re-quarantines without error.
+func (s *Store) QuarantineHost(ctx context.Context, hostID, reason string) error {
+	if _, err := s.pool.Exec(ctx, storage.Query("QuarantineHost"), hostID, reason); err != nil {
+		return fmt.Errorf("quarantine host %s: %w", hostID, err)
+	}
+	return nil
+}
+
+// IsHostQuarantined reports whether a host is quarantined — the placement guard before a new allocation.
+func (s *Store) IsHostQuarantined(ctx context.Context, hostID string) (bool, error) {
+	var quarantined bool
+	if err := s.pool.QueryRow(ctx, storage.Query("IsHostQuarantined"), hostID).Scan(&quarantined); err != nil {
+		return false, fmt.Errorf("check host quarantine %s: %w", hostID, err)
+	}
+	return quarantined, nil
+}
+
+// ListQuarantinedHosts returns every quarantined host newest-first — the doctor's quarantine view.
+func (s *Store) ListQuarantinedHosts(ctx context.Context) ([]QuarantinedHost, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("ListQuarantinedHosts"))
+	if err != nil {
+		return nil, fmt.Errorf("list quarantined hosts: %w", err)
+	}
+	defer rows.Close()
+	var out []QuarantinedHost
+	for rows.Next() {
+		var h QuarantinedHost
+		if err := rows.Scan(&h.HostID, &h.Reason, &h.QuarantinedAt); err != nil {
+			return nil, fmt.Errorf("scan quarantined host: %w", err)
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }
 
 // LatestRestorableWorkspaceSnapshot returns the id of the workspace's newest snapshot that carries

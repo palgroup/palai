@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
@@ -17,6 +18,11 @@ import (
 // is driven recovering→failed with a typed reason rather than left dangling or resumed on an empty tree.
 var ErrRecoveryImpossible = errors.New("workspace recovery impossible")
 
+// ErrHostQuarantined reports that a placement was refused because the host was quarantined by a prior
+// allocation-destroy failure (spec §29 SAN-008). A run already executing on the host is untouched; only
+// a NEW allocation is denied, so a poisoned host stops accepting tenants until an operator clears it.
+var ErrHostQuarantined = errors.New("host quarantined")
+
 // WorkspaceRecovery drives a host-lost workspace back to ready on a NEW fenced allocation (spec
 // §29.7-29.8, REC-005/ENG-006). It is the FIRST driver of the leased→host_lost→recovering→ready
 // transitions the workspace SM has carried since E09 (packages/state-machines/workspace.go) with no
@@ -25,13 +31,27 @@ var ErrRecoveryImpossible = errors.New("workspace recovery impossible")
 type WorkspaceRecovery struct {
 	spine     *coordinator.Store
 	snapshots *SnapshotSink
-	root      string // the provision root new allocation dirs are minted under
+	root      string // the provision root new allocation dirs are minted under; also the local-tier host id
+	// remove tears an allocation's host directory down. Defaulted to os.RemoveAll; a test injects a
+	// failing remover to exercise the destroy-failure→quarantine path (SAN-008). ponytail: one function
+	// field, not a Destroyer interface — there is exactly one real implementation.
+	remove func(string) error
 }
 
-// NewWorkspaceRecovery binds the durable spine, the snapshot restore path, and the provision root.
+// NewWorkspaceRecovery binds the durable spine, the snapshot restore path, and the provision root (which
+// doubles as the local-tier host identity for quarantine).
 func NewWorkspaceRecovery(spine *coordinator.Store, snapshots *SnapshotSink, root string) *WorkspaceRecovery {
-	return &WorkspaceRecovery{spine: spine, snapshots: snapshots, root: root}
+	return &WorkspaceRecovery{spine: spine, snapshots: snapshots, root: root, remove: os.RemoveAll}
 }
+
+// hostID is the local-tier host identity (the provision root). There is no hosts/runners registry in
+// this tier (enrollment is cert-based, runner_gateway.go), so the provision root IS the host.
+func (r *WorkspaceRecovery) hostID() string { return r.root }
+
+// SetTeardown overrides how an allocation's host directory is reclaimed (default os.RemoveAll). It is a
+// real seam — a remote/multi-host tier tears down over the wire rather than with a local RemoveAll — and
+// also the point a destroy-failure fault injects through to exercise the quarantine path (SAN-008).
+func (r *WorkspaceRecovery) SetTeardown(remove func(string) error) { r.remove = remove }
 
 // RecoverInput names the host-lost workspace and the run/session recovering it. SnapshotID is optional:
 // empty resolves the workspace's latest byte-archived snapshot (the natural boundary), a set value pins
@@ -65,6 +85,15 @@ func (r *WorkspaceRecovery) RecoverWorkspace(ctx context.Context, tenant coordin
 		if err := r.spine.AdvanceWorkspace(ctx, tenant, in.WorkspaceID, cmd); err != nil && !errors.Is(err, statemachines.ErrInvalidState) {
 			return RecoverResult{}, err
 		}
+	}
+
+	// Placement guard (SAN-008): never recover onto a quarantined host — checked BEFORE resolving a
+	// snapshot, so a poisoned host is refused whether or not a boundary exists. A run already on it is
+	// untouched; only a NEW allocation there is denied, so a poisoned host stops taking tenants.
+	if quarantined, err := r.spine.IsHostQuarantined(ctx, r.hostID()); err != nil {
+		return RecoverResult{}, err
+	} else if quarantined {
+		return RecoverResult{}, r.fail(ctx, tenant, in, fmt.Errorf("%w: %s", ErrHostQuarantined, r.hostID()))
 	}
 
 	snapshotID := in.SnapshotID
@@ -108,6 +137,44 @@ func (r *WorkspaceRecovery) RecoverWorkspace(ctx context.Context, tenant coordin
 		return RecoverResult{}, err
 	}
 	return RecoverResult{Allocation: alloc, SnapshotID: snapshotID, Manifest: manifest}, nil
+}
+
+// DestroyInput names the allocation to tear down: its workspace (for the SM transition) and the on-host
+// directory whose bytes must be reclaimed so no tenant residue survives (SAN-007).
+type DestroyInput struct {
+	WorkspaceID string
+	SessionID   string
+	ResponseID  string
+	HostPath    string
+}
+
+// DestroyAllocation tears an allocation down: it drives the workspace ready/paused/failed→destroying→
+// destroyed and REMOVES the on-host directory so a later allocation on the same host inherits zero
+// residue — files, credentials, or a dirty writable layer (SAN-007). If the physical teardown FAILS,
+// the host is QUARANTINED (SAN-008): its bytes may still hold tenant data, so no new allocation may be
+// placed there, and the failure is journaled (host.quarantined.v1). The workspace stays in destroying
+// (not destroyed) — the teardown did not complete — and the typed error is returned.
+func (r *WorkspaceRecovery) DestroyAllocation(ctx context.Context, tenant coordinator.Tenant, in DestroyInput) error {
+	if err := r.spine.AdvanceWorkspace(ctx, tenant, in.WorkspaceID, statemachines.WorkspaceCmdDestroy); err != nil && !errors.Is(err, statemachines.ErrInvalidState) {
+		return err
+	}
+	if err := r.remove(in.HostPath); err != nil {
+		// The teardown failed — the host may still hold tenant bytes, so quarantine it and refuse future
+		// placement rather than reuse a substrate we could not clean (SAN-008).
+		cause := fmt.Errorf("destroy allocation %s: %w", in.HostPath, err)
+		if qerr := r.spine.QuarantineHost(ctx, r.hostID(), cause.Error()); qerr != nil {
+			return fmt.Errorf("%w (and quarantine failed: %v)", cause, qerr)
+		}
+		payload, _ := json.Marshal(map[string]any{"host_id": r.hostID(), "reason": cause.Error(), "workspace_id": in.WorkspaceID})
+		if _, jerr := r.spine.RecordRecoveryEvent(ctx, tenant, in.SessionID, in.ResponseID, eventHostQuarantined, payload); jerr != nil {
+			return fmt.Errorf("%w (and journal failed: %v)", cause, jerr)
+		}
+		return cause
+	}
+	if err := r.spine.AdvanceWorkspace(ctx, tenant, in.WorkspaceID, statemachines.WorkspaceCmdFinishDestroy); err != nil && !errors.Is(err, statemachines.ErrInvalidState) {
+		return err
+	}
+	return nil
 }
 
 // fail drives recovering→failed and returns the typed cause, so an unrecoverable workspace surfaces an

@@ -93,6 +93,7 @@ func runChecks(cfg Config, p paths) Report {
 		"retention_ttl":     checkRetention(caps),
 		"runner_tls_reject": checkRunnerTLSReject(cfg, p),
 		"supervisor":        checkSupervisor(ctx, cfg),
+		"host_quarantine":   checkQuarantine(ctx, pgURL),
 	}
 	ok := true
 	for _, c := range checks {
@@ -246,6 +247,25 @@ func checkClock(ctx context.Context, pgURL string) Check {
 		return fail(fmt.Sprintf("db clock skew %s exceeds 2s", skew.Round(time.Millisecond)))
 	}
 	return ok(fmt.Sprintf("db clock within %s of host", skew.Round(time.Millisecond)))
+}
+
+// checkQuarantine surfaces hosts quarantined by an allocation-destroy failure (spec §29 SAN-008, E10
+// T6). Zero quarantined hosts is green; a non-zero count is still green but NAMED in the detail so an
+// operator sees a poisoned host refusing new placement. Only an unreachable DB or a missing table fails.
+func checkQuarantine(ctx context.Context, pgURL string) Check {
+	conn, err := pgx.Connect(ctx, pgURL)
+	if err != nil {
+		return fail("connect Postgres: " + err.Error())
+	}
+	defer conn.Close(ctx)
+	var count int
+	if err := conn.QueryRow(ctx, "SELECT count(*) FROM host_quarantine").Scan(&count); err != nil {
+		return fail("read host_quarantine: " + err.Error())
+	}
+	if count == 0 {
+		return ok("no quarantined hosts")
+	}
+	return ok(fmt.Sprintf("%d host(s) quarantined — new placement refused there", count))
 }
 
 // checkRetention reflects the configured store:false retention TTL discovery publishes.
