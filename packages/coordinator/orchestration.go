@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -381,6 +382,35 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 		return 0, fmt.Errorf("commit tool result: %w", err)
 	}
 	return seq, nil
+}
+
+// PendingToolOperations returns a run's UNRESOLVED tool operations as a JSON array — the checkpoint's
+// pending_operations content (spec §26.2, §26.4, E10 T7). Each element is
+// {tool_call_id, name, replay_class, reconciliation_state} for a row still `uncertain` or in
+// `manual_resolution`. A run with none returns "[]" (never null), so a checkpoint always records a
+// well-formed array and a RESTORE that reads it back can honestly report zero in-flight effects. This is
+// CP-resolved at persist time — the engine never sees the ledger (§24).
+func (s *Store) PendingToolOperations(ctx context.Context, tenant Tenant, runID string) ([]byte, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("PendingToolOperationsForRun"), runID, tenant.Organization, tenant.Project)
+	if err != nil {
+		return nil, fmt.Errorf("read pending tool operations: %w", err)
+	}
+	defer rows.Close()
+	ops := []map[string]any{}
+	for rows.Next() {
+		var id, name, replayClass, reconciliationState string
+		if err := rows.Scan(&id, &name, &replayClass, &reconciliationState); err != nil {
+			return nil, fmt.Errorf("scan pending tool operation: %w", err)
+		}
+		ops = append(ops, map[string]any{
+			"tool_call_id": id, "name": name,
+			"replay_class": replayClass, "reconciliation_state": reconciliationState,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return json.Marshal(ops)
 }
 
 // FinalizeResponse writes the terminal Response projection built from committed run,

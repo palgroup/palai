@@ -102,6 +102,18 @@ INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, n
 VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, $9, $10)
 ON CONFLICT (id) DO NOTHING;
 
+-- PendingToolOperationsForRun returns a run's UNRESOLVED tool operations at a checkpoint boundary (spec
+-- §26.2, §26.4, E10 T7): rows in the `uncertain` state (killed after execute, side effect unknown) or
+-- escalated to `manual_resolution`. These are the operations a checkpoint must record in
+-- pending_operations so a RESTORE does not silently hide an in-flight external effect — a completed row
+-- is resolved and never listed. Ordered so the recorded list is deterministic.
+-- name: PendingToolOperationsForRun
+SELECT id, name, replay_class, reconciliation_state
+FROM tool_calls
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+  AND state IN ('uncertain', 'manual_resolution')
+ORDER BY created_at, id;
+
 -- InsertModelRequest records a model request before the provider is called. It returns
 -- the id only on a fresh insert, so the caller journals the request event exactly once
 -- even if a reclaimed attempt re-derives the same stable id (spec §25.9, §53.4).

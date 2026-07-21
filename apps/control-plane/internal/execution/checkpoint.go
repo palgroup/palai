@@ -46,6 +46,10 @@ type CheckpointMeta struct {
 	ConfigSnapshotHash  string
 	TranscriptSequence  int64
 	WorkspaceSnapshotID string
+	// PendingOperations is the run's unresolved (uncertain/manual_resolution) tool operations at the
+	// boundary as a JSON array (spec §26.2, §26.4, E10 T7), CP-resolved from the tool ledger at persist
+	// time — the engine's opaque offer never carries it. Empty is normalised to '[]' by the recovery layer.
+	PendingOperations []byte
 }
 
 // CheckpointSink persists an engine checkpoint.offer (spec §26.1-26.2): it decodes the opaque bytes,
@@ -106,6 +110,7 @@ func (s *CheckpointSink) Persist(ctx context.Context, meta CheckpointMeta, offer
 		ContentChecksum:     checksum,
 		ObjectKey:           key,
 		SizeBytes:           size,
+		PendingOperations:   meta.PendingOperations,
 	})
 }
 
@@ -143,6 +148,13 @@ func (o *Orchestrator) persistCheckpoint(ctx context.Context, st *attemptState, 
 	if err != nil {
 		return fmt.Errorf("read journal boundary for checkpoint: %w", err)
 	}
+	// Resolve the run's unresolved (uncertain/manual_resolution) tool operations at THIS boundary from the
+	// ledger (spec §26.2, §26.4, E10 T7), so the checkpoint records them and a RESTORE does not silently
+	// hide an in-flight external effect. '[]' when none. The engine never sees the ledger (§24).
+	pendingOps, err := o.spine.PendingToolOperations(ctx, st.tenant, string(st.attempt.RunID))
+	if err != nil {
+		return fmt.Errorf("resolve pending tool operations for checkpoint: %w", err)
+	}
 	// WorkspaceSnapshotID is empty in T1: a snapshot cut AT the boundary is T6. A checkpoint with no
 	// snapshot declares no workspace dependency (spec §26.4), stored as NULL.
 	err = o.checkpoints.Persist(ctx, CheckpointMeta{
@@ -156,6 +168,7 @@ func (o *Orchestrator) persistCheckpoint(ctx context.Context, st *attemptState, 
 		ProtocolVersion:    st.protocolVersion,
 		ConfigSnapshotHash: configHash,
 		TranscriptSequence: transcriptSeq,
+		PendingOperations:  pendingOps,
 	}, frame.Data)
 	// A duplicate of an immutable checkpoint (a retransmitted offer, or a T4 replay re-offering the
 	// same boundary) is benign: the durable row already exists, so it is not an attempt failure.
