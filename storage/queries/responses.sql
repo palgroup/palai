@@ -120,6 +120,15 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- 1..M (all replayed by LookupModelResult), so a fresh queued message must fold at the boundary that
 -- precedes the FIRST live step (M+1), never into a replayed step's request. Committed steps are a
 -- contiguous prefix, so the count IS the last replayed step's index.
+-- name: UpsertAttempt
+-- Record the run attempt row (spec §26.1, E10 T4): the durable anchor the checkpoint /
+-- transcript-boundary / workspace-snapshot FKs reference. Idempotent on id so a reclaim re-recording
+-- the same attempt is a no-op; the (run_id, fence) uniqueness still holds because a reclaim mints a
+-- strictly higher fence.
+INSERT INTO attempts (id, organization_id, project_id, run_id, fence)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (id) DO NOTHING;
+
 -- name: CommittedModelStepCount
 SELECT count(*) FROM model_requests
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'completed';

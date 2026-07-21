@@ -152,6 +152,17 @@ func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID st
 	return cp, true, nil
 }
 
+// RecordAttempt records the run attempt row (spec §26.1, E10 T4): the durable anchor the checkpoint,
+// transcript-boundary, and workspace-snapshot FKs reference. Idempotent on id (a reclaim re-recording
+// the same attempt is a no-op). Called at attempt start so a checkpoint offered mid-run can persist.
+func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attemptID string, fence uint64) error {
+	if _, err := s.pool.Exec(ctx, storage.Query("UpsertAttempt"),
+		attemptID, tenant.Organization, tenant.Project, runID, int64(fence)); err != nil {
+		return fmt.Errorf("record attempt: %w", err)
+	}
+	return nil
+}
+
 // RunHasLiveResponseJob reports whether the run has a response.run job — other than excludeJobID —
 // still claimed with a non-expired lease by DB clock (spec §26.3 rung 1, E10 T4). True means the
 // original attempt is still driving the run, so a new attempt takes the "exact" rung and stands

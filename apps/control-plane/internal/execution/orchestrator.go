@@ -214,6 +214,13 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		return o.recordExactStandDown(ctx, tenant, sessionID, responseID, attempt)
 	}
 
+	// Record the durable attempt row before anything mid-run can offer a checkpoint (spec §26.1): the
+	// checkpoint / transcript-boundary / workspace-snapshot FKs all reference attempts(id). Idempotent,
+	// so a reclaim re-recording is a no-op. This attempt is proceeding (exact stood down above).
+	if err := o.spine.RecordAttempt(ctx, tenant, string(attempt.RunID), string(attempt.AttemptID), attempt.Fence); err != nil {
+		return err
+	}
+
 	// Read this run's delegation context (spec §25.18): its depth, the required delegations a root
 	// run seeds into run.start, its parent budget children intersect against, and — for a ChildRun
 	// — its own model and budget. A plain run carries none and behaves exactly as before. Read here
