@@ -224,16 +224,18 @@ func (s *Store) CancelChildren(ctx context.Context, tenant Tenant, parentRunID s
 // uncertain, or `failed_with_uncertain_side_effect` when an irreversible/interactive tool_call is still
 // uncertain (its effect may have landed; the run must NOT claim a clean cancel). It drives the run to
 // canceled (monotonic — a run a racing terminal already finished is left alone), propagates the cancel to
-// children (each to a single terminal, E08 SUB-005), and finalizes the response. It returns the response's
-// ACTUAL terminal after the write, so a racing terminal that won is reflected — the run terminalizes once.
-func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, sessionID, responseID, runID string) (string, error) {
+// children (each to a single terminal, E08 SUB-005), and finalizes the response with the caller's
+// projection for the chosen terminal (the RFC-problem shapes live in the store/contracts layer). It
+// returns the response's ACTUAL terminal after the write, so a racing terminal that won is reflected —
+// the run terminalizes once. It is the single production cancel path (CancelResponse routes here).
+func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, responseID, runID string, canceledProjection, uncertainProjection []byte) (string, error) {
 	uncertain, err := s.hasUncertainSideEffect(ctx, tenant, runID)
 	if err != nil {
 		return "", err
 	}
-	terminal := "canceled"
+	terminal, projection := "canceled", canceledProjection
 	if uncertain {
-		terminal = "failed_with_uncertain_side_effect"
+		terminal, projection = "failed_with_uncertain_side_effect", uncertainProjection
 	}
 	// Drive the run canceled, monotonically. Already terminal (a racing kill won) is fine — the response
 	// is already finalized and the writes below are no-ops.
@@ -242,12 +244,9 @@ func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, sessionI
 	case err != nil:
 		return "", err
 	}
-	projection, _ := json.Marshal(map[string]any{
-		"output": []any{}, "usage": map[string]any{}, "model": "",
-		"terminal_reason": map[string]any{"canceled_during_recovery": true, "uncertain_side_effect": uncertain},
-	})
-	// Propagate the cancel to descendants (E08 SUB-005), each to its own single terminal.
-	if _, err := s.CancelChildren(ctx, tenant, runID, projection); err != nil {
+	// Propagate the cancel to descendants (E08 SUB-005): a child is canceled (not uncertain), so it gets
+	// the canonical canceled projection.
+	if _, err := s.CancelChildren(ctx, tenant, runID, canceledProjection); err != nil {
 		return "", err
 	}
 	// Finalize the response — the conditional UpdateResponse makes this a monotonic no-op if a racing
@@ -437,17 +436,22 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 		return 0, fmt.Errorf("upsert tool call: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		// The upsert changed nothing: either the row is already resolved (a benign idempotent re-drive)
-		// or an in-flight row whose fence the guard rejected (a stale late callback). Classify by state.
+		// The upsert changed nothing. Only a plain `completed` row is a benign idempotent re-drive (the
+		// durable result already stands). ANY other state means this committer is stale: executing/leased
+		// = the fence advanced past it (TOL-017), and uncertain/manual_resolution/reconciled_* = a
+		// RECLAIMING attempt parked or resolved the call after this (stale) attempt passed the consult and
+		// executed — so returning nil here would deliver a non-durable fresh result to the superseded
+		// engine (commit-before-deliver breach) and let it reason on a result the reclaimer blocked
+		// (§26.7 continuation-block, TOL-003). Reject it.
 		var state string
 		if err := tx.QueryRow(ctx, storage.Query("LookupToolCall"), callID, tenant.Organization, tenant.Project).
 			Scan(&state, new(string), new(string), new(int64)); err != nil {
 			return 0, fmt.Errorf("classify unchanged tool commit: %w", err)
 		}
-		if state == "executing" || state == "leased" {
-			return 0, ErrStaleToolCommit // the fence advanced past this commit (TOL-017)
+		if state != "completed" {
+			return 0, ErrStaleToolCommit
 		}
-		if err := tx.Commit(ctx); err != nil { // already resolved: idempotent no-op, no second event
+		if err := tx.Commit(ctx); err != nil { // already completed: idempotent no-op, no second event
 			return 0, fmt.Errorf("commit tool result (idempotent): %w", err)
 		}
 		return 0, nil

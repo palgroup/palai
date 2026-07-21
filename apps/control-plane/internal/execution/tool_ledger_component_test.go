@@ -331,6 +331,39 @@ func hasLabel(labels []string, want string) bool {
 	return false
 }
 
+// TestStaleCommitOnReclaimerParkedRowRejected proves the MUST-FIX #1 classification (spec §26.7,
+// TOL-003): a stale attempt that reaches CommitToolResult on a row a RECLAIMER has since parked
+// `uncertain` (or manual_resolution / reconciled_*) is REJECTED with ErrStaleToolCommit — never a benign
+// no-op. A nil return would let dispatchTool deliver a non-durable fresh result to the superseded engine
+// (commit-before-deliver breach) and let a stale attempt reason on a result the reclaimer blocked. Only a
+// plain `completed` row is a benign idempotent re-drive.
+func TestStaleCommitOnReclaimerParkedRowRejected(t *testing.T) {
+	ctx := context.Background()
+	cs, tenant, sessionID, runID := openLedgerSpine(t)
+
+	for _, parked := range []string{"uncertain", "manual_resolution", "reconciled_completed", "reconciled_not_applied"} {
+		callID := redeliveryID("tc")
+		// The reclaimer's ledger row, parked in a resolved/uncertain state (our stale attempt executed
+		// before this and now tries to commit).
+		execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class) VALUES ($1,$2,$3,$4,2,$5,'effect','{}','reversible')`,
+			callID, tenant.Organization, tenant.Project, runID, parked)
+		_, err := cs.CommitToolResult(ctx, tenant, sessionID, "", runID, 2, callID, "effect",
+			[]byte(`{}`), []byte(`{"fresh":true}`), "reversible", "sha256:x", "tool_call.completed.v1", []byte(`{}`))
+		if !errors.Is(err, coordinator.ErrStaleToolCommit) {
+			t.Fatalf("commit on reclaimer-parked %q row = %v, want ErrStaleToolCommit", parked, err)
+		}
+	}
+
+	// A plain completed row is still a benign idempotent re-drive (nil, no error) — the durable result stands.
+	completedID := redeliveryID("tc")
+	execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, result) VALUES ($1,$2,$3,$4,2,'completed','effect','{}','pure','{"done":true}')`,
+		completedID, tenant.Organization, tenant.Project, runID)
+	if _, err := cs.CommitToolResult(ctx, tenant, sessionID, "", runID, 2, completedID, "effect",
+		[]byte(`{}`), []byte(`{"done":true}`), "pure", "sha256:x", "tool_call.completed.v1", []byte(`{}`)); err != nil {
+		t.Fatalf("re-commit on a completed row = %v, want nil (benign idempotent)", err)
+	}
+}
+
 // toolResult captures a delivered tool.result frame's content + replayed label.
 type toolResult struct {
 	content  string

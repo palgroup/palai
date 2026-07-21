@@ -18,7 +18,6 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
-	statemachines "github.com/palgroup/palai/packages/state-machines"
 )
 
 // Store is a Postgres-backed repository that serves every tenant from one pool;
@@ -183,28 +182,20 @@ func (s *Store) CancelResponse(ctx context.Context, scope middleware.Scope, id s
 	if !found {
 		return api.RetrieveResult{}, nil
 	}
-	switch _, err := s.spine.ApplyRunTransition(ctx, tenant, runID, statemachines.RunCmdCancel); {
-	case errors.Is(err, coordinator.ErrRunTerminal):
-		// Already terminal: no second terminal, no new event — return the existing projection.
-	case err != nil:
-		return api.RetrieveResult{}, err
-	default:
-		projection, err := canceledProjection()
-		if err != nil {
-			return api.RetrieveResult{}, err
-		}
-		if err := s.spine.FinalizeResponse(ctx, tenant, id, "canceled", projection); err != nil {
-			return api.RetrieveResult{}, err
-		}
-	}
-	// Propagate the cancel to any non-terminal ChildRuns (spec §25.18, SUB-005), always — a
-	// re-cancel whose parent is already terminal still reconciles a child a first cancel missed.
-	// The canonical canceled projection is applied to every child so a GET reads the same terminal.
-	projection, err := canceledProjection()
+	// Route through CancelRunReconciled (spec §26.10, SES-010): it reconciles the run's active external
+	// ops to a SINGLE monotonic terminal — plain `canceled`, or `failed_with_uncertain_side_effect` when
+	// an irreversible tool effect is still uncertain (its outcome unknown) — drives the run canceled
+	// monotonically, and propagates the cancel to non-terminal ChildRuns (SUB-005). Both terminal
+	// projections are built here (the RFC-problem shapes) and handed in.
+	canceled, err := canceledProjection()
 	if err != nil {
 		return api.RetrieveResult{}, err
 	}
-	if _, err := s.spine.CancelChildren(ctx, tenant, runID, projection); err != nil {
+	uncertain, err := uncertainSideEffectProjection()
+	if err != nil {
+		return api.RetrieveResult{}, err
+	}
+	if _, err := s.spine.CancelRunReconciled(ctx, tenant, id, runID, canceled, uncertain); err != nil {
 		return api.RetrieveResult{}, err
 	}
 	return s.GetResponse(ctx, scope, id)
@@ -221,6 +212,18 @@ func canceledProjection() ([]byte, error) {
 		"usage":  contracts.Usage{},
 		"model":  "",
 		"error":  contracts.CanceledProblem(),
+	})
+}
+
+// uncertainSideEffectProjection builds the terminal projection for a cancel that hit an uncertain
+// irreversible side effect (spec §26.10, SES-010): the failed_with_uncertain_side_effect terminal the
+// reconcile loop later resolves. Same shape as canceledProjection with the uncertain-side-effect problem.
+func uncertainSideEffectProjection() ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"output": []contracts.ContentItem{},
+		"usage":  contracts.Usage{},
+		"model":  "",
+		"error":  contracts.UncertainSideEffectProblem(),
 	})
 }
 

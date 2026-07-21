@@ -10,6 +10,11 @@ import (
 	"github.com/palgroup/palai/packages/coordinator"
 )
 
+// canceledProj / uncertainProj are minimal terminal projections the store layer would build; the test
+// only checks the response STATE, so their body just has to be well-formed JSON.
+func canceledProj() []byte  { return []byte(`{"output":[],"error":{"code":"canceled"}}`) }
+func uncertainProj() []byte { return []byte(`{"output":[],"error":{"code":"uncertain_side_effect"}}`) }
+
 // seedChildRun creates a running child run of parent, with its own in_progress response, and returns
 // (childRunID, childResponseID).
 func seedChildRun(t *testing.T, tenant coordinator.Tenant, cs *coordinator.Store, sessionID, parentRunID string) (string, string) {
@@ -43,7 +48,7 @@ func TestCancelDuringKillReconcilesChildrenSingleTerminal(t *testing.T) {
 	exec(t, pool, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
 		VALUES ($1,$2,$3,$4,1,'uncertain','charge','{}','irreversible','reconciling')`, newID("tc"), tenant.Organization, tenant.Project, runID)
 
-	terminal, err := cs.CancelRunReconciled(ctx, tenant, sessionID, respID, runID)
+	terminal, err := cs.CancelRunReconciled(ctx, tenant, respID, runID, canceledProj(), uncertainProj())
 	if err != nil {
 		t.Fatalf("CancelRunReconciled error = %v", err)
 	}
@@ -75,7 +80,7 @@ func TestCancelDuringKillReconcilesChildrenSingleTerminal(t *testing.T) {
 		t.Fatalf("late finalize error = %v, want a silent no-op", err)
 	}
 	// A second cancel is idempotent — still the same single terminal.
-	again, err := cs.CancelRunReconciled(ctx, tenant, sessionID, respID, runID)
+	again, err := cs.CancelRunReconciled(ctx, tenant, respID, runID, canceledProj(), uncertainProj())
 	if err != nil {
 		t.Fatalf("second CancelRunReconciled error = %v", err)
 	}
@@ -107,7 +112,7 @@ func TestCancelDuringKillCleanTerminalIsCanceled(t *testing.T) {
 	exec(t, pool, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
 		VALUES ($1,$2,$3,$4,1,'reconciled_completed','push','{}','idempotent','reconciled_completed')`, newID("tc"), tenant.Organization, tenant.Project, runID)
 
-	terminal, err := cs.CancelRunReconciled(ctx, tenant, sessionID, respID, runID)
+	terminal, err := cs.CancelRunReconciled(ctx, tenant, respID, runID, canceledProj(), uncertainProj())
 	if err != nil {
 		t.Fatalf("CancelRunReconciled error = %v", err)
 	}

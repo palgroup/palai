@@ -25,3 +25,18 @@ func CanceledProblem() Problem {
 		Detail: "the run was canceled before completion",
 	}
 }
+
+// UncertainSideEffectProblem returns the terminal error for a run canceled while an irreversible tool
+// effect was in flight (spec §26.10, SES-010): its outcome is unknown, so the run terminalizes
+// failed_with_uncertain_side_effect rather than claiming a clean cancel — the reconcile loop resolves the
+// effect for audit while the response records that a side effect may have landed. request_id is stamped
+// at retrieval, like CanceledProblem.
+func UncertainSideEffectProblem() Problem {
+	return Problem{
+		Type:   ProblemTypePrefix + "uncertain_side_effect",
+		Code:   "uncertain_side_effect",
+		Title:  "Canceled with an uncertain side effect",
+		Status: 409,
+		Detail: "the run was canceled while an irreversible tool effect was in flight; its outcome is being reconciled",
+	}
+}

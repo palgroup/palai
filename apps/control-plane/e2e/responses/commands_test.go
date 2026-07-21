@@ -416,6 +416,58 @@ func TestDuplicateCommandIDReturnsOriginalResult(t *testing.T) {
 // TestQueuedCommandExpiresWhenRunTerminalizes proves the §22.4 lifecycle: a command accepted
 // mid-run that never reaches a delivery boundary before the run terminalizes is swept to
 // expired (with command.expired.v1), not left queued forever.
+// TestCancelWithUncertainSideEffectTerminalizesUncertain proves MUST-FIX #2 / SES-010 through the REAL
+// production cancel path (spec §26.10): the DELETE endpoint (CancelResponse) now routes through
+// CancelRunReconciled, so cancelling a run that has an unresolved uncertain IRREVERSIBLE tool_call
+// terminalizes it failed_with_uncertain_side_effect — not a plain canceled — and propagates the cancel to
+// a child run. Without the wiring this terminal is unreachable by any real request.
+func TestCancelWithUncertainSideEffectTerminalizesUncertain(t *testing.T) {
+	h := newHarness(t)
+	gp, rec := newGatedProvider(), &deliverRecorder{}
+	dialer := subprocessDialer{engineDir: h.engineDir, onSend: rec.onSend}
+	stop := h.runWorker(h.newOrchestratorWithAdapter(dialer, gp))
+	defer stop()
+
+	respID, sessionID, runID := h.admitWith(`{"input":"work"}`, newID("idem"))
+	select {
+	case <-gp.started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("first model step never started")
+	}
+
+	ctx := context.Background()
+	mustExec := func(sql string, args ...any) {
+		if _, err := h.spine.Pool().Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("exec %q error = %v", sql, err)
+		}
+	}
+	// An irreversible tool_call left uncertain by a kill mid-effect (its outcome unknown).
+	mustExec(`INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
+		VALUES ($1,$2,$3,$4,1,'uncertain','charge','{}','irreversible','reconciling')`,
+		newID("tc"), h.tenant.Organization, h.tenant.Project, runID)
+	// A child run of this run, to prove cancel-propagation still fires on the reconciled path.
+	childRun, childResp := newID("run"), newID("resp")
+	mustExec(`INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+		childResp, h.tenant.Organization, h.tenant.Project, sessionID)
+	mustExec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth, response_id) VALUES ($1,$2,$3,$4,'running',$5,1,$6)`,
+		childRun, h.tenant.Organization, h.tenant.Project, sessionID, runID, childResp)
+
+	h.cancelResponse(respID, h.token).Body.Close()
+	close(gp.release)
+	h.awaitResponseState(respID, "failed_with_uncertain_side_effect", 60*time.Second)
+
+	var childRunState, childRespState string
+	if err := h.spine.Pool().QueryRow(ctx, `SELECT state FROM runs WHERE id=$1`, childRun).Scan(&childRunState); err != nil {
+		t.Fatalf("read child run state error = %v", err)
+	}
+	if err := h.spine.Pool().QueryRow(ctx, `SELECT state FROM responses WHERE id=$1`, childResp).Scan(&childRespState); err != nil {
+		t.Fatalf("read child response state error = %v", err)
+	}
+	if childRunState != "canceled" || childRespState != "canceled" {
+		t.Fatalf("child after uncertain cancel = {run:%q resp:%q}, want both canceled (propagation on the reconciled path)", childRunState, childRespState)
+	}
+}
+
 func TestQueuedCommandExpiresWhenRunTerminalizes(t *testing.T) {
 	h := newHarness(t)
 	gp, rec := newGatedProvider(), &deliverRecorder{}
