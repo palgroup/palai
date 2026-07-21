@@ -96,3 +96,30 @@ def test_completed_tool_boundary_offers_a_checkpoint() -> None:
     captured = checkpoint.decode(base64.b64decode(offer["data"]["state"]))
     assert captured["step"] == step_at_boundary
     assert out[1]["data"]["model_request_id"] != offer  # the next model step follows the offer
+
+
+def test_migrate_v1_to_v2_preserves_original() -> None:
+    # ENG-011 (E10 Task 4): a sandboxed migration transforms a v1 captured state to v2 WITHOUT
+    # mutating the original — the immutable v1 checkpoint is preserved and rollback stays possible.
+    # The transform is a real, minimal shape change: v2 stamps the explicit state_version
+    # discriminator that v1 checkpoints lacked. Honest ceiling: the production engine stays v1
+    # (checkpoint_formats == ["reference-kernel/1"]); this proves the migration MECHANISM.
+    loop, _ = _drive_to_pending_tool("run_mig")
+    v1 = loop.capture_state()
+    v1_bytes = checkpoint.encode(v1)
+
+    v2 = checkpoint.migrate(v1)
+
+    # A distinct object with a new content checksum, and the original left byte-for-byte untouched.
+    assert v2 is not v1
+    assert v2.get("state_version") == 2
+    assert checkpoint.encode(v2) != v1_bytes
+    assert checkpoint.encode(v1) == v1_bytes  # migrate did not mutate v1 in place
+
+    # v2 restore-roundtrips: a fresh loop restores from the migrated bytes to the SAME boundary.
+    restored = make_loop("run_mig")
+    restored.restore_state(checkpoint.decode(checkpoint.encode(v2)))
+    assert restored.state is loop.state
+    assert restored._step == loop._step
+    assert restored._pending_tools == loop._pending_tools
+    assert restored.context._messages == loop.context._messages
