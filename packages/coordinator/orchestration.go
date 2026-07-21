@@ -483,6 +483,23 @@ func (s *Store) MarkToolCallUncertain(ctx context.Context, tenant Tenant, sessio
 	return true, nil
 }
 
+// ReenqueueResponseRun enqueues a fresh response.run job for a run so a new attempt continues it (spec
+// §26.7, E10 T7): after the reconcile loop resolves an uncertain tool_call, the run — left running when
+// its attempt STOPPED on the uncertain call — needs a fresh attempt to reconstruct and proceed (the
+// resolved row now replays or re-executes). Idempotent-safe: a duplicate job exact-stands-down against
+// any live one (RunHasLiveResponseJob), so an over-enqueue never double-drives.
+func (s *Store) ReenqueueResponseRun(ctx context.Context, tenant Tenant, runID string) error {
+	jobID, err := newJobID()
+	if err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, storage.Query("EnqueueJob"),
+		jobID, tenant.Organization, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, runID))); err != nil {
+		return fmt.Errorf("re-enqueue response run: %w", err)
+	}
+	return nil
+}
+
 // UncertainToolCall is one uncertain tool_call the reconcile loop must resolve (spec §26.7, E10 T7).
 type UncertainToolCall struct {
 	CallID      string
