@@ -238,16 +238,29 @@ func (o *Orchestrator) recordAttemptRecovering(ctx context.Context, st *attemptS
 // lists are the frame-ledger accounting; in T4 they are honestly empty (nothing is double-run — the
 // ENG-009 guarantee), the fuller class-labelled accounting is T7.
 func (o *Orchestrator) recordRecoveryProof(ctx context.Context, st *attemptState, plan recoveryPlan) error {
+	// Config/model drift the recovery crossed: on a transcript rung the checkpoint was rejected, and a
+	// "config_changed" rejection reason is a real drift the proof must NOT hide (§26.12). Empty means no
+	// drift (a compatible restore, where the §26.4 config condition passed).
+	configModelChanges := []string{}
+	for _, reason := range plan.decision.Failures {
+		if reason == "config_changed" {
+			configModelChanges = append(configModelChanges, "config_snapshot_hash changed since the checkpoint")
+		}
+	}
 	proof := recovery.RecoveryProof{
-		PreviousAttemptID:    plan.checkpoint.AttemptID,
-		NewAttemptID:         string(st.attempt.AttemptID),
-		Level:                plan.decision.Level,
-		CheckpointID:         plan.checkpoint.CheckpointID,
-		WorkspaceSnapshotID:  plan.checkpoint.WorkspaceSnapshotID,
+		PreviousAttemptID:   plan.checkpoint.AttemptID,
+		NewAttemptID:        string(st.attempt.AttemptID),
+		Level:               plan.decision.Level,
+		CheckpointID:        plan.checkpoint.CheckpointID,
+		WorkspaceSnapshotID: plan.checkpoint.WorkspaceSnapshotID,
+		// The checkpoint's transcript boundary. ponytail ceiling: on a transcript RECONSTRUCTION this
+		// is the REJECTED checkpoint's boundary, not the exact turn-point the reconstruction rebuilt
+		// from — a fuller reconstruction anchors that when the tool ledger lands (T7). It still names
+		// the durable boundary the recovery weighed.
 		TranscriptBoundaryID: plan.checkpoint.BoundaryID,
 		ReplayedToolCalls:    []string{},
 		ReusedToolCalls:      []string{},
-		ConfigModelChanges:   []string{},
+		ConfigModelChanges:   configModelChanges,
 		SemanticLossAssessed: true,
 		SemanticLossWarning:  "",
 		// The measured recovery latency: from this attempt opening to the restore/reconstruction being

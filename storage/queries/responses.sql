@@ -121,11 +121,15 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- precedes the FIRST live step (M+1), never into a replayed step's request. Committed steps are a
 -- contiguous prefix, so the count IS the last replayed step's index.
 -- name: SupersedeActiveAttempts
--- A new attempt on a run supersedes any prior NON-TERMINAL attempt (a reclaim: the old attempt is
--- lost), clearing the one-active-per-run index so the new attempt can record. Skips the new
--- attempt's own id. Only reachable once the exact rung ruled out a still-live original (§26.3), so
--- this never steals an active lease — it reconciles the crashed/fenced-out predecessor's row.
-UPDATE attempts SET state = 'lost', updated_at = clock_timestamp()
+-- A new attempt on a run supersedes any prior NON-TERMINAL attempt, clearing the one-active-per-run
+-- index so the new attempt can record. Marked 'preempted' (superseded by a newer attempt), NOT 'lost':
+-- the predecessor may have cleanly paused or crashed, and this path does not know which — 'preempted'
+-- is honest for the supersede itself, where 'lost' would falsely assert a crash. Only reachable once
+-- the exact rung ruled out a still-live original (§26.3), so it never steals an active lease.
+-- ponytail ceiling: a cleanly-SUCCEEDED attempt still has no path writing a terminal state on its row
+-- (attempt-lifecycle terminal writes are T5/T6) — such a row is only reconciled here if a later attempt
+-- supersedes it; the run's final attempt can linger non-terminal. Wire attempt.succeed on finalize in T5/T6.
+UPDATE attempts SET state = 'preempted', updated_at = clock_timestamp()
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND id <> $4
   AND state IN ('assigned', 'starting', 'active', 'draining');
 

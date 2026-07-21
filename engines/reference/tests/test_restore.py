@@ -91,6 +91,19 @@ def test_restore_reemits_pending_tool_requests() -> None:
     assert restored.state is State.AWAITING_TOOLS
 
 
+def test_restore_rejects_malformed_state() -> None:
+    # A decodable-but-malformed state (missing required keys) is a protocol.error, not a KeyError that
+    # crashes the engine — restore_state is inside the try (minor 7).
+    import base64
+    import json
+
+    bad = base64.b64encode(json.dumps({"state": "awaiting_model"}).encode()).decode()  # missing step/context/...
+    restored = make_loop("run_bad")
+    out = restored.handle(ctrl("run.restore", {"format": "reference-kernel", "format_version": 1, "state": bad}, "frm_r"))
+    assert [f["type"] for f in out] == ["protocol.error"]
+    assert out[0]["data"]["code"] == "invalid_checkpoint"
+
+
 def test_restore_rejects_unknown_format_version() -> None:
     run_id = "run_restore3"
     loop, tcall = _drive_to_pending_tool(run_id)

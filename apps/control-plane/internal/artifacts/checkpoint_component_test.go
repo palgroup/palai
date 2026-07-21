@@ -221,10 +221,13 @@ func TestCheckpointMigrationPreservesOriginalWithProvenance(t *testing.T) {
 		t.Fatalf("provenance = %+v, want from=%s to=%s formats reference-kernel/1->2", prov, fromID, toID)
 	}
 
-	// Rollback: the original id is still restore-selectable — its bytes' checksum still verifies.
+	// Rollback basis: the original row + bytes remain intact and integrity-valid — the durable basis a
+	// rollback selects. (The ladder's LatestRunCheckpoint is newest-ONLY, so actually SELECTING the
+	// older row on a rejected-newest is a follow-up when a real format bump lands — named as a ceiling
+	// on LatestRunCheckpoint; here we prove the v1 object survives migration byte-for-byte.)
 	sum := sha256.Sum256(origBytes)
 	if "sha256:"+hex.EncodeToString(sum[:]) != v1Checksum {
-		t.Fatal("original checkpoint is no longer integrity-valid — rollback to it is impossible")
+		t.Fatal("original checkpoint is no longer integrity-valid — a rollback basis is impossible")
 	}
 }
 

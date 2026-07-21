@@ -133,6 +133,11 @@ type RunCheckpoint struct {
 // LatestRunCheckpoint reads a run's newest checkpoint (spec §26.3-26.4). found is false — with a nil
 // error — for a run that has no checkpoint, so the ladder falls to transcript reconstruction rather
 // than a phantom restore. The read is index-backed (checkpoints_by_run) and tenant-scoped.
+//
+// ponytail ceiling: newest-ONLY (LIMIT 1). If a migration wrote a v2 row a v1-only engine can't
+// restore, the newest v2 shadows the still-valid v1 and the ladder drops to transcript rather than
+// rolling back to v1. Harmless while production stays single-format v1; when a real format bump lands,
+// return an ordered candidate list here and let the ladder fall to the next on a rejected-newest.
 func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID string) (RunCheckpoint, bool, error) {
 	var cp RunCheckpoint
 	var workspaceSnapshot *string
@@ -161,9 +166,9 @@ func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attempt
 		return fmt.Errorf("begin record attempt: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	// Supersede any prior non-terminal attempt for this run (a reclaim: the predecessor is lost) so
-	// the one-active-per-run index admits this attempt. The exact rung already ruled out a live
-	// original, so this only reconciles a crashed/fenced-out row.
+	// Supersede any prior non-terminal attempt for this run (marked 'preempted' — superseded by a
+	// newer attempt, not falsely 'lost') so the one-active-per-run index admits this attempt. The
+	// exact rung already ruled out a live original, so this only reconciles a stale predecessor's row.
 	if _, err := tx.Exec(ctx, storage.Query("SupersedeActiveAttempts"),
 		runID, tenant.Organization, tenant.Project, attemptID); err != nil {
 		return fmt.Errorf("supersede prior attempts: %w", err)

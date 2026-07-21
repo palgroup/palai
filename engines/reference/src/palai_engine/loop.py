@@ -372,9 +372,12 @@ class Loop:
             return [self._error("incompatible_checkpoint", f"cannot restore {fmt}/{version}: this engine writes {checkpoint.FORMAT_ID}")]
         try:
             captured = checkpoint.decode(base64.b64decode(data.get("state") or ""))
-        except (ValueError, KeyError) as exc:
-            return [self._error("invalid_checkpoint", f"checkpoint state is not decodable: {exc}")]
-        self.restore_state(captured)
+            # restore_state is INSIDE the try: a decodable-but-malformed state (a missing/typed key)
+            # must be a protocol.error, never a KeyError that crashes the engine — "no silent
+            # half-restore" (MUST-FIX #1 sibling, minor 7).
+            self.restore_state(captured)
+        except (ValueError, KeyError, TypeError) as exc:
+            return [self._error("invalid_checkpoint", f"checkpoint state is not restorable: {exc}")]
         self.log("restored", state=self.state.value, step=self._step)
         return self._resume_frames()
 

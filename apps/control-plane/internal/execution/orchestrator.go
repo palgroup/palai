@@ -34,6 +34,12 @@ const engineProtocol = "engine.v1"
 // well before the lease lapses, turning a silent hang into a classified, retryable failure.
 const dialHandshakeDeadline = 20 * time.Second
 
+// pauseDrainDeadline bounds the pause checkpoint drain (SES-009, brief fork-1(i)): the controller
+// asks the engine for a checkpoint of the pause boundary and drains in-flight frames until the offer
+// arrives. A wedged-but-live engine that never offers fails the attempt here rather than hanging
+// until lease reclaim. Generous relative to a single-threaded engine's synchronous offer.
+const pauseDrainDeadline = 10 * time.Second
+
 // Orchestrator executes response run attempts through the common kernel.
 type Orchestrator struct {
 	store  *store.Store
@@ -479,20 +485,31 @@ func (o *Orchestrator) receiveEngineFrame(ctx context.Context, st *attemptState)
 // A persist failure is returned so the caller fails the attempt rather than pausing with no
 // recoverable boundary (§26.5 last sentence) — never a silent checkpoint-less pause.
 func (o *Orchestrator) checkpointBeforePause(ctx context.Context, st *attemptState) error {
-	if err := st.ch.Send(ctx, o.frame(st, "checkpoint.request", map[string]any{}, "")); err != nil {
+	// Bound the drain (brief fork-1(i)): a wedged-but-live engine that never emits the offer must fail
+	// the attempt on this deadline rather than hang until lease reclaim — §26.5 forbids a silent
+	// checkpoint-less pause, so a failed drain fails the attempt (retry/reclaim), never pauses.
+	drainCtx, cancel := context.WithTimeout(ctx, pauseDrainDeadline)
+	defer cancel()
+	if err := st.ch.Send(drainCtx, o.frame(st, "checkpoint.request", map[string]any{}, "")); err != nil {
 		return err
 	}
 	for {
-		frame, err := o.receiveEngineFrame(ctx, st)
+		frame, err := o.receiveEngineFrame(drainCtx, st)
 		if err != nil {
-			return err
+			return fmt.Errorf("drain for pause checkpoint: %w", err)
 		}
-		if frame.Type == "checkpoint.offer" {
+		switch frame.Type {
+		case "checkpoint.offer":
 			return o.persistCheckpoint(ctx, st, frame)
+		case "protocol.error":
+			// Surface it, never discard: a malformed frame during the drain is a real engine fault that
+			// must fail the attempt, not be swallowed while the pause proceeds checkpoint-less.
+			return fmt.Errorf("engine protocol error during pause drain: %v", frame.Data)
+		default:
+			// An in-flight tool.request/child.request for the pausing turn: admitted + seq-tracked by
+			// receiveEngineFrame, discarded here WITHOUT dispatch. No tool runs, no commit — the resume's
+			// fresh process re-derives it from the restored checkpoint (SES-009).
 		}
-		// An in-flight tool.request/child.request for the pausing turn: admitted + seq-tracked by
-		// receiveEngineFrame, discarded here WITHOUT dispatch. No tool runs, no commit — the resume's
-		// fresh process re-derives it from the restored checkpoint (SES-009).
 	}
 }
 
