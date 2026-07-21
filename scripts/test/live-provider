@@ -117,9 +117,25 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_object_store=1
     ;;
+  provider-one/host-kill-restore)
+    # E10 Task 6: a real provider run writes files to a REAL workspace, a pause cuts a checkpoint + a
+    # workspace byte-snapshot to REAL S3, the WHOLE HOST is killed (runner daemon + engine sandbox
+    # containers + host-path — single-machine stand-in), a fresh runner enrolls, the workspace RESTORES
+    # (checksums re-derived EQUAL), and the run resumes + completes on the real provider — the fence pair
+    # (old<new), the §26.12 RecoveryProof, and the fenced-out old host's stale frame DENIED. Needs the
+    # credential + a throwaway object store (PG + SeaweedFS) + the engine dir. Honest ceilings (named in
+    # the test): the FENCING + restore-under-real-kill half is proven DETERMINISTICALLY in
+    # tests/fault/recovery/host_kill_test.go and the artifacts component tier; this tier confirms the
+    # RESTORED workspace lets a real provider RESUME + COMPLETE. Shares the container-engine live-harness
+    # + tool-advertising gate — SKIPs until PALAI_LIVE_TOOL_ADVERTISING is set once that wiring lands.
+    pkg="./apps/control-plane/internal/execution/live"
+    run="TestLiveHostKillRestoreRealProvider"
+    required_key="OPENAI_API_KEY"
+    needs_object_store=1
+    ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=host-kill-restore" >&2
     exit 2
     ;;
 esac
