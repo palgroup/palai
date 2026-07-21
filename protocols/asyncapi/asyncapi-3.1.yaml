@@ -152,6 +152,7 @@ components:
         - trigger.delivery.failed.v1
         - trigger.delivery.deferred.v1
         - trigger.delivery.skipped.v1
+        - trigger.callback.v1
         - schedule.occurrence.created.v1
         - schedule.occurrence.admitted.v1
         - schedule.occurrence.skipped.v1

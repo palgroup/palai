@@ -204,11 +204,55 @@ FROM triggers t
 WHERE t.id = $1 AND t.organization_id = $2 AND t.project_id = $3;
 
 -- GetTriggerDelivery reads a delivery's operator-facing projection (GET /v1/trigger-deliveries/{id}).
+-- callback_state exposes the post-run callback's own terminal (independent of the delivery state — a
+-- callback that dead-letters never rewinds run_created; AUT-011 link-half).
 -- name: GetTriggerDelivery
 SELECT trigger_id, trigger_revision_id, state, response_id, run_id, session_id,
-       COALESCE(duplicate_of, ''), reason, received_at, updated_at
+       COALESCE(duplicate_of, ''), reason, callback_state, received_at, updated_at
 FROM trigger_deliveries
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- CallbackDueDeliveries lists run_created deliveries whose revision names a callback endpoint, whose
+-- response has reached a terminal state, and whose callback has not yet been armed (callback_state = '').
+-- It is a system-wide sweep (like the reconciler's other sweeps — each row carries its own scope). The
+-- response's terminal state + output are the callback source projection. (spec §20.2.2, §32.1)
+-- name: CallbackDueDeliveries
+SELECT d.id, d.organization_id, d.project_id, d.session_id, d.response_id, d.run_id, d.trigger_id,
+       rev.callback_endpoint_id, rev.output_mapping, r.state, r.output
+FROM trigger_deliveries d
+JOIN trigger_revisions rev ON rev.id = d.trigger_revision_id
+JOIN responses r ON r.id = d.response_id AND r.organization_id = d.organization_id AND r.project_id = d.project_id
+WHERE d.callback_state = ''
+  AND d.state = 'run_created'
+  AND rev.callback_endpoint_id IS NOT NULL
+  AND r.state IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
+ORDER BY d.updated_at
+LIMIT $1;
+
+-- ArmDeliveryCallback marks a delivery's callback armed (callback_state → 'pending') once its signed
+-- webhook_deliveries row is enqueued in the SAME tx. The InsertDelivery ON CONFLICT + this filter make a
+-- re-sweep idempotent (an armed delivery is excluded from CallbackDueDeliveries).
+-- name: ArmDeliveryCallback
+UPDATE trigger_deliveries SET callback_state = 'pending', updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- DeadDeliveryCallback marks a callback dead WITHOUT enqueuing — the output-mapping failed at callback
+-- time (a schema-invalid shape). The run result stays intact; only the callback has its own dead terminal.
+-- name: DeadDeliveryCallback
+UPDATE trigger_deliveries SET callback_state = 'dead', reason = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- MirrorCallbackState mirrors the pump's terminal webhook_deliveries.state onto the delivery's
+-- callback_state (pending → delivered/dead). It is a set-based sweep over armed callbacks — callback_state
+-- is a bounded MIRROR of the delivery-half state the pump already drives, NOT a second state machine.
+-- name: MirrorCallbackState
+UPDATE trigger_deliveries d
+SET callback_state = whd.state, updated_at = clock_timestamp()
+FROM webhook_deliveries whd
+WHERE whd.event_id = 'cb:' || d.id
+  AND whd.organization_id = d.organization_id AND whd.project_id = d.project_id
+  AND d.callback_state = 'pending'
+  AND whd.state IN ('delivered', 'dead');
 
 -- SetDeliveryState advances a delivery's state (the SM transition persisted; the caller computes the
 -- legal transition via the TriggerDelivery table, this only writes it). Bumps updated_at.

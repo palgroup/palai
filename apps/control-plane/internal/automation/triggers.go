@@ -184,24 +184,27 @@ func (s *TriggerStore) GetTrigger(ctx context.Context, org, project, triggerID s
 
 // TriggerDeliveryView is a delivery's operator-facing projection (GET /v1/trigger-deliveries/{id}).
 type TriggerDeliveryView struct {
-	ID          string    `json:"id"`
-	TriggerID   string    `json:"trigger_id"`
-	RevisionID  string    `json:"trigger_revision_id"`
-	State       string    `json:"state"`
-	ResponseID  string    `json:"response_id,omitempty"`
-	RunID       string    `json:"run_id,omitempty"`
-	SessionID   string    `json:"session_id,omitempty"`
-	DuplicateOf string    `json:"duplicate_of,omitempty"`
-	Reason      string    `json:"reason,omitempty"`
-	ReceivedAt  time.Time `json:"received_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string `json:"id"`
+	TriggerID   string `json:"trigger_id"`
+	RevisionID  string `json:"trigger_revision_id"`
+	State       string `json:"state"`
+	ResponseID  string `json:"response_id,omitempty"`
+	RunID       string `json:"run_id,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	DuplicateOf string `json:"duplicate_of,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	// CallbackState is the post-run callback's own terminal (''/pending/delivered/dead), independent of the
+	// delivery State — a callback that dead-letters never rewinds run_created (AUT-011 link-half).
+	CallbackState string    `json:"callback_state,omitempty"`
+	ReceivedAt    time.Time `json:"received_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // GetDelivery reads a delivery's projection, or found=false when it is absent from the scope.
 func (s *TriggerStore) GetDelivery(ctx context.Context, org, project, deliveryID string) (TriggerDeliveryView, bool, error) {
 	v := TriggerDeliveryView{ID: deliveryID}
 	switch err := s.pool.QueryRow(ctx, storage.Query("GetTriggerDelivery"), deliveryID, org, project).
-		Scan(&v.TriggerID, &v.RevisionID, &v.State, &v.ResponseID, &v.RunID, &v.SessionID, &v.DuplicateOf, &v.Reason, &v.ReceivedAt, &v.UpdatedAt); {
+		Scan(&v.TriggerID, &v.RevisionID, &v.State, &v.ResponseID, &v.RunID, &v.SessionID, &v.DuplicateOf, &v.Reason, &v.CallbackState, &v.ReceivedAt, &v.UpdatedAt); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return TriggerDeliveryView{}, false, nil
 	case err != nil:
