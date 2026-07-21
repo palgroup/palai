@@ -48,6 +48,21 @@ func (c *recordingChannel) delivers(commandID string) []string {
 	return msgs
 }
 
+// deliverOrder is the ordered command_ids of the message.deliver frames sent — the fold order the
+// engine reconstructs from.
+func (c *recordingChannel) deliverOrder() []string {
+	var ids []string
+	for _, f := range c.sent {
+		if f.Type != "message.deliver" {
+			continue
+		}
+		if id, _ := f.Data["command_id"].(string); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func asString(v any) string {
 	s, _ := v.(string)
 	return s
@@ -98,11 +113,20 @@ func newRedeliveryHarness(t *testing.T, delivery string) *redeliveryHarness {
 	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, h.tenant.Project, h.tenant.Organization)
 	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, h.sessionID, h.tenant.Organization, h.tenant.Project)
 	execSQL(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, h.runID, h.tenant.Organization, h.tenant.Project, h.sessionID)
-	execSQL(t, pool,
+	h.commandID = h.enqueue(t, delivery, h.message)
+	return h
+}
+
+// enqueue inserts another queued send_message command for the run and returns its id — a message
+// accepted at this boundary (the first at harness build, more during a simulated outage).
+func (h *redeliveryHarness) enqueue(t *testing.T, delivery, message string) string {
+	t.Helper()
+	id := redeliveryID("cmd")
+	execSQL(t, h.orch.spine.Pool(),
 		`INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, delivery, payload, state)
 		 VALUES ($1, $2, $3, $4, $5, 'send_message', $6, jsonb_build_object('message', $7::text), 'queued')`,
-		h.commandID, h.tenant.Organization, h.tenant.Project, h.sessionID, h.runID, delivery, h.message)
-	return h
+		id, h.tenant.Organization, h.tenant.Project, h.sessionID, h.runID, delivery, message)
+	return id
 }
 
 func execSQL(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
@@ -238,6 +262,78 @@ func TestRedeliveryNeverInjectsIntoReconstructedStep(t *testing.T) {
 	if got := chC.delivers(h.commandID); len(got) != 1 {
 		t.Fatalf("own-boundary redelivered %v, want exactly one", got)
 	}
+}
+
+// TestRedeliveryOrderStableAcrossReclaimWithFreshMessage: when a boundary carries BOTH a prior
+// message and a message queued during the outage, the fold order must be IDENTICAL across every
+// reclaim — a flipped order rebuilds a different request for a committed step (LookupModelResult
+// replays by id without hash-checking the request), a silent divergence. Redelivery reads before the
+// fresh drain, so a prior message always folds before a message applied later at the same boundary.
+func TestRedeliveryOrderStableAcrossReclaimWithFreshMessage(t *testing.T) {
+	ctx := context.Background()
+	h := newRedeliveryHarness(t, "queue") // command M, applied first (lower applied_sequence)
+
+	// Original attempt applies M and delivers it once.
+	stA, _ := h.attemptAt()
+	if err := h.orch.pumpCommands(ctx, stA, foldBoundary); err != nil {
+		t.Fatalf("prior attempt pumpCommands() error = %v", err)
+	}
+	// A fresh message N is accepted at the SAME boundary during the outage.
+	nID := h.enqueue(t, "steer", "then do Z")
+
+	st1, ch1 := h.attemptAt()
+	if err := h.orch.pumpCommands(ctx, st1, foldBoundary); err != nil {
+		t.Fatalf("reclaim 1 pumpCommands() error = %v", err)
+	}
+	st2, ch2 := h.attemptAt()
+	if err := h.orch.pumpCommands(ctx, st2, foldBoundary); err != nil {
+		t.Fatalf("reclaim 2 pumpCommands() error = %v", err)
+	}
+
+	order1, order2 := ch1.deliverOrder(), ch2.deliverOrder()
+	if !slicesEqual(order1, order2) {
+		t.Fatalf("fold order diverged across reclaims: reclaim1=%v reclaim2=%v", order1, order2)
+	}
+	if want := []string{h.commandID, nID}; !slicesEqual(order1, want) {
+		t.Fatalf("reclaim fold order = %v, want canonical applied_sequence order %v (prior before fresh)", order1, want)
+	}
+}
+
+// TestRedeliveryFailsClosedOnEmptyBoundary: an empty boundary id would write a NULL boundary_request_id
+// the redelivery read (= $4) can never match — an unreachable row that turns command.applied.v1 back
+// into a lie. The pump fails closed instead: it errors and writes no row. (The engine always sets the
+// id; this guards the malformed frame.)
+func TestRedeliveryFailsClosedOnEmptyBoundary(t *testing.T) {
+	ctx := context.Background()
+	h := newRedeliveryHarness(t, "queue")
+
+	st, ch := h.attemptAt()
+	if err := h.orch.pumpCommands(ctx, st, ""); err == nil {
+		t.Fatal("pumpCommands with empty boundary = nil error, want fail-closed error")
+	}
+	if got := ch.deliverOrder(); len(got) != 0 {
+		t.Fatalf("delivered %v under empty boundary, want none", got)
+	}
+	var rows int
+	if err := h.orch.spine.Pool().QueryRow(ctx,
+		`SELECT count(*) FROM delivered_messages WHERE run_id = $1`, h.runID).Scan(&rows); err != nil {
+		t.Fatalf("count delivered rows error = %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("wrote %d delivered rows under empty boundary, want 0 (no unreachable NULL-boundary row)", rows)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func foldStateOf(t *testing.T, h *redeliveryHarness, commandID string) string {
