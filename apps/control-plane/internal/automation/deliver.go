@@ -152,22 +152,27 @@ func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []
 	if err != nil {
 		return s.fail(ctx, sc, statemachines.TriggerDeliveryDeduplicated, "input mapping failed: "+err.Error())
 	}
-	if _, err := s.transition(ctx, sc, statemachines.TriggerDeliveryDeduplicated, statemachines.TriggerDeliveryCmdMap); err != nil {
+	// Validate the deduplicated → mapped transition, then persist the mapped input + correlation hash
+	// TOGETHER (a delivery that crashes after this is a recoverable remnant the reconciler re-decides
+	// from the stored state, without the now-gone source payload).
+	if _, _, err := statemachines.Apply(statemachines.TriggerDeliveryDeduplicated, statemachines.TriggerDeliveryCmdMap, statemachines.TriggerDeliveryTable); err != nil {
 		return DeliveryResult{}, err
 	}
+	hash := computeCorrelationHash(sc, cfg.CorrelationKeyExpr, source)
+	if _, err := s.pool.Exec(ctx, storage.Query("RecordDeliveryMapped"), sc.deliveryID, sc.org, sc.project, mappedInput, hash); err != nil {
+		return DeliveryResult{}, fmt.Errorf("record mapped delivery: %w", err)
+	}
 
-	// Correlate + act (spec §20.2.2): the correlation mode decides the target session — a fresh one
-	// (per_event), a chained one (bounded_key_reuse), an existing named session the mapped input is
-	// appended to (named_session), or a rejection when the correlated session is busy (reject_if_active).
-	return s.correlate(ctx, sc, cfg, source, mappedInput)
+	// Apply the concurrency policy at the admit gate, then correlate + admit.
+	return s.applyPolicy(ctx, sc, cfg, source, mappedInput, hash)
 }
 
-// correlate resolves the target session per the revision's correlation mode and runs the shared admit /
-// append / reject action. A bounded correlation key is SHA-256'd with the (project, trigger_revision,
-// source_tenant) scope; ONLY the hash is stored (the raw key never lands in the DB). A correlation query
-// touches only THIS tenant's deliveries, so it can never reach a foreign session (authz is not bypassed),
-// and admission still enforces retention/scope on the resolved session.
-func (s *TriggerStore) correlate(ctx context.Context, sc deliveryScope, cfg revisionConfig, source map[string]any, mappedInput []byte) (DeliveryResult, error) {
+// correlateAdmit resolves the target session per the revision's correlation mode and runs the shared
+// admit / append / reject action, using the pre-computed correlation hash (recorded at map). A
+// correlation query touches only THIS tenant's deliveries, so it can never reach a foreign session (authz
+// is not bypassed), and admission still enforces retention/scope on the resolved session. source may be
+// nil on a reconciler resume — only named_session needs it, and a deferred delivery is never named_session.
+func (s *TriggerStore) correlateAdmit(ctx context.Context, sc deliveryScope, cfg revisionConfig, source map[string]any, mappedInput []byte, hash string) (DeliveryResult, error) {
 	switch cfg.CorrelationMode {
 	case "named_session":
 		key, err := boundedKey(cfg.CorrelationKeyExpr, source)
@@ -176,11 +181,8 @@ func (s *TriggerStore) correlate(ctx context.Context, sc deliveryScope, cfg revi
 		}
 		return s.appendToNamedSession(ctx, sc, key, mappedInput)
 	case "bounded_key_reuse", "reject_if_active":
-		hash, err := s.correlationHash(ctx, sc, cfg.CorrelationKeyExpr, source)
-		if err != nil {
-			return DeliveryResult{}, err
-		}
 		var prior string
+		var err error
 		if hash != "" {
 			if prior, err = s.findCorrelatedSession(ctx, sc, hash); err != nil {
 				return DeliveryResult{}, err
@@ -205,29 +207,23 @@ func (s *TriggerStore) correlate(ctx context.Context, sc deliveryScope, cfg revi
 	}
 }
 
-// correlationHash computes and records the delivery's bounded correlation-key hash — SHA-256 over the
-// (project, trigger_revision, source_tenant, raw-key) tuple, so only the hash is stored. An empty key
-// expr yields "" (no correlation), recorded as the empty hash.
-func (s *TriggerStore) correlationHash(ctx context.Context, sc deliveryScope, expr string, source map[string]any) (string, error) {
-	key, err := CompileExpr(expr, nil)
+// computeCorrelationHash is the pure bounded correlation-key hash — SHA-256 over the (project,
+// trigger_revision, source_tenant, raw-key) tuple, so only the hash is ever stored. An empty key expr (or
+// an empty evaluated key) yields "" (no correlation grouping). The expr was compiled at revise time, so a
+// compile error here is impossible — it is swallowed to "" rather than propagated.
+func computeCorrelationHash(sc deliveryScope, expr string, source map[string]any) string {
+	compiled, err := CompileExpr(expr, nil)
 	if err != nil {
-		return "", err
+		return ""
 	}
-	raw, err := key.EvalString(source)
-	if err != nil {
-		return "", err
-	}
-	if raw == "" {
-		return "", nil
+	raw, err := compiled.EvalString(source)
+	if err != nil || raw == "" {
+		return ""
 	}
 	// source_tenant is '' in T2 (manual/api carries no signed source envelope — T5).
 	scoped := sc.project + "\x00" + sc.revisionID + "\x00" + "" + "\x00" + raw
 	sum := sha256.Sum256([]byte(scoped))
-	hash := hex.EncodeToString(sum[:])
-	if _, err := s.pool.Exec(ctx, storage.Query("SetDeliveryCorrelationHash"), sc.deliveryID, sc.org, sc.project, hash); err != nil {
-		return "", fmt.Errorf("record correlation hash: %w", err)
-	}
-	return hash, nil
+	return hex.EncodeToString(sum[:])
 }
 
 // findCorrelatedSession resolves the session a prior delivery with the same correlation hash landed in.
@@ -303,6 +299,54 @@ func (s *TriggerStore) appendToNamedSession(ctx context.Context, sc deliveryScop
 		ID: sc.deliveryID, State: string(statemachines.TriggerDeliveryRunCreated),
 		ResponseID: responseID, RunID: runID, SessionID: sessionID,
 	}, nil
+}
+
+// applyPolicy runs the revision's concurrency policy at the admit gate (spec §20.2.2, AUT-004/005). It
+// decides — using the pre-computed correlation hash as the grouping key — whether to admit now, defer for
+// the reconciler, skip, reject, or (A9) replace/coalesce. `allow` admits immediately through the
+// correlation mode; `queue` serializes per key (a busy key defers, the reconciler admits the FIFO head
+// when the gate opens). The remaining policies land in A9.
+func (s *TriggerStore) applyPolicy(ctx context.Context, sc deliveryScope, cfg revisionConfig, source map[string]any, mappedInput []byte, hash string) (DeliveryResult, error) {
+	switch cfg.ConcurrencyPolicy {
+	case "queue":
+		busy, err := s.keyBusy(ctx, sc, hash)
+		if err != nil {
+			return DeliveryResult{}, err
+		}
+		if busy {
+			return s.defer_(ctx, sc, "key has an active run; queued FIFO")
+		}
+		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
+	default: // allow (and, until A9, the not-yet-implemented policies fall back to allow)
+		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
+	}
+}
+
+// keyBusy reports whether the (trigger, correlation-key) group already has a delivery with a non-terminal
+// run. An empty hash means no grouping key, so the group is never "busy" (nothing to serialize against).
+func (s *TriggerStore) keyBusy(ctx context.Context, sc deliveryScope, hash string) (bool, error) {
+	if hash == "" {
+		return false, nil
+	}
+	switch err := s.pool.QueryRow(ctx, storage.Query("KeyHasActiveRun"), sc.triggerID, sc.org, sc.project, hash).Scan(new(int)); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("check key busy: %w", err)
+	}
+	return true, nil
+}
+
+// defer_ gates a mapped delivery behind a busy key (state → deferred). Its mapped_input + hash are already
+// stored (recordMapped), so the reconciler admits it FIFO once the gate opens.
+func (s *TriggerStore) defer_(ctx context.Context, sc deliveryScope, reason string) (DeliveryResult, error) {
+	if _, _, err := statemachines.Apply(statemachines.TriggerDeliveryMapped, statemachines.TriggerDeliveryCmdDefer, statemachines.TriggerDeliveryTable); err != nil {
+		return DeliveryResult{}, err
+	}
+	if _, err := s.pool.Exec(ctx, storage.Query("DeferDelivery"), sc.deliveryID, sc.org, sc.project, reason); err != nil {
+		return DeliveryResult{}, fmt.Errorf("defer delivery: %w", err)
+	}
+	return DeliveryResult{ID: sc.deliveryID, State: string(statemachines.TriggerDeliveryDeferred), Reason: reason}, nil
 }
 
 // admit builds a coordinator.AdmissionInput from the mapped canonical input + the pinned run target and

@@ -68,6 +68,73 @@ UPDATE trigger_deliveries
 SET correlation_key_hash = $4, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- RecordDeliveryMapped advances a delivery to 'mapped' and stores BOTH the mapped canonical input and the
+-- correlation-key hash. Storing them here (not only at admit/defer) makes a delivery that crashes after
+-- mapping a RECOVERABLE remnant: the reconciler re-runs the concurrency decision from the stored state
+-- without the (now gone) source payload.
+-- name: RecordDeliveryMapped
+UPDATE trigger_deliveries
+SET state = 'mapped', mapped_input = $4, correlation_key_hash = $5, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- DeferDelivery gates a mapped delivery behind a busy key: state → 'deferred' (its mapped_input + hash are
+-- already stored, so the reconciler can admit it FIFO once the gate opens). A reason records why.
+-- name: DeferDelivery
+UPDATE trigger_deliveries
+SET state = 'deferred', reason = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- KeyHasActiveRun reports whether a (trigger, correlation-key) group already has a delivery whose run is
+-- non-terminal — the queue/singleton "busy" gate. A trigger-wide gate (singleton) passes '' for the hash
+-- arg semantics by the caller instead (it uses TriggerHasActiveRun).
+-- name: KeyHasActiveRun
+SELECT 1
+FROM trigger_deliveries d
+JOIN runs r ON r.id = d.run_id AND r.organization_id = d.organization_id AND r.project_id = d.project_id
+WHERE d.trigger_id = $1 AND d.organization_id = $2 AND d.project_id = $3
+  AND d.correlation_key_hash = $4 AND d.run_id <> ''
+  AND r.state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
+LIMIT 1;
+
+-- TriggerHasActiveRun reports whether ANY delivery of a trigger has a non-terminal run — the singleton
+-- (trigger-wide) gate.
+-- name: TriggerHasActiveRun
+SELECT 1
+FROM trigger_deliveries d
+JOIN runs r ON r.id = d.run_id AND r.organization_id = d.organization_id AND r.project_id = d.project_id
+WHERE d.trigger_id = $1 AND d.organization_id = $2 AND d.project_id = $3
+  AND d.run_id <> ''
+  AND r.state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
+LIMIT 1;
+
+-- DeferredDeliveryGroups lists the (trigger, scope, correlation-key) groups that hold at least one
+-- deferred delivery — the reconciler's per-key FIFO sweep unit (system-wide, not tenant-scoped: the
+-- reconciler is a system loop, like the webhook pump's fan-out).
+-- name: DeferredDeliveryGroups
+SELECT DISTINCT trigger_id, organization_id, project_id, correlation_key_hash
+FROM trigger_deliveries
+WHERE state = 'deferred';
+
+-- OldestDeferredForKey resolves the FIFO head of a group's deferred deliveries (earliest received) plus
+-- the state the reconciler needs to admit it: the pinned revision, the accepting principal, and the
+-- stored mapped input.
+-- name: OldestDeferredForKey
+SELECT id, principal_id, trigger_revision_id, mapped_input
+FROM trigger_deliveries
+WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
+  AND correlation_key_hash = $4 AND state = 'deferred'
+ORDER BY received_at
+LIMIT 1;
+
+-- StuckMappedDeliveries lists deliveries stranded in 'mapped' past a grace window — crash remnants that
+-- reached mapping but never took the concurrency decision. The reconciler re-decides them.
+-- name: StuckMappedDeliveries
+SELECT id, organization_id, project_id, principal_id, trigger_id, trigger_revision_id, correlation_key_hash, mapped_input
+FROM trigger_deliveries
+WHERE state = 'mapped' AND updated_at < clock_timestamp() - make_interval(secs => $1)
+ORDER BY updated_at
+LIMIT $2;
+
 -- FindCorrelatedSession resolves the session a bounded_key_reuse / reject_if_active delivery correlates
 -- onto: the most recent OTHER delivery (of this trigger, in scope) that carries the same correlation hash
 -- and a resolved session. Only THIS tenant's deliveries are queried, so a correlation can never reach a
