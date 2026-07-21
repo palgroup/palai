@@ -109,6 +109,52 @@ func TestReconcilerRecoversStuckMapped(t *testing.T) {
 	}
 }
 
+// TestReconcilerReplayRecordsRealIds pins M1: after a crash between AdmitResponse-commit and the delivery
+// row's RecordDeliveryAdmitted, the reconciler re-admits with the SAME idempotency key → the coordinator
+// REPLAYS (no new run) → the delivery must record the ORIGINAL run/session/response ids, not fresh-minted
+// ghosts. Ghost ids would 404 at /v1/responses and make KeyHasActiveRun / FindCorrelatedSession miss the
+// real run/session.
+func TestReconcilerReplayRecordsRealIds(t *testing.T) {
+	store, pool := wiredTriggerStore(t)
+	ctx := context.Background()
+	org, project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, org, project)
+	rec := NewDeliveryReconciler(store, time.Hour, 0, 100, nil) // grace 0 → the reset remnant is eligible now
+
+	triggerID, _ := seedTrigger(t, store, org, project, "replay", TriggerRevisionInput{ConcurrencyPolicy: "allow"})
+	del, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{}`))
+	if err != nil || del.State != "run_created" {
+		t.Fatalf("CreateDelivery = %+v, err = %v; want run_created", del, err)
+	}
+	origRun, origSession, origResp := del.RunID, del.SessionID, del.ResponseID
+
+	// Simulate the crash: the admission committed (idempotency record + run exist), but the delivery row's
+	// admitted-record was lost — reset it to `mapped` with its ids wiped (mapped_input/hash retained).
+	mustExec(t, pool, `UPDATE trigger_deliveries SET state='mapped', run_id='', response_id='', session_id='' WHERE id=$1`, del.ID)
+
+	if err := rec.Tick(ctx); err != nil {
+		t.Fatalf("reconciler tick error = %v", err)
+	}
+
+	if got := deliveryRun(t, pool, del.ID); got != origRun {
+		t.Fatalf("re-admitted delivery run_id = %q, want the original %q (ghost-id bug)", got, origRun)
+	}
+	if n := count(t, pool, `SELECT count(*) FROM runs WHERE id=$1`, origRun); n != 1 {
+		t.Fatalf("the recorded run does not exist as a real row (count=%d) — a ghost id", n)
+	}
+	var sess, resp string
+	if err := pool.QueryRow(ctx, `SELECT session_id, response_id FROM trigger_deliveries WHERE id=$1`, del.ID).Scan(&sess, &resp); err != nil {
+		t.Fatalf("read delivery ids error = %v", err)
+	}
+	if sess != origSession || resp != origResp {
+		t.Fatalf("re-admitted delivery ids = (%s,%s), want the originals (%s,%s)", sess, resp, origSession, origResp)
+	}
+	// Only ONE run exists for the session — the replay created no second run.
+	if n := count(t, pool, `SELECT count(*) FROM runs WHERE session_id=$1`, origSession); n != 1 {
+		t.Fatalf("runs in the session = %d, want 1 (the replay must not create a second run)", n)
+	}
+}
+
 // insertMappedRemnant creates a trigger delivery frozen in the `mapped` state with a stored mapped_input
 // and an old updated_at, simulating a process crash between mapping and the concurrency decision.
 func insertMappedRemnant(t *testing.T, pool *pgxpool.Pool, org, project, principal, triggerID string, store *TriggerStore) string {

@@ -517,10 +517,22 @@ func (s *TriggerStore) admitChained(ctx context.Context, sc deliveryScope, cfg r
 		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, admissionFailureReason(adm))
 	}
 
-	// The resolved session is authoritative (a chained response reuses an existing session; the admission
-	// patches the body's session_id). Read it back so the delivery records the real session.
+	// On a REPLAY (M1: a crash between AdmitResponse-commit and the record below, then a reconciler
+	// re-admit under the same idempotency key), the coordinator created NO new run and returns the ORIGINAL
+	// body. Use its ids, not the freshly minted ones, so the delivery records the real run/session — a
+	// ghost id would 404 at /v1/responses and make the KeyHasActiveRun / FindCorrelatedSession joins miss.
+	if adm.Replayed {
+		if id := responseField(adm.Body, "id"); id != "" {
+			responseID = id
+		}
+		if rid := responseField(adm.Body, "run_id"); rid != "" {
+			runID = rid
+		}
+	}
+	// The resolved session is authoritative (a chained response reuses an existing session, and a replay
+	// carries the original session; both are patched into the body's session_id). Read it back.
 	resolvedSession := sessionID
-	if requestedSession != nil {
+	if requestedSession != nil || adm.Replayed {
 		if sid := responseField(adm.Body, "session_id"); sid != "" {
 			resolvedSession = sid
 		}
