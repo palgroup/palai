@@ -229,8 +229,9 @@ type EndpointCreate struct {
 	AllowPrivateDestination bool
 }
 
-// CreateEndpoint registers an endpoint in the verified scope and returns its minted id.
-func (s *WebhookStore) CreateEndpoint(ctx context.Context, org, project, id string, c EndpointCreate) (string, error) {
+// CreateEndpoint registers an endpoint in the verified scope and returns its server-minted id.
+func (s *WebhookStore) CreateEndpoint(ctx context.Context, org, project string, c EndpointCreate) (string, error) {
+	id := newID("whe")
 	fixed := c.FixedHeaders
 	if fixed == nil {
 		fixed = map[string]string{}

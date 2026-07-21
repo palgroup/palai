@@ -153,7 +153,7 @@ func TestSignedDeliveryEndToEndRealHTTP(t *testing.T) {
 	})
 
 	org, project, session := seedSession(t, pool)
-	if _, err := store.CreateEndpoint(ctx, org, project, randID("whe"), defaultEndpoint(srv.URL, "ref1")); err != nil {
+	if _, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint(srv.URL, "ref1")); err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 	appendEvent(t, pool, org, project, session, 1, "run.completed.v1", `{"run_id":"run_1"}`)
@@ -222,7 +222,7 @@ func TestRedeliveryReusesDeliveryIdAndPayload(t *testing.T) {
 	org, project, session := seedSession(t, pool)
 	ep := defaultEndpoint(srv.URL, "ref1")
 	ep.MaxAttempts = 3 // small cap so it dead-letters quickly
-	if _, err := store.CreateEndpoint(ctx, org, project, randID("whe"), ep); err != nil {
+	if _, err := store.CreateEndpoint(ctx, org, project, ep); err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 	appendEvent(t, pool, org, project, session, 1, "run.completed.v1", `{"run_id":"run_dead"}`)
@@ -288,7 +288,7 @@ func TestAttemptViewSanitizedNoSecret(t *testing.T) {
 	org, project, session := seedSession(t, pool)
 	ep := defaultEndpoint(srv.URL, "ref1")
 	ep.FixedHeaders = map[string]string{"X-Partner-Token": fixedHeaderSecretValue}
-	if _, err := store.CreateEndpoint(ctx, org, project, randID("whe"), ep); err != nil {
+	if _, err := store.CreateEndpoint(ctx, org, project, ep); err != nil {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 	appendEvent(t, pool, org, project, session, 1, "run.completed.v1", `{"run_id":"run_x"}`)
@@ -331,10 +331,10 @@ func TestPumpSupervisedEndpointDownDoesNotStarveOthers(t *testing.T) {
 	down.Close()
 
 	org, project, session := seedSession(t, pool)
-	if _, err := store.CreateEndpoint(ctx, org, project, randID("whe"), defaultEndpoint(healthy.URL, "ref1")); err != nil {
+	if _, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint(healthy.URL, "ref1")); err != nil {
 		t.Fatalf("CreateEndpoint(healthy) error = %v", err)
 	}
-	if _, err := store.CreateEndpoint(ctx, org, project, randID("whe"), defaultEndpoint(downURL, "ref1")); err != nil {
+	if _, err := store.CreateEndpoint(ctx, org, project, defaultEndpoint(downURL, "ref1")); err != nil {
 		t.Fatalf("CreateEndpoint(down) error = %v", err)
 	}
 	appendEvent(t, pool, org, project, session, 1, "run.completed.v1", `{"run_id":"run_starve"}`)
