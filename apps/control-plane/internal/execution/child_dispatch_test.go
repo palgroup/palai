@@ -100,4 +100,13 @@ func TestAdmitChildCapabilityAndRoutability(t *testing.T) {
 	if got := admitChild(childSpec{Model: "expensive-9", Tools: []string{"a"}}, 0, 0, 0, false, policy, parentTools); !got.Denied || got.Reason != "unroutable" {
 		t.Fatalf("off-allowlist model admission = %+v, want denied unroutable", got)
 	}
+	// An EMPTY (non-nil) parent ceiling means "select no tools" (spec §14.2) — an allow-nothing
+	// ceiling, or a ceiling∩override that emptied out. A child requesting ANY tool must be denied; a
+	// nil ceiling (neither ceiling nor override) stays unrestricted. This is the empty-vs-nil boundary.
+	if got := admitChild(childSpec{Model: "cheap-1", Tools: []string{"a"}}, 0, 0, 0, false, policy, []string{}); !got.Denied || got.Reason != "capability_denied" {
+		t.Fatalf("child tool under an empty (allow-nothing) parent ceiling = %+v, want denied capability_denied", got)
+	}
+	if got := admitChild(childSpec{Model: "cheap-1", Tools: []string{"a"}}, 0, 0, 0, false, policy, nil); got.Denied {
+		t.Fatalf("nil parent ceiling (unrestricted) denied = %q, want admitted", got.Reason)
+	}
 }
