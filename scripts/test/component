@@ -85,6 +85,14 @@ run_postgres() {
         ./apps/control-plane/internal/execution
     status=$?
   fi
+  # The E11 Task 4 webhook pump tests drive the fan-out -> signed real-HTTP delivery -> retry/
+  # dead-letter/redeliver state machine against this same real spine, with real local httptest
+  # receivers that verify the HMAC server-side (spec §21.4-21.6). Package automation, component-tagged.
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v ./apps/control-plane/internal/automation
+    status=$?
+  fi
   set -e
   if test "$status" -ne 0; then
     docker logs "$container" >&2 || true

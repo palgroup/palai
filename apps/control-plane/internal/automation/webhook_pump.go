@@ -99,7 +99,7 @@ func (p *WebhookPump) fanOut(ctx context.Context) error {
 		return fmt.Errorf("fan-out endpoints: %w", err)
 	}
 	for _, ep := range endpoints {
-		events, err := p.store.ReadJournalForEndpoint(ctx, ep.Cursor, ep.Filter, p.cfg.BatchSize)
+		events, err := p.store.ReadJournalForEndpoint(ctx, ep.Org, ep.Project, ep.Cursor, ep.Filter, p.cfg.BatchSize)
 		if err != nil {
 			return fmt.Errorf("read journal for endpoint %s: %w", ep.ID, err)
 		}

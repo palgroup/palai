@@ -25,17 +25,20 @@ FROM webhook_endpoints
 WHERE enabled;
 
 -- ReadJournalForEndpoint reads the matching journal slice past an endpoint's cursor, ordered by the
--- global journal_id (the 000020 IDENTITY cursor). Self-generated webhook.* events are excluded so a
+-- global journal_id (the 000020 IDENTITY cursor). It is tenant-scoped to the endpoint's own
+-- organization + project (§39.2): an endpoint only ever fans out its OWN project's events — a delivery
+-- must never carry another tenant's journal. Self-generated webhook.* events are excluded so a
 -- delivery-outcome event can never fan out into another delivery (loop guard, §50 webhook loop
 -- detection). An empty filter matches every (non-webhook) event.
 -- name: ReadJournalForEndpoint
 SELECT journal_id, id, session_id, type, payload
 FROM events
-WHERE journal_id > $1
+WHERE organization_id = $1 AND project_id = $2
+  AND journal_id > $3
   AND type NOT LIKE 'webhook.%'
-  AND (cardinality($2::text[]) = 0 OR type = ANY ($2::text[]))
+  AND (cardinality($4::text[]) = 0 OR type = ANY ($4::text[]))
 ORDER BY journal_id
-LIMIT $3;
+LIMIT $5;
 
 -- name: AdvanceEndpointCursor
 UPDATE webhook_endpoints SET cursor_journal_id = $2 WHERE id = $1 AND cursor_journal_id < $2;

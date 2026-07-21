@@ -102,12 +102,13 @@ func (s *WebhookStore) FanOutEndpoints(ctx context.Context) ([]endpointCursor, e
 }
 
 // ReadJournalForEndpoint reads the matching journal slice past the cursor (loop-guarded, ordered by
-// the global journal_id).
-func (s *WebhookStore) ReadJournalForEndpoint(ctx context.Context, cursor int64, filter []string, limit int) ([]journalEvent, error) {
+// the global journal_id), tenant-scoped to the endpoint's own org+project so a delivery never carries
+// another tenant's journal (§39.2).
+func (s *WebhookStore) ReadJournalForEndpoint(ctx context.Context, org, project string, cursor int64, filter []string, limit int) ([]journalEvent, error) {
 	if filter == nil {
 		filter = []string{}
 	}
-	rows, err := s.pool.Query(ctx, storage.Query("ReadJournalForEndpoint"), cursor, filter, limit)
+	rows, err := s.pool.Query(ctx, storage.Query("ReadJournalForEndpoint"), org, project, cursor, filter, limit)
 	if err != nil {
 		return nil, err
 	}
