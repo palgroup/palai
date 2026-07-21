@@ -91,6 +91,7 @@ func main() {
 
 	startDispatch(ctx, repo, gateway, supervisor, artStore)
 	startWebhookPump(ctx, webhookStore, supervisor)
+	startDeliveryReconciler(ctx, triggerStore, supervisor)
 	startRetention(ctx, repo, supervisor, artStore)
 	startOrphanGC(ctx, repo, supervisor, artStore)
 
@@ -335,6 +336,21 @@ func startWebhookPump(ctx context.Context, store *automation.WebhookStore, super
 		MaxBackoff:  envDurationOr("PALAI_WEBHOOK_BACKOFF_MAX", time.Hour),
 	}, log.Printf)
 	go supervisor.Supervise(ctx, "webhook-pump", pump.Run)
+}
+
+// startDeliveryReconciler launches the supervised trigger delivery-reconciler (spec §20.2.2, E11 Task 2).
+// It is a system loop that serves every project's deferred deliveries and is inert until one is deferred,
+// so it runs unconditionally (like the webhook pump): it admits the FIFO head of each gate-opened
+// correlation-key group and re-decides crash remnants stranded in `mapped`. The loop name is pinned
+// "delivery-reconciler" — T5 folds inbound-source sweeps into the same loop. A killed process just misses
+// ticks; the next run resumes from the durable delivery rows.
+func startDeliveryReconciler(ctx context.Context, store *automation.TriggerStore, supervisor *coordinator.Supervisor) {
+	rec := automation.NewDeliveryReconciler(store,
+		envDurationOr("PALAI_TRIGGER_RECONCILE_TICK", time.Second),
+		envDurationOr("PALAI_TRIGGER_MAPPED_GRACE", time.Minute),
+		envIntDefault("PALAI_TRIGGER_RECONCILE_BATCH", 100),
+		log.Printf)
+	go supervisor.Supervise(ctx, "delivery-reconciler", rec.Run)
 }
 
 // webhookSecretResolver bridges an endpoint's SecretRef handle to the signing-secret bytes at delivery

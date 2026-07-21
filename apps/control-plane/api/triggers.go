@@ -67,22 +67,24 @@ func (h *triggerHandler) reviseTrigger(w http.ResponseWriter, r *http.Request) {
 		AgentRevisionID       string          `json:"agent_revision_id"`
 		RunTemplateRevisionID string          `json:"run_template_revision_id"`
 		InputMapping          json.RawMessage `json:"input_mapping"`
-		DedupeKeyExpr         string          `json:"dedupe_key_expr"`
+		DedupeKeyExpr         json.RawMessage `json:"dedupe_key_expr"`
 		CorrelationMode       string          `json:"correlation_mode"`
-		CorrelationKeyExpr    string          `json:"correlation_key_expr"`
+		CorrelationKeyExpr    json.RawMessage `json:"correlation_key_expr"`
 		ConcurrencyPolicy     string          `json:"concurrency_policy"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body is not valid JSON")
 		return
 	}
+	// The dedupe/correlation key exprs are JSON rule objects in the same mapping language (stored as
+	// TEXT); carry the raw JSON through as the expr string.
 	rev, err := h.triggers.ReviseTrigger(r.Context(), scope.Organization, scope.Project, r.PathValue("trigger_id"), automation.TriggerRevisionInput{
 		AgentRevisionID:       body.AgentRevisionID,
 		RunTemplateRevisionID: body.RunTemplateRevisionID,
 		InputMapping:          body.InputMapping,
-		DedupeKeyExpr:         body.DedupeKeyExpr,
+		DedupeKeyExpr:         string(body.DedupeKeyExpr),
 		CorrelationMode:       body.CorrelationMode,
-		CorrelationKeyExpr:    body.CorrelationKeyExpr,
+		CorrelationKeyExpr:    string(body.CorrelationKeyExpr),
 		ConcurrencyPolicy:     body.ConcurrencyPolicy,
 	})
 	if errors.Is(err, automation.ErrTriggerNotFound) {
