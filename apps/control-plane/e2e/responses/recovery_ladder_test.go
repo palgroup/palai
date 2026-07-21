@@ -491,8 +491,8 @@ func TestLadderPrefersExactWhenLeaseAlive(t *testing.T) {
 
 	// A SECOND attempt on the SAME run, direct-driven with no claimed job of its own: the original
 	// lease is alive, so it takes the exact rung and stands down. No dial, no checkpoint read.
-	if err := orch.ExecuteAttempt(context.Background(), h.descriptor(runID, 2)); err != nil {
-		t.Fatalf("second attempt (exact stand-down) error = %v", err)
+	if err := orch.ExecuteAttempt(context.Background(), h.descriptor(runID, 2)); !errors.Is(err, execution.ErrExactStandDown) {
+		t.Fatalf("second attempt should stand down retryably (ErrExactStandDown), got %v", err)
 	}
 	if d := dialer.dials(); d != 1 {
 		t.Fatalf("dials after exact stand-down = %d, want 1 (the exact rung must NOT dial)", d)

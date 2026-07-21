@@ -162,9 +162,23 @@ func supportedFormats(ready contracts.EngineFrame) []string {
 	return out
 }
 
+// ErrExactStandDown reports that this attempt took the exact rung and stood down because a sibling
+// response.run job holds a live lease (spec §26.3 rung 1). It is RETRYABLE, not a completion: the
+// handler must NOT settle the job on it. Completing the job would hang the run when two jobs
+// mutually stand down (each seeing the other's live lease) — both would complete and nothing would
+// ever drive the run (MUST-FIX #2). Returning it requeues the job (FullJitterBackoff breaks the
+// symmetry), and a retry either drives the run once the sibling lapses or finds the run terminal.
+var ErrExactStandDown = errors.New("exact_stand_down")
+
 // recordExactStandDown journals attempt.recovering.v1 at the exact rung (spec §26.3 rung 1): the
-// original attempt still holds the run, so this one stands down without dialing. In this stdio
-// topology "exact" is a lease-liveness confirmation, not a socket reconnect (T4 ceiling).
+// original attempt still holds the run, so this one stands down without dialing, and returns
+// ErrExactStandDown so the job requeues rather than completes. In this stdio topology "exact" is a
+// lease-liveness confirmation, not a socket reconnect (T4 ceiling).
+//
+// ponytail: a stand-down retries under the ordinary MaxAttempts ceiling — a redundant job whose
+// sibling runs longer than MaxAttempts*backoff of stand-downs would dead-letter (SweepDeadLetteredRuns
+// then fails the run, unless the sibling already drove it terminal). Jitter resolves the mutual case
+// in a retry or two; add an attempt-count-free soft requeue if a legitimately long sibling ever trips it.
 func (o *Orchestrator) recordExactStandDown(ctx context.Context, tenant coordinator.Tenant, sessionID, responseID string, attempt AttemptDescriptor) error {
 	payload, _ := json.Marshal(map[string]any{
 		"run_id":         string(attempt.RunID),
@@ -172,8 +186,10 @@ func (o *Orchestrator) recordExactStandDown(ctx context.Context, tenant coordina
 		"level":          string(recovery.LevelExact),
 		"detail":         "original attempt lease alive; standing down (lease-liveness reconnect-ack, not socket reconnect)",
 	})
-	_, err := o.spine.RecordRecoveryEvent(ctx, tenant, sessionID, responseID, eventAttemptRecovering, payload)
-	return err
+	if _, err := o.spine.RecordRecoveryEvent(ctx, tenant, sessionID, responseID, eventAttemptRecovering, payload); err != nil {
+		return err
+	}
+	return ErrExactStandDown
 }
 
 // recordCompatibleRecovery journals the compatible-checkpoint rung + its §26.12 proof (ENG-009).
