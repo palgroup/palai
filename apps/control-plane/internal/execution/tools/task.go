@@ -27,7 +27,8 @@ func TodoTool() toolbroker.Tool { return registryTool("palai.todo", "todo") }
 // tool's argv). A richer JSON-Schema validator is the upgrade path if free-choice calls need it.
 func registryTool(name, kind string) toolbroker.Tool {
 	return toolbroker.Tool{
-		Name: name,
+		Name:        name,
+		ReplayClass: toolbroker.ClassIdempotent, // durable session registry, ON CONFLICT idempotent (§26.6)
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

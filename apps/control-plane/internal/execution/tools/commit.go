@@ -17,7 +17,8 @@ import (
 // so the commit is a control-plane Git operation the model cannot smuggle a credential into.
 func CommitTool() toolbroker.Tool {
 	return toolbroker.Tool{
-		Name: "palai.workspace.commit",
+		Name:        "palai.workspace.commit",
+		ReplayClass: toolbroker.ClassReversible, // a workspace git commit is revertible (§26.6)
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -87,7 +87,7 @@ run_pg_fault_suite() {
 
   set +e
   PALAI_FAULT_POSTGRES_URL="$url" \
-    go test -tags=fault -count="${COUNT:-1}" -v "$pkg"
+    go test -tags=fault -count="${COUNT:-1}" -run "${PALAI_FAULT_RUN:-.}" -v "$pkg"
   local status=$?
   set -e
   if test "$status" -ne 0; then
@@ -131,12 +131,21 @@ run_sandbox() {
   run_runner_suite fault ./tests/fault/sandbox
 }
 
-# The recovery suite proves the E10 kill matrix's container half against the real fixture engine: a
-# fast-exit engine's run.terminal is never lost in the OCI drain race (REC-001), and an external
-# `docker rm -f` mid-run is classified lost, never a false success (ENG-005 streaming half). It
-# reuses the same digest-pinned fixture-engine harness.
+# The recovery suite proves three E10 recovery halves under CASE=recovery. (1) The kill matrix's
+# container half against the real fixture engine: a fast-exit engine's run.terminal is never lost in the
+# OCI drain race (REC-001), an external `docker rm -f` mid-run is classified lost not a false success
+# (ENG-005 streaming half), and T6's host-kill fences+restores. (2) T7's uncertain-tool reconciliation
+# against real Postgres + a real local HTTP destination: a kill between a side-effecting tool's execute
+# and record leaves the row uncertain, and the reconcile loop resolves it with DUPLICATE EXTERNAL EFFECT
+# = 0 (reversible reconciles to completed; irreversible escalates to manual_resolution). No real provider
+# — the reconcile invariant is provider-agnostic; the gated LIVE layer wraps the same assertions.
 run_recovery() {
   run_runner_suite fault ./tests/fault/recovery
+  # The reconcile fault tests live in package execution (they drive the in-process UncertainReconciler,
+  # an internal package tests/fault/* cannot import — the E09 T2 placement rule). -run selects only the
+  # fault-tagged recovery tests, so the package's plain unit tests are not re-run here.
+  PALAI_FAULT_RUN='TestFaultReversibleReconcile|TestFaultIrreversibleReconcile' \
+    run_pg_fault_suite recovery ./apps/control-plane/internal/execution
 }
 
 case "$suite" in

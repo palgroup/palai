@@ -42,6 +42,7 @@ var allTables = []string{
 	"publications", "approvals",
 	"checkpoints", "transcript_boundaries",
 	"delivered_messages",
+	"host_quarantine",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -683,6 +684,78 @@ func TestRecoveryObjectsMigration(t *testing.T) {
 	}
 	if !columnExists(t, pool, "workspace_snapshots", "boundary_id") {
 		t.Fatal("after reapply, workspace_snapshots.boundary_id rider is missing")
+	}
+}
+
+// TestToolCallLedgerMigration proves 000018 adds the tool-call replay-ledger rider columns (E10 Task 7,
+// spec §26.6-26.7) idempotently and reverses cleanly: the columns exist after apply (a re-apply is a
+// clean no-op), are gone after rollback, and return after reapply (the 000014/000016 re-run-safety
+// pattern). A legacy completed row backfills to the 'pure' default — the ledger classification never has
+// to backfill a NULL — and an uncertain row with a reconciliation sub-state round-trips, proving the
+// columns are usable, not just present.
+func TestToolCallLedgerMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (ADD COLUMN IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	ledgerCols := []string{"replay_class", "request_hash", "external_idempotency_key", "lease_owner", "reconciliation_state", "commit_boundary"}
+	for _, col := range ledgerCols {
+		if !columnExists(t, pool, "tool_calls", col) {
+			t.Fatalf("after apply, tool_calls.%s is missing", col)
+		}
+	}
+
+	// A legacy completed row inserted through the pre-000018 column list backfills replay_class to the
+	// 'pure' default, so the ledger classification reads a value rather than a NULL.
+	tenant, _, runID := seedRun(t, pool)
+	legacyID := newID("tcall")
+	exec(t, pool,
+		`INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, result)
+		 VALUES ($1, $2, $3, $4, 3, 'completed', 'add', '{"a":1}', '{"sum":1}')`,
+		legacyID, tenant.Organization, tenant.Project, runID)
+	var replayClass string
+	if err := pool.QueryRow(ctx, `SELECT replay_class FROM tool_calls WHERE id=$1`, legacyID).Scan(&replayClass); err != nil {
+		t.Fatalf("read replay_class error = %v", err)
+	}
+	if replayClass != "pure" {
+		t.Fatalf("legacy row replay_class = %q, want the 'pure' backfill default", replayClass)
+	}
+	// An uncertain row with a reconciliation sub-state round-trips — the columns carry the §26.7 path.
+	uncertainID := newID("tcall")
+	exec(t, pool,
+		`INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments,
+		 replay_class, request_hash, external_idempotency_key, lease_owner, reconciliation_state, commit_boundary)
+		 VALUES ($1, $2, $3, $4, 4, 'uncertain', 'push', '{}', 'irreversible', 'sha256:abc', 'push:main', '4', 'reconciling', 'mr_step2')`,
+		uncertainID, tenant.Organization, tenant.Project, runID)
+	var state, reconState, boundary string
+	if err := pool.QueryRow(ctx, `SELECT state, reconciliation_state, commit_boundary FROM tool_calls WHERE id=$1`, uncertainID).
+		Scan(&state, &reconState, &boundary); err != nil {
+		t.Fatalf("read uncertain row error = %v", err)
+	}
+	if state != "uncertain" || reconState != "reconciling" || boundary != "mr_step2" {
+		t.Fatalf("uncertain row = state:%q recon:%q boundary:%q, want uncertain/reconciling/mr_step2", state, reconState, boundary)
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, col := range ledgerCols {
+		if columnExists(t, pool, "tool_calls", col) {
+			t.Fatalf("after rollback, tool_calls.%s still exists", col)
+		}
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, col := range ledgerCols {
+		if !columnExists(t, pool, "tool_calls", col) {
+			t.Fatalf("after reapply, tool_calls.%s is missing", col)
+		}
 	}
 }
 

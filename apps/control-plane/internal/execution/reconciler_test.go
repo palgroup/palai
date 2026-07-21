@@ -12,6 +12,7 @@ type fakeReclaimer struct {
 	sawMaxAttempts int
 	swept          int
 	bridgeSweeps   int
+	approvalSweeps int
 }
 
 func (f *fakeReclaimer) ReclaimExpired(_ context.Context, maxAttempts int) (int, error) {
@@ -21,6 +22,11 @@ func (f *fakeReclaimer) ReclaimExpired(_ context.Context, maxAttempts int) (int,
 
 func (f *fakeReclaimer) SweepDeadLetteredRuns(_ context.Context) (int, error) {
 	f.bridgeSweeps++
+	return 0, nil
+}
+
+func (f *fakeReclaimer) SweepExpiredApprovals(_ context.Context) (int, error) {
+	f.approvalSweeps++
 	return 0, nil
 }
 
@@ -39,5 +45,8 @@ func TestReconcilerSweepReportsDeadLetteredWithConfiguredCeiling(t *testing.T) {
 	}
 	if rec.bridgeSweeps != 1 {
 		t.Fatalf("dead-letter bridge sweeps = %d, want 1 (each pass must bridge dead-lettered runs)", rec.bridgeSweeps)
+	}
+	if rec.approvalSweeps != 1 {
+		t.Fatalf("expired-approval sweeps = %d, want 1 (each pass must expire idle-elapsed approvals, E10 T7)", rec.approvalSweeps)
 	}
 }

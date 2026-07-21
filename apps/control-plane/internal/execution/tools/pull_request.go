@@ -19,7 +19,8 @@ import (
 // approved (REP-008).
 func PullRequestTool() toolbroker.Tool {
 	return toolbroker.Tool{
-		Name: "palai.publish.pull_request",
+		Name:        "palai.publish.pull_request",
+		ReplayClass: toolbroker.ClassIdempotent, // one PR per branch under a stable idempotency key (§26.6, REP-008)
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

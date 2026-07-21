@@ -55,15 +55,40 @@ ORDER BY p.created_at, p.id
 LIMIT 1;
 
 -- LockPendingApprovalForSession locks the session's oldest pending publication + its approval so an
--- approve/deny transition sees a stable state (the single-winner gate).
+-- approve/deny transition sees a stable state (the single-winner gate). It projects the approval's
+-- expires_at so the consume-time guard (ApplyApprovalDecision) can reject an approve that arrives after
+-- the minutes-scale expiry (spec §22.4, E10 T7): an expired approval authorizes nothing.
 -- name: LockPendingApprovalForSession
-SELECT p.id, coalesce(a.request_hash, '')
+SELECT p.id, coalesce(a.request_hash, ''), a.expires_at
 FROM publications p
 LEFT JOIN approvals a ON a.publication_id = p.id
 WHERE p.session_id = $1 AND p.organization_id = $2 AND p.project_id = $3 AND p.state = 'pending_approval'
 ORDER BY p.created_at, p.id
 LIMIT 1
 FOR UPDATE OF p;
+
+-- LockPublicationApprovalExpiry locks one publication + its approval expiry for the pump's consume-time
+-- expiry guard (spec §22.4, §30.9-30.10, E10 T7): before publishing an APPROVED row the pump checks
+-- whether its approval elapsed between approval and publish. FOR UPDATE OF p serializes it against a
+-- concurrent publish/deny so the approved->expired transition is single-winner.
+-- name: LockPublicationApprovalExpiry
+SELECT p.state, a.expires_at
+FROM publications p
+LEFT JOIN approvals a ON a.publication_id = p.id
+WHERE p.id = $1 AND p.organization_id = $2 AND p.project_id = $3
+FOR UPDATE OF p;
+
+-- SelectExpiredApprovals returns the still-open publications (pending_approval or approved) whose
+-- one-shot approval has passed its minutes-scale expiry — the reconcile sweep's read (spec §22.4, E10
+-- T7). Ordered so the sweep journals deterministically. The sweep expires each single-winner and emits
+-- approval.expired.v1; this read only names the candidates.
+-- name: SelectExpiredApprovals
+SELECT p.id, p.organization_id, p.project_id, p.session_id, coalesce(p.response_id, ''), p.state
+FROM publications p
+JOIN approvals a ON a.publication_id = p.id
+WHERE p.state IN ('pending_approval', 'approved')
+  AND a.expires_at IS NOT NULL AND a.expires_at < clock_timestamp()
+ORDER BY p.created_at, p.id;
 
 -- SetPublicationState transitions a publication to a new state single-winner: only the tx that finds it
 -- in fromState advances it, so a redelivered boundary is a no-op.

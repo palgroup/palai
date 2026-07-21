@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -19,6 +20,11 @@ const (
 	approvalRequestedEvent = "approval.requested.v1"
 	approvalApprovedEvent  = "approval.approved.v1"
 	approvalDeniedEvent    = "approval.denied.v1"
+	// approvalExpiredEvent marks a one-shot approval that passed its minutes-scale expiry (spec §22.4)
+	// before it was consumed — forward-declared in 000013 (the 'expired' publication state + expires_at)
+	// and enforced in E10 T7. It is already in the canonical registry (event-types.json + AsyncAPI); the
+	// consume-time guard + reconcile sweep are the code half, no schema.
+	approvalExpiredEvent   = "approval.expired.v1"
 	pushCompletedEvent     = "push.completed.v1"
 	pullRequestOpenedEvent = "pull_request.opened.v1"
 	warningRaisedEvent     = "warning.raised.v1"
@@ -191,13 +197,33 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 
 	// Lock the session's pending publication so the transition is single-winner.
 	var pubID, pendingHash string
+	var expiresAt *time.Time
 	switch err := tx.QueryRow(ctx, storage.Query("LockPendingApprovalForSession"), sessionID, tenant.Organization, tenant.Project).
-		Scan(&pubID, &pendingHash); {
+		Scan(&pubID, &pendingHash, &expiresAt); {
 	case errors.Is(err, pgx.ErrNoRows):
 		// No pending approval (already resolved by a racing path): settle the command, transition nothing.
 		return applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
 	case err != nil:
 		return 0, fmt.Errorf("lock pending approval: %w", err)
+	}
+
+	// Consume-time expiry guard (spec §22.4, E10 T7): an approve/deny that arrives after the one-shot
+	// approval passed its minutes-scale expiry authorizes NOTHING. Expire the publication (pending ->
+	// expired) + journal approval.expired.v1, then settle the command — the same "authorizes nothing but
+	// settles the command" shape the stale-hash branch uses. Checked before the hash so an expired
+	// approval never approves regardless of the token.
+	if expiresAt != nil && expiresAt.Before(time.Now()) {
+		if _, err := expirePublicationTx(ctx, tx, tenant, sessionID, responseID, pubID, "pending_approval"); err != nil {
+			return 0, err
+		}
+		seq, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
+		if err != nil {
+			return 0, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return 0, fmt.Errorf("commit expired approval: %w", err)
+		}
+		return seq, nil
 	}
 
 	// A stale one-shot token (the head moved -> a new pending approval carries a new hash, or the args
@@ -229,6 +255,118 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		return 0, fmt.Errorf("commit apply approval: %w", err)
 	}
 	return seq, nil
+}
+
+// expirePublicationTx drives a publication fromState -> expired single-winner and journals
+// approval.expired.v1 (spec §22.4, E10 T7). It is the shared enforcement body: the consume-time guards
+// (ApplyApprovalDecision, ExpireApprovalIfElapsed) and the reconcile sweep all expire through it, so an
+// expired approval is journaled identically no matter which path observes the elapsed deadline. The
+// UPDATE is conditional on fromState, so a racing publish/deny that already moved the row wins and this
+// is a no-op that journals nothing. It returns whether it actually expired a row, so a sweep counts only
+// the ones it moved (not a no-op a concurrent consume already handled).
+func expirePublicationTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, pubID, fromState string) (bool, error) {
+	tag, err := tx.Exec(ctx, storage.Query("SetPublicationState"),
+		pubID, tenant.Organization, tenant.Project, "expired", fromState)
+	if err != nil {
+		return false, fmt.Errorf("expire publication: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil // a racing transition already moved it; nothing to journal
+	}
+	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, approvalExpiredEvent,
+		mustMarshal(map[string]any{"publication_id": pubID})); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ExpireApprovalIfElapsed is the approval pump's consume-time expiry guard (spec §22.4, §30.9-30.10,
+// E10 T7): before publishing an APPROVED publication, the pump checks whether its one-shot approval
+// elapsed between approval and publish. If so it expires the row (approved -> expired) + journals
+// approval.expired.v1 and reports expired=true, so the pump SKIPS the publish — an expired approval
+// never pushes. A row with no expiry, or one still within it, reports false and is published unchanged
+// (bit-identical). The lock serializes it against a concurrent publish so the transition is
+// single-winner.
+func (s *Store) ExpireApprovalIfElapsed(ctx context.Context, tenant Tenant, sessionID, responseID, publicationID string) (bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return false, fmt.Errorf("begin expire-if-elapsed: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	var state string
+	var expiresAt *time.Time
+	switch err := tx.QueryRow(ctx, storage.Query("LockPublicationApprovalExpiry"), publicationID, tenant.Organization, tenant.Project).
+		Scan(&state, &expiresAt); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("lock publication expiry: %w", err)
+	}
+	if state != "approved" || expiresAt == nil || !expiresAt.Before(time.Now()) {
+		return false, nil
+	}
+	if _, err := expirePublicationTx(ctx, tx, tenant, sessionID, responseID, publicationID, "approved"); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit expire-if-elapsed: %w", err)
+	}
+	return true, nil
+}
+
+// SweepExpiredApprovals expires every still-open publication (pending_approval or approved) whose
+// one-shot approval passed its minutes-scale expiry, in one transaction, journaling approval.expired.v1
+// per row (spec §22.4, E10 T7). It is the reconcile-loop half of expiry enforcement: the consume-time
+// guards catch an expiry observed at approve/publish, this catches one that elapsed while idle (no
+// consume). Not a timer-scheduled sweep (that is E11) — one supervised reconcile pass, the retention/GC
+// pattern. Returns the number expired this pass.
+func (s *Store) SweepExpiredApprovals(ctx context.Context) (int, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return 0, fmt.Errorf("begin sweep expired approvals: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	rows, err := tx.Query(ctx, storage.Query("SelectExpiredApprovals"))
+	if err != nil {
+		return 0, fmt.Errorf("select expired approvals: %w", err)
+	}
+	type expired struct {
+		pubID, sessionID, responseID, fromState string
+		tenant                                  Tenant
+	}
+	var candidates []expired
+	for rows.Next() {
+		var e expired
+		if err := rows.Scan(&e.pubID, &e.tenant.Organization, &e.tenant.Project, &e.sessionID, &e.responseID, &e.fromState); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan expired approval: %w", err)
+		}
+		candidates = append(candidates, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	swept := 0
+	for _, e := range candidates {
+		// The row's own read state (pending_approval or approved) is the fromState the shared
+		// single-winner expiry guards on. Count only rows this sweep actually moved — a row a concurrent
+		// consume already expired is a no-op (RowsAffected 0), not a swept one.
+		expired, err := expirePublicationTx(ctx, tx, e.tenant, e.sessionID, e.responseID, e.pubID, e.fromState)
+		if err != nil {
+			return 0, err
+		}
+		if expired {
+			swept++
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit sweep expired approvals: %w", err)
+	}
+	return swept, nil
 }
 
 // ApprovedPublicationsForRun returns a run's approved-but-unpublished publications — the approval pump's

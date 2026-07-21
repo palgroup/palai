@@ -121,15 +121,114 @@ SELECT EXISTS (
 UPDATE responses
 SET state = $4, output = $5, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3
-  AND state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded');
+  AND state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded', 'failed_with_uncertain_side_effect');
 
--- UpsertToolCall records a completed tool call. ON CONFLICT DO NOTHING makes a
--- redelivered tool_call_id idempotent: the cached completion is authoritative and is
--- never overwritten (spec §26.7).
+-- HasUncertainSideEffect reports whether a run has an UNRESOLVED uncertain side effect — an
+-- irreversible/interactive tool_call still `uncertain` or in `manual_resolution` (spec §26.10, SES-010,
+-- E10 T7). A cancel racing a kill terminalizes such a run as failed_with_uncertain_side_effect (the
+-- effect may have landed; its status is unknown), not a clean canceled.
+-- name: HasUncertainSideEffect
+SELECT EXISTS (
+    SELECT 1 FROM tool_calls
+    WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+      AND state IN ('uncertain', 'manual_resolution')
+      AND replay_class IN ('irreversible', 'interactive')
+);
+
+-- UpsertToolCall records a completed tool call with its replay-ledger classification (spec §26.6-26.7,
+-- E10 T7): replay_class is the tool's declared kill-recovery class copied at execute time, request_hash
+-- the canonical (name, arguments) digest so a duplicate tool_call_id is recognised by content (TOL-016).
+-- ON CONFLICT DO NOTHING makes a redelivered tool_call_id idempotent: the cached completion is
+-- authoritative and is never overwritten.
 -- name: UpsertToolCall
-INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, result)
-VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8)
-ON CONFLICT (id) DO NOTHING;
+-- Complete a tool_call (spec §26.7, E10 T7). A pure tool with no pre-write INSERTs 'completed' fresh; a
+-- side-effecting tool pre-written 'executing' (BeginToolCall) is advanced executing->completed via the
+-- ON CONFLICT branch. The FENCE GUARD (tool_calls.fence <= EXCLUDED.fence) rejects a stale late callback
+-- from a superseded attempt (TOL-017) — its lower fence loses to the reclaiming attempt's advanced
+-- fence, so 0 rows change and the caller reports a stale commit. A row already resolved
+-- (completed/reconciled_*) never reopens (WHERE excludes it). RETURNING xmax=0 distinguishes a fresh
+-- insert from an update, but the caller only needs RowsAffected, so no RETURNING.
+INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, result, replay_class, request_hash)
+VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, $9, $10)
+ON CONFLICT (id) DO UPDATE
+   SET state = 'completed', result = EXCLUDED.result, updated_at = clock_timestamp()
+   WHERE tool_calls.state IN ('executing', 'leased') AND tool_calls.fence <= EXCLUDED.fence;
+
+-- LookupToolCall reads a tool_call's durable ledger row for the pre-execute consult (spec §26.7, §53.4
+-- analogue for tools, E10 T7): a committed row is authoritative, so a redelivered call after a
+-- reclaim/reconstruction replays the cached result instead of re-firing the effect (TOL-001/016), an
+-- `uncertain` row blocks the call, and an `executing` row (a kill mid-execute) is classified by the
+-- replay_class. No row -> a fresh dispatch.
+-- name: LookupToolCall
+SELECT state, coalesce(result::text, ''), replay_class, fence, request_hash
+FROM tool_calls
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- BeginToolCall records the durable PRE-EXECUTE marker for a side-effecting tool (spec §26.6-26.7, E10
+-- T7): the row goes to 'executing' BEFORE the external effect, so a kill between execute and commit is
+-- detectable as uncertain (the row is stuck 'executing'), never mistaken for "never ran". ON CONFLICT
+-- advances the fence to the reclaiming attempt (so a stale late callback is rejected at commit) but
+-- never reopens an already-resolved row.
+-- name: BeginToolCall
+INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, request_hash, external_idempotency_key, lease_owner, commit_boundary)
+VALUES ($1, $2, $3, $4, $5, 'executing', $6, $7, $8, $9, $10, $11, $12)
+ON CONFLICT (id) DO UPDATE
+   SET fence = GREATEST(tool_calls.fence, EXCLUDED.fence), lease_owner = EXCLUDED.lease_owner, updated_at = clock_timestamp()
+   WHERE tool_calls.state NOT IN ('completed', 'reconciled_completed', 'reconciled_not_applied');
+
+-- MarkToolCallUncertain drives an in-flight (executing/leased) tool_call to `uncertain` (spec §26.7): a
+-- kill-after-execute for a class that must not auto-replay (irreversible/reversible/interactive). Single
+-- winner on the in-flight state, so a racing path settles once. Journals nothing here — the caller
+-- appends tool_call.uncertain.v1 in the same tx.
+-- name: MarkToolCallUncertain
+UPDATE tool_calls
+SET state = 'uncertain', reconciliation_state = 'reconciling', updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state IN ('executing', 'leased');
+
+-- ReconcileToolCall resolves an `uncertain` tool_call to one of the §26.7 exits (E10 T7):
+-- reconciled_completed (the destination applied it), reconciled_not_applied (it did not), or
+-- manual_resolution (a human must decide — the irreversible default). Single winner on 'uncertain', so a
+-- racing reconcile settles once. result is set only when a resolution carries one (COALESCE keeps the
+-- existing bytes otherwise). $4 the new state, $5 the reconciliation_state mirror, $6 the optional result.
+-- name: ReconcileToolCall
+UPDATE tool_calls
+SET state = $4, reconciliation_state = $5, result = COALESCE($6, result), updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'uncertain';
+
+-- SelectUncertainToolCalls returns the uncertain tool_calls awaiting reconciliation, oldest first — the
+-- reconcile loop's read (spec §26.7, E10 T7). It joins the run for the session/response the resolution
+-- event is journaled under and the re-enqueue needs.
+-- name: SelectUncertainToolCalls
+SELECT t.id, t.organization_id, t.project_id, t.run_id, r.session_id, coalesce(r.response_id, ''),
+       t.name, t.replay_class, t.external_idempotency_key
+FROM tool_calls t
+JOIN runs r ON r.id = t.run_id
+WHERE t.state = 'uncertain' AND t.reconciliation_state = 'reconciling'
+ORDER BY t.created_at, t.id
+LIMIT $1;
+
+-- RunResolvedToolCalls returns a run's resolved tool_calls with their replay class — the class-labelled
+-- accounting a RecoveryProof carries for the reused-vs-replayed tool set (spec §26.12, E10 T7). On a
+-- transcript reconstruction these are the calls whose committed result is REUSED from the ledger (the
+-- durable consult replays them, never re-executes), so the proof honestly names them class-labelled.
+-- name: RunResolvedToolCalls
+SELECT id, replay_class
+FROM tool_calls
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+  AND state IN ('completed', 'reconciled_completed', 'reconciled_not_applied')
+ORDER BY created_at, id;
+
+-- PendingToolOperationsForRun returns a run's UNRESOLVED tool operations at a checkpoint boundary (spec
+-- §26.2, §26.4, E10 T7): rows in the `uncertain` state (killed after execute, side effect unknown) or
+-- escalated to `manual_resolution`. These are the operations a checkpoint must record in
+-- pending_operations so a RESTORE does not silently hide an in-flight external effect — a completed row
+-- is resolved and never listed. Ordered so the recorded list is deterministic.
+-- name: PendingToolOperationsForRun
+SELECT id, name, replay_class, reconciliation_state
+FROM tool_calls
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+  AND state IN ('uncertain', 'manual_resolution')
+ORDER BY created_at, id;
 
 -- InsertModelRequest records a model request before the provider is called. It returns
 -- the id only on a fresh insert, so the caller journals the request event exactly once

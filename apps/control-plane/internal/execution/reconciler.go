@@ -6,11 +6,16 @@ import (
 )
 
 // ReconcileStore is the coordinator seam the reconciler sweeps through: it dead-letters
-// abandoned jobs and drives dead-lettered response.run jobs to a failed run terminal.
+// abandoned jobs, drives dead-lettered response.run jobs to a failed run terminal, and expires
+// approvals whose minutes-scale deadline elapsed while idle (spec §22.4, E10 T7).
 // *coordinator.Store implements it; a fake implements it in unit tests.
 type ReconcileStore interface {
 	ReclaimExpired(ctx context.Context, maxAttempts int) (int, error)
 	SweepDeadLetteredRuns(ctx context.Context) (int, error)
+	// SweepExpiredApprovals expires publications whose one-shot approval passed its expiry with no
+	// consume observing it (the idle-expiry half; the consume-time guards catch the rest). Returns the
+	// number expired this pass.
+	SweepExpiredApprovals(ctx context.Context) (int, error)
 }
 
 // Reconciler periodically dead-letters jobs whose lease has lapsed and whose attempts
@@ -40,6 +45,12 @@ func (r *Reconciler) Sweep(ctx context.Context) (int, error) {
 		return dead, err
 	}
 	if _, err := r.store.SweepDeadLetteredRuns(ctx); err != nil {
+		return dead, err
+	}
+	// Expire approvals whose minutes-scale deadline elapsed while idle (spec §22.4, E10 T7): a
+	// forward-declared expiry that no approve/publish consume ever observed. Non-fatal like the rest of
+	// the pass — the next tick retries — so a transient blip never stops the dead-letter safety net.
+	if _, err := r.store.SweepExpiredApprovals(ctx); err != nil {
 		return dead, err
 	}
 	return dead, nil

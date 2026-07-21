@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -233,6 +234,73 @@ func (s *Store) CancelChildren(ctx context.Context, tenant Tenant, parentRunID s
 	return canceled, nil
 }
 
+// CancelRunReconciled cancels a run during/after a kill and reconciles its active external ops to a
+// SINGLE monotonic terminal (spec §26.10 steps 8-9, SES-010, E10 T7): `canceled` when nothing is left
+// uncertain, or `failed_with_uncertain_side_effect` when an irreversible/interactive tool_call is still
+// uncertain (its effect may have landed; the run must NOT claim a clean cancel). It drives the run to
+// canceled (monotonic — a run a racing terminal already finished is left alone), propagates the cancel to
+// children (each to a single terminal, E08 SUB-005), and finalizes the response with the caller's
+// projection — but ONLY if the run is genuinely canceled: a run that COMPLETED/failed concurrently keeps
+// its own projection (no empty-canceled clobber of a completion's output). It returns the response's
+// ACTUAL terminal, so a racing completion is reflected honestly. It is the single production cancel path
+// (CancelResponse routes here).
+func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, responseID, runID string, canceledProjection, uncertainProjection []byte) (string, error) {
+	uncertain, err := s.hasUncertainSideEffect(ctx, tenant, runID)
+	if err != nil {
+		return "", err
+	}
+	terminal, projection := "canceled", canceledProjection
+	if uncertain {
+		terminal, projection = "failed_with_uncertain_side_effect", uncertainProjection
+	}
+	// Drive the run canceled, monotonically. A run a racing terminal already finished is left alone
+	// (ErrRunTerminal) — it may have COMPLETED concurrently, which the finalize step below must respect.
+	switch _, err := s.ApplyRunTransition(ctx, tenant, runID, statemachines.RunCmdCancel); {
+	case errors.Is(err, ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+	case err != nil:
+		return "", err
+	}
+	// Propagate the cancel to descendants (E08 SUB-005): a child is canceled (not uncertain), so it gets
+	// the canonical canceled projection. Runs regardless — a re-cancel reconciles a child a first missed.
+	if _, err := s.CancelChildren(ctx, tenant, runID, canceledProjection); err != nil {
+		return "", err
+	}
+	// Finalize the response as canceled/uncertain ONLY if the run is GENUINELY canceled. finalize.go
+	// applies run→completed and then compiles the changeset BEFORE finalizing the response, so a cancel
+	// landing in that gap sees run=completed but response still open; writing an empty canceled projection
+	// then would clobber the completion's output (run/response divergence + lost output). Read the run's
+	// actual terminal and skip the finalize when it completed/failed — leave the completion's projection.
+	var runState string
+	if err := s.pool.QueryRow(ctx, `SELECT state FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		runID, tenant.Organization, tenant.Project).Scan(&runState); err != nil {
+		return "", fmt.Errorf("read run state for cancel finalize: %w", err)
+	}
+	if runState == string(statemachines.RunCanceled) {
+		// The conditional UpdateResponse still makes this a monotonic no-op if the response was already
+		// finalized by another cancel path (the late-terminal DB guard).
+		if err := s.FinalizeResponse(ctx, tenant, responseID, terminal, projection); err != nil {
+			return "", err
+		}
+	}
+	// Return the ACTUAL response terminal (whatever won), so a racing completion is reflected honestly.
+	var actual string
+	if err := s.pool.QueryRow(ctx, `SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		responseID, tenant.Organization, tenant.Project).Scan(&actual); err != nil {
+		return "", fmt.Errorf("read terminal response state: %w", err)
+	}
+	return actual, nil
+}
+
+// hasUncertainSideEffect reports whether a run has an unresolved uncertain irreversible/interactive
+// tool_call — the SES-010 terminal discriminator (spec §26.10).
+func (s *Store) hasUncertainSideEffect(ctx context.Context, tenant Tenant, runID string) (bool, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, storage.Query("HasUncertainSideEffect"), runID, tenant.Organization, tenant.Project).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check uncertain side effect: %w", err)
+	}
+	return exists, nil
+}
+
 // PriorResponse is one earlier response in a session, as run.start history needs it:
 // Output is the stored terminal projection (nil once purged or not yet terminal), and
 // Purged marks a reaped response whose content is a redacted_content marker (spec §22.2).
@@ -369,12 +437,18 @@ func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID,
 	return seq, nil
 }
 
+// ErrStaleToolCommit reports a tool result committed under a fence the ledger has since advanced past —
+// a late callback from a superseded attempt (spec §26.7, TOL-017). The reclaiming attempt's higher
+// fence wins; the stale commit is rejected rather than overwriting the newer row.
+var ErrStaleToolCommit = errors.New("stale_tool_commit")
+
 // CommitToolResult persists a completed tool_call row and its journal event in one
 // transaction. The orchestrator calls it before delivering tool.result to the engine
-// (commit-before-deliver). The tool_call row is idempotent (UpsertToolCall keeps the
-// authoritative completed row); duplicate frames are already deduped by the caller's
-// frame ledger, so this runs once per tool call.
-func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, fence uint64, callID, name string, arguments, result []byte, eventType string, payload []byte) (int64, error) {
+// (commit-before-deliver). A pure tool INSERTs 'completed' fresh; a side-effecting tool pre-written
+// 'executing' (BeginToolCall) is advanced to completed. A stale-fence late callback (TOL-017) changes 0
+// rows and returns ErrStaleToolCommit; a benign re-commit of an already-resolved row is an idempotent
+// no-op (0 rows, nil, no second event). Only a real completion journals its event.
+func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, fence uint64, callID, name string, arguments, result []byte, replayClass, requestHash, eventType string, payload []byte) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin tool commit: %w", err)
@@ -384,9 +458,31 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 	if err := guardRunActive(ctx, tx, tenant, runID); err != nil {
 		return 0, err
 	}
-	if _, err := tx.Exec(ctx, storage.Query("UpsertToolCall"),
-		callID, tenant.Organization, tenant.Project, runID, int64(fence), name, arguments, result); err != nil {
+	tag, err := tx.Exec(ctx, storage.Query("UpsertToolCall"),
+		callID, tenant.Organization, tenant.Project, runID, int64(fence), name, arguments, result, replayClass, requestHash)
+	if err != nil {
 		return 0, fmt.Errorf("upsert tool call: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// The upsert changed nothing. Only a plain `completed` row is a benign idempotent re-drive (the
+		// durable result already stands). ANY other state means this committer is stale: executing/leased
+		// = the fence advanced past it (TOL-017), and uncertain/manual_resolution/reconciled_* = a
+		// RECLAIMING attempt parked or resolved the call after this (stale) attempt passed the consult and
+		// executed — so returning nil here would deliver a non-durable fresh result to the superseded
+		// engine (commit-before-deliver breach) and let it reason on a result the reclaimer blocked
+		// (§26.7 continuation-block, TOL-003). Reject it.
+		var state string
+		if err := tx.QueryRow(ctx, storage.Query("LookupToolCall"), callID, tenant.Organization, tenant.Project).
+			Scan(&state, new(string), new(string), new(int64), new(string)); err != nil {
+			return 0, fmt.Errorf("classify unchanged tool commit: %w", err)
+		}
+		if state != "completed" {
+			return 0, ErrStaleToolCommit
+		}
+		if err := tx.Commit(ctx); err != nil { // already completed: idempotent no-op, no second event
+			return 0, fmt.Errorf("commit tool result (idempotent): %w", err)
+		}
+		return 0, nil
 	}
 	seq, err := appendEvent(ctx, tx, tenant, sessionID, responseID, eventType, payload)
 	if err != nil {
@@ -396,6 +492,230 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 		return 0, fmt.Errorf("commit tool result: %w", err)
 	}
 	return seq, nil
+}
+
+// LookupToolCall reads a tool_call's durable ledger row for the pre-execute consult (spec §26.7, E10
+// T7): a completed row replays cached (never re-fires), an `uncertain` row blocks the call, an
+// `executing` row (a kill mid-execute) is classified by replayClass. requestHash is the row's canonical
+// (name, args) digest, so the replay path can reject a same-id call whose content diverged (TOL-016).
+// found is false for a fresh call.
+func (s *Store) LookupToolCall(ctx context.Context, tenant Tenant, callID string) (state, result, replayClass string, fence int64, requestHash string, found bool, err error) {
+	switch e := s.pool.QueryRow(ctx, storage.Query("LookupToolCall"), callID, tenant.Organization, tenant.Project).
+		Scan(&state, &result, &replayClass, &fence, &requestHash); {
+	case errors.Is(e, pgx.ErrNoRows):
+		return "", "", "", 0, "", false, nil
+	case e != nil:
+		return "", "", "", 0, "", false, fmt.Errorf("lookup tool call: %w", e)
+	}
+	return state, result, replayClass, fence, requestHash, true, nil
+}
+
+// BeginToolCall records the durable PRE-EXECUTE marker for a side-effecting tool (spec §26.6-26.7, E10
+// T7): the row goes to 'executing' BEFORE the external effect, so a kill between execute and commit is
+// detectable as uncertain. It journals tool_call.executing.v1 on a fresh pre-write. Runs under
+// guardRunActive. Idempotent: a redelivered pre-write advances the fence but does not reopen a resolved row.
+func (s *Store) BeginToolCall(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, fence uint64, callID, name string, arguments []byte, replayClass, requestHash, externalKey, boundary string) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin tool pre-write: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	if err := guardRunActive(ctx, tx, tenant, runID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, storage.Query("BeginToolCall"),
+		callID, tenant.Organization, tenant.Project, runID, int64(fence), name, arguments, replayClass, requestHash, externalKey, fmt.Sprintf("%d", fence), boundary)
+	if err != nil {
+		return fmt.Errorf("pre-write tool call: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, "tool_call.executing.v1",
+			mustMarshal(map[string]any{"run_id": runID, "tool_call_id": callID, "replay_class": replayClass})); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tool pre-write: %w", err)
+	}
+	return nil
+}
+
+// MarkToolCallUncertain drives an in-flight (executing/leased) tool_call to `uncertain` and journals
+// tool_call.uncertain.v1 (spec §26.7): a kill-after-execute for a class that must not auto-replay. It
+// returns whether it transitioned a row (false when a racing path already resolved it). Runs under
+// guardRunActive.
+func (s *Store) MarkToolCallUncertain(ctx context.Context, tenant Tenant, sessionID, responseID, runID, callID string) (bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return false, fmt.Errorf("begin mark uncertain: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	if err := guardRunActive(ctx, tx, tenant, runID); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx, storage.Query("MarkToolCallUncertain"), callID, tenant.Organization, tenant.Project)
+	if err != nil {
+		return false, fmt.Errorf("mark tool call uncertain: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil // already resolved by a racing path
+	}
+	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, "tool_call.uncertain.v1",
+		mustMarshal(map[string]any{"run_id": runID, "tool_call_id": callID})); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit mark uncertain: %w", err)
+	}
+	return true, nil
+}
+
+// RunResolvedToolCalls returns a run's resolved tool_calls as class-labelled "tool_call_id:replay_class"
+// strings — the RecoveryProof's reused-tool accounting (spec §26.12, E10 T7). On a transcript
+// reconstruction these are the calls whose committed result is REUSED from the ledger (replayed, never
+// re-executed). Empty (a run with no tool calls, or a compatible restore) is honest evidence too.
+func (s *Store) RunResolvedToolCalls(ctx context.Context, tenant Tenant, runID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("RunResolvedToolCalls"), runID, tenant.Organization, tenant.Project)
+	if err != nil {
+		return nil, fmt.Errorf("read resolved tool calls: %w", err)
+	}
+	defer rows.Close()
+	labels := []string{}
+	for rows.Next() {
+		var id, class string
+		if err := rows.Scan(&id, &class); err != nil {
+			return nil, fmt.Errorf("scan resolved tool call: %w", err)
+		}
+		labels = append(labels, id+":"+class)
+	}
+	return labels, rows.Err()
+}
+
+// ReenqueueResponseRun enqueues a fresh response.run job for a run so a new attempt continues it (spec
+// §26.7, E10 T7): after the reconcile loop resolves an uncertain tool_call, the run — left running when
+// its attempt STOPPED on the uncertain call — needs a fresh attempt to reconstruct and proceed (the
+// resolved row now replays or re-executes). Idempotent-safe: a duplicate job exact-stands-down against
+// any live one (RunHasLiveResponseJob), so an over-enqueue never double-drives.
+func (s *Store) ReenqueueResponseRun(ctx context.Context, tenant Tenant, runID string) error {
+	jobID, err := newJobID()
+	if err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, storage.Query("EnqueueJob"),
+		jobID, tenant.Organization, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, runID))); err != nil {
+		return fmt.Errorf("re-enqueue response run: %w", err)
+	}
+	return nil
+}
+
+// UncertainToolCall is one uncertain tool_call the reconcile loop must resolve (spec §26.7, E10 T7). It
+// carries the session/response the resolution event is journaled under and the run the reconcile
+// re-enqueues.
+type UncertainToolCall struct {
+	CallID      string
+	Tenant      Tenant
+	RunID       string
+	SessionID   string
+	ResponseID  string
+	Name        string
+	ReplayClass string
+	ExternalKey string
+}
+
+// UncertainToolCalls reads up to limit uncertain tool_calls awaiting reconciliation across all tenants —
+// the reconcile loop's sweep read (spec §26.7). Ordered oldest-first so resolution is deterministic.
+func (s *Store) UncertainToolCalls(ctx context.Context, limit int) ([]UncertainToolCall, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("SelectUncertainToolCalls"), limit)
+	if err != nil {
+		return nil, fmt.Errorf("select uncertain tool calls: %w", err)
+	}
+	defer rows.Close()
+	var out []UncertainToolCall
+	for rows.Next() {
+		var u UncertainToolCall
+		if err := rows.Scan(&u.CallID, &u.Tenant.Organization, &u.Tenant.Project, &u.RunID, &u.SessionID, &u.ResponseID, &u.Name, &u.ReplayClass, &u.ExternalKey); err != nil {
+			return nil, fmt.Errorf("scan uncertain tool call: %w", err)
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// ReconcileToolCall resolves an `uncertain` tool_call to one of the §26.7 exits and journals the
+// matching event (E10 T7): "reconciled_completed" (the destination applied it — its result re-enters
+// reasoning), "reconciled_not_applied" (it did not — a typed not-applied result), or "manual_resolution"
+// (a human must decide — the irreversible default). Single winner on 'uncertain', so a racing reconcile
+// settles once (RowsAffected 0 → a no-op). result is optional. It does NOT run under guardRunActive: a
+// reconcile settles a durable ledger row even for a run paused/waiting on it.
+func (s *Store) ReconcileToolCall(ctx context.Context, tenant Tenant, sessionID, responseID, runID, callID, resolution string, result []byte) error {
+	var newState, event string
+	switch resolution {
+	case "reconciled_completed":
+		newState, event = "reconciled_completed", "tool_call.reconciled_completed.v1"
+	case "reconciled_not_applied":
+		newState, event = "reconciled_not_applied", "tool_call.reconciled_not_applied.v1"
+	case "manual_resolution":
+		newState, event = "manual_resolution", "tool_call.manual_resolution.v1"
+	default:
+		return fmt.Errorf("unknown tool reconciliation %q", resolution)
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin reconcile tool call: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	var resultArg any
+	if len(result) > 0 {
+		resultArg = result
+	}
+	tag, err := tx.Exec(ctx, storage.Query("ReconcileToolCall"),
+		callID, tenant.Organization, tenant.Project, newState, newState, resultArg)
+	if err != nil {
+		return fmt.Errorf("reconcile tool call: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil // already resolved by a racing reconcile
+	}
+	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, event,
+		mustMarshal(map[string]any{"run_id": runID, "tool_call_id": callID, "resolution": resolution})); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit reconcile tool call: %w", err)
+	}
+	return nil
+}
+
+// PendingToolOperations returns a run's UNRESOLVED tool operations as a JSON array — the checkpoint's
+// pending_operations content (spec §26.2, §26.4, E10 T7). Each element is
+// {tool_call_id, name, replay_class, reconciliation_state} for a row still `uncertain` or in
+// `manual_resolution`. A run with none returns "[]" (never null), so a checkpoint always records a
+// well-formed array and a RESTORE that reads it back can honestly report zero in-flight effects. This is
+// CP-resolved at persist time — the engine never sees the ledger (§24).
+func (s *Store) PendingToolOperations(ctx context.Context, tenant Tenant, runID string) ([]byte, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("PendingToolOperationsForRun"), runID, tenant.Organization, tenant.Project)
+	if err != nil {
+		return nil, fmt.Errorf("read pending tool operations: %w", err)
+	}
+	defer rows.Close()
+	ops := []map[string]any{}
+	for rows.Next() {
+		var id, name, replayClass, reconciliationState string
+		if err := rows.Scan(&id, &name, &replayClass, &reconciliationState); err != nil {
+			return nil, fmt.Errorf("scan pending tool operation: %w", err)
+		}
+		ops = append(ops, map[string]any{
+			"tool_call_id": id, "name": name,
+			"replay_class": replayClass, "reconciliation_state": reconciliationState,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return json.Marshal(ops)
 }
 
 // FinalizeResponse writes the terminal Response projection built from committed run,

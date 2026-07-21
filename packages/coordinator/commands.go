@@ -513,8 +513,8 @@ func (s *Store) PendingSessionConfigCommands(ctx context.Context, tenant Tenant,
 // is the model_request_id of the step at whose boundary the message is delivered, the key a fresh
 // attempt redelivers it under. command.applied.v1 therefore now means the delivered message is
 // durable, not merely in the engine's memory — the crash-before-fold and pause/resume losses close.
-// The interrupt-path fold (InterruptModelStep) writes no such row; that recovery half is E10 Task 7
-// (ENG-012 outage command ordering), not this boundary path.
+// The interrupt-path fold (InterruptModelStep) writes the SAME durable row keyed by the aborted step's
+// boundary (E10 Task 7, ENG-012), so both delivery paths redeliver at the input boundary.
 func (s *Store) ApplyCommand(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, boundaryRequestID string) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -680,10 +680,20 @@ func (s *Store) PendingInterruptCommand(ctx context.Context, tenant Tenant, runI
 
 // InterruptModelStep records an aborted model step and applies the interrupt command in one
 // transaction (spec §9.2, §25.11): it journals the partial step event (the controller aborted
-// the in-flight provider call), then applies the command (command.applied.v1). It runs under
-// guardRunActive, so a run canceled during the abort rejects the write. Returns the command's
-// applied_sequence. A command already applied by a racing boundary returns ErrCommandNotPending.
-func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, partialEventType string, partialPayload []byte) (int64, error) {
+// the in-flight provider call), applies the command (command.applied.v1), and — for a send_message
+// interrupt — journals the durable delivered_messages row so the interrupt-delivered turn survives a
+// reclaim (spec §26.9, ENG-012). It runs under guardRunActive, so a run canceled during the abort
+// rejects the write. Returns the command's applied_sequence. A command already applied by a racing
+// boundary returns ErrCommandNotPending.
+//
+// The durable row closes the ENG-012 outage half the boundary path (ApplyCommand) already closed for
+// its own folds: an interrupt-delivered message lived ONLY in the engine subprocess's memory, so a
+// crash between the fold and the resumed step's commit dropped it (the command is drained single-winner,
+// nothing redelivered it, run.start carries prior responses only). boundaryRequestID is the aborted
+// step's model_request_id — the deterministic boundary key a reconstructing attempt redelivers under,
+// so interrupt-delivered and boundary-delivered messages at the same step interleave by applied_sequence
+// (§26.9). Empty boundaryRequestID (a change_config interrupt has no message) writes no row.
+func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, boundaryRequestID, partialEventType string, partialPayload []byte) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin interrupt: %w", err)
@@ -700,6 +710,15 @@ func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID
 	if err != nil {
 		return 0, err
 	}
+	// The interrupt-delivered message is now durable, keyed by the aborted step's boundary, so a
+	// reconstructing attempt refolds it exactly once at that same input boundary (spec §26.9). ON
+	// CONFLICT DO NOTHING (InsertDeliveredMessage) keeps a redelivered interrupt idempotent.
+	if boundaryRequestID != "" {
+		if _, err := tx.Exec(ctx, storage.Query("InsertDeliveredMessage"),
+			commandID, tenant.Organization, tenant.Project, runID, nullableText(boundaryRequestID), seq); err != nil {
+			return 0, fmt.Errorf("record interrupt delivered message: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit interrupt: %w", err)
 	}
@@ -711,8 +730,16 @@ func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID
 // was queued on the final step) must not sit queued forever. ApplyRunTransition calls it inside
 // the terminal transition's tx, so the run's terminality and its commands' expiry commit
 // together. Journals command.expired.v1 per swept command so attached clients see the lifecycle.
-func sweepQueuedCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID string, responseID *string, runID string) error {
-	rows, err := tx.Query(ctx, storage.Query("ExpireQueuedCommandsForRun"), runID, tenant.Organization, tenant.Project)
+//
+// send_message and change_config are NOT expired — they carry to the next response (E10 T7 ENG-012 fork
+// 3). A surviving send_message that never folded into THIS response gets a warning.raised.v1 so the user
+// SEES it will carry rather than silently vanish; the actual carry re-scopes it at the next run.start
+// (CarrySessionSendMessages).
+func sweepQueuedCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID string, responseID *string, runID string, terminal statemachines.RunState) error {
+	// send_message survives (carries) ONLY on a clean completion; a canceled/failed terminal expires it
+	// like the rest (an aborted run has no clean next response to carry into, E10 T7 fork 3).
+	expireSendMessages := terminal != statemachines.RunCompleted
+	rows, err := tx.Query(ctx, storage.Query("ExpireQueuedCommandsForRun"), runID, tenant.Organization, tenant.Project, expireSendMessages)
 	if err != nil {
 		return fmt.Errorf("expire queued commands: %w", err)
 	}
@@ -738,7 +765,57 @@ func sweepQueuedCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionI
 			return err
 		}
 	}
+	// Only a clean completion leaves send_messages queued to carry — warn each so the user sees it.
+	if !expireSendMessages {
+		return warnSurvivingSendMessages(ctx, tx, tenant, sessionID, resp, runID)
+	}
 	return nil
+}
+
+// warnSurvivingSendMessages journals warning.raised.v1 for each send_message still queued on a terminal
+// run (E10 T7 fork 3): the message did not fold into this response and will carry to the next — the user
+// sees it, not a silent drop. The commands stay queued; CarrySessionSendMessages re-scopes them at the
+// next run.start so the ordinary boundary pump delivers them there.
+func warnSurvivingSendMessages(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, runID string) error {
+	rows, err := tx.Query(ctx, storage.Query("SurvivingQueuedSendMessagesForRun"), runID, tenant.Organization, tenant.Project)
+	if err != nil {
+		return fmt.Errorf("read surviving send messages: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan surviving send message: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		payload := mustMarshal(map[string]any{"command_id": id, "code": "message_carried_to_next_response",
+			"detail": "the message did not fold into this response before it terminated; it stays queued and carries to the next response's input boundary"})
+		if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, warningRaisedEvent, payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CarrySessionSendMessages re-scopes a session's still-queued send_message commands to the run starting
+// now (E10 T7 ENG-012 fork 3, the cross-run carry): a message queued on a prior terminal run — one that
+// never folded into that response — becomes a normal queued command on this run, so this run's ordinary
+// boundary pump delivers it at its first input boundary. It is the send_message analogue of the
+// change_config carry (PendingSessionConfigCommands) and reuses the entire delivery path — no new frame.
+// Run at run.start (never on a restore, which resumes past the boundary). Returns how many carried.
+func (s *Store) CarrySessionSendMessages(ctx context.Context, tenant Tenant, sessionID, runID string) (int64, error) {
+	tag, err := s.pool.Exec(ctx, storage.Query("CarrySessionSendMessages"), sessionID, tenant.Organization, tenant.Project, runID)
+	if err != nil {
+		return 0, fmt.Errorf("carry session send messages: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // readCommand reads a command's projection within tx.

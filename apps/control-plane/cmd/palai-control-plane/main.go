@@ -175,6 +175,13 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 	}
 	reconciler := execution.NewReconciler(spine, 30*time.Second, retry.MaxAttempts)
 	go supervisor.Supervise(ctx, "reconciler", reconciler.Run)
+	// Uncertain-tool reconciliation loop (spec §26.7, E10 T7): resolves tool_calls stuck `uncertain` by a
+	// kill-between-execute-and-commit. No destination prober is wired yet (the probe is a tool's own read
+	// surface, per-tool — a named future wiring), so a reversible/irreversible uncertain call escalates to
+	// manual_resolution rather than guessing an effect landed; the LIVE reconcile smoke wires a real prober.
+	// ponytail: nil prober = safe manual_resolution default; add a prober registry when a probe-capable tool ships.
+	toolReconciler := execution.NewUncertainReconciler(spine, nil, 30*time.Second, 100)
+	go supervisor.Supervise(ctx, "tool-reconciler", toolReconciler.Run)
 }
 
 // modelBrokerFromEnv builds the model broker and route the exec-path uses, selected by

@@ -39,8 +39,9 @@ var errRunPaused = errors.New("run_paused")
 // SAME input boundary as the loop re-walks — variant-1 refolds live, R1 refolds into a replayed step's
 // request, both at the input boundary (never inside a reconstructed step) and exactly once per
 // reconstructed conversation. run.start is left UNCHANGED: a mid-run turn belongs at its boundary, not
-// front-seeded among prior responses. Interrupt-path folds (InterruptModelStep) record no row — that
-// recovery half is E10 Task 7 (ENG-012 outage ordering), not this boundary path.
+// front-seeded among prior responses. Interrupt-path folds (InterruptModelStep) now record the SAME
+// durable row keyed by the aborted step's boundary (E10 Task 7, ENG-012), so redeliverBoundaryMessages
+// below refolds interrupt-delivered and boundary-delivered turns together, ordered by applied_sequence.
 func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState, boundaryRequestID string) error {
 	// Fail closed on a boundary with no model_request_id (spec §26.9, E10 Task 2): a delivered_messages
 	// row written under a NULL boundary is unreachable by the redelivery read (boundary_request_id = $4
@@ -144,7 +145,8 @@ func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState, bound
 // sees prior-attempt rows (a command still queued has no row): the redelivery set and the drain set
 // are disjoint, and the fold order is stable across reclaims. Sent once per boundary per attempt (the
 // boundary recurs once as the loop re-walks), the reconstructed conversation carries each turn exactly
-// once. Interrupt-delivered messages have no such row (E10 Task 7, ENG-012), so they are not redelivered.
+// once. Interrupt-delivered messages now carry the same durable row (E10 Task 7, ENG-012), keyed by the
+// aborted step's boundary, so they refold here alongside boundary-delivered turns in applied_sequence order.
 func (o *Orchestrator) redeliverBoundaryMessages(ctx context.Context, st *attemptState, boundaryRequestID string) error {
 	redeliver, err := o.spine.RedeliverBoundaryMessages(ctx, st.tenant, string(st.attempt.RunID), boundaryRequestID)
 	if err != nil {

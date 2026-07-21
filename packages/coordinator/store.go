@@ -128,6 +128,10 @@ type RunCheckpoint struct {
 	ContentChecksum     string
 	ObjectKey           string
 	SizeBytes           int64
+	// PendingOperations is the checkpoint's recorded unresolved (uncertain/manual_resolution) tool
+	// operations as a JSON array (spec §26.2, §26.4, E10 T7): a RESTORE reads it back so it does not
+	// silently hide an in-flight external effect. Always a well-formed array ('[]' when none).
+	PendingOperations []byte
 }
 
 // LatestRunCheckpoint reads a run's newest checkpoint (spec §26.3-26.4). found is false — with a nil
@@ -144,7 +148,7 @@ func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID st
 	err := s.pool.QueryRow(ctx, storage.Query("LatestRunCheckpoint"), runID, tenant.Organization, tenant.Project).
 		Scan(&cp.CheckpointID, &cp.BoundaryID, &cp.AttemptID, &cp.Format, &cp.FormatVersion,
 			&cp.ConfigSnapshotHash, &cp.ProtocolVersion, &cp.TranscriptSequence, &workspaceSnapshot,
-			&cp.ContentChecksum, &cp.ObjectKey, &cp.SizeBytes)
+			&cp.ContentChecksum, &cp.ObjectKey, &cp.SizeBytes, &cp.PendingOperations)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RunCheckpoint{}, false, nil
 	}
@@ -412,7 +416,7 @@ func applyRunTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID s
 	// This is the single choke point every terminal path (engine terminal, cancel, fail) routes
 	// through, so the sweep runs exactly once per run (terminality is monotonic).
 	if runTerminalStates[next] {
-		if err := sweepQueuedCommands(ctx, tx, tenant, sessionID, responseID, runID); err != nil {
+		if err := sweepQueuedCommands(ctx, tx, tenant, sessionID, responseID, runID, next); err != nil {
 			return Transition{}, err
 		}
 	}

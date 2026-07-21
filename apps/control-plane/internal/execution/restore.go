@@ -85,6 +85,10 @@ func (o *Orchestrator) consultCheckpointLadder(ctx context.Context, st *attemptS
 	}
 	plan.present = true
 	plan.checkpoint = cp
+	// ponytail: cp.PendingOperations is populated (persistCheckpoint) but the ladder does not yet BLOCK a
+	// restore on it — the practical uncertain block is enforced dispatch-side (dispatchTool's uncertain-STOP
+	// on the durable ledger row), which a restored attempt re-hits. A ladder-level §26.4 pending-op gate is
+	// the upgrade if a restore must refuse to resume with an unreconciled op before re-dispatch.
 
 	// Fetch + checksum the opaque bytes so the pure ladder can weigh integrity (§26.4). A missing sink
 	// or absent object leaves computed == "" and bytes nil, which fails the checksum condition — the
@@ -237,9 +241,10 @@ func (o *Orchestrator) recordAttemptRecovering(ctx context.Context, st *attemptS
 }
 
 // recordRecoveryProof journals the §26.12 RecoveryProof (REC-006): a "resumed" log is not evidence
-// on its own — this carries the eight field groups the verifier requires. The replayed/reused tool
-// lists are the frame-ledger accounting; in T4 they are honestly empty (nothing is double-run — the
-// ENG-009 guarantee), the fuller class-labelled accounting is T7.
+// on its own — this carries the eight field groups the verifier requires. ReusedToolCalls is the
+// class-labelled accounting (E10 T7): on a transcript reconstruction the run's resolved tool_calls are
+// reused from the ledger; on a compatible restore the list is honestly empty. ReplayedToolCalls stays
+// empty — nothing is double-run (the ENG-009 guarantee).
 func (o *Orchestrator) recordRecoveryProof(ctx context.Context, st *attemptState, plan recoveryPlan) error {
 	// Config/model drift the recovery crossed: on a transcript rung the checkpoint was rejected, and a
 	// "config_changed" rejection reason is a real drift the proof must NOT hide (§26.12). Empty means no
@@ -249,6 +254,20 @@ func (o *Orchestrator) recordRecoveryProof(ctx context.Context, st *attemptState
 		if reason == "config_changed" {
 			configModelChanges = append(configModelChanges, "config_snapshot_hash changed since the checkpoint")
 		}
+	}
+	// Class-labelled reused-tool accounting (spec §26.12, E10 T7). On a transcript RECONSTRUCTION the
+	// run's resolved tool_calls are REUSED from the ledger — the durable consult replays their committed
+	// result, never re-executing (TOL-001) — so the proof names them class-labelled. On a compatible
+	// restore the engine resumed PAST them (they are in the checkpoint), so the list is honestly empty:
+	// an empty list is itself evidence (nothing double-run, the ENG-009 guarantee), it never means
+	// unaccounted. ReplayedToolCalls stays empty: no committed tool call is ever RE-EXECUTED.
+	reused := []string{}
+	if plan.decision.Level == recovery.LevelTranscriptReconstruction {
+		labels, err := o.spine.RunResolvedToolCalls(ctx, st.tenant, string(st.attempt.RunID))
+		if err != nil {
+			return err
+		}
+		reused = labels
 	}
 	proof := recovery.RecoveryProof{
 		PreviousAttemptID:   plan.checkpoint.AttemptID,
@@ -261,8 +280,8 @@ func (o *Orchestrator) recordRecoveryProof(ctx context.Context, st *attemptState
 		// from — a fuller reconstruction anchors that when the tool ledger lands (T7). It still names
 		// the durable boundary the recovery weighed.
 		TranscriptBoundaryID: plan.checkpoint.BoundaryID,
-		ReplayedToolCalls:    []string{},
-		ReusedToolCalls:      []string{},
+		ReplayedToolCalls:    []string{}, // no committed tool call is ever re-executed (ENG-009)
+		ReusedToolCalls:      reused,     // class-labelled on a transcript reconstruction; empty on a compatible restore
 		ConfigModelChanges:   configModelChanges,
 		SemanticLossAssessed: true,
 		SemanticLossWarning:  "",

@@ -26,27 +26,60 @@ var (
 	ErrInvalidArguments = errors.New("invalid_arguments")
 )
 
+// ReplayClass is a tool operation's kill-recovery class (spec §26.6). It is DECLARED at registration
+// (fork 1: the class lives on the tool, not per-call DB config) and copied onto the ledger row at
+// execute time, so a kill-after-execute row is classified without re-deriving it. An unset class
+// defaults to ClassPure — the safe, re-runnable-cached default.
+type ReplayClass string
+
+const (
+	// ClassPure: deterministic, no external side effect — re-run freely, result is "replayed"-labelled
+	// but semantically single (TOL-001).
+	ClassPure ReplayClass = "pure"
+	// ClassIdempotent: a stable destination key makes a resend settle ONE external object (TOL-002).
+	ClassIdempotent ReplayClass = "idempotent"
+	// ClassReversible: reconcile against the destination first, then compensate/retry per policy (TOL-004).
+	ClassReversible ReplayClass = "reversible"
+	// ClassIrreversible: a kill after execute enters `uncertain` and NEVER auto-replays; a human resolves
+	// it (TOL-003).
+	ClassIrreversible ReplayClass = "irreversible"
+	// ClassInteractive: no client/approval → no silent replay.
+	ClassInteractive ReplayClass = "interactive"
+)
+
 // Tool is a broker-fenced tool. A pure conformance tool sets Invoke (deterministic, no side
 // effects). A workspace-touching tool (file/shell, spec §28.7-28.8) sets Exec instead: the broker
 // prefers Exec, handing it the per-attempt sandbox context so the effect confines to the workspace
 // while still riding the same fenced-row, idempotent-replay, schema, and usage machinery. Exactly
-// one of Invoke/Exec is set.
+// one of Invoke/Exec is set. ReplayClass declares the operation's kill-recovery class (spec §26.6);
+// empty means ClassPure.
 type Tool struct {
 	Name         string
 	InputSchema  map[string]any
 	OutputSchema map[string]any
+	ReplayClass  ReplayClass
 	Invoke       func(args map[string]any) (map[string]any, error)
 	Exec         func(ctx context.Context, env ExecEnv, args map[string]any) (map[string]any, error)
 }
 
+// replayClass reports the tool's declared class, defaulting an unset one to ClassPure.
+func (t Tool) replayClass() ReplayClass {
+	if t.ReplayClass == "" {
+		return ClassPure
+	}
+	return t.ReplayClass
+}
+
 // Outcome is the result of one Execute. Cached reports whether it replayed a
-// completed row (in which case the tool did not run and no new usage was emitted).
+// completed row (in which case the tool did not run and no new usage was emitted). ReplayClass is the
+// executed tool's declared kill-recovery class, copied onto the ledger row (spec §26.6).
 type Outcome struct {
-	Result map[string]any
-	State  statemachines.ToolCallState
-	Usage  contracts.Usage
-	Hash   string
-	Cached bool
+	Result      map[string]any
+	State       statemachines.ToolCallState
+	Usage       contracts.Usage
+	Hash        string
+	ReplayClass ReplayClass
+	Cached      bool
 }
 
 // Broker holds the explicit conformance tool set and the fenced tool-call rows.
@@ -80,6 +113,41 @@ func (b *Broker) Discoverable(name string) bool {
 	return ok
 }
 
+// ReplayClassOf reports a tool's declared kill-recovery class BEFORE it executes (spec §26.6), so the
+// dispatcher can decide whether a side-effecting tool needs a durable pre-execute marker. An unknown
+// tool yields ClassPure (the caller rejects it separately at Execute); a registered tool with no
+// declared class defaults ClassPure.
+func (b *Broker) ReplayClassOf(name string) ReplayClass {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	tool, ok := b.tools[name]
+	if !ok {
+		return ClassPure
+	}
+	return tool.replayClass()
+}
+
+// NeedsPreWrite reports whether a class must be durably marked 'executing' BEFORE it runs so a
+// kill-after-execute is detectable as uncertain (spec §26.7): every class whose re-execution is unsafe
+// or needs reconciliation — irreversible, reversible, interactive. Pure re-runs freely and idempotent
+// resends settle one object, so neither needs the marker.
+func NeedsPreWrite(class ReplayClass) bool {
+	switch class {
+	case ClassIrreversible, ClassReversible, ClassInteractive:
+		return true
+	default:
+		return false
+	}
+}
+
+// BlocksReplayAfterKill reports whether an in-flight (executing) row of this class, found after a kill,
+// must enter `uncertain` rather than silently re-run (spec §26.7): irreversible/interactive never
+// auto-replay, and reversible must reconcile-then-compensate first. Pure/idempotent fall through to a
+// safe re-execute.
+func BlocksReplayAfterKill(class ReplayClass) bool {
+	return NeedsPreWrite(class)
+}
+
 // Execute runs a conformance tool behind its fenced row. A completed tool_call_id
 // replays its cached result unchanged and does not re-execute. A fresh call
 // validates its arguments strictly before any side effect, advances the row along
@@ -96,7 +164,7 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 
 	// Idempotent replay: a completed row is authoritative and never re-runs.
 	if r, ok := b.rows[callID]; ok && r.state == statemachines.ToolCallCompleted {
-		return Outcome{Result: r.result, State: r.state, Hash: r.hash, Cached: true}, nil
+		return Outcome{Result: r.result, State: r.state, Hash: r.hash, ReplayClass: tool.replayClass(), Cached: true}, nil
 	}
 
 	// Strict validation happens before the row or fence is touched, so a rejected
@@ -139,7 +207,7 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 	}
 	r.state = state
 	r.result = result
-	return Outcome{Result: result, State: r.state, Usage: contracts.Usage{ToolCalls: 1}, Hash: r.hash}, nil
+	return Outcome{Result: result, State: r.state, Usage: contracts.Usage{ToolCalls: 1}, Hash: r.hash, ReplayClass: tool.replayClass()}, nil
 }
 
 // invoke runs the tool through whichever surface it defines: a workspace-touching Exec receives the
@@ -155,6 +223,11 @@ func (t Tool) invoke(ctx context.Context, env ExecEnv, args map[string]any) (map
 		return nil, fmt.Errorf("tool %s has no invoke surface", t.Name)
 	}
 }
+
+// RequestHash is the exported canonical hash of a tool call (name, args), so the dispatcher can record
+// the SAME digest on the durable pre-write that the broker records at completion — one definition of the
+// content identity a duplicate tool_call_id is recognised by (spec §25.9, §26.6).
+func RequestHash(name string, args map[string]any) string { return requestHash(name, args) }
 
 // requestHash is the canonical hash of a tool call. json.Marshal sorts map keys,
 // so the digest is stable for equal (name, args) pairs (spec §25.9 same request-id

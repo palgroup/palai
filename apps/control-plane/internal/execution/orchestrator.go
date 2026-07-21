@@ -349,6 +349,15 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	}
 	st.committedStepWatermark = plan.committedSteps
 
+	// Intent hook (spec §26.9, §22.3, E10 T7 ENG-012 fork 2): a CANCELLATION intent accepted during the
+	// outage is already processed before compute opens — ExecuteAttempt's ApplyRunTransition(Provision,
+	// Start) above returns ErrRunTerminal for a canceled run and this attempt returns without dialing (the
+	// terminal check IS the pre-dial cancel hook). A PAUSE is deliberately NOT pre-empted here: a pause is
+	// a cooperative stop that must go through the boundary pump so it captures its SES-009 checkpoint
+	// (checkpointBeforePause); applying it at run.start would skip the checkpoint. Any queue/steer/
+	// interrupt message accepted in the outage stays queued for the pump to deliver in canonical
+	// (creation/applied_sequence) order once the run continues — never spliced into a reconstructed step.
+
 	switch plan.decision.Level {
 	case recovery.LevelExplicitFailure:
 		return o.failRecovery(ctx, st, plan)
@@ -372,6 +381,12 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		// under it (spec §9.3, the cross-run config carry). Runs before the first model.request; a
 		// switch aimed at a mid-run boundary is untouched (it is applied by the pump/watcher instead).
 		if err := o.applyPendingSessionConfig(ctx, st); err != nil {
+			return abortIfTerminal(err)
+		}
+		// Carry any send_message that survived a prior run's terminal (E10 T7 ENG-012 fork 3): re-scope
+		// it to this run so the ordinary boundary pump delivers it at this run's first input boundary. A
+		// no-op when none carried. Only on run.start — a restore resumed past the boundary.
+		if _, err := o.spine.CarrySessionSendMessages(ctx, st.tenant, st.sessionID, string(st.attempt.RunID)); err != nil {
 			return abortIfTerminal(err)
 		}
 		// A checkpoint that existed but was rejected fell to transcript reconstruction: record the
@@ -423,7 +438,13 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 				}
 			}
 		case "tool.request":
-			if err := o.dispatchTool(ctx, st, frame); err != nil {
+			switch err := o.dispatchTool(ctx, st, frame); {
+			case errors.Is(err, errToolUncertainWait):
+				// An uncertain tool blocks continuation (spec §26.7): end the attempt cleanly — no
+				// tool.result was sent, so the engine subprocess closes without hanging, and the reconcile
+				// job resolves the row and re-enqueues the run. Not a failure, like a pause.
+				return nil
+			case err != nil:
 				return abortIfTerminal(err)
 			}
 		case "child.request":

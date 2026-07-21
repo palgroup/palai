@@ -10,14 +10,16 @@ ON CONFLICT (id) DO NOTHING;
 -- name: InsertCheckpoint
 -- Record an IMMUTABLE checkpoint (spec §26.2). A second write to the same id raises a unique_violation
 -- (23505) the caller maps to ErrCheckpointExists — the DB-level immutability guard (§26.1); there is no
--- UPDATE path (the role GRANT withholds it). pending_operations uses the table default '[]' (T7 fills it);
--- workspace_snapshot_id is NULL when the checkpoint declares no workspace dependency (§26.4).
+-- UPDATE path (the role GRANT withholds it). pending_operations carries the run's unresolved
+-- (uncertain/manual_resolution) tool operations at the boundary, CP-resolved at persist time (E10 T7) —
+-- '[]' when none, never null, so a RESTORE reads a well-formed array. workspace_snapshot_id is NULL when
+-- the checkpoint declares no workspace dependency (§26.4).
 INSERT INTO checkpoints
     (id, run_id, attempt_id, boundary_id, organization_id, project_id,
      engine_digest, engine_version, protocol_version, format, format_version,
      config_snapshot_hash, transcript_sequence, workspace_snapshot_id,
-     content_checksum, object_key, size_bytes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17);
+     content_checksum, object_key, size_bytes, pending_operations)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18);
 
 -- name: LatestRunCheckpoint
 -- The recovery ladder's read (spec §26.3-26.4, E10 T4): a run's NEWEST checkpoint with the §26.4
@@ -25,7 +27,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $
 -- run without a checkpoint -> the caller falls to transcript reconstruction, never a phantom restore.
 SELECT id, boundary_id, attempt_id, format, format_version, config_snapshot_hash,
        protocol_version, transcript_sequence, workspace_snapshot_id, content_checksum,
-       object_key, size_bytes
+       object_key, size_bytes, pending_operations
 FROM checkpoints
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
 ORDER BY created_at DESC

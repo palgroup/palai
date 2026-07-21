@@ -66,6 +66,10 @@ type PersistInput struct {
 	ContentChecksum     string
 	ObjectKey           string
 	SizeBytes           int64
+	// PendingOperations is the run's unresolved (uncertain/manual_resolution) tool operations at the
+	// boundary as a JSON array (spec §26.2, §26.4, E10 T7). Nil/empty is normalised to '[]' so the column
+	// is always a well-formed array a RESTORE can read back.
+	PendingOperations []byte
 }
 
 // Persist records the transcript boundary and the checkpoint as two rows in one transaction, so a
@@ -91,11 +95,15 @@ func (o *Objects) Persist(ctx context.Context, in PersistInput) error {
 		return fmt.Errorf("insert transcript boundary: %w", err)
 	}
 
+	pendingOps := in.PendingOperations
+	if len(pendingOps) == 0 {
+		pendingOps = []byte("[]") // never null: a RESTORE reads a well-formed array
+	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertCheckpoint"),
 		in.CheckpointID, in.RunID, in.AttemptID, in.BoundaryID, in.Organization, in.Project,
 		in.EngineDigest, in.EngineVersion, in.ProtocolVersion, in.Format, in.FormatVersion,
 		in.ConfigSnapshotHash, in.TranscriptSequence, nullableText(in.WorkspaceSnapshotID),
-		in.ContentChecksum, in.ObjectKey, in.SizeBytes); err != nil {
+		in.ContentChecksum, in.ObjectKey, in.SizeBytes, pendingOps); err != nil {
 		if isUniqueViolation(err) {
 			return ErrCheckpointExists
 		}

@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -69,6 +70,82 @@ func TestPersistCheckpointWritesImmutableBoundaryAndRow(t *testing.T) {
 	// Immutable: the same id cannot be written twice.
 	if err := obj.Persist(ctx, in); err != recovery.ErrCheckpointExists {
 		t.Fatalf("second Persist() = %v, want ErrCheckpointExists", err)
+	}
+}
+
+// TestCheckpointCarriesPendingOperations proves the E10 T7 pending_operations fill (spec §26.2, §26.4):
+// a checkpoint records the run's unresolved tool operations at the boundary, and LatestRunCheckpoint
+// reads them back — so a RESTORE cannot silently hide an in-flight external effect. PendingToolOperations
+// (the CP-side resolver) collects only the uncertain/manual_resolution rows, class-labelled; a checkpoint
+// with none records '[]' (never null).
+func TestCheckpointCarriesPendingOperations(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, _, runID := seedRun(t, pool)
+	attemptID := seedAttempt(t, pool, tenant, runID)
+
+	// A completed op (resolved — must NOT appear), an uncertain op, and an escalated one (both unresolved).
+	exec(t, pool, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class)
+		VALUES ($1,$2,$3,$4,1,'completed','pure_add','{}','pure')`, newID("tc"), tenant.Organization, tenant.Project, runID)
+	uncertainID := newID("tc")
+	exec(t, pool, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
+		VALUES ($1,$2,$3,$4,2,'uncertain','http_post','{}','irreversible','reconciling')`, uncertainID, tenant.Organization, tenant.Project, runID)
+	escalatedID := newID("tc")
+	exec(t, pool, `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, reconciliation_state)
+		VALUES ($1,$2,$3,$4,3,'manual_resolution','charge','{}','irreversible','manual_resolution')`, escalatedID, tenant.Organization, tenant.Project, runID)
+
+	// The CP-side resolver collects only the two unresolved ops, class-labelled.
+	pendingJSON, err := cs.PendingToolOperations(ctx, tenant, runID)
+	if err != nil {
+		t.Fatalf("PendingToolOperations() error = %v", err)
+	}
+	var ops []map[string]any
+	if err := json.Unmarshal(pendingJSON, &ops); err != nil {
+		t.Fatalf("decode pending ops %s error = %v", pendingJSON, err)
+	}
+	if len(ops) != 2 {
+		t.Fatalf("pending tool operations = %d (%s), want 2 (uncertain + manual_resolution, not the completed one)", len(ops), pendingJSON)
+	}
+	if ops[0]["tool_call_id"] != uncertainID || ops[0]["replay_class"] != "irreversible" {
+		t.Fatalf("first pending op = %v, want the uncertain irreversible op %s", ops[0], uncertainID)
+	}
+
+	// Persist a checkpoint carrying them; LatestRunCheckpoint reads them back (restore doesn't hide them).
+	in := baseCheckpointInput(tenant, runID, attemptID)
+	in.PendingOperations = pendingJSON
+	if err := recovery.New(pool).Persist(ctx, in); err != nil {
+		t.Fatalf("Persist(with pending ops) error = %v", err)
+	}
+	cp, found, err := cs.LatestRunCheckpoint(ctx, tenant, runID)
+	if err != nil || !found {
+		t.Fatalf("LatestRunCheckpoint() = (found:%v, %v)", found, err)
+	}
+	var readBack []map[string]any
+	if err := json.Unmarshal(cp.PendingOperations, &readBack); err != nil {
+		t.Fatalf("decode read-back pending ops %s error = %v", cp.PendingOperations, err)
+	}
+	if len(readBack) != 2 {
+		t.Fatalf("checkpoint read-back pending operations = %d (%s), want 2", len(readBack), cp.PendingOperations)
+	}
+
+	// A run with no unresolved ops records '[]', never null.
+	tenant2, _, runID2 := seedRun(t, pool)
+	attempt2 := seedAttempt(t, pool, tenant2, runID2)
+	empty, err := cs.PendingToolOperations(ctx, tenant2, runID2)
+	if err != nil {
+		t.Fatalf("PendingToolOperations(empty) error = %v", err)
+	}
+	if string(empty) != "[]" {
+		t.Fatalf("empty pending ops = %q, want []", empty)
+	}
+	in2 := baseCheckpointInput(tenant2, runID2, attempt2)
+	if err := recovery.New(pool).Persist(ctx, in2); err != nil { // PendingOperations left nil -> normalised to '[]'
+		t.Fatalf("Persist(no pending ops) error = %v", err)
+	}
+	cp2, _, _ := cs.LatestRunCheckpoint(ctx, tenant2, runID2)
+	if string(cp2.PendingOperations) != "[]" {
+		t.Fatalf("checkpoint with no pending ops = %q, want [] (never null)", cp2.PendingOperations)
 	}
 }
 

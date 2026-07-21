@@ -20,7 +20,8 @@ import (
 // validator is the upgrade path if free-choice tool calls need it.
 func ShellTool() toolbroker.Tool {
 	return toolbroker.Tool{
-		Name: "palai.workspace.shell",
+		Name:        "palai.workspace.shell",
+		ReplayClass: toolbroker.ClassIrreversible, // arbitrary side effects; a kill-after-run must not auto-replay (§26.6, TOL-003)
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
