@@ -91,6 +91,7 @@ func TestRevisionValidationRejectsBadCombos(t *testing.T) {
 		{"named_session + singleton", TriggerRevisionInput{CorrelationMode: "named_session", ConcurrencyPolicy: "singleton", CorrelationKeyExpr: `{"select":"s"}`}, ErrNamedSessionCannotDefer},
 		{"bad correlation_mode", TriggerRevisionInput{CorrelationMode: "telepathy"}, ErrInvalidCorrelationMode},
 		{"bad concurrency_policy", TriggerRevisionInput{ConcurrencyPolicy: "yolo"}, ErrInvalidConcurrencyPolicy},
+		{"replace without a key", TriggerRevisionInput{ConcurrencyPolicy: "replace"}, ErrReplaceNeedsKey},
 	} {
 		if _, err := store.ReviseTrigger(ctx, org, project, triggerID, tc.in); !errors.Is(err, tc.want) {
 			t.Errorf("%s: ReviseTrigger error = %v, want %v", tc.name, err, tc.want)

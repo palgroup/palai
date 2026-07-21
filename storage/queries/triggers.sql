@@ -61,13 +61,6 @@ UPDATE trigger_deliveries
 SET state = 'admitted', response_id = $4, run_id = $5, session_id = $6, mapped_input = $7, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
--- SetDeliveryCorrelationHash records the delivery's correlation-key HASH (only the hash is stored, never
--- the raw key — spec §20.2.2). The hash is (project, trigger_revision, source_tenant)-scoped by its input.
--- name: SetDeliveryCorrelationHash
-UPDATE trigger_deliveries
-SET correlation_key_hash = $4, updated_at = clock_timestamp()
-WHERE id = $1 AND organization_id = $2 AND project_id = $3;
-
 -- RecordDeliveryMapped advances a delivery to 'mapped' and stores BOTH the mapped canonical input and the
 -- correlation-key hash. Storing them here (not only at admit/defer) makes a delivery that crashes after
 -- mapping a RECOVERABLE remnant: the reconciler re-runs the concurrency decision from the stored state
@@ -123,7 +116,7 @@ SELECT id, principal_id, trigger_revision_id, mapped_input
 FROM trigger_deliveries
 WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
   AND correlation_key_hash = $4 AND state = 'deferred'
-ORDER BY received_at
+ORDER BY received_at, id
 LIMIT 1;
 
 -- StuckMappedDeliveries lists deliveries stranded in 'mapped' past a grace window — crash remnants that
@@ -154,7 +147,7 @@ SELECT id, principal_id, trigger_revision_id, mapped_input
 FROM trigger_deliveries
 WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
   AND correlation_key_hash = $4 AND state = 'deferred'
-ORDER BY received_at DESC
+ORDER BY received_at DESC, id DESC
 LIMIT 1;
 
 -- SkipCoalescedDeferred terminalizes every OTHER deferred delivery of a coalesce group `skipped`, linked
@@ -173,7 +166,7 @@ WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
 SELECT session_id FROM trigger_deliveries
 WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
   AND correlation_key_hash = $4 AND session_id <> '' AND id <> $5
-ORDER BY received_at DESC
+ORDER BY received_at DESC, id DESC
 LIMIT 1;
 
 -- GetDeliveryPin reads a delivery's pinned revision + state (the AGT-002 assertion + pipeline read).
@@ -232,7 +225,7 @@ RETURNING id;
 SELECT id FROM trigger_deliveries
 WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
   AND dedupe_key = $4 AND duplicate_of IS NULL
-ORDER BY received_at
+ORDER BY received_at, id
 LIMIT 1;
 
 -- MarkDeliveryDuplicate links a losing delivery to its canonical original and terminalizes it

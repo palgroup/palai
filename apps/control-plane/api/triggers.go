@@ -197,5 +197,6 @@ func isBadRevision(err error) bool {
 		errors.Is(err, automation.ErrBothPins) ||
 		errors.Is(err, automation.ErrNamedSessionCannotDefer) ||
 		errors.Is(err, automation.ErrInvalidCorrelationMode) ||
-		errors.Is(err, automation.ErrInvalidConcurrencyPolicy)
+		errors.Is(err, automation.ErrInvalidConcurrencyPolicy) ||
+		errors.Is(err, automation.ErrReplaceNeedsKey)
 }

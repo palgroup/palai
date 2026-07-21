@@ -50,6 +50,9 @@ var (
 	// rather than letting it fall through to a DB CHECK 500 (m8).
 	ErrInvalidCorrelationMode   = errors.New("automation: invalid correlation_mode")
 	ErrInvalidConcurrencyPolicy = errors.New("automation: invalid concurrency_policy")
+	// ErrReplaceNeedsKey rejects a replace policy with no correlation_key_expr — with no key there is no
+	// active run to identify, so replace would silently degenerate to allow (m10).
+	ErrReplaceNeedsKey = errors.New("automation: replace concurrency policy requires a correlation_key_expr")
 )
 
 // validCorrelationModes / validConcurrencyPolicies mirror the 000021 CHECK constraints.
@@ -219,6 +222,9 @@ func validateRevisionInput(in TriggerRevisionInput) error {
 	// Reject the combo at revise so it can never be stored (M4).
 	if in.CorrelationMode == "named_session" && deferringPolicy(in.ConcurrencyPolicy) {
 		return ErrNamedSessionCannotDefer
+	}
+	if in.ConcurrencyPolicy == "replace" && in.CorrelationKeyExpr == "" {
+		return ErrReplaceNeedsKey
 	}
 	if _, err := CompileMapping(in.InputMapping, nil); err != nil {
 		return err

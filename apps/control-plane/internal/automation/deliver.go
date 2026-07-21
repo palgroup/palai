@@ -97,17 +97,26 @@ type revisionConfig struct {
 	ConcurrencyPolicy     string
 }
 
-// advance drives a received delivery through the pipeline. It is grown stage by stage across the E11 T2
-// slice: A4 accepts + pins (the delivery is born received); A5 adds dedupe; A6 map + admission; A7
-// correlation; A8/A9 concurrency policy. Each stage validates the transition through the TriggerDelivery
-// state machine and persists the new state.
+// advance drives a received delivery through the pipeline: authenticate → dedupe → map → concurrency
+// policy → correlate → admit (A4-A9). The single-column stage moves (authenticate/deduplicate/map/defer/
+// reject/fail/skip) go through the TriggerDelivery state machine (statemachines.Apply validates them); a
+// FEW atomic MULTI-column writes — ClaimCanonicalDelivery (dedupe_key + state in one ON CONFLICT UPDATE),
+// MarkDeliveryDuplicate (state + duplicate_of), RecordDeliveryAdmitted (response/run/session + state) —
+// set their resulting state DIRECTLY, because splitting the atomic write to route through Apply would
+// reopen a race (m5). The SM edge each of those lands on still exists in the table.
 //
 // DESIGN — the trigger_deliveries.state column IS the durable record (queryable via GET
-// /v1/trigger-deliveries/{id}); the SM authorizes each transition (an illegal one is a bug, not a state).
-// The trigger.delivery.* events are registered in the contract for downstream consumers; a delivery has
-// NO session before admission (events are session-scoped, NOT NULL), so pre-admission transitions persist
-// the state column only and the run-born events ride the run's session once it exists (A6). This mirrors
-// the agents.go precedent (the durable fact is the row; the event is declared-but-unemitted here).
+// /v1/trigger-deliveries/{id}). The trigger.delivery.* events are registered in the contract for
+// downstream consumers; a delivery has NO session before admission (events are session-scoped, NOT NULL),
+// so pre-admission transitions persist the state column only and the run-born events ride the run's
+// session once it exists (A6). This mirrors the agents.go precedent (the durable fact is the row; the
+// event is declared-but-unemitted here).
+//
+// ponytail (m9) — a delivery that crashes BEFORE map (received/authenticated/deduplicated) is a ZOMBIE:
+// its source payload is not persisted in T2, so the reconciler (which sweeps only mapped + deferred) can
+// never re-decide it and it stays non-terminal forever. Closing this needs the durable raw_payload the
+// T5 signed-inbound receiver owns (the column is pre-provisioned in 000021); until then a manual/API
+// delivery that crashes in the first three states is an accepted, named ceiling — not a silent gap.
 func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []byte) (DeliveryResult, error) {
 	cfg, err := s.loadRevisionConfig(ctx, sc)
 	if err != nil {
