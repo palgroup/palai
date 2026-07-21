@@ -5,6 +5,11 @@
 // is the one legitimate mutation (a once-only conditional flip). Resolution of a run's pinned revision
 // into its ExecutionSpec lives on the coordinator spine (execution reads it there); this package owns the
 // management writes and reads.
+//
+// ponytail: the contract registers agent.revision.published.v1, but NO code emits it — publication's
+// durable fact IS the published_at flip on the revision row (queryable, immutable-once-set). A
+// project-scoped management action has no session journal to ride, so the event is declared-but-
+// unemitted by design; add an audit/journal emitter here if a downstream consumer ever needs the event.
 package automation
 
 import (
@@ -95,6 +100,10 @@ func (s *Store) CreateRevision(ctx context.Context, org, project, profileID stri
 	}
 	id := newID("arev")
 	var number int
+	// ponytail: revision_number is MAX+1 in-statement, so two concurrent CreateRevision on ONE profile
+	// can pick the same number and one loses the UNIQUE(profile_id, revision_number) (a 23505 → 500).
+	// Benign at the expected authoring cadence (a human editing a profile); add a retry-on-23505 loop
+	// if concurrent revise throughput ever matters.
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertAgentRevision"),
 		id, org, project, profileID, in.Model, marshalTools(in.Tools), in.Instructions).Scan(&number); err != nil {
 		return Revision{}, fmt.Errorf("insert agent revision: %w", err)

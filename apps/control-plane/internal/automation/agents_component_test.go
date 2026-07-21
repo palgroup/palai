@@ -45,6 +45,20 @@ func testID(prefix string) string {
 	return prefix + "_" + hex.EncodeToString(raw[:])
 }
 
+// rawRevisionRow reads a revision's config columns + publish stamp as a single comparable string, so a
+// test can assert the whole row is byte-stable (JSONB tools rendered ::text for a stable comparison).
+func rawRevisionRow(t *testing.T, s *Store, revisionID string) string {
+	t.Helper()
+	var model, tools, instructions, published string
+	err := s.pool.QueryRow(context.Background(),
+		`SELECT model, COALESCE(tools::text,''), instructions, COALESCE(published_at::text,'') FROM agent_revisions WHERE id=$1`,
+		revisionID).Scan(&model, &tools, &instructions, &published)
+	if err != nil {
+		t.Fatalf("read raw revision row %s: %v", revisionID, err)
+	}
+	return model + "\x1f" + tools + "\x1f" + instructions + "\x1f" + published
+}
+
 // TestAgentRevisionPublishIsImmutable proves the core §10 invariant: once published, a revision's config
 // is frozen — a "revise" (a PATCH in API terms) creates a NEW draft revision, and the published row's
 // config is byte-for-byte unchanged. Publish itself is a once-only flip: a second publish is a no-op.
@@ -73,6 +87,8 @@ func TestAgentRevisionPublishIsImmutable(t *testing.T) {
 	if err != nil || !ok || !before.Published {
 		t.Fatalf("get v1 after publish = %+v ok=%v err=%v, want published", before, ok, err)
 	}
+	// The published row's raw bytes (every config column + publish stamp) — the plan's "byte-değişmez".
+	rawBefore := rawRevisionRow(t, s, v1.ID)
 
 	// A "PATCH" is a new draft revision, NOT an edit of v1. v2 carries different config and is unpublished.
 	v2, err := s.CreateRevision(ctx, org, project, profileID, []byte(`{"model":"model-b","tools":["file","shell"],"instructions":"v2"}`))
@@ -87,14 +103,10 @@ func TestAgentRevisionPublishIsImmutable(t *testing.T) {
 		t.Fatal("a revise must produce a DRAFT, but v2 came back published")
 	}
 
-	// The published v1 is unchanged after the revise — same model/tools/instructions/publish state.
-	after, _, err := s.GetRevision(ctx, org, project, v1.ID)
-	if err != nil {
-		t.Fatalf("re-get v1: %v", err)
-	}
-	if after.Model != before.Model || after.Instructions != before.Instructions ||
-		len(after.Tools) != len(before.Tools) || !after.Published {
-		t.Fatalf("published v1 mutated by a later revise: before=%+v after=%+v", before, after)
+	// The published v1's raw row is BYTE-identical after the revise: every config column, the tools
+	// content, and the publish stamp are unchanged (not just field-equal — the whole row).
+	if rawAfter := rawRevisionRow(t, s, v1.ID); rawAfter != rawBefore {
+		t.Fatalf("published v1 row mutated by a later revise:\n before=%s\n after =%s", rawBefore, rawAfter)
 	}
 
 	// Publish is once-only: re-publishing v1 is a no-op (already published), never a re-stamp.

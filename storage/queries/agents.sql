@@ -14,6 +14,8 @@ SELECT 1 FROM agent_profiles WHERE id = $1 AND organization_id = $2 AND project_
 
 -- InsertAgentRevision creates a DRAFT revision (published_at NULL). revision_number is the profile's
 -- next monotonic number, computed in-statement so a revise never has to read-then-write. Returns it.
+-- ponytail: the MAX+1 subselect can race two concurrent inserts to the same number; the
+-- UNIQUE(profile_id, revision_number) constraint then rejects the loser (retry on 23505 if it matters).
 -- name: InsertAgentRevision
 INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, instructions)
 VALUES ($1, $2, $3, $4,

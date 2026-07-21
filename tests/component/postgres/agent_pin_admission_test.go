@@ -44,9 +44,9 @@ func TestUnpublishedRevisionCannotBePinnedOrRun(t *testing.T) {
 	if !out.PinnedRevisionNotPublished {
 		t.Fatalf("draft pin admission = %+v, want PinnedRevisionNotPublished (409)", out)
 	}
-	assertNoRun(t, cs, in.RunID)
+	assertNoResidue(t, cs, in.RunID, in.IdempotencyKey)
 
-	// An unknown pin is a 404, likewise leaving no run.
+	// An unknown pin is a 404, likewise leaving no run and no idempotency record.
 	unknown := admissionInput(principalID, newID("key"), "hash-unknown", `{"id":"r"}`)
 	unknown.AgentRevisionID = "arev_does_not_exist"
 	out2, err := cs.AdmitResponse(ctx, tenant, unknown)
@@ -56,7 +56,7 @@ func TestUnpublishedRevisionCannotBePinnedOrRun(t *testing.T) {
 	if !out2.PinnedRevisionNotFound {
 		t.Fatalf("unknown pin admission = %+v, want PinnedRevisionNotFound (404)", out2)
 	}
-	assertNoRun(t, cs, unknown.RunID)
+	assertNoResidue(t, cs, unknown.RunID, unknown.IdempotencyKey)
 
 	// A published revision admits and stamps the pin on the run row — resolution reads it back.
 	pubRev := seedAgentRevision(t, tenant, cs, true)
@@ -120,13 +120,22 @@ func TestRunTemplateRevisionStartsProfileFreeRun(t *testing.T) {
 	}
 }
 
-func assertNoRun(t *testing.T, cs *coordinator.Store, runID string) {
+// assertNoResidue proves a rejected pin left NOTHING behind: no run row and no idempotency record
+// (the reject fires before the reserve, so a retry is not poisoned by a phantom key).
+func assertNoResidue(t *testing.T, cs *coordinator.Store, runID, idemKey string) {
 	t.Helper()
-	var n int
-	if err := cs.Pool().QueryRow(context.Background(), `SELECT count(*) FROM runs WHERE id=$1`, runID).Scan(&n); err != nil {
+	ctx := context.Background()
+	var runs, idem int
+	if err := cs.Pool().QueryRow(ctx, `SELECT count(*) FROM runs WHERE id=$1`, runID).Scan(&runs); err != nil {
 		t.Fatalf("count run %s: %v", runID, err)
 	}
-	if n != 0 {
-		t.Fatalf("run %s exists (n=%d), want none — a rejected pin must leave no run", runID, n)
+	if runs != 0 {
+		t.Fatalf("run %s exists (n=%d), want none — a rejected pin must leave no run", runID, runs)
+	}
+	if err := cs.Pool().QueryRow(ctx, `SELECT count(*) FROM idempotency_records WHERE idempotency_key=$1`, idemKey).Scan(&idem); err != nil {
+		t.Fatalf("count idempotency %s: %v", idemKey, err)
+	}
+	if idem != 0 {
+		t.Fatalf("idempotency record for %s exists (n=%d), want none — the reject fires before the reserve", idemKey, idem)
 	}
 }
