@@ -1,0 +1,9 @@
+id: TOL-016
+name: duplicate-tool-call-id-single-execution-ledger-half
+proof_class: unit
+provider: fake
+input: "a duplicate/retry carrying the same stable tool_call_id executes exactly once against a real in-process HTTP destination (a request counter proves single execution)"
+expect_status: completed
+proof:
+  - packages/tool-broker/broker_test.go:TestDuplicateToolCallIdSingleExecution
+# ceiling: only the tool-call LEDGER half is proven here; the signed-transport / remote-tool-SDK half of TOL-016 is E12 (shared-case discipline, SAN-005/006 pattern)

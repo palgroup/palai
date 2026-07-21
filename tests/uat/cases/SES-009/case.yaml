@@ -1,0 +1,10 @@
+id: SES-009
+name: pause-produces-valid-checkpoint-resume-restores-from-it
+proof_class: e2e-deterministic
+provider: fake
+input: "a pause produces a valid checkpoint + snapshot before releasing compute, and resume restores from that checkpoint via the ladder (not a transcript-only reconstruction)"
+expect_status: completed
+proof:
+  - apps/control-plane/e2e/responses/pause_checkpoint_test.go:TestPauseProducesValidCheckpointBeforeComputeRelease
+  - apps/control-plane/e2e/responses/pause_checkpoint_test.go:TestResumeRestoresFromValidCheckpoint
+# ceiling: the command/state half of pause/resume (compute release, same logical run, new attempt) is proven in E08; this is the checkpoint-VALIDITY half

@@ -1,0 +1,9 @@
+id: ENG-007
+name: returned-old-host-diagnostics-accepted-authoritative-frame-denied
+proof_class: component-real
+provider: fake
+input: "after the fence advances, a returning old host may still upload diagnostics but an authoritative frame it writes under the stale fence is denied and audited"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/artifacts/workspace_recovery_component_test.go:TestOldHostAuthoritativeFramesDeniedDiagnosticsAllowed
+# ceiling: the real host-kill that advances the fence is SAN-006 (fault-live); cert-level runner-identity revocation (SAN-011) is E13/E14, not fence-level denial

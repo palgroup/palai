@@ -1,0 +1,8 @@
+id: REC-004
+name: orphan-gc-single-reconcile-both-directions-never-deletes-referenced
+proof_class: component-real
+provider: fake
+input: "one supervised GC reconcile handles both directions (write-side orphan + failed retention delete) with a grace window, and never deletes a referenced or in-grace object"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/artifacts/gc_test.go:TestGCDeletesUnreferencedObjectAfterGrace

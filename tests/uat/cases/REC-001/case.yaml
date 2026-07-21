@@ -1,0 +1,8 @@
+id: REC-001
+name: fast-exit-engine-terminal-frame-never-lost-in-drain-race
+proof_class: fault-live
+provider: fake
+input: "a fast-exit engine's run.terminal is never dropped in the OCI drain race — the supervisor drains the stream to EOF before reaping, proven over N real fast-exit subprocess iterations"
+expect_status: completed
+proof:
+  - tests/fault/recovery/terminal_test.go:TestFastExitEngineTerminalFrameNeverLost

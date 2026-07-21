@@ -1,0 +1,9 @@
+id: SAN-007
+name: allocation-reuse-leaves-no-prior-tenant-residue
+proof_class: component-real
+provider: fake
+input: "reusing an allocation on the same host substrate leaves zero prior-tenant residue (no files, processes, or credentials) and a fresh writable layer"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/artifacts/workspace_recovery_component_test.go:TestAllocationReuseLeavesNoTenantResidue
+# ceiling: this is the reuse-hygiene invariant only; a real warm-pool of pre-provisioned allocations + microVM tenant isolation (SAN-009) is E15/E14

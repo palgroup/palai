@@ -1,0 +1,8 @@
+id: ENG-011
+name: checkpoint-migration-preserves-original-with-provenance-and-rollback
+proof_class: component-real
+provider: fake
+input: "a checkpoint format migration preserves the original object, records a new checksum + provenance on the migrated copy, and supports rollback to the original"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/artifacts/checkpoint_component_test.go:TestCheckpointMigrationPreservesOriginalWithProvenance

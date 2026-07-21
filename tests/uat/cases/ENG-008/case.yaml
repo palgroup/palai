@@ -1,0 +1,8 @@
+id: ENG-008
+name: exact-resume-confirms-live-lease-labeled-exact
+proof_class: e2e-deterministic
+provider: fake
+input: "when the original process still holds the current fenced lease and re-acks, the ladder chooses exact continuation, labels it exact, and does not touch the checkpoint"
+expect_status: completed
+proof:
+  - apps/control-plane/e2e/responses/recovery_ladder_test.go:TestLadderPrefersExactWhenLeaseAlive

@@ -1,0 +1,8 @@
+id: DET-002
+name: detached-idle-child-receives-spine-message-durable-resumable
+proof_class: e2e-deterministic
+provider: fake
+input: "a detached idle (waiting) child receives a command-spine send_message exactly once and folds it on its next attempt; the child->parent journal event enters the parent's resume history — the conversation is durable and resumable"
+expect_status: completed
+proof:
+  - apps/control-plane/e2e/responses/detached_child_test.go:TestDetachedChildIdleReceivesSpineMessage

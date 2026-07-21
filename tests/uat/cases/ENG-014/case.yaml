@@ -1,0 +1,8 @@
+id: ENG-014
+name: terminal-less-exit-never-false-success-explicit-failure
+proof_class: e2e-deterministic
+provider: fake
+input: "an engine that exits without ever emitting run.terminal never reads as completed; with no checkpoint to restore the job dead-letters and the reconciler drives an explicit failed terminal"
+expect_status: failed
+proof:
+  - apps/control-plane/e2e/responses/kill_matrix_test.go:TestExitWithoutTerminalNeverFalseSuccess
