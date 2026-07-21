@@ -307,7 +307,10 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 	if err != nil {
 		return err
 	}
-	parentTools := o.parentTools(ctx, st)
+	parentTools, err := o.parentTools(ctx, st)
+	if err != nil {
+		return err
+	}
 	remaining, bounded := st.budgetRemaining()
 	admission := admitChild(spec, st.depth, len(st.childRunIDs), remaining, bounded, policy, parentTools)
 	if admission.Denied {
@@ -444,14 +447,33 @@ func childRunTerminal(state string) bool {
 }
 
 // parentTools is the parent's effective capability, which a child's tool subset must stay within
-// (the parent half of the parent ∩ project intersection): the parent's session config tools, or
-// unrestricted when it never narrowed them.
-func (o *Orchestrator) parentTools(ctx context.Context, st *attemptState) []string {
+// (the parent half of the parent ∩ project intersection): the parent's session config tools capped by
+// its pinned-revision ceiling. The revision ceiling is load-bearing here — WITHOUT it a run pinned to
+// tools=[file] whose session never overrode tools would expose nil (=unrestricted), letting a child be
+// granted any project-baseline tool and EXPANDING capability through delegation (spec §10, 63.4). It
+// reads through the SAME PinnedExecConfig the resolver uses, and fails CLOSED on a DB error (returns it,
+// so the delegation is refused rather than silently unrestricted).
+func (o *Orchestrator) parentTools(ctx context.Context, st *attemptState) ([]string, error) {
 	override, found, err := o.spine.LatestSessionConfig(ctx, st.tenant, st.sessionID)
-	if err != nil || !found {
-		return nil
+	if err != nil {
+		return nil, err
 	}
-	return override.Tools
+	tools := []string(nil)
+	if found {
+		tools = override.Tools
+	}
+	_, _, revTools, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	if err != nil {
+		return nil, err
+	}
+	if revTools != nil {
+		if tools == nil {
+			tools = revTools
+		} else {
+			tools = intersectTools(tools, revTools)
+		}
+	}
+	return tools, nil
 }
 
 // childStatus maps a ChildRun's terminal run state to the child.result status the engine folds: a

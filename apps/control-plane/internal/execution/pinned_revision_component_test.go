@@ -112,6 +112,52 @@ func TestPinnedRevisionFlowsIntoConfigChangeSnapshot(t *testing.T) {
 	}
 }
 
+// TestPinnedRevisionCeilingBoundsChildDelegation proves the tool ceiling cannot be BYPASSED through
+// delegation (spec §10, 63.4): a run pinned to a revision with tools=[file], whose session never
+// overrode tools, must expose that ceiling as its parent capability — so a child requesting [shell]
+// (which the project baseline permits) is REFUSED. Before the fix parentTools read only the session
+// override (nil = unrestricted) and the capability could EXPAND through a child.
+func TestPinnedRevisionCeilingBoundsChildDelegation(t *testing.T) {
+	cs, tenant, exec := openPinnedSpine(t)
+	ctx := context.Background()
+
+	sessionID := pinnedID("ses")
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`UPDATE projects SET config_policy = '{"default_tools":["file","shell"]}' WHERE id=$1 AND organization_id=$2`, tenant.Project, tenant.Organization)
+	profileID, revID, runID := pinnedID("aprof"), pinnedID("arev"), pinnedID("run")
+	exec(`INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
+		profileID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, published_at)
+	      VALUES ($1,$2,$3,$4,1,'model-pinned','["file"]', clock_timestamp())`,
+		revID, tenant.Organization, tenant.Project, profileID)
+	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
+		runID, tenant.Organization, tenant.Project, sessionID, revID)
+
+	orch := &Orchestrator{spine: cs, route: ModelRoute{Model: "deployment-default", Secret: "model"}}
+	st := &attemptState{
+		attempt:   AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID(pinnedID("att"))},
+		tenant:    tenant,
+		sessionID: sessionID,
+	}
+
+	// The parent's effective capability is the revision ceiling, even with no session override.
+	parentTools, err := orch.parentTools(ctx, st)
+	if err != nil {
+		t.Fatalf("parentTools: %v", err)
+	}
+	if !slices.Equal(parentTools, []string{"file"}) {
+		t.Fatalf("parentTools = %v, want the revision ceiling [file] (a nil/unrestricted result lets a child escape it)", parentTools)
+	}
+
+	// A child requesting a project-baseline tool the revision withheld is denied — capability cannot
+	// expand through delegation.
+	policy := coordinator.ConfigPolicy{DefaultTools: []string{"file", "shell"}}
+	admission := admitChild(childSpec{ChildRequestID: pinnedID("crq"), Tools: []string{"shell"}}, st.depth, 0, 0, false, policy, parentTools)
+	if !admission.Denied || admission.Reason != "capability_denied" {
+		t.Fatalf("child requesting [shell] under a [file] ceiling = %+v, want Denied capability_denied", admission)
+	}
+}
+
 // TestPinnedRevisionConfigHashReflectsRevision proves the ExecutionSpec-resolution seam (spec §14,
 // AGT-001): a run pinned to a published AgentRevision resolves its effective config from the revision,
 // so effectiveConfigHash (checkpoint.go:187 — the config a checkpoint records) reflects the revision's
