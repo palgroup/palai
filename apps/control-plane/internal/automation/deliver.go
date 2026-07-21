@@ -310,6 +310,34 @@ func (s *TriggerStore) appendToNamedSession(ctx context.Context, sc deliveryScop
 // correlation mode; `queue` serializes per key (a busy key defers, the reconciler admits the FIFO head
 // when the gate opens). The remaining policies land in A9.
 func (s *TriggerStore) applyPolicy(ctx context.Context, sc deliveryScope, cfg revisionConfig, source map[string]any, mappedInput []byte, hash string) (DeliveryResult, error) {
+	// `allow` has no gate — the DB one-active-root constraint serializes any bounded_key_reuse chain — so
+	// it admits without the lock (over-locking allow would needlessly serialize independent runs). Every
+	// other policy takes the gate under a per-scope advisory lock (M3): the gate-check + admit run inside
+	// it, so two concurrent same-key deliveries serialize — one admits, the rest see the active run and
+	// defer/drop per policy.
+	if cfg.ConcurrencyPolicy == "" || cfg.ConcurrencyPolicy == "allow" {
+		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
+	}
+	res, err := s.withGateLock(ctx, gateLockText(cfg.ConcurrencyPolicy, sc.triggerID, hash), func(ctx context.Context) (DeliveryResult, error) {
+		return s.applyGatedPolicy(ctx, sc, cfg, source, mappedInput, hash)
+	})
+	if errors.Is(err, errGateContended) {
+		// Another same-key delivery holds the gate mid-admit — treat contention as the gate being busy:
+		// drop_if_running skips (the concurrent winner runs); the rest defer (the reconciler admits FIFO).
+		// ponytail: a concurrent same-key `replace` burst defers the loser instead of canceling the
+		// winner's run — the reconciler admits it after that run terminates. Rare (two replaces racing one
+		// key); the common sequential-replace path cancels correctly. Tighten with a per-key serial queue
+		// if concurrent replace ever matters.
+		if cfg.ConcurrencyPolicy == "drop_if_running" {
+			return s.skip_(ctx, sc, statemachines.TriggerDeliveryMapped, "", "dropped: key gate contended")
+		}
+		return s.defer_(ctx, sc, "key gate contended; queued")
+	}
+	return res, err
+}
+
+// applyGatedPolicy is the gate-check + admit decision for a non-allow policy, run under the gate lock.
+func (s *TriggerStore) applyGatedPolicy(ctx context.Context, sc deliveryScope, cfg revisionConfig, source map[string]any, mappedInput []byte, hash string) (DeliveryResult, error) {
 	switch cfg.ConcurrencyPolicy {
 	case "queue":
 		busy, err := s.keyBusy(ctx, sc, hash)
@@ -426,20 +454,29 @@ func cancelProjections() (canceled, uncertain []byte, err error) {
 	return canceled, uncertain, nil
 }
 
+// errGateContended signals that another same-key delivery holds the concurrency gate mid-admit — the
+// caller treats it as the gate being busy (defer/drop per policy).
+var errGateContended = errors.New("automation: concurrency gate contended")
+
 // withGateLock runs fn while holding a Postgres session advisory lock keyed on the concurrency gate's
 // scope, so concurrent same-key deliveries serialize through the gate-check + admit: one admits, the rest
-// see the now-active run and defer/drop per policy (M3). The gate queries + admit run on the pool; the
-// lock only serializes the code path (held from gate-check through admit-commit on a dedicated conn).
-// ponytail: one global advisory lock per (trigger,key) — fine at trigger cadence; shard the key space if
-// a single hot key ever bottlenecks.
+// are contended (→ defer/drop per policy) (M3). It uses the NON-BLOCKING pg_try_advisory_lock: a blocking
+// acquire would hold a pool connection while waiting AND the holder needs a second connection to admit, so
+// N concurrent same-key deliveries would exhaust the pool and deadlock. Try-and-defer bounds each delivery
+// to one connection and never waits. ponytail: one advisory lock per (trigger,key) — fine at trigger
+// cadence; shard the key space if a single hot key ever bottlenecks.
 func (s *TriggerStore) withGateLock(ctx context.Context, lockText string, fn func(context.Context) (DeliveryResult, error)) (DeliveryResult, error) {
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return DeliveryResult{}, fmt.Errorf("acquire gate-lock conn: %w", err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1)::bigint)", lockText); err != nil {
-		return DeliveryResult{}, fmt.Errorf("acquire gate lock: %w", err)
+	var got bool
+	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock(hashtext($1)::bigint)", lockText).Scan(&got); err != nil {
+		return DeliveryResult{}, fmt.Errorf("try gate lock: %w", err)
+	}
+	if !got {
+		return DeliveryResult{}, errGateContended
 	}
 	defer func() {
 		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1)::bigint)", lockText)

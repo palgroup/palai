@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -138,6 +139,9 @@ func (s *TriggerStore) admitDeferredGroup(ctx context.Context, triggerID, org, p
 			org: org, project: project, principal: admitPrincipal, triggerID: triggerID, revisionID: admitRevision, deliveryID: admitID,
 		}, hash, admitInput)
 	})
+	if errors.Is(err, errGateContended) {
+		return nil // an inline admit holds the gate right now; retry this group next tick
+	}
 	return err
 }
 
