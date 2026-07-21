@@ -18,7 +18,8 @@ import (
 // never model-supplied, so the model cannot redirect a push.
 func PushTool() toolbroker.Tool {
 	return toolbroker.Tool{
-		Name: "palai.publish.push",
+		Name:        "palai.publish.push",
+		ReplayClass: toolbroker.ClassIdempotent, // records a pending publication under a stable idempotency key (§26.6, TOL-002)
 		InputSchema: map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},

@@ -359,7 +359,7 @@ func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID,
 // (commit-before-deliver). The tool_call row is idempotent (UpsertToolCall keeps the
 // authoritative completed row); duplicate frames are already deduped by the caller's
 // frame ledger, so this runs once per tool call.
-func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, fence uint64, callID, name string, arguments, result []byte, eventType string, payload []byte) (int64, error) {
+func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, fence uint64, callID, name string, arguments, result []byte, replayClass, requestHash, eventType string, payload []byte) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin tool commit: %w", err)
@@ -370,7 +370,7 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, storage.Query("UpsertToolCall"),
-		callID, tenant.Organization, tenant.Project, runID, int64(fence), name, arguments, result); err != nil {
+		callID, tenant.Organization, tenant.Project, runID, int64(fence), name, arguments, result, replayClass, requestHash); err != nil {
 		return 0, fmt.Errorf("upsert tool call: %w", err)
 	}
 	seq, err := appendEvent(ctx, tx, tenant, sessionID, responseID, eventType, payload)

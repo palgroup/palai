@@ -21,7 +21,8 @@ const maxFileReadBytes = 1 << 20
 // likely-secret read is refused. It runs behind the broker's sandbox-backed Exec seam.
 func FileTool() toolbroker.Tool {
 	return toolbroker.Tool{
-		Name: "palai.workspace.file",
+		Name:        "palai.workspace.file",
+		ReplayClass: toolbroker.ClassReversible, // a workspace edit is revertible via the snapshot/git (§26.6)
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

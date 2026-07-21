@@ -27,8 +27,11 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	arguments, _ := json.Marshal(args)
 	result, _ := json.Marshal(outcome.Result)
 	payload, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "tool_call_id": callID})
+	// The ledger row carries the tool's DECLARED replay class (copied at execute time) and the canonical
+	// request hash, so a kill-after-execute row is classified and a duplicate tool_call_id is recognised
+	// by content (spec §26.6, TOL-016). commit-before-deliver still holds.
 	if _, err := o.spine.CommitToolResult(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID),
-		st.attempt.Fence, callID, name, arguments, result, toolCallCompletedEvent, payload); err != nil {
+		st.attempt.Fence, callID, name, arguments, result, string(outcome.ReplayClass), outcome.Hash, toolCallCompletedEvent, payload); err != nil {
 		return err
 	}
 

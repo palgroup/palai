@@ -26,27 +26,60 @@ var (
 	ErrInvalidArguments = errors.New("invalid_arguments")
 )
 
+// ReplayClass is a tool operation's kill-recovery class (spec §26.6). It is DECLARED at registration
+// (fork 1: the class lives on the tool, not per-call DB config) and copied onto the ledger row at
+// execute time, so a kill-after-execute row is classified without re-deriving it. An unset class
+// defaults to ClassPure — the safe, re-runnable-cached default.
+type ReplayClass string
+
+const (
+	// ClassPure: deterministic, no external side effect — re-run freely, result is "replayed"-labelled
+	// but semantically single (TOL-001).
+	ClassPure ReplayClass = "pure"
+	// ClassIdempotent: a stable destination key makes a resend settle ONE external object (TOL-002).
+	ClassIdempotent ReplayClass = "idempotent"
+	// ClassReversible: reconcile against the destination first, then compensate/retry per policy (TOL-004).
+	ClassReversible ReplayClass = "reversible"
+	// ClassIrreversible: a kill after execute enters `uncertain` and NEVER auto-replays; a human resolves
+	// it (TOL-003).
+	ClassIrreversible ReplayClass = "irreversible"
+	// ClassInteractive: no client/approval → no silent replay.
+	ClassInteractive ReplayClass = "interactive"
+)
+
 // Tool is a broker-fenced tool. A pure conformance tool sets Invoke (deterministic, no side
 // effects). A workspace-touching tool (file/shell, spec §28.7-28.8) sets Exec instead: the broker
 // prefers Exec, handing it the per-attempt sandbox context so the effect confines to the workspace
 // while still riding the same fenced-row, idempotent-replay, schema, and usage machinery. Exactly
-// one of Invoke/Exec is set.
+// one of Invoke/Exec is set. ReplayClass declares the operation's kill-recovery class (spec §26.6);
+// empty means ClassPure.
 type Tool struct {
 	Name         string
 	InputSchema  map[string]any
 	OutputSchema map[string]any
+	ReplayClass  ReplayClass
 	Invoke       func(args map[string]any) (map[string]any, error)
 	Exec         func(ctx context.Context, env ExecEnv, args map[string]any) (map[string]any, error)
 }
 
+// replayClass reports the tool's declared class, defaulting an unset one to ClassPure.
+func (t Tool) replayClass() ReplayClass {
+	if t.ReplayClass == "" {
+		return ClassPure
+	}
+	return t.ReplayClass
+}
+
 // Outcome is the result of one Execute. Cached reports whether it replayed a
-// completed row (in which case the tool did not run and no new usage was emitted).
+// completed row (in which case the tool did not run and no new usage was emitted). ReplayClass is the
+// executed tool's declared kill-recovery class, copied onto the ledger row (spec §26.6).
 type Outcome struct {
-	Result map[string]any
-	State  statemachines.ToolCallState
-	Usage  contracts.Usage
-	Hash   string
-	Cached bool
+	Result      map[string]any
+	State       statemachines.ToolCallState
+	Usage       contracts.Usage
+	Hash        string
+	ReplayClass ReplayClass
+	Cached      bool
 }
 
 // Broker holds the explicit conformance tool set and the fenced tool-call rows.
@@ -96,7 +129,7 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 
 	// Idempotent replay: a completed row is authoritative and never re-runs.
 	if r, ok := b.rows[callID]; ok && r.state == statemachines.ToolCallCompleted {
-		return Outcome{Result: r.result, State: r.state, Hash: r.hash, Cached: true}, nil
+		return Outcome{Result: r.result, State: r.state, Hash: r.hash, ReplayClass: tool.replayClass(), Cached: true}, nil
 	}
 
 	// Strict validation happens before the row or fence is touched, so a rejected
@@ -139,7 +172,7 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 	}
 	r.state = state
 	r.result = result
-	return Outcome{Result: result, State: r.state, Usage: contracts.Usage{ToolCalls: 1}, Hash: r.hash}, nil
+	return Outcome{Result: result, State: r.state, Usage: contracts.Usage{ToolCalls: 1}, Hash: r.hash, ReplayClass: tool.replayClass()}, nil
 }
 
 // invoke runs the tool through whichever surface it defines: a workspace-touching Exec receives the

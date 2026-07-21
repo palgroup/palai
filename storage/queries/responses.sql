@@ -92,12 +92,14 @@ SET state = $4, output = $5, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3
   AND state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded');
 
--- UpsertToolCall records a completed tool call. ON CONFLICT DO NOTHING makes a
--- redelivered tool_call_id idempotent: the cached completion is authoritative and is
--- never overwritten (spec §26.7).
+-- UpsertToolCall records a completed tool call with its replay-ledger classification (spec §26.6-26.7,
+-- E10 T7): replay_class is the tool's declared kill-recovery class copied at execute time, request_hash
+-- the canonical (name, arguments) digest so a duplicate tool_call_id is recognised by content (TOL-016).
+-- ON CONFLICT DO NOTHING makes a redelivered tool_call_id idempotent: the cached completion is
+-- authoritative and is never overwritten.
 -- name: UpsertToolCall
-INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, result)
-VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8)
+INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, result, replay_class, request_hash)
+VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, $9, $10)
 ON CONFLICT (id) DO NOTHING;
 
 -- InsertModelRequest records a model request before the provider is called. It returns
