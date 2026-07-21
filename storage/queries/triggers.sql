@@ -46,11 +46,20 @@ SELECT agent_revision_id, run_template_revision_id, input_mapping,
 FROM trigger_revisions
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
--- InsertDelivery accepts a delivery, PINNING trigger_revision_id at accept (AGT-002). It is born in the
--- 'received' state (the state-machine genesis); the pipeline advances it from here.
+-- InsertDelivery accepts a delivery, PINNING trigger_revision_id at accept (AGT-002) and recording the
+-- accepting principal (so a deferred resume admits under the same principal). Born 'received' (the
+-- state-machine genesis); the pipeline advances it from here.
 -- name: InsertDelivery
-INSERT INTO trigger_deliveries (id, organization_id, project_id, trigger_id, trigger_revision_id)
-VALUES ($1, $2, $3, $4, $5);
+INSERT INTO trigger_deliveries (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id)
+VALUES ($1, $2, $3, $4, $5, $6);
+
+-- RecordDeliveryAdmitted records the born run's coordinates (response/run/session) + the mapped canonical
+-- input on the delivery and advances it to 'admitted'. The delivery is now tied to a session, so the
+-- run_created transition (SetDeliveryState) rides the run's own journal.
+-- name: RecordDeliveryAdmitted
+UPDATE trigger_deliveries
+SET state = 'admitted', response_id = $4, run_id = $5, session_id = $6, mapped_input = $7, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- GetDeliveryPin reads a delivery's pinned revision + state (the AGT-002 assertion + pipeline read).
 -- name: GetDeliveryPin

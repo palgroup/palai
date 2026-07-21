@@ -18,8 +18,8 @@ import (
 // §20.9 admission path as /v1/responses: the pipeline builds a coordinator.AdmissionInput and calls the
 // admitter seam, so a triggered run and a POST /v1/responses run are the same durable object.
 type TriggerStore struct {
-	pool  *pgxpool.Pool
-	admit RunAdmitter
+	pool     *pgxpool.Pool
+	admitter RunAdmitter
 }
 
 // NewTriggerStore wraps a shared connection pool. The admitter (the durable coordinator) is wired
@@ -29,7 +29,7 @@ func NewTriggerStore(pool *pgxpool.Pool) *TriggerStore { return &TriggerStore{po
 // WithAdmitter binds the run-admission seam the delivery pipeline admits through (the coordinator spine
 // in production). Returns the store for chaining.
 func (s *TriggerStore) WithAdmitter(a RunAdmitter) *TriggerStore {
-	s.admit = a
+	s.admitter = a
 	return s
 }
 

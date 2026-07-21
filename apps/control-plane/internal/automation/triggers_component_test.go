@@ -8,8 +8,50 @@ package automation
 
 import (
 	"context"
+	"os"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/palgroup/palai/packages/coordinator"
 )
+
+// componentSpine opens the durable coordinator against the throwaway PG (the RunAdmitter a triggered run
+// is born through) and migrates it. A trigger store wired to it admits runs on the SAME §20.9 path a POST
+// /v1/responses takes.
+func componentSpine(t *testing.T) *coordinator.Store {
+	t.Helper()
+	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
+	if url == "" {
+		t.Skip("PALAI_COMPONENT_POSTGRES_URL is required; run make test-component TEST=postgres")
+	}
+	cs, err := coordinator.Open(context.Background(), url)
+	if err != nil {
+		t.Fatalf("coordinator.Open() error = %v", err)
+	}
+	t.Cleanup(cs.Close)
+	if err := cs.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	return cs
+}
+
+// wiredTriggerStore returns a trigger store wired to the real coordinator admitter over the throwaway PG,
+// plus the shared pool for direct row assertions.
+func wiredTriggerStore(t *testing.T) (*TriggerStore, *pgxpool.Pool) {
+	t.Helper()
+	spine := componentSpine(t)
+	return NewTriggerStore(spine.Pool()).WithAdmitter(spine), spine.Pool()
+}
+
+// seedPrincipal creates a service principal in scope and returns its id — the principal a manual/API
+// delivery admits AS (the §20.9 idempotency record FKs principals).
+func seedPrincipal(t *testing.T, pool *pgxpool.Pool, org, project string) string {
+	t.Helper()
+	id := randID("prin")
+	mustExec(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`, id, org, project)
+	return id
+}
 
 // seedTrigger creates a trigger with one initial revision and returns (triggerID, revisionID). The
 // caller supplies the revision input (mapping/policy/pin) it needs.
@@ -31,15 +73,15 @@ func seedTrigger(t *testing.T, s *TriggerStore, org, project, name string, in Tr
 // accept, and a later revise (a NEW immutable INSERT, revision N+1) never moves the already-pinned
 // delivery. The revision that processes the delivery is the one active at accept, not the latest.
 func TestAcceptedDeliveryPinsExactRevision(t *testing.T) {
-	pool := componentPool(t)
-	store := NewTriggerStore(pool)
+	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
 	org, project, _ := seedSession(t, pool)
 
+	principal := seedPrincipal(t, pool, org, project)
 	triggerID, rev1 := seedTrigger(t, store, org, project, "nightly", TriggerRevisionInput{})
 
 	// The active revision is rev1; a delivery pins it.
-	del, err := store.CreateDelivery(ctx, org, project, triggerID, []byte(`{"order":{"id":"o1"}}`))
+	del, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`{"order":{"id":"o1"}}`))
 	if err != nil {
 		t.Fatalf("CreateDelivery error = %v", err)
 	}

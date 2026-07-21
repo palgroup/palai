@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS trigger_deliveries (
     project_id TEXT NOT NULL,
     trigger_id TEXT NOT NULL REFERENCES triggers (id) ON DELETE CASCADE,
     trigger_revision_id TEXT NOT NULL REFERENCES trigger_revisions (id),
+    -- The principal a delivery admits its run AS: the API principal that posted a manual/api delivery,
+    -- recorded so the delivery-reconciler resumes a DEFERRED delivery under the SAME principal (the
+    -- §20.9 idempotency record is principal-scoped). '' until an authenticated delivery is accepted.
+    principal_id TEXT NOT NULL DEFAULT '',
     state TEXT NOT NULL DEFAULT 'received'
         CHECK (state IN ('received', 'authenticated', 'deduplicated', 'mapped', 'admitted',
                          'run_created', 'rejected', 'duplicate', 'failed', 'deferred', 'skipped')),

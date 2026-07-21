@@ -7,15 +7,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	statemachines "github.com/palgroup/palai/packages/state-machines"
-
+	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+	statemachines "github.com/palgroup/palai/packages/state-machines"
 	"github.com/palgroup/palai/storage"
 )
+
+// createRoute is the admission route a triggered run is born on — the SAME route a POST /v1/responses
+// takes, so a triggered run and an API-posted run share one admission path (spec §20.9, §20.2.2).
+const createRoute = "/v1/responses"
 
 // RunAdmitter is the seam the delivery pipeline admits a run through — the SAME §20.9 admission path a
 // POST /v1/responses takes (spec §20.2.2). The coordinator spine implements it; a triggered run is born
@@ -45,7 +50,7 @@ type DeliveryResult struct {
 // pinned delivery), then advances the delivery through authenticate → dedupe → map → admit → run_created
 // (or a rejected/duplicate/failed/deferred/skipped branch). A disabled or unknown trigger is a typed
 // error; a trigger with no revision cannot accept a delivery.
-func (s *TriggerStore) CreateDelivery(ctx context.Context, org, project, triggerID string, payload []byte) (DeliveryResult, error) {
+func (s *TriggerStore) CreateDelivery(ctx context.Context, org, project, principal, triggerID string, payload []byte) (DeliveryResult, error) {
 	enabled, err := s.triggerEnabled(ctx, org, project, triggerID)
 	if err != nil {
 		return DeliveryResult{}, err
@@ -62,17 +67,17 @@ func (s *TriggerStore) CreateDelivery(ctx context.Context, org, project, trigger
 	}
 
 	deliveryID := newID("tdel")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertDelivery"), deliveryID, org, project, triggerID, rev.ID); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertDelivery"), deliveryID, org, project, triggerID, rev.ID, principal); err != nil {
 		return DeliveryResult{}, fmt.Errorf("insert delivery: %w", err)
 	}
 
-	scope := deliveryScope{org: org, project: project, triggerID: triggerID, revisionID: rev.ID, deliveryID: deliveryID}
+	scope := deliveryScope{org: org, project: project, principal: principal, triggerID: triggerID, revisionID: rev.ID, deliveryID: deliveryID}
 	return s.advance(ctx, scope, payload)
 }
 
 // deliveryScope carries the tenant + pinned-revision coordinates a delivery advances within.
 type deliveryScope struct {
-	org, project, triggerID, revisionID, deliveryID string
+	org, project, principal, triggerID, revisionID, deliveryID string
 }
 
 // revisionConfig is a pinned revision's delivery-pipeline config (mapping + key exprs + modes).
@@ -134,12 +139,177 @@ func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []
 		return DeliveryResult{}, err
 	}
 
-	// A5 stops at deduplicated. A6 adds map → admit → run_created.
-	state, err := s.deliveryState(ctx, sc)
+	// Map (AUT-003): compile + evaluate the mapping into the canonical action input. A schema-invalid
+	// mapping FAILS the delivery WITHOUT a run — no billable run is ever born from an unmappable event.
+	mapping, err := CompileMapping(cfg.InputMapping, nil)
+	if err != nil {
+		return s.fail(ctx, sc, statemachines.TriggerDeliveryDeduplicated, "input mapping is invalid: "+err.Error())
+	}
+	mappedInput, err := mapping.Apply(source)
+	if err != nil {
+		return s.fail(ctx, sc, statemachines.TriggerDeliveryDeduplicated, "input mapping failed: "+err.Error())
+	}
+	if _, err := s.transition(ctx, sc, statemachines.TriggerDeliveryDeduplicated, statemachines.TriggerDeliveryCmdMap); err != nil {
+		return DeliveryResult{}, err
+	}
+
+	// Admit (spec §20.2.2): born via the SAME §20.9 admission path a POST /v1/responses takes.
+	return s.admit(ctx, sc, cfg, mappedInput)
+}
+
+// admit builds a coordinator.AdmissionInput from the mapped canonical input + the pinned run target and
+// reserves the run through the RunAdmitter seam — the SAME §20.9 admission transaction a POST
+// /v1/responses runs. The run is born identically (a queued run + run.queued.v1 birth event + a dispatch
+// job the existing workers claim), so a triggered run and an API-posted run are one durable object. The
+// idempotency key is the delivery id, so a reconciler re-run REPLAYS rather than double-admitting.
+//
+// A6 admits per_event (a fresh session). Correlation modes (A7) and concurrency policy (A8/A9) decide,
+// BEFORE this call, whether to admit, defer, skip, or reject — this method is the shared admit action.
+func (s *TriggerStore) admit(ctx context.Context, sc deliveryScope, cfg revisionConfig, mappedInput []byte) (DeliveryResult, error) {
+	if s.admitter == nil {
+		return DeliveryResult{}, errors.New("automation: delivery admitter is not wired")
+	}
+	return s.admitChained(ctx, sc, cfg, mappedInput, nil)
+}
+
+// admitChained is admit with an optional existing session to chain onto (correlation bounded_key_reuse).
+// requestedSession nil opens a fresh session (per_event).
+func (s *TriggerStore) admitChained(ctx context.Context, sc deliveryScope, cfg revisionConfig, mappedInput []byte, requestedSession *string) (DeliveryResult, error) {
+	responseID, runID, sessionID := newID("resp"), newID("run"), newID("ses")
+	projection := contracts.Response{
+		ID:             contracts.ResponseID(responseID),
+		Object:         "response",
+		Status:         "queued",
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339Nano),
+		Output:         []contracts.ContentItem{},
+		Usage:          contracts.Usage{},
+		SessionID:      contracts.SessionID(sessionID),
+		RunID:          contracts.RunID(runID),
+		OrganizationID: contracts.OrganizationID(sc.org),
+		ProjectID:      contracts.ProjectID(sc.project),
+	}
+	body, err := json.Marshal(projection)
 	if err != nil {
 		return DeliveryResult{}, err
 	}
-	return DeliveryResult{ID: sc.deliveryID, State: state}, nil
+	sum := sha256.Sum256(mappedInput)
+	adm, err := s.admitter.AdmitResponse(ctx, coordinator.Tenant{Organization: sc.org, Project: sc.project}, coordinator.AdmissionInput{
+		Principal:             sc.principal,
+		IdempotencyKey:        "trigger-delivery:" + sc.deliveryID,
+		Method:                "POST",
+		Route:                 createRoute,
+		RequestHash:           hex.EncodeToString(sum[:]),
+		ResponseID:            responseID,
+		RunID:                 runID,
+		SessionID:             sessionID,
+		RequestedSessionID:    requestedSession,
+		Input:                 mappedInput,
+		Body:                  body,
+		Store:                 true,
+		AgentRevisionID:       cfg.AgentRevisionID,
+		RunTemplateRevisionID: cfg.RunTemplateRevisionID,
+	})
+	if err != nil {
+		return DeliveryResult{}, fmt.Errorf("admit triggered run: %w", err)
+	}
+	// A pin/session error is a delivery failure, not a run: no billable run was born (AUT-003). An
+	// active-run conflict on a chained session is the queue signal (A8) — surfaced to the caller.
+	if adm.ActiveRunConflict {
+		return DeliveryResult{ID: sc.deliveryID, State: string(statemachines.TriggerDeliveryMapped), Reason: "active_run"}, errActiveRun
+	}
+	if adm.Conflict || adm.SessionNotFound || adm.SessionConflict || adm.PinnedRevisionNotFound || adm.PinnedRevisionNotPublished || adm.RepositoryBindingNotFound {
+		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, admissionFailureReason(adm))
+	}
+
+	// The resolved session is authoritative (a chained response reuses an existing session; the admission
+	// patches the body's session_id). Read it back so the delivery records the real session.
+	resolvedSession := sessionID
+	if requestedSession != nil {
+		if sid := responseField(adm.Body, "session_id"); sid != "" {
+			resolvedSession = sid
+		}
+	}
+	if _, err := s.pool.Exec(ctx, storage.Query("RecordDeliveryAdmitted"),
+		sc.deliveryID, sc.org, sc.project, responseID, runID, resolvedSession, mappedInput); err != nil {
+		return DeliveryResult{}, fmt.Errorf("record admitted delivery: %w", err)
+	}
+	if _, err := s.transition(ctx, sc, statemachines.TriggerDeliveryAdmitted, statemachines.TriggerDeliveryCmdCreateRun); err != nil {
+		return DeliveryResult{}, err
+	}
+	// The delivery now has a session, so its run_created event rides the run's own journal (a delivery is
+	// trigger-born; an operator watching the run sees it). Best-effort — the durable delivery row is the
+	// source of truth, so a failed emit does not fail the run.
+	_ = s.emitRunCreated(ctx, sc, resolvedSession, responseID)
+
+	return DeliveryResult{
+		ID: sc.deliveryID, State: string(statemachines.TriggerDeliveryRunCreated),
+		ResponseID: responseID, RunID: runID, SessionID: resolvedSession,
+	}, nil
+}
+
+// errActiveRun signals a chained admission lost to one-active-root — the queue/defer signal (A8).
+var errActiveRun = errors.New("automation: session already has an active root run")
+
+// emitRunCreated journals trigger.delivery.run_created.v1 into the run's session (the seq-then-append
+// shape the coordinator uses), so a triggered run is visible as such in its own stream.
+func (s *TriggerStore) emitRunCreated(ctx context.Context, sc deliveryScope, sessionID, responseID string) error {
+	payload := fmt.Sprintf(`{"delivery_id":%q,"trigger_id":%q,"response_id":%q}`, sc.deliveryID, sc.triggerID, responseID)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var seq int64
+	if err := tx.QueryRow(ctx, storage.Query("AllocateSequence"), sessionID).Scan(&seq); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, storage.Query("AppendEvent"),
+		newID("evt"), sc.org, sc.project, sessionID, responseID, seq, "trigger.delivery.run_created.v1", []byte(payload)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// admissionFailureReason maps a typed admission rejection to a delivery failure reason.
+func admissionFailureReason(adm coordinator.Admission) string {
+	switch {
+	case adm.PinnedRevisionNotFound:
+		return "pinned revision not found"
+	case adm.PinnedRevisionNotPublished:
+		return "pinned revision is a draft"
+	case adm.SessionNotFound:
+		return "correlation session not found"
+	case adm.SessionConflict:
+		return "correlation session not active"
+	case adm.RepositoryBindingNotFound:
+		return "repository binding not found"
+	default:
+		return "admission conflict"
+	}
+}
+
+// responseField reads a top-level string field from a response projection body.
+func responseField(body []byte, field string) string {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return ""
+	}
+	var v string
+	_ = json.Unmarshal(fields[field], &v)
+	return v
+}
+
+// fail terminalizes a delivery `failed` with a reason (a mapping/admission failure), via the SM. A
+// failed delivery leaves NO runs row (AUT-003): admission is never reached, so no billable run is born.
+func (s *TriggerStore) fail(ctx context.Context, sc deliveryScope, from statemachines.TriggerDeliveryState, reason string) (DeliveryResult, error) {
+	to, _, err := statemachines.Apply(from, statemachines.TriggerDeliveryCmdFail, statemachines.TriggerDeliveryTable)
+	if err != nil {
+		return DeliveryResult{}, err
+	}
+	if _, err := s.pool.Exec(ctx, storage.Query("SetDeliveryReason"), sc.deliveryID, sc.org, sc.project, string(to), reason); err != nil {
+		return DeliveryResult{}, fmt.Errorf("fail delivery: %w", err)
+	}
+	return DeliveryResult{ID: sc.deliveryID, State: string(to), Reason: reason}, nil
 }
 
 // markDuplicate links a losing delivery to its canonical original and terminalizes it `duplicate`.
