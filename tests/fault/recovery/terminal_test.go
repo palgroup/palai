@@ -30,8 +30,7 @@ func TestFastExitEngineTerminalFrameNeverLost(t *testing.T) {
 			}
 			return nil
 		}
-		inbound := make(chan contracts.EngineFrame)
-		close(inbound) // the fast-exit fixture never blocks for a controller frame
+		inbound := make(chan contracts.EngineFrame) // never fed: the fast-exit fixture blocks for no controller frame
 
 		result, err := sup.Stream(context.Background(), request, inbound, sink)
 		if err != nil {
