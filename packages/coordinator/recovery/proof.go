@@ -6,18 +6,18 @@ package recovery
 // transcript boundary, the replayed-vs-reused tool calls, the config/model changes, the
 // semantic-loss assessment, and the measured duration.
 type RecoveryProof struct {
-	PreviousAttemptID    string
-	NewAttemptID         string
-	Level                Level
-	CheckpointID         string
-	WorkspaceSnapshotID  string // "" is honest when the checkpoint declared no workspace dependency
-	TranscriptBoundaryID string
-	ReplayedToolCalls    []string // non-nil once accounted; empty is itself the evidence (nothing replayed)
-	ReusedToolCalls      []string // non-nil once accounted
-	ConfigModelChanges   []string // non-nil once accounted; empty means no drift across the recovery
-	SemanticLossAssessed bool     // the assessment was made (the warning below may still be empty)
-	SemanticLossWarning  string
-	DurationMS           int64
+	PreviousAttemptID    string   `json:"previous_attempt_id"`
+	NewAttemptID         string   `json:"new_attempt_id"`
+	Level                Level    `json:"level"`
+	CheckpointID         string   `json:"checkpoint_id"`
+	WorkspaceSnapshotID  string   `json:"workspace_snapshot_id"` // "" is honest when the checkpoint declared no workspace dependency
+	TranscriptBoundaryID string   `json:"transcript_boundary_id"`
+	ReplayedToolCalls    []string `json:"replayed_tool_calls"`    // non-nil once accounted; empty is itself the evidence (nothing replayed)
+	ReusedToolCalls      []string `json:"reused_tool_calls"`      // non-nil once accounted
+	ConfigModelChanges   []string `json:"config_model_changes"`   // non-nil once accounted; empty means no drift across the recovery
+	SemanticLossAssessed bool     `json:"semantic_loss_assessed"` // the assessment was made (the warning below may still be empty)
+	SemanticLossWarning  string   `json:"semantic_loss_warning"`
+	DurationMS           int64    `json:"duration_ms"`
 }
 
 // Complete reports whether the proof carries every §26.12 field a recovery claim requires. The
