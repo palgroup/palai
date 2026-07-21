@@ -69,11 +69,10 @@ func (h *scheduleHandler) createSchedule(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	body, in, ok := decodeScheduleInput(w, r, raw)
+	in, ok := decodeScheduleInput(w, r, raw)
 	if !ok {
 		return
 	}
-	_ = body
 	id, err := h.schedules.CreateSchedule(r.Context(), scope.Organization, scope.Project, scope.Principal, in)
 	if bad := scheduleProblem(w, r, err); bad {
 		return
@@ -108,7 +107,7 @@ func (h *scheduleHandler) reviseSchedule(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	_, in, ok := decodeScheduleInput(w, r, raw)
+	in, ok := decodeScheduleInput(w, r, raw)
 	if !ok {
 		return
 	}
@@ -124,8 +123,12 @@ func (h *scheduleHandler) reviseSchedule(w http.ResponseWriter, r *http.Request)
 }
 
 // pauseSchedule / resumeSchedule stop and restart the schedule's admission (POST .../pause, .../resume).
-func (h *scheduleHandler) pauseSchedule(w http.ResponseWriter, r *http.Request)  { h.setPaused(w, r, true) }
-func (h *scheduleHandler) resumeSchedule(w http.ResponseWriter, r *http.Request) { h.setPaused(w, r, false) }
+func (h *scheduleHandler) pauseSchedule(w http.ResponseWriter, r *http.Request) {
+	h.setPaused(w, r, true)
+}
+func (h *scheduleHandler) resumeSchedule(w http.ResponseWriter, r *http.Request) {
+	h.setPaused(w, r, false)
+}
 
 func (h *scheduleHandler) setPaused(w http.ResponseWriter, r *http.Request, paused bool) {
 	scope, ok := middleware.ScopeFrom(r.Context())
@@ -189,25 +192,25 @@ func (h *scheduleHandler) listOccurrences(w http.ResponseWriter, r *http.Request
 
 // decodeScheduleInput parses the request body into an automation.ScheduleInput, turning malformed JSON or
 // an unparseable RFC3339 time into a 400.
-func decodeScheduleInput(w http.ResponseWriter, r *http.Request, raw []byte) (scheduleBody, automation.ScheduleInput, bool) {
+func decodeScheduleInput(w http.ResponseWriter, r *http.Request, raw []byte) (automation.ScheduleInput, bool) {
 	var body scheduleBody
 	if err := json.Unmarshal(raw, &body); err != nil {
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body is not valid JSON")
-		return scheduleBody{}, automation.ScheduleInput{}, false
+		return automation.ScheduleInput{}, false
 	}
 	oneTime, ok := parseOptionalTime(w, r, body.OneTimeAt, "one_time_at")
 	if !ok {
-		return scheduleBody{}, automation.ScheduleInput{}, false
+		return automation.ScheduleInput{}, false
 	}
 	startsAt, ok := parseOptionalTime(w, r, body.StartsAt, "starts_at")
 	if !ok {
-		return scheduleBody{}, automation.ScheduleInput{}, false
+		return automation.ScheduleInput{}, false
 	}
 	endsAt, ok := parseOptionalTime(w, r, body.EndsAt, "ends_at")
 	if !ok {
-		return scheduleBody{}, automation.ScheduleInput{}, false
+		return automation.ScheduleInput{}, false
 	}
-	return body, automation.ScheduleInput{
+	return automation.ScheduleInput{
 		Name: body.Name, TriggerID: body.TriggerID, Kind: body.Kind, CronExpr: body.CronExpr,
 		Timezone: body.Timezone, OneTimeAt: oneTime, MisfirePolicy: body.MisfirePolicy,
 		MisfireGraceSeconds: body.MisfireGraceSeconds, MaxCatchUp: body.MaxCatchUp, JitterSeconds: body.JitterSeconds,

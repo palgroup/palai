@@ -16,17 +16,17 @@ func mkWall(y, mo, d, h, mi int) time.Time {
 // everything outside it (a 6-field seconds form, @macros, month/day NAMES, out-of-range values, empty).
 func TestCronParserAcceptsOnlyDocumentedFiveField(t *testing.T) {
 	accept := []string{
-		"* * * * *",           // every minute
-		"0 0 * * *",           // midnight
-		"30 2 * * *",          // 02:30 daily
-		"0-29 9-17 * * 1-5",   // ranges + weekday range
-		"0,15,30,45 * * * *",  // comma list
-		"*/15 * * * *",        // step
-		"0 */2 * * *",         // step on hour
-		"0-30/10 * * * *",     // range with step
-		"59 23 31 12 6",       // upper bounds (dow 6 = Saturday)
-		"0 0 1 1 0",           // lower bounds (dow 0 = Sunday)
-		"0 0 1,15 * 1,3,5",    // dom + dow both restricted (Vixie OR)
+		"* * * * *",          // every minute
+		"0 0 * * *",          // midnight
+		"30 2 * * *",         // 02:30 daily
+		"0-29 9-17 * * 1-5",  // ranges + weekday range
+		"0,15,30,45 * * * *", // comma list
+		"*/15 * * * *",       // step
+		"0 */2 * * *",        // step on hour
+		"0-30/10 * * * *",    // range with step
+		"59 23 31 12 6",      // upper bounds (dow 6 = Saturday)
+		"0 0 1 1 0",          // lower bounds (dow 0 = Sunday)
+		"0 0 1,15 * 1,3,5",   // dom + dow both restricted (Vixie OR)
 	}
 	for _, expr := range accept {
 		if _, err := ParseCron(expr); err != nil {
@@ -35,22 +35,22 @@ func TestCronParserAcceptsOnlyDocumentedFiveField(t *testing.T) {
 	}
 
 	reject := []string{
-		"",                    // empty
-		"* * * *",             // four fields
-		"* * * * * *",         // six fields (seconds form is NOT supported)
-		"@daily",              // macro
-		"0 0 * * MON",         // weekday NAME
-		"0 0 1 JAN *",         // month NAME
-		"60 * * * *",          // minute out of range (0-59)
-		"* 24 * * *",          // hour out of range (0-23)
-		"* * 0 * *",           // dom out of range (1-31)
-		"* * 32 * *",          // dom out of range
-		"* * * 13 *",          // month out of range (1-12)
-		"* * * * 7",           // dow out of range (0-6)
-		"*/0 * * * *",         // zero step
-		"5-3 * * * *",         // inverted range
-		"1..5 * * * *",        // malformed separator
-		"a * * * *",           // non-numeric
+		"",             // empty
+		"* * * *",      // four fields
+		"* * * * * *",  // six fields (seconds form is NOT supported)
+		"@daily",       // macro
+		"0 0 * * MON",  // weekday NAME
+		"0 0 1 JAN *",  // month NAME
+		"60 * * * *",   // minute out of range (0-59)
+		"* 24 * * *",   // hour out of range (0-23)
+		"* * 0 * *",    // dom out of range (1-31)
+		"* * 32 * *",   // dom out of range
+		"* * * 13 *",   // month out of range (1-12)
+		"* * * * 7",    // dow out of range (0-6)
+		"*/0 * * * *",  // zero step
+		"5-3 * * * *",  // inverted range
+		"1..5 * * * *", // malformed separator
+		"a * * * *",    // non-numeric
 	}
 	for _, expr := range reject {
 		if _, err := ParseCron(expr); err == nil {
