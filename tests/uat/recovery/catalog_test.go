@@ -38,12 +38,20 @@ var validProofClasses = map[string]bool{
 
 var honestNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// recoveryIDPrefixes are the case-id families E10 EXCLUSIVELY owns; every case.yaml under one of them must
+// be in expectedRecoveryCatalog, so a recovery case cannot be added outside the map and escape proof
+// resolution. SAN is deliberately absent: it is shared with E09 (SAN-001..004 are E09 sandbox cases), so a
+// prefix sweep can't own it — the SAN-005..008 recovery cases are still validated as map keys above.
+// ponytail: exclusive-family sweep only; a shared-family orphan (e.g. a stray SAN-009) is not auto-caught.
+var recoveryIDPrefixes = []string{"ENG-", "TOL-", "SES-", "REC-", "DET-"}
+
 // expectedRecoveryCatalog is the E10 recovery UAT catalog: every case ID this slice materializes (spec §3
 // acceptance contract ENG/TOL/SAN/SES + §64 authored REC/DET), mapped to the proof class its case.yaml
 // must declare and the in-tree proof(s) that already prove it (T1-T8). The declared class is the BUILD-TAG
-// TIER of the referenced proof, so a reader can run exactly that tier to see the proof — no tier overclaim.
-// A missing dir, a drifted class, or a proof reference that does not resolve fails the gate: the recovery
-// catalog cannot silently under-materialize or overclaim a proven half.
+// TIER of the referenced proof — MECHANICALLY enforced by assertProofsMatch reading each proof file's
+// //go:build tag — so a reader can run exactly that tier to see the proof and no case can overclaim its
+// tier. A missing dir, a drifted class, a tag/class mismatch, or a proof reference that does not resolve
+// fails the gate: the recovery catalog cannot silently under-materialize or overclaim a proven half.
 var expectedRecoveryCatalog = map[string]struct {
 	class  string
 	proofs []string
@@ -137,14 +145,56 @@ func TestRecoveryCatalogMaterialized(t *testing.T) {
 			t.Errorf("%s: a live-provider case must not declare the fake provider", id)
 		}
 		// The materialization guarantee: the case.yaml lists exactly the proof(s) the catalog expects, and
-		// each one resolves to a real func in a real file. A case cannot claim a half that isn't in the tree.
-		assertProofsMatch(t, root, id, want.proofs, c.Proof)
+		// each one resolves to a real func in a real file whose build-tag tier equals the declared class.
+		assertProofsMatch(t, root, id, want.class, want.proofs, c.Proof)
+	}
+
+	// Orphan guard: every recovery-family case dir must be in the map (no case escapes proof resolution).
+	entries, err := os.ReadDir(casesDir)
+	if err != nil {
+		t.Fatalf("read cases dir: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		for _, prefix := range recoveryIDPrefixes {
+			if strings.HasPrefix(e.Name(), prefix) {
+				if _, ok := expectedRecoveryCatalog[e.Name()]; !ok {
+					t.Errorf("%s: a recovery-family case dir is not in expectedRecoveryCatalog (add it, or it escapes proof resolution)", e.Name())
+				}
+				break
+			}
+		}
 	}
 }
 
+// buildClass maps a proof file's //go:build tag to its master-plan §10.2 proof class. A file with no
+// build tag runs in make verify / test-unit, so it is the "unit" tier.
+func buildClass(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if constraint, ok := strings.CutPrefix(strings.TrimSpace(line), "//go:build "); ok {
+			switch strings.TrimSpace(constraint) {
+			case "fault":
+				return "fault-live"
+			case "component":
+				return "component-real"
+			case "e2e":
+				return "e2e-deterministic"
+			case "live":
+				return "live-provider"
+			default:
+				return "unit"
+			}
+		}
+	}
+	return "unit"
+}
+
 // assertProofsMatch checks the case.yaml `proof:` list equals the catalog's expected proofs and that each
-// "path/to/file.go:FuncName" resolves to a file that declares that func.
-func assertProofsMatch(t *testing.T, root, id string, want, got []string) {
+// "path/to/file.go:FuncName" resolves to a file that declares that func AND whose //go:build tier equals
+// the declared class — so the declared class is mechanically the tier that runs the proof, not just prose.
+func assertProofsMatch(t *testing.T, root, id, class string, want, got []string) {
 	t.Helper()
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("%s: proof list = %v, want %v", id, got, want)
@@ -163,6 +213,9 @@ func assertProofsMatch(t *testing.T, root, id string, want, got []string) {
 		}
 		if !strings.Contains(string(body), "func "+fn+"(") {
 			t.Errorf("%s: proof %q not found in %s (the case claims a proof that is not in the tree)", id, fn, file)
+		}
+		if got := buildClass(string(body)); got != class {
+			t.Errorf("%s: proof %s is build-tier %q but the case declares proof_class %q (tier overclaim/mismatch)", id, file, got, class)
 		}
 	}
 }

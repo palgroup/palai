@@ -16,6 +16,7 @@ package responses
 // DET-001/002 + the E09 journey; this test omits it to keep the recovery invariant in focus (ponytail).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -145,6 +146,13 @@ func TestCodingJourneyWithKillRecoveryDeterministic(t *testing.T) {
 	if n := h.count(`SELECT count(*) FROM publications WHERE run_id=$1 AND operation='push_branch'`, runID); n != 1 {
 		t.Fatalf("push publications after restore = %d, want 1 (the completed push must not be re-requested)", n)
 	}
+	// The checkpoint bytes carry no credential — the §26.2 secret-absence scan extended to CHECKPOINT
+	// objects (the snapshot half is SAN-005). The run's own push token is absent from every stored object.
+	for _, obj := range store.objects() {
+		if bytes.Contains(obj, []byte(detPushSecret)) {
+			t.Fatal("a checkpoint object leaked the run's push credential (checkpoint-byte secret scan)")
+		}
+	}
 
 	// --- Step 10: compile the changeset from the tool ledger (the file write survived the kill). ---
 	aw := &recordingArtifactWriter{h: h}
@@ -222,9 +230,12 @@ func (h *harness) writeAndVerifyRecoveryEvidence(t *testing.T, proof recovery.Re
 				"id": "ENG-004", "status": "PASS", "proof_class": "e2e-deterministic",
 				"run_id": runID, "image_digest": "sha256:" + strings.Repeat("a", 64),
 				"provider_request_id": "prov_final", "mtls_enroll": "runner-local cn=controller",
-				"terminal":       map[string]any{"type": "response.completed", "count": 1},
-				"usage":          map[string]int{"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
-				"db_assertions":  []string{"a real SIGKILL at the push boundary recovered via the compatible_checkpoint ladder; the completed push was not re-run"},
+				"terminal": map[string]any{"type": "response.completed", "count": 1},
+				"usage":    map[string]int{"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+				"db_assertions": []string{
+					"a real SIGKILL at the push boundary recovered via the compatible_checkpoint ladder; the completed push was not re-run",
+					"every stored checkpoint object was scanned for the run's push token and carried no credential (checkpoint-byte secret scan)",
+				},
 				"checksum":       hashCoding(runID, "recovery"),
 				"recovery_claim": "continued", "recovery_proof": proof,
 			},

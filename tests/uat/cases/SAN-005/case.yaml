@@ -1,8 +1,8 @@
 id: SAN-005
-name: snapshot-restore-checksums-match-create-no-secret-exclusions
+name: snapshot-restore-checksums-match-create-secrets-excluded
 proof_class: unit
 provider: fake
-input: "a workspace snapshot restore reproduces file/index/tree checksums byte-for-byte equal to create, and its exclusion set is empty and secret-free (the .git dir is preserved for post-terminal publication)"
+input: "a workspace snapshot restore reproduces file/index/tree checksums byte-for-byte equal to create; the secret + credential are recorded as exclusions and never enter the archive bytes, while the .git dir is preserved for post-terminal publication"
 expect_status: completed
 proof:
   - adapters/sandboxes/oci/snapshot/archive_test.go:TestSnapshotRestoreChecksumsMatchCreate

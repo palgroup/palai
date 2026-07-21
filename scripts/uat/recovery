@@ -13,13 +13,18 @@
 #     3. evidence-verify RELEASE=recovery-0.1.0 — the committed recovery bundle verifies clean with the
 #        §26.12 RecoveryProof rule active (a recovery-claimed case with a missing/incomplete proof fails).
 #
-#   live tier (PROVIDER=provider-one): the 7 recovery live smokes (T1 checkpoint-create, T2
-#     steer-survives-kill, T4 checkpoint-restore, T5 container-kill-recovery, T6 host-kill-restore, T7
-#     tool-replay-reconcile, T8 detached-child-conversation). HONEST CEILING: all 7 share the
+#   live tier (PROVIDER=provider-one): FOUR live-provider CASEs are authored + wired
+#     (scripts/test/live-provider): checkpoint-restore (T4), container-kill-recovery (T5),
+#     host-kill-restore (T6), detached-child-conversation (T8). HONEST CEILING: all four share the
 #     tool-advertising gate — dispatchModel does not advertise tool schemas to the provider, so a real
 #     provider never reaches a tool boundary; they SKIP until PALAI_LIVE_TOOL_ADVERTISING is set. They
 #     serialize on the shared :local Docker stack, so this target does NOT run them inline — it names them
 #     so the gate is explicit and points at the per-case live runner.
+#
+#     The other three recovery halves have NO live-provider CASE authored — checkpoint-create (T1),
+#     steer-survives-kill (T2), and tool-replay-reconcile (T7). They are proven at the fault/component
+#     tier only (T7 recorded its own non-wiring deviation, tool_replay_fault_test.go:19-21); wiring their
+#     live layer is a named follow-up, not an existing-but-gated CASE. This target does not claim them.
 #
 # uat-coding / uat-local-live / uat-interactive stay UNTOUCHED.
 set -euo pipefail
@@ -35,9 +40,11 @@ CASE=recovery scripts/test/fault
 # Core 3 — the recovery-0.1.0 evidence bundle verifies clean.
 RELEASE=recovery-0.1.0 scripts/evidence/verify
 
-# Live tier — named-but-gated. The 7 recovery live smokes need PALAI_LIVE_TOOL_ADVERTISING (dispatchModel
-# omits tool schemas) and serialize on :local; they are not run inline here.
+# Live tier — named-but-gated. The FOUR authored recovery live smokes need PALAI_LIVE_TOOL_ADVERTISING
+# (dispatchModel omits tool schemas) and serialize on :local; they are not run inline here. The other
+# three halves (T1/T2/T7) have no live-provider CASE — they are named as a follow-up, not run.
 if [ "${PROVIDER:-fake}" = "provider-one" ]; then
-  echo "uat-recovery: PROVIDER=provider-one — the 7 live recovery smokes are GATED on PALAI_LIVE_TOOL_ADVERTISING (dispatchModel omits tool schemas) and serialize on :local." >&2
-  echo "  run them per-case: make test-live-provider PROVIDER=provider-one CASE=<checkpoint-create|steer-survives-kill|checkpoint-restore|container-kill-recovery|host-kill-restore|tool-replay-reconcile|detached-child-conversation>" >&2
+  echo "uat-recovery: PROVIDER=provider-one — the 4 authored live recovery smokes are GATED on PALAI_LIVE_TOOL_ADVERTISING (dispatchModel omits tool schemas) and serialize on :local." >&2
+  echo "  run them per-case: make test-live-provider PROVIDER=provider-one CASE=<checkpoint-restore|container-kill-recovery|host-kill-restore|detached-child-conversation>" >&2
+  echo "  no live-provider CASE authored for checkpoint-create (T1), steer-survives-kill (T2), tool-replay-reconcile (T7) — proven at the fault/component tier; wiring their live layer is a named follow-up." >&2
 fi

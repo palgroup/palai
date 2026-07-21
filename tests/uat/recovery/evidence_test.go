@@ -1,9 +1,9 @@
 package recovery
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/palgroup/palai/tests/uat"
@@ -34,14 +34,30 @@ func TestRecoveryReleaseVerifiesClean(t *testing.T) {
 	}
 
 	// The RecoveryProof rule must be exercised on REAL release data, not only in the unit fixtures: the
-	// committed bundle carries at least one recovery claim + its §26.12 proof. A clean release with no
-	// recovery claim would silently not test the rule this release exists to enforce.
+	// committed bundle carries at least one case with a NON-EMPTY recovery_claim AND a recovery_proof
+	// block (parsed, not just key-string present). A clean release with no live claim would silently not
+	// test the rule this release exists to enforce — and since it verified clean above, that claim's proof
+	// is complete.
 	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		t.Fatalf("read recovery-0.1.0 manifest: %v", err)
 	}
-	body := string(raw)
-	if !strings.Contains(body, `"recovery_claim"`) || !strings.Contains(body, `"recovery_proof"`) {
-		t.Fatal("recovery-0.1.0 carries no recovery_claim/recovery_proof: the release does not exercise the §26.12 rule it exists to enforce")
+	var parsed struct {
+		Cases []struct {
+			RecoveryClaim string          `json:"recovery_claim"`
+			RecoveryProof json.RawMessage `json:"recovery_proof"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("decode recovery-0.1.0 manifest: %v", err)
+	}
+	claimed := 0
+	for _, c := range parsed.Cases {
+		if c.RecoveryClaim != "" && len(c.RecoveryProof) > 0 {
+			claimed++
+		}
+	}
+	if claimed == 0 {
+		t.Fatal("recovery-0.1.0 carries no case with a non-empty recovery_claim + recovery_proof: the release does not exercise the §26.12 rule it exists to enforce")
 	}
 }
