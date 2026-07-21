@@ -326,7 +326,10 @@ func TestJitterGatesAdmission(t *testing.T) {
 	principal := seedPrincipal(t, pool, org, project)
 	triggerID := seedCronTrigger(t, ts, pool, org, project)
 
-	planned := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
+	// A real-past minute-aligned instant: the tick's `now` is injected (drives the jitter GATE), but
+	// admitted_at is stamped by the DB clock (real time), so planned must sit in the real past for the
+	// planned_at-vs-admitted_at lateness assertion to hold.
+	planned := time.Now().UTC().Truncate(time.Minute).Add(-3 * time.Minute)
 	const jitter = 120
 	schID := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", planned, "fire_once_now", 0, jitter)
 
