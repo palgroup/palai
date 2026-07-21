@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
+	"github.com/palgroup/palai/packages/coordinator/recovery"
 )
 
 // graceElapsed is a negative grace window: the cutoff moves into the future, so every
@@ -182,6 +183,42 @@ func TestGCNeverDeletesReferencedOrInGraceObject(t *testing.T) {
 	}
 	if h.objectPresent(t, freshOrphanKey) {
 		t.Fatalf("orphan %q survived reclaim after its grace elapsed", freshOrphanKey)
+	}
+}
+
+// TestGCNeverDeletesLiveCheckpointObject proves the orphan-GC reference set spans checkpoint bytes,
+// not just artifacts (the E10 T1<->T3 data-loss gap). A checkpoint.offer writes its opaque bytes to
+// the SAME bucket under <org>/<proj>/<run>/checkpoints/<id> and records them in the checkpoints
+// table — NOT artifacts. With the grace elapsed, an unreferenced object would be reclaimed; this one
+// must survive, because a live checkpoints row references it. Before checkpoints joined the reference
+// set, GC saw every live checkpoint as an orphan and destroyed the recovery bytes T1 depends on.
+func TestGCNeverDeletesLiveCheckpointObject(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	org, project, _, runID, attemptID := h.seedRunWithAttempt(t)
+	sink := execution.NewCheckpointSink(h.s3, recovery.New(h.pool))
+
+	meta := execution.CheckpointMeta{
+		Organization: org, Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 7,
+	}
+	if err := sink.Persist(ctx, meta, offerFrameData([]byte(`{"state":"awaiting_model","step":2}`))); err != nil {
+		t.Fatalf("Persist() error = %v", err)
+	}
+	var checkpointKey string
+	if err := h.pool.QueryRow(ctx, `SELECT object_key FROM checkpoints WHERE run_id=$1`, runID).Scan(&checkpointKey); err != nil {
+		t.Fatalf("read checkpoint object_key: %v", err)
+	}
+	if !h.objectPresent(t, checkpointKey) {
+		t.Fatalf("precondition: checkpoint object %q absent before GC", checkpointKey)
+	}
+
+	// Grace elapsed: an unreferenced object here would be reclaimed. The live checkpoints row must
+	// keep this one — reference beats grace, for checkpoints exactly as for artifacts.
+	if _, err := NewCollector(h.s3, h.pool, graceElapsed).Collect(ctx); err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if !h.objectPresent(t, checkpointKey) {
+		t.Fatalf("live checkpoint object %q was reclaimed by GC — recovery bytes destroyed", checkpointKey)
 	}
 }
 
