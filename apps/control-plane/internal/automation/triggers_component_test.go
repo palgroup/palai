@@ -8,6 +8,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -67,6 +68,60 @@ func seedTrigger(t *testing.T, s *TriggerStore, org, project, name string, in Tr
 		t.Fatalf("ReviseTrigger error = %v", err)
 	}
 	return triggerID, rev.ID
+}
+
+// TestRevisionValidationRejectsBadCombos pins M4(a) + m8: a revise carrying named_session + a deferring
+// policy is rejected (a deferred delivery would lose its source-derived target session), and an
+// out-of-enum correlation_mode / concurrency_policy is a typed reject (not a DB-CHECK 500).
+func TestRevisionValidationRejectsBadCombos(t *testing.T) {
+	store, pool := wiredTriggerStore(t)
+	ctx := context.Background()
+	org, project, _ := seedSession(t, pool)
+	triggerID, err := store.CreateTrigger(ctx, org, project, "validate", "manual_api")
+	if err != nil {
+		t.Fatalf("CreateTrigger error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		in   TriggerRevisionInput
+		want error
+	}{
+		{"named_session + queue", TriggerRevisionInput{CorrelationMode: "named_session", ConcurrencyPolicy: "queue", CorrelationKeyExpr: `{"select":"s"}`}, ErrNamedSessionCannotDefer},
+		{"named_session + singleton", TriggerRevisionInput{CorrelationMode: "named_session", ConcurrencyPolicy: "singleton", CorrelationKeyExpr: `{"select":"s"}`}, ErrNamedSessionCannotDefer},
+		{"bad correlation_mode", TriggerRevisionInput{CorrelationMode: "telepathy"}, ErrInvalidCorrelationMode},
+		{"bad concurrency_policy", TriggerRevisionInput{ConcurrencyPolicy: "yolo"}, ErrInvalidConcurrencyPolicy},
+	} {
+		if _, err := store.ReviseTrigger(ctx, org, project, triggerID, tc.in); !errors.Is(err, tc.want) {
+			t.Errorf("%s: ReviseTrigger error = %v, want %v", tc.name, err, tc.want)
+		}
+	}
+	// A valid combo (named_session + allow) still succeeds.
+	if _, err := store.ReviseTrigger(ctx, org, project, triggerID, TriggerRevisionInput{CorrelationMode: "named_session", ConcurrencyPolicy: "allow", CorrelationKeyExpr: `{"select":"s"}`}); err != nil {
+		t.Fatalf("valid named_session + allow rejected: %v", err)
+	}
+}
+
+// TestMalformedPayloadRejectedFromReceived pins M4(b): a malformed (non-object) source payload rejects the
+// delivery from its ACTUAL `received` state — the reject transition is valid regardless of the from-state
+// the caller once hardcoded.
+func TestMalformedPayloadRejectedFromReceived(t *testing.T) {
+	store, pool := wiredTriggerStore(t)
+	ctx := context.Background()
+	org, project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, org, project)
+	triggerID, _ := seedTrigger(t, store, org, project, "malformed", TriggerRevisionInput{})
+
+	del, err := store.CreateDelivery(ctx, org, project, principal, triggerID, []byte(`"not an object"`))
+	if err != nil {
+		t.Fatalf("CreateDelivery error = %v", err)
+	}
+	if del.State != "rejected" {
+		t.Fatalf("malformed-payload delivery state = %q, want rejected", del.State)
+	}
+	if del.RunID != "" {
+		t.Fatal("a rejected delivery must not create a run")
+	}
 }
 
 // TestAcceptedDeliveryPinsExactRevision pins AGT-002: a delivery pins the trigger's ACTIVE revision at

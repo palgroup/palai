@@ -43,7 +43,30 @@ var (
 	ErrNoActiveRevision = errors.New("automation: trigger has no revision to pin")
 	// ErrBothPins is returned when a revision pins BOTH an agent revision and a run template.
 	ErrBothPins = errors.New("automation: a trigger revision pins an agent revision OR a run template, never both")
+	// ErrNamedSessionCannotDefer is returned when named_session correlation is combined with a deferring
+	// concurrency policy (queue/singleton/coalesce) — a deferred delivery would lose its target session id.
+	ErrNamedSessionCannotDefer = errors.New("automation: named_session cannot combine with a deferring concurrency policy")
+	// ErrInvalidCorrelationMode / ErrInvalidConcurrencyPolicy reject an out-of-enum value at revise (a 400),
+	// rather than letting it fall through to a DB CHECK 500 (m8).
+	ErrInvalidCorrelationMode   = errors.New("automation: invalid correlation_mode")
+	ErrInvalidConcurrencyPolicy = errors.New("automation: invalid concurrency_policy")
 )
+
+// validCorrelationModes / validConcurrencyPolicies mirror the 000021 CHECK constraints.
+var (
+	validCorrelationModes    = map[string]bool{"per_event": true, "bounded_key_reuse": true, "named_session": true, "reject_if_active": true}
+	validConcurrencyPolicies = map[string]bool{"allow": true, "queue": true, "replace": true, "drop_if_running": true, "coalesce": true, "singleton": true}
+)
+
+// deferringPolicy reports whether a concurrency policy can DEFER a delivery for the reconciler.
+func deferringPolicy(policy string) bool {
+	switch policy {
+	case "queue", "singleton", "coalesce":
+		return true
+	default:
+		return false
+	}
+}
 
 // TriggerRevisionInput is the executable config a revision carries (spec §20.2.2). At most one run
 // target is pinned (validated before insert). InputMapping is the bounded mapping document; the two key
@@ -183,6 +206,19 @@ func (s *TriggerStore) triggerEnabled(ctx context.Context, org, project, trigger
 func validateRevisionInput(in TriggerRevisionInput) error {
 	if in.AgentRevisionID != "" && in.RunTemplateRevisionID != "" {
 		return ErrBothPins
+	}
+	// Reject out-of-enum mode/policy at revise (a 400), not at the DB CHECK (a 500) — m8.
+	if in.CorrelationMode != "" && !validCorrelationModes[in.CorrelationMode] {
+		return ErrInvalidCorrelationMode
+	}
+	if in.ConcurrencyPolicy != "" && !validConcurrencyPolicies[in.ConcurrencyPolicy] {
+		return ErrInvalidConcurrencyPolicy
+	}
+	// named_session appends to an existing session immediately; it can never DEFER (a deferred delivery
+	// resumes without its source payload, so the target session id — derived from the source — is lost).
+	// Reject the combo at revise so it can never be stored (M4).
+	if in.CorrelationMode == "named_session" && deferringPolicy(in.ConcurrencyPolicy) {
+		return ErrNamedSessionCannotDefer
 	}
 	if _, err := CompileMapping(in.InputMapping, nil); err != nil {
 		return err

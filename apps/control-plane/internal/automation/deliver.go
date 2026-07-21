@@ -116,7 +116,7 @@ func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []
 	source, err := decodePayload(payload)
 	if err != nil {
 		// A malformed source payload cannot be mapped; reject the delivery (no run).
-		return s.reject(ctx, sc, statemachines.TriggerDeliveryReceived, "source payload is not a JSON object")
+		return s.reject(ctx, sc, "source payload is not a JSON object")
 	}
 
 	// Authenticate. A manual/API delivery is authenticated by the verified API scope that reached this
@@ -149,11 +149,11 @@ func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []
 	// mapping FAILS the delivery WITHOUT a run — no billable run is ever born from an unmappable event.
 	mapping, err := CompileMapping(cfg.InputMapping, nil)
 	if err != nil {
-		return s.fail(ctx, sc, statemachines.TriggerDeliveryDeduplicated, "input mapping is invalid: "+err.Error())
+		return s.fail(ctx, sc, "input mapping is invalid: "+err.Error())
 	}
 	mappedInput, err := mapping.Apply(source)
 	if err != nil {
-		return s.fail(ctx, sc, statemachines.TriggerDeliveryDeduplicated, "input mapping failed: "+err.Error())
+		return s.fail(ctx, sc, "input mapping failed: "+err.Error())
 	}
 	// Validate the deduplicated → mapped transition, then persist the mapped input + correlation hash
 	// TOGETHER (a delivery that crashes after this is a recoverable remnant the reconciler re-decides
@@ -174,7 +174,8 @@ func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []
 // admit / append / reject action, using the pre-computed correlation hash (recorded at map). A
 // correlation query touches only THIS tenant's deliveries, so it can never reach a foreign session (authz
 // is not bypassed), and admission still enforces retention/scope on the resolved session. source may be
-// nil on a reconciler resume — only named_session needs it, and a deferred delivery is never named_session.
+// nil on a reconciler resume — only named_session needs it, and named_session can never defer (rejected at
+// revise by ErrNamedSessionCannotDefer), so a resumed (deferred) delivery is never named_session (M4).
 func (s *TriggerStore) correlateAdmit(ctx context.Context, sc deliveryScope, cfg revisionConfig, source map[string]any, mappedInput []byte, hash string) (DeliveryResult, error) {
 	switch cfg.CorrelationMode {
 	case "named_session":
@@ -197,7 +198,7 @@ func (s *TriggerStore) correlateAdmit(ctx context.Context, sc deliveryScope, cfg
 				return DeliveryResult{}, err
 			}
 			if active {
-				return s.reject(ctx, sc, statemachines.TriggerDeliveryMapped, "correlated session has an active root run")
+				return s.reject(ctx, sc, "correlated session has an active root run")
 			}
 		}
 		var requested *string
@@ -261,14 +262,14 @@ func (s *TriggerStore) appendToNamedSession(ctx context.Context, sc deliveryScop
 		return DeliveryResult{}, errors.New("automation: delivery admitter is not wired")
 	}
 	if sessionID == "" {
-		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, "named_session correlation produced no session id")
+		return s.fail(ctx, sc, "named_session correlation produced no session id")
 	}
 	tenant := coordinator.Tenant{Organization: sc.org, Project: sc.project}
 	// Resolve the target run BEFORE the send, so the delivery records the run it joined.
 	var runID, responseID string
 	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveRootRun"), sessionID, sc.org, sc.project).Scan(&runID, &responseID); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, "named session has no active run to receive the message")
+		return s.fail(ctx, sc, "named session has no active run to receive the message")
 	case err != nil:
 		return DeliveryResult{}, fmt.Errorf("resolve named session run: %w", err)
 	}
@@ -286,10 +287,10 @@ func (s *TriggerStore) appendToNamedSession(ctx context.Context, sc deliveryScop
 		return DeliveryResult{}, fmt.Errorf("append to named session: %w", err)
 	}
 	if cmd.SessionNotFound {
-		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, "named session not found in scope")
+		return s.fail(ctx, sc, "named session not found in scope")
 	}
 	if cmd.State == "rejected" {
-		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, "named session rejected the message (no live run)")
+		return s.fail(ctx, sc, "named session rejected the message (no live run)")
 	}
 	if _, err := s.pool.Exec(ctx, storage.Query("RecordDeliveryAdmitted"),
 		sc.deliveryID, sc.org, sc.project, responseID, runID, sessionID, mappedInput); err != nil {
@@ -329,7 +330,7 @@ func (s *TriggerStore) applyPolicy(ctx context.Context, sc deliveryScope, cfg re
 		// key); the common sequential-replace path cancels correctly. Tighten with a per-key serial queue
 		// if concurrent replace ever matters.
 		if cfg.ConcurrencyPolicy == "drop_if_running" {
-			return s.skip_(ctx, sc, statemachines.TriggerDeliveryMapped, "", "dropped: key gate contended")
+			return s.skip_(ctx, sc, "", "dropped: key gate contended")
 		}
 		return s.defer_(ctx, sc, "key gate contended; queued")
 	}
@@ -356,7 +357,7 @@ func (s *TriggerStore) applyGatedPolicy(ctx context.Context, sc deliveryScope, c
 			return DeliveryResult{}, err
 		}
 		if busy {
-			return s.skip_(ctx, sc, statemachines.TriggerDeliveryMapped, "", "dropped: key has an active run")
+			return s.skip_(ctx, sc, "", "dropped: key has an active run")
 		}
 		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
 	case "singleton":
@@ -395,8 +396,13 @@ func (s *TriggerStore) applyGatedPolicy(ctx context.Context, sc deliveryScope, c
 }
 
 // skip_ terminalizes a delivery `skipped` with a reason and an optional survivor link (AUT-005 honest
-// naming: a policy skip is distinct from a rejection). from is the current SM state.
-func (s *TriggerStore) skip_(ctx context.Context, sc deliveryScope, from statemachines.TriggerDeliveryState, survivor, reason string) (DeliveryResult, error) {
+// naming: a policy skip is distinct from a rejection), via the SM, from the delivery's ACTUAL current
+// state (M4).
+func (s *TriggerStore) skip_(ctx context.Context, sc deliveryScope, survivor, reason string) (DeliveryResult, error) {
+	from, err := s.currentState(ctx, sc)
+	if err != nil {
+		return DeliveryResult{}, err
+	}
 	if _, _, err := statemachines.Apply(from, statemachines.TriggerDeliveryCmdSkip, statemachines.TriggerDeliveryTable); err != nil {
 		return DeliveryResult{}, err
 	}
@@ -602,7 +608,7 @@ func (s *TriggerStore) admitChained(ctx context.Context, sc deliveryScope, cfg r
 		return s.defer_(ctx, sc, "chained session has an active root run; queued")
 	}
 	if adm.Conflict || adm.SessionNotFound || adm.SessionConflict || adm.PinnedRevisionNotFound || adm.PinnedRevisionNotPublished || adm.RepositoryBindingNotFound {
-		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, admissionFailureReason(adm))
+		return s.fail(ctx, sc, admissionFailureReason(adm))
 	}
 
 	// On a REPLAY (M1: a crash between AdmitResponse-commit and the record below, then a reconciler
@@ -692,9 +698,14 @@ func responseField(body []byte, field string) string {
 	return v
 }
 
-// fail terminalizes a delivery `failed` with a reason (a mapping/admission failure), via the SM. A
-// failed delivery leaves NO runs row (AUT-003): admission is never reached, so no billable run is born.
-func (s *TriggerStore) fail(ctx context.Context, sc deliveryScope, from statemachines.TriggerDeliveryState, reason string) (DeliveryResult, error) {
+// fail terminalizes a delivery `failed` with a reason (a mapping/admission failure), via the SM, from the
+// delivery's ACTUAL current state (M4 — never a hardcoded guess a resume path would violate). A failed
+// delivery leaves NO runs row (AUT-003): admission is never reached, so no billable run is born.
+func (s *TriggerStore) fail(ctx context.Context, sc deliveryScope, reason string) (DeliveryResult, error) {
+	from, err := s.currentState(ctx, sc)
+	if err != nil {
+		return DeliveryResult{}, err
+	}
 	to, _, err := statemachines.Apply(from, statemachines.TriggerDeliveryCmdFail, statemachines.TriggerDeliveryTable)
 	if err != nil {
 		return DeliveryResult{}, err
@@ -719,8 +730,13 @@ func (s *TriggerStore) markDuplicate(ctx context.Context, sc deliveryScope, dedu
 	return DeliveryResult{ID: sc.deliveryID, State: string(statemachines.TriggerDeliveryDuplicate), DuplicateOf: original}, nil
 }
 
-// reject terminalizes a delivery `rejected` with a reason (auth/policy denial), via the SM.
-func (s *TriggerStore) reject(ctx context.Context, sc deliveryScope, from statemachines.TriggerDeliveryState, reason string) (DeliveryResult, error) {
+// reject terminalizes a delivery `rejected` with a reason (auth/policy denial), via the SM, from the
+// delivery's ACTUAL current state (M4).
+func (s *TriggerStore) reject(ctx context.Context, sc deliveryScope, reason string) (DeliveryResult, error) {
+	from, err := s.currentState(ctx, sc)
+	if err != nil {
+		return DeliveryResult{}, err
+	}
 	to, _, err := statemachines.Apply(from, statemachines.TriggerDeliveryCmdReject, statemachines.TriggerDeliveryTable)
 	if err != nil {
 		return DeliveryResult{}, err
