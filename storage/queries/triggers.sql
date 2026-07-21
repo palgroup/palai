@@ -135,6 +135,36 @@ WHERE state = 'mapped' AND updated_at < clock_timestamp() - make_interval(secs =
 ORDER BY updated_at
 LIMIT $2;
 
+-- ActiveDeliveryRunForKey resolves the response + run of the (trigger, key) group's currently-active
+-- delivery — the run a `replace` policy cancels before admitting the new event.
+-- name: ActiveDeliveryRunForKey
+SELECT d.response_id, d.run_id
+FROM trigger_deliveries d
+JOIN runs r ON r.id = d.run_id AND r.organization_id = d.organization_id AND r.project_id = d.project_id
+WHERE d.trigger_id = $1 AND d.organization_id = $2 AND d.project_id = $3
+  AND d.correlation_key_hash = $4 AND d.run_id <> ''
+  AND r.state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
+ORDER BY d.received_at DESC
+LIMIT 1;
+
+-- LatestDeferredForKey resolves the COALESCE survivor: the newest deferred delivery of a group (a burst
+-- of events collapses into the latest — the deterministic reducer).
+-- name: LatestDeferredForKey
+SELECT id, principal_id, trigger_revision_id, mapped_input
+FROM trigger_deliveries
+WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
+  AND correlation_key_hash = $4 AND state = 'deferred'
+ORDER BY received_at DESC
+LIMIT 1;
+
+-- SkipCoalescedDeferred terminalizes every OTHER deferred delivery of a coalesce group `skipped`, linked
+-- to the surviving delivery (duplicate_of) — the subsumed rows are recorded, not lost (AUT-005).
+-- name: SkipCoalescedDeferred
+UPDATE trigger_deliveries
+SET state = 'skipped', duplicate_of = $5, reason = 'coalesced into ' || $5, updated_at = clock_timestamp()
+WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
+  AND correlation_key_hash = $4 AND state = 'deferred' AND id <> $5;
+
 -- FindCorrelatedSession resolves the session a bounded_key_reuse / reject_if_active delivery correlates
 -- onto: the most recent OTHER delivery (of this trigger, in scope) that carries the same correlation hash
 -- and a resolved session. Only THIS tenant's deliveries are queried, so a correlation can never reach a
@@ -163,6 +193,13 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- name: SetDeliveryReason
 UPDATE trigger_deliveries
 SET state = $4, reason = $5, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- SkipDelivery terminalizes a delivery `skipped` with a reason and an optional survivor link (a
+-- drop_if_running skip, or a coalesce-subsumed row) — a policy skip, distinct from a rejection (AUT-005).
+-- name: SkipDelivery
+UPDATE trigger_deliveries
+SET state = 'skipped', duplicate_of = $4, reason = $5, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- ClaimCanonicalDelivery makes a delivery the LIVE canonical row for its (trigger, dedupe_key): it sets

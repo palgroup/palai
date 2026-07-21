@@ -32,6 +32,9 @@ type RunAdmitter interface {
 	// AcceptCommand is the send_message accept path a named_session delivery appends through (spec
 	// §20.2.2 correlation named_session — no new command kind, no new run). The coordinator implements it.
 	AcceptCommand(ctx context.Context, tenant coordinator.Tenant, sessionID string, in coordinator.CommandInput) (coordinator.Command, error)
+	// CancelRunReconciled cancels an active run to a single monotonic terminal — the `replace` policy
+	// cancels the running delivery before admitting the new one. The coordinator implements it.
+	CancelRunReconciled(ctx context.Context, tenant coordinator.Tenant, responseID, runID string, canceledProjection, uncertainProjection []byte) (string, error)
 }
 
 // DeliveryResult is the outcome of accepting + processing a delivery. State is the terminal (or current)
@@ -317,9 +320,110 @@ func (s *TriggerStore) applyPolicy(ctx context.Context, sc deliveryScope, cfg re
 			return s.defer_(ctx, sc, "key has an active run; queued FIFO")
 		}
 		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
-	default: // allow (and, until A9, the not-yet-implemented policies fall back to allow)
+	case "drop_if_running":
+		// A busy key SKIPs the new event (nothing was wrong — a policy skip, the AUT-005 honest-naming
+		// terminal, not a rejection). A free key admits.
+		busy, err := s.keyBusy(ctx, sc, hash)
+		if err != nil {
+			return DeliveryResult{}, err
+		}
+		if busy {
+			return s.skip_(ctx, sc, statemachines.TriggerDeliveryMapped, "", "dropped: key has an active run")
+		}
+		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
+	case "singleton":
+		// Trigger-wide single active: any active run on the trigger defers the new event (the reconciler
+		// admits it once the trigger is free). The gate is trigger-wide, not per-key.
+		busy, err := s.triggerBusy(ctx, sc)
+		if err != nil {
+			return DeliveryResult{}, err
+		}
+		if busy {
+			return s.defer_(ctx, sc, "trigger has an active run; singleton")
+		}
+		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
+	case "coalesce":
+		// A busy key defers; the reconciler collapses a burst of deferred events into ONE survivor (the
+		// latest — the deterministic reducer) and skips the rest linked to it.
+		busy, err := s.keyBusy(ctx, sc, hash)
+		if err != nil {
+			return DeliveryResult{}, err
+		}
+		if busy {
+			return s.defer_(ctx, sc, "key has an active run; coalescing")
+		}
+		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
+	case "replace":
+		// Cancel the key's active run, then admit the new event in its place. (Post-irreversible-effect
+		// replace/coalesce prohibition is T6's guard via tool_calls.replay_class — a policy field + doc
+		// here, not enforced.)
+		if err := s.cancelActiveForKey(ctx, sc, hash); err != nil {
+			return DeliveryResult{}, err
+		}
+		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
+	default: // allow
 		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
 	}
+}
+
+// skip_ terminalizes a delivery `skipped` with a reason and an optional survivor link (AUT-005 honest
+// naming: a policy skip is distinct from a rejection). from is the current SM state.
+func (s *TriggerStore) skip_(ctx context.Context, sc deliveryScope, from statemachines.TriggerDeliveryState, survivor, reason string) (DeliveryResult, error) {
+	if _, _, err := statemachines.Apply(from, statemachines.TriggerDeliveryCmdSkip, statemachines.TriggerDeliveryTable); err != nil {
+		return DeliveryResult{}, err
+	}
+	if _, err := s.pool.Exec(ctx, storage.Query("SkipDelivery"), sc.deliveryID, sc.org, sc.project, nullableText(survivor), reason); err != nil {
+		return DeliveryResult{}, fmt.Errorf("skip delivery: %w", err)
+	}
+	return DeliveryResult{ID: sc.deliveryID, State: string(statemachines.TriggerDeliverySkipped), DuplicateOf: survivor, Reason: reason}, nil
+}
+
+// triggerBusy reports whether ANY delivery of the trigger has a non-terminal run (the singleton gate).
+func (s *TriggerStore) triggerBusy(ctx context.Context, sc deliveryScope) (bool, error) {
+	switch err := s.pool.QueryRow(ctx, storage.Query("TriggerHasActiveRun"), sc.triggerID, sc.org, sc.project).Scan(new(int)); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("check trigger busy: %w", err)
+	}
+	return true, nil
+}
+
+// cancelActiveForKey cancels the key's currently-active run (the `replace` policy). No active run is a
+// no-op. It reconciles the run to a single monotonic terminal via the admitter seam.
+func (s *TriggerStore) cancelActiveForKey(ctx context.Context, sc deliveryScope, hash string) error {
+	if hash == "" {
+		return nil
+	}
+	var responseID, runID string
+	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveDeliveryRunForKey"), sc.triggerID, sc.org, sc.project, hash).Scan(&responseID, &runID); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil // nothing to replace
+	case err != nil:
+		return fmt.Errorf("resolve active run to replace: %w", err)
+	}
+	canceled, uncertain, err := cancelProjections()
+	if err != nil {
+		return err
+	}
+	if _, err := s.admitter.CancelRunReconciled(ctx, coordinator.Tenant{Organization: sc.org, Project: sc.project}, responseID, runID, canceled, uncertain); err != nil {
+		return fmt.Errorf("replace: cancel active run: %w", err)
+	}
+	return nil
+}
+
+// cancelProjections builds the canceled + uncertain-side-effect terminal projections a replace-cancel
+// finalizes (the same shapes store.go's endpoint cancel uses).
+func cancelProjections() (canceled, uncertain []byte, err error) {
+	canceled, err = json.Marshal(map[string]any{"output": []contracts.ContentItem{}, "usage": contracts.Usage{}, "model": "", "error": contracts.CanceledProblem()})
+	if err != nil {
+		return nil, nil, err
+	}
+	uncertain, err = json.Marshal(map[string]any{"output": []contracts.ContentItem{}, "usage": contracts.Usage{}, "model": "", "error": contracts.UncertainSideEffectProblem()})
+	if err != nil {
+		return nil, nil, err
+	}
+	return canceled, uncertain, nil
 }
 
 // keyBusy reports whether the (trigger, correlation-key) group already has a delivery with a non-terminal
