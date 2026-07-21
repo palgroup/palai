@@ -46,6 +46,7 @@ var allTables = []string{
 	"agent_profiles", "agent_revisions", "run_template_revisions",
 	"webhook_endpoints", "webhook_deliveries", "delivery_attempts",
 	"triggers", "trigger_revisions", "trigger_deliveries",
+	"schedules", "schedule_occurrences",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -986,6 +987,79 @@ func TestTriggersMigration(t *testing.T) {
 	}
 	if !tableExists(t, pool, "trigger_deliveries") {
 		t.Fatal("after reapply, a 000021 table is missing")
+	}
+}
+
+// TestMigration22Schedules proves 000022 adds the schedule tables (schedules, schedule_occurrences,
+// E11 Task 3, spec §33) idempotently and reverses cleanly: present after apply (a re-apply is a clean
+// no-op — every object IF NOT EXISTS), gone after rollback (children before parents), returning after
+// reapply. It also pins the load-bearing invariants: version 22 is recorded; the max_catch_up CHECK caps
+// catch-up at 100 (uncrossable); and the occurrence UNIQUE(schedule_id, schedule_revision, planned_at)
+// rejects a second row for the same (schedule, revision, instant) — the raw exactly-once guarantee the
+// deterministic occurrence_id is derived from.
+func TestMigration22Schedules(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE TABLE / INDEX IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"schedules", "schedule_occurrences"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after apply, %s is missing", name)
+		}
+	}
+	var version22 int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 22`).Scan(&version22); err != nil {
+		t.Fatalf("count version 22 error = %v", err)
+	}
+	if version22 != 1 {
+		t.Fatalf("schema_migrations records version 22 %d times, want 1", version22)
+	}
+
+	tenant, _, _ := seedRun(t, pool)
+
+	// A trigger the schedule fires, then a schedule pinned to it.
+	triggerID := newID("trg")
+	exec(t, pool, `INSERT INTO triggers (id, organization_id, project_id, name, type) VALUES ($1,$2,$3,'nightly','cron')`,
+		triggerID, tenant.Organization, tenant.Project)
+	scheduleID := newID("sch")
+	exec(t, pool, `INSERT INTO schedules (id, organization_id, project_id, name, trigger_id, timezone, cron_expr) VALUES ($1,$2,$3,'nightly-cron',$4,'America/New_York','30 2 * * *')`,
+		scheduleID, tenant.Organization, tenant.Project, triggerID)
+
+	// The max_catch_up ceiling is a DB CHECK — a value above 100 is rejected (catch_up can never be
+	// unbounded, §33.3).
+	if got := pgCode(mustFail(pool.Exec(ctx, `UPDATE schedules SET max_catch_up = 101 WHERE id=$1`, scheduleID))); got != "23514" {
+		t.Fatalf("max_catch_up=101 code = %q, want 23514 check_violation (the cap is uncrossable)", got)
+	}
+
+	// The exactly-once invariant: a second occurrence for the same (schedule, revision, planned instant)
+	// is a unique_violation — the raw guarantee behind ON CONFLICT DO NOTHING + RowsAffected discipline.
+	planned := "2026-07-22T06:30:00Z"
+	exec(t, pool, `INSERT INTO schedule_occurrences (occurrence_id, schedule_id, schedule_revision, planned_at) VALUES ($1,$2,1,$3)`,
+		newID("occ"), scheduleID, planned)
+	if got := pgCode(mustFail(pool.Exec(ctx,
+		`INSERT INTO schedule_occurrences (occurrence_id, schedule_id, schedule_revision, planned_at) VALUES ($1,$2,1,$3)`,
+		newID("occ"), scheduleID, planned))); got != "23505" {
+		t.Fatalf("second occurrence for the same (schedule, revision, instant) code = %q, want 23505 unique_violation", got)
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, name := range []string{"schedules", "schedule_occurrences"} {
+		if tableExists(t, pool, name) {
+			t.Fatalf("after rollback, %s still exists", name)
+		}
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "schedule_occurrences") {
+		t.Fatal("after reapply, a 000022 table is missing")
 	}
 }
 
