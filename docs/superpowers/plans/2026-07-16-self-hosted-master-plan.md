@@ -437,7 +437,7 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 
 ### E11 — Agents, schedules, triggers ve webhooks
 
-**Child plan:** `docs/superpowers/plans/phase-11-automation.md`
+**Child plan:** `docs/superpowers/plans/phase-11-automation-agents.md`
 
 **Files:** `apps/control-plane/internal/automation/`, `adapters/integrations/webhook/`, `tests/e2e/automation/`, `tests/fault/scheduler/`
 
