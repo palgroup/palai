@@ -36,7 +36,7 @@ func (o *Orchestrator) SetWorkspaceProvisioner(root string, broker repositories.
 // ready, so resume re-leases the SAME allocation). Reclaim after a HARD worker kill — a dangling active
 // lease on a still-`leased` workspace — is E10 recovery (the host_lost/recovering states exist for it);
 // here it surfaces as a lease conflict routed to retry, not silent corruption.
-func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordinator.Tenant, sessionID, runID string, fence uint64) (hostPath, leaseID, workspaceID string, err error) {
+func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordinator.Tenant, sessionID, runID, jobID string, fence uint64) (hostPath, leaseID, workspaceID string, err error) {
 	ws, found, err := o.spine.WorkspaceForSession(ctx, tenant, sessionID)
 	if err != nil || !found {
 		return "", "", "", err
@@ -59,8 +59,10 @@ func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordi
 	}
 
 	// The single writer lease the root run holds for the whole run (spec §29.8), released at attempt end.
-	leaseID = "lease_" + randHex16()
-	if err := o.spine.AcquireWriterLease(ctx, leaseID, alloc.ID, runID); err != nil {
+	// A crash can leave a dangling ACTIVE lease on the reused allocation; acquireWriterLease reclaims it
+	// only on PROOF the holder is dead (E09 T10 devir), never a blind TTL, and never steals a live one.
+	leaseID, err = o.acquireWriterLease(ctx, tenant, alloc.ID, runID, jobID)
+	if err != nil {
 		return "", "", "", err
 	}
 	// Drive ready→leased. A workspace already `leased` (the crash inconsistency above) has no Lease
@@ -73,6 +75,45 @@ func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordi
 		return "", "", "", err
 	}
 	return alloc.HostPath, leaseID, ws.WorkspaceID, nil
+}
+
+// acquireWriterLease takes the root run's single writer lease, reclaiming a stale one a crash left
+// behind (E09 T10 devir, spec §29.8). A hard worker kill can leave a still-`active` lease with no TTL,
+// which today bricks every later attempt with ErrWriterLeaseHeld. On that conflict this proves the
+// holder run is no longer live — RunHasLiveResponseJob(excludeJobID=this attempt's own job) is false —
+// then releases the dead lease and re-acquires. The proof is fence/attempt liveness, NOT a blind TTL:
+// a LIVE holder's lease is NEVER stolen (the conflict is surfaced unchanged, so a genuine second writer
+// still loses). excludeJobID is this attempt's own claimed job, so reclaiming our OWN crashed lease
+// (the same run, a new attempt) does not read our current job as the live holder.
+func (o *Orchestrator) acquireWriterLease(ctx context.Context, tenant coordinator.Tenant, allocationID, runID, excludeJobID string) (string, error) {
+	leaseID := "lease_" + randHex16()
+	err := o.spine.AcquireWriterLease(ctx, leaseID, allocationID, runID)
+	if !errors.Is(err, coordinator.ErrWriterLeaseHeld) {
+		return leaseID, err // acquired, or a non-conflict error (e.g. ErrStaleAllocation) — never a reclaim
+	}
+
+	holder, found, herr := o.spine.WorkspaceLeaseHolder(ctx, allocationID)
+	if herr != nil {
+		return "", herr
+	}
+	if found {
+		live, lerr := o.spine.RunHasLiveResponseJob(ctx, tenant, holder.RunID, excludeJobID)
+		if lerr != nil {
+			return "", lerr
+		}
+		if live {
+			return "", coordinator.ErrWriterLeaseHeld // a LIVE writer holds it — never steal (single-writer)
+		}
+		// The holder is dead — a crash left this lease dangling. Release it, then re-acquire.
+		if rerr := o.spine.ReleaseWriterLease(ctx, holder.LeaseID); rerr != nil {
+			return "", rerr
+		}
+	}
+	retryID := "lease_" + randHex16()
+	if err := o.spine.AcquireWriterLease(ctx, retryID, allocationID, runID); err != nil {
+		return "", err
+	}
+	return retryID, nil
 }
 
 // provisionFreshAllocation mints the first physical allocation for a workspace: a host dir under the

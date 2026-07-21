@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -45,15 +46,34 @@ type Allocation struct {
 }
 
 // SnapshotInput is a create-side workspace snapshot manifest (spec §29.10). The checksums and
-// exclusions are computed over the real allocation filesystem; RESTORE is E10.
+// exclusions are computed over the real allocation filesystem. ObjectKey/ArchiveChecksum/SizeBytes
+// locate + verify the byte-archive (E10 Task 6, SAN-005 restore); they are empty/0 for a manifest-only
+// (E09) snapshot with no archived bytes.
 type SnapshotInput struct {
-	SnapshotID    string
-	AllocationID  string
-	TreeChecksum  string
-	IndexChecksum string
-	FileChecksums []byte
-	Exclusions    []byte
-	Reason        string
+	SnapshotID      string
+	AllocationID    string
+	TreeChecksum    string
+	IndexChecksum   string
+	FileChecksums   []byte
+	Exclusions      []byte
+	Reason          string
+	ObjectKey       string
+	ArchiveChecksum string
+	SizeBytes       int64
+}
+
+// WorkspaceSnapshotRecord is a persisted snapshot's byte-archive location plus its create-side manifest
+// checksums (spec §29.10) — the facts a restore needs to fetch the archived bytes and verify the
+// restored tree re-derives EQUAL (SAN-005). ObjectKey is empty for a manifest-only (E09) snapshot.
+type WorkspaceSnapshotRecord struct {
+	WorkspaceID     string
+	ObjectKey       string
+	ArchiveChecksum string
+	SizeBytes       int64
+	TreeChecksum    string
+	IndexChecksum   string
+	FileChecksums   []byte
+	Exclusions      []byte
 }
 
 // SessionWorkspace is a session's attached coding workspace (spec §29.7, E09 Task 10): the logical
@@ -113,6 +133,18 @@ func (s *Store) AdvanceWorkspace(ctx context.Context, tenant Tenant, workspaceID
 		return fmt.Errorf("commit workspace transition: %w", err)
 	}
 	return nil
+}
+
+// WorkspaceLifecycleState reads a workspace's current lifecycle state within tenant scope (non-locking).
+// The destroy path uses it to distinguish an idempotent retry (already destroying/destroyed) from a live
+// workspace whose physical teardown must be refused.
+func (s *Store) WorkspaceLifecycleState(ctx context.Context, tenant Tenant, workspaceID string) (string, error) {
+	var state string
+	err := s.pool.QueryRow(ctx, storage.Query("WorkspaceLifecycleState"), workspaceID, tenant.Organization, tenant.Project).Scan(&state)
+	if err != nil {
+		return "", fmt.Errorf("workspace lifecycle state: %w", err)
+	}
+	return state, nil
 }
 
 // CreateWorkspace opens a logical workspace in the requested binding state (spec §29.7).
@@ -180,6 +212,28 @@ func (s *Store) AcquireWriterLease(ctx context.Context, leaseID, allocationID, r
 	return nil
 }
 
+// LeaseHolder is the active writer lease on an allocation: the lease id and the run holding it (spec
+// §29.8). found is false when the allocation has no active lease.
+type LeaseHolder struct {
+	LeaseID string
+	RunID   string
+}
+
+// WorkspaceLeaseHolder returns the active writer lease on an allocation, if any (spec §29.8). The
+// stuck-lease reclaim reads it to identify the holder run, then proves that run is no longer live
+// before releasing the lease — a liveness-gated reclaim, never a blind TTL (E09 T10 devir, E10 T6).
+func (s *Store) WorkspaceLeaseHolder(ctx context.Context, allocationID string) (LeaseHolder, bool, error) {
+	var h LeaseHolder
+	err := s.pool.QueryRow(ctx, storage.Query("WorkspaceLeaseHolder"), allocationID).Scan(&h.LeaseID, &h.RunID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return LeaseHolder{}, false, nil
+	}
+	if err != nil {
+		return LeaseHolder{}, false, fmt.Errorf("workspace lease holder: %w", err)
+	}
+	return h, true, nil
+}
+
 // ReleaseWriterLease frees the single-writer slot for the next writer (spec §29.8).
 func (s *Store) ReleaseWriterLease(ctx context.Context, leaseID string) error {
 	if _, err := s.pool.Exec(ctx, storage.Query("ReleaseWriterLease"), leaseID); err != nil {
@@ -201,7 +255,8 @@ func (s *Store) CreateWorkspaceSnapshot(ctx context.Context, in SnapshotInput) e
 		exclusions = []byte("[]")
 	}
 	tag, err := s.pool.Exec(ctx, storage.Query("CreateWorkspaceSnapshot"),
-		in.SnapshotID, in.AllocationID, in.TreeChecksum, in.IndexChecksum, fileChecksums, exclusions, in.Reason)
+		in.SnapshotID, in.AllocationID, in.TreeChecksum, in.IndexChecksum, fileChecksums, exclusions, in.Reason,
+		in.ObjectKey, in.ArchiveChecksum, in.SizeBytes)
 	if err != nil {
 		return fmt.Errorf("create workspace snapshot: %w", err)
 	}
@@ -209,4 +264,80 @@ func (s *Store) CreateWorkspaceSnapshot(ctx context.Context, in SnapshotInput) e
 		return ErrStaleAllocation
 	}
 	return nil
+}
+
+// QuarantinedHost is one poisoned host: its identity, why it was quarantined, and when (spec §29
+// SAN-008). In the local tier the id is the provision-root / runner identity a destroy failed under.
+type QuarantinedHost struct {
+	HostID        string
+	Reason        string
+	QuarantinedAt time.Time
+}
+
+// QuarantineHost marks a host poisoned by an allocation-destroy failure so no new allocation is placed
+// on it (spec §29 SAN-008). Idempotent on host_id — a repeat failure re-quarantines without error.
+func (s *Store) QuarantineHost(ctx context.Context, hostID, reason string) error {
+	if _, err := s.pool.Exec(ctx, storage.Query("QuarantineHost"), hostID, reason); err != nil {
+		return fmt.Errorf("quarantine host %s: %w", hostID, err)
+	}
+	return nil
+}
+
+// IsHostQuarantined reports whether a host is quarantined — the placement guard before a new allocation.
+func (s *Store) IsHostQuarantined(ctx context.Context, hostID string) (bool, error) {
+	var quarantined bool
+	if err := s.pool.QueryRow(ctx, storage.Query("IsHostQuarantined"), hostID).Scan(&quarantined); err != nil {
+		return false, fmt.Errorf("check host quarantine %s: %w", hostID, err)
+	}
+	return quarantined, nil
+}
+
+// ListQuarantinedHosts returns every quarantined host newest-first — the doctor's quarantine view.
+func (s *Store) ListQuarantinedHosts(ctx context.Context) ([]QuarantinedHost, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("ListQuarantinedHosts"))
+	if err != nil {
+		return nil, fmt.Errorf("list quarantined hosts: %w", err)
+	}
+	defer rows.Close()
+	var out []QuarantinedHost
+	for rows.Next() {
+		var h QuarantinedHost
+		if err := rows.Scan(&h.HostID, &h.Reason, &h.QuarantinedAt); err != nil {
+			return nil, fmt.Errorf("scan quarantined host: %w", err)
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// LatestRestorableWorkspaceSnapshot returns the id of the workspace's newest snapshot that carries
+// archived bytes (spec §29.10, REC-005) — the boundary a host-lost recovery restores from. found is
+// false when the workspace has no byte-archived snapshot: the recovery then has no boundary to restore
+// and must fail explicitly rather than resume on an empty tree.
+func (s *Store) LatestRestorableWorkspaceSnapshot(ctx context.Context, tenant Tenant, workspaceID string) (string, bool, error) {
+	var id string
+	err := s.pool.QueryRow(ctx, storage.Query("LatestRestorableWorkspaceSnapshot"), workspaceID, tenant.Organization, tenant.Project).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("latest restorable snapshot: %w", err)
+	}
+	return id, true, nil
+}
+
+// LoadWorkspaceSnapshot reads a snapshot's byte-archive location + create-side manifest within tenant
+// scope, so a restore fetches the archived bytes and verifies the restored tree (spec §29.10, SAN-005).
+func (s *Store) LoadWorkspaceSnapshot(ctx context.Context, tenant Tenant, snapshotID string) (WorkspaceSnapshotRecord, error) {
+	var rec WorkspaceSnapshotRecord
+	err := s.pool.QueryRow(ctx, storage.Query("LoadWorkspaceSnapshot"), snapshotID, tenant.Organization, tenant.Project).
+		Scan(&rec.WorkspaceID, &rec.ObjectKey, &rec.ArchiveChecksum, &rec.SizeBytes,
+			&rec.TreeChecksum, &rec.IndexChecksum, &rec.FileChecksums, &rec.Exclusions)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return WorkspaceSnapshotRecord{}, fmt.Errorf("load workspace snapshot: %s not found in tenant scope", snapshotID)
+	}
+	if err != nil {
+		return WorkspaceSnapshotRecord{}, fmt.Errorf("load workspace snapshot: %w", err)
+	}
+	return rec, nil
 }

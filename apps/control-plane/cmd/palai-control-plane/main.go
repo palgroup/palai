@@ -125,11 +125,16 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		if publisher := repositoryPublisherFromEnv(); publisher != nil {
 			orch.SetPublisher(publisher)
 		}
-		// Wire the checkpoint sink whenever an object store exists (spec §26.1-26.2). Unlike the
-		// changeset writer, this is NOT gated on a coding workspace — a checkpoint boundary applies to
-		// any run. Absent an object store, a checkpoint offer is dropped (no durable boundary).
+		// Wire the checkpoint + snapshot sinks whenever an object store exists (spec §26.1-26.2, §29.10).
+		// Unlike the changeset writer, neither is gated on a coding workspace — a checkpoint boundary
+		// applies to any run, and the snapshot sink is a no-op for a run with no workspace. Absent an
+		// object store, a checkpoint offer is dropped and a pause cuts no snapshot (no durable boundary).
+		// The snapshot sink shares artStore (the same Put/Get shape) so a pause boundary cuts + links a
+		// workspace snapshot (SES-009); without it workspaceRestorable is vacuously true and the snapshot
+		// half is inert.
 		if artStore != nil {
 			orch.SetCheckpointSink(execution.NewCheckpointSink(artStore, recovery.New(spine.Pool())))
+			orch.SetSnapshotSink(execution.NewSnapshotSink(artStore, spine))
 		}
 		// Wire the root run's workspace auto-provisioning + coding-tool sandbox, gated on
 		// PALAI_WORKSPACE_ROOT (spec §29.7-30.3, E09 Task 10). This is what makes a coding session

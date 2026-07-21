@@ -108,6 +108,12 @@ func (o *Orchestrator) consultCheckpointLadder(ctx context.Context, st *attemptS
 	if err != nil {
 		return plan, fmt.Errorf("read journal boundary for recovery: %w", err)
 	}
+	// A checkpoint that links a workspace snapshot is restorable only if that snapshot carries archived
+	// bytes (SES-009, T6). A snapshot-less checkpoint is vacuously restorable (no workspace dependency).
+	workspaceRestorable, err := o.workspaceRestorable(ctx, st.tenant, cp.WorkspaceSnapshotID)
+	if err != nil {
+		return plan, fmt.Errorf("resolve workspace restorability for recovery: %w", err)
+	}
 
 	plan.decision = recovery.Decide(
 		recovery.Candidate{
@@ -120,9 +126,9 @@ func (o *Orchestrator) consultCheckpointLadder(ctx context.Context, st *attemptS
 			ProtocolVersion:     cp.ProtocolVersion,
 			TranscriptSequence:  cp.TranscriptSequence,
 			WorkspaceSnapshotID: cp.WorkspaceSnapshotID,
-			// Snapshot RESTORE is T6; a checkpoint with a workspace dependency cannot yet be restored,
-			// but one that declares NO dependency (the T4 case) passes the workspace condition vacuously.
-			WorkspaceRestorable: false,
+			// Real restorability (T6): a linked snapshot with archived bytes passes; a manifest-only or
+			// absent one fails workspace_unrestorable. A checkpoint with NO snapshot passes vacuously.
+			WorkspaceRestorable: workspaceRestorable,
 		},
 		recovery.Target{
 			OriginalLeaseAlive:      false, // exact ruled out pre-dial

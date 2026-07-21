@@ -42,6 +42,16 @@ const (
 	eventCheckpointRejected = "checkpoint.rejected.v1"
 	eventCheckpointMigrated = "checkpoint.migrated.v1"
 	eventRecoveryProof      = "recovery.proof.v1"
+	// eventWorkspaceRestored records a host-lost workspace recovered onto a NEW fenced allocation
+	// (spec §29.7, REC-005/ENG-006, E10 T6): the logical id stayed stable, a strictly higher fence
+	// appeared, and the boundary snapshot restored checksum-EQUAL (SAN-005). It is the visible signal
+	// a host move + restore succeeded, distinct from the attempt.recovering.v1 the engine-loop recovery
+	// records — this is the WORKSPACE half.
+	eventWorkspaceRestored = "workspace.restored.v1"
+	// eventHostQuarantined records a host poisoned by an allocation-destroy failure (spec §29 SAN-008,
+	// E10 T6): its bytes could not be reclaimed, so no new allocation may be placed there. The doctor
+	// surfaces it; an operator clears it.
+	eventHostQuarantined = "host.quarantined.v1"
 )
 
 // toolCallCompletedEvent is the event the tool-call table emits on Executing->Completed,
@@ -66,6 +76,8 @@ var emittedEventTypes = []string{
 	eventCheckpointRejected,
 	eventCheckpointMigrated,
 	eventRecoveryProof,
+	eventWorkspaceRestored,
+	eventHostQuarantined,
 	toolCallCompletedEvent,
 }
 

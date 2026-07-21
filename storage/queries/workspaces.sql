@@ -51,20 +51,60 @@ WHERE a.id = $2
 -- Release the lease so the single-writer slot frees for the next writer (spec §29.8).
 UPDATE workspace_leases SET state = 'released' WHERE id = $1 AND state = 'active';
 
+-- name: WorkspaceLeaseHolder
+-- The active writer lease on an allocation, if any — its id and the run holding it (spec §29.8). The
+-- stuck-lease reclaim (E09 T10 devir, E10 T6) reads it to decide whether a crash left a DEAD holder: it
+-- proves the holder run is no longer live (RunHasLiveResponseJob) BEFORE releasing, never a blind TTL.
+SELECT id, run_id FROM workspace_leases
+WHERE allocation_id = $1 AND state = 'active'
+LIMIT 1;
+
 -- name: CreateWorkspaceSnapshot
 -- Record a create-side snapshot, but ONLY when the uploading allocation is the workspace's
 -- current (max-fence) allocation. A stale allocation whose fence a host move has superseded
 -- affects zero rows — the DB-level reject of a stale authoritative snapshot (spec §29.8 line
 -- 3070, SAN-006). The fence equality is evaluated inside the DB, so app code cannot bypass it,
--- exactly as the conditional-write fence guard on job completion does. RESTORE is E10.
+-- exactly as the conditional-write fence guard on job completion does. object_key/archive_checksum/
+-- size_bytes (000017) record WHERE the byte-archive lives and how to verify it (E10 Task 6, SAN-005);
+-- they are '' / 0 for a manifest-only (E09) snapshot with no archived bytes.
 INSERT INTO workspace_snapshots
     (id, workspace_id, allocation_id, organization_id, project_id, fencing_token,
-     tree_checksum, index_checksum, file_checksums, exclusions, reason)
+     tree_checksum, index_checksum, file_checksums, exclusions, reason,
+     object_key, archive_checksum, size_bytes)
 SELECT $1, a.workspace_id, a.id, a.organization_id, a.project_id, a.fence,
-       $3, $4, $5, $6, $7
+       $3, $4, $5, $6, $7, $8, $9, $10
 FROM workspace_allocations a
 WHERE a.id = $2
   AND a.fence = (SELECT MAX(fence) FROM workspace_allocations WHERE workspace_id = a.workspace_id);
+
+-- name: LoadWorkspaceSnapshot
+-- Read a snapshot's byte-archive location + create-side manifest checksums, so a restore fetches the
+-- archived bytes and verifies the restored tree re-derives EQUAL (spec §29.10, SAN-005 restore, E10
+-- Task 6). Scoped by id + tenant. object_key is '' for a manifest-only (E09) snapshot with no bytes.
+SELECT workspace_id, object_key, archive_checksum, size_bytes,
+       tree_checksum, index_checksum, file_checksums, exclusions
+FROM workspace_snapshots
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- name: LatestRestorableWorkspaceSnapshot
+-- The newest snapshot of a workspace that carries archived BYTES (object_key <> ''), so a host-lost
+-- recovery restores from the most recent durable boundary (spec §29.7-29.10, REC-005, E10 Task 6). A
+-- manifest-only (E09) snapshot is skipped — it has no bytes to restore. No row -> the recovery has no
+-- boundary to restore from and fails EXPLICITLY (recovering→failed), never a silent empty tree.
+SELECT id FROM workspace_snapshots
+WHERE workspace_id = $1 AND organization_id = $2 AND project_id = $3 AND object_key <> ''
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: ReferencedSnapshotObjectKeys
+-- The snapshot half of the orphan-GC reference set (E10 Task 6 <-> Task 3). Snapshot byte-archives live
+-- in the SAME object-store bucket as artifacts + checkpoints under <org>/<proj>/<ws>/snapshots/<id>, but
+-- are tracked HERE — so the GC must UNION these keys with the artifact + checkpoint sets, or it reclaims
+-- every live snapshot as an orphan and destroys the restore bytes SAN-005 depends on. Deliberately
+-- bucket-wide with NO tenant scope, matching the artifacts + checkpoints queries: the delete decision is
+-- the pure absence of a referencing row, so the set must be complete across every tenant. The <> ''
+-- filter skips manifest-only rows (no archived bytes to protect).
+SELECT object_key FROM workspace_snapshots WHERE object_key <> '';
 
 -- name: AttachSessionWorkspace
 -- Attach a session-scoped coding workspace (spec §29.7, E09 Task 10): the logical workspace the root
@@ -91,12 +131,36 @@ WHERE session_id = $1 AND organization_id = $2 AND project_id = $3 AND repositor
 ORDER BY created_at
 LIMIT 1;
 
+-- name: QuarantineHost
+-- Mark a host poisoned by an allocation-destroy failure (spec §29 SAN-008, E10 Task 6). Idempotent on
+-- host_id — a repeat failure re-quarantines the same host without error. In the local tier the host_id
+-- is the provision-root / runner identity the destroy failed under (there is no hosts registry).
+INSERT INTO host_quarantine (host_id, reason) VALUES ($1, $2)
+ON CONFLICT (host_id) DO NOTHING;
+
+-- name: IsHostQuarantined
+-- Whether a host is quarantined — the placement guard consults it before minting a NEW allocation on
+-- that host and refuses a quarantined one (spec §29 SAN-008). A run already executing there is untouched.
+SELECT EXISTS (SELECT 1 FROM host_quarantine WHERE host_id = $1);
+
+-- name: ListQuarantinedHosts
+-- Every quarantined host with its reason + time, newest first — the doctor's quarantine visibility
+-- (spec §29 SAN-008). A control-plane-internal read (spec §24): host identities, no tenant data.
+SELECT host_id, reason, quarantined_at FROM host_quarantine ORDER BY quarantined_at DESC;
+
 -- name: WorkspaceState
 -- The workspace's current lifecycle state within tenant scope, LOCKED for a transition (spec §29.7),
 -- exactly as LockRun locks a run before a RunTable transition.
 SELECT state FROM workspaces
 WHERE id = $1 AND organization_id = $2 AND project_id = $3
 FOR UPDATE;
+
+-- name: WorkspaceLifecycleState
+-- The workspace's current lifecycle state within tenant scope, NON-locking (unlike WorkspaceState, which
+-- takes FOR UPDATE for a transition). The destroy path reads it to tell an idempotent retry (already
+-- destroying/destroyed) from a live workspace whose teardown must be refused, not a check-then-act race.
+SELECT state FROM workspaces
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- name: UpdateWorkspaceState
 -- Advance the workspace's lifecycle state projection (spec §29.7). The legal transition is checked by

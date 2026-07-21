@@ -111,9 +111,11 @@ components:
         - workspace.restoring.v1
         - workspace.host_lost.v1
         - workspace.recovering.v1
+        - workspace.restored.v1
         - workspace.failed.v1
         - workspace.destroying.v1
         - workspace.destroyed.v1
+        - host.quarantined.v1
         - model_step.created.v1
         - model_step.delta.v1
         - model_step.completed.v1

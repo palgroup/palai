@@ -78,6 +78,11 @@ type Orchestrator struct {
 	// Nil ⇒ no object store wired (every non-S3 stack): a checkpoint offer is advisory and dropped,
 	// no durable boundary is created. main.go injects it via SetCheckpointSink.
 	checkpoints *CheckpointSink
+	// snapshots cuts + restores the workspace byte-archive a pause-boundary checkpoint links (spec
+	// §26.4, §29.10, SES-009). Nil ⇒ no snapshot is cut at a pause (a stack with no object store, or no
+	// workspace): the checkpoint then declares no workspace dependency, unchanged from T4. main.go
+	// injects it via SetSnapshotSink alongside the checkpoint sink.
+	snapshots *SnapshotSink
 	// reconstructionForbidden is the §26.3 policy knob: when set, an incompatible checkpoint fails the
 	// run EXPLICITLY rather than falling to transcript reconstruction (spec §26.3 rung 4). ponytail:
 	// a plain bool setter, model-route pattern; DB-backed recovery policy is another epic. Default
@@ -112,6 +117,11 @@ func (o *Orchestrator) SetChangesetWriter(aw ArtifactWriter) { o.artifacts = aw 
 // SetCheckpointSink injects the checkpoint persistence path (spec §26.1-26.2). Left unset, a
 // checkpoint.offer is dropped (no durable boundary) — the same discipline as SetChangesetWriter.
 func (o *Orchestrator) SetCheckpointSink(cs *CheckpointSink) { o.checkpoints = cs }
+
+// SetSnapshotSink injects the workspace snapshot capture/restore path (spec §29.10, SES-009). Left
+// unset, no boundary snapshot is cut at a pause — the checkpoint declares no workspace dependency, the
+// T4 behaviour. Wired alongside SetCheckpointSink where an object store is configured.
+func (o *Orchestrator) SetSnapshotSink(ss *SnapshotSink) { o.snapshots = ss }
 
 // SetReconstructionForbidden sets the §26.3 policy: when true, an incompatible checkpoint fails the
 // run explicitly rather than reconstructing from the transcript (spec §26.3 rung 4).
@@ -246,7 +256,7 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// A run with no attachment, or no provisioner wired, gets no workspace — the pre-E09 behaviour.
 	var workspaceID, workspaceLeaseID string
 	if depth == 0 && attempt.WorkspaceHostPath == "" && o.provisionRoot != "" && o.provisionBroker != nil {
-		hostPath, leaseID, wsID, perr := o.provisionRootWorkspace(ctx, tenant, sessionID, string(attempt.RunID), attempt.Fence)
+		hostPath, leaseID, wsID, perr := o.provisionRootWorkspace(ctx, tenant, sessionID, string(attempt.RunID), attempt.JobID, attempt.Fence)
 		if perr != nil {
 			return fmt.Errorf("provision workspace: %w", perr)
 		}
@@ -433,7 +443,9 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 			// the offer; the control plane stores + checksums them opaquely. A checkpoint failure does
 			// not always fail the run (§26.5), but a hard persist error here surfaces rather than
 			// silently dropping a boundary a later recovery would rely on.
-			if err := o.persistCheckpoint(ctx, st, frame); err != nil {
+			// A mid-loop checkpoint.offer links no workspace snapshot (the boundary snapshot is cut only
+			// at a pause, SES-009). It declares no workspace dependency, unchanged from T4.
+			if err := o.persistCheckpoint(ctx, st, frame, ""); err != nil {
 				return abortIfTerminal(err)
 			}
 		case "run.terminal":
@@ -496,6 +508,14 @@ func (o *Orchestrator) checkpointBeforePause(ctx context.Context, st *attemptSta
 	// checkpoint-less pause, so a failed drain fails the attempt (retry/reclaim), never pauses.
 	drainCtx, cancel := context.WithTimeout(ctx, pauseDrainDeadline)
 	defer cancel()
+	// Cut the boundary WORKSPACE snapshot BEFORE asking for the checkpoint (SES-009), so the checkpoint
+	// links a durable tree the resume restores. A snapshot failure fails the attempt here, exactly like a
+	// checkpoint failure — §26.5 forbids pausing with no recoverable boundary, so it never pauses
+	// snapshot-less silently. Empty when no sink/workspace is wired (the T4 no-dependency case).
+	snapshotID, err := o.captureBoundarySnapshot(ctx, st)
+	if err != nil {
+		return fmt.Errorf("cut pause boundary snapshot: %w", err)
+	}
 	if err := st.ch.Send(drainCtx, o.frame(st, "checkpoint.request", map[string]any{}, "")); err != nil {
 		return err
 	}
@@ -506,7 +526,7 @@ func (o *Orchestrator) checkpointBeforePause(ctx context.Context, st *attemptSta
 		}
 		switch frame.Type {
 		case "checkpoint.offer":
-			return o.persistCheckpoint(ctx, st, frame)
+			return o.persistCheckpoint(ctx, st, frame, snapshotID)
 		case "protocol.error":
 			// Surface it, never discard: a malformed frame during the drain is a real engine fault that
 			// must fail the attempt, not be swallowed while the pause proceeds checkpoint-less.
