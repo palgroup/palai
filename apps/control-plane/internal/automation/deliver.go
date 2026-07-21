@@ -516,21 +516,44 @@ func (s *TriggerStore) applyGatedPolicy(ctx context.Context, sc deliveryScope, c
 		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
 	case "coalesce":
 		// A busy key defers; the reconciler collapses a burst of deferred events into ONE survivor (the
-		// latest — the deterministic reducer) and skips the rest linked to it.
-		busy, err := s.keyBusy(ctx, sc, hash)
+		// latest — the deterministic reducer) and skips the rest linked to it. But if the active run
+		// EXECUTED an irreversible tool action, the new event is REJECTED, not deferred (§32.6 fail-closed):
+		// an irreversible run's follow-on events must not be silently coalesced away.
+		_, runID, busy, err := s.activeRunForKey(ctx, sc, hash)
 		if err != nil {
 			return DeliveryResult{}, err
 		}
 		if busy {
+			irr, err := s.runExecutedIrreversible(ctx, sc, runID)
+			if err != nil {
+				return DeliveryResult{}, err
+			}
+			if irr {
+				return s.reject(ctx, sc, irreversibleGuardReason("coalesce"))
+			}
 			return s.defer_(ctx, sc, "key has an active run; coalescing")
 		}
 		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
 	case "replace":
-		// Cancel the key's active run, then admit the new event in its place. (Post-irreversible-effect
-		// replace/coalesce prohibition is T6's guard via tool_calls.replay_class — a policy field + doc
-		// here, not enforced.)
-		if err := s.cancelActiveForKey(ctx, sc, hash); err != nil {
+		// Cancel the key's active run, then admit the new event in its place — UNLESS that run already
+		// EXECUTED an irreversible tool action, in which case the replace is REJECTED without canceling it
+		// (§32.6 fail-closed): a run that performed an irreversible side effect is never canceled without a
+		// reconciliation contract. Resolve the active run BEFORE canceling so the guard runs first.
+		responseID, runID, active, err := s.activeRunForKey(ctx, sc, hash)
+		if err != nil {
 			return DeliveryResult{}, err
+		}
+		if active {
+			irr, err := s.runExecutedIrreversible(ctx, sc, runID)
+			if err != nil {
+				return DeliveryResult{}, err
+			}
+			if irr {
+				return s.reject(ctx, sc, irreversibleGuardReason("replace"))
+			}
+			if err := s.cancelResolvedRun(ctx, sc, responseID, runID); err != nil {
+				return DeliveryResult{}, err
+			}
 		}
 		return s.correlateAdmit(ctx, sc, cfg, source, mappedInput, hash)
 	default: // allow
@@ -566,19 +589,39 @@ func (s *TriggerStore) triggerBusy(ctx context.Context, sc deliveryScope) (bool,
 	return true, nil
 }
 
-// cancelActiveForKey cancels the key's currently-active run (the `replace` policy). No active run is a
-// no-op. It reconciles the run to a single monotonic terminal via the admitter seam.
-func (s *TriggerStore) cancelActiveForKey(ctx context.Context, sc deliveryScope, hash string) error {
+// activeRunForKey resolves the (trigger, key) group's currently-active run (the run a replace cancels /
+// the guard inspects). found=false when the key is empty (no grouping) or no active run exists.
+func (s *TriggerStore) activeRunForKey(ctx context.Context, sc deliveryScope, hash string) (responseID, runID string, found bool, err error) {
 	if hash == "" {
-		return nil
+		return "", "", false, nil
 	}
-	var responseID, runID string
 	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveDeliveryRunForKey"), sc.triggerID, sc.org, sc.project, hash).Scan(&responseID, &runID); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return nil // nothing to replace
+		return "", "", false, nil
 	case err != nil:
-		return fmt.Errorf("resolve active run to replace: %w", err)
+		return "", "", false, fmt.Errorf("resolve active run for key: %w", err)
 	}
+	return responseID, runID, true, nil
+}
+
+// runExecutedIrreversible reports whether a run's E10 tool ledger holds an EXECUTED irreversible action —
+// the §32.6 guard predicate. An empty run id is trivially false.
+func (s *TriggerStore) runExecutedIrreversible(ctx context.Context, sc deliveryScope, runID string) (bool, error) {
+	if runID == "" {
+		return false, nil
+	}
+	switch err := s.pool.QueryRow(ctx, storage.Query("RunHasIrreversibleExecuted"), runID, sc.org, sc.project).Scan(new(int)); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("check irreversible tool ledger: %w", err)
+	}
+	return true, nil
+}
+
+// cancelResolvedRun reconciles an already-resolved active run to a single monotonic terminal via the
+// admitter seam (the `replace` cancel, once the guard has cleared it).
+func (s *TriggerStore) cancelResolvedRun(ctx context.Context, sc deliveryScope, responseID, runID string) error {
 	canceled, uncertain, err := cancelProjections()
 	if err != nil {
 		return err
@@ -587,6 +630,13 @@ func (s *TriggerStore) cancelActiveForKey(ctx context.Context, sc deliveryScope,
 		return fmt.Errorf("replace: cancel active run: %w", err)
 	}
 	return nil
+}
+
+// irreversibleGuardReason is the §32.6 rejection reason for a policy denied because the active run executed
+// an irreversible tool action. It names the policy and the missing reconciliation contract (the deferred
+// override gate — a future epic; the reason text names it).
+func irreversibleGuardReason(policy string) string {
+	return "active run performed an irreversible tool action; " + policy + " denied without a reconciliation contract"
 }
 
 // cancelProjections builds the canceled + uncertain-side-effect terminal projections a replace-cancel

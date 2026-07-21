@@ -150,6 +150,17 @@ WHERE d.trigger_id = $1 AND d.organization_id = $2 AND d.project_id = $3
 ORDER BY d.received_at DESC
 LIMIT 1;
 
+-- RunHasIrreversibleExecuted reports whether a run's E10 tool-call ledger (000018 rider on 000001's
+-- tool_calls) holds an EXECUTED irreversible action — a replay_class='irreversible' row in a completed or
+-- uncertain state (the plan-pinned "executed" definition). The post-irreversible guard (§32.6) reads this
+-- so replace/coalesce never cancels or subsumes a run that already performed an irreversible side effect.
+-- name: RunHasIrreversibleExecuted
+SELECT 1
+FROM tool_calls
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+  AND replay_class = 'irreversible' AND state IN ('completed', 'uncertain')
+LIMIT 1;
+
 -- LatestDeferredForKey resolves the COALESCE survivor: the newest deferred delivery of a group (a burst
 -- of events collapses into the latest — the deterministic reducer).
 -- name: LatestDeferredForKey
