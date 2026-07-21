@@ -90,7 +90,13 @@ func removeSandboxContainers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list sandbox containers: %v", err)
 	}
-	for _, id := range strings.Fields(string(ids)) {
+	matched := strings.Fields(string(ids))
+	if len(matched) == 0 {
+		// A drifted label would match nothing and silently degrade the container-kill into a
+		// 30s wall-time pass — a false proof. Fail loudly instead.
+		t.Fatal("no engine sandbox container (label io.palai.sandbox=engine) matched to kill; the container-kill would degrade to a wall-time pass")
+	}
+	for _, id := range matched {
 		_ = exec.Command("docker", "rm", "-f", id).Run()
 	}
 }

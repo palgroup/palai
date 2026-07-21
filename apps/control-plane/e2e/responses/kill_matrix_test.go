@@ -32,9 +32,10 @@ func mustJSON(t *testing.T, v any) string {
 // injected error. It is the fault-class kill the recovery ladder must survive: an abrupt process
 // death that EOFs the channel, not a clean error return.
 type killableDialer struct {
-	inner subprocessDialer
-	mu    sync.Mutex
-	procs []*os.Process
+	inner  subprocessDialer
+	mu     sync.Mutex
+	procs  []*os.Process
+	killed int
 }
 
 func (d *killableDialer) Dial(ctx context.Context, a execution.AttemptDescriptor) (execution.EngineChannel, error) {
@@ -50,14 +51,30 @@ func (d *killableDialer) Dial(ctx context.Context, a execution.AttemptDescriptor
 	return ch, err
 }
 
-// killLatest SIGKILLs the most recently dialed engine process — the live attempt's engine.
+// killLatest SIGKILLs the most recently dialed engine process — the live attempt's engine — and
+// counts the kill, so the test can prove the SIGKILL actually fired (not a silent no-op that would
+// let ENG-004 green off the provider error alone).
 func (d *killableDialer) killLatest() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if len(d.procs) == 0 {
 		return
 	}
-	_ = d.procs[len(d.procs)-1].Kill()
+	if err := d.procs[len(d.procs)-1].Kill(); err == nil {
+		d.killed++
+	}
+}
+
+func (d *killableDialer) dialed() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.procs)
+}
+
+func (d *killableDialer) killCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.killed
 }
 
 // killThenFinishProvider drives one tool step (recovery.count) then a final answer, but the FIRST
@@ -117,6 +134,14 @@ func TestEngineProcessKillRecoversViaLadder(t *testing.T) {
 	// attempt-1: reaches the tool boundary (persisting a checkpoint), then the engine is SIGKILLed.
 	if err := orch.ExecuteAttempt(context.Background(), h.descriptor(runID, 1)); err == nil {
 		t.Fatal("attempt-1 must fail after the engine process is killed")
+	}
+	// Prove the SIGKILL actually fired against a real engine — otherwise ENG-004 would green off the
+	// provider error alone with no kill, a false proof.
+	if dialer.dialed() == 0 {
+		t.Fatal("attempt-1 dialed no engine process: the kill had no target")
+	}
+	if dialer.killCount() == 0 {
+		t.Fatal("attempt-1 failed WITHOUT the SIGKILL firing: the recovery would not be exercising a real kill")
 	}
 	if store.objectCount() == 0 {
 		t.Fatal("no checkpoint persisted before the process kill: the ladder has nothing to restore")
@@ -194,12 +219,13 @@ func TestExitWithoutTerminalNeverFalseSuccess(t *testing.T) {
 	}
 }
 
-// TestTerminalThenCrashSingleTerminalUnderFence proves ENG-013 (spec §26.8, §22.3): once a run's
+// TestRedeliveredTerminalStaysSingleByMonotonicity proves ENG-013 (spec §26.8, §22.3): once a run's
 // terminal is persisted, a crash + redelivery of the same run's job (a duplicate terminal) is
-// rejected by the finalize monotonicity guard — the run keeps EXACTLY ONE terminal event and its
-// projection is byte-unchanged. This is the durable half of the tail-frame fix: the OCI drain
-// guarantees the terminal is delivered once, and finalize guarantees a redelivery never doubles it.
-func TestTerminalThenCrashSingleTerminalUnderFence(t *testing.T) {
+// rejected by the finalize MONOTONICITY guard (first-terminal-write-wins by state) — the run keeps
+// EXACTLY ONE terminal event and its projection is byte-unchanged. This is the durable half of the
+// tail-frame fix: the OCI drain guarantees the terminal is delivered once, and finalize guarantees a
+// redelivery never doubles it.
+func TestRedeliveredTerminalStaysSingleByMonotonicity(t *testing.T) {
 	h := newHarness(t)
 	respID, sessionID, runID := h.admit()
 
@@ -231,9 +257,11 @@ func TestTerminalThenCrashSingleTerminalUnderFence(t *testing.T) {
 	}
 
 	// A crash + job redelivery: a second attempt on the same run replays the same terminal frame.
-	// The finalize monotonicity guard (ApplyRunTransition -> ErrRunTerminal) must make it a no-op.
+	// The finalize monotonicity guard (ApplyRunTransition -> ErrRunTerminal) absorbs it cleanly.
 	orch2 := h.newOrchestrator(scriptedDialer{&scriptedChannel{frames: terminal()}})
-	_ = orch2.ExecuteAttempt(context.Background(), h.descriptor(runID, 2)) // benign: terminal already won
+	if err := orch2.ExecuteAttempt(context.Background(), h.descriptor(runID, 2)); err != nil {
+		t.Fatalf("redelivered terminal must be absorbed cleanly (finalize monotonicity), got %v", err)
+	}
 
 	terminalsAfter := h.count(`SELECT count(*) FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='run.completed.v1'`,
 		sessionID, h.tenant.Organization, h.tenant.Project)

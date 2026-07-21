@@ -15,6 +15,12 @@ import (
 // clean success — this is a deterministic drain proof, not a flake-tolerant retry. Before the OCI
 // drain-then-reap fix, the container's buffered terminal could be severed by destroy()'s
 // attach.Close before the scanner read it, dropping the terminal on some iterations.
+//
+// RED reproducibility (honest record): the container-level loss is timing-dependent — a drain=false
+// run did NOT reproduce it on a fast local Docker daemon, which is precisely why a deterministic
+// drain is the right fix rather than hoping the race stays quiet. The deterministic RED->GREEN proof
+// of the drain-ordering MECHANISM is the unit test TestContainerExitDrainsStreamBeforeReap (oci);
+// this is its real-container confirmation.
 func TestFastExitEngineTerminalFrameNeverLost(t *testing.T) {
 	const iterations = 20
 	digest := engineDigest(t)
