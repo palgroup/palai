@@ -57,6 +57,17 @@ func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState, bound
 	case err != nil:
 		return err
 	case found:
+		// SES-009 (spec §26.5): before releasing compute, capture a durable checkpoint of the pause
+		// boundary so resume RESTORES from it (ladder rung 2), not a transcript reconstruction. Drain
+		// the in-flight tool.requests without dispatch, persist the offer, THEN pause — the persist
+		// journals its transcript boundary BEFORE PauseRun appends the pause event, so the checkpoint
+		// is durable ahead of the release. With no sink wired (every non-S3 stack, incl. today's pause
+		// tests) this is today's behaviour: PauseRun directly, resume reconstructs from the transcript.
+		if o.checkpoints != nil {
+			if err := o.checkpointBeforePause(ctx, st); err != nil {
+				return err
+			}
+		}
 		if _, err := o.spine.PauseRun(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), pauseID); err != nil {
 			return err
 		}

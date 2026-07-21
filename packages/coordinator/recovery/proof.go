@@ -10,7 +10,7 @@ type RecoveryProof struct {
 	NewAttemptID         string
 	Level                Level
 	CheckpointID         string
-	WorkspaceSnapshotID  string   // "" is honest when the checkpoint declared no workspace dependency
+	WorkspaceSnapshotID  string // "" is honest when the checkpoint declared no workspace dependency
 	TranscriptBoundaryID string
 	ReplayedToolCalls    []string // non-nil once accounted; empty is itself the evidence (nothing replayed)
 	ReusedToolCalls      []string // non-nil once accounted

@@ -168,3 +168,19 @@ SET status = 'dead',
     updated_at = clock_timestamp()
 FROM abandoned
 WHERE job.id = abandoned.id;
+
+-- name: RunHasLiveResponseJob
+-- The recovery ladder's "exact" reconnect-ack (spec §26.3 rung 1, E10 T4): does the run have a
+-- response.run job — OTHER than $4, the caller's own claimed job — that is still claimed and whose
+-- lease has NOT lapsed by DATABASE clock (never a worker clock, so a paused host can't self-certify a
+-- live lease)? If so the original process is still driving the run and a new attempt stands down.
+SELECT EXISTS (
+    SELECT 1 FROM durable_jobs
+    WHERE kind = 'response.run'
+      AND payload->>'run_id' = $1
+      AND organization_id = $2 AND project_id = $3
+      AND id <> $4
+      AND status = 'running'
+      AND lease_expires_at IS NOT NULL
+      AND lease_expires_at > clock_timestamp()
+);

@@ -50,6 +50,8 @@ func ExecuteRun(_ *coordinator.Store, _ *store.Store, orch *Orchestrator) coordi
 			Fence:       uint64(claim.Fence),
 			ImageDigest: engineImage,
 			Limits:      defaultAttemptLimits,
+			// The claimed job, so the ladder's exact rung excludes this attempt's own live lease.
+			JobID: claim.JobID,
 		}); err != nil {
 			return "", fmt.Errorf("execute run %s: %w", body.RunID, err)
 		}

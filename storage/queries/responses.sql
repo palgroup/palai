@@ -115,6 +115,15 @@ SELECT state, result
 FROM model_requests
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- CommittedModelStepCount is the recovery replay watermark (spec §26.9, E10 T4): how many model
+-- steps this run has already committed. On a run.start reconstruction the engine re-walks steps
+-- 1..M (all replayed by LookupModelResult), so a fresh queued message must fold at the boundary that
+-- precedes the FIRST live step (M+1), never into a replayed step's request. Committed steps are a
+-- contiguous prefix, so the count IS the last replayed step's index.
+-- name: CommittedModelStepCount
+SELECT count(*) FROM model_requests
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'completed';
+
 -- CompleteModelRequest stores the model result so a later attempt replays it.
 -- name: CompleteModelRequest
 UPDATE model_requests

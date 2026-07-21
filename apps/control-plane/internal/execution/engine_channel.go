@@ -25,6 +25,11 @@ type AttemptDescriptor struct {
 	// outside the runner's managed allocation root, so the runner skips its containment check. It
 	// defaults false — a normal allocation must sit under the runner's root.
 	WorkspaceUnsafe bool
+	// JobID is the durable response.run job this attempt was claimed under, threaded so the recovery
+	// ladder's "exact" rung can exclude the attempt's OWN live lease when it asks whether the ORIGINAL
+	// process is still driving the run (spec §26.3 rung 1, E10 T4). Empty for a direct-drive attempt
+	// with no claimed job (tests) — then any live sibling job wins exact.
+	JobID string
 }
 
 // EngineChannel is a handshake-complete, single-attempt frame transport. The first

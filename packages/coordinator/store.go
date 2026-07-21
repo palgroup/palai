@@ -152,6 +152,50 @@ func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID st
 	return cp, true, nil
 }
 
+// RunHasLiveResponseJob reports whether the run has a response.run job — other than excludeJobID —
+// still claimed with a non-expired lease by DB clock (spec §26.3 rung 1, E10 T4). True means the
+// original attempt is still driving the run, so a new attempt takes the "exact" rung and stands
+// down. excludeJobID is the caller's own claimed job ("" for a direct-drive attempt with no job).
+func (s *Store) RunHasLiveResponseJob(ctx context.Context, tenant Tenant, runID, excludeJobID string) (bool, error) {
+	var live bool
+	if err := s.pool.QueryRow(ctx, storage.Query("RunHasLiveResponseJob"), runID, tenant.Organization, tenant.Project, excludeJobID).Scan(&live); err != nil {
+		return false, fmt.Errorf("read run live response job: %w", err)
+	}
+	return live, nil
+}
+
+// CommittedModelStepCount is the replay watermark M: how many model steps the run has already
+// committed (spec §26.9, E10 T4). On a reconstruction the engine re-walks steps 1..M as replays, so
+// a fresh queued message folds at the boundary preceding step M+1 (the first live step), never into
+// a replayed step. Captured once at attempt start, before this attempt commits any new step.
+func (s *Store) CommittedModelStepCount(ctx context.Context, tenant Tenant, runID string) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, storage.Query("CommittedModelStepCount"), runID, tenant.Organization, tenant.Project).Scan(&n); err != nil {
+		return 0, fmt.Errorf("read committed model step count: %w", err)
+	}
+	return n, nil
+}
+
+// RecordRecoveryEvent journals a standalone recovery event (attempt.recovering.v1,
+// checkpoint.rejected.v1, checkpoint.migrated.v1, recovery.proof.v1 — spec §26.3, §26.12, E10 T4).
+// It is a plain diagnostic append with no run-active guard: the record must survive whatever the
+// recovery does next (a stand-down under a live sibling, a restore, or an imminent explicit failure).
+func (s *Store) RecordRecoveryEvent(ctx context.Context, tenant Tenant, sessionID, responseID, eventType string, payload []byte) (int64, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return 0, fmt.Errorf("begin recovery event: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	seq, err := appendEvent(ctx, tx, tenant, sessionID, responseID, eventType, payload)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit recovery event: %w", err)
+	}
+	return seq, nil
+}
+
 // Enqueue inserts a queued job.
 func (s *Store) Enqueue(ctx context.Context, tenant Tenant, jobID, kind string) error {
 	if strings.TrimSpace(jobID) == "" {

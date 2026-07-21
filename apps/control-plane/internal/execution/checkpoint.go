@@ -23,6 +23,9 @@ var ErrEmptyCheckpoint = errors.New("empty checkpoint state")
 // changeset ArtifactWriter uses.
 type CheckpointObjectStore interface {
 	Put(ctx context.Context, key string, body []byte) (checksum string, size int64, err error)
+	// Get reads the opaque bytes back for a restore (spec §26.3 rung 2). found is false — with a nil
+	// error — when the object is absent, so the ladder distinguishes a miss from a transport failure.
+	Get(ctx context.Context, key string) (body []byte, found bool, err error)
 }
 
 // CheckpointMeta is the control-plane-resolved provenance the engine's OPAQUE offer does not carry
@@ -104,6 +107,23 @@ func (s *CheckpointSink) Persist(ctx context.Context, meta CheckpointMeta, offer
 		ObjectKey:           key,
 		SizeBytes:           size,
 	})
+}
+
+// Retrieve fetches an opaque checkpoint's bytes for a restore and returns their sha256 as
+// "sha256:<hex>" (spec §26.3-26.4). The COMPUTED checksum is handed to the pure ladder, which
+// compares it to the recorded one — a mismatch (a tampered or partial object) is the §26.4
+// checksum condition failing, so the checkpoint is rejected rather than restored as garbage. found
+// is false when the object is absent (the ladder treats an absent checkpoint as no candidate).
+func (s *CheckpointSink) Retrieve(ctx context.Context, key string) (body []byte, computedChecksum string, found bool, err error) {
+	raw, found, err := s.store.Get(ctx, key)
+	if err != nil {
+		return nil, "", false, fmt.Errorf("get checkpoint bytes: %w", err)
+	}
+	if !found {
+		return nil, "", false, nil
+	}
+	sum := sha256.Sum256(raw)
+	return raw, "sha256:" + hex.EncodeToString(sum[:]), true, nil
 }
 
 // persistCheckpoint records a checkpoint.offer at a safe boundary (spec §26.2). It resolves the

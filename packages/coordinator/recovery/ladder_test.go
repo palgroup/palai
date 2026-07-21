@@ -86,9 +86,12 @@ func TestLadderDecision(t *testing.T) {
 			want:   LevelTranscriptReconstruction,
 		},
 		{
-			name:   "policy forbids reconstruction turns incompatible into explicit failure",
-			mutate: func(c *Candidate, tg *Target) { c.ComputedChecksum = "sha256:tampered"; tg.ReconstructionForbidden = true },
-			want:   LevelExplicitFailure,
+			name: "policy forbids reconstruction turns incompatible into explicit failure",
+			mutate: func(c *Candidate, tg *Target) {
+				c.ComputedChecksum = "sha256:tampered"
+				tg.ReconstructionForbidden = true
+			},
+			want: LevelExplicitFailure,
 		},
 		{
 			name:   "no checkpoint and no transcript is an explicit failure",
