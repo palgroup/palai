@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	statemachines "github.com/palgroup/palai/packages/state-machines"
 )
@@ -40,8 +41,25 @@ func (o *Orchestrator) releaseParentForDetach(ctx context.Context, st *attemptSt
 	if _, err := o.spine.ApplyRunTransition(ctx, st.tenant, string(st.attempt.RunID), statemachines.RunCmdWait); err != nil {
 		return err
 	}
-	if _, err := o.spine.WakeDetachedParent(ctx, st.tenant, string(st.attempt.RunID)); err != nil {
-		return err
+	// Self-wake with a bounded retry (m-8): once the run is WAITING, a fresh attempt bails on the waiting
+	// guard, so a transient self-wake failure would never re-run — and if the child finished DURING the
+	// release its finalize wake already no-op'd (parent not-yet-waiting), leaving this the only waker for
+	// that race. Retry the tiny idempotent TX a few times before surfacing (a persistent failure fails the
+	// attempt honestly — the DB is down). ponytail: bounded in-process retry; the general lost-wake backstop
+	// is the E11 stuck-waiting-parent reconciliation loop.
+	var wakeErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if _, wakeErr = o.spine.WakeDetachedParent(ctx, st.tenant, string(st.attempt.RunID)); wakeErr == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if wakeErr != nil {
+		return wakeErr
 	}
 	return errRunReleased
 }

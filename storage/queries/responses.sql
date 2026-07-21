@@ -86,7 +86,7 @@ WHERE state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exce
 -- RE-BIND the existing child rather than clone it. The linkage rides the child's delegation.spec JSONB
 -- (child_request_id + the detached flag) — no separate column, no migration. Tenant-scoped; one row.
 -- name: LookupChildByRequest
-SELECT id, state, response_id,
+SELECT id, state,
        coalesce((delegation->'spec'->>'detached')::boolean, false),
        coalesce((delegation->'spec'->>'budget')::int, 0)
 FROM runs

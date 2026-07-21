@@ -16,10 +16,9 @@ import (
 // binds this row rather than cloning a second child. State lets it decide (terminal ⇒ fold the
 // typed result, still-running ⇒ re-release), and ResponseID keys the child's outcome read.
 type ChildRunLookup struct {
-	RunID      string
-	State      string
-	ResponseID string
-	Detached   bool
+	RunID    string
+	State    string
+	Detached bool
 	// Budget is the child's effective (parent-intersected) reservation, re-added to the parent's
 	// reserved total on a rebind so sequential detach cycles cannot over-fund children (SUB-004, m-4).
 	Budget int
@@ -33,7 +32,7 @@ func (s *Store) LookupChildByRequest(ctx context.Context, tenant Tenant, parentR
 	var out ChildRunLookup
 	err := s.pool.QueryRow(ctx, storage.Query("LookupChildByRequest"),
 		parentRunID, tenant.Organization, tenant.Project, childRequestID).
-		Scan(&out.RunID, &out.State, &out.ResponseID, &out.Detached, &out.Budget)
+		Scan(&out.RunID, &out.State, &out.Detached, &out.Budget)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ChildRunLookup{}, false, nil
 	}

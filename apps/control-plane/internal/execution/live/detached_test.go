@@ -9,8 +9,9 @@
 // compute (a real checkpoint persisted to REAL S3 + run.waiting; NO engine subprocess held), the child
 // runs as a durable job on the REAL provider (its own distinct chatcmpl id), the child terminal WAKES
 // the parent, which RESTORES from the S3 checkpoint (ladder rung 2) and folds the child's typed result
-// to completion — two DISTINCT real chatcmpl ids, and ZERO provider calls during the parent's release
-// window.
+// to completion — two DISTINCT real chatcmpl ids. The parent holds NO provider call across its release
+// window by construction (its attempt ended; the release is observable as run.waiting + a persisted S3
+// checkpoint + a compatible-checkpoint restore rung — what this test asserts).
 //
 // It lives under the control-plane internal tree (not tests/live/) because it drives the real
 // execution.Orchestrator (an internal package Go forbids importing from tests/live/), exactly like its
