@@ -42,9 +42,19 @@ func TestPrivateAndLoopbackDestinationsDeniedByDefault(t *testing.T) {
 			t.Errorf("VetDestinationURL(%q, allowPrivate=true) = %v, want allowed", u, err)
 		}
 	}
-	// ...but the metadata / link-local range is never allowed, even with the flag.
-	if err := VetDestinationURL("http://169.254.169.254/latest/meta-data", true); err == nil {
-		t.Error("VetDestinationURL(metadata IP, allowPrivate=true) = nil, want still denied")
+	// ...but the metadata / link-local + other special-use ranges are never allowed, even with the flag
+	// (F8): 169.254.169.254 (AWS/GCP/Azure), 100.100.100.200 (Alibaba, RFC6598 CGNAT), plus the
+	// IETF-reserved 192.0.0.0/24, benchmarking 198.18.0.0/15, and future-use 240.0.0.0/4.
+	for _, u := range []string{
+		"http://169.254.169.254/latest/meta-data",
+		"http://100.100.100.200/latest/meta-data",
+		"http://192.0.0.1/x",
+		"http://198.18.0.1/x",
+		"http://240.0.0.1/x",
+	} {
+		if err := VetDestinationURL(u, true); err == nil {
+			t.Errorf("VetDestinationURL(%q, allowPrivate=true) = nil, want still denied (special-use range)", u)
+		}
 	}
 	// A public destination passes over https.
 	if err := VetDestinationURL("https://hooks.example.com/x", false); err != nil {

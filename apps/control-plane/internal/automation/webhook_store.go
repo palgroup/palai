@@ -75,12 +75,11 @@ type dueDelivery struct {
 }
 
 type attemptRecord struct {
-	DeliveryID    string
-	AttemptNumber int
-	StatusCode    int
-	DurationMS    int64
-	Excerpt       string
-	Error         string
+	DeliveryID string
+	StatusCode int
+	DurationMS int64
+	Excerpt    string
+	Error      string
 }
 
 // FanOutEndpoints returns every enabled endpoint and its durable cursor (system-wide, not tenant-scoped).
@@ -166,10 +165,11 @@ func (s *WebhookStore) DueDeliveries(ctx context.Context, limit int) ([]dueDeliv
 	return out, rows.Err()
 }
 
-// RecordAttempt appends one sanitized attempt row (idempotent on (delivery, attempt_number)).
+// RecordAttempt appends one sanitized attempt row with a monotonic attempt_number (max+1, computed in
+// SQL) so a redelivery's attempts never collide with the original cycle's (F6).
 func (s *WebhookStore) RecordAttempt(ctx context.Context, a attemptRecord) error {
 	_, err := s.pool.Exec(ctx, storage.Query("RecordDeliveryAttempt"),
-		a.DeliveryID, a.AttemptNumber, a.StatusCode, a.DurationMS, a.Excerpt, a.Error)
+		a.DeliveryID, a.StatusCode, a.DurationMS, a.Excerpt, a.Error)
 	return err
 }
 
@@ -248,7 +248,7 @@ func (s *WebhookStore) CreateEndpoint(ctx context.Context, org, project string, 
 	err = s.pool.QueryRow(ctx, storage.Query("CreateWebhookEndpoint"),
 		id, org, project, c.URL, true, filter, c.APIRevision,
 		c.SigningSecretRef, c.SigningSecretRefNext, fixedJSON,
-		c.TimeoutMS, c.MaxAttempts, c.RetryWindowSeconds, c.AllowPrivateDestination,
+		c.TimeoutMS, c.MaxAttempts, c.RetryWindowSeconds, c.AllowPrivateDestination, journalLag,
 	).Scan(&out)
 	return out, err
 }

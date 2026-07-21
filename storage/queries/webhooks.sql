@@ -2,12 +2,17 @@
 -- cursor, the delivery pump's due-scan + state transitions, and the sanitized attempt view. Every
 -- read/write is tenant-scoped by the verified identity (§39.2), never a request-body field.
 
+-- CreateWebhookEndpoint initializes the fan-out cursor to the CURRENT journal high-water mark plus the
+-- pump's re-scan lag ($15), so a brand-new endpoint only receives events journaled AFTER it was created
+-- — never the tenant's entire historical journal (F5). The + lag keeps the pump's read-back window
+-- (cursor - lag) at or above the current max, so no pre-creation event is re-scanned into a delivery.
 -- name: CreateWebhookEndpoint
 INSERT INTO webhook_endpoints (
     id, organization_id, project_id, url, enabled, event_filter, api_revision,
     signing_secret_ref, signing_secret_ref_next, fixed_headers,
-    timeout_ms, max_attempts, retry_window_seconds, allow_private_destination
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    timeout_ms, max_attempts, retry_window_seconds, allow_private_destination, cursor_journal_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+    (SELECT COALESCE(max(journal_id), 0) FROM events) + $15)
 RETURNING id;
 
 -- name: ListWebhookEndpoints
@@ -68,10 +73,16 @@ WHERE d.state = 'pending' AND d.next_attempt_at <= clock_timestamp() AND e.enabl
 ORDER BY d.next_attempt_at
 LIMIT $1;
 
+-- RecordDeliveryAttempt appends the next attempt row with a MONOTONIC attempt_number (max+1), not the
+-- delivery's retry-budget count — so an operator redelivery (which resets attempt_count to 0 for a
+-- fresh budget) keeps appending 4,5,6… instead of colliding on 1 and being silently dropped by the
+-- UNIQUE(delivery_id,attempt_number) constraint (F6). One writer per delivery per tick, so max+1 has no
+-- race.
 -- name: RecordDeliveryAttempt
 INSERT INTO delivery_attempts (delivery_id, attempt_number, status_code, duration_ms, response_excerpt, error)
-VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (delivery_id, attempt_number) DO NOTHING;
+VALUES ($1,
+    (SELECT COALESCE(max(attempt_number), 0) + 1 FROM delivery_attempts WHERE delivery_id = $1),
+    $2, $3, $4, $5);
 
 -- name: MarkDeliveryDelivered
 UPDATE webhook_deliveries

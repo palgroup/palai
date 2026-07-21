@@ -119,7 +119,7 @@ func parseUnix(v string) (time.Time, bool) {
 // secret resolver, and a tiny backoff so a rescheduled retry is due on the next tick.
 func pumpFor(store *WebhookStore, certs *x509.CertPool, secret []byte, ref string) *WebhookPump {
 	sender := webhook.NewSender(webhook.WithTLSConfig(&tls.Config{RootCAs: certs}))
-	resolver := func(r string) ([]byte, error) {
+	resolver := func(_ string, r string) ([]byte, error) {
 		if r == ref {
 			return secret, nil
 		}

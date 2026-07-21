@@ -105,6 +105,37 @@ func TestCreateEndpointRejectsPrivateDestinationAtTheAPI(t *testing.T) {
 	}
 }
 
+// TestCreateEndpointBoundsDeliveryPolicy pins F4/F9: an out-of-range timeout/attempts is a typed 400
+// (never a DB-CHECK 500) and never reaches the store; an in-range value is accepted.
+func TestCreateEndpointBoundsDeliveryPolicy(t *testing.T) {
+	fake := &fakeWebhookAPI{}
+	srv := webhookTestServer(t, fake)
+
+	for _, bad := range []string{
+		`{"url":"https://93.184.216.34/x","timeout_ms":-5}`,
+		`{"url":"https://93.184.216.34/x","timeout_ms":600000}`,
+		`{"url":"https://93.184.216.34/x","max_attempts":-1}`,
+		`{"url":"https://93.184.216.34/x","max_attempts":9999}`,
+	} {
+		resp := post(t, srv.URL+"/v1/webhook-endpoints", bad)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("out-of-range create %s status = %d, want 400", bad, resp.StatusCode)
+		}
+	}
+	if fake.created != nil {
+		t.Fatal("an out-of-range create reached the store")
+	}
+
+	// In-range values are accepted and the defaults fill for omitted fields.
+	resp := post(t, srv.URL+"/v1/webhook-endpoints", `{"url":"https://93.184.216.34/x","timeout_ms":5000}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("in-range create status = %d, want 201", resp.StatusCode)
+	}
+	if fake.created == nil || fake.created.TimeoutMS != 5000 || fake.created.MaxAttempts != 20 {
+		t.Fatalf("store got %+v, want timeout 5000 + default 20 attempts", fake.created)
+	}
+}
+
 // TestRedeliverMissingIsNotFound proves the redeliver route maps a missing delivery to 404.
 func TestRedeliverMissingIsNotFound(t *testing.T) {
 	srv := webhookTestServer(t, &fakeWebhookAPI{redeliverOK: false})

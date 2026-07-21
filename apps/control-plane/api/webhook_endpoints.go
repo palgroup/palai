@@ -77,7 +77,29 @@ func (h *webhookHandler) createEndpoint(w http.ResponseWriter, r *http.Request) 
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "url is not an allowed webhook destination")
 		return
 	}
+	// Bound the delivery policy at the trust boundary (F4/F9): an out-of-range value is a typed 400, not
+	// a DB-CHECK 500; an omitted (0) value takes the platform default. This also caps timeout_ms so no
+	// endpoint can hold a delivery worker longer than the platform maximum (a tarpit-amplification bound).
+	timeout, ok := boundOrDefault(body.TimeoutMS, 1, 30000, 10000)
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "timeout_ms must be between 1 and 30000")
+		return
+	}
+	attempts, ok := boundOrDefault(body.MaxAttempts, 1, 50, 20)
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "max_attempts must be between 1 and 50")
+		return
+	}
+	window, ok := boundOrDefault(body.RetryWindowSeconds, 1, 7*24*3600, 72*3600)
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "retry_window_seconds is out of range")
+		return
+	}
 
+	// ponytail (F10): no Idempotency-Key — this matches the sibling durable create POST
+	// /v1/repository-bindings (a re-post registers a distinct resource). Endpoint creation is a rare
+	// operator action, and a duplicate endpoint is operator-visible + deletable. Full idempotent-create
+	// via the idempotency_records admission tx (the /v1/responses path) is the upgrade path, deferred.
 	id, err := h.webhooks.CreateEndpoint(r.Context(), scope.Organization, scope.Project, automation.EndpointCreate{
 		URL:                     body.URL,
 		EventFilter:             body.EventFilter,
@@ -85,9 +107,9 @@ func (h *webhookHandler) createEndpoint(w http.ResponseWriter, r *http.Request) 
 		SigningSecretRef:        body.SigningSecretRef,
 		SigningSecretRefNext:    body.SigningSecretRefNext,
 		FixedHeaders:            body.FixedHeaders,
-		TimeoutMS:               body.TimeoutMS,
-		MaxAttempts:             body.MaxAttempts,
-		RetryWindowSeconds:      body.RetryWindowSeconds,
+		TimeoutMS:               timeout,
+		MaxAttempts:             attempts,
+		RetryWindowSeconds:      window,
 		AllowPrivateDestination: body.AllowPrivateDestination,
 	})
 	if err != nil {
@@ -181,6 +203,18 @@ func (h *webhookHandler) redeliver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": id, "state": "pending"})
+}
+
+// boundOrDefault returns (def, true) for a zero/unset value, (v, true) for v within [min,max], and
+// (0, false) for an out-of-range value the caller maps to a 400.
+func boundOrDefault(v, min, max, def int) (int, bool) {
+	if v == 0 {
+		return def, true
+	}
+	if v < min || v > max {
+		return 0, false
+	}
+	return v, true
 }
 
 // writeJSON writes a JSON body with the given status.

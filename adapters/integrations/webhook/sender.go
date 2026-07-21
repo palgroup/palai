@@ -223,10 +223,31 @@ func VetDestination(ctx context.Context, resolver Resolver, rawURL string, allow
 	return nil
 }
 
-// vetIP is the single IP egress decision. Unspecified, multicast, and link-local (which includes the
-// 169.254.169.254 cloud-metadata address) are NEVER allowed — not even under the allowlist flag,
-// because a webhook has no legitimate reason to reach them. Loopback and private/ULA ranges are
-// denied by default and opened only for a self-host receiver via the explicit allowlist flag (§21.4).
+// specialUseCIDRs are ranges that are NEVER a valid webhook destination and stay denied even under the
+// allowlist flag (F8): RFC6598 CGNAT (Alibaba metadata lives at 100.100.100.200), IETF protocol
+// assignments, benchmarking, and future-use space. net.IP.IsPrivate/IsLinkLocal* miss these.
+var specialUseCIDRs = parseCIDRs(
+	"100.64.0.0/10", // RFC6598 shared address space / CGNAT (Alibaba metadata)
+	"192.0.0.0/24",  // RFC6890 IETF protocol assignments
+	"198.18.0.0/15", // RFC2544 benchmarking
+	"240.0.0.0/4",   // RFC1112 reserved for future use
+)
+
+func parseCIDRs(cidrs ...string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		if _, n, err := net.ParseCIDR(c); err == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// vetIP is the single IP egress decision. Unspecified, multicast, link-local (which includes the
+// 169.254.169.254 cloud-metadata address), and the special-use ranges above are NEVER allowed — not
+// even under the allowlist flag, because a webhook has no legitimate reason to reach them. Loopback and
+// private/ULA ranges are denied by default and opened only for a self-host receiver via the explicit
+// allowlist flag (§21.4).
 func vetIP(ip net.IP, allowPrivate bool) error {
 	if ip == nil {
 		return fmt.Errorf("%w: unparseable IP", errEgressDenied)
@@ -234,6 +255,11 @@ func vetIP(ip net.IP, allowPrivate bool) error {
 	switch {
 	case ip.IsUnspecified(), ip.IsMulticast(), ip.IsLinkLocalUnicast(), ip.IsInterfaceLocalMulticast():
 		return fmt.Errorf("%w: %s is a reserved/metadata address", errEgressDenied, ip)
+	}
+	for _, n := range specialUseCIDRs {
+		if n.Contains(ip) {
+			return fmt.Errorf("%w: %s is a special-use address", errEgressDenied, ip)
+		}
 	}
 	if allowPrivate {
 		return nil
@@ -254,8 +280,9 @@ func unwrapURLError(err error) error {
 	return err
 }
 
-// parseUnixHeader parses a Webhook-Timestamp header value into a time. Exported for the receiver-side
-// verify path the SDK helper and the live smoke share.
+// parseUnixHeader parses a Webhook-Timestamp header value into a time — the receiver-side helper the
+// live smoke uses to reconstruct the signed timestamp before Verify. Unexported: the production send
+// path never parses this header (it only writes it), so this is test/receiver-side only.
 func parseUnixHeader(v string) (time.Time, bool) {
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {

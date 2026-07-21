@@ -333,16 +333,19 @@ func startWebhookPump(ctx context.Context, store *automation.WebhookStore, super
 }
 
 // webhookSecretResolver bridges an endpoint's SecretRef handle to the signing-secret bytes at delivery
-// time (the E09 credential-broker hand-off pattern): PALAI_WEBHOOK_SECRET_FILE_<REF> holds a FILE PATH,
-// never the secret inline, and the bytes are read only here and never logged (E13 seals the file at
-// rest). An unresolved ref fails the attempt (a retry), never an unsigned delivery.
-func webhookSecretResolver(ref string) ([]byte, error) {
-	if ref == "" {
-		return nil, errors.New("empty webhook secret ref")
+// time (the E09 credential-broker hand-off pattern): PALAI_WEBHOOK_SECRET_FILE_<ORG>__<REF> holds a
+// FILE PATH, never the secret inline, and the bytes are read only here and never logged (E13 seals the
+// file at rest). The env key is scoped by the endpoint's ORG so a tenant's SigningSecretRef can only
+// name a secret provisioned under its OWN org — a foreign ref resolves to no env var (F2). The org is
+// server-minted (never tenant-forgeable), so the org prefix is a hard tenant boundary. An unresolved
+// ref fails the attempt (a retry), never an unsigned delivery.
+func webhookSecretResolver(org, ref string) ([]byte, error) {
+	if org == "" || ref == "" {
+		return nil, errors.New("empty webhook secret org/ref")
 	}
-	path := os.Getenv("PALAI_WEBHOOK_SECRET_FILE_" + secretEnvKey(ref))
+	path := os.Getenv("PALAI_WEBHOOK_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
 	if path == "" {
-		return nil, fmt.Errorf("no secret bridge configured for webhook ref %q", ref)
+		return nil, fmt.Errorf("no secret bridge configured for webhook ref under org %q", org)
 	}
 	return os.ReadFile(path)
 }

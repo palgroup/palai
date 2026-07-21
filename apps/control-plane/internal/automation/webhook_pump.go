@@ -6,25 +6,40 @@
 package automation
 
 import (
+	"bytes"
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
+	"sync"
 	"time"
 
 	"github.com/palgroup/palai/adapters/integrations/webhook"
 )
 
+// journalLag is the re-scan window (in journal_id units) the fan-out reads BACK past each endpoint's
+// cursor every tick (F3). An IDENTITY value is assigned at INSERT but committed out of order, so a
+// lower id can commit AFTER the cursor passed a higher one; re-reading the last journalLag ids and
+// relying on the UNIQUE(endpoint_id,event_id) ON CONFLICT dedupe recovers that late commit instead of
+// losing the event. It must exceed the max id-gap accrued during one uncommitted event-append txn
+// (event appends are short single transitions, so a few hundred is generous).
+// ponytail: fixed re-scan window = journalLag idempotent upserts/tick/endpoint even when idle; a
+// set-based INSERT...SELECT fan-out or a pg_current_snapshot() xmin low-watermark removes the re-scan
+// overhead (and the heuristic) if the endpoint count or journal write-rate grows.
+const journalLag int64 = 256
+
 // PumpConfig carries the platform retry bounds (spec §21.4: "retry policy within platform bounds") and
 // the loop cadence. BaseBackoff/MaxBackoff shape the jittered exponential curve; per-endpoint
-// MaxAttempts and RetryWindow come from the endpoint row.
+// MaxAttempts and RetryWindow come from the endpoint row. Concurrency bounds how many deliveries a
+// single tick attempts in parallel, so one tarpit receiver cannot block a whole tenant's queue.
 type PumpConfig struct {
 	BaseBackoff time.Duration
 	MaxBackoff  time.Duration
 	Tick        time.Duration
 	BatchSize   int
+	Concurrency int
 }
 
 func (c PumpConfig) withDefaults() PumpConfig {
@@ -38,15 +53,25 @@ func (c PumpConfig) withDefaults() PumpConfig {
 		c.Tick = time.Second
 	}
 	if c.BatchSize <= 0 {
-		c.BatchSize = 100
+		c.BatchSize = 1000
+	}
+	// The batch must exceed the re-scan window or the read never advances past the re-scanned tail into
+	// new events (the re-scan would consume the whole batch) — forward progress requires batch > lag.
+	if int64(c.BatchSize) <= journalLag {
+		c.BatchSize = int(journalLag) + 500
+	}
+	if c.Concurrency <= 0 {
+		c.Concurrency = 8
 	}
 	return c
 }
 
 // SecretResolver resolves an endpoint's SecretRef handle to the signing secret bytes at delivery time
-// (the LP file-secret bridge in production; a static map in tests). The bytes never touch a log or the
-// delivery row. A func type, not an interface — the two callers are a closure each.
-type SecretResolver func(ref string) ([]byte, error)
+// (the LP file-secret bridge in production; a static map in tests). It is scoped by the endpoint's
+// ORG because SigningSecretRef is tenant input: without the org, tenant A could name tenant B's ref and
+// sign its own deliveries with B's secret (a cross-tenant HMAC-forgery oracle). The bytes never touch a
+// log or the delivery row. A func type, not an interface — the two callers are a closure each.
+type SecretResolver func(org, ref string) ([]byte, error)
 
 // WebhookPump is the supervised delivery loop.
 type WebhookPump struct {
@@ -99,7 +124,13 @@ func (p *WebhookPump) fanOut(ctx context.Context) error {
 		return fmt.Errorf("fan-out endpoints: %w", err)
 	}
 	for _, ep := range endpoints {
-		events, err := p.store.ReadJournalForEndpoint(ctx, ep.Org, ep.Project, ep.Cursor, ep.Filter, p.cfg.BatchSize)
+		// Read back journalLag ids past the cursor to recover a late-committing lower id (F3); the
+		// InsertDelivery ON CONFLICT dedupe makes the re-scanned tail a no-op.
+		from := ep.Cursor - journalLag
+		if from < 0 {
+			from = 0
+		}
+		events, err := p.store.ReadJournalForEndpoint(ctx, ep.Org, ep.Project, from, ep.Filter, p.cfg.BatchSize)
 		if err != nil {
 			return fmt.Errorf("read journal for endpoint %s: %w", ep.ID, err)
 		}
@@ -123,23 +154,37 @@ func (p *WebhookPump) fanOut(ctx context.Context) error {
 	return nil
 }
 
-// deliverDue attempts every due delivery once. Each delivery is independent: a failure reschedules or
-// dead-letters that one row and the loop moves on, so a permanently-down endpoint cannot block the
-// deliveries queued for a healthy one (no head-of-line blocking).
+// deliverDue attempts every due delivery once, up to Concurrency in parallel. Bounding the parallelism
+// (rather than one-at-a-time) means a single tarpit receiver — one that accepts but never responds,
+// holding a worker for the full timeout — occupies only one slot; the other slots keep delivering to
+// healthy endpoints, so one bad receiver cannot block a whole tenant's queue for the tick (F4).
 func (p *WebhookPump) deliverDue(ctx context.Context) error {
 	due, err := p.store.DueDeliveries(ctx, p.cfg.BatchSize)
 	if err != nil {
 		return fmt.Errorf("due deliveries: %w", err)
 	}
+	sem := make(chan struct{}, p.cfg.Concurrency)
+	var wg sync.WaitGroup
 	for _, d := range due {
-		if err := p.attempt(ctx, d); err != nil {
-			// A per-delivery attempt error (e.g. a store write) is logged and skipped, not fatal —
-			// one bad row must not stall the whole queue. The row stays pending for the next tick.
-			if p.log != nil {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(d dueDelivery) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			// This goroutine recovers its OWN panic: the supervisor's guard only covers the Run
+			// goroutine's stack, so an unrecovered panic here would crash the process. A poison row is
+			// contained and left pending for the next tick, never wedging or killing the pump (F1/F4).
+			defer func() {
+				if r := recover(); r != nil && p.log != nil {
+					p.log("webhook delivery %s panicked (contained): %v", d.ID, r)
+				}
+			}()
+			if err := p.attempt(ctx, d); err != nil && p.log != nil {
 				p.log("webhook delivery %s attempt error: %v", d.ID, err)
 			}
-		}
+		}(d)
 	}
+	wg.Wait()
 	return nil
 }
 
@@ -159,7 +204,7 @@ func (p *WebhookPump) attempt(ctx context.Context, d dueDelivery) error {
 	}
 
 	if err := p.store.RecordAttempt(ctx, attemptRecord{
-		DeliveryID: d.ID, AttemptNumber: attemptNo,
+		DeliveryID: d.ID,
 		StatusCode: res.StatusCode, DurationMS: res.DurationMS,
 		Excerpt: res.Excerpt, Error: errString(res.Err),
 	}); err != nil {
@@ -210,18 +255,26 @@ func (p *WebhookPump) sign(d dueDelivery, ts time.Time, attempt int) (signed, er
 		if ref == "" {
 			continue
 		}
-		s, err := p.secrets(ref)
+		s, err := p.secrets(d.Org, ref) // org-scoped: a tenant cannot resolve another tenant's ref (F2)
 		if err != nil {
 			return signed{}, fmt.Errorf("resolve signing secret: %w", err)
+		}
+		s = bytes.TrimSpace(s) // a trailing newline in a secret file is not a different key (F12)
+		if len(s) == 0 {
+			continue // an empty/whitespace secret never reaches NewSigner, which panics on an empty set (F1)
 		}
 		secrets = append(secrets, s)
 	}
 	if len(secrets) == 0 {
-		return signed{}, fmt.Errorf("endpoint %s has no signing secret", d.EndpointID)
+		// No usable secret: a retryable error, so the row reschedules instead of the pump panicking and
+		// wedging the whole due queue (F1). A misconfigured endpoint retries until its secret is fixed.
+		return signed{}, fmt.Errorf("endpoint %s has no usable signing secret", d.EndpointID)
 	}
 	headers := webhook.NewSigner(secrets...).Headers(d.ID, ts, attempt, d.Payload)
 	for k, v := range d.FixedHeaders {
-		headers[k] = v // fixed headers (resolved secret-ref values) ride alongside the signature
+		// Fixed header values are stored plaintext in fixed_headers (at-rest plaintext until E13 seals
+		// them, §21.4); they are NOT resolved through the SecretResolver in this task (F7).
+		headers[k] = v
 	}
 	return signed{
 		dst: webhook.Destination{
