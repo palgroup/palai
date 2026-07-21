@@ -159,10 +159,12 @@ func admitChild(spec childSpec, parentDepth, fanoutUsed, parentRemaining int, pa
 }
 
 // capabilityDeniedTool returns the first child tool outside the parent ∩ project capability, or ""
-// if every requested tool is within it. An empty parentTools or project allowlist is unrestricted
-// at that layer, so the intersection narrows to whichever layer actually restricts (spec §25.18).
+// if every requested tool is within it. A NIL parentTools is unrestricted (no ceiling and no session
+// override); a NON-nil set — even EMPTY — is an explicit ceiling, so an empty one is "select no tools"
+// (spec §14.2) and denies every child tool. Testing nil (not len>0) closes the delegation-ceiling
+// escape where an allow-nothing ceiling, or a ceiling∩override that emptied out, read as unrestricted.
 func capabilityDeniedTool(childTools, parentTools []string, policy coordinator.ConfigPolicy) string {
-	if len(parentTools) > 0 {
+	if parentTools != nil {
 		for _, t := range childTools {
 			if !slices.Contains(parentTools, t) {
 				return t
@@ -307,7 +309,10 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 	if err != nil {
 		return err
 	}
-	parentTools := o.parentTools(ctx, st)
+	parentTools, err := o.parentTools(ctx, st)
+	if err != nil {
+		return err
+	}
 	remaining, bounded := st.budgetRemaining()
 	admission := admitChild(spec, st.depth, len(st.childRunIDs), remaining, bounded, policy, parentTools)
 	if admission.Denied {
@@ -444,14 +449,33 @@ func childRunTerminal(state string) bool {
 }
 
 // parentTools is the parent's effective capability, which a child's tool subset must stay within
-// (the parent half of the parent ∩ project intersection): the parent's session config tools, or
-// unrestricted when it never narrowed them.
-func (o *Orchestrator) parentTools(ctx context.Context, st *attemptState) []string {
+// (the parent half of the parent ∩ project intersection): the parent's session config tools capped by
+// its pinned-revision ceiling. The revision ceiling is load-bearing here — WITHOUT it a run pinned to
+// tools=[file] whose session never overrode tools would expose nil (=unrestricted), letting a child be
+// granted any project-baseline tool and EXPANDING capability through delegation (spec §10, 63.4). It
+// reads through the SAME PinnedExecConfig the resolver uses, and fails CLOSED on a DB error (returns it,
+// so the delegation is refused rather than silently unrestricted).
+func (o *Orchestrator) parentTools(ctx context.Context, st *attemptState) ([]string, error) {
 	override, found, err := o.spine.LatestSessionConfig(ctx, st.tenant, st.sessionID)
-	if err != nil || !found {
-		return nil
+	if err != nil {
+		return nil, err
 	}
-	return override.Tools
+	tools := []string(nil)
+	if found {
+		tools = override.Tools
+	}
+	_, _, revTools, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	if err != nil {
+		return nil, err
+	}
+	if revTools != nil {
+		if tools == nil {
+			tools = revTools
+		} else {
+			tools = intersectTools(tools, revTools)
+		}
+	}
+	return tools, nil
 }
 
 // childStatus maps a ChildRun's terminal run state to the child.result status the engine folds: a

@@ -20,7 +20,7 @@ import (
 // correlation middleware, because it carries its own one-use-token and mTLS identity.
 // It is served over a separate mutually-authenticated listener; binding the CA and that
 // listener is Task 12, so production passes nil until then.
-func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, sse SSEConfig, runner http.Handler) http.Handler {
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, sse SSEConfig, runner http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
@@ -36,6 +36,18 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if bindings != nil {
 		bh := &bindingHandler{bindings: bindings}
 		mux.HandleFunc("POST /v1/repository-bindings", bh.create)
+	}
+
+	// The automation-agent management surface (spec §20.2.1, §10, E11 Task 1): AgentProfiles +
+	// immutable publishable AgentRevisions + profile-free RunTemplateRevisions. Durable config, not
+	// idempotent operations, so no Idempotency-Key. nil in tiers that never touch agents.
+	if agents != nil {
+		ah := &agentHandler{agents: agents}
+		mux.HandleFunc("POST /v1/agents", ah.createProfile)
+		mux.HandleFunc("POST /v1/agents/{agent_id}/revisions", ah.createRevision)
+		mux.HandleFunc("POST /v1/agents/{agent_id}/revisions/{revision_id}/publish", ah.publishRevision)
+		mux.HandleFunc("POST /v1/run-templates/{template}/revisions", ah.createTemplateRevision)
+		mux.HandleFunc("POST /v1/run-templates/{template}/revisions/{revision_id}/publish", ah.publishTemplateRevision)
 	}
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}

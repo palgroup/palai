@@ -521,6 +521,13 @@ type AdmissionInput struct {
 	// root run auto-provisions it. Empty leaves the response non-coding — the pre-E09 behaviour.
 	RepositoryBindingID string
 	RepositoryRef       string
+	// AgentRevisionID / RunTemplateRevisionID pin the run's executable config to a PUBLISHED revision
+	// (spec §10, §14, AGT-001). At most one is set (the API rejects both). Admission verifies the
+	// revision exists in scope and is published before reserving idempotency — an unknown revision is a
+	// 404 and a draft is a 409, both leaving no idempotency record and no run. Empty leaves the run
+	// profile-free (the pre-E11 behaviour), so an absent pin resolves config exactly as before.
+	AgentRevisionID       string
+	RunTemplateRevisionID string
 }
 
 // Admission is the committed, replayed, conflicting, or purged admission outcome.
@@ -546,6 +553,12 @@ type Admission struct {
 	// no existence disclosure). Verified before the idempotency reserve, so a bad binding leaves nothing
 	// behind — a coding run never starts against a binding the clone could not resolve (spec §30.1).
 	RepositoryBindingNotFound bool
+	// PinnedRevisionNotFound marks an agent_revision_id / run_template_revision_id naming a revision
+	// absent from the scope (404, no existence disclosure); PinnedRevisionNotPublished marks a pin onto
+	// an existing DRAFT revision (409 — a draft cannot be pinned or run, spec §10). Both are verified
+	// before the idempotency reserve, so a bad pin leaves no record and no run.
+	PinnedRevisionNotFound     bool
+	PinnedRevisionNotPublished bool
 }
 
 // AdmitResponse atomically reserves the idempotency key and, on a fresh key,
@@ -601,6 +614,27 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 			return Admission{RepositoryBindingNotFound: true}, nil
 		case err != nil:
 			return Admission{}, fmt.Errorf("verify repository binding: %w", err)
+		}
+	}
+
+	// Verify a pinned agent/template revision exists in scope and is PUBLISHED before reserving
+	// idempotency, so an unknown pin is a clean 404 and a draft is a 409 (spec §10, AGT-001) — no
+	// idempotency record, no run started against config a draft could still change. At most one pin is
+	// set (the API rejects both).
+	if in.AgentRevisionID != "" {
+		switch adm, ok, err := verifyPublishedRevision(ctx, tx, "AgentRevisionPublished", in.AgentRevisionID, tenant); {
+		case err != nil:
+			return Admission{}, err
+		case !ok:
+			return adm, nil
+		}
+	}
+	if in.RunTemplateRevisionID != "" {
+		switch adm, ok, err := verifyPublishedRevision(ctx, tx, "RunTemplateRevisionPublished", in.RunTemplateRevisionID, tenant); {
+		case err != nil:
+			return Admission{}, err
+		case !ok:
+			return adm, nil
 		}
 	}
 
@@ -662,7 +696,8 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		return Admission{}, fmt.Errorf("insert response: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("InsertRun"),
-		in.RunID, tenant.Organization, tenant.Project, sessionID, in.ResponseID, nullableJSON(in.Delegations)); err != nil {
+		in.RunID, tenant.Organization, tenant.Project, sessionID, in.ResponseID, nullableJSON(in.Delegations),
+		nullableText(in.AgentRevisionID), nullableText(in.RunTemplateRevisionID)); err != nil {
 		// The session already holds a non-terminal root run: one-active-root (spec §22.3). The
 		// partial unique index (runs_one_active_root_per_session) rejects the second root run at
 		// the DB, so a concurrent chain loses here rather than in an app-code check-then-insert
@@ -749,6 +784,51 @@ func withSessionID(body []byte, sessionID string) ([]byte, error) {
 		return nil, fmt.Errorf("encode response body: %w", err)
 	}
 	return out, nil
+}
+
+// verifyPublishedRevision checks a pinned revision (agent or template) exists in scope and is
+// published, using the given publish-state query. ok=true continues admission; ok=false carries the
+// typed Admission to return (PinnedRevisionNotFound=404 on no rows, PinnedRevisionNotPublished=409 on a
+// draft). An unexpected query error is RETURNED, not swallowed (matching the RepositoryBindingExists
+// arm), so admission fails closed with a 500 rather than committing a fake success. Runs in the tx.
+func verifyPublishedRevision(ctx context.Context, tx pgx.Tx, query, revisionID string, tenant Tenant) (Admission, bool, error) {
+	var published bool
+	switch err := tx.QueryRow(ctx, storage.Query(query), revisionID, tenant.Organization, tenant.Project).Scan(&published); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return Admission{PinnedRevisionNotFound: true}, false, nil
+	case err != nil:
+		return Admission{}, false, fmt.Errorf("verify pinned revision: %w", err)
+	}
+	if !published {
+		return Admission{PinnedRevisionNotPublished: true}, false, nil
+	}
+	return Admission{}, true, nil
+}
+
+// PinnedExecConfig resolves a run's pinned executable config (spec §14, AGT-001): the model and tool
+// ceiling of whichever revision — agent or template — the run pinned. revisionID is "" for a
+// profile-free run, so the resolver skips the pinned-revision layer. The pin is fixed on the run row,
+// so a later revision of the same profile leaves this unchanged (old-run reproducibility).
+func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID string) (revisionID, model string, tools []string, err error) {
+	var (
+		revID     *string
+		toolsJSON []byte
+	)
+	err = s.pool.QueryRow(ctx, storage.Query("PinnedRunConfig"), runID, tenant.Organization, tenant.Project).
+		Scan(&revID, &model, &toolsJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil, nil // unknown run: treat as no pin (the caller's run existence is already established)
+	}
+	if err != nil {
+		return "", "", nil, fmt.Errorf("read pinned run config: %w", err)
+	}
+	if revID == nil {
+		return "", "", nil, nil // profile-free run: no pinned revision
+	}
+	if len(toolsJSON) > 0 {
+		_ = json.Unmarshal(toolsJSON, &tools)
+	}
+	return *revID, model, tools, nil
 }
 
 // isUniqueViolation reports whether err is a PostgreSQL unique_violation (SQLSTATE 23505),

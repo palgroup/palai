@@ -49,6 +49,7 @@
     "callback": {"type": "object"},
     "metadata": {"type": "object", "maxProperties": 64},
     "agent_revision_id": {"type": ["string", "null"]},
+    "run_template_revision_id": {"type": ["string", "null"]},
     "engine": {"type": ["string", "null"]}
   },
   "additionalProperties": true,

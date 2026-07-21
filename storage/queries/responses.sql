@@ -315,8 +315,8 @@ INSERT INTO responses (id, organization_id, project_id, session_id, state, input
 VALUES ($1, $2, $3, $4, 'queued', $5, $6);
 
 -- name: InsertRun
-INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, delegation)
-VALUES ($1, $2, $3, $4, $5, 'queued', $6);
+INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state, delegation, agent_revision_id, run_template_revision_id)
+VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8);
 
 -- PurgeExpiredStoreFalse is the retention sweep (spec §8.3, §20.9): it purges the
 -- content of store=false responses whose terminal state has aged past the configured

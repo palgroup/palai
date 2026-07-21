@@ -43,6 +43,7 @@ var allTables = []string{
 	"checkpoints", "transcript_boundaries",
 	"delivered_messages",
 	"host_quarantine",
+	"agent_profiles", "agent_revisions", "run_template_revisions",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -756,6 +757,84 @@ func TestToolCallLedgerMigration(t *testing.T) {
 		if !columnExists(t, pool, "tool_calls", col) {
 			t.Fatalf("after reapply, tool_calls.%s is missing", col)
 		}
+	}
+}
+
+// TestAgentsMigration proves 000019 adds the automation-agent tables — agent_profiles,
+// agent_revisions, run_template_revisions — plus the runs.agent_revision_id /
+// run_template_revision_id pin riders, idempotently and reversibly (spec §10, §32.2, E11 Task 1;
+// the 000015/000018 re-run-safety pattern). A usable-row assert proves the shape: a draft revision
+// inserts, the conditional publish flips published_at exactly once (a second publish is a no-op,
+// keeping the published row immutable), and a run pinned to a missing revision is FK-rejected.
+func TestAgentsMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE TABLE / ADD COLUMN IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"agent_profiles", "agent_revisions", "run_template_revisions"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after apply, %s is missing", name)
+		}
+	}
+	for _, col := range []string{"agent_revision_id", "run_template_revision_id"} {
+		if !columnExists(t, pool, "runs", col) {
+			t.Fatalf("after apply, runs.%s pin rider is missing", col)
+		}
+	}
+
+	// Usable shape: a profile, a draft revision, publish flips once, a second publish is a no-op.
+	tenant, sessionID, runID := seedRun(t, pool)
+	profileID, revID := newID("aprof"), newID("arev")
+	exec(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`,
+		profileID, tenant.Organization, tenant.Project)
+	exec(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, instructions)
+	               VALUES ($1,$2,$3,$4,1,'model-x','["file"]','be careful')`,
+		revID, tenant.Organization, tenant.Project, profileID)
+
+	// The conditional publish flip sets published_at once; a re-run against the now-published row
+	// affects zero rows, so a published revision never re-stamps (immutable publish boundary).
+	tag, err := pool.Exec(ctx, `UPDATE agent_revisions SET published_at = clock_timestamp() WHERE id=$1 AND published_at IS NULL`, revID)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("first publish rows = %d err = %v, want exactly 1", tag.RowsAffected(), err)
+	}
+	tag2, err := pool.Exec(ctx, `UPDATE agent_revisions SET published_at = clock_timestamp() WHERE id=$1 AND published_at IS NULL`, revID)
+	if err != nil || tag2.RowsAffected() != 0 {
+		t.Fatalf("second publish rows = %d err = %v, want 0 (already published)", tag2.RowsAffected(), err)
+	}
+
+	// A run may pin the published revision (rider FK resolves); a pin to a missing revision is rejected.
+	exec(t, pool, `UPDATE runs SET agent_revision_id=$1 WHERE id=$2`, revID, runID)
+	if got := pgCode(mustFail(pool.Exec(ctx, `UPDATE runs SET agent_revision_id='arev_missing' WHERE id=$1`, runID))); got != "23503" {
+		t.Fatalf("pin to a missing revision code = %q, want 23503 foreign_key_violation", got)
+	}
+	_ = sessionID
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, name := range []string{"agent_profiles", "agent_revisions", "run_template_revisions"} {
+		if tableExists(t, pool, name) {
+			t.Fatalf("after rollback, %s still exists", name)
+		}
+	}
+	if columnExists(t, pool, "runs", "agent_revision_id") {
+		t.Fatal("after rollback, runs.agent_revision_id rider still exists")
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"agent_profiles", "agent_revisions", "run_template_revisions"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after reapply, %s is missing", name)
+		}
+	}
+	if !columnExists(t, pool, "runs", "run_template_revision_id") {
+		t.Fatal("after reapply, runs.run_template_revision_id rider is missing")
 	}
 }
 

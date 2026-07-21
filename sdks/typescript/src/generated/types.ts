@@ -195,6 +195,7 @@ export interface ResponseCreateRequest {
   parallel_tool_calls?: boolean;
   previous_response_id?: string | null;
   repository?: Record<string, unknown>;
+  run_template_revision_id?: string | null;
   session_id?: string | null;
   skills?: string[];
   store?: boolean;

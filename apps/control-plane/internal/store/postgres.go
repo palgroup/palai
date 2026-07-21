@@ -16,6 +16,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 )
@@ -26,6 +27,7 @@ import (
 type Store struct {
 	spine   *coordinator.Store
 	journal *Journal
+	agents  *automation.Store
 }
 
 // Open connects the durable spine. databaseURL carries a local throwaway credential.
@@ -34,7 +36,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{spine: spine, journal: NewJournal(spine.Pool())}, nil
+	return &Store{spine: spine, journal: NewJournal(spine.Pool()), agents: automation.New(spine.Pool())}, nil
 }
 
 // Close releases the underlying pool.
@@ -72,36 +74,40 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 	adm, err := s.spine.AdmitResponse(ctx,
 		coordinator.Tenant{Organization: req.Scope.Organization, Project: req.Scope.Project},
 		coordinator.AdmissionInput{
-			Principal:           req.Scope.Principal,
-			IdempotencyKey:      req.IdempotencyKey,
-			Method:              req.Method,
-			Route:               req.Route,
-			RequestHash:         req.RequestHash,
-			ResponseID:          req.ResponseID,
-			RunID:               req.RunID,
-			SessionID:           req.SessionID,
-			RequestedSessionID:  req.RequestedSessionID,
-			PreviousResponseID:  req.PreviousResponseID,
-			Input:               req.Input,
-			Body:                req.Body,
-			Store:               req.Store,
-			Delegations:         req.Delegations,
-			RepositoryBindingID: req.RepositoryBindingID,
-			RepositoryRef:       req.RepositoryRef,
+			Principal:             req.Scope.Principal,
+			IdempotencyKey:        req.IdempotencyKey,
+			Method:                req.Method,
+			Route:                 req.Route,
+			RequestHash:           req.RequestHash,
+			ResponseID:            req.ResponseID,
+			RunID:                 req.RunID,
+			SessionID:             req.SessionID,
+			RequestedSessionID:    req.RequestedSessionID,
+			PreviousResponseID:    req.PreviousResponseID,
+			Input:                 req.Input,
+			Body:                  req.Body,
+			Store:                 req.Store,
+			Delegations:           req.Delegations,
+			RepositoryBindingID:   req.RepositoryBindingID,
+			RepositoryRef:         req.RepositoryRef,
+			AgentRevisionID:       req.AgentRevisionID,
+			RunTemplateRevisionID: req.RunTemplateRevisionID,
 		})
 	if err != nil {
 		return api.AdmitResult{}, err
 	}
 	result := api.AdmitResult{
-		ResponseID:                responseID(adm.Body),
-		Body:                      adm.Body,
-		Replayed:                  adm.Replayed,
-		Conflict:                  adm.Conflict,
-		Purged:                    adm.Purged,
-		SessionNotFound:           adm.SessionNotFound,
-		SessionConflict:           adm.SessionConflict,
-		ActiveRunConflict:         adm.ActiveRunConflict,
-		RepositoryBindingNotFound: adm.RepositoryBindingNotFound,
+		ResponseID:                 responseID(adm.Body),
+		Body:                       adm.Body,
+		Replayed:                   adm.Replayed,
+		Conflict:                   adm.Conflict,
+		Purged:                     adm.Purged,
+		SessionNotFound:            adm.SessionNotFound,
+		SessionConflict:            adm.SessionConflict,
+		ActiveRunConflict:          adm.ActiveRunConflict,
+		RepositoryBindingNotFound:  adm.RepositoryBindingNotFound,
+		PinnedRevisionNotFound:     adm.PinnedRevisionNotFound,
+		PinnedRevisionNotPublished: adm.PinnedRevisionNotPublished,
 	}
 	// On a purged replay the body is gone; the tombstone identity is the resource id.
 	if adm.Purged {

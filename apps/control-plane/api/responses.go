@@ -69,6 +69,11 @@ type AdmitRequest struct {
 	// workspace the root run auto-provisions. Empty leaves the response non-coding.
 	RepositoryBindingID string
 	RepositoryRef       string
+	// AgentRevisionID / RunTemplateRevisionID pin the run's executable config to a published revision
+	// (spec §10, AGT-001). At most one is set (validateCreate rejects both). Empty leaves the run
+	// profile-free.
+	AgentRevisionID       string
+	RunTemplateRevisionID string
 }
 
 // AdmitResult is the admission outcome. Conflict marks a key reused with a
@@ -91,6 +96,10 @@ type AdmitResult struct {
 	SessionConflict           bool
 	ActiveRunConflict         bool
 	RepositoryBindingNotFound bool
+	// PinnedRevisionNotFound is an agent_revision_id / run_template_revision_id naming an unknown or
+	// foreign revision (404); PinnedRevisionNotPublished is a pin onto a draft revision (409, spec §10).
+	PinnedRevisionNotFound     bool
+	PinnedRevisionNotPublished bool
 }
 
 type responseHandler struct {
@@ -137,6 +146,16 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	// root run auto-provisions (E09 Task 10). An absent field leaves the response non-coding.
 	bindingID, repositoryRef := resolveRepository(raw)
 
+	// The pinned executable-config revision (spec §10, AGT-001): agent_revision_id OR
+	// run_template_revision_id, typed contract fields so they ride the semantic request hash.
+	agentRevisionID, templateRevisionID := "", ""
+	if req.AgentRevisionID != nil {
+		agentRevisionID = *req.AgentRevisionID
+	}
+	if req.RunTemplateRevisionID != nil {
+		templateRevisionID = *req.RunTemplateRevisionID
+	}
+
 	hash, err := canonicalRequestHash(req)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -171,22 +190,24 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := h.admitter.AdmitResponse(r.Context(), AdmitRequest{
-		Scope:               scope,
-		IdempotencyKey:      middleware.IdempotencyKey(r.Context()),
-		Method:              http.MethodPost,
-		Route:               createRoute,
-		RequestHash:         hash,
-		ResponseID:          responseID,
-		RunID:               runID,
-		SessionID:           sessionID,
-		RequestedSessionID:  req.SessionID,
-		PreviousResponseID:  req.PreviousResponseID,
-		Input:               input,
-		Body:                body,
-		Store:               store,
-		Delegations:         delegations,
-		RepositoryBindingID: bindingID,
-		RepositoryRef:       repositoryRef,
+		Scope:                 scope,
+		IdempotencyKey:        middleware.IdempotencyKey(r.Context()),
+		Method:                http.MethodPost,
+		Route:                 createRoute,
+		RequestHash:           hash,
+		ResponseID:            responseID,
+		RunID:                 runID,
+		SessionID:             sessionID,
+		RequestedSessionID:    req.SessionID,
+		PreviousResponseID:    req.PreviousResponseID,
+		Input:                 input,
+		Body:                  body,
+		Store:                 store,
+		Delegations:           delegations,
+		RepositoryBindingID:   bindingID,
+		RepositoryRef:         repositoryRef,
+		AgentRevisionID:       agentRevisionID,
+		RunTemplateRevisionID: templateRevisionID,
 	})
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -201,6 +222,16 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	// A `repository` field naming an unknown or foreign binding is a tenant-scoped 404 (spec §30.1).
 	if out.RepositoryBindingNotFound {
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such repository binding in this project")
+		return
+	}
+	// A pin naming an unknown revision is a tenant-scoped 404; a pin onto a draft is a 409 — a draft
+	// revision cannot be run until it is published (spec §10, AGT-001).
+	if out.PinnedRevisionNotFound {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such agent revision or run template in this project")
+		return
+	}
+	if out.PinnedRevisionNotPublished {
+		middleware.WriteProblem(w, r, http.StatusConflict, "revision_not_published", "the pinned revision is a draft; publish it before running it")
 		return
 	}
 	if out.SessionConflict {
@@ -352,6 +383,11 @@ func validateCreate(req contracts.ResponseCreateRequest) error {
 	}
 	if req.PreviousResponseID != nil && req.SessionID != nil {
 		return errors.New("previous_response_id and session_id are mutually exclusive")
+	}
+	// A run pins EITHER an agent revision OR a run template, never both (spec §10, §32.2): an agent
+	// revision carries identity, a template is profile-free, so one request cannot mean both.
+	if req.AgentRevisionID != nil && req.RunTemplateRevisionID != nil {
+		return errors.New("agent_revision_id and run_template_revision_id are mutually exclusive")
 	}
 	return nil
 }
