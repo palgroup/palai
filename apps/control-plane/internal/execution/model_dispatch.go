@@ -319,7 +319,10 @@ func (o *Orchestrator) handleInterrupt(ctx context.Context, st *attemptState, fr
 			return err
 		}
 	} else {
-		switch _, err := o.spine.InterruptModelStep(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), hit.commandID, eventModelStepInterrupted, partial); {
+		// The aborted step's model_request_id keys the durable interrupt-delivered row (spec §26.9,
+		// ENG-012): a reconstructing attempt refolds the message at THIS same boundary, interleaved with
+		// any boundary-delivered message by applied_sequence.
+		switch _, err := o.spine.InterruptModelStep(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), hit.commandID, requestID, eventModelStepInterrupted, partial); {
 		case errors.Is(err, coordinator.ErrCommandNotPending):
 			// Already applied by a boundary; the message is delivered — just resume the engine.
 		case err != nil:

@@ -186,3 +186,74 @@ func TestRedeliverBoundaryMessagesReturnsBoundaryRowsInCanonicalOrder(t *testing
 		t.Fatalf("empty boundary returned %d messages, want 0", len(none))
 	}
 }
+
+// TestInterruptDeliveryDurableAcrossReclaim proves the ENG-012 interrupt half (spec §26.9, E10 T7): an
+// interrupt-delivered message used to live ONLY in the engine subprocess's memory (InterruptModelStep
+// wrote no delivered_messages row), so a crash after the fold dropped it — the command drained
+// single-winner, run.start carries prior responses only, nothing redelivered it. InterruptModelStep now
+// journals the SAME durable row keyed by the aborted step's boundary, so a reclaiming attempt redelivers
+// it exactly once at that boundary — and interleaves with a boundary-delivered message by
+// applied_sequence (never inside the reconstructed step). A re-interrupt is a single-winner no-op.
+func TestInterruptDeliveryDurableAcrossReclaim(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	tenant, sessionID, runID := seedRun(t, cs.Pool())
+
+	// A message queued during the outage and delivered by the in-flight-abort watcher (an interrupt
+	// fold), aborting model step mr_step2.
+	interruptID := seedQueuedSendMessage(t, cs, tenant, sessionID, runID, "interrupt", "stop and do Z")
+	iseq, err := cs.InterruptModelStep(ctx, tenant, sessionID, "", runID, interruptID, "mr_step2", "model_step.interrupted.v1", []byte(`{"output":"partial"}`))
+	if err != nil {
+		t.Fatalf("InterruptModelStep() error = %v", err)
+	}
+	if iseq <= 0 {
+		t.Fatalf("InterruptModelStep() sequence = %d, want > 0", iseq)
+	}
+
+	// The interrupt fold is now DURABLE: a delivered_messages row keyed by the aborted step's boundary.
+	row, ok := readDeliveredMessage(t, cs, tenant, interruptID)
+	if !ok {
+		t.Fatal("interrupt fold wrote no delivered_messages row — the ENG-012 outage loss is not closed")
+	}
+	if row.boundary != "mr_step2" || row.seq != iseq {
+		t.Fatalf("interrupt delivered row = {boundary:%q seq:%d}, want {mr_step2 %d}", row.boundary, row.seq, iseq)
+	}
+
+	// A boundary-delivered message applied at the SAME step interleaves with the interrupt one by
+	// applied_sequence: the interrupt folded first (lower seq), the boundary message after.
+	boundaryID := seedQueuedSendMessage(t, cs, tenant, sessionID, runID, "queue", "then do Y at boundary")
+	if _, err := cs.ApplyCommand(ctx, tenant, sessionID, "", runID, boundaryID, "mr_step2"); err != nil {
+		t.Fatalf("ApplyCommand(boundary) error = %v", err)
+	}
+
+	redeliver, err := cs.RedeliverBoundaryMessages(ctx, tenant, runID, "mr_step2")
+	if err != nil {
+		t.Fatalf("RedeliverBoundaryMessages(mr_step2) error = %v", err)
+	}
+	if len(redeliver) != 2 {
+		t.Fatalf("boundary mr_step2 redelivered %d messages, want 2 (interrupt + boundary interleaved)", len(redeliver))
+	}
+	if redeliver[0].CommandID != interruptID || redeliver[1].CommandID != boundaryID {
+		t.Fatalf("redelivery order = [%s %s], want [interrupt %s, boundary %s] by applied_sequence",
+			redeliver[0].CommandID, redeliver[1].CommandID, interruptID, boundaryID)
+	}
+	if redeliver[0].Delivery != "interrupt" {
+		t.Fatalf("interrupt-delivered redelivery mode = %q, want interrupt (joined from the command)", redeliver[0].Delivery)
+	}
+	if got := decodeSeededMessage(t, redeliver[0].Payload); got != "stop and do Z" {
+		t.Fatalf("interrupt payload message = %q, want %q (content ref resolves)", got, "stop and do Z")
+	}
+
+	// A re-interrupt (the reclaim re-walks the boundary) is a single-winner no-op: the command already
+	// applied, so ErrCommandNotPending and no second durable row.
+	if _, err := cs.InterruptModelStep(ctx, tenant, sessionID, "", runID, interruptID, "mr_step2", "model_step.interrupted.v1", []byte(`{}`)); err != coordinator.ErrCommandNotPending {
+		t.Fatalf("re-InterruptModelStep() error = %v, want ErrCommandNotPending", err)
+	}
+	var count int
+	if err := cs.Pool().QueryRow(ctx, `SELECT count(*) FROM delivered_messages WHERE command_id = $1`, interruptID).Scan(&count); err != nil {
+		t.Fatalf("count interrupt delivered rows error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("interrupt delivered rows after re-interrupt = %d, want 1 (single-winner)", count)
+	}
+}

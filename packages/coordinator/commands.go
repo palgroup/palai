@@ -513,8 +513,8 @@ func (s *Store) PendingSessionConfigCommands(ctx context.Context, tenant Tenant,
 // is the model_request_id of the step at whose boundary the message is delivered, the key a fresh
 // attempt redelivers it under. command.applied.v1 therefore now means the delivered message is
 // durable, not merely in the engine's memory — the crash-before-fold and pause/resume losses close.
-// The interrupt-path fold (InterruptModelStep) writes no such row; that recovery half is E10 Task 7
-// (ENG-012 outage command ordering), not this boundary path.
+// The interrupt-path fold (InterruptModelStep) writes the SAME durable row keyed by the aborted step's
+// boundary (E10 Task 7, ENG-012), so both delivery paths redeliver at the input boundary.
 func (s *Store) ApplyCommand(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, boundaryRequestID string) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -680,10 +680,20 @@ func (s *Store) PendingInterruptCommand(ctx context.Context, tenant Tenant, runI
 
 // InterruptModelStep records an aborted model step and applies the interrupt command in one
 // transaction (spec §9.2, §25.11): it journals the partial step event (the controller aborted
-// the in-flight provider call), then applies the command (command.applied.v1). It runs under
-// guardRunActive, so a run canceled during the abort rejects the write. Returns the command's
-// applied_sequence. A command already applied by a racing boundary returns ErrCommandNotPending.
-func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, partialEventType string, partialPayload []byte) (int64, error) {
+// the in-flight provider call), applies the command (command.applied.v1), and — for a send_message
+// interrupt — journals the durable delivered_messages row so the interrupt-delivered turn survives a
+// reclaim (spec §26.9, ENG-012). It runs under guardRunActive, so a run canceled during the abort
+// rejects the write. Returns the command's applied_sequence. A command already applied by a racing
+// boundary returns ErrCommandNotPending.
+//
+// The durable row closes the ENG-012 outage half the boundary path (ApplyCommand) already closed for
+// its own folds: an interrupt-delivered message lived ONLY in the engine subprocess's memory, so a
+// crash between the fold and the resumed step's commit dropped it (the command is drained single-winner,
+// nothing redelivered it, run.start carries prior responses only). boundaryRequestID is the aborted
+// step's model_request_id — the deterministic boundary key a reconstructing attempt redelivers under,
+// so interrupt-delivered and boundary-delivered messages at the same step interleave by applied_sequence
+// (§26.9). Empty boundaryRequestID (a change_config interrupt has no message) writes no row.
+func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, boundaryRequestID, partialEventType string, partialPayload []byte) (int64, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin interrupt: %w", err)
@@ -699,6 +709,15 @@ func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID
 	seq, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
 	if err != nil {
 		return 0, err
+	}
+	// The interrupt-delivered message is now durable, keyed by the aborted step's boundary, so a
+	// reconstructing attempt refolds it exactly once at that same input boundary (spec §26.9). ON
+	// CONFLICT DO NOTHING (InsertDeliveredMessage) keeps a redelivered interrupt idempotent.
+	if boundaryRequestID != "" {
+		if _, err := tx.Exec(ctx, storage.Query("InsertDeliveredMessage"),
+			commandID, tenant.Organization, tenant.Project, runID, nullableText(boundaryRequestID), seq); err != nil {
+			return 0, fmt.Errorf("record interrupt delivered message: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit interrupt: %w", err)
