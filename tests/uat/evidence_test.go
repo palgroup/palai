@@ -53,6 +53,61 @@ func hasKind(fs []Finding, kind string) bool {
 	return false
 }
 
+// completeRecoveryProof returns a fresh §26.12 RecoveryProof map with every field group populated —
+// the shape the recovery.proof.v1 journal event serializes to.
+func completeRecoveryProof() map[string]any {
+	return map[string]any{
+		"previous_attempt_id":    "att_prev",
+		"new_attempt_id":         "att_new",
+		"level":                  "compatible_checkpoint",
+		"checkpoint_id":          "chk_1",
+		"transcript_boundary_id": "bnd_1",
+		"replayed_tool_calls":    []any{},
+		"reused_tool_calls":      []any{"tcall_a"},
+		"config_model_changes":   []any{},
+		"semantic_loss_assessed": true,
+		"duration_ms":            42,
+	}
+}
+
+// TestRecoveryProofFieldsComplete pins REC-006 (spec §26.12): a case that claims recovery passes only
+// with a COMPLETE proof; dropping any one field group makes it a Finding.
+func TestRecoveryProofFieldsComplete(t *testing.T) {
+	m := baseManifest()
+	c := caseOf(m)
+	c["recovery_claim"] = "continued"
+	c["recovery_proof"] = completeRecoveryProof()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete §26.12 recovery proof should pass, got %v", f)
+	}
+
+	for _, field := range []string{
+		"previous_attempt_id", "new_attempt_id", "level", "checkpoint_id", "transcript_boundary_id",
+		"replayed_tool_calls", "reused_tool_calls", "config_model_changes", "semantic_loss_assessed", "duration_ms",
+	} {
+		m := baseManifest()
+		c := caseOf(m)
+		c["recovery_claim"] = "continued"
+		proof := completeRecoveryProof()
+		delete(proof, field)
+		c["recovery_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("a recovery proof missing %q must be a Finding", field)
+		}
+	}
+}
+
+// TestVerifierRejectsContinuedLogWithoutProof pins the REC-006 core: a "continued"/"resumed" marker
+// is NEVER evidence on its own — a recovery claim with no §26.12 proof block is a Finding.
+func TestVerifierRejectsContinuedLogWithoutProof(t *testing.T) {
+	m := baseManifest()
+	c := caseOf(m)
+	c["recovery_claim"] = "resumed" // claims recovery but carries NO proof
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a recovery claim with no §26.12 RecoveryProof must be a Finding (continued/resumed alone is not proof)")
+	}
+}
+
 func TestEvidenceVerifier(t *testing.T) {
 	// A valid, redacted bundle passes with no findings.
 	if f := VerifyManifest(marshal(t, baseManifest()), nil); len(f) != 0 {
