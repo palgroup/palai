@@ -51,6 +51,14 @@ WHERE a.id = $2
 -- Release the lease so the single-writer slot frees for the next writer (spec §29.8).
 UPDATE workspace_leases SET state = 'released' WHERE id = $1 AND state = 'active';
 
+-- name: WorkspaceLeaseHolder
+-- The active writer lease on an allocation, if any — its id and the run holding it (spec §29.8). The
+-- stuck-lease reclaim (E09 T10 devir, E10 T6) reads it to decide whether a crash left a DEAD holder: it
+-- proves the holder run is no longer live (RunHasLiveResponseJob) BEFORE releasing, never a blind TTL.
+SELECT id, run_id FROM workspace_leases
+WHERE allocation_id = $1 AND state = 'active'
+LIMIT 1;
+
 -- name: CreateWorkspaceSnapshot
 -- Record a create-side snapshot, but ONLY when the uploading allocation is the workspace's
 -- current (max-fence) allocation. A stale allocation whose fence a host move has superseded

@@ -256,7 +256,7 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// A run with no attachment, or no provisioner wired, gets no workspace — the pre-E09 behaviour.
 	var workspaceID, workspaceLeaseID string
 	if depth == 0 && attempt.WorkspaceHostPath == "" && o.provisionRoot != "" && o.provisionBroker != nil {
-		hostPath, leaseID, wsID, perr := o.provisionRootWorkspace(ctx, tenant, sessionID, string(attempt.RunID), attempt.Fence)
+		hostPath, leaseID, wsID, perr := o.provisionRootWorkspace(ctx, tenant, sessionID, string(attempt.RunID), attempt.JobID, attempt.Fence)
 		if perr != nil {
 			return fmt.Errorf("provision workspace: %w", perr)
 		}

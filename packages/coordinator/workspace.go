@@ -200,6 +200,28 @@ func (s *Store) AcquireWriterLease(ctx context.Context, leaseID, allocationID, r
 	return nil
 }
 
+// LeaseHolder is the active writer lease on an allocation: the lease id and the run holding it (spec
+// §29.8). found is false when the allocation has no active lease.
+type LeaseHolder struct {
+	LeaseID string
+	RunID   string
+}
+
+// WorkspaceLeaseHolder returns the active writer lease on an allocation, if any (spec §29.8). The
+// stuck-lease reclaim reads it to identify the holder run, then proves that run is no longer live
+// before releasing the lease — a liveness-gated reclaim, never a blind TTL (E09 T10 devir, E10 T6).
+func (s *Store) WorkspaceLeaseHolder(ctx context.Context, allocationID string) (LeaseHolder, bool, error) {
+	var h LeaseHolder
+	err := s.pool.QueryRow(ctx, storage.Query("WorkspaceLeaseHolder"), allocationID).Scan(&h.LeaseID, &h.RunID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return LeaseHolder{}, false, nil
+	}
+	if err != nil {
+		return LeaseHolder{}, false, fmt.Errorf("workspace lease holder: %w", err)
+	}
+	return h, true, nil
+}
+
 // ReleaseWriterLease frees the single-writer slot for the next writer (spec §29.8).
 func (s *Store) ReleaseWriterLease(ctx context.Context, leaseID string) error {
 	if _, err := s.pool.Exec(ctx, storage.Query("ReleaseWriterLease"), leaseID); err != nil {
