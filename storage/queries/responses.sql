@@ -90,7 +90,19 @@ WHERE state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exce
 UPDATE responses
 SET state = $4, output = $5, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3
-  AND state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded');
+  AND state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded', 'failed_with_uncertain_side_effect');
+
+-- HasUncertainSideEffect reports whether a run has an UNRESOLVED uncertain side effect — an
+-- irreversible/interactive tool_call still `uncertain` or in `manual_resolution` (spec §26.10, SES-010,
+-- E10 T7). A cancel racing a kill terminalizes such a run as failed_with_uncertain_side_effect (the
+-- effect may have landed; its status is unknown), not a clean canceled.
+-- name: HasUncertainSideEffect
+SELECT EXISTS (
+    SELECT 1 FROM tool_calls
+    WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+      AND state IN ('uncertain', 'manual_resolution')
+      AND replay_class IN ('irreversible', 'interactive')
+);
 
 -- UpsertToolCall records a completed tool call with its replay-ledger classification (spec §26.6-26.7,
 -- E10 T7): replay_class is the tool's declared kill-recovery class copied at execute time, request_hash

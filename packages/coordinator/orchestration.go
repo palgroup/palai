@@ -219,6 +219,61 @@ func (s *Store) CancelChildren(ctx context.Context, tenant Tenant, parentRunID s
 	return canceled, nil
 }
 
+// CancelRunReconciled cancels a run during/after a kill and reconciles its active external ops to a
+// SINGLE monotonic terminal (spec §26.10 steps 8-9, SES-010, E10 T7): `canceled` when nothing is left
+// uncertain, or `failed_with_uncertain_side_effect` when an irreversible/interactive tool_call is still
+// uncertain (its effect may have landed; the run must NOT claim a clean cancel). It drives the run to
+// canceled (monotonic — a run a racing terminal already finished is left alone), propagates the cancel to
+// children (each to a single terminal, E08 SUB-005), and finalizes the response. It returns the response's
+// ACTUAL terminal after the write, so a racing terminal that won is reflected — the run terminalizes once.
+func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, sessionID, responseID, runID string) (string, error) {
+	uncertain, err := s.hasUncertainSideEffect(ctx, tenant, runID)
+	if err != nil {
+		return "", err
+	}
+	terminal := "canceled"
+	if uncertain {
+		terminal = "failed_with_uncertain_side_effect"
+	}
+	// Drive the run canceled, monotonically. Already terminal (a racing kill won) is fine — the response
+	// is already finalized and the writes below are no-ops.
+	switch _, err := s.ApplyRunTransition(ctx, tenant, runID, statemachines.RunCmdCancel); {
+	case errors.Is(err, ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+	case err != nil:
+		return "", err
+	}
+	projection, _ := json.Marshal(map[string]any{
+		"output": []any{}, "usage": map[string]any{}, "model": "",
+		"terminal_reason": map[string]any{"canceled_during_recovery": true, "uncertain_side_effect": uncertain},
+	})
+	// Propagate the cancel to descendants (E08 SUB-005), each to its own single terminal.
+	if _, err := s.CancelChildren(ctx, tenant, runID, projection); err != nil {
+		return "", err
+	}
+	// Finalize the response — the conditional UpdateResponse makes this a monotonic no-op if a racing
+	// terminal already wrote one (the late-terminal DB guard, now covering the new terminal too).
+	if err := s.FinalizeResponse(ctx, tenant, responseID, terminal, projection); err != nil {
+		return "", err
+	}
+	// Return the ACTUAL terminal (whatever won), so a racing terminal is reflected — one terminal, honest.
+	var actual string
+	if err := s.pool.QueryRow(ctx, `SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		responseID, tenant.Organization, tenant.Project).Scan(&actual); err != nil {
+		return "", fmt.Errorf("read terminal response state: %w", err)
+	}
+	return actual, nil
+}
+
+// hasUncertainSideEffect reports whether a run has an unresolved uncertain irreversible/interactive
+// tool_call — the SES-010 terminal discriminator (spec §26.10).
+func (s *Store) hasUncertainSideEffect(ctx context.Context, tenant Tenant, runID string) (bool, error) {
+	var exists bool
+	if err := s.pool.QueryRow(ctx, storage.Query("HasUncertainSideEffect"), runID, tenant.Organization, tenant.Project).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check uncertain side effect: %w", err)
+	}
+	return exists, nil
+}
+
 // PriorResponse is one earlier response in a session, as run.start history needs it:
 // Output is the stored terminal projection (nil once purged or not yet terminal), and
 // Purged marks a reaped response whose content is a redacted_content marker (spec §22.2).
