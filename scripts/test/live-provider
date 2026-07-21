@@ -89,9 +89,23 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_shell_image=1
     ;;
+  provider-one/checkpoint-restore)
+    # E10 Task 4: a real provider forced-tool run persists a tool-boundary checkpoint to REAL S3, the
+    # engine uv-subprocess is SIGKILLed post-persist, and a fresh attempt RESTORES it (ladder rung 2,
+    # run.restore) and completes on the real provider — two DISTINCT chatcmpl ids + a complete §26.12
+    # RecoveryProof + the completed tool not re-run. Needs the credential + a throwaway object store
+    # (PG + SeaweedFS) + the engine dir. Honest ceilings (named in the test): the deterministic tier
+    # already proves the ladder/restore/proof with a fake provider + hook kill; this confirms with a
+    # REAL provider + REAL S3. The orchestrator does not yet advertise tool schemas to the provider, so
+    # reaching the real tool boundary requires that live-harness wiring first.
+    pkg="./apps/control-plane/internal/execution/live"
+    run="TestLiveCheckpointRestoreRealProvider"
+    required_key="OPENAI_API_KEY"
+    needs_object_store=1
+    ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=checkpoint-restore" >&2
     exit 2
     ;;
 esac
@@ -185,6 +199,7 @@ run_live_with_object_store() {
     PALAI_S3_BUCKET="palai-artifacts-live" \
     PALAI_S3_ACCESS_KEY="palai" \
     PALAI_S3_SECRET_KEY="palai" \
+    PALAI_ENGINE_DIR="$root/engines/reference" \
     go test -tags=live -count=1 -run "$test_run" -v "$test_pkg"
   local status=$?
   set -e
