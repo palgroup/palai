@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -334,6 +336,130 @@ func TestPolicyForbidsReconstructionExplicitFailure(t *testing.T) {
 	if got, _ := h.response(respID); got != "failed" {
 		t.Fatalf("run state = %q, want failed (explicit recovery failure, not a silent drop or retry)", got)
 	}
+}
+
+// engineModelRequestID replicates the reference engine's deterministic model_request_id (protocol.py
+// _stable_id("mreq","model",run,step)), so a test can name the exact input boundary a message folded
+// at and prove the drain gate chose the LAST replayed boundary, not an earlier one.
+func engineModelRequestID(runID string, step int) string {
+	sum := sha256.Sum256([]byte("model\x1f" + runID + "\x1f" + strconv.Itoa(step)))
+	return "mreq_" + hex.EncodeToString(sum[:])[:24]
+}
+
+func (h *harness) deliveredBoundary(runID, commandID string) string {
+	h.t.Helper()
+	var b string
+	if err := h.spine.Pool().QueryRow(context.Background(),
+		`SELECT boundary_request_id FROM delivered_messages WHERE run_id=$1 AND command_id=$2 AND organization_id=$3 AND project_id=$4`,
+		runID, commandID, h.tenant.Organization, h.tenant.Project).Scan(&b); err != nil {
+		h.t.Fatalf("read delivered boundary for %s: %v", commandID, err)
+	}
+	return b
+}
+
+// threeStepThenCrashProvider drives two tool steps then a final answer, crashing the FIRST time it
+// reaches the final (third) step — so attempt-1 commits steps 1 and 2 then dies, and attempt-2
+// reconstructs by replaying steps 1 and 2 before a live step 3. It records whether the live step saw
+// the fresh message, which proves the message folded at the first live boundary, not a replayed one.
+type threeStepThenCrashProvider struct {
+	mu            sync.Mutex
+	finalCalls    int
+	finalSawFresh bool
+}
+
+func (p *threeStepThenCrashProvider) Execute(_ context.Context, req modelbroker.Request, _ string, _ func(modelbroker.Delta)) (modelbroker.Result, error) {
+	toolResults := 0
+	for _, m := range req.Messages {
+		if m.Role == "tool" {
+			toolResults++
+		}
+	}
+	res := modelbroker.Result{ModelRequestID: req.ModelRequestID, Model: "fake", Usage: contracts.Usage{InputTokens: 5, OutputTokens: 3, TotalTokens: 8}, Attempts: 1}
+	switch {
+	case toolResults == 0:
+		res.ProviderRequestID = "prov_tool1"
+		res.ToolCalls = []modelbroker.ToolCall{{ID: "c1", Name: "recovery.count", Arguments: "{}"}}
+		res.FinishReason = "tool_calls"
+		return res, nil
+	case toolResults == 1:
+		res.ProviderRequestID = "prov_tool2"
+		res.ToolCalls = []modelbroker.ToolCall{{ID: "c2", Name: "recovery.count", Arguments: "{}"}}
+		res.FinishReason = "tool_calls"
+		return res, nil
+	default:
+		p.mu.Lock()
+		p.finalCalls++
+		n := p.finalCalls
+		if n >= 2 {
+			for _, m := range req.Messages {
+				if strings.Contains(m.Content, "LIVE-FOLD") {
+					p.finalSawFresh = true
+				}
+			}
+		}
+		p.mu.Unlock()
+		if n == 1 {
+			return modelbroker.Result{}, errRecoveryCrash // attempt-1 crashes at the live step
+		}
+		res.ProviderRequestID = "prov_final"
+		res.Output = "done"
+		res.FinishReason = "stop"
+		return res, nil
+	}
+}
+
+// TestFreshCommandsNotDrainedAtReplayedBoundary proves the replayed-boundary drain gate (spec §26.9,
+// E10 T4 fork 4): a message queued during an outage folds at the FIRST LIVE boundary (before the
+// first live step), NEVER at a replayed boundary — where it would rewrite a step LookupModelResult
+// replays by id (silent divergence). No checkpoint sink here, so recovery is transcript
+// reconstruction (run.start replay), which is the only path with replayed boundaries.
+func TestFreshCommandsNotDrainedAtReplayedBoundary(t *testing.T) {
+	h := newHarness(t)
+	tool := &countingTool{}
+	provider := &threeStepThenCrashProvider{}
+	rec := &deliverRecorder{}
+	dialer := subprocessDialer{engineDir: h.engineDir, onSend: rec.onSend}
+	orch := h.newOrchestratorWithTools(dialer, provider, tool.tool())
+
+	respID, sessionID, runID := h.admit()
+
+	// attempt-1: commits steps 1 and 2 (two model steps + two tool boundaries), crashes at step 3.
+	if err := orch.ExecuteAttempt(context.Background(), h.descriptor(runID, 1)); err == nil {
+		t.Fatal("attempt-1 should crash at the third (live) step")
+	}
+	if got := h.committedModelSteps(runID); got != 2 {
+		t.Fatalf("committed model steps after attempt-1 = %d, want 2", got)
+	}
+
+	// A FRESH message queued during the outage.
+	msgID := newID("cmd")
+	if cmd := h.submitCommand(sessionID, `{"command_id":"`+msgID+`","kind":"send_message","delivery":"queue","message":"LIVE-FOLD"}`); cmd.Status != "queued" {
+		t.Fatalf("send_message status = %q, want queued", cmd.Status)
+	}
+	_ = sessionID
+
+	// attempt-2: reconstruct (replay steps 1+2, live step 3). The fresh message folds ONCE, at the
+	// last replayed boundary (step 2's), into the live step 3.
+	if err := orch.ExecuteAttempt(context.Background(), h.descriptor(runID, 2)); err != nil {
+		t.Fatalf("attempt-2 (reconstruction) error = %v", err)
+	}
+	if st, _ := h.response(respID); st != "completed" {
+		t.Fatalf("run state = %q, want completed", st)
+	}
+	if !provider.finalSawFresh {
+		t.Fatal("the fresh message did not fold into the first LIVE step (it was lost at a replayed boundary)")
+	}
+	if boundary, want := h.deliveredBoundary(runID, msgID), engineModelRequestID(runID, 2); boundary != want {
+		t.Fatalf("message delivered at boundary %q, want the last-replayed (step 2) boundary %q", boundary, want)
+	}
+	if count, last := rec.snapshot(); count != 1 || last != "LIVE-FOLD" {
+		t.Fatalf("message.deliver frames = %d (last %q), want exactly 1 of LIVE-FOLD", count, last)
+	}
+}
+
+func (h *harness) committedModelSteps(runID string) int {
+	return h.count(`SELECT count(*) FROM model_requests WHERE run_id=$1 AND organization_id=$2 AND project_id=$3 AND state='completed'`,
+		runID, h.tenant.Organization, h.tenant.Project)
 }
 
 // TestLadderPrefersExactWhenLeaseAlive proves the exact rung (ENG-008, spec §26.3 rung 1): while the
