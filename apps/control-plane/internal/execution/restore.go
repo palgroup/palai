@@ -271,7 +271,7 @@ func (o *Orchestrator) recordRecoveryProof(ctx context.Context, st *attemptState
 		// the durable boundary the recovery weighed.
 		TranscriptBoundaryID: plan.checkpoint.BoundaryID,
 		ReplayedToolCalls:    []string{}, // no committed tool call is ever re-executed (ENG-009)
-		ReusedToolCalls:      reused,      // class-labelled on a transcript reconstruction; empty on a compatible restore
+		ReusedToolCalls:      reused,     // class-labelled on a transcript reconstruction; empty on a compatible restore
 		ConfigModelChanges:   configModelChanges,
 		SemanticLossAssessed: true,
 		SemanticLossWarning:  "",

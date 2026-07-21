@@ -77,7 +77,10 @@ func TestPureToolReplayLabeledNoDuplication(t *testing.T) {
 	mkBroker := func() *toolbroker.Broker {
 		return toolbroker.New(toolbroker.Tool{
 			Name: "count.pure", InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"},
-			Invoke: func(map[string]any) (map[string]any, error) { atomic.AddInt32(&runs, 1); return map[string]any{"ok": true}, nil },
+			Invoke: func(map[string]any) (map[string]any, error) {
+				atomic.AddInt32(&runs, 1)
+				return map[string]any{"ok": true}, nil
+			},
 		})
 	}
 	callID := redeliveryID("tc")
@@ -117,7 +120,10 @@ func TestIrreversibleUncertainNeverAutoReplays(t *testing.T) {
 	broker := toolbroker.New(toolbroker.Tool{
 		Name: "effect.irr", InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"},
 		ReplayClass: toolbroker.ClassIrreversible,
-		Invoke:      func(map[string]any) (map[string]any, error) { atomic.AddInt32(&runs, 1); return map[string]any{"charged": true}, nil },
+		Invoke: func(map[string]any) (map[string]any, error) {
+			atomic.AddInt32(&runs, 1)
+			return map[string]any{"charged": true}, nil
+		},
 	})
 	callID := redeliveryID("tc")
 
@@ -254,8 +260,8 @@ func TestRecoveryProofCarriesClassLabeledReplay(t *testing.T) {
 
 	orch := &Orchestrator{spine: cs}
 	st := &attemptState{
-		attempt:      AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID("att_new")},
-		tenant:       tenant, sessionID: sessionID, responseID: respID,
+		attempt: AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID("att_new")},
+		tenant:  tenant, sessionID: sessionID, responseID: respID,
 		attemptStart: time.Now().Add(-5 * time.Millisecond),
 	}
 	plan := recoveryPlan{
@@ -283,8 +289,8 @@ func TestRecoveryProofCarriesClassLabeledReplay(t *testing.T) {
 	// A COMPATIBLE restore of the same run yields an EMPTY reused list (the engine resumed past them) —
 	// still valid evidence.
 	st2 := &attemptState{
-		attempt:      AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID("att_new2")},
-		tenant:       tenant, sessionID: sessionID, responseID: respID,
+		attempt: AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID("att_new2")},
+		tenant:  tenant, sessionID: sessionID, responseID: respID,
 		attemptStart: time.Now().Add(-5 * time.Millisecond),
 	}
 	planCompat := recoveryPlan{present: true, decision: recovery.Decision{Level: recovery.LevelCompatibleCheckpoint},
