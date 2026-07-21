@@ -37,6 +37,33 @@ func (p recoveryPlan) restoreData() map[string]any {
 	}
 }
 
+// MigrateCheckpoint persists a migrated (v2) checkpoint as a NEW immutable row alongside the original
+// and journals the provenance link (spec §26.2, ENG-011). The v1->v2 transform is engine-owned
+// (checkpoint.migrate, proven in the reference kernel) and the control plane treats the bytes opaquely
+// (§26.2), so this reuses the ordinary offer/persist path for the migrated bytes and records
+// checkpoint.migrated.v1 {from_id, to_id, from_format, to_format}. The original checkpoint is never
+// touched (append-only) — it stays integrity-valid and restore-selectable, which IS the rollback.
+//
+// Ceiling: the MECHANISM is proven with the reference-kernel v2 SHAPE. The production engine stays v1
+// (engine.ready.checkpoint_formats == ["reference-kernel/1"], schema-pin unchanged) — no live run
+// migrates yet; this is the reversible-migration seam a future format bump would call. It is a free
+// function (not a CheckpointSink method) so the sink stays pure persistence, uncoupled from the journal.
+func MigrateCheckpoint(ctx context.Context, sink *CheckpointSink, spine *coordinator.Store, tenant coordinator.Tenant, sessionID, responseID, fromCheckpointID, fromFormat string, meta CheckpointMeta, v2OfferData map[string]any) (toCheckpointID string, err error) {
+	toCheckpointID = recoveryObjectID("chk", meta.RunID, meta.AttemptID, meta.OfferSequence)
+	if err := sink.Persist(ctx, meta, v2OfferData); err != nil {
+		return "", fmt.Errorf("persist migrated checkpoint: %w", err)
+	}
+	toFormat := fmt.Sprintf("%s/%d", v2OfferData["format"], checkpointIntField(v2OfferData["format_version"]))
+	payload, _ := json.Marshal(map[string]any{
+		"from_id": fromCheckpointID, "to_id": toCheckpointID,
+		"from_format": fromFormat, "to_format": toFormat,
+	})
+	if _, err := spine.RecordRecoveryEvent(ctx, tenant, sessionID, responseID, eventCheckpointMigrated, payload); err != nil {
+		return "", fmt.Errorf("journal checkpoint migration provenance: %w", err)
+	}
+	return toCheckpointID, nil
+}
+
 // consultCheckpointLadder reads the run's newest checkpoint and weighs it with the pure ladder (spec
 // §26.3-26.4). It is the IO half: it fetches + checksums the opaque bytes, resolves the current
 // effective config and transcript boundary, then hands those facts to recovery.Decide. The exact
