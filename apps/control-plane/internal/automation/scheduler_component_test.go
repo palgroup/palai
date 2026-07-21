@@ -156,9 +156,110 @@ func TestOccurrenceDurableBeforeRunCreated(t *testing.T) {
 	}
 }
 
+// TestOneTimeScheduleFiresAndExhausts proves B11: a one_time schedule fires its single occurrence when due
+// and then exhausts (next_fire_at NULL) — it never fires again.
+func TestOneTimeScheduleFiresAndExhausts(t *testing.T) {
+	ss, ts, pool := wiredScheduleStore(t)
+	ctx := context.Background()
+	org, project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, org, project)
+	triggerID := seedCronTrigger(t, ts, pool, org, project)
+
+	fireAt := time.Now().UTC().Truncate(time.Minute).Add(-2 * time.Minute)
+	now := fireAt.Add(30 * time.Second) // within grace → a normal single fire
+	id := randID("sch")
+	mustExec(t, pool,
+		`INSERT INTO schedules (id, organization_id, project_id, name, trigger_id, created_by, kind, timezone,
+		 misfire_policy, misfire_grace_seconds, one_time_at, next_fire_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,'one_time','UTC','fire_once_now',300,$7,$7)`,
+		id, org, project, randID("name"), triggerID, principal, fireAt.UTC())
+
+	if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
+		t.Fatalf("fireDueSchedules error = %v", err)
+	}
+	occs := occurrencesOf(t, pool, id)
+	if len(occs) != 1 || occs[0].state != "pending" || !occs[0].plannedAt.Equal(fireAt) {
+		t.Fatalf("one_time occurrences = %+v, want one pending at %s", occs, fireAt)
+	}
+	// The schedule is exhausted: next_fire_at is NULL (it never fires again).
+	var nextFire *time.Time
+	if err := pool.QueryRow(ctx, `SELECT next_fire_at FROM schedules WHERE id=$1`, id).Scan(&nextFire); err != nil {
+		t.Fatalf("read next_fire_at error = %v", err)
+	}
+	if nextFire != nil {
+		t.Fatalf("one_time next_fire_at = %s, want NULL (exhausted after its single fire)", nextFire)
+	}
+	// It hands off and never re-fires on a later tick.
+	if err := ss.sweepPendingOccurrences(ctx, now, 100, t.Logf); err != nil {
+		t.Fatalf("sweep error = %v", err)
+	}
+	if err := ss.fireDueSchedules(ctx, now.Add(time.Hour), 100, t.Logf); err != nil {
+		t.Fatalf("later fireDueSchedules error = %v", err)
+	}
+	if occs := occurrencesOf(t, pool, id); len(occs) != 1 {
+		t.Fatalf("one_time re-fired: %d occurrences, want the unchanged 1", len(occs))
+	}
+	if occs := occurrencesOf(t, pool, id); occs[0].state != "admitted" {
+		t.Fatalf("one_time occurrence state = %q, want admitted (handed off)", occs[0].state)
+	}
+}
+
+// TestResumeAfterFailRecomputesNextFire proves the policy=fail resume path (review #4, AUT-008): a failed
+// schedule's next_fire_at is stuck at the stale missed instant, so a bare status flip to 'active' would let
+// the next tick see the same backlog and re-fail (a deadlock — "admission stops until operator resume"
+// never holds). Resume must recompute next_fire_at from NOW, so admission resumes cleanly.
+func TestResumeAfterFailRecomputesNextFire(t *testing.T) {
+	ss, ts, pool := wiredScheduleStore(t)
+	ctx := context.Background()
+	org, project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, org, project)
+	triggerID := seedCronTrigger(t, ts, pool, org, project)
+
+	base := time.Now().UTC().Truncate(time.Minute).Add(-10 * time.Minute)
+	now := base.Add(5 * time.Minute) // several instants missed → policy=fail freezes
+	schID := seedScheduleRow(t, pool, org, project, triggerID, principal, "* * * * *", "UTC", base, "fail", 0, 0)
+
+	if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
+		t.Fatalf("fireDueSchedules error = %v", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM schedules WHERE id=$1`, schID).Scan(&status); err != nil {
+		t.Fatalf("read status error = %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("policy=fail schedule status = %q, want failed", status)
+	}
+
+	// Resume: next_fire_at recomputed from now (future), status active, reason cleared.
+	if ok, err := ss.SetPaused(ctx, org, project, schID, false); err != nil || !ok {
+		t.Fatalf("resume SetPaused = (%v, %v), want (true, nil)", ok, err)
+	}
+	var next time.Time
+	if err := pool.QueryRow(ctx, `SELECT status, next_fire_at FROM schedules WHERE id=$1`, schID).Scan(&status, &next); err != nil {
+		t.Fatalf("read after resume error = %v", err)
+	}
+	if status != "active" {
+		t.Fatalf("after resume status = %q, want active", status)
+	}
+	if !next.After(now) {
+		t.Fatalf("after resume next_fire_at = %s, want a future instant (recomputed from now), not the stale missed instant", next)
+	}
+
+	// A subsequent tick must NOT immediately re-fail — admission has resumed cleanly.
+	if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
+		t.Fatalf("post-resume fireDueSchedules error = %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status FROM schedules WHERE id=$1`, schID).Scan(&status); err != nil {
+		t.Fatalf("read status error = %v", err)
+	}
+	if status != "active" {
+		t.Fatalf("after resume + tick status = %q, want active (the fail did not recur)", status)
+	}
+}
+
 // TestTwoSchedulerReplicasSingleCanonicalOccurrence proves AUT-007: two ticker replicas racing one PG on
 // one due instant yield exactly ONE occurrence row and ONE run — correctness pinned to the occurrence
-// UNIQUE index (ON CONFLICT DO NOTHING + RowsAffected discipline), NOT to any row lock.
+// UNIQUE index (ON CONFLICT DO NOTHING collapses the concurrent inserts), NOT to any row lock.
 func TestTwoSchedulerReplicasSingleCanonicalOccurrence(t *testing.T) {
 	ss, ts, pool := wiredScheduleStore(t)
 	ctx := context.Background()

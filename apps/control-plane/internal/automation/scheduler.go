@@ -103,6 +103,12 @@ func planTick(spec scheduleSpec, currentNextFireAt, now time.Time) tickPlan {
 
 	// A misfire exists only when more than one instant was missed, or the single missed instant is older
 	// than the grace window. Within grace = a normal (slightly late) fire — never the misfire machinery.
+	//
+	// Conscious (m-grace): grace applies ONLY to the single-missed case. ≥2 missed instants ALWAYS enter
+	// the misfire machine, even if all are within grace — because >1 missed period means the ticker
+	// genuinely lagged more than one cadence (a real backlog), so fire_once_now firing only the latest +
+	// windowing the rest is correct; grace is for absorbing sub-period ticker jitter, not a multi-instant
+	// catch-up window.
 	if len(missed) == 1 && now.Sub(latest) <= spec.grace {
 		p.fire = []time.Time{latest}
 		return p
@@ -155,6 +161,12 @@ func admitAfter(occurrenceID string, plannedAt time.Time, jitterSeconds int, end
 	}
 	return at
 }
+
+// The schedule.occurrence.{created,admitted,skipped,failed}.v1 event types are registered in the contract
+// (event-types.json + asyncapi) but DECLARED-BUT-UNEMITTED here — the T2 trigger.delivery.* precedent: an
+// occurrence has no session before it admits (events are session-scoped, NOT NULL session_id), so the
+// durable fact is the schedule_occurrences ROW (queryable at GET /v1/schedules/{id}/occurrences), and the
+// run-born events ride the trigger delivery's own session once the firing admits.
 
 // OccurrenceID is the DETERMINISTIC id of a schedule firing: sha256(schedule_id | revision | RFC3339-UTC
 // planned instant) → "occ_" + the first 32 hex chars (spec §33.5, E11 Task 3). Because it is a pure

@@ -141,19 +141,57 @@ func (s *ScheduleStore) ReviseSchedule(ctx context.Context, org, project, id str
 }
 
 // SetPaused pauses or resumes a schedule (the due-scan stops/starts admitting new occurrences; an
-// in-flight run is untouched). Returns found=false when absent from scope.
+// in-flight run is untouched). A pause leaves next_fire_at as-is (it never fires while paused); a RESUME
+// recomputes next_fire_at from now — a resumed schedule fires fresh, never replaying its stale missed
+// window (which for policy=fail would re-enter the misfire machine and re-fail — review #4). Returns
+// found=false when absent from scope.
 func (s *ScheduleStore) SetPaused(ctx context.Context, org, project, id string, paused bool) (bool, error) {
-	status, reason := "active", ""
 	if paused {
-		status, reason = "paused", "paused by operator"
+		switch err := s.pool.QueryRow(ctx, storage.Query("PauseSchedule"), id, org, project).Scan(new(string)); {
+		case errors.Is(err, pgx.ErrNoRows):
+			return false, nil
+		case err != nil:
+			return false, fmt.Errorf("pause schedule: %w", err)
+		}
+		return true, nil
 	}
-	switch err := s.pool.QueryRow(ctx, storage.Query("SetScheduleStatus"), id, org, project, status, reason).Scan(new(string)); {
+
+	// Resume: recompute next_fire_at from now off the schedule's stored firing config.
+	view, found, err := s.GetSchedule(ctx, org, project, id)
+	if err != nil || !found {
+		return false, err
+	}
+	spec, err := validateFiring(scheduleInputFromView(view))
+	if err != nil {
+		return false, err // a stored schedule is always valid; defensive
+	}
+	next, _ := spec.firstFireAt(createBase(scheduleInputFromView(view), time.Now()))
+	switch err := s.pool.QueryRow(ctx, storage.Query("ResumeSchedule"), id, org, project, nullableTime(next)).Scan(new(string)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
-		return false, fmt.Errorf("set schedule status: %w", err)
+		return false, fmt.Errorf("resume schedule: %w", err)
 	}
 	return true, nil
+}
+
+// scheduleInputFromView rebuilds the firing config of a stored schedule (for a resume's next_fire_at
+// recompute).
+func scheduleInputFromView(v ScheduleView) ScheduleInput {
+	in := ScheduleInput{
+		Kind: v.Kind, CronExpr: v.CronExpr, Timezone: v.Timezone, MisfirePolicy: v.MisfirePolicy,
+		MisfireGraceSeconds: v.MisfireGraceSeconds, MaxCatchUp: v.MaxCatchUp, JitterSeconds: v.JitterSeconds,
+	}
+	if v.OneTimeAt != nil {
+		in.OneTimeAt = *v.OneTimeAt
+	}
+	if v.StartsAt != nil {
+		in.StartsAt = *v.StartsAt
+	}
+	if v.EndsAt != nil {
+		in.EndsAt = *v.EndsAt
+	}
+	return in
 }
 
 // DeleteSchedule soft-deletes a schedule (deleted_at set): the due-scan skips it while its occurrence rows
@@ -221,6 +259,17 @@ func (s *ScheduleStore) validate(ctx context.Context, org, project string, in Sc
 // (LoadLocation — an unknown IANA name is a 400, never a stored row), and the cron expr (kind=cron) or
 // one-time instant (kind=one_time). Shared by create and revise (revise never touches name/trigger/scope).
 func validateFiring(in ScheduleInput) (scheduleSpec, error) {
+	// Bound the numeric knobs app-side so an out-of-range value is a 400, not a DB-CHECK 500 (m-api). The
+	// DB CHECKs remain the last line of defense.
+	if in.MaxCatchUp < 0 || in.MaxCatchUp > 100 {
+		return scheduleSpec{}, fmt.Errorf("%w: max_catch_up must be 0..100", ErrScheduleInvalid)
+	}
+	if in.JitterSeconds < 0 || in.JitterSeconds > 3600 {
+		return scheduleSpec{}, fmt.Errorf("%w: jitter_seconds must be 0..3600", ErrScheduleInvalid)
+	}
+	if in.MisfireGraceSeconds < 0 {
+		return scheduleSpec{}, fmt.Errorf("%w: misfire_grace_seconds must be non-negative", ErrScheduleInvalid)
+	}
 	loc, err := time.LoadLocation(in.Timezone)
 	if err != nil {
 		return scheduleSpec{}, fmt.Errorf("%w: %q", ErrInvalidTimezone, in.Timezone)
@@ -293,9 +342,10 @@ type dueSchedule struct {
 // not wedge the whole sweep behind a supervisor restart loop (the delivery-reconciler discipline).
 //
 // ponytail: the due-scan takes NO row lock (no FOR UPDATE SKIP LOCKED). Correctness is the occurrence
-// UNIQUE(schedule_id, revision, planned_at) index — two replicas that both process a due schedule race
-// the ON CONFLICT claim and exactly one wins (RowsAffected==1); redundant compute at trigger cadence is
-// cheap. Add SKIP LOCKED as a contention optimization only if the due-scan ever profiles hot.
+// UNIQUE(schedule_id, revision, planned_at) index — two replicas that both process a due schedule target
+// the same deterministic occurrence_id, and ON CONFLICT DO NOTHING collapses them to one row; redundant
+// compute at trigger cadence is cheap. Add SKIP LOCKED as a contention optimization only if the due-scan
+// ever profiles hot.
 func (s *ScheduleStore) fireDueSchedules(ctx context.Context, now time.Time, limit int, log func(string, ...any)) error {
 	if limit <= 0 {
 		limit = 100

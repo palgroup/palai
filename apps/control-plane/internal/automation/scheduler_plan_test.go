@@ -1,9 +1,32 @@
 package automation
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
+
+// TestValidateFiringRejectsOutOfRange proves the app-side range validation (m-api): max_catch_up>100,
+// jitter>3600, and negatives are a typed ErrScheduleInvalid (→ 400), not a DB-CHECK 500.
+func TestValidateFiringRejectsOutOfRange(t *testing.T) {
+	base := ScheduleInput{Kind: "cron", CronExpr: "* * * * *", Timezone: "UTC"}
+	bad := []ScheduleInput{
+		func() ScheduleInput { i := base; i.MaxCatchUp = 101; return i }(),
+		func() ScheduleInput { i := base; i.MaxCatchUp = -1; return i }(),
+		func() ScheduleInput { i := base; i.JitterSeconds = 3601; return i }(),
+		func() ScheduleInput { i := base; i.JitterSeconds = -1; return i }(),
+		func() ScheduleInput { i := base; i.MisfireGraceSeconds = -1; return i }(),
+	}
+	for _, in := range bad {
+		if _, err := validateFiring(in); !errors.Is(err, ErrScheduleInvalid) {
+			t.Errorf("validateFiring(%+v) err = %v, want ErrScheduleInvalid", in, err)
+		}
+	}
+	// A well-formed config still validates.
+	if _, err := validateFiring(func() ScheduleInput { i := base; i.MaxCatchUp = 100; i.JitterSeconds = 3600; return i }()); err != nil {
+		t.Fatalf("validateFiring on in-range knobs err = %v, want nil", err)
+	}
+}
 
 // cronSpec builds a per-minute cron scheduleSpec in UTC for the pure planning tests.
 func cronSpec(policy string, grace time.Duration, maxCatchUp int) scheduleSpec {

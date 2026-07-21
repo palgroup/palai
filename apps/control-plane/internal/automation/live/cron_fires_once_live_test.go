@@ -143,8 +143,10 @@ func TestLiveCronFiresOnce(t *testing.T) {
 		t.Fatalf("delivery dedupe_key = %q, want the occurrence_id %q", dedupeKey, occurrenceID)
 	}
 
-	// The load-bearing count assert: the counting seam over the REAL provider-one adapter. The born run
-	// dispatches EXACTLY ONE real completion — provider requests == occurrence count.
+	// The load-bearing count assert: the counting seam over the REAL provider-one adapter. The born run is
+	// admitted 'queued' (no dispatch worker runs here); we drive its ONE mapped input through the broker
+	// ourselves, so provider requests == occurrence count (one real completion per fired occurrence) — the
+	// same broker-seam-counter shape the T2 dedupe smoke uses.
 	adapter := &countingAdapter{inner: providerone.Adapter{}}
 	broker := modelbroker.New(modelbroker.Config{
 		Adapters: map[string]modelbroker.ModelAdapter{"provider-one": adapter},

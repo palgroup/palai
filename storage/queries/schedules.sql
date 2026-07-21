@@ -30,11 +30,21 @@ SET cron_expr = $4, timezone = $5, one_time_at = $6, misfire_policy = $7, misfir
 WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND deleted_at IS NULL
 RETURNING revision;
 
--- SetScheduleStatus pauses or resumes a schedule (status='paused'|'active'). A pause stops the due-scan
--- from admitting new occurrences; an in-flight run is untouched. Tenant-scoped.
--- name: SetScheduleStatus
+-- PauseSchedule stops the due-scan from admitting new occurrences (status='paused'); an in-flight run is
+-- untouched, and next_fire_at is left as-is (it never fires while paused). Tenant-scoped.
+-- name: PauseSchedule
 UPDATE schedules
-SET status = $4, status_reason = $5, updated_at = clock_timestamp()
+SET status = 'paused', status_reason = 'paused by operator', updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND deleted_at IS NULL
+RETURNING id;
+
+-- ResumeSchedule reactivates a paused OR failed schedule and RECOMPUTES next_fire_at from now ($4), so a
+-- resumed schedule fires fresh rather than replaying its stale missed window — the fix for the policy=fail
+-- resume deadlock (a stale past next_fire_at would re-enter the misfire machine and re-fail). $4 NULL when
+-- the schedule is exhausted (a one_time already past). Tenant-scoped.
+-- name: ResumeSchedule
+UPDATE schedules
+SET status = 'active', status_reason = '', next_fire_at = $4, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND deleted_at IS NULL
 RETURNING id;
 
@@ -70,9 +80,11 @@ ORDER BY next_fire_at
 LIMIT $2;
 
 -- ClaimOccurrence is the exactly-once claim: INSERT ... ON CONFLICT DO NOTHING on the
--- UNIQUE(schedule_id, schedule_revision, planned_at) index. The caller reads RowsAffected() — 1 means this
--- replica won the (schedule, revision, instant), 0 means another replica (or a prior tick) already owns it.
--- Born 'pending'; the handoff sweep admits it.
+-- UNIQUE(schedule_id, schedule_revision, planned_at) index. Concurrent replicas (and re-run ticks) all
+-- target the SAME deterministic occurrence_id/(schedule,revision,instant), so the index collapses them to
+-- at most ONE row regardless of insert order — that is the whole exactly-once guarantee. The winner is
+-- immaterial to the ticker: admission is a SEPARATE sweep over every 'pending' row, so fireOne need not
+-- read the command tag. Born 'pending'; the handoff sweep admits it.
 -- name: ClaimOccurrence
 INSERT INTO schedule_occurrences (occurrence_id, schedule_id, schedule_revision, planned_at, state)
 VALUES ($1, $2, $3, $4, 'pending')
