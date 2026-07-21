@@ -212,6 +212,50 @@ func TestWakeDetachedParentWaitsForAllChildren(t *testing.T) {
 	}
 }
 
+// TestCreateChildRunEnqueuesJobAtomically proves MF-3 (E10 T8 liveness): a detached child's run row and
+// its response.run job must commit in ONE transaction. A two-commit gap (create, then a separate
+// enqueue that a crash/transient error skips) leaves a child row with no job and no waker → the parent
+// hangs forever. Atomic: on success both exist; on a guard rollback neither does — never an orphan.
+func TestCreateChildRunEnqueuesJobAtomically(t *testing.T) {
+	store := openStore(t)
+	pool := store.Pool()
+	ctx := context.Background()
+	tenant, parentRun, parentResp, _, _ := seedParent(t, pool, "running", "completed", true)
+	sessionID := sessionOf(t, pool, parentRun)
+
+	childRun, childResp := newID("run"), newID("resp")
+	in := coordinator.ChildRunInput{
+		ParentRunID: parentRun, ParentResponseID: parentResp, SessionID: sessionID,
+		ChildRunID: childRun, ChildResponseID: childResp, Depth: 1,
+		Input: []byte(`"objective"`), Delegation: []byte(`{"spec":{"child_request_id":"creq_x","detached":true}}`),
+		Store: true, EnqueueRun: true,
+	}
+	requested, _ := json.Marshal(map[string]any{"child_run_id": childRun})
+	if err := store.CreateChildRun(ctx, tenant, in, "child.requested.v1", requested); err != nil {
+		t.Fatalf("CreateChildRun error = %v", err)
+	}
+	// The child row AND its response.run job both exist — no orphan.
+	if n := count(t, pool, `SELECT count(*) FROM runs WHERE id=$1`, childRun); n != 1 {
+		t.Fatalf("child run rows = %d, want 1", n)
+	}
+	if n := count(t, pool, `SELECT count(*) FROM durable_jobs WHERE kind='response.run' AND payload->>'run_id'=$1`, childRun); n != 1 {
+		t.Fatalf("child response.run jobs = %d, want 1 (enqueued atomically with the child row)", n)
+	}
+
+	// Rollback atomicity: a create against a TERMINAL parent commits neither the child row nor a job.
+	if _, err := store.ApplyRunTransition(ctx, tenant, parentRun, statemachines.RunCmdComplete); err != nil {
+		t.Fatalf("terminalize parent error = %v", err)
+	}
+	orphanRun, orphanResp := newID("run"), newID("resp")
+	in.ChildRunID, in.ChildResponseID = orphanRun, orphanResp
+	if err := store.CreateChildRun(ctx, tenant, in, "child.requested.v1", requested); err == nil {
+		t.Fatal("CreateChildRun against a terminal parent should fail (guard)")
+	}
+	if n := count(t, pool, `SELECT count(*) FROM durable_jobs WHERE kind='response.run' AND payload->>'run_id'=$1`, orphanRun); n != 0 {
+		t.Fatalf("orphan job after rolled-back create = %d, want 0 (atomic)", n)
+	}
+}
+
 // TestDeadLetteredDetachedChildWakesParent proves MF-1 (E10 T8 liveness): a detached child whose job
 // DEAD-LETTERS (its every attempt hit a deterministic failure, so it never self-reports run.terminal)
 // must still wake its released parent. The dead-letter sweep drives the child→failed; without a wake

@@ -333,19 +333,18 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 		ParentRunID: string(st.attempt.RunID), ParentResponseID: st.responseID, SessionID: st.sessionID,
 		ChildRunID: childRunID, ChildResponseID: childResponseID, Depth: st.depth + 1,
 		Input: childInput, Delegation: childDelegation, Store: true,
+		// A detached child's response.run job commits ATOMICALLY with its row (MF-3): no jobless orphan.
+		EnqueueRun: detach,
 	}, eventChildRequested, requested); err != nil {
 		return err
 	}
 	st.childRunIDs = append(st.childRunIDs, childRunID)
 	st.childReserved += admission.EffectiveBudget
 
-	// Detached path (E10 T8, DET-001): enqueue the child as a durable response.run job and RELEASE the
-	// parent — checkpoint this awaiting-children boundary, drive the run to waiting, and end the attempt.
-	// The child terminal wakes the parent (finalize → WakeParentOfChild), which restores here and rebinds.
+	// Detached path (E10 T8, DET-001): the child's durable job is already enqueued (atomically, above), so
+	// RELEASE the parent — checkpoint this awaiting-children boundary, drive the run to waiting, and end the
+	// attempt. The child terminal wakes the parent (finalize → WakeParentOfChild), which restores + rebinds.
 	if detach {
-		if err := o.spine.EnqueueRunJob(ctx, st.tenant, childRunID); err != nil {
-			return err
-		}
 		return o.releaseParentForDetach(ctx, st)
 	}
 

@@ -95,6 +95,10 @@ type ChildRunInput struct {
 	Input            []byte
 	Delegation       []byte
 	Store            bool
+	// EnqueueRun enqueues the child's response.run job in the SAME transaction as the child row (E10 T8
+	// DET-001, MF-3): a detached child that committed its row but not its job (a crash/transient error in
+	// a separate enqueue) would have no worker and no waker — a permanently hung parent. Atomic ⇒ no orphan.
+	EnqueueRun bool
 }
 
 // CreateChildRun creates a ChildRun's response and run and journals the child-requested event on
@@ -122,6 +126,17 @@ func (s *Store) CreateChildRun(ctx context.Context, tenant Tenant, in ChildRunIn
 	}
 	if _, err := appendEvent(ctx, tx, tenant, in.SessionID, in.ParentResponseID, eventType, payload); err != nil {
 		return err
+	}
+	// A detached child's job commits WITH its row (MF-3): no window where the row exists jobless.
+	if in.EnqueueRun {
+		jobID, err := newJobID()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, storage.Query("EnqueueJob"),
+			jobID, tenant.Organization, tenant.Project, "response.run", []byte(fmt.Sprintf(`{"run_id":%q}`, in.ChildRunID))); err != nil {
+			return fmt.Errorf("enqueue detached child job: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit child run: %w", err)
