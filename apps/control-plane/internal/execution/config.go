@@ -11,14 +11,18 @@ import (
 )
 
 // The configuration resolution layers whose names appear in a ConfigSnapshot's provenance
-// (spec §14). This slice resolves the three layers that exist today: the env-selected
-// deployment default, the project baseline/policy, and the session config revision. The
-// omitted layers (organization policy, pinned agent revision, run/child override) arrive
-// with later phases; a value's provenance names the layer that actually set it.
+// (spec §14). Ordered low → high: the env-selected deployment default, the project
+// baseline/policy, the pinned agent revision / run-template revision (E11 Task 1), and the
+// session config revision / run override on top. The remaining omitted layers (organization
+// policy, child override) arrive with later phases; a value's provenance names the layer that
+// actually set it. layerAgentRevision covers both an AgentRevision and a RunTemplateRevision —
+// spec §14 resolves both from ONE logical ExecutionSpec, and a template is a profile-free pinned
+// revision, so they share this layer.
 const (
-	layerDeployment = "deployment"
-	layerProject    = "project"
-	layerSession    = "session"
+	layerDeployment    = "deployment"
+	layerProject       = "project"
+	layerAgentRevision = "agent_revision"
+	layerSession       = "session"
 )
 
 // ResolveInput is the config resolution input: the deployment default (model + credential
@@ -30,8 +34,18 @@ type ResolveInput struct {
 	DeploymentModel  string
 	DeploymentSecret string // SecretRef NAME, never a credential value
 	ProjectTools     []string
-	SessionModel     string   // cumulative session model override ("" = never set)
-	SessionTools     []string // cumulative session tools override (nil = never set)
+	// AgentRevisionID / Model / Tools are the pinned AgentRevision or RunTemplateRevision layer
+	// (E11 Task 1, AGT-001). An empty AgentRevisionID means the run pins no revision — the layer is
+	// skipped and resolution behaves exactly as before (the profile-free path). AgentRevisionModel,
+	// when set, pins the model above the deployment default (a session override still wins).
+	// AgentRevisionTools, when non-nil, is a capability CEILING intersected with the resolved tools:
+	// a tool the revision does not declare never reaches the effective set (63.4 "capability never
+	// expands"), even when the project baseline or a session override carries it.
+	AgentRevisionID    string
+	AgentRevisionModel string
+	AgentRevisionTools []string
+	SessionModel       string   // cumulative session model override ("" = never set)
+	SessionTools       []string // cumulative session tools override (nil = never set)
 }
 
 // ConfigSnapshot is the resolved, redacted, content-addressed effective configuration with
@@ -52,7 +66,11 @@ type ConfigSnapshot struct {
 // journal and API can explain why a model/tool was selected. Pure: no I/O, so the same input
 // always yields the same hash.
 func Resolve(in ResolveInput) ConfigSnapshot {
+	// Model: deployment default < pinned revision < session/run override.
 	model, modelProv := in.DeploymentModel, layerDeployment
+	if in.AgentRevisionModel != "" {
+		model, modelProv = in.AgentRevisionModel, layerAgentRevision
+	}
 	if in.SessionModel != "" {
 		model, modelProv = in.SessionModel, layerSession
 	}
@@ -62,13 +80,43 @@ func Resolve(in ResolveInput) ConfigSnapshot {
 	if in.SessionTools != nil {
 		tools, toolsProv = in.SessionTools, layerSession
 	}
+	// The pinned revision's tool set is a capability CEILING: intersect it LAST, so neither the
+	// project baseline nor a session override can select a tool the revision does not declare
+	// (spec §10 capability restriction, 63.4). The revision then owns the effective set's provenance.
+	if in.AgentRevisionID != "" && in.AgentRevisionTools != nil {
+		tools, toolsProv = intersectTools(tools, in.AgentRevisionTools), layerAgentRevision
+	}
+	provenance := map[string]string{"model": modelProv, "tools": toolsProv}
+	if in.AgentRevisionID != "" {
+		// The pinned revision id rides the provenance (never the content hash): AGT-001's "run's
+		// snapshot names the revision it ran under". The hash addresses only effective values, so an
+		// equivalent config from a different revision still content-addresses identically.
+		provenance["agent_revision"] = in.AgentRevisionID
+	}
 	return ConfigSnapshot{
 		Hash:       configContentHash(model, tools, in.DeploymentSecret),
 		Model:      model,
 		Tools:      tools,
 		SecretRef:  in.DeploymentSecret,
-		Provenance: map[string]string{"model": modelProv, "tools": toolsProv},
+		Provenance: provenance,
 	}
+}
+
+// intersectTools returns the resolved tools that the ceiling also permits, preserving the resolved
+// order (the effective registry is a subset of what was resolved, never a reordering). The ceiling
+// is a membership filter, so a resolved tool absent from it is dropped.
+func intersectTools(resolved, ceiling []string) []string {
+	allowed := make(map[string]struct{}, len(ceiling))
+	for _, t := range ceiling {
+		allowed[t] = struct{}{}
+	}
+	out := make([]string, 0, len(resolved))
+	for _, t := range resolved {
+		if _, ok := allowed[t]; ok {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // planConfigChange layers a requested change_config onto the session's cumulative override and
