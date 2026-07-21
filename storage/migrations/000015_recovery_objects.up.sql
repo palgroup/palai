@@ -76,9 +76,13 @@ CREATE TABLE IF NOT EXISTS checkpoints (
 CREATE INDEX IF NOT EXISTS checkpoints_by_run ON checkpoints (run_id, created_at DESC);
 
 -- The new tables are DML-granted to the application role explicitly (000001's blanket GRANT covered
--- only the tables that existed then; a security boundary). UPDATE is deliberately withheld from both
--- recovery tables: a checkpoint / transcript boundary is immutable once written (spec §26.1). DELETE
--- stays for retention/orphan-GC to reclaim expired bytes (T3).
+-- only the tables that existed then). UPDATE is then REVOKED so a checkpoint / transcript boundary is
+-- immutable once written (spec §26.1). The REVOKE is load-bearing, not decoration: 000001's
+-- `GRANT ... ON ALL TABLES IN SCHEMA public` re-runs on every Migrate and would re-grant UPDATE on
+-- these tables once they exist, so — exactly like audit_events (§50.3) — the REVOKE runs after it
+-- (000015 follows 000001 in the chain) and keeps UPDATE withheld. DELETE stays for retention/orphan-GC
+-- to reclaim expired bytes (T3).
 GRANT SELECT, INSERT, DELETE ON transcript_boundaries, checkpoints TO palai_app;
+REVOKE UPDATE ON transcript_boundaries, checkpoints FROM palai_app;
 
 INSERT INTO schema_migrations (version) VALUES (15) ON CONFLICT DO NOTHING;

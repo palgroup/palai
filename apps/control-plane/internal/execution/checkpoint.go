@@ -5,11 +5,16 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 )
+
+// ErrEmptyCheckpoint reports an offer whose decoded state is empty (absent or non-string): there is
+// nothing to restore, so it is rejected rather than stored as a 0-byte object + size-0 row.
+var ErrEmptyCheckpoint = errors.New("empty checkpoint state")
 
 // CheckpointObjectStore is the object-store PUT the opaque checkpoint bytes are written through. The
 // engine never sees the S3 credential (spec §24) — the control plane holds it — so this seam is a
@@ -64,6 +69,9 @@ func (s *CheckpointSink) Persist(ctx context.Context, meta CheckpointMeta, offer
 	if err != nil {
 		return fmt.Errorf("decode checkpoint state: %w", err)
 	}
+	if len(raw) == 0 {
+		return ErrEmptyCheckpoint
+	}
 	// Size-bound BEFORE the PUT: an oversize checkpoint is rejected with no orphan object written
 	// (spec §26.2). recovery.Persist re-checks the size on the row as defense in depth.
 	if len(raw) > recovery.MaxCheckpointBytes {
@@ -117,7 +125,7 @@ func (o *Orchestrator) persistCheckpoint(ctx context.Context, st *attemptState, 
 	}
 	// WorkspaceSnapshotID is empty in T1: a snapshot cut AT the boundary is T6. A checkpoint with no
 	// snapshot declares no workspace dependency (spec §26.4), stored as NULL.
-	return o.checkpoints.Persist(ctx, CheckpointMeta{
+	err = o.checkpoints.Persist(ctx, CheckpointMeta{
 		Organization:       st.tenant.Organization,
 		Project:            st.tenant.Project,
 		RunID:              string(st.attempt.RunID),
@@ -129,6 +137,12 @@ func (o *Orchestrator) persistCheckpoint(ctx context.Context, st *attemptState, 
 		ConfigSnapshotHash: configHash,
 		TranscriptSequence: transcriptSeq,
 	}, frame.Data)
+	// A duplicate of an immutable checkpoint (a retransmitted offer, or a T4 replay re-offering the
+	// same boundary) is benign: the durable row already exists, so it is not an attempt failure.
+	if errors.Is(err, recovery.ErrCheckpointExists) {
+		return nil
+	}
+	return err
 }
 
 // effectiveConfigHash resolves the run's effective ConfigSnapshot at this boundary and returns its

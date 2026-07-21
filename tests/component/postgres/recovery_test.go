@@ -71,6 +71,38 @@ func TestPersistCheckpointWritesImmutableBoundaryAndRow(t *testing.T) {
 	}
 }
 
+// TestRecoveryObjectsAppendOnlyToApplicationRole proves the withheld UPDATE grant is real, not just
+// asserted: as palai_app, UPDATE on checkpoints and transcript_boundaries is denied (42501), so an
+// immutable checkpoint / boundary can never be silently rewritten (spec §26.1). DELETE stays granted
+// for retention/GC, so only UPDATE is checked.
+func TestRecoveryObjectsAppendOnlyToApplicationRole(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, _, runID := seedRun(t, pool)
+	attemptID := seedAttempt(t, pool, tenant, runID)
+	if err := recovery.New(pool).Persist(ctx, baseCheckpointInput(tenant, runID, attemptID)); err != nil {
+		t.Fatalf("Persist() error = %v", err)
+	}
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET ROLE palai_app`); err != nil {
+		t.Fatalf("SET ROLE palai_app error = %v", err)
+	}
+	defer func() { _, _ = conn.Exec(ctx, `RESET ROLE`) }()
+
+	if got := pgCode(mustFail(conn.Exec(ctx, `UPDATE checkpoints SET content_checksum = 'tampered'`))); got != "42501" {
+		t.Fatalf("checkpoints UPDATE code = %q, want 42501 (immutable, UPDATE withheld)", got)
+	}
+	if got := pgCode(mustFail(conn.Exec(ctx, `UPDATE transcript_boundaries SET transcript_sequence = 999`))); got != "42501" {
+		t.Fatalf("transcript_boundaries UPDATE code = %q, want 42501 (immutable, UPDATE withheld)", got)
+	}
+}
+
 // TestCheckpointSizeBoundRejected proves an oversized checkpoint is refused BEFORE any row is written
 // (spec §26.2 size-bound) — so an oversize offer leaves no orphan boundary for GC to chase.
 func TestCheckpointSizeBoundRejected(t *testing.T) {

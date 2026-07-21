@@ -283,14 +283,18 @@ class Loop:
         self._pending_tools.discard(call_id)
         if self._pending_tools:
             return []  # still awaiting the remaining tool results
-        # A completed tool turn is a §26.5 checkpoint boundary: request the next model step, then
-        # offer a checkpoint of the resulting post-tool state. Every completed-tool offer is honest;
-        # which offers to persist (external side-effecting tools only) is the control plane's call,
-        # since per-tool side-effect classification is deferred to T7. Delegation-completion resumes
-        # do not offer — a child spawn is not the external side-effecting tool §26.5 names.
-        frames = self._request_model()  # resume: next model request for the next step
-        frames.append(self._checkpoint_offer("tool"))
-        return frames
+        # A completed tool turn is a §26.5 checkpoint boundary. Offer the checkpoint of the
+        # tool-boundary state FIRST, THEN request the next model step: the control plane reads
+        # frames in order, so it persists the checkpoint at the correct tool-boundary journal seq
+        # and durably BEFORE the (possibly long) provider call — a crash mid-call keeps the offered
+        # checkpoint. The engine is single-threaded, so this is pure emit order. On restore (T4) the
+        # loop re-derives the next model request from the captured context (model_request_id is
+        # deterministic per (run, step)). Every completed-tool offer is honest; which to persist
+        # (external side-effecting tools only) is the control plane's call — per-tool side-effect
+        # classification is T7. Delegation-completion resumes do not offer — a child spawn is not the
+        # external side-effecting tool §26.5 names.
+        offer = self._checkpoint_offer("tool")
+        return [offer, *self._request_model()]  # resume: next model request for the next step
 
     def _finish(self, data: dict, *, reply_to: str | None) -> list[dict]:
         self.state = State.VALIDATING_OUTPUT

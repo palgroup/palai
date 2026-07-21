@@ -81,9 +81,18 @@ def test_completed_tool_boundary_offers_a_checkpoint() -> None:
     # The honest superset (spec §26.5, adjudicated E10 T1): the engine offers a checkpoint at
     # every completed-tool safe boundary. Per-tool side-effect classification (which offers the
     # control plane actually persists) is deferred to T7 — the offer is just an offer.
+    #
+    # The offer is emitted BEFORE the next model.request so the control plane persists it at the
+    # tool-boundary journal seq and it is durable before the (long) provider call — the checkpoint
+    # anchors AT the tool boundary, not one model step ahead.
     loop, tcall = _drive_to_pending_tool("run_tb")
+    step_at_boundary = loop._step  # the step whose model call produced the tool_calls
     out = loop.handle(ctrl("tool.result", {"tool_call_id": tcall, "content": "42"}, "frm_tr"))
-    kinds = [f["type"] for f in out]
-    # The next model step is requested, then a checkpoint of the resulting post-tool boundary offered.
-    assert kinds == ["model.request", "checkpoint.offer"]
-    assert out[-1]["data"]["boundary_kind"] == "tool"
+
+    assert [f["type"] for f in out] == ["checkpoint.offer", "model.request"]
+    offer = out[0]
+    assert offer["data"]["boundary_kind"] == "tool"
+    # The captured state anchors at the tool boundary — the step is NOT advanced to the next one.
+    captured = checkpoint.decode(base64.b64decode(offer["data"]["state"]))
+    assert captured["step"] == step_at_boundary
+    assert out[1]["data"]["model_request_id"] != offer  # the next model step follows the offer

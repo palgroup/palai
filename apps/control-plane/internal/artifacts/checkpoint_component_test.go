@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
@@ -103,6 +104,31 @@ func TestCheckpointOfferPersistsImmutableRowAndBytes(t *testing.T) {
 	}
 	if rows != 1 {
 		t.Fatalf("checkpoint rows = %d, want 1 (immutable, no duplicate on retransmit)", rows)
+	}
+}
+
+// TestCheckpointRejectsEmptyState proves an offer with no state is refused rather than stored as a
+// 0-byte object + size-0 immutable row (nothing to restore).
+func TestCheckpointRejectsEmptyState(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	org, project, _, runID, attemptID := h.seedRunWithAttempt(t)
+	sink := execution.NewCheckpointSink(h.s3, recovery.New(h.pool))
+	meta := execution.CheckpointMeta{
+		Organization: org, Project: project, RunID: runID, AttemptID: attemptID, OfferSequence: 3,
+	}
+
+	// An offer with no "state" field has nothing to persist.
+	err := sink.Persist(ctx, meta, map[string]any{"format": "reference-kernel", "format_version": float64(1)})
+	if !errors.Is(err, execution.ErrEmptyCheckpoint) {
+		t.Fatalf("Persist(empty state) = %v, want ErrEmptyCheckpoint", err)
+	}
+	var rows int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM checkpoints WHERE run_id=$1`, runID).Scan(&rows); err != nil {
+		t.Fatalf("count checkpoints: %v", err)
+	}
+	if rows != 0 {
+		t.Fatal("an empty checkpoint must leave NO row")
 	}
 }
 

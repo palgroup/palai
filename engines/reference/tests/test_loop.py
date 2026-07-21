@@ -86,10 +86,11 @@ def test_tool_result_resumes_with_the_next_model_request() -> None:
     tcall = treq["data"]["tool_call_id"]
 
     out = loop.handle(ctrl("tool.result", {"tool_call_id": tcall, "content": "42"}, "frm_tr"))
-    # A completed tool turn resumes with the next model request, and offers a checkpoint of the
-    # resulting post-tool boundary (spec §26.5) — see test_checkpoint for the offer's contract.
-    assert [f["type"] for f in out] == ["model.request", "checkpoint.offer"]
-    assert out[0]["data"]["model_request_id"] != mrid
+    # A completed tool turn offers a checkpoint of the tool boundary FIRST (spec §26.5 — see
+    # test_checkpoint for the offer's contract), then resumes with the next model request.
+    assert [f["type"] for f in out] == ["checkpoint.offer", "model.request"]
+    model_request = out[1]
+    assert model_request["data"]["model_request_id"] != mrid
     assert loop.state is State.AWAITING_MODEL
 
 
@@ -119,8 +120,10 @@ def test_delivered_message_folds_into_the_next_model_request() -> None:
     assert out == []  # the fold emits no engine frame
     assert loop.state is State.AWAITING_TOOLS  # and does not advance the loop
 
-    step2 = loop.handle(ctrl("tool.result", {"tool_call_id": tcall, "content": "42"}, "frm_tr"))[0]
-    assert step2["type"] == "model.request"
+    # The tool result offers a checkpoint then resumes; the delivered message folds into that next
+    # model request (out has [checkpoint.offer, model.request] — pick the model request).
+    resumed = loop.handle(ctrl("tool.result", {"tool_call_id": tcall, "content": "42"}, "frm_tr"))
+    step2 = next(f for f in resumed if f["type"] == "model.request")
     msgs = step2["data"]["messages"]
     tool_idx = next(i for i, m in enumerate(msgs) if m.get("role") == "tool")
     deliver_idx = next(i for i, m in enumerate(msgs) if m.get("content") == "steered!")
