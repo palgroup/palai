@@ -57,3 +57,43 @@ VALUES ($1, $2, $3, $4, $5);
 SELECT trigger_revision_id, state
 FROM trigger_deliveries
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- SetDeliveryState advances a delivery's state (the SM transition persisted; the caller computes the
+-- legal transition via the TriggerDelivery table, this only writes it). Bumps updated_at.
+-- name: SetDeliveryState
+UPDATE trigger_deliveries
+SET state = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- SetDeliveryReason advances a delivery's state AND records a human reason (a reject/skip/fail).
+-- name: SetDeliveryReason
+UPDATE trigger_deliveries
+SET state = $4, reason = $5, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- ClaimCanonicalDelivery makes a delivery the LIVE canonical row for its (trigger, dedupe_key): it sets
+-- the dedupe_key + advances to 'deduplicated'. The partial UNIQUE index
+-- (trigger_deliveries_dedupe_canonical_idx) rejects a second live canonical for the same key with a
+-- 23505, so a duplicate loses HERE (at the DB, race-free) rather than in an app-code check-then-set.
+-- name: ClaimCanonicalDelivery
+UPDATE trigger_deliveries
+SET dedupe_key = $4, state = 'deduplicated', updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3
+RETURNING id;
+
+-- FindCanonicalDelivery resolves the surviving canonical original a duplicate links to (AUT-001
+-- original-linkage): the earliest live canonical row for the (trigger, dedupe_key).
+-- name: FindCanonicalDelivery
+SELECT id FROM trigger_deliveries
+WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
+  AND dedupe_key = $4 AND duplicate_of IS NULL
+ORDER BY received_at
+LIMIT 1;
+
+-- MarkDeliveryDuplicate links a losing delivery to its canonical original and terminalizes it
+-- 'duplicate'. duplicate_of is set, so the dedupe_key it also records stays exempt from the canonical
+-- index (WHERE duplicate_of IS NULL).
+-- name: MarkDeliveryDuplicate
+UPDATE trigger_deliveries
+SET state = 'duplicate', duplicate_of = $4, dedupe_key = $5, reason = $6, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
