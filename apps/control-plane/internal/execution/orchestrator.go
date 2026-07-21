@@ -413,7 +413,13 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 				}
 			}
 		case "tool.request":
-			if err := o.dispatchTool(ctx, st, frame); err != nil {
+			switch err := o.dispatchTool(ctx, st, frame); {
+			case errors.Is(err, errToolUncertainWait):
+				// An uncertain tool blocks continuation (spec §26.7): end the attempt cleanly — no
+				// tool.result was sent, so the engine subprocess closes without hanging, and the reconcile
+				// job resolves the row and re-enqueues the run. Not a failure, like a pause.
+				return nil
+			case err != nil:
 				return abortIfTerminal(err)
 			}
 		case "child.request":

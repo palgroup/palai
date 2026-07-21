@@ -98,9 +98,68 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3
 -- ON CONFLICT DO NOTHING makes a redelivered tool_call_id idempotent: the cached completion is
 -- authoritative and is never overwritten.
 -- name: UpsertToolCall
+-- Complete a tool_call (spec §26.7, E10 T7). A pure tool with no pre-write INSERTs 'completed' fresh; a
+-- side-effecting tool pre-written 'executing' (BeginToolCall) is advanced executing->completed via the
+-- ON CONFLICT branch. The FENCE GUARD (tool_calls.fence <= EXCLUDED.fence) rejects a stale late callback
+-- from a superseded attempt (TOL-017) — its lower fence loses to the reclaiming attempt's advanced
+-- fence, so 0 rows change and the caller reports a stale commit. A row already resolved
+-- (completed/reconciled_*) never reopens (WHERE excludes it). RETURNING xmax=0 distinguishes a fresh
+-- insert from an update, but the caller only needs RowsAffected, so no RETURNING.
 INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, result, replay_class, request_hash)
 VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, $9, $10)
-ON CONFLICT (id) DO NOTHING;
+ON CONFLICT (id) DO UPDATE
+   SET state = 'completed', result = EXCLUDED.result, updated_at = clock_timestamp()
+   WHERE tool_calls.state IN ('executing', 'leased') AND tool_calls.fence <= EXCLUDED.fence;
+
+-- LookupToolCall reads a tool_call's durable ledger row for the pre-execute consult (spec §26.7, §53.4
+-- analogue for tools, E10 T7): a committed row is authoritative, so a redelivered call after a
+-- reclaim/reconstruction replays the cached result instead of re-firing the effect (TOL-001/016), an
+-- `uncertain` row blocks the call, and an `executing` row (a kill mid-execute) is classified by the
+-- replay_class. No row -> a fresh dispatch.
+-- name: LookupToolCall
+SELECT state, coalesce(result::text, ''), replay_class, fence
+FROM tool_calls
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- BeginToolCall records the durable PRE-EXECUTE marker for a side-effecting tool (spec §26.6-26.7, E10
+-- T7): the row goes to 'executing' BEFORE the external effect, so a kill between execute and commit is
+-- detectable as uncertain (the row is stuck 'executing'), never mistaken for "never ran". ON CONFLICT
+-- advances the fence to the reclaiming attempt (so a stale late callback is rejected at commit) but
+-- never reopens an already-resolved row.
+-- name: BeginToolCall
+INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, request_hash, external_idempotency_key, lease_owner, commit_boundary)
+VALUES ($1, $2, $3, $4, $5, 'executing', $6, $7, $8, $9, $10, $11, $12)
+ON CONFLICT (id) DO UPDATE
+   SET fence = GREATEST(tool_calls.fence, EXCLUDED.fence), lease_owner = EXCLUDED.lease_owner, updated_at = clock_timestamp()
+   WHERE tool_calls.state NOT IN ('completed', 'reconciled_completed', 'reconciled_not_applied');
+
+-- MarkToolCallUncertain drives an in-flight (executing/leased) tool_call to `uncertain` (spec §26.7): a
+-- kill-after-execute for a class that must not auto-replay (irreversible/reversible/interactive). Single
+-- winner on the in-flight state, so a racing path settles once. Journals nothing here — the caller
+-- appends tool_call.uncertain.v1 in the same tx.
+-- name: MarkToolCallUncertain
+UPDATE tool_calls
+SET state = 'uncertain', reconciliation_state = 'reconciling', updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state IN ('executing', 'leased');
+
+-- ReconcileToolCall resolves an `uncertain` tool_call to one of the §26.7 exits (E10 T7):
+-- reconciled_completed (the destination applied it), reconciled_not_applied (it did not), or
+-- manual_resolution (a human must decide — the irreversible default). Single winner on 'uncertain', so a
+-- racing reconcile settles once. result is set only when a resolution carries one (COALESCE keeps the
+-- existing bytes otherwise). $4 the new state, $5 the reconciliation_state mirror, $6 the optional result.
+-- name: ReconcileToolCall
+UPDATE tool_calls
+SET state = $4, reconciliation_state = $5, result = COALESCE($6, result), updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'uncertain';
+
+-- SelectUncertainToolCalls returns the uncertain tool_calls awaiting reconciliation, oldest first — the
+-- reconcile loop's read (spec §26.7, E10 T7). It carries the scope the resolver + re-enqueue need.
+-- name: SelectUncertainToolCalls
+SELECT id, organization_id, project_id, run_id, name, replay_class, external_idempotency_key
+FROM tool_calls
+WHERE state = 'uncertain' AND reconciliation_state = 'reconciling'
+ORDER BY created_at, id
+LIMIT $1;
 
 -- PendingToolOperationsForRun returns a run's UNRESOLVED tool operations at a checkpoint boundary (spec
 -- §26.2, §26.4, E10 T7): rows in the `uncertain` state (killed after execute, side effect unknown) or

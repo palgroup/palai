@@ -113,6 +113,41 @@ func (b *Broker) Discoverable(name string) bool {
 	return ok
 }
 
+// ReplayClassOf reports a tool's declared kill-recovery class BEFORE it executes (spec §26.6), so the
+// dispatcher can decide whether a side-effecting tool needs a durable pre-execute marker. An unknown
+// tool yields ClassPure (the caller rejects it separately at Execute); a registered tool with no
+// declared class defaults ClassPure.
+func (b *Broker) ReplayClassOf(name string) ReplayClass {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	tool, ok := b.tools[name]
+	if !ok {
+		return ClassPure
+	}
+	return tool.replayClass()
+}
+
+// NeedsPreWrite reports whether a class must be durably marked 'executing' BEFORE it runs so a
+// kill-after-execute is detectable as uncertain (spec §26.7): every class whose re-execution is unsafe
+// or needs reconciliation — irreversible, reversible, interactive. Pure re-runs freely and idempotent
+// resends settle one object, so neither needs the marker.
+func NeedsPreWrite(class ReplayClass) bool {
+	switch class {
+	case ClassIrreversible, ClassReversible, ClassInteractive:
+		return true
+	default:
+		return false
+	}
+}
+
+// BlocksReplayAfterKill reports whether an in-flight (executing) row of this class, found after a kill,
+// must enter `uncertain` rather than silently re-run (spec §26.7): irreversible/interactive never
+// auto-replay, and reversible must reconcile-then-compensate first. Pure/idempotent fall through to a
+// safe re-execute.
+func BlocksReplayAfterKill(class ReplayClass) bool {
+	return NeedsPreWrite(class)
+}
+
 // Execute runs a conformance tool behind its fenced row. A completed tool_call_id
 // replays its cached result unchanged and does not re-execute. A fresh call
 // validates its arguments strictly before any side effect, advances the row along
@@ -188,6 +223,11 @@ func (t Tool) invoke(ctx context.Context, env ExecEnv, args map[string]any) (map
 		return nil, fmt.Errorf("tool %s has no invoke surface", t.Name)
 	}
 }
+
+// RequestHash is the exported canonical hash of a tool call (name, args), so the dispatcher can record
+// the SAME digest on the durable pre-write that the broker records at completion — one definition of the
+// content identity a duplicate tool_call_id is recognised by (spec §25.9, §26.6).
+func RequestHash(name string, args map[string]any) string { return requestHash(name, args) }
 
 // requestHash is the canonical hash of a tool call. json.Marshal sorts map keys,
 // so the digest is stable for equal (name, args) pairs (spec §25.9 same request-id

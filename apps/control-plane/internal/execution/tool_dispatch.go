@@ -3,41 +3,99 @@ package execution
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/palgroup/palai/packages/contracts"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
-// dispatchTool handles a tool.request: it runs the fenced, schema-checked tool through
-// the broker, commits the completed tool_call row and its journal event, and only then
-// delivers tool.result to the engine (commit-before-deliver, spec §24.7, §26.7). A
-// redelivered tool_call_id replays the broker's cached result without re-executing.
+// errToolUncertainWait ends an attempt cleanly when a tool call is uncertain (spec §26.7 last sentence):
+// its result would feed reasoning, so the run must NOT continue on it. dispatchTool returns this instead
+// of sending tool.result; ExecuteAttempt ends the attempt (no engine hang) and the reconcile job
+// resolves the row + re-enqueues the run. Not a failure — like errRunPaused.
+var errToolUncertainWait = errors.New("tool_uncertain_wait")
+
+// dispatchTool handles a tool.request behind the durable tool ledger (spec §24.7, §26.6-26.7). It first
+// CONSULTS the ledger: a committed row replays the cached result LABELED without re-firing the effect
+// (cross-kill dedup, TOL-001/016); an `uncertain` row blocks continuation (uncertain-STOP); an
+// `executing` row left by a kill is classified — irreversible/reversible/interactive enter `uncertain`
+// and STOP, pure/idempotent re-execute safely. For a fresh side-effecting call it writes a durable
+// 'executing' marker BEFORE the effect (so a kill is detectable), executes, commits completed, and only
+// then delivers tool.result (commit-before-deliver).
 func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame contracts.EngineFrame) error {
 	callID, _ := frame.Data["tool_call_id"].(string)
 	name, _ := frame.Data["name"].(string)
 	args, _ := frame.Data["arguments"].(map[string]any)
+	runID := string(st.attempt.RunID)
 
+	// 1. Durable consult (cross-kill dedup + uncertain block).
+	state, stored, storedClass, _, found, err := o.spine.LookupToolCall(ctx, st.tenant, callID)
+	if err != nil {
+		return err
+	}
+	if found {
+		switch state {
+		case "completed", "reconciled_completed", "reconciled_not_applied":
+			// Replay the committed result LABELED; no re-execute, no re-commit (§26.7, TOL-001/016).
+			return o.deliverToolResult(ctx, st, frame, callID, stored, true)
+		case "uncertain", "manual_resolution":
+			// §26.7 last sentence: an uncertain result blocks continuation — end the attempt, do not
+			// deliver. The reconcile job resolves it and re-enqueues the run.
+			return errToolUncertainWait
+		case "executing", "leased":
+			// A kill left this in-flight. A class that must not silently re-run enters uncertain and
+			// STOPS; pure/idempotent fall through to a safe (re-)execute.
+			if toolbroker.BlocksReplayAfterKill(toolbroker.ReplayClass(storedClass)) {
+				if _, err := o.spine.MarkToolCallUncertain(ctx, st.tenant, st.sessionID, st.responseID, runID, callID); err != nil {
+					return err
+				}
+				return errToolUncertainWait
+			}
+		}
+	}
+
+	// 2. Pre-write a side-effecting tool BEFORE the effect so a kill is detectable as uncertain (§26.7).
+	// Pure/idempotent skip it (re-run/resend is safe). Skipped when a row already exists (a re-executing
+	// pure row, or a fence re-lease) — BeginToolCall is idempotent, but avoiding it keeps the fresh path lean.
+	arguments, _ := json.Marshal(args)
+	class := o.tools.ReplayClassOf(name)
+	requestHash := toolbroker.RequestHash(name, args)
+	if toolbroker.NeedsPreWrite(class) && !found {
+		if err := o.spine.BeginToolCall(ctx, st.tenant, st.sessionID, st.responseID, runID, st.attempt.Fence,
+			callID, name, arguments, string(class), requestHash, "", ""); err != nil {
+			return err
+		}
+	}
+
+	// 3. Execute + commit + deliver.
 	outcome, err := o.tools.Execute(ctx, contracts.ToolCallID(callID), name, args, st.attempt.Fence, o.execEnv(st))
 	if err != nil {
 		return fmt.Errorf("execute tool %q (%s): %w", name, callID, err)
 	}
 	st.usage = addUsage(st.usage, outcome.Usage)
 
-	arguments, _ := json.Marshal(args)
 	result, _ := json.Marshal(outcome.Result)
 	payload, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "tool_call_id": callID})
-	// The ledger row carries the tool's DECLARED replay class (copied at execute time) and the canonical
-	// request hash, so a kill-after-execute row is classified and a duplicate tool_call_id is recognised
-	// by content (spec §26.6, TOL-016). commit-before-deliver still holds.
-	if _, err := o.spine.CommitToolResult(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID),
+	// The ledger row carries the tool's DECLARED replay class and the canonical request hash, so a
+	// kill-after-execute row is classified and a duplicate tool_call_id is recognised by content (§26.6,
+	// TOL-016). A stale-fence late callback is rejected here (TOL-017, ErrStaleToolCommit).
+	if _, err := o.spine.CommitToolResult(ctx, st.tenant, st.sessionID, st.responseID, runID,
 		st.attempt.Fence, callID, name, arguments, result, string(outcome.ReplayClass), outcome.Hash, toolCallCompletedEvent, payload); err != nil {
 		return err
 	}
+	return o.deliverToolResult(ctx, st, frame, callID, string(result), false)
+}
 
-	// The engine hands tool content back to the model as text, so serialize the
-	// structured result to a JSON string rather than a nested object.
-	data := map[string]any{"tool_call_id": callID, "content": string(result)}
+// deliverToolResult sends the tool.result frame to the engine (spec §25.9): the structured result is
+// serialized to a JSON string the engine hands the model as text. replayed marks a result served from
+// the durable ledger after a reclaim rather than a fresh execution (§26.7, TOL-001) — an honest label,
+// not a re-fire.
+func (o *Orchestrator) deliverToolResult(ctx context.Context, st *attemptState, frame contracts.EngineFrame, callID, result string, replayed bool) error {
+	data := map[string]any{"tool_call_id": callID, "content": result}
+	if replayed {
+		data["replayed"] = true
+	}
 	return st.ch.Send(ctx, o.frame(st, "tool.result", data, string(frame.ID)))
 }
 
