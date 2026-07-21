@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -506,4 +507,57 @@ func TestLadderPrefersExactWhenLeaseAlive(t *testing.T) {
 	// Release attempt-1: the original run finishes untouched.
 	close(gp.release)
 	h.awaitResponseState(respID, "completed", 60*time.Second)
+}
+
+// TestMutualExactStandDownRequeuesInsteadOfHanging proves MUST-FIX #2 (spec §26.3 rung 1): two
+// concurrent response.run jobs for ONE run each see the OTHER's live lease, so each takes the exact
+// rung. If stand-down COMPLETED the job, both would complete and the run would never be driven — a
+// permanent hang no reconciler recovers. Instead stand-down returns a RETRYABLE error so the worker
+// requeues (with jitter), and a retry drives the run once the tie breaks or finds it terminal.
+func TestMutualExactStandDownRequeuesInsteadOfHanging(t *testing.T) {
+	h := newHarness(t)
+	dialer := &countingDialer{inner: subprocessDialer{engineDir: h.engineDir}}
+	orch := h.newOrchestrator(dialer)
+	_, _, runID := h.admit()
+
+	// Two response.run jobs for the SAME run, both claimed with LIVE leases (running, lease in the
+	// future) — the mutual-standoff window (a paused attempt's job reclaimable while resume minted a
+	// second job).
+	job1, job2 := newID("job"), newID("job")
+	for _, j := range []string{job1, job2} {
+		if _, err := h.spine.Pool().Exec(context.Background(),
+			`INSERT INTO durable_jobs (id, organization_id, project_id, kind, status, lease_owner, lease_expires_at, fence, attempt_count, payload)
+			 VALUES ($1, $2, $3, 'response.run', 'running', 'owner', clock_timestamp() + interval '1 minute', 1, 1, $4)`,
+			j, h.tenant.Organization, h.tenant.Project, []byte(`{"run_id":"`+runID+`"}`)); err != nil {
+			t.Fatalf("seed live job %s: %v", j, err)
+		}
+	}
+
+	d1 := h.descriptor(runID, 1)
+	d1.JobID = job1
+	d2 := h.descriptor(runID, 2)
+	d2.JobID = job2
+	err1 := orch.ExecuteAttempt(context.Background(), d1)
+	err2 := orch.ExecuteAttempt(context.Background(), d2)
+
+	if !errors.Is(err1, execution.ErrExactStandDown) || !errors.Is(err2, execution.ErrExactStandDown) {
+		t.Fatalf("mutual exact stand-down must return a retryable error (not complete the job), got %v / %v", err1, err2)
+	}
+	if d := dialer.dials(); d != 0 {
+		t.Fatalf("exact stand-downs must not dial, got %d", d)
+	}
+	if st, _ := h.response(runID2resp(t, h, runID)); st == "completed" || st == "failed" {
+		t.Fatalf("run must stay non-terminal + recoverable, got %q", st)
+	}
+}
+
+func runID2resp(t *testing.T, h *harness, runID string) string {
+	t.Helper()
+	var respID string
+	if err := h.spine.Pool().QueryRow(context.Background(),
+		`SELECT response_id FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		runID, h.tenant.Organization, h.tenant.Project).Scan(&respID); err != nil {
+		t.Fatalf("resolve response for run: %v", err)
+	}
+	return respID
 }
