@@ -65,11 +65,14 @@ WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
   AND state IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
   AND purged_at IS NULL;
 
--- ActiveRootRun resolves a session's live (non-terminal) root run and its response, so an
--- accepted command targets the loop the pump will steer and the response its journal events
--- belong to. No live run (all terminal) yields no row, which the accept path renders as a
--- typed rejection (no active loop). Terminal states are the RunTable destinations; the latest
--- live run wins if several exist (one-active-root is a T4 constraint).
+-- ActiveRootRun resolves a session's live (non-terminal) run and its response, so an accepted
+-- command targets the loop the pump will steer and the response its journal events belong to. No
+-- live run (all terminal) yields no row, which the accept path renders as a typed rejection (no
+-- active loop). Terminal states are the RunTable destinations; the latest live run wins if several
+-- exist. Normally that is the root run (one-active-root, §22.3). During a DETACHED child's window,
+-- however, the parent is WAITING (released) and the child is the live run — so a send_message lands
+-- on the child, the E10 T8 (DET-002) child-addressing: authorized through the parent's session, the
+-- message reaches whichever run is live. A distinct client-facing child address is E16 ergonomics.
 -- name: ActiveRootRun
 SELECT id, response_id
 FROM runs

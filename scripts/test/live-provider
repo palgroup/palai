@@ -117,9 +117,24 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_object_store=1
     ;;
+  provider-one/detached-child-conversation)
+    # E10 Task 8: a real provider parent with a config-seeded DETACHED delegation RELEASES its compute
+    # (a real checkpoint persisted to REAL S3 + run.waiting; no engine subprocess held), the child runs
+    # as a durable job on the REAL provider, and the child terminal WAKES the parent, which RESTORES the
+    # S3 checkpoint (ladder rung 2) and folds the typed result — two DISTINCT real chatcmpl ids, exactly
+    # one child (rebind, never clone). Needs the credential + a throwaway object store (PG + SeaweedFS) +
+    # the engine dir. Honest ceilings (named in the test): spawn is config-FORCED (not model-spontaneous —
+    # dispatchModel advertises no tools); the parent↔child send_message conversation (DET-002) is proven
+    # deterministically (a single-step live child offers no delivery boundary). The deterministic tier
+    # proves release/wake/rebind/exactly-once/addressing; this CONFIRMS the DETACH+DURABLE half live.
+    pkg="./apps/control-plane/internal/execution/live"
+    run="TestLiveDetachedChildConversationRealProvider"
+    required_key="OPENAI_API_KEY"
+    needs_object_store=1
+    ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation" >&2
     exit 2
     ;;
 esac
