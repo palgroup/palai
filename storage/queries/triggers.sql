@@ -182,6 +182,20 @@ SELECT trigger_revision_id, state
 FROM trigger_deliveries
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- GetTrigger reads a trigger + its active revision number for the management GET.
+-- name: GetTrigger
+SELECT t.name, t.type, t.enabled,
+       COALESCE((SELECT MAX(revision_number) FROM trigger_revisions WHERE trigger_id = t.id), 0)
+FROM triggers t
+WHERE t.id = $1 AND t.organization_id = $2 AND t.project_id = $3;
+
+-- GetTriggerDelivery reads a delivery's operator-facing projection (GET /v1/trigger-deliveries/{id}).
+-- name: GetTriggerDelivery
+SELECT trigger_id, trigger_revision_id, state, response_id, run_id, session_id,
+       COALESCE(duplicate_of, ''), reason, received_at, updated_at
+FROM trigger_deliveries
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
 -- SetDeliveryState advances a delivery's state (the SM transition persisted; the caller computes the
 -- legal transition via the TriggerDelivery table, this only writes it). Bumps updated_at.
 -- name: SetDeliveryState

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,6 +41,8 @@ var (
 	ErrTriggerDisabled = errors.New("automation: trigger is disabled")
 	// ErrNoActiveRevision is returned when a delivery targets a trigger with no revision to pin.
 	ErrNoActiveRevision = errors.New("automation: trigger has no revision to pin")
+	// ErrBothPins is returned when a revision pins BOTH an agent revision and a run template.
+	ErrBothPins = errors.New("automation: a trigger revision pins an agent revision OR a run template, never both")
 )
 
 // TriggerRevisionInput is the executable config a revision carries (spec §20.2.2). At most one run
@@ -110,6 +113,56 @@ func (s *TriggerStore) GetActiveRevision(ctx context.Context, org, project, trig
 	return rev, true, nil
 }
 
+// TriggerView is a trigger's management projection (GET /v1/triggers/{id}).
+type TriggerView struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	Enabled        bool   `json:"enabled"`
+	ActiveRevision int    `json:"active_revision"`
+}
+
+// GetTrigger reads a trigger's management projection, or found=false when it is absent from the scope.
+func (s *TriggerStore) GetTrigger(ctx context.Context, org, project, triggerID string) (TriggerView, bool, error) {
+	v := TriggerView{ID: triggerID}
+	switch err := s.pool.QueryRow(ctx, storage.Query("GetTrigger"), triggerID, org, project).
+		Scan(&v.Name, &v.Type, &v.Enabled, &v.ActiveRevision); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return TriggerView{}, false, nil
+	case err != nil:
+		return TriggerView{}, false, fmt.Errorf("read trigger: %w", err)
+	}
+	return v, true, nil
+}
+
+// TriggerDeliveryView is a delivery's operator-facing projection (GET /v1/trigger-deliveries/{id}).
+type TriggerDeliveryView struct {
+	ID          string    `json:"id"`
+	TriggerID   string    `json:"trigger_id"`
+	RevisionID  string    `json:"trigger_revision_id"`
+	State       string    `json:"state"`
+	ResponseID  string    `json:"response_id,omitempty"`
+	RunID       string    `json:"run_id,omitempty"`
+	SessionID   string    `json:"session_id,omitempty"`
+	DuplicateOf string    `json:"duplicate_of,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
+	ReceivedAt  time.Time `json:"received_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// GetDelivery reads a delivery's projection, or found=false when it is absent from the scope.
+func (s *TriggerStore) GetDelivery(ctx context.Context, org, project, deliveryID string) (TriggerDeliveryView, bool, error) {
+	v := TriggerDeliveryView{ID: deliveryID}
+	switch err := s.pool.QueryRow(ctx, storage.Query("GetTriggerDelivery"), deliveryID, org, project).
+		Scan(&v.TriggerID, &v.RevisionID, &v.State, &v.ResponseID, &v.RunID, &v.SessionID, &v.DuplicateOf, &v.Reason, &v.ReceivedAt, &v.UpdatedAt); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return TriggerDeliveryView{}, false, nil
+	case err != nil:
+		return TriggerDeliveryView{}, false, fmt.Errorf("read trigger delivery: %w", err)
+	}
+	return v, true, nil
+}
+
 // triggerEnabled verifies a trigger is in scope and returns its enabled flag, mapping absence to
 // ErrTriggerNotFound (a foreign/unknown trigger discloses no existence).
 func (s *TriggerStore) triggerEnabled(ctx context.Context, org, project, triggerID string) (bool, error) {
@@ -129,7 +182,7 @@ func (s *TriggerStore) triggerEnabled(ctx context.Context, org, project, trigger
 // concern); a mapping naming any secret is rejected until an allowlist is provisioned.
 func validateRevisionInput(in TriggerRevisionInput) error {
 	if in.AgentRevisionID != "" && in.RunTemplateRevisionID != "" {
-		return errors.New("automation: a trigger revision pins an agent revision OR a run template, never both")
+		return ErrBothPins
 	}
 	if _, err := CompileMapping(in.InputMapping, nil); err != nil {
 		return err

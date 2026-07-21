@@ -21,7 +21,7 @@ import (
 // correlation middleware, because it carries its own one-use-token and mTLS identity.
 // It is served over a separate mutually-authenticated listener; binding the CA and that
 // listener is Task 12, so production passes nil until then.
-func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, sse SSEConfig, runner http.Handler) http.Handler {
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, sse SSEConfig, runner http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
@@ -49,6 +49,20 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/agents/{agent_id}/revisions/{revision_id}/publish", ah.publishRevision)
 		mux.HandleFunc("POST /v1/run-templates/{template}/revisions", ah.createTemplateRevision)
 		mux.HandleFunc("POST /v1/run-templates/{template}/revisions/{revision_id}/publish", ah.publishTemplateRevision)
+	}
+
+	// Trigger management + manual/API delivery ingestion (spec §20.2.2, E11 Task 2). Durable config
+	// (create/revise/get) plus a delivery POST that births a run via the SAME admission path as
+	// /v1/responses — so the delivery POST carries the Idempotency-Key requirement (per-key delivery
+	// dedup, AUT-013, is T6; the header is required by contract here). nil in tiers that never touch
+	// triggers. The trigger delivery view is read at GET /v1/trigger-deliveries/{id}.
+	if triggers != nil {
+		th := &triggerHandler{triggers: triggers}
+		mux.HandleFunc("POST /v1/triggers", th.createTrigger)
+		mux.HandleFunc("POST /v1/triggers/{trigger_id}/revisions", th.reviseTrigger)
+		mux.HandleFunc("GET /v1/triggers/{trigger_id}", th.getTrigger)
+		mux.Handle("POST /v1/triggers/{trigger_id}/deliveries", middleware.RequireIdempotencyKey(http.HandlerFunc(th.createDelivery)))
+		mux.HandleFunc("GET /v1/trigger-deliveries/{delivery_id}", th.getDelivery)
 	}
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}

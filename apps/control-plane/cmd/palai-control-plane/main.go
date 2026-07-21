@@ -58,6 +58,11 @@ func main() {
 	// view) and the delivery pump (spec §21.4-21.6). It rides the durable spine's pool.
 	webhookStore := automation.NewWebhookStore(repo.Spine().Pool())
 
+	// The trigger store is shared by the HTTP surface (trigger management + manual/API delivery) and the
+	// delivery-reconciler (spec §20.2.2, E11 Task 2). It admits a triggered run through the durable spine
+	// — the SAME §20.9 admission path a POST /v1/responses takes.
+	triggerStore := automation.NewTriggerStore(repo.Spine().Pool()).WithAdmitter(repo.Spine())
+
 	// One supervisor keeps the dispatch workers, reconciler, and retention reaper alive: a
 	// background loop that returns a transient error is logged, counted, and restarted rather
 	// than silently dying and stalling dispatch (H2; LP-15 — no restart cap).
@@ -73,7 +78,7 @@ func main() {
 		// (Task 12 binds the local CA and that listener); the public API server carries no
 		// runner routes, so it is passed nil here. The handler is wrapped so `palai doctor`
 		// can surface the supervisor's restart counters over /healthz/supervisor.
-		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, sseConfigFromEnv(), nil), supervisor),
+		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, sseConfigFromEnv(), nil), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
