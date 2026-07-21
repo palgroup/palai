@@ -11,7 +11,7 @@ from __future__ import annotations
 from palai_engine import checkpoint, protocol
 from palai_engine.loop import State
 
-from test_loop import ctrl, make_loop, run_start
+from test_loop import _first_model_result, ctrl, make_loop, run_start
 from test_checkpoint import _drive_to_pending_tool
 
 
@@ -89,6 +89,31 @@ def test_restore_reemits_pending_tool_requests() -> None:
     assert rout[0]["data"]["name"] == "beta"
     assert rout[0]["data"]["arguments"] == {"y": 2}
     assert restored.state is State.AWAITING_TOOLS
+
+
+def test_restore_from_child_boundary_resumes_next_model_step() -> None:
+    # FIX A: a config-seeded delegation offers a checkpoint at state=awaiting_children with EMPTY
+    # pending_children (the last child popped). Restoring it must RESUME the next model step, not return
+    # [] and hang the loop at awaiting_children — which would kill an otherwise-healthy run.
+    run_id = "run_childrestore"
+    loop = make_loop(run_id)
+    spec = {"role": "r", "objective": "o", "model": "m", "required": False}
+    out = _first_model_result(loop, [spec])
+    child_req = next(f for f in out if f["type"] == "child.request")
+    step = loop._step
+    resume = loop.handle(
+        ctrl(
+            "child.result",
+            {"child_request_id": child_req["data"]["child_request_id"], "status": "completed", "output": "done", "child_run_id": "run_kid"},
+            "frm_cr",
+        )
+    )
+    offer = next(f for f in resume if f["type"] == "checkpoint.offer")
+
+    restored = make_loop(run_id)
+    rout = restored.handle(_restore_frame(offer))
+    assert [f["type"] for f in rout] == ["model.request"], f"child-boundary restore must resume, got {[f['type'] for f in rout]}"
+    assert rout[0]["data"]["model_request_id"] == protocol.model_request_id(run_id, step + 1)
 
 
 def test_restore_rejects_malformed_state() -> None:
