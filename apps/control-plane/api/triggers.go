@@ -71,6 +71,8 @@ func (h *triggerHandler) reviseTrigger(w http.ResponseWriter, r *http.Request) {
 		CorrelationMode       string          `json:"correlation_mode"`
 		CorrelationKeyExpr    json.RawMessage `json:"correlation_key_expr"`
 		ConcurrencyPolicy     string          `json:"concurrency_policy"`
+		OutputMapping         json.RawMessage `json:"output_mapping"`
+		CallbackEndpointID    string          `json:"callback_endpoint_id"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body is not valid JSON")
@@ -86,9 +88,17 @@ func (h *triggerHandler) reviseTrigger(w http.ResponseWriter, r *http.Request) {
 		CorrelationMode:       body.CorrelationMode,
 		CorrelationKeyExpr:    string(body.CorrelationKeyExpr),
 		ConcurrencyPolicy:     body.ConcurrencyPolicy,
+		OutputMapping:         body.OutputMapping,
+		CallbackEndpointID:    body.CallbackEndpointID,
 	})
 	if errors.Is(err, automation.ErrTriggerNotFound) {
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such trigger in this project")
+		return
+	}
+	// A callback_endpoint_id naming an unknown/foreign endpoint is a tenant-scoped 404 (no existence
+	// disclosure) — the app-side scope guard that keeps a run result from reaching a foreign URL.
+	if errors.Is(err, automation.ErrCallbackEndpointNotFound) {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such callback endpoint in this project")
 		return
 	}
 	if err != nil {

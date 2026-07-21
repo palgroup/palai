@@ -20,14 +20,24 @@ SELECT enabled FROM triggers WHERE id = $1 AND organization_id = $2 AND project_
 -- UNIQUE(trigger_id, revision_number) then rejects the loser (retry on 23505 if concurrent revise
 -- throughput ever matters — a human authoring cadence does not).
 -- name: InsertTriggerRevision
+-- output_mapping + callback_endpoint_id (T6, callback output shaping + delivery) ride the SAME immutable
+-- INSERT — the columns are pre-provisioned in 000021, so T6 adds behavior with no migration.
 INSERT INTO trigger_revisions (
     id, organization_id, project_id, trigger_id, revision_number,
     agent_revision_id, run_template_revision_id, input_mapping,
-    dedupe_key_expr, correlation_mode, correlation_key_expr, concurrency_policy)
+    dedupe_key_expr, correlation_mode, correlation_key_expr, concurrency_policy,
+    output_mapping, callback_endpoint_id)
 VALUES ($1, $2, $3, $4,
         (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM trigger_revisions WHERE trigger_id = $4),
-        $5, $6, $7, $8, $9, $10, $11)
+        $5, $6, $7, $8, $9, $10, $11, $12, $13)
 RETURNING revision_number;
+
+-- WebhookEndpointInScope verifies a callback endpoint belongs to the revising tenant (spec §39.2). The
+-- callback_endpoint_id FK is GLOBAL (any webhook_endpoints row), so without this app-side scope check a
+-- revise could name another tenant's endpoint and leak the run result to a foreign URL. Returns the id
+-- when in scope; no row otherwise.
+-- name: WebhookEndpointInScope
+SELECT id FROM webhook_endpoints WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- ActiveTriggerRevision resolves the trigger's ACTIVE revision (highest revision_number) — the revision
 -- a new delivery pins at accept. Returns the revision id + number.

@@ -53,6 +53,14 @@ var (
 	// ErrReplaceNeedsKey rejects a replace policy with no correlation_key_expr — with no key there is no
 	// active run to identify, so replace would silently degenerate to allow (m10).
 	ErrReplaceNeedsKey = errors.New("automation: replace concurrency policy requires a correlation_key_expr")
+	// ErrCallbackEndpointNotFound rejects a revise naming a callback_endpoint_id absent from the tenant's
+	// scope. The FK is global, so this app-side check is the ONLY thing stopping a run result from being
+	// delivered to a foreign tenant's URL (a foreign/unknown id discloses no existence — a not-found).
+	ErrCallbackEndpointNotFound = errors.New("automation: callback endpoint not found in scope")
+	// ErrIdempotencyMismatch is returned when a delivery Idempotency-Key is reused with a different request
+	// body (AUT-013): the same key must map to one delivery, so a body change is a typed conflict, not a
+	// silent second action.
+	ErrIdempotencyMismatch = errors.New("automation: idempotency key reused with a different request")
 )
 
 // validCorrelationModes / validConcurrencyPolicies mirror the 000021 CHECK constraints.
@@ -82,6 +90,12 @@ type TriggerRevisionInput struct {
 	CorrelationMode       string
 	CorrelationKeyExpr    string
 	ConcurrencyPolicy     string
+	// T6 (callback execution + output shaping, spec §20.2.2). OutputMapping shapes the run's terminal
+	// projection into the callback envelope's data through the SAME bounded mapping language the input
+	// uses (no second language). CallbackEndpointID names a registered webhook endpoint the shaped
+	// callback is delivered to; it is app-side scope-checked at revise (the FK is global).
+	OutputMapping      json.RawMessage
+	CallbackEndpointID string
 }
 
 // Revision identifies a stored trigger revision (management projection + the pin assertion).
@@ -113,12 +127,19 @@ func (s *TriggerStore) ReviseTrigger(ctx context.Context, org, project, triggerI
 	if err := validateRevisionInput(in); err != nil {
 		return TriggerRevision{}, err
 	}
+	// A callback endpoint must belong to THIS tenant (the FK is global — this app-side check is what stops
+	// a run result from being delivered to a foreign tenant's URL). Done after the pure validation so a
+	// malformed mapping is still the first error surfaced.
+	if err := s.verifyCallbackEndpointInScope(ctx, org, project, in.CallbackEndpointID); err != nil {
+		return TriggerRevision{}, err
+	}
 	id := newID("trev")
 	var number int
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertTriggerRevision"),
 		id, org, project, triggerID,
 		nullableText(in.AgentRevisionID), nullableText(in.RunTemplateRevisionID), mappingJSON(in.InputMapping),
 		in.DedupeKeyExpr, defaultMode(in.CorrelationMode), in.CorrelationKeyExpr, defaultPolicy(in.ConcurrencyPolicy),
+		mappingJSON(in.OutputMapping), nullableText(in.CallbackEndpointID),
 	).Scan(&number); err != nil {
 		return TriggerRevision{}, fmt.Errorf("insert trigger revision: %w", err)
 	}
@@ -229,11 +250,32 @@ func validateRevisionInput(in TriggerRevisionInput) error {
 	if _, err := CompileMapping(in.InputMapping, nil); err != nil {
 		return err
 	}
+	// The output_mapping is compiled through the SAME bounded language (no second language): a malformed
+	// or escape-carrying output mapping is rejected here, exactly as the input mapping is (T6).
+	if _, err := CompileMapping(in.OutputMapping, nil); err != nil {
+		return err
+	}
 	if _, err := CompileExpr(in.DedupeKeyExpr, nil); err != nil {
 		return err
 	}
 	if _, err := CompileExpr(in.CorrelationKeyExpr, nil); err != nil {
 		return err
+	}
+	return nil
+}
+
+// verifyCallbackEndpointInScope confirms a named callback endpoint belongs to the tenant. An empty id
+// (no callback configured) is a no-op; a foreign/unknown id is ErrCallbackEndpointNotFound (the FK is
+// global, so this is the only cross-tenant guard — a not-found discloses no existence).
+func (s *TriggerStore) verifyCallbackEndpointInScope(ctx context.Context, org, project, endpointID string) error {
+	if endpointID == "" {
+		return nil
+	}
+	switch err := s.pool.QueryRow(ctx, storage.Query("WebhookEndpointInScope"), endpointID, org, project).Scan(new(string)); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrCallbackEndpointNotFound
+	case err != nil:
+		return fmt.Errorf("verify callback endpoint scope: %w", err)
 	}
 	return nil
 }
