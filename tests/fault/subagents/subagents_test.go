@@ -212,6 +212,32 @@ func TestWakeDetachedParentWaitsForAllChildren(t *testing.T) {
 	}
 }
 
+// TestChildCompletionJournaledOnceAcrossRefold proves the exactly-once fold survives a repeated parent
+// restore (E10 T8, the DET kill-recovery property): if a detached parent restores more than once — its
+// resume attempt killed after folding but before completing, then reclaimed — it re-emits the
+// child.request and re-folds the terminal child each time, but JournalChildCompletionOnce keeps the
+// parent's stream carrying child.completed.v1 EXACTLY once. This is what makes "both killed → ladder
+// restores each; the conversation is intact and folds are exactly-once" hold at the journal.
+func TestChildCompletionJournaledOnceAcrossRefold(t *testing.T) {
+	store := openStore(t)
+	pool := store.Pool()
+	ctx := context.Background()
+	// A running parent (the fold is guarded on the parent being active) with a completed detached child.
+	tenant, parentRun, parentResp, childRun, _ := seedParent(t, pool, "running", "completed", true)
+	sessionID := sessionOf(t, pool, parentRun)
+	payload, _ := json.Marshal(map[string]any{"child_run_id": childRun, "child_request_id": "creq_" + childRun, "status": "completed"})
+
+	// Simulate the same fold running on three separate restore attempts of the parent.
+	for i := 0; i < 3; i++ {
+		if err := store.JournalChildCompletionOnce(ctx, tenant, sessionID, parentResp, parentRun, "child.completed.v1", childRun, payload); err != nil {
+			t.Fatalf("refold %d error = %v", i, err)
+		}
+	}
+	if c := count(t, pool, `SELECT count(*) FROM events WHERE response_id=$1 AND type='child.completed.v1' AND payload->>'child_run_id'=$2`, parentResp, childRun); c != 1 {
+		t.Fatalf("child.completed.v1 across three restores = %d, want 1 (exactly-once fold)", c)
+	}
+}
+
 // TestParentCancelPropagatesToDetachedChild proves SUB-005's detached variant (spec §25.18-19, E10 T8):
 // canceling a parent that RELEASED its compute (waiting) still propagates the cancel to its detached,
 // still-running child — the cancel walks parent_run_id regardless of detach — and the child-terminal

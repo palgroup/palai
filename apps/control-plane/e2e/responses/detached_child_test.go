@@ -4,10 +4,13 @@ package responses
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
+	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 )
@@ -131,5 +134,121 @@ func TestChildEventReachesParentResumeHistory(t *testing.T) {
 	// child result), scoped to its own response — the child's steps never leaked in.
 	if n := h.count(`SELECT count(*) FROM events WHERE response_id=$1 AND type='model_step.created.v1'`, respID); n < 2 {
 		t.Fatalf("parent model steps = %d, want >=2 (delegate step + fold step)", n)
+	}
+}
+
+// detachGatedChildProvider drives the DET-002 conversation deterministically: the parent runs a single
+// final step (a config-seeded delegation dispatches the detached child), and the child runs TWO steps —
+// its first GATES (blocks until the test has durably queued a spine message to it) and requests a tool
+// so there is a boundary to fold at; its second, seeing the queued message folded into context, echoes
+// the marker and finishes. The gate makes the fold-order deterministic — no wall-clock race.
+type detachGatedChildProvider struct {
+	childModel string
+	marker     string
+	started    chan struct{}
+	once       sync.Once
+	release    chan struct{}
+	mu         sync.Mutex
+	childFolds int
+}
+
+func newDetachGatedChildProvider(childModel, marker string) *detachGatedChildProvider {
+	return &detachGatedChildProvider{childModel: childModel, marker: marker, started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (p *detachGatedChildProvider) Execute(ctx context.Context, req modelbroker.Request, _ string, _ func(modelbroker.Delta)) (modelbroker.Result, error) {
+	res := modelbroker.Result{
+		ModelRequestID: req.ModelRequestID, Model: req.Model,
+		Usage: contracts.Usage{InputTokens: 5, OutputTokens: 3, TotalTokens: 8}, Attempts: 1,
+	}
+	if req.Model != p.childModel {
+		// The parent: a single final step. The config-seeded delegation (with detach) dispatches the child.
+		res.ProviderRequestID = "prov_parent"
+		res.Output = "parent done"
+		res.FinishReason = "stop"
+		return res, nil
+	}
+	sawMarker := false
+	for _, m := range req.Messages {
+		if m.Role == "user" && strings.Contains(m.Content, p.marker) {
+			sawMarker = true
+		}
+	}
+	if sawMarker {
+		p.mu.Lock()
+		p.childFolds++
+		p.mu.Unlock()
+		res.ProviderRequestID = "prov_child_final"
+		res.Output = "child folded [" + p.marker + "]"
+		res.FinishReason = "stop"
+		return res, nil
+	}
+	// The child's first step: signal it is running (idle at its own boundary), block until the test has
+	// durably queued the spine message, then request a tool so the fold happens on the resumed step.
+	p.once.Do(func() { close(p.started) })
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+		return modelbroker.Result{}, ctx.Err()
+	}
+	res.ProviderRequestID = "prov_child_tool"
+	res.ToolCalls = []modelbroker.ToolCall{{ID: "call_add", Name: "palai.conformance.math.add", Arguments: `{"a":7,"b":5}`}}
+	res.FinishReason = "tool_calls"
+	return res, nil
+}
+
+func (p *detachGatedChildProvider) folds() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.childFolds
+}
+
+// TestDetachedChildIdleReceivesSpineMessage proves DET-002 (spec §25.18-19, E10 T8): while a detached
+// child runs (its parent released, WAITING), the child is the session's live run, so a send_message
+// accepted on the parent's session reaches the CHILD, which folds it EXACTLY ONCE at its next boundary —
+// the existing send_message spine + delivered_messages (E10 T2), applied run-generically to the child.
+func TestDetachedChildIdleReceivesSpineMessage(t *testing.T) {
+	h := newHarness(t)
+	store := newMemCheckpointStore()
+	marker := "spine-to-child-" + newID("mark")
+	gp := newDetachGatedChildProvider("fake-child", marker)
+	stop := h.runWorker(h.newDetachOrchestrator(store, gp))
+	defer stop()
+
+	respID, sessionID, runID := h.admitWith(
+		`{"input":"do it","delegations":[{"role":"r","objective":"o","model":"fake-child","required":true,"detach":true}]}`, newID("idem"))
+
+	// Wait for the child to be running and idle at its own first boundary.
+	select {
+	case <-gp.started:
+	case <-time.After(60 * time.Second):
+		t.Fatal("detached child never started its first model step")
+	}
+	// The child is now the session's live run (the parent is WAITING). Address it through the parent's
+	// session — no new command kind, no distinct child address.
+	childRun, _ := h.childRunOf(runID)
+	commandID := newID("cmd")
+	cmd := h.submitCommand(sessionID, `{"command_id":"`+commandID+`","kind":"send_message","delivery":"queue","message":"`+marker+`"}`)
+	if cmd.Status != "queued" {
+		t.Fatalf("send_message status = %q, want queued (the live detached child accepts it)", cmd.Status)
+	}
+	// The command bound to the CHILD run, not the waiting parent.
+	if n := h.count(`SELECT count(*) FROM commands WHERE id=$1 AND run_id=$2`, commandID, childRun); n != 1 {
+		t.Fatalf("send_message did not bind to the detached child run %s", childRun)
+	}
+	close(gp.release) // let the child continue: it folds the queued message on its resumed step
+
+	h.awaitResponseState(respID, "completed", 120*time.Second)
+
+	// The child folded the spine message EXACTLY once (the delivered_messages exactly-once, T2, applied
+	// run-generically to the child), and the command settled applied against the child run.
+	if got := gp.folds(); got != 1 {
+		t.Fatalf("child folded the spine message %d times, want exactly 1", got)
+	}
+	if n := h.count(`SELECT count(*) FROM commands WHERE id=$1 AND state='applied' AND run_id=$2`, commandID, childRun); n != 1 {
+		t.Fatalf("send_message did not settle as exactly one applied delivery to the child run")
+	}
+	if n := h.count(`SELECT count(*) FROM delivered_messages WHERE command_id=$1 AND run_id=$2`, commandID, childRun); n != 1 {
+		t.Fatalf("no durable delivered-message row for the spine message on the child run")
 	}
 }
