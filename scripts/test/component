@@ -80,7 +80,7 @@ run_postgres() {
   # tests, so the package's Docker-free unit tests are not re-run here.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
-      go test -tags=component -count=1 -v -run 'TestApplied|TestRedelivery' ./apps/control-plane/internal/execution
+      go test -tags=component -count=1 -v -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot' ./apps/control-plane/internal/execution
     status=$?
   fi
   set -e

@@ -131,7 +131,7 @@ func (s *CheckpointSink) Retrieve(ctx context.Context, key string) (body []byte,
 // boundary — and hands the sink the bytes. With no object store wired, an offer is advisory: it is
 // dropped, and no durable boundary is created (§26.5 — a checkpoint failure does not always fail the
 // run; a missing sink is that "no recoverable boundary" case for a non-pausing boundary).
-func (o *Orchestrator) persistCheckpoint(ctx context.Context, st *attemptState, frame contracts.EngineFrame) error {
+func (o *Orchestrator) persistCheckpoint(ctx context.Context, st *attemptState, frame contracts.EngineFrame, workspaceSnapshotID string) error {
 	if o.checkpoints == nil {
 		return nil
 	}
@@ -143,19 +143,22 @@ func (o *Orchestrator) persistCheckpoint(ctx context.Context, st *attemptState, 
 	if err != nil {
 		return fmt.Errorf("read journal boundary for checkpoint: %w", err)
 	}
-	// WorkspaceSnapshotID is empty in T1: a snapshot cut AT the boundary is T6. A checkpoint with no
-	// snapshot declares no workspace dependency (spec §26.4), stored as NULL.
+	// WorkspaceSnapshotID links the checkpoint to a boundary snapshot cut AT the pause (SES-009, E10 T6),
+	// so a restore re-hydrates the workspace tree, not just the engine loop. It is empty for a mid-loop
+	// checkpoint.offer (no snapshot) — a checkpoint with no snapshot declares no workspace dependency
+	// (spec §26.4), stored as NULL.
 	err = o.checkpoints.Persist(ctx, CheckpointMeta{
-		Organization:       st.tenant.Organization,
-		Project:            st.tenant.Project,
-		RunID:              string(st.attempt.RunID),
-		AttemptID:          string(st.attempt.AttemptID),
-		OfferSequence:      int64(frame.Sequence),
-		EngineDigest:       st.attempt.ImageDigest,
-		EngineVersion:      st.engineVersion,
-		ProtocolVersion:    st.protocolVersion,
-		ConfigSnapshotHash: configHash,
-		TranscriptSequence: transcriptSeq,
+		Organization:        st.tenant.Organization,
+		Project:             st.tenant.Project,
+		RunID:               string(st.attempt.RunID),
+		AttemptID:           string(st.attempt.AttemptID),
+		OfferSequence:       int64(frame.Sequence),
+		EngineDigest:        st.attempt.ImageDigest,
+		EngineVersion:       st.engineVersion,
+		ProtocolVersion:     st.protocolVersion,
+		ConfigSnapshotHash:  configHash,
+		TranscriptSequence:  transcriptSeq,
+		WorkspaceSnapshotID: workspaceSnapshotID,
 	}, frame.Data)
 	// A duplicate of an immutable checkpoint (a retransmitted offer, or a T4 replay re-offering the
 	// same boundary) is benign: the durable row already exists, so it is not an attempt failure.

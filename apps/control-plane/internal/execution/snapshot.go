@@ -126,6 +126,46 @@ func (s *SnapshotSink) RestoreTo(ctx context.Context, tenant coordinator.Tenant,
 	return snapshot.Restore(bytes.NewReader(body), dest, want)
 }
 
+// captureBoundarySnapshot cuts a workspace snapshot at a pause boundary (SES-009) and returns its id for
+// the checkpoint to link. It is a no-op — returns "" — when no snapshot sink is wired or the run has no
+// workspace (the T4 no-dependency case): the checkpoint then declares no workspace dependency, unchanged.
+// It resolves the workspace's CURRENT allocation so the snapshot is fence-guarded (a stale host's cut is
+// rejected). A capture error is returned so the pause fails rather than proceeding snapshot-less (§26.5).
+func (o *Orchestrator) captureBoundarySnapshot(ctx context.Context, st *attemptState) (string, error) {
+	if o.snapshots == nil || st.workspaceID == "" || st.attempt.WorkspaceHostPath == "" {
+		return "", nil
+	}
+	alloc, err := o.spine.CurrentAllocation(ctx, st.workspaceID)
+	if err != nil {
+		return "", err
+	}
+	return o.snapshots.Capture(ctx, SnapshotCaptureInput{
+		SnapshotID:   "snap_" + randHex16(),
+		Organization: st.tenant.Organization,
+		Project:      st.tenant.Project,
+		WorkspaceID:  st.workspaceID,
+		AllocationID: alloc.ID,
+		HostPath:     st.attempt.WorkspaceHostPath,
+		Reason:       "pause",
+	})
+}
+
+// workspaceRestorable reports whether a checkpoint's linked workspace snapshot can be restored (spec
+// §26.4): it is byte-archived (a non-empty object_key). A snapshot-less checkpoint ("") is vacuously
+// restorable — it declares no workspace dependency. A manifest-only snapshot (no bytes) is NOT
+// restorable, so the ladder rejects the checkpoint with workspace_unrestorable rather than resuming on
+// an un-rehydratable tree.
+func (o *Orchestrator) workspaceRestorable(ctx context.Context, tenant coordinator.Tenant, snapshotID string) (bool, error) {
+	if snapshotID == "" {
+		return true, nil
+	}
+	rec, err := o.spine.LoadWorkspaceSnapshot(ctx, tenant, snapshotID)
+	if err != nil {
+		return false, err
+	}
+	return rec.ObjectKey != "", nil
+}
+
 // snapshotObjectKey lays out the S3 key tenant-first (defense in depth, the artifacts + checkpoints
 // layout) with a snapshots/ segment so snapshot bytes never collide with artifact or checkpoint bytes.
 func snapshotObjectKey(org, project, workspaceID, snapshotID string) string {
