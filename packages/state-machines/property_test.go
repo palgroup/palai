@@ -102,6 +102,11 @@ func allTables() []tableSpec {
 		newSpec("workspace", string(WorkspaceRequested), WorkspaceTable, map[string]bool{
 			string(WorkspaceDestroyed): true,
 		}),
+		newSpec("trigger_delivery", string(TriggerDeliveryReceived), TriggerDeliveryTable, map[string]bool{
+			string(TriggerDeliveryRunCreated): true, string(TriggerDeliveryRejected): true,
+			string(TriggerDeliveryDuplicate): true, string(TriggerDeliveryFailed): true,
+			string(TriggerDeliverySkipped): true,
+		}),
 	}
 }
 

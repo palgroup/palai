@@ -58,6 +58,11 @@ func main() {
 	// view) and the delivery pump (spec §21.4-21.6). It rides the durable spine's pool.
 	webhookStore := automation.NewWebhookStore(repo.Spine().Pool())
 
+	// The trigger store is shared by the HTTP surface (trigger management + manual/API delivery) and the
+	// delivery-reconciler (spec §20.2.2, E11 Task 2). It admits a triggered run through the durable spine
+	// — the SAME §20.9 admission path a POST /v1/responses takes.
+	triggerStore := automation.NewTriggerStore(repo.Spine().Pool()).WithAdmitter(repo.Spine())
+
 	// One supervisor keeps the dispatch workers, reconciler, and retention reaper alive: a
 	// background loop that returns a transient error is logged, counted, and restarted rather
 	// than silently dying and stalling dispatch (H2; LP-15 — no restart cap).
@@ -73,7 +78,7 @@ func main() {
 		// (Task 12 binds the local CA and that listener); the public API server carries no
 		// runner routes, so it is passed nil here. The handler is wrapped so `palai doctor`
 		// can surface the supervisor's restart counters over /healthz/supervisor.
-		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, sseConfigFromEnv(), nil), supervisor),
+		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, sseConfigFromEnv(), nil), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -86,6 +91,7 @@ func main() {
 
 	startDispatch(ctx, repo, gateway, supervisor, artStore)
 	startWebhookPump(ctx, webhookStore, supervisor)
+	startDeliveryReconciler(ctx, triggerStore, supervisor)
 	startRetention(ctx, repo, supervisor, artStore)
 	startOrphanGC(ctx, repo, supervisor, artStore)
 
@@ -330,6 +336,21 @@ func startWebhookPump(ctx context.Context, store *automation.WebhookStore, super
 		MaxBackoff:  envDurationOr("PALAI_WEBHOOK_BACKOFF_MAX", time.Hour),
 	}, log.Printf)
 	go supervisor.Supervise(ctx, "webhook-pump", pump.Run)
+}
+
+// startDeliveryReconciler launches the supervised trigger delivery-reconciler (spec §20.2.2, E11 Task 2).
+// It is a system loop that serves every project's deferred deliveries and is inert until one is deferred,
+// so it runs unconditionally (like the webhook pump): it admits the FIFO head of each gate-opened
+// correlation-key group and re-decides crash remnants stranded in `mapped`. The loop name is pinned
+// "delivery-reconciler" — T5 folds inbound-source sweeps into the same loop. A killed process just misses
+// ticks; the next run resumes from the durable delivery rows.
+func startDeliveryReconciler(ctx context.Context, store *automation.TriggerStore, supervisor *coordinator.Supervisor) {
+	rec := automation.NewDeliveryReconciler(store,
+		envDurationOr("PALAI_TRIGGER_RECONCILE_TICK", time.Second),
+		envDurationOr("PALAI_TRIGGER_MAPPED_GRACE", time.Minute),
+		envIntDefault("PALAI_TRIGGER_RECONCILE_BATCH", 100),
+		log.Printf)
+	go supervisor.Supervise(ctx, "delivery-reconciler", rec.Run)
 }
 
 // webhookSecretResolver bridges an endpoint's SecretRef handle to the signing-secret bytes at delivery

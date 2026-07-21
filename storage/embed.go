@@ -181,6 +181,21 @@ var migrationDown20 string
 //go:embed queries/webhooks.sql
 var webhooksSQL string
 
+// 000021 adds the trigger tables (triggers, immutable trigger_revisions, trigger_deliveries, E11 Task 2):
+// a versioned source-event → canonical-action binding and the TriggerDelivery record its ingestion
+// advances through the §20.2.2 state machine, born via the SAME §20.9 admission path as /v1/responses.
+// It references projects/agent_revisions/run_template_revisions (000001/000019) and webhook_endpoints
+// (000020) for its T6-ready callback column, so it opens from the tip of the E11 T1+T4 merges.
+//
+//go:embed migrations/000021_triggers.up.sql
+var migrationUp21 string
+
+//go:embed migrations/000021_triggers.down.sql
+var migrationDown21 string
+
+//go:embed queries/triggers.sql
+var triggersSQL string
+
 //go:embed queries/jobs.sql
 var jobsSQL string
 
@@ -229,20 +244,21 @@ var publicationsSQL string
 //go:embed queries/recovery.sql
 var recoverySQL string
 
-// MigrationUp is the forward migration chain, applied in version order (000001..000020). Each file is
+// MigrationUp is the forward migration chain, applied in version order (000001..000021). Each file is
 // individually idempotent, so the whole chain is safe to re-run. 000019 (E11 Task 1 agents) and 000020
-// (E11 Task 4 webhooks + events cursor rider) land in parallel and interleave here at merge.
+// (E11 Task 4 webhooks + events cursor rider) land in parallel and interleave here at merge; 000021 (E11
+// Task 2 triggers) opens from the tip of both.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp17 + "\n" + migrationUp18 + "\n" + migrationUp19 + "\n" + migrationUp20
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp17 + "\n" + migrationUp18 + "\n" + migrationUp19 + "\n" + migrationUp20 + "\n" + migrationUp21
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: each migration drops its added
 // objects before the earlier one drops the tables that carried them.
 func MigrationDown() string {
-	return migrationDown20 + "\n" + migrationDown19 + "\n" + migrationDown18 + "\n" + migrationDown17 + "\n" + migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown21 + "\n" + migrationDown20 + "\n" + migrationDown19 + "\n" + migrationDown18 + "\n" + migrationDown17 + "\n" + migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
-var namedQueries = parseNamedQueries(agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL)
+var namedQueries = parseNamedQueries(agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL, triggersSQL)
 
 // Query returns the SQL statement labelled "-- name: <name>" in storage/queries.
 // It panics on an unknown name because query names are compile-time constants.
