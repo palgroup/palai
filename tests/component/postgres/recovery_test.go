@@ -103,6 +103,69 @@ func TestRecoveryObjectsAppendOnlyToApplicationRole(t *testing.T) {
 	}
 }
 
+// TestLatestRunCheckpointReadsNewestWithBoundary proves the recovery ladder's read (spec §26.3-26.4,
+// E10 Task 4): LatestRunCheckpoint returns a run's newest checkpoint with the §26.4 compatibility
+// inputs (format/version, config hash, protocol, transcript boundary), and reports found=false for a
+// run that has no checkpoint at all (so the ladder falls to reconstruction, never a phantom restore).
+func TestLatestRunCheckpointReadsNewestWithBoundary(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+	tenant, _, runID := seedRun(t, pool)
+	attemptID := seedAttempt(t, pool, tenant, runID)
+	obj := recovery.New(pool)
+
+	// An older checkpoint, then a newer one. Force created_at so "newest" is unambiguous regardless
+	// of clock resolution (the index is checkpoints_by_run (run_id, created_at DESC)).
+	older := baseCheckpointInput(tenant, runID, attemptID)
+	older.TranscriptSequence = 7
+	older.ContentChecksum = "sha256:older"
+	if err := obj.Persist(ctx, older); err != nil {
+		t.Fatalf("Persist(older) error = %v", err)
+	}
+	exec(t, pool, `UPDATE checkpoints SET created_at = clock_timestamp() - interval '1 hour' WHERE id=$1`, older.CheckpointID)
+
+	newer := baseCheckpointInput(tenant, runID, attemptID)
+	newer.TranscriptSequence = 11
+	newer.ContentChecksum = "sha256:newer"
+	newer.ConfigSnapshotHash = "sha256:cfg-new"
+	if err := obj.Persist(ctx, newer); err != nil {
+		t.Fatalf("Persist(newer) error = %v", err)
+	}
+
+	got, found, err := cs.LatestRunCheckpoint(ctx, tenant, runID)
+	if err != nil {
+		t.Fatalf("LatestRunCheckpoint() error = %v", err)
+	}
+	if !found {
+		t.Fatal("LatestRunCheckpoint found=false, want the newest checkpoint")
+	}
+	if got.CheckpointID != newer.CheckpointID {
+		t.Fatalf("CheckpointID = %q, want the newest %q", got.CheckpointID, newer.CheckpointID)
+	}
+	if got.BoundaryID != newer.BoundaryID {
+		t.Fatalf("BoundaryID = %q, want %q", got.BoundaryID, newer.BoundaryID)
+	}
+	if got.TranscriptSequence != 11 || got.ContentChecksum != "sha256:newer" || got.ConfigSnapshotHash != "sha256:cfg-new" {
+		t.Fatalf("newest row §26.4 fields wrong: seq=%d checksum=%q config=%q", got.TranscriptSequence, got.ContentChecksum, got.ConfigSnapshotHash)
+	}
+	if got.Format != "reference-kernel" || got.FormatVersion != 1 || got.ProtocolVersion != "engine.v1" {
+		t.Fatalf("newest row format fields wrong: %q/%d proto=%q", got.Format, got.FormatVersion, got.ProtocolVersion)
+	}
+	if got.WorkspaceSnapshotID != "" {
+		t.Fatalf("checkpoint with no snapshot must read empty workspace id, got %q", got.WorkspaceSnapshotID)
+	}
+	if got.ObjectKey == "" {
+		t.Fatal("newest row must carry its object key for the bytes fetch")
+	}
+
+	// A run with no checkpoint reads found=false — the ladder falls to reconstruction.
+	_, _, freshRun := seedRun(t, pool)
+	if _, found, err := cs.LatestRunCheckpoint(ctx, tenant, freshRun); err != nil || found {
+		t.Fatalf("LatestRunCheckpoint(no checkpoints) = found %v err %v, want found=false", found, err)
+	}
+}
+
 // TestCheckpointSizeBoundRejected proves an oversized checkpoint is refused BEFORE any row is written
 // (spec §26.2 size-bound) — so an oversize offer leaves no orphan boundary for GC to chase.
 func TestCheckpointSizeBoundRejected(t *testing.T) {
