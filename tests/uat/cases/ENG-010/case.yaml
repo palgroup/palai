@@ -1,0 +1,8 @@
+id: ENG-010
+name: incompatible-or-corrupt-checkpoint-rejected-falls-back-to-transcript
+proof_class: e2e-deterministic
+provider: fake
+input: "a corrupt-checksum or format-mismatched checkpoint emits a rejected event and the ladder falls back to transcript reconstruction (never labelled an exact resume)"
+expect_status: completed
+proof:
+  - apps/control-plane/e2e/responses/recovery_ladder_test.go:TestIncompatibleCheckpointFallsToTranscriptWithRejectedEvent

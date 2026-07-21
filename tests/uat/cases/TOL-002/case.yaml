@@ -1,0 +1,8 @@
+id: TOL-002
+name: idempotent-tool-same-destination-key-single-external-object
+proof_class: unit
+provider: fake
+input: "a destination-idempotent tool resent with the same stable destination key against a faithful HTTP destination double creates exactly one external object"
+expect_status: completed
+proof:
+  - packages/tool-broker/broker_test.go:TestIdempotentToolSameKeySingleExternalObject

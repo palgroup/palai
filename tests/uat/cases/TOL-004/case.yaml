@@ -1,0 +1,8 @@
+id: TOL-004
+name: reversible-side-effect-reconciles-then-compensates-or-retries
+proof_class: unit
+provider: fake
+input: "a reversible side effect is reconciled against the destination first, then compensated or retried per policy — never blindly re-applied"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/execution/reconcile_unit_test.go:TestReversibleReconcilesThenCompensates

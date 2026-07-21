@@ -1,0 +1,9 @@
+id: ENG-004
+name: engine-process-kill-recovers-via-ladder-completed-tool-not-replayed
+proof_class: e2e-deterministic
+provider: fake
+input: "a real SIGKILL of the engine mid-tool-loop, after the boundary checkpoint is durable, recovers on a new attempt via the compatible-checkpoint ladder; the completed tool is not replayed and a complete §26.12 RecoveryProof is journaled"
+expect_status: completed
+proof:
+  - apps/control-plane/e2e/responses/kill_matrix_test.go:TestEngineProcessKillRecoversViaLadder
+# ceiling: the real-provider restore-realness is the gated CASE=container-kill-recovery live smoke (SKIP until PALAI_LIVE_TOOL_ADVERTISING — dispatchModel omits tool schemas)

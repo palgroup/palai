@@ -1,0 +1,9 @@
+id: ENG-013
+name: terminal-then-crash-keeps-single-terminal-under-fence
+proof_class: e2e-deterministic
+provider: fake
+input: "once a run's terminal is persisted, a crash + redelivery of the same job is rejected by the finalize monotonicity guard — the run keeps exactly one terminal and a byte-unchanged projection"
+expect_status: completed
+proof:
+  - apps/control-plane/e2e/responses/kill_matrix_test.go:TestRedeliveredTerminalStaysSingleByMonotonicity
+# ceiling: the OCI tail-drain half (a fast-exit engine's terminal never lost) is REC-001 (fault-live); this tier proves the durable single-terminal half

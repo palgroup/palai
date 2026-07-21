@@ -1,0 +1,65 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-21T19:30:00Z",
+  "cases": [
+    {
+      "checksum": "sha256:01a774771a585ff2dc16f99ddeaf675bbb280c5f0fcdc1dcaf87a593d539e181",
+      "db_assertions": [
+        "a real SIGKILL after the boundary checkpoint was durable recovered on a new attempt via the compatible_checkpoint ladder",
+        "the completed tool was NOT replayed after restore (a single tool_call row for the run)",
+        "attempt.recovering.v1 carried the compatible_checkpoint level, visible in the run",
+        "the checkpoint/snapshot bytes carry no credential (secret-absence scan clean)"
+      ],
+      "id": "ENG-004",
+      "image_digest": "sha256:aa8b161d9128e09ff50fb83be2a2d1bddd1e2574829c15ec6e24876d1e660d40",
+      "mtls_enroll": "runner-local cn=controller",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_final",
+      "recovery_claim": "continued",
+      "recovery_proof": {
+        "checkpoint_id": "chk_recovery_eng004",
+        "config_model_changes": [],
+        "duration_ms": 137,
+        "level": "compatible_checkpoint",
+        "new_attempt_id": "att_recovery_2",
+        "previous_attempt_id": "att_recovery_1",
+        "replayed_tool_calls": [],
+        "reused_tool_calls": [
+          "tcall_recovery_count"
+        ],
+        "semantic_loss_assessed": true,
+        "semantic_loss_warning": "",
+        "transcript_boundary_id": "bnd_recovery_eng004",
+        "workspace_snapshot_id": "wsnap_recovery_eng004"
+      },
+      "run_id": "run_recovery_eng004",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      }
+    },
+    {
+      "checksum": "sha256:e1ed06ce2809f80b43a852435deb18589d7055e9a8aa05da2a1630b75b4c52f4",
+      "db_assertions": [
+        "the approved branch push landed exactly the committed head \u2014 the remote ref is a genuine external receipt",
+        "a kill between the run and the publication pump did NOT duplicate the push: a re-driven pump republished nothing",
+        "the draft PR was opened exactly once (find-before-create); duplicate external effect (push/PR) = 0",
+        "the scoped push credential was destroyed after the operation; absent from every surface including the checkpoint bytes"
+      ],
+      "external_receipt": "6d7225f0ac38a870d302842f2cc83e9734534c76",
+      "id": "REP-006",
+      "proof_class": "external-receipt",
+      "run_id": "run_recovery_push",
+      "status": "PASS"
+    }
+  ],
+  "git_sha": "e15e47c",
+  "migration": "000018_tool_call_ledger",
+  "release": "recovery-0.1.0"
+}

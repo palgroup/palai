@@ -1,0 +1,9 @@
+id: DET-001
+name: parent-releases-compute-then-resumes-detached-child-typed-result
+proof_class: e2e-deterministic
+provider: fake
+input: "a parent releases compute (checkpoint + run.waiting), the child continues parent-detached, and the parent resumes and sees the child's typed result in canonical history order"
+expect_status: completed
+proof:
+  - apps/control-plane/e2e/responses/detached_child_test.go:TestParentReleasesComputeWhileChildRuns
+# ceiling: the child spawn is a forced agent tool_call (E09 T7 discipline); the proof is the DETACH + durable conversation, not the model's spontaneous delegation. The live tier is the gated CASE=detached-child-conversation smoke

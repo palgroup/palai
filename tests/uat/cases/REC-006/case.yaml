@@ -1,0 +1,9 @@
+id: REC-006
+name: recovery-proof-fields-complete-continued-log-alone-rejected
+proof_class: unit
+provider: fake
+input: "a case that claims recovery passes only with a complete §26.12 RecoveryProof; a continued/resumed marker with no proof (or a proof missing any field group) is a verifier Finding"
+expect_status: completed
+proof:
+  - tests/uat/evidence_test.go:TestRecoveryProofFieldsComplete
+  - tests/uat/evidence_test.go:TestVerifierRejectsContinuedLogWithoutProof

@@ -1,0 +1,9 @@
+id: ENG-005
+name: engine-container-kill-classified-lost-never-false-success
+proof_class: fault-live
+provider: fake
+input: "an external docker rm -f of the engine container mid-run fails the attempt as lost and never forwards a terminal, so a container kill is never a false success"
+expect_status: failed
+proof:
+  - tests/fault/recovery/container_kill_test.go:TestContainerKillNeverFalseSuccess
+# ceiling: the ladder-RESTORE, canonical message ORDER (T2 delivered_messages §26.9) and workspace-checksum equality (T6 snapshot restore) ride ENG-004/T2/T6; the real-provider ladder-restore is the gated CASE=container-kill-recovery live smoke

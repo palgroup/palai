@@ -1,0 +1,9 @@
+id: SAN-006
+name: host-kill-advances-fence-rejects-stale-writer-half
+proof_class: fault-live
+provider: fake
+input: "a real host kill advances the fence and the old host's subsequent write/snapshot attempt is rejected at the database"
+expect_status: completed
+proof:
+  - tests/fault/recovery/host_kill_test.go:TestHostKillFencesStaleWriter
+# ceiling: the fence-advance was proven deterministically in E09; this fault-live half drives it with a real host kill

@@ -1,0 +1,8 @@
+id: REC-005
+name: host-move-keeps-logical-id-new-fenced-allocation-old-fenced
+proof_class: component-real
+provider: fake
+input: "a host move drives host_lost->recovering->ready onto a new fence+1 allocation, keeps the logical workspace id stable, and fences the old allocation"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/artifacts/workspace_recovery_component_test.go:TestHostMoveKeepsLogicalIdNewFencedAllocation

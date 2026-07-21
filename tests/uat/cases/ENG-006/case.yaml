@@ -1,0 +1,9 @@
+id: ENG-006
+name: runner-daemon-kill-advances-fence-and-recovers-on-new-host
+proof_class: fault-live
+provider: fake
+input: "a real runner-daemon stop drops the heartbeat, the fence advances, and the run is re-placed on a new host with ladder evidence"
+expect_status: completed
+proof:
+  - tests/fault/recovery/host_kill_test.go:TestRunnerDaemonKillAdvancesFenceAndRecovers
+# ceiling: whole-host kill is the single-machine local approach (runner daemon + its containers + host-path made inaccessible); real multi-host fleet drain is E14/E15

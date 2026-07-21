@@ -1,0 +1,8 @@
+id: REC-003
+name: applied-folded-user-turn-present-in-post-resume-history
+proof_class: component-real
+provider: fake
+input: "an applied + folded user turn is present in the post-resume provider context in canonical position, so the model sees it after a resume/reclaim"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/execution/redelivery_component_test.go:TestAppliedFoldedTurnPresentInPostResumeHistory

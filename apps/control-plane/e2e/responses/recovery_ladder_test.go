@@ -79,6 +79,18 @@ func (s *memCheckpointStore) objectCount() int {
 	return len(s.objs)
 }
 
+// objects returns a copy of every stored checkpoint object's bytes, so a test can scan the raw
+// checkpoint surface for a leaked credential (§26.2 / SAN-005 exclusion invariant, extended to checkpoints).
+func (s *memCheckpointStore) objects() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]byte, 0, len(s.objs))
+	for _, b := range s.objs {
+		out = append(out, append([]byte(nil), b...))
+	}
+	return out
+}
+
 // countingDialer wraps a dialer and counts Dial calls, so the exact rung can be proven to stand down
 // WITHOUT dialing a fresh engine (ENG-008).
 type countingDialer struct {

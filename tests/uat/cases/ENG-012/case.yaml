@@ -1,0 +1,9 @@
+id: ENG-012
+name: outage-queue-steer-interrupt-delivered-in-canonical-order-after-recovery
+proof_class: component-real
+provider: fake
+input: "queue/steer/interrupt accepted during an outage are delivered after recovery in canonical order — interrupt intent first, steer at a safe boundary, queue at an input boundary — never injected into a reconstructed step"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/execution/tool_ledger_component_test.go:TestOutageCommandsDeliverCanonicalOrderAfterRecovery
+# ceiling: the durable command rows this replays are E08 T2's; this tier proves the recovery-time ordering half

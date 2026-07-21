@@ -1,0 +1,9 @@
+id: SES-010
+name: cancel-during-kill-reconciles-children-single-terminal
+proof_class: component-real
+provider: fake
+input: "a cancel arriving during a kill reconciles active external ops and children and lands exactly one monotonic terminal (canceled, or failed_with_uncertain_side_effect)"
+expect_status: canceled
+proof:
+  - tests/component/postgres/cancel_recovery_test.go:TestCancelDuringKillReconcilesChildrenSingleTerminal
+# ceiling: the cancel-command half is proven in E08; this is the recovery/reconcile half

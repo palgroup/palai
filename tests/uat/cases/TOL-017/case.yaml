@@ -1,0 +1,9 @@
+id: TOL-017
+name: late-callback-after-fence-advance-denied-fence-half
+proof_class: component-real
+provider: fake
+input: "a late async-tool callback arriving after the fence advances is rejected by the active fence/reconciliation, so a stale silent commit cannot land"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/execution/tool_ledger_component_test.go:TestLateCallbackAfterFenceAdvanceDenied
+# ceiling: only the fence half is proven here; the signed-request / SDK transport half of TOL-017 is E12

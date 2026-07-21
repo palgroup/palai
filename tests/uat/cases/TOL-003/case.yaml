@@ -1,0 +1,8 @@
+id: TOL-003
+name: irreversible-tool-response-loss-uncertain-never-auto-replays
+proof_class: component-real
+provider: fake
+input: "a kill between an irreversible tool's execute and record leaves the call uncertain, blocks continuation, and routes to manual_resolution — it is NEVER auto-replayed"
+expect_status: failed
+proof:
+  - apps/control-plane/internal/execution/tool_ledger_component_test.go:TestIrreversibleUncertainNeverAutoReplays
