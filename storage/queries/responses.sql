@@ -161,6 +161,17 @@ WHERE state = 'uncertain' AND reconciliation_state = 'reconciling'
 ORDER BY created_at, id
 LIMIT $1;
 
+-- RunResolvedToolCalls returns a run's resolved tool_calls with their replay class — the class-labelled
+-- accounting a RecoveryProof carries for the reused-vs-replayed tool set (spec §26.12, E10 T7). On a
+-- transcript reconstruction these are the calls whose committed result is REUSED from the ledger (the
+-- durable consult replays them, never re-executes), so the proof honestly names them class-labelled.
+-- name: RunResolvedToolCalls
+SELECT id, replay_class
+FROM tool_calls
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+  AND state IN ('completed', 'reconciled_completed', 'reconciled_not_applied')
+ORDER BY created_at, id;
+
 -- PendingToolOperationsForRun returns a run's UNRESOLVED tool operations at a checkpoint boundary (spec
 -- §26.2, §26.4, E10 T7): rows in the `uncertain` state (killed after execute, side effect unknown) or
 -- escalated to `manual_resolution`. These are the operations a checkpoint must record in

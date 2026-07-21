@@ -483,6 +483,27 @@ func (s *Store) MarkToolCallUncertain(ctx context.Context, tenant Tenant, sessio
 	return true, nil
 }
 
+// RunResolvedToolCalls returns a run's resolved tool_calls as class-labelled "tool_call_id:replay_class"
+// strings — the RecoveryProof's reused-tool accounting (spec §26.12, E10 T7). On a transcript
+// reconstruction these are the calls whose committed result is REUSED from the ledger (replayed, never
+// re-executed). Empty (a run with no tool calls, or a compatible restore) is honest evidence too.
+func (s *Store) RunResolvedToolCalls(ctx context.Context, tenant Tenant, runID string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("RunResolvedToolCalls"), runID, tenant.Organization, tenant.Project)
+	if err != nil {
+		return nil, fmt.Errorf("read resolved tool calls: %w", err)
+	}
+	defer rows.Close()
+	labels := []string{}
+	for rows.Next() {
+		var id, class string
+		if err := rows.Scan(&id, &class); err != nil {
+			return nil, fmt.Errorf("scan resolved tool call: %w", err)
+		}
+		labels = append(labels, id+":"+class)
+	}
+	return labels, rows.Err()
+}
+
 // ReenqueueResponseRun enqueues a fresh response.run job for a run so a new attempt continues it (spec
 // §26.7, E10 T7): after the reconcile loop resolves an uncertain tool_call, the run — left running when
 // its attempt STOPPED on the uncertain call — needs a fresh attempt to reconstruct and proceed (the

@@ -4,13 +4,17 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+	"github.com/palgroup/palai/packages/coordinator/recovery"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
@@ -229,6 +233,95 @@ func TestOutageCommandsDeliverCanonicalOrderAfterRecovery(t *testing.T) {
 	if got := ch3.deliverOrder(); len(got) != 0 {
 		t.Fatalf("wrong boundary delivered %v, want none (never spliced into another step)", got)
 	}
+}
+
+// TestRecoveryProofCarriesClassLabeledReplay proves REC-006 / §26.12's E10 T7 half: on a transcript
+// reconstruction the RecoveryProof's ReusedToolCalls is filled with the run's resolved tool_calls,
+// CLASS-LABELLED (the durable consult replays their committed result, never re-executing) — while a
+// compatible restore yields an empty list (itself valid evidence: nothing double-run). ReplayedToolCalls
+// stays empty in both.
+func TestRecoveryProofCarriesClassLabeledReplay(t *testing.T) {
+	ctx := context.Background()
+	cs, tenant, sessionID, runID := openLedgerSpine(t)
+	respID := redeliveryID("resp")
+	execSQL(t, cs.Pool(), `INSERT INTO responses (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'in_progress')`,
+		respID, tenant.Organization, tenant.Project, sessionID)
+	// Two resolved tool_calls with distinct classes — the reused set a reconstruction replays.
+	execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class) VALUES ($1,$2,$3,$4,1,'completed','pure_add','{}','pure')`,
+		"tc_pure", tenant.Organization, tenant.Project, runID)
+	execSQL(t, cs.Pool(), `INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class) VALUES ($1,$2,$3,$4,2,'reconciled_completed','push','{}','idempotent')`,
+		"tc_idem", tenant.Organization, tenant.Project, runID)
+
+	orch := &Orchestrator{spine: cs}
+	st := &attemptState{
+		attempt:      AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID("att_new")},
+		tenant:       tenant, sessionID: sessionID, responseID: respID,
+		attemptStart: time.Now().Add(-5 * time.Millisecond),
+	}
+	plan := recoveryPlan{
+		present:    true,
+		decision:   recovery.Decision{Level: recovery.LevelTranscriptReconstruction},
+		checkpoint: coordinator.RunCheckpoint{AttemptID: "att_prev", CheckpointID: "chk_1", BoundaryID: "bnd_1"},
+	}
+	if err := orch.recordRecoveryProof(ctx, st, plan); err != nil {
+		t.Fatalf("recordRecoveryProof(transcript) error = %v", err)
+	}
+	proof := readRecoveryProof(t, cs, sessionID)
+	if len(proof.ReusedToolCalls) != 2 {
+		t.Fatalf("ReusedToolCalls = %v, want 2 class-labelled entries", proof.ReusedToolCalls)
+	}
+	if !hasLabel(proof.ReusedToolCalls, "tc_pure:pure") || !hasLabel(proof.ReusedToolCalls, "tc_idem:idempotent") {
+		t.Fatalf("ReusedToolCalls = %v, want class-labelled tc_pure:pure and tc_idem:idempotent", proof.ReusedToolCalls)
+	}
+	if len(proof.ReplayedToolCalls) != 0 {
+		t.Fatalf("ReplayedToolCalls = %v, want empty (no committed tool call is re-executed)", proof.ReplayedToolCalls)
+	}
+	if !proof.Complete() {
+		t.Fatal("recorded proof is not Complete()")
+	}
+
+	// A COMPATIBLE restore of the same run yields an EMPTY reused list (the engine resumed past them) —
+	// still valid evidence.
+	st2 := &attemptState{
+		attempt:      AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID("att_new2")},
+		tenant:       tenant, sessionID: sessionID, responseID: respID,
+		attemptStart: time.Now().Add(-5 * time.Millisecond),
+	}
+	planCompat := recoveryPlan{present: true, decision: recovery.Decision{Level: recovery.LevelCompatibleCheckpoint},
+		checkpoint: coordinator.RunCheckpoint{AttemptID: "att_prev2", CheckpointID: "chk_2", BoundaryID: "bnd_2"}}
+	if err := orch.recordRecoveryProof(ctx, st2, planCompat); err != nil {
+		t.Fatalf("recordRecoveryProof(compatible) error = %v", err)
+	}
+	compat := readRecoveryProof(t, cs, sessionID) // newest first below → the compatible one
+	if len(compat.ReusedToolCalls) != 0 {
+		t.Fatalf("compatible restore ReusedToolCalls = %v, want empty (resumed past them)", compat.ReusedToolCalls)
+	}
+	if compat.ReusedToolCalls == nil {
+		t.Fatal("compatible ReusedToolCalls is nil — must be non-nil empty (accounted, not unaccounted)")
+	}
+}
+
+func readRecoveryProof(t *testing.T, cs *coordinator.Store, sessionID string) recovery.RecoveryProof {
+	t.Helper()
+	var payload []byte
+	if err := cs.Pool().QueryRow(context.Background(),
+		`SELECT payload FROM events WHERE session_id=$1 AND type='recovery.proof.v1' ORDER BY seq DESC LIMIT 1`, sessionID).Scan(&payload); err != nil {
+		t.Fatalf("read recovery.proof.v1 error = %v", err)
+	}
+	var proof recovery.RecoveryProof
+	if err := json.Unmarshal(payload, &proof); err != nil {
+		t.Fatalf("decode proof %s error = %v", payload, err)
+	}
+	return proof
+}
+
+func hasLabel(labels []string, want string) bool {
+	for _, l := range labels {
+		if strings.EqualFold(l, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // toolResult captures a delivered tool.result frame's content + replayed label.
