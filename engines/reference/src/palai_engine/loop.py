@@ -310,8 +310,8 @@ class Loop:
         # loop re-derives the next model request from the captured context (model_request_id is
         # deterministic per (run, step)). Every completed-tool offer is honest; which to persist
         # (external side-effecting tools only) is the control plane's call — per-tool side-effect
-        # classification is T7. Delegation-completion resumes do not offer — a child spawn is not the
-        # external side-effecting tool §26.5 names.
+        # classification is T7. Delegation completions offer too (_on_child_result, MUST-FIX #1), so
+        # the newest checkpoint always sits at the last committed step.
         offer = self._checkpoint_offer("tool")
         return [offer, *self._request_model()]  # resume: next model request for the next step
 
@@ -395,7 +395,10 @@ class Loop:
             # The tool turn was fully answered at the boundary → resume into the next model step.
             return self._request_model()
         if self.state is State.AWAITING_CHILDREN:
-            return self._reemit_pending_children()
+            # Empty pending set = the child turn was fully answered at the boundary (the 'child'
+            # checkpoint offer, MUST-FIX #1) → resume the next model step, exactly like AWAITING_TOOLS.
+            # Without this the loop returns [] and hangs at awaiting_children (re-review FIX A).
+            return self._reemit_pending_children() if self._pending_children else self._request_model()
         return [self._error("unrestorable_state", f"cannot resume from {self.state.value}")]
 
     def _reemit_pending_tools(self) -> list[dict]:
