@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -77,6 +78,63 @@ func TestDuplicateToolCallIdSingleExecution(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&hits); got != 2 {
 		t.Fatalf("external effect fired %d times for two distinct tool_call_ids, want 2", got)
+	}
+}
+
+// TestIdempotentToolSameKeySingleExternalObject proves TOL-002 (spec §26.6-26.7): an idempotent tool
+// retried under a DIFFERENT tool_call_id (the model re-proposed the same operation after a kill) but the
+// SAME stable external idempotency key settles ONE object at a FAITHFUL destination double that dedups by
+// that key — the broker's per-call_id cache cannot help across distinct ids, the destination key does. A
+// genuinely different key is a different object.
+func TestIdempotentToolSameKeySingleExternalObject(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	var objects int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("Idempotency-Key")
+		mu.Lock()
+		if !seen[key] { // a faithful destination: one object per idempotency key, retries fold in
+			seen[key] = true
+			atomic.AddInt32(&objects, 1)
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	put := Tool{
+		Name: "http.put", InputSchema: openObject, OutputSchema: openObject, ReplayClass: ClassIdempotent,
+		Invoke: func(args map[string]any) (map[string]any, error) {
+			key, _ := args["key"].(string)
+			req, _ := http.NewRequest(http.MethodPut, server.URL, http.NoBody)
+			req.Header.Set("Idempotency-Key", key) // the STABLE destination key (spec §35.3), not the tool_call_id
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			_ = resp.Body.Close()
+			return map[string]any{"ok": true}, nil
+		},
+	}
+	broker := New(put)
+	ctx := context.Background()
+
+	// Two DISTINCT tool_call_ids (a retry after a kill re-proposed the op) carrying the SAME key.
+	if _, err := broker.Execute(ctx, contracts.ToolCallID("tc_a"), "http.put", map[string]any{"key": "obj-1"}, 1, ExecEnv{}); err != nil {
+		t.Fatalf("first Execute error = %v", err)
+	}
+	if _, err := broker.Execute(ctx, contracts.ToolCallID("tc_b"), "http.put", map[string]any{"key": "obj-1"}, 2, ExecEnv{}); err != nil {
+		t.Fatalf("resend Execute error = %v", err)
+	}
+	if got := atomic.LoadInt32(&objects); got != 1 {
+		t.Fatalf("destination holds %d objects for one idempotency key across two tool_call_ids, want 1 (TOL-002)", got)
+	}
+	// A different key is a genuinely different object.
+	if _, err := broker.Execute(ctx, contracts.ToolCallID("tc_c"), "http.put", map[string]any{"key": "obj-2"}, 3, ExecEnv{}); err != nil {
+		t.Fatalf("distinct-key Execute error = %v", err)
+	}
+	if got := atomic.LoadInt32(&objects); got != 2 {
+		t.Fatalf("destination holds %d objects for two distinct keys, want 2", got)
 	}
 }
 
