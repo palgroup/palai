@@ -38,7 +38,7 @@ type tickPlan struct {
 
 // firstFireAt computes the first fire instant strictly after `base` (create + advance), or false when the
 // schedule is exhausted (a one_time already past, or a cron whose next instant is beyond ends_at / has no
-// occurrence in the 5-year lookahead). A cron instant that falls in a DST gap is skipped (nextReal).
+// occurrence in the 5-year lookahead). A cron instant that falls in a DST gap is skipped by Next.
 func (s scheduleSpec) firstFireAt(base time.Time) (time.Time, bool) {
 	var next time.Time
 	if s.kind == "one_time" {
@@ -47,7 +47,7 @@ func (s scheduleSpec) firstFireAt(base time.Time) (time.Time, bool) {
 		}
 		next = s.oneTimeAt.UTC()
 	} else {
-		n, err := s.cron.nextReal(base, s.loc)
+		n, err := s.cron.Next(base, s.loc)
 		if err != nil {
 			return time.Time{}, false
 		}
@@ -74,7 +74,7 @@ func (s scheduleSpec) enumerateDue(currentNextFireAt, now time.Time) (missed []t
 		missed = append(missed, cur)
 	}
 	for i := 0; i < cronScanLimit; i++ {
-		nxt, err := s.cron.nextReal(cur, s.loc)
+		nxt, err := s.cron.Next(cur, s.loc)
 		if err != nil {
 			return missed, time.Time{}, false // no further occurrence
 		}

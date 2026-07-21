@@ -57,29 +57,63 @@ func TestNextOccurrenceDSTDuplicateFiresOnceEarlierInstant(t *testing.T) {
 	}
 }
 
-// TestNextOccurrenceDSTNonexistentFollowsMisfirePolicy proves the spring-forward (gap wall time) rule
-// (AUT-006, §33.2): on 2026-03-08 America/New_York springs forward 02:00 EST → 03:00 EDT, so wall 02:30
-// never occurs. A daily 02:30 cron must NOT silently fire at a guessed instant — Next returns the typed
-// ErrNonexistentLocalTime, which the ticker maps to the schedule's misfire policy.
-func TestNextOccurrenceDSTNonexistentFollowsMisfirePolicy(t *testing.T) {
+// TestNextOccurrenceDSTGapSkipsToNextValid proves the spring-forward (gap wall time) rule (AUT-006,
+// §33.2): on 2026-03-08 America/New_York springs forward 02:00 EST → 03:00 EDT, so wall 02:30 never occurs.
+// The raw DST primitive (resolveInstant) flags the gap with ErrNonexistentLocalTime; Next SKIPS that
+// nonexistent occurrence and fires the NEXT valid daily instant (2026-03-09 02:30 EDT) — it must never
+// resume from time.Date's "moved" normalization (which points BACKWARDS into the gap and permanently
+// exhausts the schedule).
+func TestNextOccurrenceDSTGapSkipsToNextValid(t *testing.T) {
 	ny, err := time.LoadLocation("America/New_York")
 	if err != nil {
 		t.Fatalf("load America/New_York: %v", err)
 	}
+	// The raw primitive still flags the gap (unchanged — the ticker's guarantee is built on it).
+	if _, err := resolveInstant(2026, 3, 8, 2, 30, ny); !errors.Is(err, ErrNonexistentLocalTime) {
+		t.Fatalf("resolveInstant over the spring-forward gap = %v, want ErrNonexistentLocalTime", err)
+	}
+
 	sched, err := ParseCron("30 2 * * *")
 	if err != nil {
 		t.Fatalf("ParseCron error = %v", err)
 	}
-	after := time.Date(2026, 3, 8, 0, 0, 0, 0, ny)
-	_, err = sched.Next(after, ny)
-	if !errors.Is(err, ErrNonexistentLocalTime) {
-		t.Fatalf("Next over the spring-forward gap error = %v, want ErrNonexistentLocalTime", err)
+	got, err := sched.Next(time.Date(2026, 3, 8, 0, 0, 0, 0, ny), ny)
+	if err != nil {
+		t.Fatalf("Next over the gap day error = %v, want the next valid occurrence (not exhaustion)", err)
+	}
+	want := time.Date(2026, 3, 9, 2, 30, 0, 0, ny) // the gap-day 02:30 skipped; next day's 02:30 EDT
+	if !got.Equal(want) {
+		t.Fatalf("Next over the gap day = %s, want the gap-day 02:30 SKIPPED → %s", got.UTC(), want.UTC())
 	}
 
-	// The no-DST control resolves the same wall time cleanly (no gap).
+	// The no-DST control resolves the same wall time cleanly (no gap, no skip).
 	ist, _ := time.LoadLocation("Europe/Istanbul")
 	if _, err := sched.Next(time.Date(2026, 3, 8, 0, 0, 0, 0, ist), ist); err != nil {
 		t.Fatalf("Istanbul Next over the same wall time error = %v, want a clean instant", err)
+	}
+}
+
+// TestNextMonotonicAcrossFallBackSecondPass proves Next stays strictly monotonic through the fall-back
+// repeated hour (§33.2, review #3): `after` = 06:00Z is 01:00 EST — INSIDE the second pass of the repeated
+// hour, past the earlier 01:30 EDT instant (05:30Z). Next must NOT return that already-past 05:30Z (which
+// would make Create/Revise write a PAST next_fire_at → a spurious immediate misfire); it returns the next
+// strictly-later occurrence.
+func TestNextMonotonicAcrossFallBackSecondPass(t *testing.T) {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load America/New_York: %v", err)
+	}
+	sched, err := ParseCron("30 1 * * *")
+	if err != nil {
+		t.Fatalf("ParseCron error = %v", err)
+	}
+	after := time.Date(2026, 11, 1, 6, 0, 0, 0, time.UTC) // 01:00 EST, second pass, after 05:30Z
+	got, err := sched.Next(after, ny)
+	if err != nil {
+		t.Fatalf("Next error = %v", err)
+	}
+	if !got.After(after) {
+		t.Fatalf("Next = %s is not strictly after %s (the fall-back earlier instant leaked as a past next_fire_at)", got.UTC(), after)
 	}
 }
 

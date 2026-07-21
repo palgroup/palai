@@ -119,16 +119,18 @@ func parseField(field string, b cronField) (bits uint64, restricted bool, err er
 	return bits, restricted, nil
 }
 
-// parseTerm compiles a single term: "*", "N", "a-b", "*/n", "a-b/n".
+// parseTerm compiles a single term: "*", "N", "a-b", "*/n", "a-b/n". A step is only legal on "*" or a
+// range base — a bare-number/step ("N/n") is NOT in the documented subset (Vixie would read it as
+// N-max/n, a different cadence), so it is rejected rather than silently accepted at a degenerate meaning.
 func parseTerm(term string, b cronField) (uint64, error) {
-	base, step := term, 1
+	base, step, hasStep := term, 1, false
 	if slash := strings.IndexByte(term, '/'); slash >= 0 {
 		base = term[:slash]
 		n, err := strconv.Atoi(term[slash+1:])
 		if err != nil || n < 1 {
 			return 0, fmt.Errorf("%w: bad step in %q", ErrInvalidCron, term)
 		}
-		step = n
+		step, hasStep = n, true
 	}
 
 	var lo, hi int
@@ -150,6 +152,9 @@ func parseTerm(term string, b cronField) (uint64, error) {
 		v, err := strconv.Atoi(base)
 		if err != nil {
 			return 0, fmt.Errorf("%w: %q is not a number", ErrInvalidCron, base)
+		}
+		if hasStep {
+			return 0, fmt.Errorf("%w: %q — a step needs a * or a-b base, not a bare number", ErrInvalidCron, term)
 		}
 		lo, hi = v, v
 	}
@@ -191,11 +196,18 @@ func (s CronSchedule) matchesDay(t time.Time) bool {
 	return domHit && dowHit
 }
 
-// Next returns the first matching instant strictly after `after`, resolved in loc. It scans wall-clock
-// minutes (calendar-iterated in UTC so +1 minute is always +1 WALL minute, undistorted by DST), and
-// resolves each matching wall time to a real instant via resolveInstant:
-//   - a duplicate wall time (fall-back) resolves to the EARLIER of its two instants (fires once);
-//   - a nonexistent wall time (spring-forward gap) returns ErrNonexistentLocalTime (caller → misfire);
+// Next returns the first REAL matching instant strictly after `after`, resolved in loc. It scans wall-clock
+// minutes (calendar-iterated in UTC so +1 minute is always +1 WALL minute, undistorted by DST) and folds
+// the two §33.2 DST rules directly into the scan — so a caller always gets a real, strictly-monotonic
+// instant, never a gap error and never a past instant:
+//   - SPRING-FORWARD GAP: a matched wall time that never occurs (resolveInstant → ErrNonexistentLocalTime)
+//     is SKIPPED (advance the wall cursor, keep scanning) — the schedule fires the next valid instant, it
+//     is NEVER resumed from time.Date's "moved" normalization (which points backwards into the gap and
+//     would permanently exhaust the schedule). The gap occurrence simply does not exist, so nothing fires
+//     for it (review #1).
+//   - FALL-BACK DUPLICATE: resolveInstant returns the EARLIER of the two instants (fires once); if that
+//     earlier instant is NOT strictly after `after` — i.e. `after` sits in the second pass of the repeated
+//     hour, past the already-fired earlier instant — it is SKIPPED so Next stays monotonic (review #3).
 //   - no match within the 5-year bound returns ErrNoCronOccurrence.
 func (s CronSchedule) Next(after time.Time, loc *time.Location) (time.Time, error) {
 	la := after.In(loc)
@@ -205,46 +217,40 @@ func (s CronSchedule) Next(after time.Time, loc *time.Location) (time.Time, erro
 	cursor := time.Date(la.Year(), la.Month(), la.Day(), la.Hour(), la.Minute(), 0, 0, time.UTC).Add(time.Minute)
 	for i := 0; i < cronScanLimit; i++ {
 		if s.matches(cursor) {
-			return resolveInstant(cursor.Year(), int(cursor.Month()), cursor.Day(), cursor.Hour(), cursor.Minute(), loc)
+			inst, err := resolveInstant(cursor.Year(), int(cursor.Month()), cursor.Day(), cursor.Hour(), cursor.Minute(), loc)
+			switch {
+			case errors.Is(err, ErrNonexistentLocalTime):
+				// gap — this wall time never occurs; skip it and keep scanning WALL-forward (never resume
+				// from a normalized instant).
+			case err != nil:
+				return time.Time{}, err
+			case inst.After(after):
+				return inst, nil
+				// else: a fall-back earlier-duplicate at/behind `after` — skip to stay monotonic.
+			}
 		}
 		cursor = cursor.Add(time.Minute)
 	}
 	return time.Time{}, ErrNoCronOccurrence
 }
 
-// nextReal is Next with DST spring-forward gaps SKIPPED: a cron-matched wall time that never occurs is
-// passed over (the schedule resumes at the next real instant — a nonexistent instant has nothing to fire),
-// and the first real matching instant strictly after `after` is returned. The ticker uses this to compute
-// next_fire_at and to enumerate missed instants; the raw Next (which surfaces ErrNonexistentLocalTime) is
-// the primitive it is built on. Bounded gap-skips guard against pathological zone data.
-func (s CronSchedule) nextReal(after time.Time, loc *time.Location) (time.Time, error) {
-	for i := 0; i < 64; i++ {
-		t, err := s.Next(after, loc)
-		if err == nil {
-			return t, nil
-		}
-		if errors.Is(err, ErrNonexistentLocalTime) {
-			after = t // t is the moved instant, past the gap — resume scanning from there
-			continue
-		}
-		return time.Time{}, err
-	}
-	return time.Time{}, ErrNoCronOccurrence
-}
-
 // resolveInstant maps a wall-clock Y-M-D-H-M in loc to a real UTC instant, applying the §33.2 DST rules
-// WITHOUT trusting time.Date's "not well-defined" gap/duplicate choice:
+// WITHOUT trusting time.Date's "not well-defined" gap/duplicate choice. It is the raw DST primitive Next is
+// built on (and is unit-tested directly for the gap case):
 //   - GAP (spring-forward): time.Date normalizes the nonexistent wall time to a different clock value —
-//     detected by the round-trip mismatch — so it returns ErrNonexistentLocalTime.
+//     detected by the round-trip mismatch — so it returns ErrNonexistentLocalTime (a zero instant; the
+//     normalized value is deliberately NOT returned, so no caller can resume from it).
 //   - DUPLICATE (fall-back): a dual-offset probe builds the two candidate instants (using the zone offset
 //     an hour before and an hour after); if both map back to the same wall time, the EARLIER is returned.
 //   - otherwise the single unambiguous instant.
+//
+// ponytail: the dual-offset probe assumes a DST transition of at most ±1h (every real IANA zone in use).
+// An exotic historical zone with a >1h jump would need a wider probe — out of scope until such a zone is
+// actually scheduled against.
 func resolveInstant(y, mo, d, h, mi int, loc *time.Location) (time.Time, error) {
 	t := time.Date(y, time.Month(mo), d, h, mi, 0, 0, loc)
 	if t.Year() != y || int(t.Month()) != mo || t.Day() != d || t.Hour() != h || t.Minute() != mi {
-		// Normalization moved it → the wall time never occurs. Return the MOVED instant with the error so a
-		// gap-skipping caller (nextReal) can resume scanning past the gap.
-		return t.UTC(), ErrNonexistentLocalTime
+		return time.Time{}, ErrNonexistentLocalTime // normalization moved it → the wall time never occurs
 	}
 	wallSecs := time.Date(y, time.Month(mo), d, h, mi, 0, 0, time.UTC).Unix()
 	_, offBefore := t.Add(-time.Hour).Zone()

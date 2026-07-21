@@ -51,6 +51,8 @@ func TestCronParserAcceptsOnlyDocumentedFiveField(t *testing.T) {
 		"5-3 * * * *",  // inverted range
 		"1..5 * * * *", // malformed separator
 		"a * * * *",    // non-numeric
+		"0/15 * * * *", // bare-number base with a step (N/n) — NOT in the subset (only */n, a-b/n)
+		"5/10 * * * *", // bare-number base with a step
 	}
 	for _, expr := range reject {
 		if _, err := ParseCron(expr); err == nil {
