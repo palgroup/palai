@@ -139,6 +139,10 @@ type dockerProcess struct {
 // drain: a wedged daemon that never EOFs the stream must not hang the supervisor's teardown.
 const demuxDrainTimeout = 5 * time.Second
 
+// errProcessTornDown ends a demux goroutine parked on a pipe write when the process is destroyed
+// before its stdout/stderr were fully drained (an early supervisor error), so it never leaks.
+var errProcessTornDown = errors.New("oci: engine process torn down")
+
 func (p *dockerProcess) Stdin() io.WriteCloser { return &stdinConn{attach: &p.attach} }
 func (p *dockerProcess) Stdout() io.Reader     { return p.stdoutR }
 func (p *dockerProcess) Stderr() io.Reader     { return p.stderrR }
@@ -217,6 +221,13 @@ func (p *dockerProcess) destroy(drain bool) {
 			defer cancel()
 			_, _ = p.client.ContainerRemove(ctx, p.containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 			p.attach.Close()
+			// Unblock a demux goroutine parked writing to a pipe whose reader stopped consuming
+			// (an early supervisor error leaves stdout/stderr undrained): closing the read ends makes
+			// StdCopy's pending Write return errProcessTornDown, so the demux returns instead of
+			// leaking. On the clean-exit drain path StdCopy has already closed the writers, so this is
+			// a harmless no-op.
+			_ = p.stdoutR.CloseWithError(errProcessTornDown)
+			_ = p.stderrR.CloseWithError(errProcessTornDown)
 		}
 		if drain {
 			drainThenReap(p.demuxDone, demuxDrainTimeout, reap)
