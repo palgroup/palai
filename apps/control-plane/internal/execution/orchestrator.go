@@ -217,7 +217,7 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// Record the durable attempt row before anything mid-run can offer a checkpoint (spec §26.1): the
 	// checkpoint / transcript-boundary / workspace-snapshot FKs all reference attempts(id). Idempotent,
 	// so a reclaim re-recording is a no-op. This attempt is proceeding (exact stood down above).
-	if err := o.spine.RecordAttempt(ctx, tenant, string(attempt.RunID), string(attempt.AttemptID), attempt.Fence); err != nil {
+	if err := o.spine.RecordAttempt(ctx, tenant, string(attempt.RunID), string(attempt.AttemptID)); err != nil {
 		return err
 	}
 

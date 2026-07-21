@@ -155,7 +155,7 @@ func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID st
 // RecordAttempt records the run attempt row (spec §26.1, E10 T4): the durable anchor the checkpoint,
 // transcript-boundary, and workspace-snapshot FKs reference. Idempotent on id (a reclaim re-recording
 // the same attempt is a no-op). Called at attempt start so a checkpoint offered mid-run can persist.
-func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attemptID string, fence uint64) error {
+func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attemptID string) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin record attempt: %w", err)
@@ -168,8 +168,10 @@ func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attempt
 		runID, tenant.Organization, tenant.Project, attemptID); err != nil {
 		return fmt.Errorf("supersede prior attempts: %w", err)
 	}
+	// Fence is computed RUN-monotonic inside the query (not the job claim fence, which restarts per
+	// job) so a resume's fresh-job attempt does not collide on (run_id, fence).
 	if _, err := tx.Exec(ctx, storage.Query("UpsertAttempt"),
-		attemptID, tenant.Organization, tenant.Project, runID, int64(fence)); err != nil {
+		attemptID, tenant.Organization, tenant.Project, runID); err != nil {
 		return fmt.Errorf("record attempt: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
