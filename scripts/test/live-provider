@@ -89,6 +89,18 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_shell_image=1
     ;;
+  provider-one/agent-revision-run)
+    # E11 Task 1 (AGT-001): a real provider run whose ExecutionSpec is resolved FROM a published
+    # AgentRevision — the revision pins the model and its tool set is a capability CEILING. The real
+    # request built from the resolved spec advertises ONLY the ceiling tool, is FORCED (tool_choice:
+    # required), and comes back with a genuine completion. Needs only the credential. Honest ceiling
+    # (named in the test): dispatchModel does NOT advertise tool schemas to the provider, so the
+    # "a tool outside the revision is never offered" half is proven by REQUEST CONSTRUCTION from the
+    # pinned revision, NOT by model-spontaneous refusal; the advertising gate is not lowered here.
+    pkg="./apps/control-plane/internal/execution/tools/live"
+    run="TestLiveAgentRevisionPinnedRun"
+    required_key="OPENAI_API_KEY"
+    ;;
   provider-one/checkpoint-restore)
     # E10 Task 4: a real provider forced-tool run persists a tool-boundary checkpoint to REAL S3, the
     # engine uv-subprocess is SIGKILLed post-persist, and a fresh attempt RESTORES it (ladder rung 2,
@@ -150,7 +162,7 @@ case "$provider/$case_name" in
     ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore" >&2
     exit 2
     ;;
 esac
