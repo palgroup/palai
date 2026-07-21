@@ -129,7 +129,7 @@ ON CONFLICT (id) DO UPDATE
 -- `uncertain` row blocks the call, and an `executing` row (a kill mid-execute) is classified by the
 -- replay_class. No row -> a fresh dispatch.
 -- name: LookupToolCall
-SELECT state, coalesce(result::text, ''), replay_class, fence
+SELECT state, coalesce(result::text, ''), replay_class, fence, request_hash
 FROM tool_calls
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 

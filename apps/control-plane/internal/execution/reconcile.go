@@ -109,7 +109,9 @@ func (r *UncertainReconciler) resolve(ctx context.Context, call coordinator.Unce
 		}
 		return "reconciled_completed", probed, nil
 	}
-	return "reconciled_not_applied", nil, nil
+	// A typed not-applied body, so a replay delivers a meaningful result to the model (not empty string).
+	notApplied, _ := json.Marshal(map[string]any{"reconciled": true, "applied": false, "detail": "the tool effect did not reach the destination and was not applied"})
+	return "reconciled_not_applied", notApplied, nil
 }
 
 // Run sweeps every interval until ctx is cancelled. A sweep error is non-fatal — the next tick retries —

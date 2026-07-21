@@ -28,15 +28,22 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	name, _ := frame.Data["name"].(string)
 	args, _ := frame.Data["arguments"].(map[string]any)
 	runID := string(st.attempt.RunID)
+	requestHash := toolbroker.RequestHash(name, args)
 
 	// 1. Durable consult (cross-kill dedup + uncertain block).
-	state, stored, storedClass, _, found, err := o.spine.LookupToolCall(ctx, st.tenant, callID)
+	state, stored, storedClass, _, storedHash, found, err := o.spine.LookupToolCall(ctx, st.tenant, callID)
 	if err != nil {
 		return err
 	}
 	if found {
 		switch state {
 		case "completed", "reconciled_completed", "reconciled_not_applied":
+			// A committed row is recognised BY CONTENT (spec §26.7, TOL-016): the same tool_call_id must
+			// carry the same (name, args). A diverged repeat is a protocol violation — replaying the stored
+			// result would answer a DIFFERENT call with the wrong content — so fail rather than mislead.
+			if storedHash != "" && storedHash != requestHash {
+				return fmt.Errorf("tool_call %q replayed with diverged content (hash %s != %s): same id, different request", callID, requestHash, storedHash)
+			}
 			// Replay the committed result LABELED; no re-execute, no re-commit (§26.7, TOL-001/016).
 			return o.deliverToolResult(ctx, st, frame, callID, stored, true)
 		case "uncertain", "manual_resolution":
@@ -60,8 +67,10 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	// pure row, or a fence re-lease) — BeginToolCall is idempotent, but avoiding it keeps the fresh path lean.
 	arguments, _ := json.Marshal(args)
 	class := o.tools.ReplayClassOf(name)
-	requestHash := toolbroker.RequestHash(name, args)
 	if toolbroker.NeedsPreWrite(class) && !found {
+		// external_idempotency_key + commit_boundary are left empty: TOL-017's fence half is real (the
+		// CommitToolResult fence guard), but the async-callback transport half that would key on
+		// commit_boundary is a signed-transport/SDK concern (E12) — no async-callback tool exists yet.
 		if err := o.spine.BeginToolCall(ctx, st.tenant, st.sessionID, st.responseID, runID, st.attempt.Fence,
 			callID, name, arguments, string(class), requestHash, "", ""); err != nil {
 			return err

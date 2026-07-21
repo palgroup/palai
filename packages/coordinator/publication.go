@@ -213,7 +213,7 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 	// settles the command" shape the stale-hash branch uses. Checked before the hash so an expired
 	// approval never approves regardless of the token.
 	if expiresAt != nil && expiresAt.Before(time.Now()) {
-		if err := expirePublicationTx(ctx, tx, tenant, sessionID, responseID, pubID, "pending_approval"); err != nil {
+		if _, err := expirePublicationTx(ctx, tx, tenant, sessionID, responseID, pubID, "pending_approval"); err != nil {
 			return 0, err
 		}
 		seq, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
@@ -262,21 +262,22 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 // (ApplyApprovalDecision, ExpireApprovalIfElapsed) and the reconcile sweep all expire through it, so an
 // expired approval is journaled identically no matter which path observes the elapsed deadline. The
 // UPDATE is conditional on fromState, so a racing publish/deny that already moved the row wins and this
-// is a no-op that journals nothing.
-func expirePublicationTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, pubID, fromState string) error {
+// is a no-op that journals nothing. It returns whether it actually expired a row, so a sweep counts only
+// the ones it moved (not a no-op a concurrent consume already handled).
+func expirePublicationTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, pubID, fromState string) (bool, error) {
 	tag, err := tx.Exec(ctx, storage.Query("SetPublicationState"),
 		pubID, tenant.Organization, tenant.Project, "expired", fromState)
 	if err != nil {
-		return fmt.Errorf("expire publication: %w", err)
+		return false, fmt.Errorf("expire publication: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return nil // a racing transition already moved it; nothing to journal
+		return false, nil // a racing transition already moved it; nothing to journal
 	}
 	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, approvalExpiredEvent,
 		mustMarshal(map[string]any{"publication_id": pubID})); err != nil {
-		return err
+		return false, err
 	}
-	return nil
+	return true, nil
 }
 
 // ExpireApprovalIfElapsed is the approval pump's consume-time expiry guard (spec §22.4, §30.9-30.10,
@@ -305,7 +306,7 @@ func (s *Store) ExpireApprovalIfElapsed(ctx context.Context, tenant Tenant, sess
 	if state != "approved" || expiresAt == nil || !expiresAt.Before(time.Now()) {
 		return false, nil
 	}
-	if err := expirePublicationTx(ctx, tx, tenant, sessionID, responseID, publicationID, "approved"); err != nil {
+	if _, err := expirePublicationTx(ctx, tx, tenant, sessionID, responseID, publicationID, "approved"); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -352,12 +353,15 @@ func (s *Store) SweepExpiredApprovals(ctx context.Context) (int, error) {
 	swept := 0
 	for _, e := range candidates {
 		// The row's own read state (pending_approval or approved) is the fromState the shared
-		// single-winner expiry guards on. A row a concurrent consume already moved is a no-op that
-		// journals nothing (RowsAffected 0 inside expirePublicationTx).
-		if err := expirePublicationTx(ctx, tx, e.tenant, e.sessionID, e.responseID, e.pubID, e.fromState); err != nil {
+		// single-winner expiry guards on. Count only rows this sweep actually moved — a row a concurrent
+		// consume already expired is a no-op (RowsAffected 0), not a swept one.
+		expired, err := expirePublicationTx(ctx, tx, e.tenant, e.sessionID, e.responseID, e.pubID, e.fromState)
+		if err != nil {
 			return 0, err
 		}
-		swept++
+		if expired {
+			swept++
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit sweep expired approvals: %w", err)

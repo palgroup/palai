@@ -445,7 +445,7 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 		// (§26.7 continuation-block, TOL-003). Reject it.
 		var state string
 		if err := tx.QueryRow(ctx, storage.Query("LookupToolCall"), callID, tenant.Organization, tenant.Project).
-			Scan(&state, new(string), new(string), new(int64)); err != nil {
+			Scan(&state, new(string), new(string), new(int64), new(string)); err != nil {
 			return 0, fmt.Errorf("classify unchanged tool commit: %w", err)
 		}
 		if state != "completed" {
@@ -468,16 +468,18 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 
 // LookupToolCall reads a tool_call's durable ledger row for the pre-execute consult (spec §26.7, E10
 // T7): a completed row replays cached (never re-fires), an `uncertain` row blocks the call, an
-// `executing` row (a kill mid-execute) is classified by replayClass. found is false for a fresh call.
-func (s *Store) LookupToolCall(ctx context.Context, tenant Tenant, callID string) (state, result, replayClass string, fence int64, found bool, err error) {
+// `executing` row (a kill mid-execute) is classified by replayClass. requestHash is the row's canonical
+// (name, args) digest, so the replay path can reject a same-id call whose content diverged (TOL-016).
+// found is false for a fresh call.
+func (s *Store) LookupToolCall(ctx context.Context, tenant Tenant, callID string) (state, result, replayClass string, fence int64, requestHash string, found bool, err error) {
 	switch e := s.pool.QueryRow(ctx, storage.Query("LookupToolCall"), callID, tenant.Organization, tenant.Project).
-		Scan(&state, &result, &replayClass, &fence); {
+		Scan(&state, &result, &replayClass, &fence, &requestHash); {
 	case errors.Is(e, pgx.ErrNoRows):
-		return "", "", "", 0, false, nil
+		return "", "", "", 0, "", false, nil
 	case e != nil:
-		return "", "", "", 0, false, fmt.Errorf("lookup tool call: %w", e)
+		return "", "", "", 0, "", false, fmt.Errorf("lookup tool call: %w", e)
 	}
-	return state, result, replayClass, fence, true, nil
+	return state, result, replayClass, fence, requestHash, true, nil
 }
 
 // BeginToolCall records the durable PRE-EXECUTE marker for a side-effecting tool (spec §26.6-26.7, E10

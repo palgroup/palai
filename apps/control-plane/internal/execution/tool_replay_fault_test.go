@@ -15,9 +15,12 @@
 // to completed WITHOUT re-firing (the counter stays 1), an irreversible one escalates to
 // manual_resolution and never auto-replays.
 //
-// This is the provider-independent core. The gated LIVE layer (a real provider driving the tool via a
-// forced tool_call on the serialized :local stack) wraps the SAME assertions with a real chatcmpl — the
-// reconcile invariant is provider-agnostic, so it is authored here and run in the serialized live tier.
+// This fault tier IS the provider-agnostic core of the reconcile invariant and runs here (CASE=recovery).
+// The plan's LIVE case CASE=tool-replay-reconcile (a real provider driving the tool via a forced
+// tool_call on the serialized :local stack) would wrap the SAME assertions with a real chatcmpl, but it
+// is NOT wired: scripts/test/live-provider has no such case yet. Recorded deviation — the reconcile
+// invariant is provider-independent, so the fault tier proves it; the live wrapper is a named follow-up
+// (it adds only the real-provider round-trip, not new reconcile logic).
 package execution
 
 import (

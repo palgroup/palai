@@ -85,6 +85,10 @@ func (o *Orchestrator) consultCheckpointLadder(ctx context.Context, st *attemptS
 	}
 	plan.present = true
 	plan.checkpoint = cp
+	// ponytail: cp.PendingOperations is populated (persistCheckpoint) but the ladder does not yet BLOCK a
+	// restore on it — the practical uncertain block is enforced dispatch-side (dispatchTool's uncertain-STOP
+	// on the durable ledger row), which a restored attempt re-hits. A ladder-level §26.4 pending-op gate is
+	// the upgrade if a restore must refuse to resume with an unreconciled op before re-dispatch.
 
 	// Fetch + checksum the opaque bytes so the pure ladder can weigh integrity (§26.4). A missing sink
 	// or absent object leaves computed == "" and bytes nil, which fails the checksum condition — the

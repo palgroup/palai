@@ -331,6 +331,44 @@ func hasLabel(labels []string, want string) bool {
 	return false
 }
 
+// TestDivergedContentReplayRejected proves the completed-replay hash guard (spec §26.7, TOL-016): a
+// committed tool_call_id replayed with DIFFERENT (name, args) is a protocol violation — replaying the
+// stored result would answer a different call with the wrong content — so dispatchTool fails rather than
+// silently serving the wrong result. A matching-content redelivery replays cleanly.
+func TestDivergedContentReplayRejected(t *testing.T) {
+	ctx := context.Background()
+	cs, tenant, sessionID, runID := openLedgerSpine(t)
+	broker := toolbroker.New(toolbroker.Tool{
+		Name: "count.pure", InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"},
+		Invoke: func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil },
+	})
+	callID := redeliveryID("tc")
+	origArgs := map[string]any{"n": float64(1)}
+	// A committed row for {n:1}, hashed by content.
+	if _, err := cs.CommitToolResult(ctx, tenant, sessionID, "", runID, 1, callID, "count.pure",
+		[]byte(`{"n":1}`), []byte(`{"ok":true}`), "pure", toolbroker.RequestHash("count.pure", origArgs), "tool_call.completed.v1", []byte(`{}`)); err != nil {
+		t.Fatalf("seed CommitToolResult error = %v", err)
+	}
+
+	// Same id, DIVERGED args {n:2} → rejected.
+	orch, st, ch := ledgerAttempt(cs, broker, tenant, sessionID, runID, 2)
+	if derr := orch.dispatchTool(ctx, st, toolRequestFrame(callID, "count.pure", map[string]any{"n": float64(2)})); derr == nil {
+		t.Fatal("diverged-content replay returned nil, want a protocol-violation error")
+	}
+	if got := toolResults(ch); len(got) != 0 {
+		t.Fatalf("diverged replay delivered %+v, want no tool.result", got)
+	}
+
+	// Same id, SAME args → clean labeled replay.
+	orch2, st2, ch2 := ledgerAttempt(cs, broker, tenant, sessionID, runID, 3)
+	if derr := orch2.dispatchTool(ctx, st2, toolRequestFrame(callID, "count.pure", origArgs)); derr != nil {
+		t.Fatalf("matching-content replay error = %v", derr)
+	}
+	if got := toolResults(ch2); len(got) != 1 || !got[0].replayed {
+		t.Fatalf("matching replay = %+v, want one labeled replay", got)
+	}
+}
+
 // TestStaleCommitOnReclaimerParkedRowRejected proves the MUST-FIX #1 classification (spec §26.7,
 // TOL-003): a stale attempt that reaches CommitToolResult on a row a RECLAIMER has since parked
 // `uncertain` (or manual_resolution / reconciled_*) is REJECTED with ErrStaleToolCommit — never a benign
