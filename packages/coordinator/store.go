@@ -156,9 +156,24 @@ func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID st
 // transcript-boundary, and workspace-snapshot FKs reference. Idempotent on id (a reclaim re-recording
 // the same attempt is a no-op). Called at attempt start so a checkpoint offered mid-run can persist.
 func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attemptID string, fence uint64) error {
-	if _, err := s.pool.Exec(ctx, storage.Query("UpsertAttempt"),
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin record attempt: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	// Supersede any prior non-terminal attempt for this run (a reclaim: the predecessor is lost) so
+	// the one-active-per-run index admits this attempt. The exact rung already ruled out a live
+	// original, so this only reconciles a crashed/fenced-out row.
+	if _, err := tx.Exec(ctx, storage.Query("SupersedeActiveAttempts"),
+		runID, tenant.Organization, tenant.Project, attemptID); err != nil {
+		return fmt.Errorf("supersede prior attempts: %w", err)
+	}
+	if _, err := tx.Exec(ctx, storage.Query("UpsertAttempt"),
 		attemptID, tenant.Organization, tenant.Project, runID, int64(fence)); err != nil {
 		return fmt.Errorf("record attempt: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit record attempt: %w", err)
 	}
 	return nil
 }

@@ -120,6 +120,15 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- 1..M (all replayed by LookupModelResult), so a fresh queued message must fold at the boundary that
 -- precedes the FIRST live step (M+1), never into a replayed step's request. Committed steps are a
 -- contiguous prefix, so the count IS the last replayed step's index.
+-- name: SupersedeActiveAttempts
+-- A new attempt on a run supersedes any prior NON-TERMINAL attempt (a reclaim: the old attempt is
+-- lost), clearing the one-active-per-run index so the new attempt can record. Skips the new
+-- attempt's own id. Only reachable once the exact rung ruled out a still-live original (§26.3), so
+-- this never steals an active lease — it reconciles the crashed/fenced-out predecessor's row.
+UPDATE attempts SET state = 'lost', updated_at = clock_timestamp()
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND id <> $4
+  AND state IN ('assigned', 'starting', 'active', 'draining');
+
 -- name: UpsertAttempt
 -- Record the run attempt row (spec §26.1, E10 T4): the durable anchor the checkpoint /
 -- transcript-boundary / workspace-snapshot FKs reference. Idempotent on id so a reclaim re-recording
