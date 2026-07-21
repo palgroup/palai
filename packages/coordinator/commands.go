@@ -735,8 +735,11 @@ func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID
 // 3). A surviving send_message that never folded into THIS response gets a warning.raised.v1 so the user
 // SEES it will carry rather than silently vanish; the actual carry re-scopes it at the next run.start
 // (CarrySessionSendMessages).
-func sweepQueuedCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID string, responseID *string, runID string) error {
-	rows, err := tx.Query(ctx, storage.Query("ExpireQueuedCommandsForRun"), runID, tenant.Organization, tenant.Project)
+func sweepQueuedCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID string, responseID *string, runID string, terminal statemachines.RunState) error {
+	// send_message survives (carries) ONLY on a clean completion; a canceled/failed terminal expires it
+	// like the rest (an aborted run has no clean next response to carry into, E10 T7 fork 3).
+	expireSendMessages := terminal != statemachines.RunCompleted
+	rows, err := tx.Query(ctx, storage.Query("ExpireQueuedCommandsForRun"), runID, tenant.Organization, tenant.Project, expireSendMessages)
 	if err != nil {
 		return fmt.Errorf("expire queued commands: %w", err)
 	}
@@ -762,7 +765,11 @@ func sweepQueuedCommands(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionI
 			return err
 		}
 	}
-	return warnSurvivingSendMessages(ctx, tx, tenant, sessionID, resp, runID)
+	// Only a clean completion leaves send_messages queued to carry — warn each so the user sees it.
+	if !expireSendMessages {
+		return warnSurvivingSendMessages(ctx, tx, tenant, sessionID, resp, runID)
+	}
+	return nil
 }
 
 // warnSurvivingSendMessages journals warning.raised.v1 for each send_message still queued on a terminal

@@ -203,8 +203,9 @@ func TestLateCallbackAfterFenceAdvanceDenied(t *testing.T) {
 // recovering attempt, in CANONICAL order (creation / applied_sequence — interrupt accepted first, then
 // steer, then queue), at the boundary pump — never spliced into a reconstructed step. The order is
 // STABLE across a second reclaim (a flipped order would rebuild a different request for a committed
-// step). The pre-first-step cancellation hook (a pending pause) is proven separately by the pause path;
-// here the run continues and the three outage messages fold in canonical order.
+// step). The cancellation-before-dial half of fork 2 is the existing terminal check (a canceled run's
+// reclaim returns before dialing); here the run continues and the three outage messages fold in canonical
+// order.
 func TestOutageCommandsDeliverCanonicalOrderAfterRecovery(t *testing.T) {
 	ctx := context.Background()
 	h := newRedeliveryHarness(t, "interrupt") // the interrupt-delivery message, accepted FIRST in the outage

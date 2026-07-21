@@ -339,22 +339,14 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	}
 	st.committedStepWatermark = plan.committedSteps
 
-	// Intent hook (spec §26.9, §22.3, E10 T7 ENG-012 fork 2): before sending run.start/restore — before
-	// any model step opens compute — process a cancellation intent accepted DURING the outage. A pending
-	// pause applies HERE so the run waits without running a step (the fresh attempt does not dial the
-	// model), and resume re-opens it. Any queue/steer/interrupt message accepted in the outage stays
-	// queued for the pump to deliver in canonical (creation/applied_sequence) order once the run
-	// continues — never spliced into a reconstructed step. A restore path takes the same hook: a pause
-	// that landed while the run was down pre-empts the resume.
-	switch pauseID, found, err := o.spine.PendingPauseCommand(ctx, tenant, string(attempt.RunID)); {
-	case err != nil:
-		return err
-	case found:
-		if _, err := o.spine.PauseRun(ctx, tenant, sessionID, responseID, string(attempt.RunID), pauseID); err != nil {
-			return abortIfTerminal(err)
-		}
-		return nil // run waiting; compute never ran a step (fork 2). Resume opens a fresh attempt.
-	}
+	// Intent hook (spec §26.9, §22.3, E10 T7 ENG-012 fork 2): a CANCELLATION intent accepted during the
+	// outage is already processed before compute opens — ExecuteAttempt's ApplyRunTransition(Provision,
+	// Start) above returns ErrRunTerminal for a canceled run and this attempt returns without dialing (the
+	// terminal check IS the pre-dial cancel hook). A PAUSE is deliberately NOT pre-empted here: a pause is
+	// a cooperative stop that must go through the boundary pump so it captures its SES-009 checkpoint
+	// (checkpointBeforePause); applying it at run.start would skip the checkpoint. Any queue/steer/
+	// interrupt message accepted in the outage stays queued for the pump to deliver in canonical
+	// (creation/applied_sequence) order once the run continues — never spliced into a reconstructed step.
 
 	switch plan.decision.Level {
 	case recovery.LevelExplicitFailure:

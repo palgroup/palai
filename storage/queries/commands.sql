@@ -96,15 +96,17 @@ ORDER BY created_at;
 -- must not sit queued forever. change_config is EXCLUDED — a config switch with no boundary in
 -- its run carries to the next run's start (the cross-run config carry, spec §9.3), so it stays
 -- queued for the session-config drain, not expired here. RETURNs the swept ids for command.expired.v1.
--- ExpireQueuedCommandsForRun expires a terminal run's still-queued commands (spec §22.4 lifecycle),
--- EXCEPT the two cross-run carries: change_config (applied at the next run's start) and send_message (a
--- message that never reached a boundary is not silently dropped — it stays queued, is warned, and is
--- carried to the next response's input boundary, E10 T7 ENG-012 fork 3).
+-- ExpireQueuedCommandsForRun expires a terminal run's still-queued commands (spec §22.4 lifecycle).
+-- change_config is NEVER expired (it carries cross-run regardless of the terminal kind). send_message
+-- carries ONLY on a CLEAN completion ($4 = false): a message that never folded into a completed response
+-- stays queued, is warned, and carries to the next response (E10 T7 ENG-012 fork 3). On a canceled/failed
+-- terminal ($4 = true) it IS expired — an aborted run has no clean next response to carry into.
 -- name: ExpireQueuedCommandsForRun
 UPDATE commands
 SET state = 'expired', updated_at = clock_timestamp()
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'queued'
-  AND kind NOT IN ('change_config', 'send_message')
+  AND kind <> 'change_config'
+  AND (kind <> 'send_message' OR $4)
 RETURNING id;
 
 -- SurvivingQueuedSendMessagesForRun returns the send_message commands that survive a run's terminal

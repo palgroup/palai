@@ -416,7 +416,7 @@ func applyRunTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID s
 	// This is the single choke point every terminal path (engine terminal, cancel, fail) routes
 	// through, so the sweep runs exactly once per run (terminality is monotonic).
 	if runTerminalStates[next] {
-		if err := sweepQueuedCommands(ctx, tx, tenant, sessionID, responseID, runID); err != nil {
+		if err := sweepQueuedCommands(ctx, tx, tenant, sessionID, responseID, runID, next); err != nil {
 			return Transition{}, err
 		}
 	}
