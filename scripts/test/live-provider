@@ -32,6 +32,7 @@ fi
 needs_engine=0
 needs_object_store=0
 needs_shell_image=0
+needs_postgres=0
 case "$provider/$case_name" in
   provider-one/text-stream-tool-schema)
     pkg="./tests/live/provider"
@@ -160,9 +161,21 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_object_store=1
     ;;
+  provider-one/trigger-dedupe-run)
+    # E11 Task 2 (AUT-001): a manual/API trigger delivery starts a REAL provider-one run pinned to a
+    # published AgentRevision, and a second delivery with the same dedupe key is a duplicate that starts
+    # NO second run — a broker-seam request-count counter proves count==1. Needs the credential + a
+    # throwaway Postgres (the dedupe is a partial-unique-index invariant). Honest ceiling (named in the
+    # test): the source is manual/API (signed inbound is T5), the run is single-step + real (E08 pin), and
+    # this case makes NO model→tool claim, so it does NOT touch PALAI_LIVE_TOOL_ADVERTISING.
+    pkg="./apps/control-plane/internal/automation/live"
+    run="TestLiveTriggerDedupeRun"
+    required_key="OPENAI_API_KEY"
+    needs_postgres=1
+    ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run" >&2
     exit 2
     ;;
 esac
@@ -308,11 +321,81 @@ run_live_with_shell_image() {
   return "$status"
 }
 
+# run_live_with_postgres stands up a throwaway Postgres, exports its URL, and runs the tagged test —
+# which inherits the provider credential loaded above. Only the throwaway pg password rides a docker
+# --env; the provider secret reaches the go test process only, never a container's argv or environment.
+run_live_with_postgres() {
+  local test_pkg="$1" test_run="$2"
+  local pg_image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  local label="io.palai.live=trigger-dedupe"
+  local run_id="$$-${RANDOM}"
+  local pg_container="palai-live-trigger-pg-$run_id"
+  local volume="palai-live-trigger-pg-$run_id"
+  local password="palai-live-${RANDOM}${RANDOM}"
+
+  count_containers() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_volumes() { docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$pg_container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+  }
+  local containers_before volumes_before
+  containers_before="$(count_containers)"
+  volumes_before="$(count_volumes)"
+  trap cleanup EXIT
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never --name "$pg_container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 --volume "$volume:/var/lib/postgresql/data" "$pg_image" >/dev/null
+
+  local pg_ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$pg_container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then
+      pg_ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$pg_ready" -ne 1; then
+    docker logs "$pg_container" >&2 || true
+    echo "postgres live-trigger container did not become ready" >&2
+    exit 1
+  fi
+
+  local pg_binding pg_port url
+  pg_binding="$(docker port "$pg_container" 5432/tcp)"
+  pg_port="${pg_binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$pg_port/palai?sslmode=disable"
+
+  set +e
+  PALAI_COMPONENT_POSTGRES_URL="$url" \
+    go test -tags=live -count=1 -run "$test_run" -v "$test_pkg"
+  local status=$?
+  set -e
+  if test "$status" -ne 0; then
+    docker logs "$pg_container" >&2 || true
+  fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers)"
+  volumes_after="$(count_volumes)"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "trigger-dedupe live smoke leaked a container or volume" >&2
+    exit 1
+  fi
+  return "$status"
+}
+
 # The credential travels only in the environment — never in argv (ps-visible) and
 # never in a log. Leak protection is asserted inside the test process by an opaque
 # comparison that never prints the value.
 if test "$needs_object_store" = 1; then
   run_live_with_object_store "$pkg" "$run"
+elif test "$needs_postgres" = 1; then
+  run_live_with_postgres "$pkg" "$run"
 elif test "$needs_shell_image" = 1; then
   run_live_with_shell_image "$pkg" "$run"
 elif test "$needs_engine" = 1; then
