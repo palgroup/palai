@@ -20,7 +20,7 @@ ORDER BY created_at DESC;
 -- scan the journal past each endpoint's high-water mark. Not tenant-scoped: the pump is a system loop
 -- that serves every project (each endpoint carries its own scope forward onto the delivery rows).
 -- name: FanOutEndpoints
-SELECT id, organization_id, project_id, event_filter, cursor_journal_id
+SELECT id, organization_id, project_id, event_filter, api_revision, cursor_journal_id
 FROM webhook_endpoints
 WHERE enabled;
 
@@ -55,7 +55,8 @@ ON CONFLICT (endpoint_id, event_id) DO NOTHING;
 -- (AUT — no head-of-line). ponytail: no FOR UPDATE — a single supervised pump owns the loop; the
 -- attempt UNIQUE(delivery_id, attempt_number) is the backstop if two ever race.
 -- name: DueDeliveries
-SELECT d.id, d.endpoint_id, d.event_id, d.event_type, d.payload, d.attempt_count, d.first_attempt_at,
+SELECT d.id, d.organization_id, d.project_id, d.session_id, d.endpoint_id, d.event_id, d.event_type,
+       d.payload, d.attempt_count, d.first_attempt_at,
        e.url, e.allow_private_destination, e.timeout_ms, e.max_attempts, e.retry_window_seconds,
        e.signing_secret_ref, e.signing_secret_ref_next, e.fixed_headers, e.api_revision
 FROM webhook_deliveries d
