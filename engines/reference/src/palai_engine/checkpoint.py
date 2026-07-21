@@ -32,6 +32,23 @@ def decode(raw: bytes) -> dict:
     return json.loads(raw.decode())
 
 
+def migrate(state: dict) -> dict:
+    """Migrate a captured loop state from format_version 1 to 2 (spec §26.2, ENG-011).
+
+    A real, minimal transform: v2 stamps the explicit ``state_version`` discriminator a v1 capture
+    lacked (a v1 state is implicitly version 1). It returns a NEW dict — the caller's v1 state is
+    never mutated — so the immutable v1 checkpoint is preserved and rollback to it stays possible.
+    Every resumable field carries forward unchanged, so a v2 state restores to the same boundary.
+
+    Ponytail: the production engine stays v1 (checkpoint_formats == ["reference-kernel/1"] pins the
+    schema); this exists to prove the migration MECHANISM (original preserved, new checksum,
+    provenance recorded by the control plane), not to ship a second production format.
+    """
+    migrated = dict(state)
+    migrated["state_version"] = 2
+    return migrated
+
+
 def offer_data(state: dict, boundary_kind: str) -> dict:
     """The checkpoint.offer frame's data (spec §26.2). `state` is base64 of the opaque
     canonical bytes; format/format_version let the control plane pin compatibility and the

@@ -84,6 +84,15 @@ class Context:
             content = f"[delegation skipped role={role} reason={data.get('reason')}]"
         self._messages.append({"role": "user", "content": content, "child_run_id": child_run})
 
+    def last_tool_calls(self) -> list[dict]:
+        """The tool_calls of the most recent assistant turn (spec §26.3): a restore re-derives the
+        outstanding tool.requests from here, keeping their name/arguments. Empty when the last
+        assistant turn proposed no tool calls."""
+        for message in reversed(self._messages):
+            if message.get("role") == "assistant" and message.get("tool_calls"):
+                return message["tool_calls"]
+        return []
+
     def capture(self) -> dict:
         """Snapshot the conversation for a checkpoint (spec §26.1). Plain lists of dicts —
         JSON-serializable and deterministic, so the same context always serializes identically."""

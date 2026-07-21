@@ -151,6 +151,23 @@
           }
         }
       }
+    },
+    {
+      "if": {"required": ["type"], "properties": {"type": {"const": "run.restore"}}},
+      "then": {
+        "properties": {
+          "data": {
+            "description": "Restore a fresh engine process from a portable checkpoint (spec §26.3 rung 2, E10 Task 4) — the inbound mirror of checkpoint.offer. state is the OPAQUE loop-state bytes base64-encoded (the same bytes the control plane held); format/format_version must match engine.ready.checkpoint_formats or the engine answers protocol.error rather than half-restoring. The engine re-derives the frame it was awaiting at the captured boundary.",
+            "type": "object",
+            "required": ["format", "format_version", "state"],
+            "properties": {
+              "format": {"type": "string"},
+              "format_version": {"type": "integer", "minimum": 1},
+              "state": {"type": "string", "description": "base64 of the opaque checkpoint bytes"}
+            }
+          }
+        }
+      }
     }
   ]
 }
