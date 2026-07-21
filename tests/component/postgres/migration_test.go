@@ -45,6 +45,7 @@ var allTables = []string{
 	"host_quarantine",
 	"agent_profiles", "agent_revisions", "run_template_revisions",
 	"webhook_endpoints", "webhook_deliveries", "delivery_attempts",
+	"triggers", "trigger_revisions", "trigger_deliveries",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -910,6 +911,81 @@ func TestWebhooksMigration(t *testing.T) {
 	}
 	if !tableExists(t, pool, "webhook_deliveries") || !columnExists(t, pool, "events", "journal_id") {
 		t.Fatal("after reapply, a 000020 object is missing")
+	}
+}
+
+// TestTriggersMigration proves 000021 adds the trigger tables (triggers, immutable trigger_revisions,
+// trigger_deliveries) idempotently and reverses cleanly (E11 Task 2, spec §20.2.2). Present after apply
+// (a re-apply is a clean no-op — every object IF NOT EXISTS), gone after rollback (children before
+// parents), returning after reapply. It also pins the load-bearing constraints: revise = a new
+// immutable INSERT keyed UNIQUE(trigger_id, revision_number); the canonical dedupe partial-unique index
+// rejects a second live canonical row for the same (trigger, dedupe_key); and version 21 is removed
+// from schema_migrations on rollback.
+func TestTriggersMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op.
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"triggers", "trigger_revisions", "trigger_deliveries"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after apply, %s is missing", name)
+		}
+	}
+	// The forward migration records its version (the guarded down.sql DELETEs it before the table drop —
+	// exercised, without a partial-rollback helper, by the clean full Rollback + reapply below).
+	var version21 int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 21`).Scan(&version21); err != nil {
+		t.Fatalf("count version 21 error = %v", err)
+	}
+	if version21 != 1 {
+		t.Fatalf("schema_migrations records version 21 %d times, want 1", version21)
+	}
+
+	tenant, _, _ := seedRun(t, pool)
+
+	// A trigger + two revisions: revise is a NEW immutable INSERT, not an in-place UPDATE, keyed by a
+	// monotonic revision_number that is UNIQUE per trigger.
+	triggerID := newID("trg")
+	exec(t, pool, `INSERT INTO triggers (id, organization_id, project_id, name, type) VALUES ($1,$2,$3,'nightly','manual_api')`,
+		triggerID, tenant.Organization, tenant.Project)
+	rev1 := newID("trev")
+	exec(t, pool, `INSERT INTO trigger_revisions (id, organization_id, project_id, trigger_id, revision_number) VALUES ($1,$2,$3,$4,1)`,
+		rev1, tenant.Organization, tenant.Project, triggerID)
+	if got := pgCode(mustFail(pool.Exec(ctx,
+		`INSERT INTO trigger_revisions (id, organization_id, project_id, trigger_id, revision_number) VALUES ($1,$2,$3,$4,1)`,
+		newID("trev"), tenant.Organization, tenant.Project, triggerID))); got != "23505" {
+		t.Fatalf("duplicate revision_number code = %q, want 23505 unique_violation", got)
+	}
+
+	// The canonical dedupe index: a live canonical row (duplicate_of IS NULL) for a non-empty dedupe_key
+	// is unique per trigger; a second canonical insert with the same key is rejected, while a duplicate
+	// row (duplicate_of set) is exempt.
+	exec(t, pool, `INSERT INTO trigger_deliveries (id, organization_id, project_id, trigger_id, trigger_revision_id, dedupe_key) VALUES ($1,$2,$3,$4,$5,'k1')`,
+		newID("tdel"), tenant.Organization, tenant.Project, triggerID, rev1)
+	if got := pgCode(mustFail(pool.Exec(ctx,
+		`INSERT INTO trigger_deliveries (id, organization_id, project_id, trigger_id, trigger_revision_id, dedupe_key) VALUES ($1,$2,$3,$4,$5,'k1')`,
+		newID("tdel"), tenant.Organization, tenant.Project, triggerID, rev1))); got != "23505" {
+		t.Fatalf("second live canonical dedupe row code = %q, want 23505 unique_violation", got)
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, name := range []string{"triggers", "trigger_revisions", "trigger_deliveries"} {
+		if tableExists(t, pool, name) {
+			t.Fatalf("after rollback, %s still exists", name)
+		}
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "trigger_deliveries") {
+		t.Fatal("after reapply, a 000021 table is missing")
 	}
 }
 

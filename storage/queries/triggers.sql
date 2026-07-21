@@ -1,0 +1,5 @@
+-- Trigger management + delivery pipeline (spec §20.2.2, E11 Task 2). Writes are the management surface
+-- (create trigger / revise / create+advance delivery); reads resolve the ACTIVE revision (highest
+-- revision_number — there is no publish flag, AGT-002 pin-at-accept) and drive dedupe / correlation /
+-- concurrency. A revise always INSERTs a new immutable revision — no statement here rewrites a revision's
+-- config columns. Every statement is tenant-scoped by (organization_id, project_id).
