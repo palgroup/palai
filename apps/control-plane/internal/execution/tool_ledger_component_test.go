@@ -188,6 +188,49 @@ func TestLateCallbackAfterFenceAdvanceDenied(t *testing.T) {
 	}
 }
 
+// TestOutageCommandsDeliverCanonicalOrderAfterRecovery proves ENG-012's outage ordering (spec §26.9, E10
+// T7 fork 2): queue + steer + interrupt messages accepted DURING an outage are delivered, on the
+// recovering attempt, in CANONICAL order (creation / applied_sequence — interrupt accepted first, then
+// steer, then queue), at the boundary pump — never spliced into a reconstructed step. The order is
+// STABLE across a second reclaim (a flipped order would rebuild a different request for a committed
+// step). The pre-first-step cancellation hook (a pending pause) is proven separately by the pause path;
+// here the run continues and the three outage messages fold in canonical order.
+func TestOutageCommandsDeliverCanonicalOrderAfterRecovery(t *testing.T) {
+	ctx := context.Background()
+	h := newRedeliveryHarness(t, "interrupt") // the interrupt-delivery message, accepted FIRST in the outage
+	interruptID := h.commandID
+	steerID := h.enqueue(t, "steer", "then steer Y")
+	queueID := h.enqueue(t, "queue", "and queue Z")
+
+	// The recovering attempt drains the outage messages at its first input boundary, in canonical order.
+	st1, ch1 := h.attemptAt()
+	if err := h.orch.pumpCommands(ctx, st1, "mr_step1"); err != nil {
+		t.Fatalf("recovery pumpCommands() error = %v", err)
+	}
+	want := []string{interruptID, steerID, queueID}
+	if got := ch1.deliverOrder(); !slicesEqual(got, want) {
+		t.Fatalf("recovery delivery order = %v, want canonical [interrupt, steer, queue] %v", got, want)
+	}
+
+	// A SECOND reclaim redelivers them at the same boundary in the IDENTICAL order (stable across reclaims).
+	st2, ch2 := h.attemptAt()
+	if err := h.orch.pumpCommands(ctx, st2, "mr_step1"); err != nil {
+		t.Fatalf("second reclaim pumpCommands() error = %v", err)
+	}
+	if got := ch2.deliverOrder(); !slicesEqual(got, want) {
+		t.Fatalf("second reclaim order = %v, want the SAME canonical order %v (no divergence)", got, want)
+	}
+
+	// No injection into a reconstructed step: a DIFFERENT boundary delivers none of them.
+	st3, ch3 := h.attemptAt()
+	if err := h.orch.pumpCommands(ctx, st3, "mr_step9"); err != nil {
+		t.Fatalf("wrong-boundary pumpCommands() error = %v", err)
+	}
+	if got := ch3.deliverOrder(); len(got) != 0 {
+		t.Fatalf("wrong boundary delivered %v, want none (never spliced into another step)", got)
+	}
+}
+
 // toolResult captures a delivered tool.result frame's content + replayed label.
 type toolResult struct {
 	content  string
