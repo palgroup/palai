@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from enum import Enum
 
-from . import commands, output, protocol
+from . import checkpoint, commands, output, protocol
 from .context import Context
 from .protocol import Emitter
 
@@ -96,6 +96,12 @@ class Loop:
         # state is a boundary: the engine holds no in-flight side effect of its own.
         if type_ == "run.cancel":
             return self._cancel(frame)
+
+        # An explicit checkpoint request (spec §26.5) is answered from the current safe boundary
+        # without advancing the run: the offer captures the loop state as it is, and the run
+        # continues. The control plane requests one before a pause/drain and on demand.
+        if type_ == "checkpoint.request":
+            return [self._checkpoint_offer("request")]
 
         # A steered/queued message is folded at the current safe boundary (spec §9.2, §25.11):
         # it surfaces in the next model request, never mid-step. Rejected before run.start —
@@ -277,7 +283,18 @@ class Loop:
         self._pending_tools.discard(call_id)
         if self._pending_tools:
             return []  # still awaiting the remaining tool results
-        return self._request_model()  # resume: next model request for the next step
+        # A completed tool turn is a §26.5 checkpoint boundary. Offer the checkpoint of the
+        # tool-boundary state FIRST, THEN request the next model step: the control plane reads
+        # frames in order, so it persists the checkpoint at the correct tool-boundary journal seq
+        # and durably BEFORE the (possibly long) provider call — a crash mid-call keeps the offered
+        # checkpoint. The engine is single-threaded, so this is pure emit order. On restore (T4) the
+        # loop re-derives the next model request from the captured context (model_request_id is
+        # deterministic per (run, step)). Every completed-tool offer is honest; which to persist
+        # (external side-effecting tools only) is the control plane's call — per-tool side-effect
+        # classification is T7. Delegation-completion resumes do not offer — a child spawn is not the
+        # external side-effecting tool §26.5 names.
+        offer = self._checkpoint_offer("tool")
+        return [offer, *self._request_model()]  # resume: next model request for the next step
 
     def _finish(self, data: dict, *, reply_to: str | None) -> list[dict]:
         self.state = State.VALIDATING_OUTPUT
@@ -288,6 +305,42 @@ class Loop:
         frames = [self.emitter.build("output.item", item, reply_to=reply_to) for item in items]
         frames.append(self._terminal("completed", output_value=data.get("output"), reply_to=reply_to))
         return frames
+
+    def _checkpoint_offer(self, boundary_kind: str) -> dict:
+        """Build a checkpoint.offer for the current loop state (spec §26.2). The bytes are opaque
+        to the control plane; it stores + checksums them but never interprets them (§26.1)."""
+        return self.emitter.build("checkpoint.offer", checkpoint.offer_data(self.capture_state(), boundary_kind))
+
+    def capture_state(self) -> dict:
+        """Snapshot the resumable loop + context state as a typed, JSON-serializable dict (spec
+        §26.1). NOT pickle: the same state serializes deterministically, so a checkpoint is
+        portable and content-addressable, and a restore reconstructs this exact boundary."""
+        return {
+            "state": self.state.value,
+            "step": self._step,
+            "model_request_id": self._model_request_id,
+            "pending_tools": sorted(self._pending_tools),
+            "delegations": self._delegations,
+            "delegations_dispatched": self._delegations_dispatched,
+            "pending_children": self._pending_children,
+            # tuple -> list so it survives JSON; restore_state rebuilds the (call_id, spec) pair.
+            "agent_children": {cid: [call_id, spec] for cid, (call_id, spec) in self._agent_children.items()},
+            "context": self.context.capture(),
+        }
+
+    def restore_state(self, state: dict) -> None:
+        """Reconstruct a loop from a captured state dict (spec §26.3 portable-checkpoint restore).
+        Applied to a fresh loop with the same emitter/context identity; the run continues from the
+        captured boundary as if it had never stopped."""
+        self.state = State(state["state"])
+        self._step = state["step"]
+        self._model_request_id = state["model_request_id"]
+        self._pending_tools = set(state["pending_tools"])
+        self._delegations = list(state["delegations"])
+        self._delegations_dispatched = state["delegations_dispatched"]
+        self._pending_children = dict(state["pending_children"])
+        self._agent_children = {cid: (pair[0], pair[1]) for cid, pair in state["agent_children"].items()}
+        self.context.restore(state["context"])
 
     def _cancel(self, frame: dict) -> list[dict]:
         reason = (frame.get("data") or {}).get("reason", "canceled")

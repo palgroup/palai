@@ -40,6 +40,7 @@ var allTables = []string{
 	"changesets", "changeset_findings",
 	"tasks",
 	"publications", "approvals",
+	"checkpoints", "transcript_boundaries",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -578,6 +579,49 @@ func TestChangesetsMigration(t *testing.T) {
 		if !tableExists(t, pool, name) {
 			t.Fatalf("after reapply, %s is missing", name)
 		}
+	}
+}
+
+// TestRecoveryObjectsMigration proves 000015 adds the durable recovery objects — the checkpoints
+// and transcript_boundaries tables plus the workspace_snapshots.boundary_id rider — idempotently
+// and reverses cleanly (spec §26.1-26.2, E10 Task 1; the 000008/000014 re-run-safety pattern).
+func TestRecoveryObjectsMigration(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE TABLE / ADD COLUMN IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"checkpoints", "transcript_boundaries"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after apply, %s is missing", name)
+		}
+	}
+	if !columnExists(t, pool, "workspace_snapshots", "boundary_id") {
+		t.Fatal("after apply, workspace_snapshots.boundary_id rider is missing")
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, name := range []string{"checkpoints", "transcript_boundaries"} {
+		if tableExists(t, pool, name) {
+			t.Fatalf("after rollback, %s still exists", name)
+		}
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"checkpoints", "transcript_boundaries"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after reapply, %s is missing", name)
+		}
+	}
+	if !columnExists(t, pool, "workspace_snapshots", "boundary_id") {
+		t.Fatal("after reapply, workspace_snapshots.boundary_id rider is missing")
 	}
 }
 

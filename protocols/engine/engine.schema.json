@@ -133,6 +133,24 @@
           }
         }
       }
+    },
+    {
+      "if": {"required": ["type"], "properties": {"type": {"const": "checkpoint.offer"}}},
+      "then": {
+        "properties": {
+          "data": {
+            "description": "An offered engine checkpoint (spec §26.1-26.2, E10 Task 1). state is the OPAQUE loop-state bytes base64-encoded; the control plane stores and checksums them but never interprets them (§26.2). format/format_version pin compatibility against engine.ready.checkpoint_formats; boundary_kind records why the offer was made (completed tool, pause, explicit request).",
+            "type": "object",
+            "required": ["format", "format_version", "state"],
+            "properties": {
+              "format": {"type": "string"},
+              "format_version": {"type": "integer", "minimum": 1},
+              "boundary_kind": {"type": "string", "enum": ["tool", "pause", "request"]},
+              "state": {"type": "string", "description": "base64 of the opaque checkpoint bytes"}
+            }
+          }
+        }
+      }
     }
   ]
 }

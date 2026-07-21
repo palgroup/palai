@@ -84,6 +84,16 @@ class Context:
             content = f"[delegation skipped role={role} reason={data.get('reason')}]"
         self._messages.append({"role": "user", "content": content, "child_run_id": child_run})
 
+    def capture(self) -> dict:
+        """Snapshot the conversation for a checkpoint (spec §26.1). Plain lists of dicts —
+        JSON-serializable and deterministic, so the same context always serializes identically."""
+        return {"messages": self._messages, "pending": self._pending}
+
+    def restore(self, state: dict) -> None:
+        """Reconstruct the conversation from a captured snapshot (spec §26.3)."""
+        self._messages = list(state["messages"])
+        self._pending = list(state["pending"])
+
     def model_request(self) -> dict:
         """The brokered model call payload. Deterministic given the messages so far."""
         return {"messages": list(self._messages)}

@@ -67,6 +67,10 @@ type Orchestrator struct {
 	// test-log through (spec §30.6). Nil ⇒ no changeset is compiled (a stack with no artifact store
 	// wired). main.go injects it via SetChangesetWriter.
 	artifacts ArtifactWriter
+	// checkpoints persists an engine checkpoint.offer as a durable recovery object (spec §26.1-26.2).
+	// Nil ⇒ no object store wired (every non-S3 stack): a checkpoint offer is advisory and dropped,
+	// no durable boundary is created. main.go injects it via SetCheckpointSink.
+	checkpoints *CheckpointSink
 	// DialHandshakeDeadline bounds the dial + engine.ready handshake per attempt. Zero uses
 	// dialHandshakeDeadline; NewOrchestrator sets the default. Tests shorten it.
 	DialHandshakeDeadline time.Duration
@@ -92,6 +96,10 @@ func (o *Orchestrator) SetShellRunner(s toolbroker.ShellRunner) { o.shell = s }
 // patch + test-log through (spec §30.6). Left unset, a terminated coding run compiles no changeset —
 // the same discipline as SetPublisher.
 func (o *Orchestrator) SetChangesetWriter(aw ArtifactWriter) { o.artifacts = aw }
+
+// SetCheckpointSink injects the checkpoint persistence path (spec §26.1-26.2). Left unset, a
+// checkpoint.offer is dropped (no durable boundary) — the same discipline as SetChangesetWriter.
+func (o *Orchestrator) SetCheckpointSink(cs *CheckpointSink) { o.checkpoints = cs }
 
 // attemptState is the per-attempt working set threaded through the dispatch handlers.
 type attemptState struct {
@@ -122,6 +130,10 @@ type attemptState struct {
 	// provisioned and its writer lease, released at attempt end. Empty on a run with no attached binding.
 	workspaceID      string
 	workspaceLeaseID string
+	// Engine handshake identity, captured from engine.ready — the §26.2 checkpoint provenance the
+	// engine's opaque offer does not carry.
+	engineVersion   string
+	protocolVersion string
 }
 
 // budgetRemaining reports the parent budget a child may still intersect against: the total less
@@ -239,6 +251,12 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		return fmt.Errorf("first frame type = %q, want engine.ready", ready.Type)
 	}
 	st.lastInboundSeq = ready.Sequence
+	// Capture the engine handshake identity for checkpoint provenance (spec §26.2): the selected
+	// protocol and the engine version. The pinned image digest rides the attempt descriptor.
+	st.protocolVersion, _ = ready.Data["selected_protocol"].(string)
+	if engine, ok := ready.Data["engine"].(map[string]any); ok {
+		st.engineVersion, _ = engine["version"].(string)
+	}
 
 	var inputValue any
 	if len(input) > 0 {
@@ -332,6 +350,14 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 			}
 		case "output.item":
 			st.output = append(st.output, contracts.ContentItem(frame.Data))
+		case "checkpoint.offer":
+			// Persist the engine's checkpoint at this safe boundary (spec §26.1-26.2). The bytes ride
+			// the offer; the control plane stores + checksums them opaquely. A checkpoint failure does
+			// not always fail the run (§26.5), but a hard persist error here surfaces rather than
+			// silently dropping a boundary a later recovery would rely on.
+			if err := o.persistCheckpoint(ctx, st, frame); err != nil {
+				return abortIfTerminal(err)
+			}
 		case "run.terminal":
 			return o.finalize(ctx, st, frame)
 		case "protocol.error":

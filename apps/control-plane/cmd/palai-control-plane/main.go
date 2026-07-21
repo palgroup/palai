@@ -25,6 +25,7 @@ import (
 	tools "github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
+	"github.com/palgroup/palai/packages/coordinator/recovery"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
@@ -123,6 +124,12 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// deterministic tier proves the pump with a fake publisher.
 		if publisher := repositoryPublisherFromEnv(); publisher != nil {
 			orch.SetPublisher(publisher)
+		}
+		// Wire the checkpoint sink whenever an object store exists (spec §26.1-26.2). Unlike the
+		// changeset writer, this is NOT gated on a coding workspace — a checkpoint boundary applies to
+		// any run. Absent an object store, a checkpoint offer is dropped (no durable boundary).
+		if artStore != nil {
+			orch.SetCheckpointSink(execution.NewCheckpointSink(artStore, recovery.New(spine.Pool())))
 		}
 		// Wire the root run's workspace auto-provisioning + coding-tool sandbox, gated on
 		// PALAI_WORKSPACE_ROOT (spec §29.7-30.3, E09 Task 10). This is what makes a coding session

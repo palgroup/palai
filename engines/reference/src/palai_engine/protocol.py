@@ -12,6 +12,8 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from . import checkpoint
+
 PROTOCOL = "engine.v1"
 # Maximum line size, one MiB, matching engine.schema.json $defs.limits.max_line_bytes.
 MAX_LINE_BYTES = 1_048_576
@@ -141,7 +143,10 @@ def build_ready(emitter: Emitter, hello: dict, *, nonce: str) -> dict:
             "engine": {"name": ENGINE_NAME, "version": ENGINE_VERSION},
             "max_frame_bytes": MAX_LINE_BYTES,
             "nonce": nonce,
-            "checkpoint_formats": [],
+            # The checkpoint formats this engine can WRITE and restore (spec §26.4). The schema-pin
+            # test keeps this equal to checkpoint.FORMAT_ID, so the advertised list can never drift
+            # from the format the engine actually serializes.
+            "checkpoint_formats": [checkpoint.FORMAT_ID],
             "commands": list(SUPPORTED_COMMANDS),
             "content_types": {"input": ["text"], "output": ["text"]},
         },
