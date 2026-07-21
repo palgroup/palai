@@ -72,6 +72,114 @@ func (s *TriggerStore) CreateScheduledDelivery(ctx context.Context, org, project
 	return s.createDelivery(ctx, org, project, principal, triggerID, payload, occurrenceID)
 }
 
+// CreateDeliveryIdempotent is the HTTP-facing delivery accept with AUT-013 per-key idempotency (spec
+// §20.9, §20.2.2). An external orchestrator's retries carry a stable Idempotency-Key; the same key + same
+// body must resolve to ONE delivery/run/callback, and a concurrent race must collapse to one durable row.
+// The claim reuses the §20.9 idempotency_records table (no new table): the reservation and the
+// trigger_deliveries INSERT commit in ONE tx, so the claim can never point at a missing delivery. The
+// route embeds the trigger id, so "same key + SAME trigger = same delivery" is the scope; the record stays
+// principal-scoped (§20.9). A key reused with a different body is ErrIdempotencyMismatch.
+func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, org, project, principal, triggerID, idempotencyKey string, payload []byte) (DeliveryResult, error) {
+	if idempotencyKey == "" {
+		return DeliveryResult{}, errors.New("automation: delivery idempotency key is required")
+	}
+	enabled, err := s.triggerEnabled(ctx, org, project, triggerID)
+	if err != nil {
+		return DeliveryResult{}, err
+	}
+	if !enabled {
+		return DeliveryResult{}, ErrTriggerDisabled
+	}
+	rev, ok, err := s.GetActiveRevision(ctx, org, project, triggerID)
+	if err != nil {
+		return DeliveryResult{}, err
+	}
+	if !ok {
+		return DeliveryResult{}, ErrNoActiveRevision
+	}
+
+	route := deliveryRoute(triggerID)
+	sum := sha256.Sum256(payload)
+	reqHash := hex.EncodeToString(sum[:])
+	deliveryID := newID("tdel")
+	respBody, err := json.Marshal(map[string]string{"id": deliveryID})
+	if err != nil {
+		return DeliveryResult{}, err
+	}
+
+	// Claim + insert atomically. ON CONFLICT DO NOTHING RETURNING id makes the DB unique index the race
+	// arbiter: the loser's INSERT blocks until the winner commits, then returns no row (never a second
+	// delivery). The delivery row is inserted in the SAME tx so a crash cannot orphan the claim.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return DeliveryResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	switch err := tx.QueryRow(ctx, storage.Query("ReserveIdempotency"),
+		org, project, principal, "POST", route, idempotencyKey, reqHash, respBody).Scan(new(int64)); {
+	case errors.Is(err, pgx.ErrNoRows):
+		_ = tx.Rollback(ctx)
+		return s.replayDelivery(ctx, org, project, principal, route, idempotencyKey, reqHash)
+	case err != nil:
+		return DeliveryResult{}, fmt.Errorf("claim delivery idempotency: %w", err)
+	}
+	if _, err := tx.Exec(ctx, storage.Query("InsertTriggerDelivery"), deliveryID, org, project, triggerID, rev.ID, principal); err != nil {
+		return DeliveryResult{}, fmt.Errorf("insert delivery: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return DeliveryResult{}, fmt.Errorf("commit delivery claim: %w", err)
+	}
+
+	// Winner: drive the pipeline OUTSIDE the claim tx. The delivery row is already durable, so a crash here
+	// leaves a recoverable remnant the reconciler re-decides — not a lost claim.
+	// ponytail: a winner that crashes BEFORE map leaves a 'received' zombie; an idempotent retry returns
+	// that SAME row and does NOT re-drive it (the extension of T2's m9 zombie ceiling — closed when T5's
+	// durable raw_payload lets the reconciler re-decide a pre-map delivery).
+	scope := deliveryScope{org: org, project: project, principal: principal, triggerID: triggerID, revisionID: rev.ID, deliveryID: deliveryID}
+	return s.advance(ctx, scope, payload)
+}
+
+// replayDelivery is the AUT-013 loser/retry path: the claim already exists. A matching request_hash returns
+// the winning delivery's CURRENT durable projection (honest — a mid-pipeline winner is shown at its live
+// state); a different hash is a typed mismatch.
+func (s *TriggerStore) replayDelivery(ctx context.Context, org, project, principal, route, key, reqHash string) (DeliveryResult, error) {
+	var (
+		storedHash string
+		respBody   []byte
+		purgedAt   *time.Time
+		tombstone  *string
+	)
+	switch err := s.pool.QueryRow(ctx, storage.Query("GetIdempotency"), org, project, principal, "POST", route, key).
+		Scan(&storedHash, &respBody, &purgedAt, &tombstone); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return DeliveryResult{}, errors.New("automation: idempotency claim vanished; retry")
+	case err != nil:
+		return DeliveryResult{}, fmt.Errorf("read delivery idempotency: %w", err)
+	}
+	if storedHash != reqHash {
+		return DeliveryResult{}, ErrIdempotencyMismatch
+	}
+	var body map[string]string
+	if err := json.Unmarshal(respBody, &body); err != nil {
+		return DeliveryResult{}, fmt.Errorf("decode idempotency body: %w", err)
+	}
+	view, found, err := s.GetDelivery(ctx, org, project, body["id"])
+	if err != nil {
+		return DeliveryResult{}, err
+	}
+	if !found {
+		return DeliveryResult{}, errors.New("automation: idempotent delivery projection missing")
+	}
+	return DeliveryResult{
+		ID: view.ID, State: view.State, ResponseID: view.ResponseID, RunID: view.RunID,
+		SessionID: view.SessionID, DuplicateOf: view.DuplicateOf, Reason: view.Reason,
+	}, nil
+}
+
+// deliveryRoute is the concrete AUT-013 idempotency route: the trigger id is embedded, so the same key on a
+// DIFFERENT trigger is a distinct claim (a different resource).
+func deliveryRoute(triggerID string) string { return "/v1/triggers/" + triggerID + "/deliveries" }
+
 // createDelivery accepts a delivery for a trigger and drives it through the pipeline. dedupeOverride, when
 // non-empty, forces the canonical dedupe_key (the scheduled-firing occurrence_id); "" leaves the trigger's
 // configured dedupe_key_expr to decide (the manual/API path).
