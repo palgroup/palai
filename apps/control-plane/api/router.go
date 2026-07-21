@@ -21,7 +21,7 @@ import (
 // correlation middleware, because it carries its own one-use-token and mTLS identity.
 // It is served over a separate mutually-authenticated listener; binding the CA and that
 // listener is Task 12, so production passes nil until then.
-func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, sse SSEConfig, runner http.Handler) http.Handler {
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, sse SSEConfig, runner http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
@@ -63,6 +63,21 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("GET /v1/triggers/{trigger_id}", th.getTrigger)
 		mux.Handle("POST /v1/triggers/{trigger_id}/deliveries", middleware.RequireIdempotencyKey(http.HandlerFunc(th.createDelivery)))
 		mux.HandleFunc("GET /v1/trigger-deliveries/{delivery_id}", th.getDelivery)
+	}
+
+	// Schedule management (spec §33, E11 Task 3): a cron/one-time cadence that fires a trigger. Durable
+	// config (create/revise/pause/resume/delete/get) — the create validates the cron + IANA timezone at the
+	// edge (a 400, never a stored row); a firing edit is a PATCH that bumps the revision. nil in tiers that
+	// never touch schedules. The occurrence log is read at GET /v1/schedules/{id}/occurrences.
+	if schedules != nil {
+		sh := &scheduleHandler{schedules: schedules}
+		mux.HandleFunc("POST /v1/schedules", sh.createSchedule)
+		mux.HandleFunc("GET /v1/schedules/{schedule_id}", sh.getSchedule)
+		mux.HandleFunc("PATCH /v1/schedules/{schedule_id}", sh.reviseSchedule)
+		mux.HandleFunc("POST /v1/schedules/{schedule_id}/pause", sh.pauseSchedule)
+		mux.HandleFunc("POST /v1/schedules/{schedule_id}/resume", sh.resumeSchedule)
+		mux.HandleFunc("DELETE /v1/schedules/{schedule_id}", sh.deleteSchedule)
+		mux.HandleFunc("GET /v1/schedules/{schedule_id}/occurrences", sh.listOccurrences)
 	}
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}

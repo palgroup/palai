@@ -111,6 +111,16 @@ run_pg_fault_suite() {
 
 run_coordinator() { run_pg_fault_suite coordinator ./tests/fault/coordinator; }
 
+# run_scheduler proves the schedule ticker's outage recovery (AUT-008) against real Postgres: the REAL
+# supervised loop is stopped (context cancel, fully drained — not a sleep) across a planned per-minute
+# fire window whose passage is modelled by an injected clock jump, then restarted; the misfire policy
+# yields exactly the right occurrences (fire_once_now → latest missed; catch_up → bounded oldest-first)
+# with ZERO duplicate occurrence ids and visible planned_at-vs-admitted_at lateness. The suite lives under
+# the automation package tree (apps/control-plane/internal/automation/fault) because it imports the
+# internal automation package, which a tests/fault/* package may not — the E09 T2 internal-package
+# placement rule (same as the recovery suite's execution-package tests).
+run_scheduler() { run_pg_fault_suite scheduler ./apps/control-plane/internal/automation/fault; }
+
 # run_subagents proves ChildRun cancel propagation + terminal accounting (SUB-005) against real
 # Postgres: a parent cancel drives its live child to the canceled terminal, and a late child
 # completion is dropped at the database rather than overwriting the canceled row.
@@ -150,12 +160,13 @@ run_recovery() {
 
 case "$suite" in
   coordinator) run_coordinator ;;
+  scheduler) run_scheduler ;;
   subagents) run_subagents ;;
   runner) run_runner ;;
   sandbox) run_sandbox ;;
   recovery) run_recovery ;;
   *)
-    echo "unknown fault suite: $suite (known: coordinator, subagents, runner, sandbox, recovery)" >&2
+    echo "unknown fault suite: $suite (known: coordinator, scheduler, subagents, runner, sandbox, recovery)" >&2
     exit 2
     ;;
 esac

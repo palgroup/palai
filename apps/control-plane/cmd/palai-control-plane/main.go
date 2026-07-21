@@ -15,6 +15,10 @@ import (
 	"strings"
 	"time"
 
+	// time/tzdata embeds the IANA zoneinfo database in the binary so schedule timezones resolve even in a
+	// container without /usr/share/zoneinfo (spec §33.1; time.LoadLocation's documented final fallback).
+	_ "time/tzdata"
+
 	"github.com/palgroup/palai/adapters/integrations/webhook"
 	fake "github.com/palgroup/palai/adapters/models/fake"
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
@@ -63,6 +67,11 @@ func main() {
 	// — the SAME §20.9 admission path a POST /v1/responses takes.
 	triggerStore := automation.NewTriggerStore(repo.Spine().Pool()).WithAdmitter(repo.Spine())
 
+	// The schedule store is shared by the HTTP surface (schedule management + occurrence log) and the
+	// schedule-ticker (spec §33, E11 Task 3). It fires schedules through the SAME trigger-delivery pipeline
+	// the manual/API path uses — a scheduled firing admits its run via triggerStore.
+	scheduleStore := automation.NewScheduleStore(repo.Spine().Pool(), triggerStore)
+
 	// One supervisor keeps the dispatch workers, reconciler, and retention reaper alive: a
 	// background loop that returns a transient error is logged, counted, and restarted rather
 	// than silently dying and stalling dispatch (H2; LP-15 — no restart cap).
@@ -78,7 +87,7 @@ func main() {
 		// (Task 12 binds the local CA and that listener); the public API server carries no
 		// runner routes, so it is passed nil here. The handler is wrapped so `palai doctor`
 		// can surface the supervisor's restart counters over /healthz/supervisor.
-		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, sseConfigFromEnv(), nil), supervisor),
+		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, sseConfigFromEnv(), nil), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -92,6 +101,7 @@ func main() {
 	startDispatch(ctx, repo, gateway, supervisor, artStore)
 	startWebhookPump(ctx, webhookStore, supervisor)
 	startDeliveryReconciler(ctx, triggerStore, supervisor)
+	startScheduleTicker(ctx, scheduleStore, supervisor)
 	startRetention(ctx, repo, supervisor, artStore)
 	startOrphanGC(ctx, repo, supervisor, artStore)
 
@@ -351,6 +361,20 @@ func startDeliveryReconciler(ctx context.Context, store *automation.TriggerStore
 		envIntDefault("PALAI_TRIGGER_RECONCILE_BATCH", 100),
 		log.Printf)
 	go supervisor.Supervise(ctx, "delivery-reconciler", rec.Run)
+}
+
+// startScheduleTicker launches the supervised schedule-ticker (spec §33, E11 Task 3). It is a SIBLING of
+// the delivery-reconciler, not an extension: the reconciler sweeps trigger_deliveries remnants, the ticker
+// sweeps schedules/occurrences — the due-scan (claim durable occurrences) and the pending-occurrence
+// handoff sweep, both inside its Run. It is a system loop that serves every project's schedules and is
+// inert until one is due, so it runs unconditionally (like the webhook pump / delivery-reconciler). A
+// killed process just misses ticks; the next run resumes from the durable schedule + occurrence rows.
+func startScheduleTicker(ctx context.Context, store *automation.ScheduleStore, supervisor *coordinator.Supervisor) {
+	ticker := automation.NewScheduleTicker(store,
+		envDurationOr("PALAI_SCHEDULE_TICK", time.Second),
+		envIntDefault("PALAI_SCHEDULE_BATCH", 100),
+		log.Printf)
+	go supervisor.Supervise(ctx, "schedule-ticker", ticker.Run)
 }
 
 // webhookSecretResolver bridges an endpoint's SecretRef handle to the signing-secret bytes at delivery

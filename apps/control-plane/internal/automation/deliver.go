@@ -57,6 +57,25 @@ type DeliveryResult struct {
 // (or a rejected/duplicate/failed/deferred/skipped branch). A disabled or unknown trigger is a typed
 // error; a trigger with no revision cannot accept a delivery.
 func (s *TriggerStore) CreateDelivery(ctx context.Context, org, project, principal, triggerID string, payload []byte) (DeliveryResult, error) {
+	return s.createDelivery(ctx, org, project, principal, triggerID, payload, "")
+}
+
+// CreateScheduledDelivery is the schedule ticker's admission handoff (E11 Task 3): it fires the schedule's
+// trigger through the SAME §20.2.2 delivery pipeline a manual/API POST takes — NO second admission path —
+// but FORCES the delivery's dedupe_key to the deterministic occurrence_id. That makes T2's canonical
+// UNIQUE(trigger_id, dedupe_key) collapse any double handoff (a crash-retry, a jitter re-sweep, or two
+// ticker replicas) to ONE canonical delivery with ONE run — the third exactly-once defense line behind the
+// occurrence unique index and durable-before-run (§5). The occurrence's own trigger-configured
+// dedupe_key_expr is intentionally overridden: a scheduled firing dedupes on its occurrence identity, not
+// on payload content.
+func (s *TriggerStore) CreateScheduledDelivery(ctx context.Context, org, project, principal, triggerID, occurrenceID string, payload []byte) (DeliveryResult, error) {
+	return s.createDelivery(ctx, org, project, principal, triggerID, payload, occurrenceID)
+}
+
+// createDelivery accepts a delivery for a trigger and drives it through the pipeline. dedupeOverride, when
+// non-empty, forces the canonical dedupe_key (the scheduled-firing occurrence_id); "" leaves the trigger's
+// configured dedupe_key_expr to decide (the manual/API path).
+func (s *TriggerStore) createDelivery(ctx context.Context, org, project, principal, triggerID string, payload []byte, dedupeOverride string) (DeliveryResult, error) {
 	enabled, err := s.triggerEnabled(ctx, org, project, triggerID)
 	if err != nil {
 		return DeliveryResult{}, err
@@ -77,13 +96,15 @@ func (s *TriggerStore) CreateDelivery(ctx context.Context, org, project, princip
 		return DeliveryResult{}, fmt.Errorf("insert delivery: %w", err)
 	}
 
-	scope := deliveryScope{org: org, project: project, principal: principal, triggerID: triggerID, revisionID: rev.ID, deliveryID: deliveryID}
+	scope := deliveryScope{org: org, project: project, principal: principal, triggerID: triggerID, revisionID: rev.ID, deliveryID: deliveryID, dedupeOverride: dedupeOverride}
 	return s.advance(ctx, scope, payload)
 }
 
-// deliveryScope carries the tenant + pinned-revision coordinates a delivery advances within.
+// deliveryScope carries the tenant + pinned-revision coordinates a delivery advances within. dedupeOverride
+// forces the canonical dedupe_key for a scheduled firing (the occurrence_id); "" for the manual/API path.
 type deliveryScope struct {
 	org, project, principal, triggerID, revisionID, deliveryID string
+	dedupeOverride                                             string
 }
 
 // revisionConfig is a pinned revision's delivery-pipeline config (mapping + key exprs + modes).
@@ -138,9 +159,14 @@ func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []
 	// Dedupe (AUT-001): compute the dedupe key and try to become the LIVE canonical row. A loser links to
 	// the canonical original and terminalizes `duplicate`, so a redelivered source event yields no second
 	// action. An empty key means dedupe is not configured — the delivery passes straight to deduplicated.
-	dedupeKey, err := boundedKey(cfg.DedupeKeyExpr, source)
-	if err != nil {
-		return DeliveryResult{}, err
+	// A scheduled firing FORCES the key to its occurrence_id (dedupeOverride), so a double handoff of the
+	// same occurrence collapses to one canonical delivery (E11 Task 3, §5 third defense line).
+	dedupeKey := sc.dedupeOverride
+	if dedupeKey == "" {
+		dedupeKey, err = boundedKey(cfg.DedupeKeyExpr, source)
+		if err != nil {
+			return DeliveryResult{}, err
+		}
 	}
 	if dedupeKey != "" {
 		switch err := s.pool.QueryRow(ctx, storage.Query("ClaimCanonicalDelivery"),
