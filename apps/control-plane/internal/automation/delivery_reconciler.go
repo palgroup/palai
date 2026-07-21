@@ -80,54 +80,65 @@ func (s *TriggerStore) reconcileDeferred(ctx context.Context, log func(string, .
 		return err
 	}
 
+	// M2: a poison group (its head's admission errors) is logged and SKIPPED, never returned — one bad
+	// delivery must not wedge the whole sweep behind a supervisor restart loop.
 	for _, g := range groups {
-		sc := deliveryScope{org: g.org, project: g.project, triggerID: g.triggerID}
-		// The FIFO head names the group's revision + policy (which gate + which survivor to admit).
-		var headID, headPrincipal, headRevision string
-		var headInput []byte
-		if err := s.pool.QueryRow(ctx, storage.Query("OldestDeferredForKey"), g.triggerID, g.org, g.project, g.hash).
-			Scan(&headID, &headPrincipal, &headRevision, &headInput); err != nil {
-			return fmt.Errorf("resolve FIFO head: %w", err)
+		if err := s.admitDeferredGroup(ctx, g.triggerID, g.org, g.project, g.hash); err != nil {
+			log("delivery-reconciler: deferred group %s/%s: %v", g.triggerID, g.hash, err)
 		}
-		cfg, err := s.loadRevisionConfig(ctx, deliveryScope{org: g.org, project: g.project, revisionID: headRevision})
-		if err != nil {
-			return err
-		}
+	}
+	return nil
+}
 
-		// The gate is trigger-wide for singleton, per-key otherwise. A busy gate leaves the group deferred.
+// admitDeferredGroup admits (at most one) delivery from a single deferred (trigger, key) group: it checks
+// the group's policy gate and, if open, admits the FIFO head (or, for coalesce, the latest survivor while
+// skipping the rest). Errors are returned to the caller, which logs + skips the group.
+func (s *TriggerStore) admitDeferredGroup(ctx context.Context, triggerID, org, project, hash string) error {
+	sc := deliveryScope{org: org, project: project, triggerID: triggerID}
+	// The FIFO head names the group's revision + policy (which gate + which survivor to admit).
+	var headID, headPrincipal, headRevision string
+	var headInput []byte
+	if err := s.pool.QueryRow(ctx, storage.Query("OldestDeferredForKey"), triggerID, org, project, hash).
+		Scan(&headID, &headPrincipal, &headRevision, &headInput); err != nil {
+		return fmt.Errorf("resolve FIFO head: %w", err)
+	}
+	cfg, err := s.loadRevisionConfig(ctx, deliveryScope{org: org, project: project, revisionID: headRevision})
+	if err != nil {
+		return err
+	}
+
+	// The gate is trigger-wide for singleton, per-key otherwise; take it under the same advisory lock the
+	// inline path uses so a reconciler admit never races an inline admit for the same key (M3).
+	_, err = s.withGateLock(ctx, gateLockText(cfg.ConcurrencyPolicy, triggerID, hash), func(ctx context.Context) (DeliveryResult, error) {
 		var busy bool
 		if cfg.ConcurrencyPolicy == "singleton" {
 			busy, err = s.triggerBusy(ctx, sc)
 		} else {
-			busy, err = s.keyBusy(ctx, sc, g.hash)
+			busy, err = s.keyBusy(ctx, sc, hash)
 		}
 		if err != nil {
-			return err
+			return DeliveryResult{}, err
 		}
 		if busy {
-			continue
+			return DeliveryResult{}, nil // gate still closed; leave the group deferred
 		}
 
 		// coalesce collapses a burst into the LATEST (the survivor); the rest are skipped, linked to it.
 		admitID, admitPrincipal, admitRevision, admitInput := headID, headPrincipal, headRevision, headInput
 		if cfg.ConcurrencyPolicy == "coalesce" {
-			if err := s.pool.QueryRow(ctx, storage.Query("LatestDeferredForKey"), g.triggerID, g.org, g.project, g.hash).
+			if err := s.pool.QueryRow(ctx, storage.Query("LatestDeferredForKey"), triggerID, org, project, hash).
 				Scan(&admitID, &admitPrincipal, &admitRevision, &admitInput); err != nil {
-				return fmt.Errorf("resolve coalesce survivor: %w", err)
+				return DeliveryResult{}, fmt.Errorf("resolve coalesce survivor: %w", err)
 			}
-			if _, err := s.pool.Exec(ctx, storage.Query("SkipCoalescedDeferred"), g.triggerID, g.org, g.project, g.hash, admitID); err != nil {
-				return fmt.Errorf("skip coalesced deferred: %w", err)
+			if _, err := s.pool.Exec(ctx, storage.Query("SkipCoalescedDeferred"), triggerID, org, project, hash, admitID); err != nil {
+				return DeliveryResult{}, fmt.Errorf("skip coalesced deferred: %w", err)
 			}
 		}
-
-		if _, err := s.resumeDelivery(ctx, deliveryScope{
-			org: g.org, project: g.project, principal: admitPrincipal, triggerID: g.triggerID, revisionID: admitRevision, deliveryID: admitID,
-		}, g.hash, admitInput); err != nil {
-			log("delivery-reconciler: admit deferred %s: %v", admitID, err)
-			return err
-		}
-	}
-	return nil
+		return s.resumeDelivery(ctx, deliveryScope{
+			org: org, project: project, principal: admitPrincipal, triggerID: triggerID, revisionID: admitRevision, deliveryID: admitID,
+		}, hash, admitInput)
+	})
+	return err
 }
 
 // recoverStuckMapped re-decides deliveries stranded in `mapped` past the grace window — a crash between
@@ -159,17 +170,19 @@ func (s *TriggerStore) recoverStuckMapped(ctx context.Context, grace time.Durati
 		return err
 	}
 
+	// M2: a poison remnant is logged and SKIPPED, never returned — one bad row must not wedge the sweep.
 	for _, m := range remnants {
 		sc := deliveryScope{org: m.org, project: m.project, principal: m.principal, triggerID: m.triggerID, revisionID: m.revisionID, deliveryID: m.id}
 		cfg, err := s.loadRevisionConfig(ctx, sc)
 		if err != nil {
-			return err
+			log("delivery-reconciler: recover stuck-mapped %s: %v", m.id, err)
+			continue
 		}
 		// Re-run the concurrency decision from the stored state (nil source: a stuck-mapped remnant is
 		// never named_session — that mode never leaves a delivery in `mapped`).
 		if _, err := s.applyPolicy(ctx, sc, cfg, nil, m.mappedInput, m.hash); err != nil {
 			log("delivery-reconciler: recover stuck-mapped %s: %v", m.id, err)
-			return err
+			continue
 		}
 	}
 	return nil

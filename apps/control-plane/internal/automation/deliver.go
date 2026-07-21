@@ -426,6 +426,37 @@ func cancelProjections() (canceled, uncertain []byte, err error) {
 	return canceled, uncertain, nil
 }
 
+// withGateLock runs fn while holding a Postgres session advisory lock keyed on the concurrency gate's
+// scope, so concurrent same-key deliveries serialize through the gate-check + admit: one admits, the rest
+// see the now-active run and defer/drop per policy (M3). The gate queries + admit run on the pool; the
+// lock only serializes the code path (held from gate-check through admit-commit on a dedicated conn).
+// ponytail: one global advisory lock per (trigger,key) — fine at trigger cadence; shard the key space if
+// a single hot key ever bottlenecks.
+func (s *TriggerStore) withGateLock(ctx context.Context, lockText string, fn func(context.Context) (DeliveryResult, error)) (DeliveryResult, error) {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return DeliveryResult{}, fmt.Errorf("acquire gate-lock conn: %w", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock(hashtext($1)::bigint)", lockText); err != nil {
+		return DeliveryResult{}, fmt.Errorf("acquire gate lock: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1)::bigint)", lockText)
+	}()
+	return fn(ctx)
+}
+
+// gateLockText is the advisory-lock key for a policy's gate scope: trigger-wide for singleton, per-key
+// otherwise.
+func gateLockText(policy, triggerID, hash string) string {
+	if policy == "singleton" {
+		return "trigger-gate:" + triggerID
+	}
+	// hashtext() runs on this text, so it must be valid UTF-8 (no null byte); ':' separates the ids.
+	return "trigger-gate:" + triggerID + ":" + hash
+}
+
 // keyBusy reports whether the (trigger, correlation-key) group already has a delivery with a non-terminal
 // run. An empty hash means no grouping key, so the group is never "busy" (nothing to serialize against).
 func (s *TriggerStore) keyBusy(ctx context.Context, sc deliveryScope, hash string) (bool, error) {
@@ -441,16 +472,35 @@ func (s *TriggerStore) keyBusy(ctx context.Context, sc deliveryScope, hash strin
 	return true, nil
 }
 
-// defer_ gates a mapped delivery behind a busy key (state → deferred). Its mapped_input + hash are already
-// stored (recordMapped), so the reconciler admits it FIFO once the gate opens.
+// defer_ gates a delivery behind a busy key (state → deferred). Its mapped_input + hash are already
+// stored (recordMapped), so the reconciler admits it FIFO once the gate opens. It reads the ACTUAL
+// current state so the SM transition is valid on whichever path reached it (sync 'mapped' or a
+// reconciler-resume re-conflict, where the row is already 'deferred' → a no-op that retries next tick).
 func (s *TriggerStore) defer_(ctx context.Context, sc deliveryScope, reason string) (DeliveryResult, error) {
-	if _, _, err := statemachines.Apply(statemachines.TriggerDeliveryMapped, statemachines.TriggerDeliveryCmdDefer, statemachines.TriggerDeliveryTable); err != nil {
+	from, err := s.currentState(ctx, sc)
+	if err != nil {
+		return DeliveryResult{}, err
+	}
+	if from == statemachines.TriggerDeliveryDeferred {
+		return DeliveryResult{ID: sc.deliveryID, State: string(from), Reason: reason}, nil
+	}
+	if _, _, err := statemachines.Apply(from, statemachines.TriggerDeliveryCmdDefer, statemachines.TriggerDeliveryTable); err != nil {
 		return DeliveryResult{}, err
 	}
 	if _, err := s.pool.Exec(ctx, storage.Query("DeferDelivery"), sc.deliveryID, sc.org, sc.project, reason); err != nil {
 		return DeliveryResult{}, fmt.Errorf("defer delivery: %w", err)
 	}
 	return DeliveryResult{ID: sc.deliveryID, State: string(statemachines.TriggerDeliveryDeferred), Reason: reason}, nil
+}
+
+// currentState reads the delivery's actual persisted SM state (so reject/fail/defer/skip transition from
+// the real state, not a hardcoded guess that a resume path would violate — M4).
+func (s *TriggerStore) currentState(ctx context.Context, sc deliveryScope) (statemachines.TriggerDeliveryState, error) {
+	st, err := s.deliveryState(ctx, sc)
+	if err != nil {
+		return "", err
+	}
+	return statemachines.TriggerDeliveryState(st), nil
 }
 
 // admit builds a coordinator.AdmissionInput from the mapped canonical input + the pinned run target and
@@ -509,9 +559,10 @@ func (s *TriggerStore) admitChained(ctx context.Context, sc deliveryScope, cfg r
 		return DeliveryResult{}, fmt.Errorf("admit triggered run: %w", err)
 	}
 	// A pin/session error is a delivery failure, not a run: no billable run was born (AUT-003). An
-	// active-run conflict on a chained session is the queue signal (A8) — surfaced to the caller.
+	// active-run conflict on a chained session is the queue signal (M2): the chain lost one-active-root, so
+	// the delivery DEFERS (the reconciler admits it once the prior run terminates) rather than 500ing.
 	if adm.ActiveRunConflict {
-		return DeliveryResult{ID: sc.deliveryID, State: string(statemachines.TriggerDeliveryMapped), Reason: "active_run"}, errActiveRun
+		return s.defer_(ctx, sc, "chained session has an active root run; queued")
 	}
 	if adm.Conflict || adm.SessionNotFound || adm.SessionConflict || adm.PinnedRevisionNotFound || adm.PinnedRevisionNotPublished || adm.RepositoryBindingNotFound {
 		return s.fail(ctx, sc, statemachines.TriggerDeliveryMapped, admissionFailureReason(adm))
@@ -554,9 +605,6 @@ func (s *TriggerStore) admitChained(ctx context.Context, sc deliveryScope, cfg r
 		ResponseID: responseID, RunID: runID, SessionID: resolvedSession,
 	}, nil
 }
-
-// errActiveRun signals a chained admission lost to one-active-root — the queue/defer signal (A8).
-var errActiveRun = errors.New("automation: session already has an active root run")
 
 // emitRunCreated journals trigger.delivery.run_created.v1 into the run's session (the seq-then-append
 // shape the coordinator uses), so a triggered run is visible as such in its own stream.
