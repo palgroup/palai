@@ -2,7 +2,9 @@ package coordinator
 
 import (
 	"context"
+	"fmt"
 	"maps"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -36,7 +38,7 @@ func (s *Supervisor) Supervise(ctx context.Context, name string, fn func(context
 		if ctx.Err() != nil {
 			return
 		}
-		err := fn(ctx)
+		err := runGuarded(ctx, fn)
 		if ctx.Err() != nil {
 			return // cancelled: a clean shutdown, not a crash
 		}
@@ -54,6 +56,24 @@ func (s *Supervisor) Supervise(ctx context.Context, name string, fn func(context
 			return // cancelled during backoff
 		}
 	}
+}
+
+// runGuarded runs fn and converts a panic into a returned error, so a supervised loop that
+// panics is restarted exactly as one that returns an error is — never crashing the whole
+// process. The kill matrix (E10 T5) drives real panics through this path; without the recover
+// a single loop panic takes the dispatcher, reconciler, reaper, and GC down with it. The panic
+// stack is carried in the error so the restart log is diagnosable, not just "panic: <value>".
+//
+// Scope: recover only catches a panic on THIS goroutine (fn's own stack). A goroutine fn spawns
+// itself is not covered — Go cannot recover another goroutine's panic; such a goroutine must
+// recover on its own stack or the process still dies.
+func runGuarded(ctx context.Context, fn func(context.Context) error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("supervised loop panicked: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return fn(ctx)
 }
 
 // Restarts returns a snapshot of the restart count per supervised name — the counter doctor

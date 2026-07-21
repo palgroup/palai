@@ -95,11 +95,14 @@ func (d *dockerDriver) Start(ctx context.Context, spec ContainerSpec) (Process, 
 		attach:      attach,
 		stdoutR:     stdoutR,
 		stderrR:     stderrR,
+		demuxDone:   make(chan struct{}),
 	}
 	// Demultiplex the container's stdcopy-framed stdio into the two pipes. When the
 	// stream ends (engine exit or kill), both pipes close and the supervisor's readers
-	// see EOF.
+	// see EOF. demuxDone closes once StdCopy has drained the attach to EOF, so a clean
+	// exit's destroy() can wait for the tail to be fully copied before tearing down.
 	go func() {
+		defer close(proc.demuxDone)
 		_, copyErr := stdcopy.StdCopy(stdoutW, stderrW, attach.Reader)
 		_ = stdoutW.CloseWithError(copyErr)
 		_ = stderrW.CloseWithError(copyErr)
@@ -127,8 +130,18 @@ type dockerProcess struct {
 	attach      client.ContainerAttachResult
 	stdoutR     *io.PipeReader
 	stderrR     *io.PipeReader
+	demuxDone   chan struct{}
 	destroyOnce sync.Once
 }
+
+// demuxDrainTimeout bounds how long a clean-exit destroy() waits for the stdcopy demux to
+// reach EOF before tearing down the attach. It is the recoverable ceiling on the tail-frame
+// drain: a wedged daemon that never EOFs the stream must not hang the supervisor's teardown.
+const demuxDrainTimeout = 5 * time.Second
+
+// errProcessTornDown ends a demux goroutine parked on a pipe write when the process is destroyed
+// before its stdout/stderr were fully drained (an early supervisor error), so it never leaks.
+var errProcessTornDown = errors.New("oci: engine process torn down")
 
 func (p *dockerProcess) Stdin() io.WriteCloser { return &stdinConn{attach: &p.attach} }
 func (p *dockerProcess) Stdout() io.Reader     { return p.stdoutR }
@@ -150,7 +163,7 @@ func (p *dockerProcess) Wait(ctx context.Context) (Outcome, error) {
 			out.TimedOut = true
 		} else {
 			cancelWall()
-			p.destroy()
+			p.destroy(false)
 			return out, fmt.Errorf("wait for engine container: %w", err)
 		}
 	case <-wallCtx.Done():
@@ -158,7 +171,7 @@ func (p *dockerProcess) Wait(ctx context.Context) (Outcome, error) {
 			out.TimedOut = true
 		} else {
 			cancelWall()
-			p.destroy()
+			p.destroy(false)
 			return out, wallCtx.Err()
 		}
 	}
@@ -169,11 +182,16 @@ func (p *dockerProcess) Wait(ctx context.Context) (Outcome, error) {
 		_, killErr := p.client.ContainerKill(killCtx, p.containerID, client.ContainerKillOptions{Signal: "SIGKILL"})
 		cancelKill()
 		if killErr != nil && !cerrdefs.IsNotFound(killErr) {
-			p.destroy()
+			p.destroy(false)
 			return out, fmt.Errorf("kill timed-out engine: %w", killErr)
 		}
+		// A force-killed engine has no clean tail to preserve; reclaim immediately.
+		p.destroy(false)
+		return out, nil
 	}
-	p.destroy()
+	// Clean exit: drain the demux to EOF so the engine's final run.terminal is copied out of
+	// the attach buffer before the stream is severed (REC-001).
+	p.destroy(true)
 	return out, nil
 }
 
@@ -183,21 +201,53 @@ func (p *dockerProcess) Kill(ctx context.Context) error {
 	killCtx, cancel := context.WithTimeout(ctx, operationTimeout)
 	_, err := p.client.ContainerKill(killCtx, p.containerID, client.ContainerKillOptions{Signal: "SIGKILL"})
 	cancel()
-	p.destroy()
+	p.destroy(false)
 	if err != nil && !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("kill engine container: %w", err)
 	}
 	return nil
 }
 
-// destroy force-removes the container and closes the hijacked connection exactly once.
-func (p *dockerProcess) destroy() {
+// destroy force-removes the container and closes the hijacked connection exactly once. When
+// drain is set (a clean container exit), it first waits for the stdcopy demux to reach EOF —
+// bounded by demuxDrainTimeout — so a fast-exit engine's buffered run.terminal is fully
+// copied into the stdout pipe before the attach is severed (REC-001). A force kill or a
+// wall-time/error teardown passes drain=false: a forcibly-killed engine has no clean tail to
+// preserve, and waiting would only delay the reclaim.
+func (p *dockerProcess) destroy(drain bool) {
 	p.destroyOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
-		defer cancel()
-		_, _ = p.client.ContainerRemove(ctx, p.containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
-		p.attach.Close()
+		reap := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), operationTimeout)
+			defer cancel()
+			_, _ = p.client.ContainerRemove(ctx, p.containerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
+			p.attach.Close()
+			// Unblock a demux goroutine parked writing to a pipe whose reader stopped consuming
+			// (an early supervisor error leaves stdout/stderr undrained): closing the read ends makes
+			// StdCopy's pending Write return errProcessTornDown, so the demux returns instead of
+			// leaking. On the clean-exit drain path StdCopy has already closed the writers, so this is
+			// a harmless no-op.
+			_ = p.stdoutR.CloseWithError(errProcessTornDown)
+			_ = p.stderrR.CloseWithError(errProcessTornDown)
+		}
+		if drain {
+			drainThenReap(p.demuxDone, demuxDrainTimeout, reap)
+			return
+		}
+		reap()
 	})
+}
+
+// drainThenReap waits for the demux goroutine to reach EOF (demuxDone closed) before invoking
+// reap, so the container's buffered tail is fully demultiplexed into the stdout pipe before
+// the attach connection is torn down. It waits at most timeout: a wedged demux must not hang
+// teardown. Pure and side-effect-only through reap, so the ordering is unit-testable without a
+// Docker daemon.
+func drainThenReap(demuxDone <-chan struct{}, timeout time.Duration, reap func()) {
+	select {
+	case <-demuxDone:
+	case <-time.After(timeout):
+	}
+	reap()
 }
 
 // stdinConn writes controller frames to the container's stdin and closes only the write
