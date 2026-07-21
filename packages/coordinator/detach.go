@@ -20,6 +20,9 @@ type ChildRunLookup struct {
 	State      string
 	ResponseID string
 	Detached   bool
+	// Budget is the child's effective (parent-intersected) reservation, re-added to the parent's
+	// reserved total on a rebind so sequential detach cycles cannot over-fund children (SUB-004, m-4).
+	Budget int
 }
 
 // LookupChildByRequest resolves the child a parent already spawned for a child_request_id (E10 T8,
@@ -30,7 +33,7 @@ func (s *Store) LookupChildByRequest(ctx context.Context, tenant Tenant, parentR
 	var out ChildRunLookup
 	err := s.pool.QueryRow(ctx, storage.Query("LookupChildByRequest"),
 		parentRunID, tenant.Organization, tenant.Project, childRequestID).
-		Scan(&out.RunID, &out.State, &out.ResponseID, &out.Detached)
+		Scan(&out.RunID, &out.State, &out.ResponseID, &out.Detached, &out.Budget)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ChildRunLookup{}, false, nil
 	}
@@ -97,6 +100,19 @@ func (s *Store) WakeDetachedParent(ctx context.Context, tenant Tenant, parentRun
 	}
 	if statemachines.RunState(state) != statemachines.RunWaiting {
 		return false, nil // not released yet, or another wake already re-entered it
+	}
+	// A WAITING run reached here two ways: a detach RELEASE, or a user PAUSE queued before the release
+	// landed (m-7). If a pause is still pending for this run, the user wants it paused — do NOT wake it
+	// against intent; the durable child result survives and the user's own resume re-drives the fold.
+	var pausePending bool
+	if err := tx.QueryRow(ctx, storage.Query("PendingPauseCommand"), parentRunID, tenant.Organization, tenant.Project).
+		Scan(new(string)); err == nil {
+		pausePending = true
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return false, fmt.Errorf("check pending pause: %w", err)
+	}
+	if pausePending {
+		return false, nil
 	}
 	var hasLive bool
 	if err := tx.QueryRow(ctx, storage.Query("HasNonTerminalChildRun"), parentRunID, tenant.Organization, tenant.Project).

@@ -187,6 +187,29 @@ func TestWakeDetachedParentIsSingleWinner(t *testing.T) {
 	}
 }
 
+// TestWakeSkipsParentWithPendingUserPause proves m-7 (E10 T8): a WAITING run reached that state either
+// by a detach RELEASE or by a user PAUSE queued before the release landed. When a pause is still pending,
+// the child terminal must NOT wake the parent against the user's intent — the durable child result
+// survives and the user's own resume re-drives the fold.
+func TestWakeSkipsParentWithPendingUserPause(t *testing.T) {
+	store := openStore(t)
+	pool := store.Pool()
+	ctx := context.Background()
+	tenant, parentRun, _, _, _ := seedParent(t, pool, "waiting", "completed", true)
+	sessionID := sessionOf(t, pool, parentRun)
+	// A queued pause command bound to the parent run (the user asked to pause).
+	exec(t, pool, `INSERT INTO commands (id, organization_id, project_id, session_id, run_id, kind, state) VALUES ($1,$2,$3,$4,$5,'pause','queued')`,
+		newID("cmd"), tenant.Organization, tenant.Project, sessionID, parentRun)
+
+	woken, err := store.WakeDetachedParent(ctx, tenant, parentRun)
+	if err != nil || woken {
+		t.Fatalf("WakeDetachedParent with a pending pause = (%v, %v), want (false, nil) — the user wants it paused", woken, err)
+	}
+	if s := runState(t, pool, parentRun); s != "waiting" {
+		t.Fatalf("parent state = %q, want waiting (a pending pause beats the child wake)", s)
+	}
+}
+
 // TestWakeDetachedParentWaitsForAllChildren proves the wake holds until EVERY child is terminal (fan-out
 // safety): a waiting parent with one terminal and one still-running child is NOT woken, so its resume
 // never re-emits a child.request to a still-running child (which would re-release anyway).

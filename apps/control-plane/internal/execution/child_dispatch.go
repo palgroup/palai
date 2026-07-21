@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -286,6 +287,13 @@ func decodeChildSpec(data map[string]any) childSpec {
 func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, frame contracts.EngineFrame) error {
 	spec := decodeChildSpec(frame.Data)
 
+	// An empty child_request_id is a malformed frame (the engine always sets the deterministic id): it
+	// would match nothing in the JSONB rebind lookup, so every restore would silently RE-CLONE the child
+	// (m-6). Fail the attempt loudly rather than let the keystone rot.
+	if spec.ChildRequestID == "" {
+		return fmt.Errorf("child.request carries no child_request_id: the re-emit rebind key would match nothing")
+	}
+
 	// Re-emit rebind (the keystone): a parent restore re-emits its pending child.request with the SAME
 	// deterministic child_request_id. If a child already exists for it, bind that one — never a second
 	// ChildRun — folding its terminal result now, or re-releasing while it still runs.
@@ -373,19 +381,36 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 }
 
 // rebindChild handles a re-emitted child.request whose child already exists (E10 T8, DET-001 keystone):
-// a terminal child folds its typed result now (never a re-spawn), a still-running detached child re-
-// releases the parent (a later child terminal re-wakes it). It appends the child to this attempt's
-// linkage set so the restored parent's terminal projection still links it.
+// a terminal child folds its typed result now (never a re-spawn); a still-running DETACHED child re-
+// releases the parent (a later child terminal re-wakes it); a still-running INLINE child (its previous
+// inline run crashed with the parent, so it has no durable job and no waker — MF-2) is RE-EXECUTED inline
+// now, never released into a permanent hang. It appends the child to this attempt's linkage set (so the
+// restored parent's terminal projection still links it) and re-reserves its budget against the parent
+// (m-4: sequential detach cycles must not over-fund children past the SUB-004 bound).
 func (o *Orchestrator) rebindChild(ctx context.Context, st *attemptState, spec childSpec, existing coordinator.ChildRunLookup, frame contracts.EngineFrame) error {
 	if !slices.Contains(st.childRunIDs, existing.RunID) {
 		st.childRunIDs = append(st.childRunIDs, existing.RunID)
+		st.childReserved += existing.Budget
 	}
 	if childRunTerminal(existing.State) {
 		return o.foldChildResult(ctx, st, spec.ChildRequestID, existing.RunID, frame)
 	}
-	// The child is still running (e.g. the parent was woken by a child→parent event before terminal, or
-	// a fan-out sibling is still working): release the parent again and wait for the terminal wake.
-	return o.releaseParentForDetach(ctx, st)
+	if existing.Detached {
+		// The detached child still runs as a durable job: release the parent again and wait for its
+		// terminal wake (fan-out sibling still working, or a child→parent event woke the parent early).
+		return o.releaseParentForDetach(ctx, st)
+	}
+	// A non-terminal INLINE child crashed with the parent's previous attempt — no durable job, no waker
+	// (MF-2). Re-execute it inline on the existing execution path (rung-1 stand-down guards a genuinely
+	// live sibling), then fold — the parent makes progress instead of releasing into a hang.
+	// ponytail: a re-executed inline child re-runs without re-realizing a worktree; a crashed
+	// WORKSPACE-mode inline child is a named gap (rare — depth-1, worktree persists under the parent).
+	childDesc := AttemptDescriptor{
+		RunID: contracts.RunID(existing.RunID), AttemptID: newAttemptID(), Fence: st.attempt.Fence,
+		ImageDigest: st.attempt.ImageDigest, Limits: defaultAttemptLimits,
+	}
+	_ = o.ExecuteAttempt(ctx, childDesc)
+	return o.foldChildResult(ctx, st, spec.ChildRequestID, existing.RunID, frame)
 }
 
 // foldChildResult reads a finished child's committed outcome, journals child.completed.v1 on the

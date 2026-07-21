@@ -137,6 +137,53 @@ func TestChildEventReachesParentResumeHistory(t *testing.T) {
 	}
 }
 
+// TestCrashedInlineChildReexecutesOnRebindNotHang proves MF-2 (E10 T8 liveness): when a parent restore
+// re-emits a child.request whose existing child is non-terminal but NON-detached — a crashed inline child
+// with no durable job and no waker — the rebind must RE-EXECUTE it inline and make progress, not release
+// the parent into a permanent hang. It uses a real release checkpoint, then models the crashed inline
+// child (running, detached=false, no job, parent reclaimed running) and drives the restore attempt.
+func TestCrashedInlineChildReexecutesOnRebindNotHang(t *testing.T) {
+	h := newHarness(t)
+	store := newMemCheckpointStore()
+	orch := h.newDetachOrchestrator(store, finalOnlyProvider{})
+	ctx := context.Background()
+
+	respID, _, runID := h.admitWith(
+		`{"input":"do it","delegations":[{"role":"r","objective":"o","model":"fake-child","required":true,"detach":true}]}`, newID("idem"))
+	// Attempt 1: the parent releases at the awaiting-children boundary; a real checkpoint is persisted.
+	if err := orch.ExecuteAttempt(ctx, h.descriptor(runID, 1)); err != nil {
+		t.Fatalf("attempt 1 (release) error = %v", err)
+	}
+	if store.objectCount() == 0 {
+		t.Fatal("attempt 1 persisted no release checkpoint")
+	}
+	childRun, _ := h.childRunOf(runID)
+	// Model a crashed INLINE child: non-terminal, NON-detached, no durable job/waker; the parent is
+	// reclaimed still 'running' (not the detach 'waiting') — the real MF-2 reclaim shape.
+	mustExec(t, h, `UPDATE runs SET state='running', delegation=jsonb_set(delegation,'{spec,detached}','false'::jsonb) WHERE id=$1`, childRun)
+	mustExec(t, h, `DELETE FROM durable_jobs WHERE payload->>'run_id'=$1`, childRun)
+	mustExec(t, h, `UPDATE runs SET state='running' WHERE id=$1`, runID)
+
+	// Attempt 2: restore + re-emit the child.request → rebind must RE-EXECUTE the inline child + fold,
+	// completing the parent, not release it into a hang.
+	if err := orch.ExecuteAttempt(ctx, h.descriptor(runID, 2)); err != nil {
+		t.Fatalf("attempt 2 (rebind re-execute) error = %v", err)
+	}
+	if state, _ := h.response(respID); state != "completed" {
+		t.Fatalf("parent state = %q, want completed (a crashed inline child must re-execute on rebind, not hang)", state)
+	}
+	if n := h.count(`SELECT count(*) FROM runs WHERE parent_run_id=$1`, runID); n != 1 {
+		t.Fatalf("child runs = %d, want 1 (rebind, never a clone)", n)
+	}
+}
+
+func mustExec(t *testing.T, h *harness, sql string, args ...any) {
+	t.Helper()
+	if _, err := h.spine.Pool().Exec(context.Background(), sql, args...); err != nil {
+		t.Fatalf("exec %q error = %v", sql, err)
+	}
+}
+
 // detachGatedChildProvider drives the DET-002 conversation deterministically: the parent runs a single
 // final step (a config-seeded delegation dispatches the detached child), and the child runs TWO steps —
 // its first GATES (blocks until the test has durably queued a spine message to it) and requests a tool

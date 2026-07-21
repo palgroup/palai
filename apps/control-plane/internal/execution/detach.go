@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	statemachines "github.com/palgroup/palai/packages/state-machines"
 )
@@ -25,6 +26,12 @@ var errRunReleased = errors.New("run_released")
 // the parent would wait forever. WakeDetachedParent is single-winner, so a genuine terminal wake racing
 // this self-wake still re-enters the parent exactly once.
 func (o *Orchestrator) releaseParentForDetach(ctx context.Context, st *attemptState) error {
+	// §26.5: never release without a durable boundary. The fresh detach path already gates on the sink,
+	// but the rebind path routes here too (MF-2) — so the single choke point refuses a sink-less release
+	// rather than letting checkpointBeforePause no-op and the parent wait on an unrecoverable boundary.
+	if o.checkpoints == nil {
+		return fmt.Errorf("cannot release a detached parent with no checkpoint sink (§26.5): no durable boundary")
+	}
 	// Checkpoint the awaiting-children boundary and drain any in-flight child.requests without dispatch
 	// (the same discipline the pause path uses); a persist failure surfaces here.
 	if err := o.checkpointBeforePause(ctx, st); err != nil {
