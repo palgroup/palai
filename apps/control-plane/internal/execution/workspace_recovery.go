@@ -28,6 +28,15 @@ var ErrHostQuarantined = errors.New("host quarantined")
 // transitions the workspace SM has carried since E09 (packages/state-machines/workspace.go) with no
 // driver. The logical workspace id is STABLE across the move; only a strictly higher allocation fence
 // appears, which fences out the old host's writes/snapshots at the DB (SAN-006, already proven).
+//
+// CEILING — DETECTION is not yet wired into the binary. This is the recovery DRIVER (component- and
+// fault-proven); nothing in the control-plane binary yet DETECTS a lost host to invoke it. The intended
+// trigger is the lease-liveness path already in the tree: the durable-job lease-expiry reconcile
+// (coordinator.Supervisor) noticing a workspace whose writer run has a dead response.run job
+// (RunHasLiveResponseJob=false) — the same liveness signal acquireWriterLease reclaims on. Wiring that
+// detect→RecoverWorkspace hook is the remaining E10 integration; until then a host-lost workspace is
+// recovered lazily on the next attempt's provisionRootWorkspace (which reclaims the stale lease) rather
+// than eagerly re-allocated. Named here so this reads as a driver-with-pending-trigger, not as live.
 type WorkspaceRecovery struct {
 	spine     *coordinator.Store
 	snapshots *SnapshotSink
@@ -81,6 +90,10 @@ type RecoverResult struct {
 func (r *WorkspaceRecovery) RecoverWorkspace(ctx context.Context, tenant coordinator.Tenant, in RecoverInput) (RecoverResult, error) {
 	// leased→host_lost→recovering. A workspace already past leased (a raced double-recover) tolerates
 	// the illegal transition — the physical restore below is the authority — but never skips silently.
+	// Split-brain-free by fencing, not by locking: two racing recoveries each mint their own allocation
+	// (fence+1, fence+2). Both restore, but only the HIGHER fence is current, so the loser's later
+	// writer-lease acquire hits ErrStaleAllocation and its attempt retries against the winner's
+	// allocation — self-healing, no torn state. (MarkReady is idempotent on the shared workspace row.)
 	for _, cmd := range []statemachines.WorkspaceCommand{statemachines.WorkspaceCmdLoseHost, statemachines.WorkspaceCmdRecover} {
 		if err := r.spine.AdvanceWorkspace(ctx, tenant, in.WorkspaceID, cmd); err != nil && !errors.Is(err, statemachines.ErrInvalidState) {
 			return RecoverResult{}, err
@@ -155,7 +168,21 @@ type DestroyInput struct {
 // placed there, and the failure is journaled (host.quarantined.v1). The workspace stays in destroying
 // (not destroyed) — the teardown did not complete — and the typed error is returned.
 func (r *WorkspaceRecovery) DestroyAllocation(ctx context.Context, tenant coordinator.Tenant, in DestroyInput) error {
-	if err := r.spine.AdvanceWorkspace(ctx, tenant, in.WorkspaceID, statemachines.WorkspaceCmdDestroy); err != nil && !errors.Is(err, statemachines.ErrInvalidState) {
+	// Own the destroy before touching the filesystem. destroy is legal only from ready/paused/failed; an
+	// ErrInvalidState is tolerated ONLY when the workspace is ALREADY destroying/destroyed (an idempotent
+	// retry). From any live state (e.g. leased) the transition is illegal and we REFUSE — removing a live
+	// workspace's bytes would be data loss, not a no-op.
+	switch err := r.spine.AdvanceWorkspace(ctx, tenant, in.WorkspaceID, statemachines.WorkspaceCmdDestroy); {
+	case err == nil:
+	case errors.Is(err, statemachines.ErrInvalidState):
+		state, serr := r.spine.WorkspaceLifecycleState(ctx, tenant, in.WorkspaceID)
+		if serr != nil {
+			return serr
+		}
+		if state != string(statemachines.WorkspaceDestroying) && state != string(statemachines.WorkspaceDestroyed) {
+			return fmt.Errorf("destroy allocation refused: workspace %s is %s, not destroyable", in.WorkspaceID, state)
+		}
+	default:
 		return err
 	}
 	if err := r.remove(in.HostPath); err != nil {

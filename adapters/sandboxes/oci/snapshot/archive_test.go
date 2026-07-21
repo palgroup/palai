@@ -70,6 +70,13 @@ func TestSnapshotRestoreChecksumsMatchCreate(t *testing.T) {
 		t.Fatalf("Archive() error = %v", err)
 	}
 
+	// Secret-scan the RAW archive bytes (spec §29.10, SAN-005): the secret sentinel must be ABSENT from
+	// the tarball itself, not just from the manifest/restored FS — an exclusion that leaked into the
+	// bytes would still ship the secret downstream.
+	if bytes.Contains(buf.Bytes(), []byte("SUPER-SECRET-TOKEN")) {
+		t.Fatal("the secret sentinel is present in the raw archive bytes — an excluded secret leaked into the tarball")
+	}
+
 	// The .git tree is captured: at least one repo/.git/ file is in the manifest.
 	sawGit := false
 	for path := range created.FileChecksums {

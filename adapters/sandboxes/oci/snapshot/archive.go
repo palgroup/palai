@@ -25,6 +25,11 @@ import (
 // repo/.git, none excluded), so the restored repo can push (E09 Task 8). Entries are written in sorted
 // path order, so the archive bytes are deterministic for the same tree. It returns the create-side
 // manifest — the tree/index/file checksums a Restore must re-derive EQUAL.
+//
+// Ceiling: workspace.Snapshot checksums only REGULAR files, so a worktree symlink or an empty directory
+// is silently absent from both the manifest and the archive (an E09 create-side decision, not new here).
+// This is safe for the restore contract: a capture-order mutation of a captured file is CAUGHT at restore
+// as a checksum mismatch, never silent corruption; only never-captured non-regular entries are omitted.
 func Archive(root string, w io.Writer) (workspace.Manifest, error) {
 	manifest, err := workspace.Snapshot(root)
 	if err != nil {

@@ -14,9 +14,10 @@ import (
 
 // MaxSnapshotArchiveBytes bounds a workspace snapshot archive. It matches the object store's read bound
 // (artifacts.maxReadBytes) so a snapshot that could never be GET back for a restore is rejected at
-// capture rather than written and later un-restorable. ponytail: 64 MiB covers the local-tier repos; a
-// larger repo needs streaming archive/restore (a real ceiling, named — this buffers the whole archive).
-const MaxSnapshotArchiveBytes = 64 * 1024 * 1024
+// capture rather than written and later un-restorable. A var, not a const, so a deployment can tune it
+// (and a test can lower it to drive the overflow path without a 64 MiB fixture). ponytail: 64 MiB covers
+// the local-tier repos; a larger repo needs streaming archive/restore — this buffers the whole archive.
+var MaxSnapshotArchiveBytes int64 = 64 * 1024 * 1024
 
 // ErrSnapshotArchiveMissing reports that a snapshot row exists but its byte-archive is absent from the
 // object store (a manifest-only E09 snapshot, or lost bytes): the restore has nothing to reconstruct
@@ -70,7 +71,7 @@ func (s *SnapshotSink) Capture(ctx context.Context, in SnapshotCaptureInput) (st
 	if err != nil {
 		return "", fmt.Errorf("archive workspace snapshot: %w", err)
 	}
-	if buf.Len() > MaxSnapshotArchiveBytes {
+	if int64(buf.Len()) > MaxSnapshotArchiveBytes {
 		return "", fmt.Errorf("workspace snapshot archive %d bytes exceeds the %d bound", buf.Len(), MaxSnapshotArchiveBytes)
 	}
 	key := snapshotObjectKey(in.Organization, in.Project, in.WorkspaceID, in.SnapshotID)

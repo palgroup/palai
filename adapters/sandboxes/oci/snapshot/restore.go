@@ -44,7 +44,10 @@ func Restore(r io.Reader, dest string, want workspace.Manifest) (workspace.Manif
 	if err != nil {
 		return workspace.Manifest{}, err
 	}
-	if want.TreeChecksum != "" && !manifestChecksumsEqual(want, got) {
+	// No verify-skip: an empty want is a caller bug at a data-integrity seam, not a "skip verification"
+	// signal — an unverified restore could resume on a silently-wrong tree (SAN-005). manifestChecksumsEqual
+	// fails on an empty want (its tree/index/file-count never match a real restored tree), so this rejects.
+	if !manifestChecksumsEqual(want, got) {
 		return got, fmt.Errorf("%w: tree %s!=%s index %s!=%s", ErrRestoreChecksumMismatch,
 			want.TreeChecksum, got.TreeChecksum, want.IndexChecksum, got.IndexChecksum)
 	}

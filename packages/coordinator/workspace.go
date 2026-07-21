@@ -135,6 +135,18 @@ func (s *Store) AdvanceWorkspace(ctx context.Context, tenant Tenant, workspaceID
 	return nil
 }
 
+// WorkspaceLifecycleState reads a workspace's current lifecycle state within tenant scope (non-locking).
+// The destroy path uses it to distinguish an idempotent retry (already destroying/destroyed) from a live
+// workspace whose physical teardown must be refused.
+func (s *Store) WorkspaceLifecycleState(ctx context.Context, tenant Tenant, workspaceID string) (string, error) {
+	var state string
+	err := s.pool.QueryRow(ctx, storage.Query("WorkspaceLifecycleState"), workspaceID, tenant.Organization, tenant.Project).Scan(&state)
+	if err != nil {
+		return "", fmt.Errorf("workspace lifecycle state: %w", err)
+	}
+	return state, nil
+}
+
 // CreateWorkspace opens a logical workspace in the requested binding state (spec §29.7).
 func (s *Store) CreateWorkspace(ctx context.Context, tenant Tenant, in WorkspaceInput) error {
 	state := in.State

@@ -155,6 +155,13 @@ SELECT state FROM workspaces
 WHERE id = $1 AND organization_id = $2 AND project_id = $3
 FOR UPDATE;
 
+-- name: WorkspaceLifecycleState
+-- The workspace's current lifecycle state within tenant scope, NON-locking (unlike WorkspaceState, which
+-- takes FOR UPDATE for a transition). The destroy path reads it to tell an idempotent retry (already
+-- destroying/destroyed) from a live workspace whose teardown must be refused, not a check-then-act race.
+SELECT state FROM workspaces
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
 -- name: UpdateWorkspaceState
 -- Advance the workspace's lifecycle state projection (spec §29.7). The legal transition is checked by
 -- the pure WorkspaceTable in Go before this write, exactly as UpdateRunState follows RunTable — the DB
