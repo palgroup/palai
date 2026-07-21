@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Recovery UAT — the E10 exit gate. One target, a deterministic/component/fault CORE (always) + a
+# named-but-gated live tier. The core is provider-agnostic: the kill is real, the provider is fake.
+#
+#   deterministic core (always):
+#     1. TestCodingJourneyWithKillRecoveryDeterministic — the §63.2 kill+recovery coding journey: the
+#        real orchestrator + tools + ladder with a REAL engine SIGKILL at the push boundary and a
+#        compatible-checkpoint RESTORE, proving "recovery evidence complete, no duplicate tool/push/PR"
+#        against the faithful Git double with the FAKE provider and NO credential. Routed through the
+#        responses e2e infra it already provisions (throwaway Postgres + reference-engine subprocess).
+#     2. test-fault CASE=recovery — the recovery fault suite: real container/host kills + uncertain-tool
+#        reconciliation (duplicate external effect = 0), against real containers + real Postgres.
+#     3. evidence-verify RELEASE=recovery-0.1.0 — the committed recovery bundle verifies clean with the
+#        §26.12 RecoveryProof rule active (a recovery-claimed case with a missing/incomplete proof fails).
+#
+#   live tier (PROVIDER=provider-one): the 7 recovery live smokes (T1 checkpoint-create, T2
+#     steer-survives-kill, T4 checkpoint-restore, T5 container-kill-recovery, T6 host-kill-restore, T7
+#     tool-replay-reconcile, T8 detached-child-conversation). HONEST CEILING: all 7 share the
+#     tool-advertising gate — dispatchModel does not advertise tool schemas to the provider, so a real
+#     provider never reaches a tool boundary; they SKIP until PALAI_LIVE_TOOL_ADVERTISING is set. They
+#     serialize on the shared :local Docker stack, so this target does NOT run them inline — it names them
+#     so the gate is explicit and points at the per-case live runner.
+#
+# uat-coding / uat-local-live / uat-interactive stay UNTOUCHED.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# Core 1 — the kill+recovery coding journey through the responses e2e infra.
+E2E_RUN='TestCodingJourneyWithKillRecoveryDeterministic' TEST=responses scripts/test/e2e
+
+# Core 2 — the recovery fault suite (real kills, provider-agnostic).
+CASE=recovery scripts/test/fault
+
+# Core 3 — the recovery-0.1.0 evidence bundle verifies clean.
+RELEASE=recovery-0.1.0 scripts/evidence/verify
+
+# Live tier — named-but-gated. The 7 recovery live smokes need PALAI_LIVE_TOOL_ADVERTISING (dispatchModel
+# omits tool schemas) and serialize on :local; they are not run inline here.
+if [ "${PROVIDER:-fake}" = "provider-one" ]; then
+  echo "uat-recovery: PROVIDER=provider-one — the 7 live recovery smokes are GATED on PALAI_LIVE_TOOL_ADVERTISING (dispatchModel omits tool schemas) and serialize on :local." >&2
+  echo "  run them per-case: make test-live-provider PROVIDER=provider-one CASE=<checkpoint-create|steer-survives-kill|checkpoint-restore|container-kill-recovery|host-kill-restore|tool-replay-reconcile|detached-child-conversation>" >&2
+fi

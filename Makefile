@@ -5,7 +5,7 @@ SHELL := /bin/bash
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
 	test-fault test-security test-live-provider test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
-	uat-interactive evidence-verify
+	uat-interactive uat-coding uat-recovery evidence-verify
 
 bootstrap:
 	go mod download
@@ -105,6 +105,13 @@ uat-interactive:
 uat-coding:
 	@test -x scripts/uat/coding || { echo "coding UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' scripts/uat/coding
+
+# E10 exit gate: the deterministic/component/fault recovery core (always) + the named-but-gated live
+# recovery smokes (PROVIDER=provider-one). The core is provider-agnostic — the kill is real, the provider
+# is fake. uat-local-live / uat-interactive / uat-coding above stay untouched.
+uat-recovery:
+	@test -x scripts/uat/recovery || { echo "recovery UAT not implemented" >&2; exit 2; }
+	@PROVIDER='$(PROVIDER)' scripts/uat/recovery
 
 evidence-verify:
 	@test -x scripts/evidence/verify || { echo "evidence verifier not implemented" >&2; exit 2; }
