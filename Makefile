@@ -5,7 +5,7 @@ SHELL := /bin/bash
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
 	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
-	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility evidence-verify
+	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud evidence-verify
 
 bootstrap:
 	go mod download
@@ -152,6 +152,15 @@ uat-automation:
 uat-extensibility:
 	@test -x scripts/uat/extensibility || { echo "extensibility UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' scripts/uat/extensibility
+
+# E13 EXIT gate: the managed-cloud catalog + committed-bundle evidence-verify core (always, no Docker) + the
+# live managed-cloud journey (PROVIDER=provider-one) — one restart-less stack, provision -> secret -> route +
+# config_policy -> SDK session/run -> steer -> list -> artifact -> budget/rate refusal -> cross-tenant
+# negative, ending in a REAL provider run. uat-local-live / uat-interactive / uat-coding / uat-recovery /
+# uat-automation / uat-extensibility above stay untouched.
+uat-managed-cloud:
+	@test -x scripts/uat/managed-cloud || { echo "managed-cloud UAT not implemented" >&2; exit 2; }
+	@PROVIDER='$(PROVIDER)' scripts/uat/managed-cloud
 
 evidence-verify:
 	@test -x scripts/evidence/verify || { echo "evidence verifier not implemented" >&2; exit 2; }
