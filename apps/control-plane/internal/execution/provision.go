@@ -25,6 +25,20 @@ func (o *Orchestrator) SetWorkspaceProvisioner(root string, broker repositories.
 	o.provisionRoot, o.provisionBroker = root, broker
 }
 
+// SetConnectionSecrets wires the resolver a binding's connection_ref is redeemed through (E13 Task 9),
+// so a tenant's own Git credential — provisioned and rotated over the secret-ref API — backs the clone
+// for the bindings that name one. main.go calls it unconditionally next to SetWorkspaceProvisioner: any
+// composition root that provisions workspaces MUST wire it, because a ref-bearing binding fails closed
+// without it rather than quietly borrowing the deployment-global credential.
+//
+// UPGRADING FROM PRE-T9: connection_ref had no reader, so a ref-bearing binding cloned with the global
+// GitHub App credential. It now has to resolve — the ref must exist under the binding's organization and
+// the deployment must have a secret master key — or the clone fails. A binding that really does want the
+// deployment credential carries an EMPTY connection_ref.
+func (o *Orchestrator) SetConnectionSecrets(secrets SecretResolver) {
+	o.provisionSecrets = secrets
+}
+
 // provisionRootWorkspace realizes the session's attached coding workspace for the ROOT run and returns
 // the allocation host path (the tools' WorkspaceRoot; the repo lives at hostPath/repo), the writer lease
 // to release at attempt end, and the logical workspace id. It drives the §29.7 lifecycle
@@ -164,6 +178,8 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, tenant coor
 		SecretsDir:   filepath.Join(dir, provisionSecretsDir),
 		AttemptFence: fence,
 		ToolCall:     "provision",
+		// A binding that names a connection_ref clones under its OWN tenant's credential (E13 T9).
+		ConnectionSecrets: o.provisionSecrets,
 	}); err != nil {
 		return coordinator.Allocation{}, err
 	}

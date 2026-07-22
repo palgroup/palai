@@ -73,8 +73,11 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 		RepositoryIdentity: "acme/widgets",
 		CloneURL:           remote.url,
 		DefaultBranch:      "main",
-		ConnectionRef:      "conn_local",
-		AllowedOperations:  []string{"push_branch", "open_pull_request"},
+		// No connection_ref: this journey's remote is a local, unauthenticated repository, so the binding
+		// takes the deployment-global broker. A ref here would be a claim to a tenant-provisioned Git
+		// credential that does not exist, and since E13 T9 gave connection_ref a reader, such a claim
+		// fails the clone closed rather than being decoration.
+		AllowedOperations: []string{"push_branch", "open_pull_request"},
 	}); err != nil {
 		t.Fatalf("create repository binding: %v", err)
 	}

@@ -78,7 +78,7 @@ func TestCodingJourneyWithKillRecoveryDeterministic(t *testing.T) {
 	bindingID := newID("bnd")
 	if err := h.spine.CreateRepositoryBinding(ctx, h.tenant, coordinator.RepositoryBindingInput{
 		BindingID: bindingID, Provider: "local", RepositoryIdentity: "acme/widgets",
-		CloneURL: remote.url, DefaultBranch: "main", ConnectionRef: "conn_local",
+		CloneURL: remote.url, DefaultBranch: "main",
 		AllowedOperations: []string{"push_branch", "open_pull_request"},
 	}); err != nil {
 		t.Fatalf("create repository binding: %v", err)

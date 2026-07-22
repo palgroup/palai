@@ -73,6 +73,10 @@ type Orchestrator struct {
 	// main.go injects them env-gated via SetWorkspaceProvisioner.
 	provisionRoot   string
 	provisionBroker repositories.Broker
+	// provisionSecrets resolves a binding's connection_ref to that tenant's OWN Git credential (E13 Task
+	// 9). Nil ⇒ no secret-ref store wired: every binding clones under provisionBroker, as before. main.go
+	// injects it via SetConnectionSecrets.
+	provisionSecrets SecretResolver
 	// artifacts is the object-store write-path the finalize changeset compile persists the patch +
 	// test-log through (spec §30.6). Nil ⇒ no changeset is compiled (a stack with no artifact store
 	// wired). main.go injects it via SetChangesetWriter.

@@ -46,7 +46,6 @@ func TestCodingAutoProvisionDeterministic(t *testing.T) {
 		RepositoryIdentity: "acme/widgets",
 		CloneURL:           remote.url,
 		DefaultBranch:      "main",
-		ConnectionRef:      "conn_local",
 		AllowedOperations:  []string{"push_branch", "open_pull_request"},
 	}); err != nil {
 		t.Fatalf("create repository binding: %v", err)

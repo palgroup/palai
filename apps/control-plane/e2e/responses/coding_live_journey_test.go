@@ -78,7 +78,7 @@ func TestCodingLiveJourney(t *testing.T) {
 	base := envOrLive("PALAI_GIT_DEFAULT_BRANCH", "main")
 	if err := h.spine.CreateRepositoryBinding(ctx, h.tenant, coordinator.RepositoryBindingInput{
 		BindingID: bindingID, Provider: "github", RepositoryIdentity: repoURL, CloneURL: repoURL,
-		DefaultBranch: base, ConnectionRef: "conn_live", AllowedOperations: []string{"push_branch", "open_pull_request"},
+		DefaultBranch: base, AllowedOperations: []string{"push_branch", "open_pull_request"},
 	}); err != nil {
 		t.Fatalf("create live binding: %v", err)
 	}

@@ -286,6 +286,9 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// holds the mount — a NAMED FUTURE split-deploy hardening, not built here.
 		if root := os.Getenv("PALAI_WORKSPACE_ROOT"); root != "" {
 			orch.SetWorkspaceProvisioner(root, repositoryBrokerFromEnv())
+			// A binding that names a connection_ref clones under its own tenant's credential (E13 T9);
+			// the resolver is inert for the ref-less bindings that take the global broker above.
+			orch.SetConnectionSecrets(repositoryConnectionSecret)
 			// The changeset writer is wired above on the object store (it doubles as the research
 			// body-artifact seam); a workspace-bound run reuses that same writer for its changeset compile.
 			if shell := shellRunnerFromEnv(); shell != nil {
@@ -467,10 +470,39 @@ func dbSecret(org, ref string) ([]byte, bool, error) {
 		if errors.Is(err, identity.ErrSecretDecrypt) {
 			return nil, false, err // fail closed: never fall back to a superseded env secret
 		}
-		log.Printf("secret store: resolve ref %q under org %q: %v (falling back to env bridge)", ref, org, err)
+		// Not every consumer HAS an env bridge (the repository connection resolver is DB-only), so the log
+		// states what happened here rather than claiming a fallback the caller may not have.
+		log.Printf("secret store: resolve ref %q under org %q: %v (treated as a miss)", ref, org, err)
 		return nil, false, nil
 	}
 	return v, ok, nil
+}
+
+// repositoryConnectionSecret bridges a repository binding's connection_ref to the Git credential bytes at
+// clone time (E13 Task 9). Unlike its four siblings it is DB-ONLY: connection_ref is a NEW consumer, so
+// there is no pre-T3 env-file bridge to stay compatible with — a binding-scoped Git credential is
+// provisioned over POST /v1/secret-refs and rotated there with no restart. A MISS is an error: a binding
+// that deliberately names its own credential must never silently clone under the deployment-global App.
+// The org is server-minted from the run, so the store scopes the read to it and RLS denies any foreign row.
+//
+// HONEST CEILING: there is no per-tenant GitHub App ONBOARDING surface (installing an App per tenant and
+// capturing its installation credential is product/SaaS work). This resolves whatever token the tenant
+// already provisioned under the ref — a PAT or an installation token it manages itself.
+func repositoryConnectionSecret(org, ref string) ([]byte, error) {
+	if org == "" || ref == "" {
+		return nil, errors.New("empty repository connection org/ref")
+	}
+	v, ok, err := dbSecret(org, ref)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		// dbSecret flattens a transient store failure into a miss (it is logged there), so this covers two
+		// causes and must not assert the wrong one: an operator reading "unprovisioned" during a Postgres
+		// blip would go hunting for a ref that is in fact present.
+		return nil, fmt.Errorf("repository connection %q did not resolve under org %q: no such secret ref, or the secret store was unreachable (see the secret-store log)", ref, org)
+	}
+	return v, nil
 }
 
 // mcpSecretResolver bridges an MCP connection's secret_ref handle to the bearer bytes at request time (the

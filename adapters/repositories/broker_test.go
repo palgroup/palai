@@ -74,6 +74,46 @@ func TestBrokerExpiredCredentialFailsClosed(t *testing.T) {
 	}
 }
 
+// TestTokenBrokerMaterializesSuppliedCredential proves the E13 T9 broker keeps the §30.2 discipline for a
+// credential it did NOT mint: the caller-supplied token (a binding's resolved connection_ref) reaches only
+// the 0600 helper file, Revoke removes it, and an EMPTY token fails closed rather than authorizing an
+// anonymous clone.
+func TestTokenBrokerMaterializesSuppliedCredential(t *testing.T) {
+	const token = "palai-REPMARK-binding-token-xx77"
+	b := NewTokenBroker(token)
+
+	cred, err := b.Mint(context.Background(), ScopeRead, Audience{Organization: "org_x", Run: "run_y"})
+	if err != nil {
+		t.Fatalf("Mint() error = %v", err)
+	}
+	if strings.Contains(cred.Handle+cred.Username, token) {
+		t.Fatal("Mint() returned the supplied token in an opaque field")
+	}
+	dir := t.TempDir()
+	helperCfg, err := b.writeHelper(cred.Handle, "https://github.com/org/repo", dir)
+	if err != nil {
+		t.Fatalf("writeHelper() error = %v", err)
+	}
+	helperPath := strings.TrimPrefix(helperCfg, "store --file=")
+	body, err := os.ReadFile(helperPath)
+	if err != nil {
+		t.Fatalf("read helper file: %v", err)
+	}
+	if !strings.Contains(string(body), token) {
+		t.Fatal("the helper file must carry the SUPPLIED token — the binding's own credential")
+	}
+	if err := b.Revoke(context.Background(), cred.Handle); err != nil {
+		t.Fatalf("Revoke() error = %v", err)
+	}
+	if _, err := os.Stat(helperPath); !os.IsNotExist(err) {
+		t.Fatalf("after Revoke, helper file still exists (err=%v)", err)
+	}
+
+	if _, err := NewTokenBroker("").Mint(context.Background(), ScopeRead, Audience{}); err == nil {
+		t.Fatal("an empty token minted a credential; want fail-closed")
+	}
+}
+
 // TestProtectedBranchDirectWorkDenied proves the branch policy (spec §30.5): direct mutable work on
 // a protected/default branch is denied, while a generated agent/<...> or feature branch is allowed.
 func TestProtectedBranchDirectWorkDenied(t *testing.T) {
