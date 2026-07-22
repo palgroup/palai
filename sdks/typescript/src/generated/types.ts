@@ -92,6 +92,7 @@ export interface MCPConnection {
   object: string;
   organization_id?: OrganizationId;
   project_id?: ProjectId;
+  sampling?: boolean;
   transport: string;
   trust_level?: string;
 }

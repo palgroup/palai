@@ -18,6 +18,10 @@ import (
 type MCPClient interface {
 	Discover(ctx context.Context, conn mcp.ConnConfig) ([]mcp.RemoteTool, error)
 	Call(ctx context.Context, scope mcp.CallScope, conn mcp.ConnConfig, remoteName string, args map[string]any) (map[string]any, error)
+	// VetConnection is the fail-fast create/discover SSRF gate (E12 T6): an http connection whose URL resolves
+	// internal, or whose bearer audience mismatches its origin, is rejected before it is ever dialed. It
+	// reuses the manager's already-wired egress resolver, so the store needs no egress injection.
+	VetConnection(ctx context.Context, conn mcp.ConnConfig) error
 }
 
 // SetMCP injects the MCP client the discovery + dispatch paths use. A nil client leaves MCP connections
@@ -45,6 +49,13 @@ func (s *Store) DiscoverConnection(ctx context.Context, org, project, connID str
 	conn, err := s.GetMCPConnection(ctx, org, project, connID)
 	if err != nil {
 		return DiscoverResult{}, err
+	}
+	// Fail-fast SSRF gate before the discovery dial: a connection whose http URL now resolves internal (a
+	// name that rebound since registration), or whose bearer audience no longer matches its origin, is
+	// rejected here rather than dialed (the pinned dialer would still deny at connect — this is the early,
+	// cheaper reject on the admin path).
+	if err := s.mcp.VetConnection(ctx, connConfig(org, conn)); err != nil {
+		return DiscoverResult{}, fmt.Errorf("vet connection %s: %w", connID, err)
 	}
 	tools, err := s.mcp.Discover(ctx, connConfig(org, conn))
 	if err != nil {
@@ -176,6 +187,18 @@ func connConfig(org string, conn Connection) mcp.ConnConfig {
 				cc.Cmd = append(cc.Cmd, s)
 			}
 		}
+	}
+	// E12 T6 non-secret auth/sampling wiring (allowlisted keys — a wrong type fails SAFE: sampling stays off,
+	// no audience binding, the router's default budget). audience binds the http bearer to its origin;
+	// sampling opts into server-driven sampling (default off = default-deny) with its own token budget.
+	if audience, ok := conn.Config["audience"].(string); ok {
+		cc.Audience = audience
+	}
+	if enabled, ok := conn.Config["sampling"].(bool); ok {
+		cc.SamplingEnabled = enabled
+	}
+	if maxTokens, ok := conn.Config["sampling_max_tokens"].(float64); ok {
+		cc.SamplingMaxTokens = int(maxTokens)
 	}
 	return cc
 }

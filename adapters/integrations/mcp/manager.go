@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net"
 	"time"
@@ -39,6 +40,12 @@ type ConnConfig struct {
 	URL         string // http
 	SecretRef   string // handle; resolved at Call time; "" ⇒ no bearer
 	TimeoutMS   int
+	// Audience is the origin the http bearer is bound to (TOL-009 replay defence); "" ⇒ the URL's own
+	// origin. SamplingEnabled opts a connection into server-driven sampling (default off = default-deny);
+	// SamplingMaxTokens is the per-sampling-step budget the SEPARATE Reservation caps at (0 ⇒ router default).
+	Audience          string
+	SamplingEnabled   bool
+	SamplingMaxTokens int
 }
 
 // CallScope carries the tenant + session/response + call identity a progress event needs, without importing
@@ -64,6 +71,7 @@ type Config struct {
 	Driver           oci.InteractiveDriver
 	Secrets          SecretResolver
 	Sink             ProgressSink
+	Sampling         SamplingRouter // nil ⇒ default-deny; wired control-plane-side (execution.MCPSamplingRouter)
 	Limits           oci.Limits
 	MaxStdoutBytes   int64
 	MaxStderrBytes   int64
@@ -135,6 +143,17 @@ func (m *Manager) Call(ctx context.Context, scope CallScope, conn ConnConfig, re
 	defer teardown()
 
 	client := NewClient(transport)
+	// Bind sampling for THIS call: enabled only when the connection opts in AND a router is wired. The client
+	// then advertises the sampling capability, and the transport routes a server sampling/createMessage to a
+	// budgeted model step through the bound handler. Absent either, the handler stays nil (default-deny) and
+	// no capability is advertised — a hostile server's unsolicited sampling request is answered with a
+	// JSON-RPC error, never a model call, and NEVER counts as a breaker failure.
+	if handler := m.bindSampling(scope, conn); handler != nil {
+		if r, ok := transport.(samplingReceiver); ok {
+			r.setSampling(handler)
+			client.advertiseSampling = true
+		}
+	}
 	if err := client.Initialize(callCtx); err != nil {
 		m.breaker.recordFailure(conn.ID)
 		return nil, err
@@ -233,6 +252,7 @@ func (m *Manager) dialHTTP(ctx context.Context, conn ConnConfig) (Transport, fun
 	transport, err := NewHTTPTransport(HTTPOptions{
 		URL:          conn.URL,
 		Bearer:       bearer,
+		Audience:     conn.Audience,
 		AllowPrivate: m.cfg.AllowPrivate,
 		Resolver:     m.cfg.Resolver,
 		Dial:         m.cfg.Dial,
@@ -243,6 +263,33 @@ func (m *Manager) dialHTTP(ctx context.Context, conn ConnConfig) (Transport, fun
 		return nil, nil, err
 	}
 	return transport, func() { _ = transport.Close(context.Background()) }, nil
+}
+
+// VetConnection is the fail-fast create/discover gate (E12 T6 step 4): an http connection's URL is
+// resolve-vetted — a name that ALREADY points at a private/loopback/metadata range is rejected HERE, at
+// registration/discovery, not only at dial — and its bearer audience is checked against the dial origin. A
+// stdio connection has no network egress, so there is nothing to vet. It reuses the manager's already-wired
+// resolver + allowPrivate, so the control-plane store needs no egress injection of its own.
+func (m *Manager) VetConnection(ctx context.Context, conn ConnConfig) error {
+	if conn.Transport != "http" {
+		return nil
+	}
+	if err := VetHTTPURL(ctx, m.cfg.Resolver, conn.URL, m.cfg.AllowPrivate); err != nil {
+		return err
+	}
+	return VetAudience(conn.URL, conn.Audience)
+}
+
+// bindSampling returns the per-call SamplingHandler for a connection, or nil (default-deny). Sampling is
+// bound ONLY when the connection enables it AND a router is wired; the handler closes over this call's scope
+// + connection so the routed model step is journaled to the right run and metered on its own budget.
+func (m *Manager) bindSampling(scope CallScope, conn ConnConfig) SamplingHandler {
+	if !conn.SamplingEnabled || m.cfg.Sampling == nil {
+		return nil
+	}
+	return func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
+		return m.cfg.Sampling.RouteSampling(ctx, scope, conn, params)
+	}
 }
 
 // resolveBearer redeems the connection's secret_ref for its bearer bytes at request time. No ref ⇒ no auth;

@@ -13,6 +13,7 @@
     "name": {"type": "string", "description": "The discovery namespace segment (mcp.<name>.<tool>); a single ASCII segment, unique per project."},
     "transport": {"type": "string", "enum": ["stdio", "http"]},
     "trust_level": {"type": "string", "description": "Explicit trust level; 'untrusted' by default. The capability ceiling is the AgentRevision.mcp_connections rider intersection regardless of this value."},
+    "sampling": {"type": "boolean", "description": "Whether server-driven sampling (sampling/createMessage) is enabled for this connection (E12 T6, TOL-010). Default false = default-deny. When enabled, a server sampling request is routed as a SEPARATE budgeted control-plane model step; the non-secret sampling wiring (the flag, its token budget) lives in the connection config."},
     "disabled": {"type": "boolean", "description": "The admin kill-switch: a disabled connection resolves no tools."},
     "created_at": {"type": "string", "format": "date-time"}
   },

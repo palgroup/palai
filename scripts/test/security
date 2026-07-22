@@ -14,9 +14,9 @@ cd "$root"
 # shellcheck source=scripts/test/runner-engine.sh
 source "$root/scripts/test/runner-engine.sh"
 
-# Default runs the engine-isolation suite and the E09 Task 4 workspace shell-tool suite; select one
-# with TEST=runner or TEST=sandbox.
-suites="${TEST:-runner sandbox}"
+# Default runs the engine-isolation suite, the E09 Task 4 workspace shell-tool suite, and the E12 Task 6 MCP
+# confused-deputy corpus; select one with TEST=runner|sandbox|extensions.
+suites="${TEST:-runner sandbox extensions}"
 
 run_runner() {
   run_runner_suite security ./tests/security/runner
@@ -29,12 +29,21 @@ run_sandbox() {
   run_runner_suite security ./tests/security/sandbox
 }
 
+# The extensions suite is the E12 Task 6 MCP confused-deputy corpus (TOL-009/TOL-010): token replay/audience,
+# received-credential-has-no-platform-authority, and a malicious sampling flood + fake-annotation all denied.
+# It drives the real transport + sampling gate over loopback — no container, no Postgres — so it is a plain
+# `go test`, not the fixture-engine harness.
+run_extensions() {
+  go test -count=1 ./tests/security/extensions
+}
+
 for suite in $suites; do
   case "$suite" in
     runner) run_runner ;;
     sandbox) run_sandbox ;;
+    extensions) run_extensions ;;
     *)
-      echo "unknown security suite: $suite (known: runner, sandbox)" >&2
+      echo "unknown security suite: $suite (known: runner, sandbox, extensions)" >&2
       exit 2
       ;;
   esac

@@ -176,7 +176,7 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// backs the dispatch lookup (Call) and the admin discover API (repo.SetMCP), and a label-scoped orphan
 		// sweep reclaims any container a crash left behind. Absent a Docker driver, stdio MCP fails cleanly;
 		// HTTP MCP still works.
-		mcpManager := mcpManagerFromEnv(spine)
+		mcpManager := mcpManagerFromEnv(spine, broker, route)
 		toolRegistry.SetMCP(mcpManager)
 		repo.SetMCP(mcpManager)
 		startMCPOrphanSweep(ctx, supervisor)
@@ -342,16 +342,28 @@ func shellRunnerFromEnv() toolbroker.ShellRunner {
 // mount-less sandbox); absent it, stdio MCP fails cleanly while HTTP MCP still works. The bearer for an HTTP
 // connection is resolved from its secret_ref at request time via the org-scoped file bridge (never inline),
 // and progress notifications journal advisory tool_call.progress.v1 events through the spine.
-func mcpManagerFromEnv(spine *coordinator.Store) *mcpclient.Manager {
+//
+// E12 T6: a sampling-enabled connection routes a server sampling/createMessage as a SEPARATE budgeted model
+// step through the SAME broker + route the engine's model steps use (the platform's own model credential,
+// control-plane-side), journalled as model_step.created/completed.v1 events tagged source:"mcp_sampling". A
+// connection that does not enable sampling (the default) stays default-deny regardless.
+func mcpManagerFromEnv(spine *coordinator.Store, broker *modelbroker.Broker, route execution.ModelRoute) *mcpclient.Manager {
 	driver, err := oci.NewDockerInteractiveDriver()
 	if err != nil {
 		log.Printf("mcp: bind docker interactive driver: %v (stdio MCP disabled; http MCP still available)", err)
 		driver = nil
 	}
+	sampling := execution.NewMCPSamplingRouter(broker, route,
+		func(ctx context.Context, scope mcpclient.CallScope, eventType string, payload []byte) error {
+			return spine.AppendModelStep(ctx,
+				coordinator.Tenant{Organization: scope.Org, Project: scope.Project},
+				scope.SessionID, scope.ResponseID, scope.RunID, eventType, payload)
+		})
 	return mcpclient.NewManager(mcpclient.Config{
 		Driver:         driver,
 		Secrets:        mcpSecretResolver,
 		Sink:           execution.NewMCPProgressSink(spine),
+		Sampling:       sampling,
 		DefaultTimeout: envDurationOr("PALAI_MCP_TIMEOUT", 30*time.Second),
 	})
 }

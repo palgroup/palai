@@ -28,6 +28,10 @@ func (f *fakeMCP) Discover(_ context.Context, conn mcp.ConnConfig) ([]mcp.Remote
 	return f.tools, nil
 }
 
+// VetConnection is inert in the fake — the real SSRF resolve-vet is proven at the adapter layer
+// (TestMetadataFetchSSRFVetted); the dispatch/discovery double just needs to satisfy the interface.
+func (f *fakeMCP) VetConnection(_ context.Context, _ mcp.ConnConfig) error { return nil }
+
 func (f *fakeMCP) Call(_ context.Context, scope mcp.CallScope, conn mcp.ConnConfig, remoteName string, args map[string]any) (map[string]any, error) {
 	f.calls++
 	f.lastConn = conn

@@ -32,6 +32,7 @@ type stdioTransport struct {
 	writeMu   sync.Mutex
 	done      chan struct{}
 	closeOnce sync.Once
+	sampling  SamplingHandler // nil ⇒ default-deny (a server sampling/createMessage gets a JSON-RPC error)
 }
 
 // NewStdioTransport frames JSON-RPC over w (the server's stdin) and r (its stdout). closer tears the
@@ -43,6 +44,11 @@ func NewStdioTransport(w io.Writer, r io.Reader, closer func(context.Context) er
 	go t.readLoop(r)
 	return t
 }
+
+// setSampling binds the per-call sampling handler after construction (the manager sets it from Config.Sampling
+// + the connection's sampling flag). A nil handler leaves default-deny. It runs before the first Call — only
+// Call reads t.sampling (the reader goroutine just fans frames), so there is no race.
+func (t *stdioTransport) setSampling(h SamplingHandler) { t.sampling = h }
 
 // rpcMessage is the inbound frame shape: a response carries id + result/error; a notification carries method
 // + params and no id.
@@ -93,6 +99,8 @@ func (t *stdioTransport) Call(ctx context.Context, method string, params any, on
 		return nil, err
 	}
 	want := fmt.Sprintf("%d", id)
+	// One gate per call: it carries the flood-cap counter across every server request this tools/call sees.
+	gate := &samplingGate{handler: t.sampling}
 	for {
 		select {
 		case <-ctx.Done():
@@ -106,6 +114,15 @@ func (t *stdioTransport) Call(ctx context.Context, method string, params any, on
 				if p, ok := decodeProgress(msg.Params); ok {
 					onProgress(p)
 				}
+				continue
+			}
+			if isServerRequest(msg) {
+				// A server→client request (e.g. sampling/createMessage) arrives interleaved with our
+				// outstanding tools/call. Serve it synchronously HERE (still exactly one client request
+				// outstanding — the invariant holds) and write the response back on the same stdin. A denial
+				// is a JSON-RPC error, never a returned error, so it never trips the breaker.
+				result, rerr := gate.serve(ctx, msg.Method, msg.Params)
+				_ = t.writeMessage(serverResponseFrame(msg.ID, result, rerr))
 				continue
 			}
 			if len(msg.ID) == 0 || trimID(msg.ID) != want {

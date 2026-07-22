@@ -9,6 +9,7 @@ type MCPConnection struct {
 	Object         string         `json:"object"`
 	OrganizationID OrganizationID `json:"organization_id,omitempty"`
 	ProjectID      ProjectID      `json:"project_id,omitempty"`
+	Sampling       bool           `json:"sampling,omitempty"`
 	Transport      string         `json:"transport"`
 	TrustLevel     string         `json:"trust_level,omitempty"`
 }

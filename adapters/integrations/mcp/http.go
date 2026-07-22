@@ -31,6 +31,7 @@ var errHTTPRedirectDenied = fmt.Errorf("%w: redirect not followed", ErrProtocol)
 type HTTPOptions struct {
 	URL          string
 	Bearer       string
+	Audience     string // the origin the bearer is bound to; "" ⇒ the URL's own origin (no extra binding)
 	AllowPrivate bool
 	Resolver     egress.Resolver
 	Dial         func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -40,13 +41,16 @@ type HTTPOptions struct {
 
 // httpTransport speaks JSON-RPC over MCP Streamable HTTP: a POST per message, Accept: json + SSE, the
 // Mcp-Session-Id carried across requests, redirects denied, and the connection pinned to a vetted resolved
-// IP so a rebind cannot swap the target between vet and connect (egress.PinnedDialer, TOCTOU closed).
+// IP so a rebind cannot swap the target between vet and connect (egress.PinnedDialer, TOCTOU closed). origin
+// is the Origin header value derived from url (a server's DNS-rebinding defence has something to pin).
 type httpTransport struct {
 	client    *http.Client
 	url       string
+	origin    string
 	bearer    string
 	sessionID atomic.Pointer[string]
 	nextID    atomic.Int64
+	sampling  SamplingHandler // nil ⇒ default-deny (a server sampling/createMessage gets a JSON-RPC error)
 }
 
 // NewHTTPTransport builds a Streamable HTTP transport after statically vetting the URL (https-only, no
@@ -56,6 +60,15 @@ func NewHTTPTransport(opts HTTPOptions) (Transport, error) {
 	if err := egress.VetURL(opts.URL, opts.AllowPrivate); err != nil {
 		return nil, err
 	}
+	// Bind the resolved bearer to its declared audience: a dial whose origin differs from the audience the
+	// token was issued for is a replay (connection A's token to server B) and is denied here, before a
+	// connection is made (TOL-009).
+	if err := VetAudience(opts.URL, opts.Audience); err != nil {
+		return nil, err
+	}
+	// The Origin header is the registered URL's origin (a server's DNS-rebinding defence pins against it). A
+	// parse failure is impossible after VetURL passed, so an empty origin only ever means a malformed host.
+	origin, _ := OriginOf(opts.URL)
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -77,16 +90,13 @@ func NewHTTPTransport(opts HTTPOptions) (Transport, error) {
 			return errHTTPRedirectDenied
 		},
 	}
-	return &httpTransport{client: client, url: opts.URL, bearer: opts.Bearer}, nil
+	return &httpTransport{client: client, url: opts.URL, origin: origin, bearer: opts.Bearer}, nil
 }
 
-// VetHTTPURL is the fail-fast registration/discovery gate: the static check PLUS a DNS resolution whose
-// every answer is vetted (a name that already points internal is rejected early). Resolution failure is
-// permissive — the pinned dialer is authoritative. It delegates to egress.VetResolved so there is one copy
-// of the resolve→vet idiom.
-func VetHTTPURL(ctx context.Context, resolver egress.Resolver, rawURL string, allowPrivate bool) error {
-	return egress.VetResolved(ctx, resolver, rawURL, allowPrivate)
-}
+// setSampling binds the per-call sampling handler after dialing (the manager sets it from Config.Sampling +
+// the connection's sampling flag). A nil handler leaves default-deny. It runs before the first Call, so the
+// read path never races the write.
+func (t *httpTransport) setSampling(h SamplingHandler) { t.sampling = h }
 
 // Call POSTs a JSON-RPC request and returns its result, routing any progress notifications (over an SSE
 // response) to onProgress. It captures the Mcp-Session-Id from the response for subsequent requests.
@@ -103,7 +113,7 @@ func (t *httpTransport) Call(ctx context.Context, method string, params any, onP
 		return nil, fmt.Errorf("%w: http status %d", ErrProtocol, resp.StatusCode)
 	}
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		return t.readSSE(resp.Body, onProgress)
+		return t.readSSE(ctx, resp.Body, onProgress)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPBody))
 	if err != nil {
@@ -123,6 +133,22 @@ func (t *httpTransport) Notify(ctx context.Context, method string, params any) e
 	return nil
 }
 
+// respondServerRequest POSTs a served server→client request's JSON-RPC response back to the endpoint (over
+// Streamable HTTP a client→server message is a POST — the SSE body is server→client only). It is best-effort:
+// the original tools/call SSE stream is still being read for the terminal result, and a transport error on
+// the response POST is not surfaced (it would already surface as a stalled/failed original read).
+// ponytail: the response POST's own body is drained and discarded; a server that streams a follow-up on it is
+// not re-read (a cooperative-fixture ceiling — sampling over HTTP assumes the server answers on the original
+// stream, which our fixture and real Streamable-HTTP servers do).
+func (t *httpTransport) respondServerRequest(ctx context.Context, frame map[string]any) {
+	resp, err := t.post(ctx, frame)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxHTTPBody))
+	_ = resp.Body.Close()
+}
+
 // Close is a no-op for HTTP (no persistent process); keep-alives are already disabled per request.
 func (t *httpTransport) Close(ctx context.Context) error { return nil }
 
@@ -139,6 +165,11 @@ func (t *httpTransport) post(ctx context.Context, msg map[string]any) (*http.Res
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if t.origin != "" {
+		// The registered URL's origin — a server's DNS-rebinding defence pins against it, and it never
+		// migrates cross-origin (redirects are denied, so every hop stays on the vetted host).
+		req.Header.Set("Origin", t.origin)
+	}
 	if t.bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+t.bearer)
 	}
@@ -156,10 +187,13 @@ func (t *httpTransport) post(ctx context.Context, msg map[string]any) (*http.Res
 }
 
 // readSSE parses a text/event-stream body: each `data:` line is one JSON-RPC message. Progress notifications
-// route to onProgress; the first response message (a result or error) terminates the read.
-func (t *httpTransport) readSSE(r io.Reader, onProgress func(Progress)) (json.RawMessage, error) {
+// route to onProgress; a server→client request (e.g. sampling/createMessage) is served through the gate and
+// its response POSTed back; the first response-to-OUR-call (a result or error) terminates the read.
+func (t *httpTransport) readSSE(ctx context.Context, r io.Reader, onProgress func(Progress)) (json.RawMessage, error) {
 	sc := bufio.NewScanner(io.LimitReader(r, maxHTTPBody))
 	sc.Buffer(make([]byte, 0, 64*1024), maxStdioMessage)
+	// One gate per call: it carries the flood-cap counter across every server request this stream delivers.
+	gate := &samplingGate{handler: t.sampling}
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		data, ok := strings.CutPrefix(line, "data:")
@@ -175,6 +209,15 @@ func (t *httpTransport) readSSE(r io.Reader, onProgress func(Progress)) (json.Ra
 			if p, ok := decodeProgress(msg.Params); ok {
 				onProgress(p)
 			}
+			continue
+		}
+		if isServerRequest(msg) {
+			// A server request in the stream (NOT a response to our call): serve it and POST the response
+			// back. Before T6 the branches below would have MISREAD it as our result (it carries an id) —
+			// this branch keeps it from being confused for the tools/call result. A denial is a JSON-RPC
+			// error frame, never a transport error, so it never trips the breaker.
+			result, rerr := gate.serve(ctx, msg.Method, msg.Params)
+			t.respondServerRequest(ctx, serverResponseFrame(msg.ID, result, rerr))
 			continue
 		}
 		if len(msg.ID) == 0 {

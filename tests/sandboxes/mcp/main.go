@@ -22,20 +22,24 @@ import (
 // protocolVersion is the MCP revision this fixture advertises; the client asserts it matches.
 const protocolVersion = "2025-11-25"
 
-// request is the inbound JSON-RPC message shape (request or notification — a notification has no id).
+// request is the inbound JSON-RPC message shape. A request/notification carries method (+ id for a request);
+// a RESPONSE to the server's own sampling request carries id + result/error and NO method (E12 T6).
 type request struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
 }
 
 // server holds the single cancellation flag the `slow` tool polls. A per-call container only ever runs one
 // request of interest, so one flag is enough (no per-request registry).
 type server struct {
-	mu        sync.Mutex
-	cancelled map[string]bool // requestId -> cancelled
-	out       *bufio.Writer
+	mu            sync.Mutex
+	cancelled     map[string]bool // requestId -> cancelled
+	pendingSample json.RawMessage // the tool-call id awaiting the client's sampling response (E12 T6)
+	out           *bufio.Writer
 }
 
 func main() {
@@ -79,10 +83,28 @@ func (s *server) dispatch(req request) {
 		s.reply(req.ID, map[string]any{"tools": toolCatalog()})
 	case "tools/call":
 		s.callTool(req)
+	case "":
+		// A RESPONSE to the server's own sampling/createMessage request (id + result/error, no method): the
+		// client either routed the completion (result) or denied it (error). Complete the pending sample tool.
+		s.completeSample(req)
 	default:
 		// resources/prompts and everything else: a JSON-RPC method-not-found error, never a silent skip.
 		s.replyError(req.ID, -32601, "method not found: "+req.Method)
 	}
+}
+
+// completeSample answers the pending `sample` tool call once the client's sampling response arrives, reporting
+// whether the client DENIED the request (a JSON-RPC error) — the E12 T6 live smoke asserts the denial (budget
+// cutoff) and, on the router side, the REAL provider request the denied step still made.
+func (s *server) completeSample(resp request) {
+	s.mu.Lock()
+	pending := s.pendingSample
+	s.pendingSample = nil
+	s.mu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	s.reply(pending, toolResult(map[string]any{"sampling_denied": len(resp.Error) != 0}))
 }
 
 // toolCatalog is the fixture's two-tool advertisement. echo is pure; slow is the progress/cancel tool.
@@ -100,6 +122,11 @@ func toolCatalog() []map[string]any {
 			"name":        "slow",
 			"description": "Emits progress then returns; honours cancellation.",
 			"inputSchema": objSchema(map[string]any{"steps": map[string]any{"type": "number"}}),
+		},
+		{
+			"name":        "sample",
+			"description": "Asks the client to run a sampling completion, then reports whether it was denied.",
+			"inputSchema": objSchema(map[string]any{"message": map[string]any{"type": "string"}}),
 		},
 	}
 }
@@ -145,6 +172,18 @@ func (s *server) callTool(req request) {
 			time.Sleep(20 * time.Millisecond)
 		}
 		s.reply(req.ID, toolResult(map[string]any{"done": true, "steps": steps}))
+	case "sample":
+		// Ask the client to run a completion on our behalf (a server->client sampling/createMessage request).
+		// The tool call is NOT answered yet — completeSample answers it once the client's response arrives
+		// (routed or denied). One outstanding sample per per-call container, so a single pending id suffices.
+		msg, _ := p.Arguments["message"].(string)
+		s.mu.Lock()
+		s.pendingSample = append(json.RawMessage(nil), req.ID...)
+		s.mu.Unlock()
+		s.write(map[string]any{"jsonrpc": "2.0", "id": "smpl-1", "method": "sampling/createMessage", "params": map[string]any{
+			"messages":  []map[string]any{{"role": "user", "content": map[string]any{"type": "text", "text": msg}}},
+			"maxTokens": 512,
+		}})
 	default:
 		s.replyError(req.ID, -32602, "unknown tool: "+p.Name)
 	}
