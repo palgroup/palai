@@ -353,6 +353,350 @@ func TestCrashIsolationClaimCannotBeMarkerPassed(t *testing.T) {
 	}
 }
 
+// completeProvisioningProof returns a fresh MCI-001 ProvisioningProof map: the created tenant's ids, an
+// applied config_policy, the full ordered journey spine, its re-derivable digest, and zero restarts.
+func completeProvisioningProof() map[string]any {
+	steps := []any{"MCI-001", "MCI-002", "MCI-003", "MCI-004", "MCI-005", "MCI-006", "MCI-007", "MCI-008"}
+	return map[string]any{
+		"org_id": "org_b", "project_id": "proj_b", "api_key_id": "key_b",
+		"config_policy_applied": true, "step_ids": steps,
+		"journey_digest": hashParts("MCI-001", "MCI-002", "MCI-003", "MCI-004", "MCI-005", "MCI-006", "MCI-007", "MCI-008"),
+		"restart_count":  0,
+	}
+}
+
+// TestProvisioningClaimRequiresRestartlessSpine pins MCI-001 (plan §T11 T2 + the restart-less spine): a
+// provisioning case must carry the created tenant's ids, an applied config_policy, the ordered spine + a
+// well-formed digest, and zero restarts. A marker alone is missing; a dropped id, an unapplied policy, a
+// malformed digest, or any restart is invalid.
+func TestProvisioningClaimRequiresRestartlessSpine(t *testing.T) {
+	m := baseManifest()
+	c := caseOf(m)
+	c["provisioning_claim"] = "provisioned"
+	c["provisioning_proof"] = completeProvisioningProof()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete provisioning proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["provisioning_claim"] = "provisioned" // marker, no proof
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a provisioning claim with no proof must be a Finding (a 'provisioned' marker is not restart-less-spine proof)")
+	}
+
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { delete(p, "org_id") },
+		func(p map[string]any) { delete(p, "project_id") },
+		func(p map[string]any) { delete(p, "api_key_id") },
+		func(p map[string]any) { p["config_policy_applied"] = false },          // policy never took
+		func(p map[string]any) { p["journey_digest"] = "not-a-sha256" },        // malformed digest
+		func(p map[string]any) { p["restart_count"] = 1 },                      // the process restarted
+		func(p map[string]any) { p["step_ids"] = []any{"MCI-001", "MCI-002"} }, // short spine
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["provisioning_claim"] = "provisioned"
+		proof := completeProvisioningProof()
+		mutate(proof)
+		c["provisioning_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid provisioning proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestSecretResolveClaimRequiresNoRestartNoLeak pins MCI-002 (plan §T11 T3): a secret-resolve case must
+// carry the ref+version resolved by a run with no restart and the value never surfaced. A marker is missing;
+// a dropped field, a restart, or a surfaced value is invalid.
+func TestSecretResolveClaimRequiresNoRestartNoLeak(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{"ref": "mcp.token", "version": "2", "resolved_in_run": "run_j", "restart_count": 0, "value_surfaced": false}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["secret_resolve_claim"] = "resolved"
+	c["secret_resolve_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete secret-resolve proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["secret_resolve_claim"] = "resolved"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a secret-resolve claim with no proof must be a Finding")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { delete(p, "ref") },
+		func(p map[string]any) { delete(p, "version") },
+		func(p map[string]any) { delete(p, "resolved_in_run") },
+		func(p map[string]any) { p["restart_count"] = 1 },     // needed a restart
+		func(p map[string]any) { p["value_surfaced"] = true }, // the plaintext leaked
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["secret_resolve_claim"] = "resolved"
+		proof := full()
+		mutate(proof)
+		c["secret_resolve_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid secret-resolve proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestIsolationClaimRequiresRealDeny pins MCI-003/004 + TEN-001/002 (the brief's load-bearing cross-tenant
+// invariant): an isolation case must carry two DISTINCT tenants, a real 404/403 deny, and zero leaked rows —
+// a "isolated" log line is not proof. A marker is missing; a self-isolation, an allow status, or a leaked
+// row is invalid.
+func TestIsolationClaimRequiresRealDeny(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{"owner_tenant": "org_a", "requester_tenant": "org_b", "resource": "run", "observed_status": 404, "leaked_rows": 0}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["isolation_claim"] = "isolated"
+	c["isolation_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete isolation proof should pass, got %v", f)
+	}
+	// A 403 RLS-deny is equally valid.
+	m = baseManifest()
+	c = caseOf(m)
+	c["isolation_claim"] = "isolated"
+	rls := full()
+	rls["observed_status"] = 403
+	c["isolation_proof"] = rls
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a 403 RLS-deny isolation proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["isolation_claim"] = "isolated"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("an isolation claim with no proof must be a Finding (a log line is not a cross-tenant deny)")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { p["requester_tenant"] = "org_a" }, // same tenant on both sides
+		func(p map[string]any) { delete(p, "resource") },
+		func(p map[string]any) { p["observed_status"] = 200 }, // tenant B was ALLOWED in
+		func(p map[string]any) { p["leaked_rows"] = 1 },       // a tenant-A row leaked
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["isolation_claim"] = "isolated"
+		proof := full()
+		mutate(proof)
+		c["isolation_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid isolation proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestArtifactClaimRequiresMatchedDigest pins MCI-004 (plan §T11 T5): an artifact case must carry the
+// artifact id, a well-formed sha256 content digest, a non-empty body, and a digest that matched the bytes.
+// A marker is missing; a malformed digest, an empty body, or an unmatched digest is invalid.
+func TestArtifactClaimRequiresMatchedDigest(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{"artifact_id": "art_1", "content_digest": "sha256:" + strings.Repeat("f", 64), "byte_len": 12, "digest_matches": true}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["artifact_claim"] = "downloaded"
+	c["artifact_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete artifact proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["artifact_claim"] = "downloaded"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("an artifact claim with no proof must be a Finding")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { delete(p, "artifact_id") },
+		func(p map[string]any) { p["content_digest"] = "not-a-sha256" }, // malformed digest
+		func(p map[string]any) { p["byte_len"] = 0 },                    // empty body
+		func(p map[string]any) { p["digest_matches"] = false },          // digest did not match the bytes
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["artifact_claim"] = "downloaded"
+		proof := full()
+		mutate(proof)
+		c["artifact_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid artifact proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestRefusalClaimRequiresDenyBeforeCompute pins MCI-005 (plan §T11 T6/T7): a refusal case must carry a
+// known limit kind, a status matching that kind (429 rate, 402 budget), and no billable compute. A marker is
+// missing; an unknown kind, a mismatched status, or compute that started is invalid.
+func TestRefusalClaimRequiresDenyBeforeCompute(t *testing.T) {
+	for _, ok := range []map[string]any{
+		{"limit_kind": "rate", "observed_status": 429, "billable_compute_started": false},
+		{"limit_kind": "budget", "observed_status": 402, "billable_compute_started": false},
+	} {
+		m := baseManifest()
+		c := caseOf(m)
+		c["refusal_claim"] = "refused"
+		c["refusal_proof"] = ok
+		if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+			t.Fatalf("a complete refusal proof %v should pass, got %v", ok, f)
+		}
+	}
+
+	m := baseManifest()
+	caseOf(m)["refusal_claim"] = "refused"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a refusal claim with no proof must be a Finding")
+	}
+	for _, bad := range []map[string]any{
+		{"limit_kind": "gremlin", "observed_status": 429, "billable_compute_started": false}, // unknown kind
+		{"limit_kind": "rate", "observed_status": 402, "billable_compute_started": false},    // rate must be 429
+		{"limit_kind": "budget", "observed_status": 429, "billable_compute_started": false},  // budget must be 402
+		{"limit_kind": "rate", "observed_status": 429, "billable_compute_started": true},     // burned compute
+	} {
+		m = baseManifest()
+		c := caseOf(m)
+		c["refusal_claim"] = "refused"
+		c["refusal_proof"] = bad
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid refusal proof %v must be a Finding", bad)
+		}
+	}
+}
+
+// TestRouteClaimRequiresDistinctPerProject pins MCI-006 (plan §T11 T8): a route case must carry two projects'
+// DISTINCT resolved model ids and distinct connections. A marker is missing; equal models or a shared
+// connection is invalid — per-project routing was not proven.
+func TestRouteClaimRequiresDistinctPerProject(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{"project_a_model": "gpt-4o-mini", "project_b_model": "gpt-4o", "distinct_connections": true}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["route_claim"] = "routed"
+	c["route_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete route proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["route_claim"] = "routed"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a route claim with no proof must be a Finding")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { delete(p, "project_a_model") },
+		func(p map[string]any) { p["project_b_model"] = "gpt-4o-mini" }, // identical models
+		func(p map[string]any) { p["distinct_connections"] = false },    // shared connection
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["route_claim"] = "routed"
+		proof := full()
+		mutate(proof)
+		c["route_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid route proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestBindingClaimRequiresResolvedRef pins MCI-007 (plan §T11 T9): a binding case must carry the binding id,
+// a non-empty connection_ref, and a resolution that took the ref path (not the global App fallback). A marker
+// is missing; a dropped field or a global-App fallback is invalid.
+func TestBindingClaimRequiresResolvedRef(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{"binding_id": "bnd_1", "connection_ref": "github.acme", "resolved_via_ref": true}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["binding_claim"] = "bound"
+	c["binding_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete binding proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["binding_claim"] = "bound"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a binding claim with no proof must be a Finding")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { delete(p, "binding_id") },
+		func(p map[string]any) { delete(p, "connection_ref") }, // fell through to the global App
+		func(p map[string]any) { p["resolved_via_ref"] = false },
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["binding_claim"] = "bound"
+		proof := full()
+		mutate(proof)
+		c["binding_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid binding proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestSteerClaimRequiresAppliedCommand pins MCI-008 (plan §T11 T10): a steer case must carry the session, the
+// durable command id, its kind, and that it was applied. A marker is missing; a dropped field or an unapplied
+// command is invalid.
+func TestSteerClaimRequiresAppliedCommand(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{"session_id": "sess_1", "command_id": "cmd_1", "command_kind": "send_message", "applied": true}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["steer_claim"] = "steered"
+	c["steer_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete steer proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["steer_claim"] = "steered"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a steer claim with no proof must be a Finding")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { delete(p, "session_id") },
+		func(p map[string]any) { delete(p, "command_id") },
+		func(p map[string]any) { delete(p, "command_kind") },
+		func(p map[string]any) { p["applied"] = false }, // the command was rejected
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["steer_claim"] = "steered"
+		proof := full()
+		mutate(proof)
+		c["steer_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid steer proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestManagedCloudJourneyDigestReproduces is the anti-fabrication gate for the managed-cloud spine digest: a
+// committed ProvisioningProof.journey_digest MUST be hashParts(step_ids...) — the same construction the
+// journey uses — so a fabricated digest is caught the way the E11 automation-0.1.0 advertised_schema_hash was
+// caught by shasum. It recomputes the digest from the proof's OWN step_ids and asserts equality.
+func TestManagedCloudJourneyDigestReproduces(t *testing.T) {
+	proof := completeProvisioningProof()
+	steps := proof["step_ids"].([]any)
+	parts := make([]string, len(steps))
+	for i, s := range steps {
+		parts[i] = s.(string)
+	}
+	if got, want := hashParts(parts...), proof["journey_digest"].(string); got != want {
+		t.Fatalf("journey_digest %q is not hashParts(step_ids) %q — a spine digest must be re-derivable from its own step list", want, got)
+	}
+}
+
 // TestRemoteSigningSecretRedacted pins the E12 T10 credential-marker extension: a leaked whsec_ webhook/
 // remote-tool signing secret (the E11 callback + E12 remote-tool/hook signed transports share the same
 // webhook signer) is caught by the redaction pattern scan, so a plaintext signing secret fails the bundle
