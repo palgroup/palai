@@ -28,8 +28,10 @@ package responses
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	mcpclient "github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/packages/contracts"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
@@ -115,25 +117,37 @@ func TestExtensibilityJourneyDeterministic(t *testing.T) {
 	resp2, _, run2 := h.seedExtRun(t, ctx, revCrash, "Call the MCP tool.")
 	prov2 := &journeyProvider{steps: []journeyStep{{Name: ext.mcpShort, Args: `{"message":"after crash"}`}}}
 	orch2 := h.extOrchestrator(subprocessDialer{engineDir: h.engineDir}, prov2, ext.reg)
-	// The MCP tool fails after the kill; the run still terminates (the failure is a tool result, not a crash).
-	if err := orch2.ExecuteAttempt(ctx, h.workspaceDescriptor(run2, 1, newAllocationRoot(t))); err != nil {
-		t.Logf("run 2 (crash) execute returned %v (tolerated — the tool_unavailable evidence is in the DB)", err)
+	// Positive proof the surface was EXERCISED (not merely absent): ExecuteAttempt must FAIL — the MCP tool
+	// was attempted after the real kill and its dispatch errored. A nil here would mean the tool was never
+	// dispatched (a seed/advertising regression), so this catches that.
+	err2 := orch2.ExecuteAttempt(ctx, h.workspaceDescriptor(run2, 1, newAllocationRoot(t)))
+	if err2 == nil {
+		t.Fatal("run 2: ExecuteAttempt succeeded after a real SIGKILL — the MCP tool was not attempted or did not fail (the crash surface was not exercised)")
+	}
+	t.Logf("run 2 (crash) execute returned %v (expected — the MCP tool was attempted and failed on the real kill)", err2)
+	// The MCP tool WAS advertised to run 2 (offered to the model), and the run saw tool_unavailable: no
+	// completed MCP ledger row — the dispatch failed, visibly.
+	if !advertisedEver(prov2.advertisedNames(), ext.mcpShort) {
+		t.Fatalf("run 2: the MCP tool %q was never advertised — the crash surface was not exercised", ext.mcpShort)
 	}
 	toolUnavailableVisible := h.count(`SELECT count(*) FROM tool_calls WHERE run_id=$1 AND name=$2 AND state='completed'`, run2, ext.mcpShort) == 0
 	if !toolUnavailableVisible {
 		t.Fatalf("run 2: the MCP tool COMPLETED after a real SIGKILL — the crash was not surfaced as tool_unavailable")
 	}
-	// The breaker TRIPPED: a fresh direct dispatch of the MCP tool is shed fast with ErrToolUnavailable (no
-	// dial), proving the per-connection breaker is open — not merely one failure.
+	// The breaker TRIPPED: turn the fixture HEALTHY AGAIN (crash off), then a fresh dispatch is STILL shed
+	// with ErrToolUnavailable — that sentinel returns ONLY from an OPEN breaker, BEFORE any dial. With the
+	// server healthy the call would otherwise succeed, so this proves the breaker is open (not merely that
+	// one call failed): if the breaker were deleted, the healthy probe would succeed and this assert would fail.
+	ext.driver.setCrash(false)
 	probeBroker := toolbroker.New()
 	probeBroker.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
 		return ext.reg.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
 	})
 	probeEnv := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: h.tenant.Organization, Project: h.tenant.Project, RunID: run2}}
 	_, probeErr := probeBroker.Execute(ctx, contracts.ToolCallID("tc_breaker_probe"), ext.mcpShort, map[string]any{"message": "shed"}, 2, probeEnv)
-	breakerTripped := probeErr != nil
+	breakerTripped := errors.Is(probeErr, mcpclient.ErrToolUnavailable)
 	if !breakerTripped {
-		t.Fatal("run 2: a post-crash MCP dispatch succeeded — the circuit breaker did not trip")
+		t.Fatalf("run 2: a post-crash MCP dispatch was not shed with ErrToolUnavailable (got %v) — the circuit breaker did not trip (a deleted breaker would let the now-healthy server succeed)", probeErr)
 	}
 
 	// --- Step 5 (hook deny) + the crash-isolation "other run flowed" proof: register a before_tool policy
