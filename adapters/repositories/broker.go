@@ -199,6 +199,43 @@ func (b *LocalBroker) Revoke(_ context.Context, handle string) error {
 	return err
 }
 
+// tokenBroker hands out a credential for a token the CALLER already holds: the binding-scoped Git
+// credential a repository_bindings.connection_ref resolved to through the secret-ref store (E13 T9).
+// It embeds the same vault as the other brokers, so the token still reaches only a 0600 credential
+// helper in the snapshot-excluded /secrets area, stays out of argv, and is removed after the operation
+// (§30.2). It does NOT revoke at the provider: this token is the tenant's own durable credential, not
+// one this process minted, so retiring it is the tenant's secret-ref rotation — revoking it upstream
+// would break every other run that binding serves.
+type tokenBroker struct {
+	*credentialVault
+	token string
+}
+
+// NewTokenBroker returns a broker over an already-resolved Git token. The Git basic-auth username is
+// "x-access-token", the form a GitHub App installation token and a PAT are both redeemed under.
+func NewTokenBroker(token string) Broker {
+	return &tokenBroker{credentialVault: newVault(), token: token}
+}
+
+// Mint retains the supplied token under a fresh opaque handle, bound to the scope + audience. An empty
+// token fails closed rather than producing a credential-shaped nothing that would clone anonymously.
+func (b *tokenBroker) Mint(_ context.Context, scope Scope, aud Audience) (Credential, error) {
+	if b.token == "" {
+		return Credential{}, fmt.Errorf("token broker: no credential supplied")
+	}
+	handle := "rcred_" + randHex(8)
+	expires := b.now().Add(tokenTTL)
+	b.retain(handle, mintedSecret{username: "x-access-token", token: b.token, scope: scope, aud: aud, expiresAt: expires})
+	return Credential{Handle: handle, Username: "x-access-token", Scope: scope, Audience: aud, ExpiresAt: expires}, nil
+}
+
+// Revoke drops the retained secret and removes its helper file, so nothing on the host can redeem the
+// handle again. The upstream token itself outlives the operation by design (see tokenBroker).
+func (b *tokenBroker) Revoke(_ context.Context, handle string) error {
+	_, _, err := b.revoke(handle)
+	return err
+}
+
 // writeGitCredentialStore writes one 0600 git-credentials line (`<scheme>://<user>:<token>@<host>`)
 // that Git's built-in `store` helper reads. The token enters ONLY this file: the fetch remote URL
 // stays clean (no token in argv, §30.2), and the file lives under the caller's /secrets area, which

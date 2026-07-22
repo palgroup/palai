@@ -19,6 +19,12 @@ type RepositoryStore interface {
 	RecordPreparationReceipt(ctx context.Context, tenant coordinator.Tenant, in coordinator.PreparationReceiptInput) error
 }
 
+// SecretResolver bridges a server-minted (organization, secret ref) to the secret bytes at use time —
+// the same shape the webhook / inbound / remote-tool / MCP resolvers already take in their packages. The
+// composition root satisfies it from the DB-backed secret-ref store (E13 Task 3). The org is never
+// tenant-supplied, so a ref can only ever name a secret provisioned under the caller's OWN organization.
+type SecretResolver func(org, ref string) ([]byte, error)
+
 // PrepareRepositoryInput is the infrastructure-owned input to a run's repository-preparation step
 // (spec §30.3). It comes from the resolved binding and the run, never from model output, so the
 // recorded provenance does not depend on model behavior (REP-001). TargetDir is the READY workspace's
@@ -32,6 +38,10 @@ type PrepareRepositoryInput struct {
 	SecretsDir   string // the snapshot-excluded /secrets area for the credential helper (§29.10)
 	AttemptFence uint64 // binds the minted read credential to this attempt (§28.11)
 	ToolCall     string
+	// ConnectionSecrets resolves a binding's connection_ref to its Git credential (E13 Task 9). It is a
+	// DEPLOYMENT capability, not run data: nil means this deployment wired no secret-ref store, and every
+	// binding — ref-bearing or not — clones under the global broker exactly as it did before this task.
+	ConnectionSecrets SecretResolver
 }
 
 // PreparedRepository is the outcome of the step: the recorded model-independent receipt plus any
@@ -56,6 +66,10 @@ func PrepareRepository(ctx context.Context, store RepositoryStore, broker reposi
 	}
 	if !found {
 		return PreparedRepository{}, fmt.Errorf("prepare repository: binding %s not found in scope", in.BindingID)
+	}
+	broker, err = bindingBroker(broker, tenant, binding, in.ConnectionSecrets)
+	if err != nil {
+		return PreparedRepository{}, err
 	}
 	res, err := repositories.Prepare(ctx, broker, repositories.Request{
 		CloneURL:      binding.CloneUrl,
@@ -88,6 +102,34 @@ func PrepareRepository(ctx context.Context, store RepositoryStore, broker reposi
 		return PreparedRepository{}, err
 	}
 	return PreparedRepository{Receipt: res.Receipt, Findings: res.Findings}, nil
+}
+
+// bindingBroker picks the credential broker one preparation runs behind (E13 Task 9). A binding that
+// names a connection_ref clones under THAT tenant's own Git credential, resolved through the secret-ref
+// store under the run's server-minted organization — RLS scopes the read to that org, so a binding can
+// never resolve another tenant's secret, however it was named. A ref-less binding (every binding written
+// before this task) keeps the deployment-global broker, unchanged.
+//
+// It fails CLOSED on an unresolvable ref: falling back to the global credential for a binding that
+// deliberately named its own would silently clone under an authority the tenant did not choose. The
+// error names the REF and never the value — the same discipline the secret store's resolver keeps.
+//
+// HONEST CEILING: this consumes the resolver seam only. There is NO per-tenant GitHub App onboarding
+// surface — installing an App per tenant and capturing its installation credential is product/SaaS work
+// (explicitly out of scope for this phase). Whatever token the tenant provisioned under the ref is what
+// the clone authenticates with; nothing here mints or manages a per-tenant App.
+func bindingBroker(global repositories.Broker, tenant coordinator.Tenant, binding contracts.RepositoryBinding, secrets SecretResolver) (repositories.Broker, error) {
+	if binding.ConnectionRef == "" || secrets == nil {
+		return global, nil
+	}
+	token, err := secrets(tenant.Organization, binding.ConnectionRef)
+	if err != nil {
+		return nil, fmt.Errorf("prepare repository: resolve connection ref %q: %w", binding.ConnectionRef, err)
+	}
+	if len(token) == 0 {
+		return nil, fmt.Errorf("prepare repository: connection ref %q resolved to an empty credential", binding.ConnectionRef)
+	}
+	return repositories.NewTokenBroker(string(token)), nil
 }
 
 // policyFromBinding maps the binding's policy JSONB into the preparation policy. Unknown keys are

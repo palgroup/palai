@@ -25,6 +25,14 @@ func (o *Orchestrator) SetWorkspaceProvisioner(root string, broker repositories.
 	o.provisionRoot, o.provisionBroker = root, broker
 }
 
+// SetConnectionSecrets wires the resolver a binding's connection_ref is redeemed through (E13 Task 9),
+// so a tenant's own Git credential — provisioned and rotated over the secret-ref API — backs the clone
+// for the bindings that name one. Left unset, a ref-bearing binding falls to the deployment-global
+// broker, which is exactly how every binding behaved before this task.
+func (o *Orchestrator) SetConnectionSecrets(secrets SecretResolver) {
+	o.provisionSecrets = secrets
+}
+
 // provisionRootWorkspace realizes the session's attached coding workspace for the ROOT run and returns
 // the allocation host path (the tools' WorkspaceRoot; the repo lives at hostPath/repo), the writer lease
 // to release at attempt end, and the logical workspace id. It drives the §29.7 lifecycle
@@ -164,6 +172,8 @@ func (o *Orchestrator) provisionFreshAllocation(ctx context.Context, tenant coor
 		SecretsDir:   filepath.Join(dir, provisionSecretsDir),
 		AttemptFence: fence,
 		ToolCall:     "provision",
+		// A binding that names a connection_ref clones under its OWN tenant's credential (E13 T9).
+		ConnectionSecrets: o.provisionSecrets,
 	}); err != nil {
 		return coordinator.Allocation{}, err
 	}

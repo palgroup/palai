@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,6 +79,75 @@ func TestPrepareRepositoryResolvesRunsRecords(t *testing.T) {
 		BindingID: "repo_missing", TargetDir: filepath.Join(t.TempDir(), "repo"), SecretsDir: t.TempDir(),
 	}); err == nil {
 		t.Fatal("PrepareRepository with a missing binding returned nil error, want fail-closed")
+	}
+}
+
+// TestPrepareRepositoryResolvesBindingConnectionRef proves the E13 T9 seam at the composition level: a
+// binding that names a connection_ref resolves its Git credential through the secret-ref resolver under
+// the RUN's server-minted organization (never a binding-carried one), a ref-less binding never consults
+// the resolver at all (today's global-broker path, unchanged), and a resolver failure fails the
+// preparation CLOSED with an error that names the REF and never the value.
+func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not found on PATH: %v", err)
+	}
+	ctx := context.Background()
+	remote := newGitRemote(t)
+	tenant := coordinator.Tenant{Organization: "org_x", Project: "prj_x"}
+
+	prepare := func(t *testing.T, ref string, resolver SecretResolver) error {
+		t.Helper()
+		store := &fakeRepoStore{found: true, binding: contracts.RepositoryBinding{
+			ID: "repo_abc", CloneUrl: remote.url, DefaultBranch: "main", ConnectionRef: ref,
+		}}
+		_, err := PrepareRepository(ctx, store, repositories.NewLocalBroker(), tenant, PrepareRepositoryInput{
+			BindingID:         "repo_abc",
+			RunID:             "run_y",
+			RequestedRef:      remote.head,
+			WorkBranch:        "agent/ses_x/run_y",
+			TargetDir:         filepath.Join(t.TempDir(), "repo"),
+			SecretsDir:        t.TempDir(),
+			ConnectionSecrets: resolver,
+		})
+		return err
+	}
+
+	// A named ref is resolved under the run's organization and the binding's ref.
+	var gotOrg, gotRef string
+	calls := 0
+	if err := prepare(t, "git-conn", func(org, ref string) ([]byte, error) {
+		calls, gotOrg, gotRef = calls+1, org, ref
+		return []byte("palai-REPMARK-binding-token"), nil
+	}); err != nil {
+		t.Fatalf("PrepareRepository(connection_ref) error = %v", err)
+	}
+	if calls != 1 || gotOrg != tenant.Organization || gotRef != "git-conn" {
+		t.Fatalf("resolver calls=%d org=%q ref=%q, want 1 / %q / git-conn", calls, gotOrg, gotRef, tenant.Organization)
+	}
+
+	// A ref-less binding takes the global broker unchanged: the resolver is never consulted.
+	if err := prepare(t, "", func(org, ref string) ([]byte, error) {
+		t.Fatalf("ref-less binding consulted the secret resolver for (%q, %q)", org, ref)
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("PrepareRepository(ref-less) error = %v", err)
+	}
+
+	// A resolver failure fails CLOSED — it must not silently fall back to the deployment-global
+	// credential — and the message names the ref, never the value.
+	err := prepare(t, "git-conn", func(string, string) ([]byte, error) {
+		return []byte("palai-REPMARK-binding-token"), errors.New("secret ref exists but could not be decrypted")
+	})
+	if err == nil {
+		t.Fatal("PrepareRepository with an unresolvable connection_ref returned nil error, want fail-closed")
+	}
+	if !strings.Contains(err.Error(), "git-conn") || strings.Contains(err.Error(), "palai-REPMARK-binding-token") {
+		t.Fatalf("error = %q, want it to name the ref and not the value", err)
+	}
+
+	// An empty resolved credential is a misconfiguration, not an anonymous clone.
+	if err := prepare(t, "git-conn", func(string, string) ([]byte, error) { return nil, nil }); err == nil {
+		t.Fatal("PrepareRepository with an empty resolved credential returned nil error, want fail-closed")
 	}
 }
 

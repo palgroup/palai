@@ -102,3 +102,17 @@ func TestArtifactGCGraceFloorsTinyValue(t *testing.T) {
 		t.Fatalf("artifactGCGrace(1h) = %s, want 1h honored", got)
 	}
 }
+
+// TestRepositoryConnectionSecretFailsClosed pins what separates the E13 T9 resolver from its four
+// siblings: a repository binding's connection_ref has NO env-file bridge (it is a new consumer, so there
+// is no pre-T3 deployment to stay compatible with). With no secret-ref store configured, a binding that
+// names a ref resolves NOTHING — and that is an error, never a silent fall-back to the deployment-global
+// GitHub App credential the tenant did not choose.
+func TestRepositoryConnectionSecretFailsClosed(t *testing.T) {
+	if _, err := repositoryConnectionSecret("org_a", "github-conn"); err == nil {
+		t.Fatal("resolved a connection ref with no secret store configured; want fail-closed")
+	}
+	if _, err := repositoryConnectionSecret("", ""); err == nil {
+		t.Fatal("resolved an empty org/ref; want an error")
+	}
+}
