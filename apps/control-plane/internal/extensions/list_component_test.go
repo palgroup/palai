@@ -8,6 +8,7 @@ package extensions
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/palgroup/palai/storage"
@@ -26,8 +27,9 @@ func TestListMCPConnectionsTenantScopedKeyset(t *testing.T) {
 		t.Fatalf("seed project B: %v", err)
 	}
 
+	digest := "sha256:" + strings.Repeat("a", 64)
 	stdio := func(name string) []byte {
-		return []byte(`{"name":"` + name + `","transport":"stdio","config":{"image_digest":"sha256:abc","cmd":["/mcp"]},"secret_ref":"sref_x"}`)
+		return []byte(`{"name":"` + name + `","transport":"stdio","config":{"image_digest":"` + digest + `","cmd":["/mcp"]},"secret_ref":"sref_x"}`)
 	}
 	for _, n := range []string{"docs", "search"} {
 		if _, err := s.CreateMCPConnection(ctx, orgA, projA, stdio(n)); err != nil {
