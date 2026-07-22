@@ -34,14 +34,21 @@ type interruptHit struct {
 
 // ModelRoute is the broker coordinates this kernel routes a model.request to: the
 // adapter name, the model id put on the provider wire, and the SecretRef the executor
-// redeems at call time. ponytail: env-selected in main.go
-// (PALAI_MODEL_PROVIDER/PALAI_MODEL) until DB-backed model_routes routing is wired —
-// that lookup is the deferred E-series carve-out. The default is the deterministic
-// fake provider every existing suite registers its adapter and resolver under.
+// redeems at call time.
+//
+// It has two provenances. As the Orchestrator's `route` field it is the DEPLOYMENT DEFAULT the
+// composition root selects from the environment (PALAI_MODEL_PROVIDER/PALAI_MODEL), defaulting to the
+// deterministic fake provider every existing suite registers under. As the value effectiveRoute returns
+// it may instead be the project's DB-backed route (E13 T8) — in which case RevisionID/Revision name the
+// model_route_revision that selected it and Secret is a tenant-qualified handle.
 type ModelRoute struct {
 	Provider string
 	Model    string
 	Secret   modelbroker.SecretRef
+	// RevisionID / Revision are set ONLY when the route was resolved from the project's DB route. An
+	// empty RevisionID means this is the deployment default, which pins no revision.
+	RevisionID string
+	Revision   int
 }
 
 var defaultModelRoute = ModelRoute{Provider: "fake", Model: "fake", Secret: modelbroker.SecretRef("model")}
@@ -87,10 +94,17 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		return false, fmt.Errorf("model request %s: %w", requestID, err)
 	}
 
+	// Resolve the run's route: the project's DB-backed model route when it has one, else the deployment
+	// default (E13 T8, spec §27.6). Both the adapter+credential the call is made with and the model id's
+	// base layer come from here.
+	route, err := o.effectiveRoute(ctx, st)
+	if err != nil {
+		return false, err
+	}
+
 	// Resolve the per-step effective model from the session's config revisions (spec §9.3,
 	// §25.16). A normal switch's revision applied at the previous boundary, and an immediate
-	// switch's applied at the interrupt boundary, so this step routes under the current config;
-	// the provider stays env-selected (E06 §7.3 carve-out) — only the model id moves.
+	// switch's applied at the interrupt boundary, so this step routes under the current config.
 	effectiveModel, err := o.effectiveModel(ctx, st)
 	if err != nil {
 		return false, err
@@ -150,7 +164,7 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		}
 	}
 
-	result, err := o.models.Route(modelCtx, o.route.Provider, modelbroker.Request{
+	result, err := o.models.Route(modelCtx, route.Provider, modelbroker.Request{
 		ModelRequestID: contracts.ModelRequestID(requestID),
 		// Stable across attempts: the same run and model-request identity re-derive the
 		// same key, so a reclaimed attempt that re-routes carries it and the provider
@@ -165,7 +179,11 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		// A ChildRun runs under its parent-intersected budget (spec §25.18); a root run stays
 		// unbounded here (0). Enforcement is the broker's Reservation.Admit at settle.
 		Reservation: modelbroker.Reservation{MaxTotalTokens: st.childBudget},
-		Secret:      o.route.Secret,
+		// The credential the broker redeems at call time. A DB-routed project's ref is tenant-qualified,
+		// so the redemption is scoped to that project's own organization (E13 T8). Zero on the deployment
+		// default, which pins no revision.
+		Secret:        route.Secret,
+		RouteRevision: route.Revision,
 	}, onDelta)
 	cancelModel()
 	hit := <-hitCh
@@ -177,6 +195,15 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 	}
 	if err != nil {
 		return false, fmt.Errorf("route model request %s: %w", requestID, err)
+	}
+	// A provider-side failure rides on the RESULT, not the Go error (the adapter contract:
+	// modelbroker.Result.Error, sanitized of any credential). Until E13 T8 nothing read it, so a 401 or a
+	// 429 was committed as a successful step with empty output — a silent wrong answer. It must fail the
+	// step: with per-project credentials a rejected credential is an ordinary tenant-caused condition, and
+	// the tenant has to see it. The sanitized message carries no credential, so it is safe to surface.
+	if result.Error != nil {
+		return false, fmt.Errorf("model request %s: provider_error: %s (code %s, status %d)",
+			requestID, result.Error.Message, result.Error.Code, result.Error.Status)
 	}
 	st.usage = addUsage(st.usage, result.Usage)
 	st.model = result.Model
@@ -194,6 +221,11 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 	// reads it back from the committed result for the live-round-trip receipt.
 	if result.ProviderRequestID != "" {
 		data["provider_request_id"] = result.ProviderRequestID
+	}
+	// "Every model step records the actual selected target" (spec §27.6). Absent on the deployment
+	// default, so a stack with no DB route commits a bit-identical result.
+	if route.RevisionID != "" {
+		data["route_revision_id"] = route.RevisionID
 	}
 	if result.Output != "" {
 		data["output"] = result.Output
@@ -296,12 +328,12 @@ func addUsage(a, b contracts.Usage) contracts.Usage {
 }
 
 // effectiveModel resolves the model id this step routes under (spec §9.3, §25.16). A session
-// config revision's model wins; absent one, the deployment default. Only the model id moves —
-// the provider and its credential ref stay env-selected (E06 §7.3 carve-out).
+// config revision's model wins; absent one, the project's DB-backed route (E13 T8); absent that,
+// the deployment default.
 func (o *Orchestrator) effectiveModel(ctx context.Context, st *attemptState) (string, error) {
 	// A ChildRun routes its own model id (spec §25.18): the cheaper/alias model the delegation
-	// asked for, within the same env-selected provider (E06 §7.3 carve-out). It wins over the
-	// session/deployment default so a child can run a different model than its parent.
+	// asked for, within its parent's route (the child shares the project, so it shares the
+	// connection). It wins over every lower layer so a child can run a different model than its parent.
 	if st.childModel != "" {
 		return st.childModel, nil
 	}
@@ -319,7 +351,11 @@ func (o *Orchestrator) effectiveModel(ctx context.Context, st *attemptState) (st
 	} else if revModel != "" {
 		return revModel, nil
 	}
-	return o.route.Model, nil
+	route, err := o.effectiveRoute(ctx, st)
+	if err != nil {
+		return "", err
+	}
+	return route.Model, nil
 }
 
 // advertisedTools resolves the run's effective tool set at this boundary and maps each effective
@@ -342,9 +378,11 @@ func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState) ([
 	if err != nil {
 		return nil, nil, err
 	}
-	snap := Resolve(ResolveInput{
-		DeploymentModel:           o.route.Model,
-		DeploymentSecret:          string(o.route.Secret),
+	route, err := o.effectiveRoute(ctx, st)
+	if err != nil {
+		return nil, nil, err
+	}
+	in := ResolveInput{
 		ProjectTools:              policy.DefaultTools,
 		AgentRevisionID:           revID,
 		AgentRevisionModel:        revModel,
@@ -353,7 +391,9 @@ func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState) ([
 		SkillPinsJSON:             skillPins,
 		SessionModel:              override.Model,
 		SessionTools:              override.Tools,
-	})
+	}
+	o.routeLayers(route, &in)
+	snap := Resolve(in)
 	// SchemaResolved checks the static broker set first, then the per-tenant registry lookup — so a
 	// REGISTERED tool (an MCP/remote executor) the broker can execute but that is not code-defined is
 	// advertised too (E12 T5). Without this fallback a registry tool is resolvable-at-dispatch but never

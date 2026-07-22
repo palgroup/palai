@@ -41,9 +41,10 @@ type AdmissionLimits struct {
 type RouterOption func(*routerConfig)
 
 type routerConfig struct {
-	edge    EdgeLimits
-	secrets SecretRefAPI
-	usage   UsageAPI
+	edge        EdgeLimits
+	secrets     SecretRefAPI
+	usage       UsageAPI
+	modelRoutes ModelRouteAPI
 }
 
 // WithEdgeLimits supplies the §20.12 request-rate limiter and per-project admission caps.
@@ -68,4 +69,11 @@ func WithSecretRefs(secrets SecretRefAPI) RouterOption {
 // lives with the data, so it cannot be bypassed by a caller that mounted a smaller router.
 func WithUsage(usage UsageAPI) RouterOption {
 	return func(c *routerConfig) { c.usage = usage }
+}
+
+// WithModelRoutes mounts the DB-backed model-routing write surface (E13 Task 8): per-project model
+// connections and publishable route revisions. A trailing option for the same reason as WithSecretRefs —
+// every existing caller compiles unchanged, and a stack that never routes leaves it unset.
+func WithModelRoutes(routes ModelRouteAPI) RouterOption {
+	return func(c *routerConfig) { c.modelRoutes = routes }
 }

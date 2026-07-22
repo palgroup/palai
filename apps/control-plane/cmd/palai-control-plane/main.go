@@ -149,9 +149,13 @@ func main() {
 	// what has been settled, over the same spine pool. It is always wired — unlike secret-refs it needs no
 	// external key material — and mounting it only opens the MANAGEMENT routes: a limit already stored is
 	// enforced inside the admission transaction whether or not this option is passed.
+	//
+	// WithModelRoutes mounts the DB-backed model-routing write surface (E13 T8): the store is the same
+	// non-nil repo the positional seams use, so it is unconditional.
 	routerOpts := []api.RouterOption{
 		api.WithEdgeLimits(edgeLimitsFromEnv()),
 		api.WithUsage(metering.New(repo.Spine().Pool())),
+		api.WithModelRoutes(repo),
 	}
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))
@@ -332,14 +336,18 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 	go supervisor.Supervise(ctx, "tool-reconciler", toolReconciler.Run)
 }
 
-// modelBrokerFromEnv builds the model broker and route the exec-path uses, selected by
+// modelBrokerFromEnv builds the model broker and the DEPLOYMENT-DEFAULT route, selected by
 // PALAI_MODEL_PROVIDER. "provider-one" is the live OpenAI adapter: the model id comes from
 // PALAI_MODEL (default gpt-4o-mini) and the credential is redeemed only at call time from
 // PALAI_SECRET_PROVIDER_ONE (the compose file-secret bridge) — never on a request, argument,
 // or log. Any other value (including unset) selects the deterministic fake adapter: no
 // network, no credential, a fixed scripted completion for the shipped-binary wiring proof.
-// ponytail: env selection, not a DB model_routes lookup — that routing is the deferred
-// E-series carve-out.
+//
+// Since E13 T8 this env selection is the FALLBACK, not the whole story: a project with a published
+// model route dispatches through that route's model and its own connection credential, and only a
+// project without one runs on what this function returns. The broker's resolver reflects that split —
+// a tenant-qualified ref (minted by a DB route) redeems from the T3 secret store under that tenant's own
+// organization, and an unqualified ref redeems from the env bridge below.
 func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 	if os.Getenv("PALAI_MODEL_PROVIDER") == "provider-one" {
 		model := os.Getenv("PALAI_MODEL")
@@ -348,7 +356,10 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 		}
 		broker := modelbroker.New(modelbroker.Config{
 			Adapters: map[string]modelbroker.ModelAdapter{"provider-one": providerone.Adapter{}},
-			Secrets:  modelbroker.EnvResolver{modelbroker.SecretRef("provider-one"): "PALAI_SECRET_PROVIDER_ONE"},
+			Secrets: execution.RouteSecretResolver{
+				Lookup:   dbSecret,
+				Fallback: modelbroker.EnvResolver{modelbroker.SecretRef("provider-one"): "PALAI_SECRET_PROVIDER_ONE"},
+			},
 		})
 		return broker, execution.ModelRoute{Provider: "provider-one", Model: model, Secret: modelbroker.SecretRef("provider-one")}
 	}
@@ -356,7 +367,10 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 		Adapters: map[string]modelbroker.ModelAdapter{"fake": fake.Adapter{Script: fake.Script{
 			ProviderRequestID: "fake-local", Model: "fake", Output: "ok",
 		}}},
-		Secrets: modelbroker.StaticResolver{modelbroker.SecretRef("fake"): "unused"},
+		Secrets: execution.RouteSecretResolver{
+			Lookup:   dbSecret,
+			Fallback: modelbroker.StaticResolver{modelbroker.SecretRef("fake"): "unused"},
+		},
 	})
 	return broker, execution.ModelRoute{Provider: "fake", Model: "fake", Secret: modelbroker.SecretRef("fake")}
 }

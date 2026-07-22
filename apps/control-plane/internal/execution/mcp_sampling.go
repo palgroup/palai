@@ -57,6 +57,10 @@ func (r *MCPSamplingRouter) RouteSampling(ctx context.Context, scope mcp.CallSco
 	// The SEPARATE Reservation is the TOL-010 budget: the broker's Admit rejects usage past it at settle, so
 	// the sampling result is cut off when it runs over — even though the provider call was made (the tokens
 	// spent are recorded, the result denied). The route provider/model/secret are the platform's own.
+	// ponytail: sampling stays on the DEPLOYMENT-DEFAULT route even for a project that publishes its own
+	// model route (E13 T8) — an MCP server's sampling request is not the project's own model step. Routing
+	// it through the project's connection is a deliberate decision, not an oversight; make it here if a
+	// tenant should pay for its servers' sampling.
 	result, routeErr := r.broker.Route(ctx, r.route.Provider, modelbroker.Request{
 		ModelRequestID: contracts.ModelRequestID(requestID),
 		IdempotencyKey: scope.RunID + "/" + requestID,
@@ -65,6 +69,13 @@ func (r *MCPSamplingRouter) RouteSampling(ctx context.Context, scope mcp.CallSco
 		Reservation:    modelbroker.Reservation{MaxTotalTokens: budget},
 		Secret:         r.route.Secret,
 	}, nil)
+	// A provider-side rejection rides on the RESULT, not the Go error (modelbroker.Result.Error, sanitized of
+	// any credential) — the same seam the run's own dispatchModel guards. Without this the step below is
+	// journaled as a SUCCESS and the MCP server is handed an assistant message with EMPTY text. Folding it
+	// into routeErr routes it through the denial path already proven for a budget cutoff.
+	if routeErr == nil && result.Error != nil {
+		routeErr = fmt.Errorf("provider_error: %s (code %s, status %d)", result.Error.Message, result.Error.Code, result.Error.Status)
+	}
 	if routeErr != nil {
 		// A budget cutoff still MADE the provider call (the tokens were spent, the result rejected at Admit):
 		// carry the provider request id + usage so the denial event is honest evidence that a REAL provider

@@ -200,9 +200,11 @@ func (o *Orchestrator) effectiveConfigHash(ctx context.Context, st *attemptState
 	if err != nil {
 		return "", err
 	}
-	snap := Resolve(ResolveInput{
-		DeploymentModel:           o.route.Model,
-		DeploymentSecret:          string(o.route.Secret),
+	route, err := o.effectiveRoute(ctx, st)
+	if err != nil {
+		return "", err
+	}
+	in := ResolveInput{
 		ProjectTools:              policy.DefaultTools,
 		AgentRevisionID:           revID,
 		AgentRevisionModel:        revModel,
@@ -211,8 +213,9 @@ func (o *Orchestrator) effectiveConfigHash(ctx context.Context, st *attemptState
 		SkillPinsJSON:             skillPins,
 		SessionModel:              override.Model,
 		SessionTools:              override.Tools,
-	})
-	return snap.Hash, nil
+	}
+	o.routeLayers(route, &in)
+	return Resolve(in).Hash, nil
 }
 
 // recoveryObjectID derives a stable id for a recovery object from the offer's identity, so a

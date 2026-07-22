@@ -203,6 +203,19 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("GET /v1/usage/ledger", uh.ledger)
 	}
 
+	// DB-backed model routing (spec §27.2/§27.6, E13 Task 8, MCI-006): a project binds its own provider
+	// connection (a secret REF, never a value) and publishes route revisions, so two projects on ONE stack
+	// run different models on different credentials. Wired via WithModelRoutes (a trailing option); a stack
+	// that never routes mounts nothing and keeps running on the env deployment default. Gated on the same
+	// `provision` capability as tenancy provisioning and secret refs.
+	if cfg.modelRoutes != nil {
+		mh := &modelRouteHandler{routes: cfg.modelRoutes}
+		mux.HandleFunc("POST /v1/model-connections", mh.createConnection)
+		mux.HandleFunc("POST /v1/model-routes", mh.createRoute)
+		mux.HandleFunc("POST /v1/model-routes/{route_id}/revisions", mh.createRevision)
+		mux.HandleFunc("POST /v1/model-routes/{route_id}/revisions/{revision_id}/publish", mh.publishRevision)
+	}
+
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}
 	mux.HandleFunc("GET /v1/sessions/{session_id}/events", stream.stream)
 
