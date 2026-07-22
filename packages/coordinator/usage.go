@@ -22,10 +22,23 @@ import (
 // are E13-H/SaaS). The ledger is deliberately self-sufficient enough that an external exporter can price
 // it by reading the table alone, and the core stays ignorant of every billing concept.
 //
-// NOT METERED YET, and named so the gap is a decision rather than a surprise: tool-call, sandbox
-// vCPU/memory-second, workspace/artifact GiB-time, and network egress (all §43.2 dimensions), plus the
-// MCP sampling path, which routes the broker directly and commits no model_requests row. Each is
-// additive — a new meter string through the same seam, no schema change.
+// NOT METERED YET, and named so each gap is a decision rather than a surprise. Every one is additive —
+// a new meter string through the same seam, no schema change:
+//
+//   - tool-call, sandbox vCPU/memory-second, workspace/artifact GiB-time, network egress (§43.2
+//     dimensions). None is user-triggerable spend against the model budget.
+//   - the MCP sampling path, which routes the broker directly and commits no model_requests row. It
+//     bounds itself with a §25.18 Reservation, but that spend does NOT reach the ledger, so it does not
+//     count against a budget.
+//   - THE TOKENS OF AN INTERRUPTED STEP. An interrupt aborts the provider call mid-stream; the provider
+//     bills the prompt and the partial completion, but its counts ride the final stream chunk a canceled
+//     stream never receives, so no honest token number exists at that seam. CONSEQUENCE, stated plainly
+//     because interrupting is user-triggerable: a tenant can spend real provider tokens that the budget
+//     gate never sees, by interrupting steps. meterInterruptedStep records the step itself so the
+//     behaviour is visible and cappable by a `step.` quota, but it is a COUNT of steps, not the tokens —
+//     the token gap is real until the adapters surface partial usage on cancel.
+//   - a CHILD run's admission is metered but not GATED (see CreateChildRun): a parent already past the
+//     gate can spawn children that spend beyond an exhausted limit until it terminates.
 const (
 	// meterRunAdmitted counts runs at ADMISSION. It is the reservation: the row lands inside the
 	// admission transaction, before the run executes, so a run-count quota counts runs that have been
@@ -37,10 +50,34 @@ const (
 	// both, which is exactly what budgets/quotas do.
 	meterInputTokens  = "model.input_tokens"
 	meterOutputTokens = "model.output_tokens"
+	// meterInterruptedStep counts model steps aborted mid-flight by an interrupt. The provider bills the
+	// prompt and the partial completion of an aborted streaming call, but its token counts arrive only in
+	// the final stream chunk, which a canceled stream never reaches — so the tokens are genuinely unknown
+	// here and this meter does NOT claim to be them. It records the fact that IS known, so interrupted
+	// spend is visible in the ledger and cappable by a `step.` quota rather than invisible and unbounded.
+	//
+	// Its own prefix and its own unit are load-bearing: folding a step COUNT into a `model.` meter would
+	// corrupt the token total the budget gate reads.
+	meterInterruptedStep = "step.interrupted"
 
 	unitToken = "token"
 	unitRun   = "run"
+	unitStep  = "step"
 )
+
+// interruptedStepEntry is the ledger record for a model step aborted mid-flight. It is keyed on the
+// aborted step's own model_request_id, so a redelivered interrupt records it exactly once. Without that
+// id there is no deterministic key, so the entry is left empty (quantity 0) and settleUsage skips it —
+// recording an unkeyed row would double-count on every redelivery, which is worse than not recording it.
+func interruptedStepEntry(sessionID, runID, requestID string) usageEntry {
+	if requestID == "" {
+		return usageEntry{}
+	}
+	return usageEntry{
+		sessionID: sessionID, runID: runID, meter: meterInterruptedStep, unit: unitStep,
+		dedupeKey: "mreq:" + requestID + ":" + meterInterruptedStep, quantity: 1,
+	}
+}
 
 // usageEntry is one settled meter fact bound for the ledger. dedupeKey is derived by the caller from
 // the settling operation's own identity (the model request, the run), never from a clock or a random —
@@ -94,8 +131,13 @@ func modelUsageEntries(sessionID, runID, requestID string, usage contracts.Usage
 
 // LimitExceeded describes the durable limit that refused an admission, in the terms the caller needs to
 // remediate: which limit, how it is denominated, what it allows, what has been used, and — for a quota,
-// whose window releases capacity on its own — when that next happens. A budget has no ResetAt because a
-// budget does not reset: it is raised, or the period is moved.
+// whose window releases capacity on its own — when that next happens.
+//
+// A budget has no ResetAt because a budget never resets, and in THIS phase it never rolls over either:
+// there is no delete route and no way to advance period_start, so a budget is effectively a LIFETIME cap
+// whose only remediation is raising limit_quantity (which is what the 429 detail tells the caller, and
+// all it tells them). Billing-period rollover and budget removal are E13-H — the period_start column is
+// already there to carry them.
 type LimitExceeded struct {
 	// Kind is "budget" (cumulative since a period start) or "quota" (a rolling window).
 	Kind        string

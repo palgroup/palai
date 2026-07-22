@@ -10,6 +10,14 @@
 -- (BIL-004/005/006). The core learns no billing concept; it records WHAT was consumed, self-sufficiently
 -- enough that an external exporter can price it by READING this table alone.
 --
+-- KNOWN GAP, named here because it is the one an operator must not discover from an invoice: the TOKENS
+-- of a model step aborted by an interrupt never reach this table. The provider bills the prompt and the
+-- partial completion, but its counts arrive only in the final stream chunk a canceled stream never
+-- receives. Interrupting is user-triggerable, so a tenant CAN spend real tokens the budget gate does not
+-- see. The step itself is recorded on the `step.interrupted` meter so the behaviour is visible and
+-- cappable by a `step.` quota; the token gap closes when the adapters surface partial usage on cancel.
+-- The full list of unmetered dimensions lives in packages/coordinator/usage.go.
+--
 -- WHY A NEW TABLE AND NOT 000001's usage_events: usage_events has had a dedupe uniqueness since LP-0 but
 -- never had a single writer, and its shape predates §43.1 — no run/session dimension, no unit, no schema
 -- version, so a row cannot be attributed to the run that caused it or reconciled against a provider

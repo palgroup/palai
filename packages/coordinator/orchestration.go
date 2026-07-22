@@ -137,6 +137,22 @@ func (s *Store) CreateChildRun(ctx context.Context, tenant Tenant, in ChildRunIn
 	if _, err := appendEvent(ctx, tx, tenant, in.SessionID, in.ParentResponseID, eventType, payload); err != nil {
 		return err
 	}
+	// A child run is metered like any other run (E13 T6): it dispatches its own model steps and spends
+	// its own tokens, so leaving it off the run meter would make delegation fan-out invisible — a `run.`
+	// quota would count only roots while a parent spawned children beneath it. Same meter, same
+	// deterministic key discipline, same transaction as the row it counts.
+	//
+	// It is METERED but not GATED: the budget/quota check lives in AdmitResponse, and a child is born
+	// here, mid-run, where there is no admission to refuse. A parent already past the gate can therefore
+	// spawn children that spend beyond an exhausted limit until the parent itself terminates; the spend
+	// is fully recorded, so the NEXT admission sees it. Gating a child needs a refusal path the child
+	// lifecycle does not have yet (§25.18 intersected budgets are the existing in-run bound) — E13-H.
+	if err := settleUsage(ctx, tx, tenant, usageEntry{
+		sessionID: in.SessionID, runID: in.ChildRunID, meter: meterRunAdmitted, unit: unitRun,
+		dedupeKey: "run:" + in.ChildRunID + ":admitted", quantity: 1,
+	}); err != nil {
+		return err
+	}
 	// A detached child's job commits WITH its row (MF-3): no window where the row exists jobless.
 	if in.EnqueueRun {
 		jobID, err := newJobID()

@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 
 	"github.com/palgroup/palai/storage"
 )
@@ -275,5 +276,152 @@ func TestAdmissionRejectsWhenTheRollingQuotaIsExhausted(t *testing.T) {
 	}
 	if adm.LimitExceeded.ResetAt == nil || !adm.LimitExceeded.ResetAt.After(time.Now()) {
 		t.Fatalf("quota rejection reset_at = %v, want a future instant (the window's oldest row aging out)", adm.LimitExceeded.ResetAt)
+	}
+}
+
+// TestExhaustedLimitStillReplaysAnAcceptedRequest is the §20.9 contract a durable limit must not break:
+// a limit is a gate on NEW work, never on the client's right to learn what it was already given. The
+// sequence is the one a lost response produces — admit under a quota of 1, then retry the SAME key with
+// the SAME request — and the retry must replay the stored body, not 429. Rejecting it would strand the
+// tenant's one accepted run: the client can never learn its response id, while the run is executing (and
+// spending) anyway.
+func TestExhaustedLimitStillReplaysAnAcceptedRequest(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	tenant, principalID := seedTenantWithKey(t, cs.Pool(), "tok-replay")
+	exec(t, cs.Pool(), `INSERT INTO quotas (id, organization_id, project_id, meter_prefix, limit_quantity, window_seconds)
+	     VALUES ($1, $2, $3, 'run.', 1, 3600)`, newID("quo"), tenant.Organization, tenant.Project)
+
+	in := admissionInput(principalID, "key-replay", "hash-A", `{"id":"resp_replay"}`)
+	first, err := cs.AdmitResponse(ctx, tenant, in)
+	if err != nil {
+		t.Fatalf("AdmitResponse(first) error = %v", err)
+	}
+	if first.LimitExceeded != nil {
+		t.Fatalf("first admission = %+v, want an admit (the quota allows one run)", first.LimitExceeded)
+	}
+
+	// The quota is now exhausted by the run just admitted. The retry is the SAME request.
+	replay, err := cs.AdmitResponse(ctx, tenant, in)
+	if err != nil {
+		t.Fatalf("AdmitResponse(replay) error = %v", err)
+	}
+	if replay.LimitExceeded != nil {
+		t.Fatalf("the retry of an ALREADY-ACCEPTED request was refused by the exhausted limit (%+v); it must replay the stored body — the run exists and is spending, so a 429 strands the client",
+			*replay.LimitExceeded)
+	}
+	if !replay.Replayed || decodeID(t, replay.Body) != "resp_replay" {
+		t.Fatalf("retry = %+v, want a replay of the original resp_replay", replay)
+	}
+	// And the replay settled no second reservation: one accepted request, one metered run.
+	assertCount(t, cs.Pool(), 1,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND meter='run.admitted'`, in.RunID)
+
+	// A DIVERGENT reuse of the same key is still a conflict, not a limit rejection — the limit check
+	// must not have displaced the idempotency contract in either direction.
+	conflict, err := cs.AdmitResponse(ctx, tenant, admissionInput(principalID, "key-replay", "hash-B", `{"id":"resp_other"}`))
+	if err != nil {
+		t.Fatalf("AdmitResponse(conflict) error = %v", err)
+	}
+	if !conflict.Conflict || conflict.LimitExceeded != nil {
+		t.Fatalf("divergent reuse = %+v, want a conflict (not a limit rejection)", conflict)
+	}
+}
+
+// TestInterruptedModelStepIsMetered closes the budget-evasion half of the interrupt path. An interrupt
+// aborts the provider call mid-stream, so the provider bills the prompt and the partial completion while
+// the control plane never reaches CommitModelResult — the spend exists and the ledger never hears about
+// it. Interrupting is USER-TRIGGERABLE, so without a record a tenant could spend past its budget
+// indefinitely by interrupting every step, and the gate would never see it.
+//
+// The provider's token counts are genuinely unavailable at this seam (usage arrives only in the final
+// stream chunk, which a canceled stream never reaches), so this does NOT settle tokens — inventing a
+// count in a money path would be worse than recording none. It settles the one thing that IS a fact:
+// the interrupted step itself, on its own meter and its own unit, so the spend is VISIBLE in the ledger
+// and CAPPABLE by a `step.` quota. The row is deterministic on the aborted step's id, so a redelivered
+// interrupt records it once.
+func TestInterruptedModelStepIsMetered(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	tenant, sessionID, runID := seedRun(t, cs.Pool())
+	cmdID := seedQueuedSendMessage(t, cs, tenant, sessionID, runID, "interrupt", "stop and do Y")
+
+	if err := cs.CommitModelRequest(ctx, tenant, sessionID, "", runID, "mr_aborted", "model_step.created.v1", []byte(`{}`)); err != nil {
+		t.Fatalf("CommitModelRequest() error = %v", err)
+	}
+	if _, err := cs.InterruptModelStep(ctx, tenant, sessionID, "", runID, cmdID, "mr_aborted",
+		"model_step.interrupted.v1", []byte(`{"output":"partial so far"}`)); err != nil {
+		t.Fatalf("InterruptModelStep() error = %v", err)
+	}
+
+	assertCount(t, cs.Pool(), 1,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND meter='step.interrupted' AND unit='step' AND quantity=1`, runID)
+	// It must NOT land on a model.* meter: a `model.` budget is denominated in TOKENS, and folding a
+	// step count into it would corrupt the very total the gate reads.
+	assertCount(t, cs.Pool(), 0,
+		`SELECT count(*) FROM usage_ledger WHERE run_id=$1 AND meter LIKE 'model.%'`, runID)
+}
+
+// TestBudgetScopeNarrowingAcrossSiblingProjects pins the project narrowing the LIMIT queries perform in
+// SQL. Migration 000032 secures the metering tables at the ORGANIZATION level on purpose — that is what
+// lets an org-wide budget sum sibling projects from a project-narrowed admission connection — so RLS is
+// NOT what keeps one project's spend off another project's budget. These predicates are, and deleting any
+// of them mis-charges a tenant rather than failing loudly. A single-project fixture cannot see that, so
+// this drives a two-project organization through the real admission gate:
+//
+//	(a) a SIBLING project's exhausted budget must not bind us     (the WHERE project_id IN ('', $2));
+//	(b) our OWN project budget must not count the sibling's spend (the JOIN's project predicate);
+//	(c) an ORG-WIDE budget must count it                          (the '' half of both).
+func TestBudgetScopeNarrowingAcrossSiblingProjects(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	tenant, principalID := seedTenantWithKey(t, cs.Pool(), "tok-scope")
+	sibling := newID("prj")
+	exec(t, cs.Pool(), `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, sibling, tenant.Organization)
+	// The sibling has spent 140 tokens; our project has spent none.
+	exec(t, cs.Pool(), `INSERT INTO usage_ledger (id, organization_id, project_id, meter, quantity, unit, dedupe_key)
+	     VALUES ($1, $2, $3, 'model.output_tokens', 140, 'token', $1)`, newID("use"), tenant.Organization, sibling)
+
+	// Every budget below opens its period BEFORE that spend. Without this the spend would sit outside the
+	// period a just-created budget starts (correct behaviour — a new budget does not retroactively charge
+	// history) and all three assertions would pass vacuously, pinning nothing.
+	setBudget := func(project string, limit int) {
+		t.Helper()
+		exec(t, cs.Pool(), `INSERT INTO budgets (id, organization_id, project_id, meter_prefix, limit_quantity, period_start)
+		     VALUES ($1, $2, $3, 'model.', $4, now() - interval '1 hour')`,
+			newID("bdg"), tenant.Organization, project, limit)
+	}
+
+	admit := func(t *testing.T, key string) *coordinator.LimitExceeded {
+		t.Helper()
+		adm, err := cs.AdmitResponse(ctx, tenant, admissionInput(principalID, key, "hash-A", `{"id":"resp_`+key+`"}`))
+		if err != nil {
+			t.Fatalf("AdmitResponse(%s) error = %v", key, err)
+		}
+		return adm.LimitExceeded
+	}
+
+	// (a) The sibling's own budget is exhausted (limit 1 against its 140). It must not bind our project.
+	setBudget(sibling, 1)
+	if limit := admit(t, "scope-a"); limit != nil {
+		t.Fatalf("a SIBLING project's exhausted budget refused our admission (%+v); the limit query is not narrowed to the caller's project", *limit)
+	}
+
+	// (b) Our own budget of 100 has full headroom — the sibling's 140 belongs to the sibling.
+	setBudget(tenant.Project, 100)
+	if limit := admit(t, "scope-b"); limit != nil {
+		t.Fatalf("our project's budget was charged the SIBLING's spend (%+v); the usage join is not narrowed to the budget's project", *limit)
+	}
+
+	// (c) An organization-wide budget ('' project) DOES sum every project, so the sibling's 140 exhausts
+	// it — the deliberate consequence of the org-level metering policy, and the reason it exists.
+	exec(t, cs.Pool(), `DELETE FROM budgets WHERE organization_id = $1`, tenant.Organization)
+	setBudget("", 100)
+	limit := admit(t, "scope-c")
+	if limit == nil {
+		t.Fatal("an org-wide budget did not see the sibling project's spend; the organization-wide limit under-counts (it fails OPEN)")
+	}
+	if limit.Used != 140 || limit.Limit != 100 {
+		t.Fatalf("org-wide rejection = %+v, want used 140 of 100 (the sibling's spend, summed across the org)", *limit)
 	}
 }

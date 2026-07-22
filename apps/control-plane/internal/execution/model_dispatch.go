@@ -76,8 +76,9 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 			st.model = model
 		}
 		toolCalls, _ := data["tool_calls"].([]any)
-		// ponytail: replayed usage is not re-accounted; the crash-recovery path
-		// undercounts. Store usage on the row if accurate recovered metering matters.
+		// Nothing to re-account here: a stored result was settled into the usage ledger by the SAME
+		// transaction that stored it (E13 T6), so replaying it must NOT settle again — and cannot,
+		// since the ledger key is derived from this model_request_id.
 		return len(toolCalls) > 0, st.ch.Send(ctx, o.frame(st, "model.result", data, string(frame.ID)))
 	}
 
@@ -446,7 +447,7 @@ func (o *Orchestrator) handleInterrupt(ctx context.Context, st *attemptState, fr
 	partial, _ := json.Marshal(partialData)
 
 	if hit.kind == "change_config" {
-		if err := o.applyImmediateConfigChange(ctx, st, hit, partial); err != nil {
+		if err := o.applyImmediateConfigChange(ctx, st, hit, requestID, partial); err != nil {
 			return err
 		}
 	} else {
@@ -479,13 +480,13 @@ func (o *Orchestrator) handleInterrupt(ctx context.Context, st *attemptState, fr
 // change (the config revision + config.revised.v1), and raises a warning — atomically. The
 // resumed model step then re-resolves and routes under the new config. A change a boundary
 // already applied returns ErrCommandNotPending and is a no-op.
-func (o *Orchestrator) applyImmediateConfigChange(ctx context.Context, st *attemptState, hit interruptHit, partial []byte) error {
+func (o *Orchestrator) applyImmediateConfigChange(ctx context.Context, st *attemptState, hit interruptHit, requestID string, partial []byte) error {
 	plan, err := o.planConfigChange(ctx, st, hit.commandID, hit.payload)
 	if err != nil {
 		return err
 	}
 	warning, _ := json.Marshal(map[string]any{"command_id": hit.commandID, "code": "config_switch_interrupted", "detail": "the in-flight model step was interrupted for an immediate config switch"})
-	switch _, err := o.spine.InterruptForConfigChange(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), plan, hit.commandID, eventModelStepInterrupted, partial, eventWarningRaised, warning); {
+	switch _, err := o.spine.InterruptForConfigChange(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), plan, hit.commandID, requestID, eventModelStepInterrupted, partial, eventWarningRaised, warning); {
 	case errors.Is(err, coordinator.ErrCommandNotPending):
 		return nil // already applied by a boundary; the resumed step still picks up the config
 	default:

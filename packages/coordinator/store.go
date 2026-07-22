@@ -667,8 +667,10 @@ type Admission struct {
 	QueueDepthExceeded bool
 	// LimitExceeded, when non-nil, names the DURABLE budget or quota that refused this admission (E13 T6,
 	// BIL-003/QUO-001). Unlike the caps above it survives a restart — it is read from the tenant's own
-	// budgets/quotas rows against the settled ledger — and it is decided BEFORE the idempotency reserve,
-	// so the refused request leaves nothing behind at all.
+	// budgets/quotas rows against the settled ledger. Like them it is decided on a FRESH key only, after
+	// the reserve and before commit, so the rolled-back reserve leaves no run and no idempotency record —
+	// and, decisively, a REPLAY of an already-accepted request is never refused by it (§20.9: a limit
+	// gates new work, never the client's right to learn what it was already given).
 	LimitExceeded *LimitExceeded
 }
 
@@ -750,17 +752,6 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		}
 	}
 
-	// The durable budget/quota gate (E13 T6, BIL-003/QUO-001). Like the binding and revision checks it
-	// runs BEFORE the idempotency reserve, so a refused request leaves no record, no run, and a key that
-	// is free to retry the moment the limit is raised or the quota window releases. Unlike the §20.12
-	// caps below it needs no configuration argument: the limits are the tenant's own durable rows, so a
-	// tenant with none configured is unaffected (both queries return no row).
-	if limit, err := checkDurableLimits(ctx, tx, tenant); err != nil {
-		return Admission{}, err
-	} else if limit != nil {
-		return Admission{LimitExceeded: limit}, nil
-	}
-
 	// The response body carries the resolved session id (the minted one is only correct for a
 	// fresh session), and the idempotency record must store that exact body for replay.
 	body := in.Body
@@ -804,6 +795,23 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		return Admission{Body: storedBody, Replayed: true}, nil
 	case err != nil:
 		return Admission{}, fmt.Errorf("reserve idempotency key: %w", err)
+	}
+
+	// Fresh key: enforce the DURABLE budget/quota gate (E13 T6, BIL-003/QUO-001) before creating any
+	// resource. It sits INSIDE the fresh-key branch, beside the §20.12 caps, and deliberately NOT before
+	// the reserve: the reserve is the only thing that distinguishes new work from a retry of work already
+	// accepted, and a limit gates NEW work only. Checked earlier it would refuse every REPLAY too — the
+	// tenant's own accepted run would answer 429 to its own retry, so the client could never learn the
+	// response id of a run that is executing and spending anyway (§20.9).
+	//
+	// A rejection returns without committing, and the deferred rollback undoes the reserve, so the refused
+	// request leaves no run, no response, and no idempotency record. It needs no configuration argument:
+	// the limits are the tenant's own durable rows, so a tenant with none configured is unaffected (both
+	// queries return no row against empty tables).
+	if limit, err := checkDurableLimits(ctx, tx, tenant); err != nil {
+		return Admission{}, err
+	} else if limit != nil {
+		return Admission{LimitExceeded: limit}, nil
 	}
 
 	// Fresh key: enforce the §20.12 per-project run caps against live counters BEFORE creating any
