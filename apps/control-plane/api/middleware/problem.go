@@ -21,7 +21,9 @@ func WriteProblem(w http.ResponseWriter, r *http.Request, status int, code, deta
 		Detail:    detail,
 		Code:      code,
 		RequestID: contracts.RequestID(RequestID(r.Context())),
-		Retryable: status >= http.StatusInternalServerError,
+		// A 429 is inherently retryable (after the Retry-After the caller pairs with it, spec §20.12),
+		// so it joins the 5xx class in advertising retryability; 4xx are otherwise terminal.
+		Retryable: status >= http.StatusInternalServerError || status == http.StatusTooManyRequests,
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
@@ -41,4 +43,7 @@ var problemTitles = map[string]string{
 	"idempotency_result_expired": "Idempotent result expired",
 	"retention_expired":          "Retention expired",
 	"internal_error":             "Internal error",
+	"rate_limited":               "Rate limit exceeded",
+	"concurrency_limit":          "Concurrent run limit reached",
+	"queue_full":                 "Run queue is full",
 }

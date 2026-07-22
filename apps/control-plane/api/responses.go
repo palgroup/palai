@@ -104,6 +104,9 @@ type AdmitResult struct {
 
 type responseHandler struct {
 	admitter Admitter
+	// limits are the per-project run-admission caps (§20.12). Zero fields disable the caps, so a
+	// stack that configures no edge limits admits exactly as before.
+	limits AdmissionLimits
 }
 
 // create admits a response: it authenticates via the scope set by Auth, validates
