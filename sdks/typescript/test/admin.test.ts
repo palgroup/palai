@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { Palai } from "../src/client.ts";
+import { PalaiConnectionError } from "../src/errors.ts";
 
 interface Call {
   url: string;
@@ -31,6 +32,40 @@ function json(status: number, body: unknown): globalThis.Response {
 function newClient(fetchImpl: typeof fetch): Palai {
   return new Palai({ apiKey: "sk-admin", baseURL: "http://palai.test", fetch: fetchImpl, backoffBaseMs: 1, backoffMaxMs: 2 });
 }
+
+// countingNetworkFailure always throws a network-level error (no HTTP status), so a test can assert
+// how many times the client re-sent the request.
+function countingNetworkFailure(): { fetch: typeof fetch; attempts: () => number } {
+  let attempts = 0;
+  const fetchImpl = (async () => {
+    attempts += 1;
+    throw new TypeError("connection reset");
+  }) as unknown as typeof fetch;
+  return { fetch: fetchImpl, attempts: () => attempts };
+}
+
+// --- network-retry safety (SHOULD-1): a non-idempotent create must NOT re-send on a torn connection
+
+test("a network failure on a non-idempotent create is NOT retried — no double-provision", async () => {
+  const net = countingNetworkFailure();
+  const client = new Palai({ apiKey: "sk-admin", baseURL: "http://palai.test", fetch: net.fetch, maxRetries: 3, backoffBaseMs: 1, backoffMaxMs: 2 });
+  await assert.rejects(client.organizations.create({ display_name: "acme" }), (e: unknown) => e instanceof PalaiConnectionError);
+  assert.equal(net.attempts(), 1, "a connection torn after a create may have committed — do not re-issue the POST");
+});
+
+test("a network failure on an idempotent GET list IS retried (safe method)", async () => {
+  const net = countingNetworkFailure();
+  const client = new Palai({ apiKey: "sk-admin", baseURL: "http://palai.test", fetch: net.fetch, maxRetries: 2, backoffBaseMs: 1, backoffMaxMs: 2 });
+  await assert.rejects(client.organizations.list(), (e: unknown) => e instanceof PalaiConnectionError);
+  assert.equal(net.attempts(), 3, "a GET is safe to re-send: initial attempt + 2 retries");
+});
+
+test("a network failure on a session command IS retried (command_id idempotency)", async () => {
+  const net = countingNetworkFailure();
+  const client = new Palai({ apiKey: "sk-admin", baseURL: "http://palai.test", fetch: net.fetch, maxRetries: 2, backoffBaseMs: 1, backoffMaxMs: 2 });
+  await assert.rejects(client.sessions.commands.steer("ses_1", { message: "go" }), (e: unknown) => e instanceof PalaiConnectionError);
+  assert.equal(net.attempts(), 3, "a command carries command_id, so a network re-send settles exactly one");
+});
 
 // --- secret refs (T3): write-only value, metadata reads, rotate --------------------
 

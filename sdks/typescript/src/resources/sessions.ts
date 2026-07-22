@@ -46,6 +46,8 @@ export class SessionCommands {
     };
     const result = await this.#client.request<Command>("POST", `/v1/sessions/${enc(sessionID)}/commands`, {
       body,
+      // command_id carries idempotency server-side, so a network re-send settles exactly one command.
+      idempotent: true,
       ...callArgs(options),
     });
     return result.body;

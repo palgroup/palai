@@ -17,6 +17,9 @@ the e2e test (`tests/live.spec.ts`) scans every browser artifact for the key sen
 - `GET /api/palai/artifacts?id=…` — relay an authenticated **artifact download**: the SDK opens
   the byte stream with the server-side key and the handler pipes the bytes straight through, with
   the `Content-Digest` header for integrity. The browser gets the object, never the credential.
+  **This example relay is unauthenticated — any visitor can pull any artifact through the server's
+  key. Add your own authorization (session check, per-artifact ownership) before copying it to
+  production.**
 
 ## Run
 

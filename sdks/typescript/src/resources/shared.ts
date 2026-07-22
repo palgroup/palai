@@ -13,6 +13,15 @@ export interface CallOptions {
   maxRetries?: number;
 }
 
+// DownloadOptions is CallOptions without maxRetries: a byte download is a single attempt (a
+// partially-drained stream is not safely retryable), so the retry knob is deliberately unrepresentable
+// here rather than silently ignored. timeoutMs bounds the CONNECT phase only — once headers arrive the
+// byte stream is bounded by `signal`, so a large object never trips the connect deadline mid-transfer.
+export interface DownloadOptions {
+  signal?: AbortSignal | undefined;
+  timeoutMs?: number;
+}
+
 // ListParams are the shared pagination + basic filters the whole read/LIST surface accepts
 // (api/pagination.go): an opaque, tenant-bound `after` cursor, a page `limit`, and the two basic
 // filters. `status` is only honored on the responses/sessions lists — the server rejects it

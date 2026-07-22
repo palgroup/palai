@@ -1,5 +1,5 @@
 import type { Palai } from "../client.ts";
-import { callArgs, enc, type CallOptions, type ListView } from "./shared.ts";
+import { callArgs, enc, type CallOptions, type DownloadOptions, type ListView } from "./shared.ts";
 
 // Artifact is an artifact's metadata projection (spec §22.6). No canonical schema generates it, so it
 // is open: the identity fields plus an index signature, so classification/integrity fields the server
@@ -42,7 +42,7 @@ export class Artifacts {
   // authenticated download — the object's bytes stream straight from the object store through the
   // control-plane; a pre-signed URL + expiry policy is E13-H. The SSE primitive in stream.ts does NOT
   // fit here (it frames an event stream, not raw bytes), so this reads the raw response body instead.
-  async download(artifactID: string, options: CallOptions = {}): Promise<ArtifactDownload> {
+  async download(artifactID: string, options: DownloadOptions = {}): Promise<ArtifactDownload> {
     const response = await this.#client.openDownload(`/v1/artifacts/${enc(artifactID)}/content`, options);
     const contentLength = response.headers.get("Content-Length");
     return {

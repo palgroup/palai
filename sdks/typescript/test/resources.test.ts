@@ -187,6 +187,28 @@ test("artifacts.download maps a 404 to a typed NotFoundError", async () => {
   await assert.rejects(newClient(f).artifacts.download("missing"), (e: unknown) => e instanceof NotFoundError);
 });
 
+test("artifacts.download's connect timeout stops at headers and does not abort the byte stream (SHOULD-2)", async () => {
+  const bytes = new Uint8Array([5, 6]);
+  let captured: AbortSignal | undefined;
+  const f = (async (_input: unknown, init?: RequestInit) => {
+    captured = init?.signal ?? undefined;
+    return new globalThis.Response(bytes, { status: 200, headers: { "Content-Type": "application/octet-stream" } });
+  }) as unknown as typeof fetch;
+  const download = await newClient(f).artifacts.download("art_1", { timeoutMs: 15 });
+  // Wait well past the 15ms connect timeout; without the headers-time clear the signal would abort here.
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(captured?.aborted, false, "the connect timeout must not keep governing the body stream");
+  assert.deepEqual([...(await download.bytes())], [5, 6]);
+});
+
+test("artifacts.download does not accept maxRetries — single-attempt by type (NIT-1)", async () => {
+  const { fetch: f } = recordingFetch(
+    () => new globalThis.Response(new Uint8Array([1]), { status: 200, headers: { "Content-Type": "application/octet-stream" } }),
+  );
+  // @ts-expect-error DownloadOptions has no maxRetries: the ignored retry knob is unrepresentable, not silently dropped.
+  await newClient(f).artifacts.download("art_1", { maxRetries: 5 });
+});
+
 // --- T4 read/LIST surfaces ----------------------------------------------------------
 
 test("the T4 list/get surfaces each page and get through the shared cursor", async () => {

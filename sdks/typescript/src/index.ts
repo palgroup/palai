@@ -43,7 +43,7 @@ export type {
   ProjectPolicyParams,
   ApiKeyCreateParams,
 } from "./resources/provisioning.ts";
-export type { CallOptions, ListParams, Page, ListView } from "./resources/shared.ts";
+export type { CallOptions, DownloadOptions, ListParams, Page, ListView } from "./resources/shared.ts";
 
 export { ResponseStream, isTerminalEvent, parseEventStream, fullJitterBackoff, delay } from "./stream.ts";
 export type { SSEFrame, StreamTransport, ResponseStreamInit, StreamStart } from "./stream.ts";
