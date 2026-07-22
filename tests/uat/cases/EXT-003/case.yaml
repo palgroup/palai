@@ -1,0 +1,10 @@
+id: EXT-003
+name: tool-revision-immutable-namespaced-collision-deterministic-shortname
+proof_class: component-real
+provider: fake
+input: "a tool/tool-set revision is immutable + digest-pinned, a canonical namespace collision is rejected, and the model-visible short name is deterministic + collision-checked (real Postgres registry)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/extensions/registry_component_test.go:TestToolRevisionImmutableAndDigestPinned
+  - apps/control-plane/internal/extensions/registry_component_test.go:TestCanonicalNamespaceCollisionRejected
+  - apps/control-plane/internal/extensions/registry_component_test.go:TestModelVisibleShortNameDeterministicCollisionChecked

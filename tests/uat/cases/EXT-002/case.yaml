@@ -1,0 +1,8 @@
+id: EXT-002
+name: tool-outside-effective-set-never-advertised
+proof_class: e2e-deterministic
+provider: fake
+input: "a registered tool outside the run's effective set (a revision ceiling that drops it) is NEVER advertised on the provider request wire — capability cannot expand at the advertising layer"
+expect_status: completed
+proof:
+  - apps/control-plane/e2e/responses/tool_advertising_test.go:TestToolOutsideEffectiveSetNeverAdvertised

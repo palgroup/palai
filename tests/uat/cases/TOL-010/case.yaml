@@ -1,0 +1,9 @@
+id: TOL-010
+name: mcp-sampling-default-deny-enabled-routes-brokered-budgeted-visible-step
+proof_class: unit
+provider: fake
+input: "MCP sampling is default-DENY; an enabled sampling call routes as a SEPARATE brokered, budgeted, visible model step and a budget cutoff stops it (fixture MCP server; the load-bearing element is the real Route + budget)"
+expect_status: completed
+proof:
+  - adapters/integrations/mcp/sampling_test.go:TestSamplingDeniedByDefault
+  - apps/control-plane/internal/execution/mcp_sampling_test.go:TestSamplingEnabledRoutesBrokeredBudgetedVisibleStep
