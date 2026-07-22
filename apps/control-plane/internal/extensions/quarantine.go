@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -126,6 +127,46 @@ func Quarantine(gzipped []byte) (QuarantineResult, error) {
 	}
 	sum := sha256.Sum256(out.Bytes())
 	return QuarantineResult{Sanitized: out.Bytes(), Digest: "sha256:" + hex.EncodeToString(sum[:]), Findings: findings}, nil
+}
+
+// ExtractSanitizedArchive writes a QUARANTINE-sanitized tar (Quarantine's Sanitized output) into destDir
+// (spec §28.16 workspace materialization). The tar is already vetted (only safe regular files), but the
+// path guard is re-applied as defense-in-depth so a corrupted stored archive can never write outside
+// destDir. Directories are created as needed; the caller (workspace materialization) confines destDir to
+// the run's allocation, so the files land under <alloc>/.palai/skills/<name>/.
+func ExtractSanitizedArchive(sanitizedTar []byte, destDir string) error {
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("prepare skill dir: %w", err)
+	}
+	tr := tar.NewReader(bytes.NewReader(sanitizedTar))
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read sanitized archive: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue // the sanitized tar holds only regular files; skip anything else defensively
+		}
+		rel, err := safeArchivePath(hdr.Name)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("prepare skill path %s: %w", rel, err)
+		}
+		body, err := io.ReadAll(io.LimitReader(tr, maxSkillFileBytes+1))
+		if err != nil {
+			return fmt.Errorf("read skill file %s: %w", rel, err)
+		}
+		if err := os.WriteFile(target, body, 0o644); err != nil {
+			return fmt.Errorf("write skill file %s: %w", rel, err)
+		}
+	}
+	return nil
 }
 
 // safeArchivePath rejects any escape in an UNTRUSTED skill entry name. Unlike the snapshot restoreEntry

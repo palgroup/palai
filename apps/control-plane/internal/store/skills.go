@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -38,6 +39,37 @@ func (s *Store) PinRunSkills(ctx context.Context, tenant coordinator.Tenant, run
 	}
 	_, err = s.spine.PinRunSkills(ctx, tenant, runID, pinsJSON)
 	return err
+}
+
+// MaterializeRunSkills unpacks a run's FROZEN skills into its workspace allocation (spec §28.16,
+// progressive loading half-2): for each pinned skill, it loads the sanitized archive BY DIGEST (the pin's
+// exact digest — never "latest") and extracts it under <hostPath>/.palai/skills/<name>/, a sibling of the
+// repo so it never enters a changeset diff. The body is then readable on-demand via the FileTool; a run
+// with no workspace (or no skills) materializes nothing — the model still sees the metadata rider, but
+// the body is unreadable (the visible boundary). Idempotent: it overwrites with digest-equal content.
+func (s *Store) MaterializeRunSkills(ctx context.Context, tenant coordinator.Tenant, runID, hostPath string) error {
+	_, _, _, _, pinsJSON, err := s.spine.PinnedExecConfig(ctx, tenant, runID)
+	if err != nil {
+		return err
+	}
+	if len(pinsJSON) == 0 {
+		return nil
+	}
+	var pins []extensions.SkillPin
+	if err := json.Unmarshal(pinsJSON, &pins); err != nil {
+		return err
+	}
+	for _, p := range pins {
+		archive, err := s.tools.LoadSkillArchive(ctx, tenant.Organization, tenant.Project, p.Digest)
+		if err != nil {
+			return err
+		}
+		destDir := filepath.Join(hostPath, ".palai", "skills", p.Name)
+		if err := extensions.ExtractSanitizedArchive(archive, destDir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // The E12 skills management surface (spec §20.2, §28.15-28.16, TOL-011). These methods adapt the
