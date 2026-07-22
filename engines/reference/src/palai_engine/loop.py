@@ -273,7 +273,7 @@ class Loop:
             self.log("safe_boundary", boundary="after_child", child_request_id=child_id)
             if data.get("status") != "completed" and spec.get("required"):
                 return [self._terminal("failed", reason=data.get("reason") or "required_delegation_unmet", reply_to=frame.get("id"))]
-            self.context.add_tool_result({"tool_call_id": call_id, "content": _delegation_content(data, spec)})
+            self.context.add_tool_result({"tool_call_id": self._provider_call_id(call_id), "content": _delegation_content(data, spec)})
             self._pending_tools.discard(call_id)
             if self._pending_tools:
                 return []  # still awaiting other tool results in this turn
@@ -305,7 +305,10 @@ class Loop:
         if call_id not in self._pending_tools:
             return [self._error("unknown_tool_call", f"{call_id!r} is not an outstanding tool call")]
         self.log("safe_boundary", boundary="after_tool", tool_call_id=call_id)
-        self.context.add_tool_result(data)
+        # Translate the synthetic tcall_ id to the assistant turn's provider id before writing the
+        # tool message to the conversation (E12 T1b): the FRAME id stays synthetic, but the provider
+        # conversation must have the tool message's tool_call_id match assistant.tool_calls[].id.
+        self.context.add_tool_result({**data, "tool_call_id": self._provider_call_id(call_id)})
         self._pending_tools.discard(call_id)
         if self._pending_tools:
             return []  # still awaiting the remaining tool results
@@ -429,6 +432,18 @@ class Loop:
     def _reemit_pending_children(self) -> list[dict]:
         """Re-derive the child.request for every outstanding config-seeded delegation (spec §25.18)."""
         return [self._child_request_frame(cid, spec, None) for cid, spec in self._pending_children.items()]
+
+    def _provider_call_id(self, call_id: str) -> str:
+        """Translate a synthetic tcall_ id to the provider's tool_call id from the last assistant
+        turn (E12 T1b), so the tool message written to the conversation matches
+        assistant.tool_calls[].id for a real chat provider. Walks last_tool_calls() with the SAME
+        (step, index) enumeration _reemit_pending_tools uses, so restore threads it identically. Falls
+        back to the synthetic id when the matched call carries no provider id — deterministic fakes and
+        pre-T1b checkpoints never captured one, so their conversation keeps the pre-T1b synthetic id."""
+        for index, call in enumerate(self.context.last_tool_calls()):
+            if protocol.tool_call_id(self.emitter.run_id, self._step, index) == call_id:
+                return call.get("id") or call_id
+        return call_id
 
     def _cancel(self, frame: dict) -> list[dict]:
         reason = (frame.get("data") or {}).get("reason", "canceled")

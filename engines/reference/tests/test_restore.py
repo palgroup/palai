@@ -52,6 +52,31 @@ def test_restore_roundtrip_resumes_from_tool_boundary() -> None:
     assert err[0]["data"]["code"] == "unexpected_frame"
 
 
+def test_restore_at_tool_boundary_threads_provider_id() -> None:
+    # E12 T1b restore-boundary pin: a checkpoint cut at a tool boundary carries the assistant turn
+    # WITH the provider id in the captured context. After a restore, feeding tool.result with the
+    # SYNTHETIC id must still translate it to the provider id in the resumed conversation, so the
+    # restored continuation is well-formed for a real provider. E10's live restore cases (checkpoint-
+    # restore, container-kill-recovery) depend on exactly this boundary.
+    run_id = "run_restore_tid"
+    loop = make_loop(run_id)
+    mrid = loop.handle(run_start())[0]["data"]["model_request_id"]
+    treq = loop.handle(
+        ctrl("model.result", {"model_request_id": mrid, "tool_calls": [{"id": "call_1", "name": "t", "arguments": {}}]}, "frm_mr")
+    )[0]
+    tcall = treq["data"]["tool_call_id"]
+    offer = loop.handle(ctrl("checkpoint.request", {}, "frm_cpr"))[0]
+
+    restored = make_loop(run_id)
+    restored.handle(_restore_frame(offer))  # re-emits the pending tool.request at the SAME step
+    out = restored.handle(ctrl("tool.result", {"tool_call_id": tcall, "content": "42"}, "frm_tr"))
+    msgs = next(f for f in out if f["type"] == "model.request")["data"]["messages"]
+    assistant = next(m for m in msgs if m.get("role") == "assistant" and m.get("tool_calls"))
+    tool_msg = next(m for m in msgs if m.get("role") == "tool")
+    assert assistant["tool_calls"][0]["id"] == "call_1"
+    assert tool_msg["tool_call_id"] == "call_1"  # translated across the restore boundary
+
+
 def test_restore_reemits_pending_tool_requests() -> None:
     run_id = "run_restore2"
     loop = make_loop(run_id)

@@ -94,6 +94,60 @@ def test_tool_result_resumes_with_the_next_model_request() -> None:
     assert loop.state is State.AWAITING_MODEL
 
 
+def test_tool_result_translates_synthetic_id_to_provider_id_in_conversation() -> None:
+    # E12 T1b: the tool.request/tool.result FRAMES keep the synthetic tcall_ id (the platform id
+    # discipline never changes), but when the engine writes the tool RESULT into the provider
+    # conversation it translates that synthetic id to the assistant turn's provider id — so the
+    # conversation the provider sees has assistant.tool_calls[].id == the tool message's
+    # tool_call_id (a well-formed chat conversation, the whole point of T1b).
+    loop = make_loop("run_tid")
+    mrid = loop.handle(run_start())[0]["data"]["model_request_id"]
+    treq = loop.handle(
+        ctrl("model.result", {"model_request_id": mrid, "tool_calls": [{"id": "call_1", "name": "t", "arguments": {}}]}, "frm_mr")
+    )[0]
+    tcall = treq["data"]["tool_call_id"]
+    assert TCALL.match(tcall)  # the FRAME id stays synthetic — the frame contract does not change
+
+    out = loop.handle(ctrl("tool.result", {"tool_call_id": tcall, "content": "42"}, "frm_tr"))
+    msgs = next(f for f in out if f["type"] == "model.request")["data"]["messages"]
+    assistant = next(m for m in msgs if m.get("role") == "assistant" and m.get("tool_calls"))
+    tool_msg = next(m for m in msgs if m.get("role") == "tool")
+    assert assistant["tool_calls"][0]["id"] == "call_1"  # recorded verbatim from the model result
+    assert tool_msg["tool_call_id"] == "call_1"  # translated from the synthetic tcall_ id
+
+
+def test_id_less_tool_call_falls_back_to_the_synthetic_id() -> None:
+    # Back-compat: a tool_call with no provider id (deterministic fakes, pre-T1b checkpoints) keeps
+    # the synthetic tcall_ id on the tool message — the pre-T1b behavior, unchanged.
+    loop = make_loop("run_tidf")
+    mrid = loop.handle(run_start())[0]["data"]["model_request_id"]
+    treq = loop.handle(
+        ctrl("model.result", {"model_request_id": mrid, "tool_calls": [{"name": "t", "arguments": {}}]}, "frm_mr")
+    )[0]
+    tcall = treq["data"]["tool_call_id"]
+    out = loop.handle(ctrl("tool.result", {"tool_call_id": tcall, "content": "42"}, "frm_tr"))
+    tool_msg = next(m for m in next(f for f in out if f["type"] == "model.request")["data"]["messages"] if m.get("role") == "tool")
+    assert tool_msg["tool_call_id"] == tcall  # synthetic fallback, no translation
+
+
+def test_agent_child_result_translates_synthetic_id_to_provider_id() -> None:
+    # E12 T1b, agent branch: a model-driven agent tool_call's child answer is folded as a tool-role
+    # result too, so it gets the SAME synthetic->provider id translation — otherwise a mixed/agent
+    # turn's tool message would mismatch the assistant.tool_calls[].id for the real provider.
+    loop = make_loop("run_atrid")
+    mrid = loop.handle(run_start())[0]["data"]["model_request_id"]
+    creq = loop.handle(ctrl("model.result", {"model_request_id": mrid,
+        "tool_calls": [{"id": "call_agent", "name": "agent", "arguments": {"role": "r", "objective": "o", "model": "m"}}]}, "frm_mr"))[0]
+    crid = creq["data"]["child_request_id"]
+    out = loop.handle(ctrl("child.result", {"child_request_id": crid, "status": "completed",
+        "output": "child answer", "child_run_id": "run_child"}, "frm_cr"))
+    msgs = next(f for f in out if f["type"] == "model.request")["data"]["messages"]
+    assistant = next(m for m in msgs if m.get("role") == "assistant" and m.get("tool_calls"))
+    tool_msg = next(m for m in msgs if m.get("role") == "tool")
+    assert assistant["tool_calls"][0]["id"] == "call_agent"
+    assert tool_msg["tool_call_id"] == "call_agent"
+
+
 def test_unknown_tool_result_is_rejected_without_resuming() -> None:
     loop = make_loop("run_9")
     req = loop.handle(run_start())[0]
