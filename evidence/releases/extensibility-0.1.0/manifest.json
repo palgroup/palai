@@ -1,7 +1,7 @@
 {
   "api_version": "v1",
   "captured_at": "2026-07-22T04:00:00Z",
-  "git_sha": "1dd3ae7",
+  "git_sha": "6f71f2e",
   "migration": "000028_hooks",
   "release": "extensibility-0.1.0",
   "cases": [
@@ -13,19 +13,31 @@
       "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
       "provider_request_id": "prov_final",
       "mtls_enroll": "runner-local cn=controller",
-      "terminal": { "type": "response.completed", "count": 1 },
-      "usage": { "input_tokens": 5, "output_tokens": 3, "total_tokens": 8 },
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
       "advertising_claim": "advertised",
       "advertising_proof": {
-        "advertised_schema_hash": "sha256:640162651ea00134d699e86efe4a5c39394516776becf62d60f82a3c13ace28c",
-        "tool_names": ["fetch", "fixture__echo", "lookup", "palai.workspace.file"],
+        "advertised_schema_hash": "sha256:b92a67ed7ffb630e40c00bf5bea96f2951104fd103d0163d5d68341efcdf8535",
+        "tool_names": [
+          "fetch",
+          "fixture__echo",
+          "lookup",
+          "palai.workspace.file"
+        ],
         "mode": "forced"
       },
       "db_assertions": [
         "dispatchModel advertised the run's effective tool set (a registered control_plane tool, a discovered MCP tool, a remote_http tool, and the file tool) to the provider; every extension call landed a single dispatchTool->tool-broker ledger row (single admission)",
-        "deterministic tier: the fake provider is schema-validated, so Mode is honestly 'forced' (scripted) here; the SPONTANEOUS half is the live tier (scripts/uat/extensibility CASE=spontaneous-tool-roundtrip)"
+        "deterministic tier: the fake provider is schema-validated, so Mode is honestly 'forced' (scripted); the SPONTANEOUS half is the live tier (scripts/uat/extensibility CASE=spontaneous-tool-roundtrip)"
       ],
-      "checksum": "sha256:640162651ea00134d699e86efe4a5c39394516776becf62d60f82a3c13ace28c"
+      "checksum": "sha256:541800ce049674b324821f2af86b2a999c7b608a438b1a5329779bbf30de602a"
     },
     {
       "id": "TOL-011",
@@ -35,18 +47,25 @@
       "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
       "provider_request_id": "prov_final",
       "mtls_enroll": "runner-local cn=controller",
-      "terminal": { "type": "response.completed", "count": 1 },
-      "usage": { "input_tokens": 5, "output_tokens": 3, "total_tokens": 8 },
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
       "skill_claim": "enabled",
       "skill_proof": {
-        "digest": "sha256:9693522b79ee29a5b505e42254a266e52c8d59a93ebadf71d2b7584766508859",
+        "digest": "sha256:cbede6cbd1489d07895863bc8a20f0f0b8ead609cfbee995d3a8609eb604882f",
         "scan_result": "clean"
       },
       "db_assertions": [
         "an enabled skill whose SKILL.md asks for the push tool rode the run pinned by an exact digest with a clean quarantine scan; push was in NO grant layer and was NEVER advertised or dispatched (no-authority)",
         "capability did not expand at any layer: the load-bearing invariant is the capability boundary, not model behavior"
       ],
-      "checksum": "sha256:9693522b79ee29a5b505e42254a266e52c8d59a93ebadf71d2b7584766508859"
+      "checksum": "sha256:bf85e0c7b49e086f18c5dea1350ebb9fe1db492f6fc6326f066c3fc195183d39"
     },
     {
       "id": "TOL-016",
@@ -56,8 +75,15 @@
       "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
       "provider_request_id": "prov_final",
       "mtls_enroll": "runner-local cn=controller",
-      "terminal": { "type": "response.completed", "count": 1 },
-      "usage": { "input_tokens": 5, "output_tokens": 3, "total_tokens": 8 },
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
       "callback_claim": "delivered_once",
       "callback_proof": {
         "delivery_id": "tc_extensibility_remote",
@@ -67,10 +93,10 @@
         "run_terminal_intact": true
       },
       "db_assertions": [
-        "a signed remote_http tool invoke (HMAC over the raw body) was answered 202 and its signed one-use callback completed the durable operation exactly once under the fence — invoke->202->signed-callback->completed (TOL-016 signed half)",
+        "a signed remote_http tool invoke (HMAC over the raw body) was answered 202 and its signed one-use callback completed the durable operation exactly once under the fence \u2014 invoke->202->signed-callback->completed (TOL-016 signed half)",
         "the callback did NOT disturb the run terminal; the one-use token was consumed exactly once"
       ],
-      "checksum": "sha256:c98d8bb912b8b8d7a4c27a2d5eccd26dfe44d625febdaff586e7167420e1cad9"
+      "checksum": "sha256:4a01a52703b4d58432ba2a8348cd4b3dedd25f40c688ebb86563cb2b8364d3e1"
     },
     {
       "id": "EXT-005",
@@ -80,8 +106,15 @@
       "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
       "provider_request_id": "prov_final",
       "mtls_enroll": "runner-local cn=controller",
-      "terminal": { "type": "response.completed", "count": 1 },
-      "usage": { "input_tokens": 5, "output_tokens": 3, "total_tokens": 8 },
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
       "crash_isolation_claim": "isolated",
       "crash_isolation_proof": {
         "breaker_tripped": true,
@@ -93,7 +126,7 @@
         "a REAL SIGKILL of the MCP server process tripped the per-connection circuit breaker and surfaced tool_unavailable to the run; the in-process control-plane stayed up and a SEPARATE run flowed afterward (EXT-005 exit gate)",
         "fault-live isolation with the FAKE provider (honest): the kill is a real OS process kill, the provider is deterministic; the hook-worker-down half is EXT-005's fault-tier proof (scripts/test/fault CASE=extensions)"
       ],
-      "checksum": "sha256:8d3879a8ed816ac6f442f225f8b66388fa72f55d7397c46ec56fcf19c35dadac"
+      "checksum": "sha256:4554d42a9d66db8a77f30a5ec435a9efd11edabcc4742f1ec129a4ce9511394c"
     }
   ]
 }

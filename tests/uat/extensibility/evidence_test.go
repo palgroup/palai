@@ -1,6 +1,8 @@
 package extensibility
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,6 +10,18 @@ import (
 
 	"github.com/palgroup/palai/tests/uat"
 )
+
+// hashOf reproduces the journey's hashCoding (sha256 of each part followed by a NUL, hex-encoded) so this
+// gate can recompute an advertised_schema_hash from the manifest's own tool_names — a committed hash that
+// does not reproduce is fabricated. ponytail: a 4-line copy, not a shared export (hashCoding is e2e-tagged).
+func hashOf(parts ...string) string {
+	h := sha256.New()
+	for _, p := range parts {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
 
 // TestExtensibilityReleaseVerifiesClean wires the extensibility-0.1.0 bundle into the shared evidence
 // verifier: the committed release must verify clean (0 failed, 0 missing, 0 secret findings) with the E12
@@ -46,8 +60,11 @@ func TestExtensibilityReleaseVerifiesClean(t *testing.T) {
 	}
 	var parsed struct {
 		Cases []struct {
-			AdvertisingClaim    string          `json:"advertising_claim"`
-			AdvertisingProof    json.RawMessage `json:"advertising_proof"`
+			AdvertisingClaim string `json:"advertising_claim"`
+			AdvertisingProof *struct {
+				AdvertisedSchemaHash string   `json:"advertised_schema_hash"`
+				ToolNames            []string `json:"tool_names"`
+			} `json:"advertising_proof"`
 			SkillClaim          string          `json:"skill_claim"`
 			SkillProof          json.RawMessage `json:"skill_proof"`
 			CallbackClaim       string          `json:"callback_claim"`
@@ -61,8 +78,15 @@ func TestExtensibilityReleaseVerifiesClean(t *testing.T) {
 	}
 	var advertising, skill, callback, crashIsolation int
 	for _, c := range parsed.Cases {
-		if c.AdvertisingClaim != "" && len(c.AdvertisingProof) > 0 {
+		if c.AdvertisingClaim != "" && c.AdvertisingProof != nil {
 			advertising++
+			// Anti-fabrication: the advertised_schema_hash MUST be the real hash of the manifest's own
+			// tool_names (the journey's hashCoding over its advertised set) — a value that does not reproduce
+			// from the tool_names is a fabricated hash, the exact defect the shape-checked verifier can't see.
+			if got := hashOf(c.AdvertisingProof.ToolNames...); got != c.AdvertisingProof.AdvertisedSchemaHash {
+				t.Fatalf("advertised_schema_hash %q is not the hash of the manifest's tool_names %v (want %q) — a committed hash must be the real value the journey produces",
+					c.AdvertisingProof.AdvertisedSchemaHash, c.AdvertisingProof.ToolNames, got)
+			}
 		}
 		if c.SkillClaim != "" && len(c.SkillProof) > 0 {
 			skill++
