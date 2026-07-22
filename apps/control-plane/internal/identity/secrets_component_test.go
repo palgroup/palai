@@ -16,6 +16,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/identity"
+	"github.com/palgroup/palai/storage"
 )
 
 // masterKey mints a random 32-byte AES-256 master key (hex), the shape main.go reads from
@@ -91,9 +92,12 @@ func TestSecretRefWriteResolveRotate(t *testing.T) {
 		t.Fatalf("list metadata missing the rotated version: %s", body)
 	}
 
-	// The plaintext is nowhere in the row: the stored ciphertext bytes must not contain it.
+	// The plaintext is nowhere in the row: the stored ciphertext bytes must not contain it. The read is
+	// tenant-scoped — an unscoped context sees zero rows under RLS (migration 000031), which is itself the
+	// isolation guarantee, so scope to the org to actually inspect the stored bytes.
 	var cipher []byte
-	if err := cs.Pool().QueryRow(ctx, "SELECT ciphertext FROM secret_refs WHERE organization_id = $1 AND name = $2 ORDER BY version DESC LIMIT 1",
+	if err := cs.Pool().QueryRow(storage.WithTenant(ctx, org, ""),
+		"SELECT ciphertext FROM secret_refs WHERE organization_id = $1 AND name = $2 ORDER BY version DESC LIMIT 1",
 		org, "provider-one").Scan(&cipher); err != nil {
 		t.Fatalf("read stored ciphertext: %v", err)
 	}
