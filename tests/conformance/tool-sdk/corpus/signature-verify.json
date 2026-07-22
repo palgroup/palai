@@ -79,6 +79,17 @@
       "expect": false
     },
     {
+      "name": "non-ascii-signature",
+      "secret": "secret-key-alpha",
+      "webhook_id": "tcall_conf_001",
+      "timestamp": 1700000000,
+      "body": "{\"operation_id\":\"rop_conf_001\",\"protocol\":\"tool-http.v1\",\"result\":{\"answer\":\"sunny\"},\"tool_call_id\":\"tcall_conf_001\"}",
+      "signature": "v1=ü7e256739c0c0cf4004146216c18f2092eda99602538621d",
+      "now": 1700000000,
+      "tolerance_seconds": 300,
+      "expect": false
+    },
+    {
       "name": "rotation-accept-old",
       "secret": "secret-key-alpha",
       "webhook_id": "tcall_conf_001",
