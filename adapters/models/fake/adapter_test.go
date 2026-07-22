@@ -39,6 +39,35 @@ func TestAdapterDedupsByIdempotencyKey(t *testing.T) {
 	}
 }
 
+// TestAdapterFaultsOnUnadvertisedToolCall proves the fake honors advertising parity (plan §109):
+// when the request advertises a tool set, a scripted tool call to a name outside it is a provider
+// fault — the fake never fabricates a call to a tool it was not offered. With no advertised tools
+// the check is inert and the script replays unchanged (bit-for-bit the pre-advertising behavior).
+func TestAdapterFaultsOnUnadvertisedToolCall(t *testing.T) {
+	adapter := Adapter{Script: Script{
+		ProviderRequestID: "prov_1", Model: "fake",
+		ToolCalls: []modelbroker.ToolCall{{ID: "c1", Name: "palai.workspace.shell", Arguments: "{}"}},
+	}}
+
+	// Advertised set offers only file; a scripted shell call is outside it → provider fault.
+	offered := modelbroker.Request{ModelRequestID: "mreq_adv1", Tools: []modelbroker.ToolSchema{{Name: "palai.workspace.file"}}}
+	if _, err := adapter.Execute(context.Background(), offered, "secret", nil); err == nil {
+		t.Fatal("advertised only file but scripted a shell call; want a provider fault, got nil")
+	}
+
+	// The SAME script with no advertised tools → the check is inert, the script replays unchanged.
+	unadvertised := modelbroker.Request{ModelRequestID: "mreq_adv2"}
+	if _, err := adapter.Execute(context.Background(), unadvertised, "secret", nil); err != nil {
+		t.Fatalf("no advertised tools should replay the script unchanged, got %v", err)
+	}
+
+	// A call to the advertised tool passes.
+	adapter.Script.ToolCalls[0].Name = "palai.workspace.file"
+	if _, err := adapter.Execute(context.Background(), offered, "secret", nil); err != nil {
+		t.Fatalf("calling the advertised tool should pass, got %v", err)
+	}
+}
+
 // TestAdapterWithoutLedgerReplaysEveryCall proves the default fake (no ledger) is
 // unchanged: it replays its script on every call, deduping nothing.
 func TestAdapterWithoutLedgerReplaysEveryCall(t *testing.T) {

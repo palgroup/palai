@@ -7,6 +7,7 @@ package fake
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/palgroup/palai/packages/contracts"
@@ -86,6 +87,22 @@ type Adapter struct {
 func (a Adapter) Execute(ctx context.Context, req modelbroker.Request, _ string, onDelta func(modelbroker.Delta)) (modelbroker.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return modelbroker.Result{}, err
+	}
+
+	// Advertising parity (plan §109): the model may only call a tool it was offered. When the
+	// request advertises a tool set, a scripted tool call to a name outside it is a provider fault
+	// — the fake never fabricates a call to a tool it was not given. No advertised tools ⇒ inert,
+	// so a request that offers none replays the script bit-for-bit as before.
+	if len(req.Tools) > 0 {
+		offered := make(map[string]struct{}, len(req.Tools))
+		for _, t := range req.Tools {
+			offered[t.Name] = struct{}{}
+		}
+		for _, call := range a.Script.ToolCalls {
+			if _, ok := offered[call.Name]; !ok {
+				return modelbroker.Result{}, fmt.Errorf("provider_error: model called tool %q outside the advertised set", call.Name)
+			}
+		}
 	}
 
 	// Idempotent replay: a repeated key returns the stored result and streams nothing,
