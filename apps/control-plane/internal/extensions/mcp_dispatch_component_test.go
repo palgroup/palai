@@ -47,13 +47,16 @@ func createStdioConnection(t *testing.T, s *Store, org, project, name string) st
 	return conn.ID
 }
 
-// latestRevisionID reads the newest revision id for a canonical tool name (a discovery materialises one).
-func latestRevisionID(t *testing.T, s *Store, canonical string) string {
+// latestRevisionID reads the newest revision id for a canonical tool name — TENANT-SCOPED, because the
+// component DB is shared and several tests create the SAME canonical name (mcp.docs.echo) under different
+// tenants; an unscoped read would return a foreign tenant's revision.
+func latestRevisionID(t *testing.T, s *Store, org, project, canonical string) string {
 	t.Helper()
 	var id string
 	err := s.pool.QueryRow(context.Background(),
 		`SELECT tr.id FROM tools t JOIN tool_revisions tr ON tr.tool_id=t.id
-		 WHERE t.canonical_name=$1 ORDER BY tr.revision_number DESC LIMIT 1`, canonical).Scan(&id)
+		 WHERE t.canonical_name=$1 AND t.organization_id=$2 AND t.project_id=$3
+		 ORDER BY tr.revision_number DESC LIMIT 1`, canonical, org, project).Scan(&id)
 	if err != nil {
 		t.Fatalf("read latest revision id for %s: %v", canonical, err)
 	}
@@ -66,7 +69,9 @@ func seedRunWithMCPRider(t *testing.T, s *Store, org, project, setID string, rid
 	sessionID, runID := testID("ses"), testID("run")
 	profileID, arevID := testID("aprof"), testID("arev")
 	mustExec(t, s.pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, project)
-	mustExec(t, s.pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`, profileID, org, project)
+	// A unique profile name per seed: several runs are seeded per test, so a fixed name would collide on
+	// UNIQUE(org, project, name).
+	mustExec(t, s.pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`, profileID, org, project, profileID)
 	mustExec(t, s.pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, published_at, tool_sets, mcp_connections)
 	                     VALUES ($1,$2,$3,$4,1,'model-x',clock_timestamp(),$5::jsonb,$6::jsonb)`, arevID, org, project, profileID, `["`+setID+`"]`, riders)
 	mustExec(t, s.pool, `INSERT INTO runs (id, organization_id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4,$5)`, runID, org, project, sessionID, arevID)
@@ -81,7 +86,7 @@ func publishDiscoveredIntoSet(t *testing.T, s *Store, org, project, connID, cano
 	if _, err := s.DiscoverConnection(ctx, org, project, connID); err != nil {
 		t.Fatalf("discover: %v", err)
 	}
-	revID := latestRevisionID(t, s, canonical)
+	revID := latestRevisionID(t, s, org, project, canonical)
 	if _, _, err := s.PublishToolRevision(ctx, org, project, revID); err != nil {
 		t.Fatalf("publish discovered revision: %v", err)
 	}
@@ -186,7 +191,7 @@ func TestAnnotationChangeRequiresNewRevisionAndReapproval(t *testing.T) {
 	if err != nil || len(first.NewRevisions) != 1 {
 		t.Fatalf("first discover = %+v err=%v, want one new revision", first, err)
 	}
-	rev1 := latestRevisionID(t, s, "mcp.docs.echo")
+	rev1 := latestRevisionID(t, s, org, project, "mcp.docs.echo")
 	if _, _, err := s.PublishToolRevision(ctx, org, project, rev1); err != nil {
 		t.Fatalf("publish v1: %v", err)
 	}
@@ -203,7 +208,7 @@ func TestAnnotationChangeRequiresNewRevisionAndReapproval(t *testing.T) {
 	if err != nil || len(changed.NewRevisions) != 1 {
 		t.Fatalf("re-discover changed = %+v err=%v, want one new draft revision", changed, err)
 	}
-	rev2 := latestRevisionID(t, s, "mcp.docs.echo")
+	rev2 := latestRevisionID(t, s, org, project, "mcp.docs.echo")
 	if rev2 == rev1 {
 		t.Fatal("changed description did not create a new revision")
 	}

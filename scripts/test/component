@@ -243,13 +243,122 @@ run_repository() {
   echo "component_repository=PASS"
 }
 
+# The mcp suite proves the E12 Task 5 MCP client (spec §28.13-28.14): migration 000026 + connection store +
+# namespaced discovery + rider-gated dispatch (real Postgres), the advisory progress event (real Postgres),
+# and the stdio transport + orphan sweep against a REAL, digest-pinned fixture MCP server in a hardened,
+# network-less OCI container. It cross-builds the fixture (the runner-engine.sh idiom), exports its immutable
+# image id, and verifies zero io.palai.sandbox=mcp containers leak.
+run_mcp() {
+  local pg_image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  local pg_label="io.palai.component=mcp"
+  local mcp_label="io.palai.sandbox=mcp"
+  local run_id="$$-${RANDOM}"
+  local container="palai-component-mcp-pg-$run_id"
+  local volume="palai-component-mcp-pg-$run_id"
+  local password="palai-component-${RANDOM}${RANDOM}"
+  local image_tag="palai-mcp-fixture:component"
+  local build_dir="tests/sandboxes/mcp/.build"
+
+  count_pg() { docker ps -aq --filter "label=$pg_label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_mcp() { docker ps -aq --filter "label=$mcp_label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+    local ids
+    ids="$(docker ps -aq --filter "label=$mcp_label")"
+    if test -n "$ids"; then docker rm -f $ids >/dev/null 2>&1 || true; fi
+    docker image rm -f "$image_tag" >/dev/null 2>&1 || true
+    rm -rf "$build_dir"
+  }
+  local pg_before mcp_before
+  pg_before="$(count_pg)"
+  mcp_before="$(count_mcp)"
+  trap cleanup EXIT
+
+  # Cross-build the digest-pinned fixture MCP server image for the daemon architecture.
+  local daemon_os daemon_arch go_arch
+  daemon_os="$(docker version --format '{{.Server.Os}}')"
+  daemon_arch="$(docker version --format '{{.Server.Arch}}')"
+  if test "$daemon_os" != linux; then
+    echo "mcp suite requires a Linux Docker daemon, got $daemon_os" >&2
+    exit 1
+  fi
+  case "$daemon_arch" in
+    amd64 | x86_64) go_arch=amd64 ;;
+    arm64 | aarch64) go_arch=arm64 ;;
+    *) echo "unsupported Docker daemon architecture: $daemon_arch" >&2; exit 1 ;;
+  esac
+  rm -rf "$build_dir"
+  mkdir -p "$build_dir"
+  CGO_ENABLED=0 GOOS=linux GOARCH="$go_arch" \
+    go build -trimpath -buildvcs=false -ldflags='-s -w' \
+    -o "$build_dir/palai-mcp-fixture" ./tests/sandboxes/mcp
+  docker build --platform "linux/$go_arch" --tag "$image_tag" \
+    --file tests/sandboxes/mcp/Dockerfile "$build_dir" >/dev/null
+  local image_id
+  image_id="$(docker image inspect "$image_tag" --format '{{.Id}}')"
+  if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "Docker returned a non-immutable fixture image ID" >&2
+    exit 1
+  fi
+
+  # Throwaway postgres.
+  docker volume create --label "$pg_label" "$volume" >/dev/null
+  docker run --detach --pull=never --name "$container" --label "$pg_label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 --volume "$volume:/var/lib/postgresql/data" "$pg_image" >/dev/null
+  local ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then docker logs "$container" >&2 || true; echo "postgres mcp container did not become ready" >&2; exit 1; fi
+  local binding port url
+  binding="$(docker port "$container" 5432/tcp)"
+  port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+
+  set +e
+  # Store + migration + namespaced discovery + rider-gated dispatch (real Postgres, fake MCP client).
+  PALAI_COMPONENT_POSTGRES_URL="$url" \
+    go test -tags=component -count=1 -v ./apps/control-plane/internal/extensions
+  local status=$?
+  # The advisory progress event (real Postgres).
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v -run 'TestMCPProgressEmitsAdvisoryToolCallProgressEvent' ./packages/coordinator
+    status=$?
+  fi
+  # The stdio transport + progress/cancel + orphan sweep against the REAL fixture container.
+  if test "$status" -eq 0; then
+    PALAI_MCP_FIXTURE_IMAGE_ID="$image_id" \
+      go test -tags=component -count=1 -v ./adapters/integrations/mcp
+    status=$?
+  fi
+  set -e
+  if test "$status" -ne 0; then docker logs "$container" >&2 || true; fi
+
+  cleanup
+  trap - EXIT
+  local pg_after mcp_after
+  pg_after="$(count_pg)"
+  mcp_after="$(count_mcp)"
+  if test "$pg_after" -ne "$pg_before" || test "$mcp_after" -ne "$mcp_before"; then
+    echo "mcp component suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+  echo "component_mcp=PASS pg=$pg_after mcp=$mcp_after"
+}
+
 case "$suite" in
   postgres) run_postgres ;;
   runner) run_runner ;;
   artifacts) run_artifacts ;;
   repository) run_repository ;;
+  mcp) run_mcp ;;
   *)
-    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository)" >&2
+    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository, mcp)" >&2
     exit 2
     ;;
 esac
