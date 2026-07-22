@@ -6,4 +6,4 @@ input: "a real SIGKILL of the engine mid-tool-loop, after the boundary checkpoin
 expect_status: completed
 proof:
   - apps/control-plane/e2e/responses/kill_matrix_test.go:TestEngineProcessKillRecoversViaLadder
-# ceiling: the real-provider restore-realness is the gated CASE=container-kill-recovery live smoke (SKIP until PALAI_LIVE_TOOL_ADVERTISING — dispatchModel omits tool schemas)
+# ceiling: the real-provider restore-realness is the CASE=container-kill-recovery live smoke, which drives a real spontaneous tool boundary now that dispatchModel advertises the effective tool set (E12 T1)
