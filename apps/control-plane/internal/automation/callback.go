@@ -109,6 +109,12 @@ func (s *TriggerStore) armCallback(ctx context.Context, d callbackDue) error {
 	defer func() { _ = tx.Rollback(ctx) }()
 	// The callback rides T4's outbound pump as a normal webhook_deliveries row. ON CONFLICT(endpoint_id,
 	// event_id) makes a re-arm a no-op, so a crash between enqueue and the state mark never double-delivers.
+	// ponytail: an enqueue error is left transient — logged and retried next sweep — NOT dead-lettered. The
+	// one structural "endpoint gone" case (an FK violation on endpoint_id) is unreachable: the endpoint
+	// cannot be deleted while a pinned revision references it (trigger_revisions.callback_endpoint_id is a
+	// RESTRICT FK). Every other enqueue error is a transient DB blip that SHOULD retry; a persistent one
+	// means the DB is down, which stalls the whole sweep, not just this callback. Add terminal-error
+	// classification here only if a reachable non-retryable enqueue error ever appears.
 	if _, err := tx.Exec(ctx, storage.Query("InsertDelivery"),
 		newID("whd"), d.org, d.project, d.endpointID, d.sessionID, "cb:"+d.deliveryID, "trigger.callback.v1", envelope); err != nil {
 		return fmt.Errorf("enqueue callback delivery: %w", err)
