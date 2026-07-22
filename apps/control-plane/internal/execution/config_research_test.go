@@ -38,7 +38,7 @@ func TestResearchRequiresNetworkCapabilityAndNeverPublishCapability(t *testing.T
 		DeploymentModel:    "m",
 		ProjectTools:       []string{research, publish},
 		AgentRevisionID:    "arev_no_research",
-		AgentRevisionTools: []string{publish}, // ceiling excludes research
+		AgentRevisionTools: []string{publish},  // ceiling excludes research
 		SessionTools:       []string{research}, // an override that tries to re-add it
 	})
 	for _, tool := range capped.Tools {

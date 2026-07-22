@@ -69,12 +69,12 @@ func TestResearchTLSRequired(t *testing.T) {
 func TestResearchDeniesPrivateAndMetadataTargetsAfterResolveAndRedirect(t *testing.T) {
 	// --- Literal internal/metadata targets: denied at the static gate, never dialed. ---
 	for _, u := range []string{
-		"https://169.254.169.254/",  // AWS/GCP/Azure metadata (link-local)
-		"https://127.0.0.1/",        // loopback
-		"https://10.0.0.8/",         // RFC1918
-		"https://100.100.100.200/",  // Alibaba metadata (RFC6598 CGNAT)
-		"https://[::1]/",            // loopback v6
-		"https://[fd00::1]/",        // ULA v6
+		"https://169.254.169.254/", // AWS/GCP/Azure metadata (link-local)
+		"https://127.0.0.1/",       // loopback
+		"https://10.0.0.8/",        // RFC1918
+		"https://100.100.100.200/", // Alibaba metadata (RFC6598 CGNAT)
+		"https://[::1]/",           // loopback v6
+		"https://[fd00::1]/",       // ULA v6
 	} {
 		dial, dialed := dialRecorder("")
 		tool := ResearchFetchTool(WithResearchDialContext(dial))
