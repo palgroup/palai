@@ -7,6 +7,8 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -298,6 +300,57 @@ func TestResearchLargeBodyBoundedExcerptPlusArtifact(t *testing.T) {
 	}
 	if excerpt, _ := out2["excerpt"].(string); excerpt == "" {
 		t.Error("excerpt is empty with no store, want the bounded excerpt still returned")
+	}
+}
+
+// TestResearchHugeMaxBytesDoesNotPanic pins the fetch-cap logic against a model-supplied max_bytes that
+// overflows an int conversion: on amd64 int(1e300) is NEGATIVE (minInt64), which would drive fetchCap
+// negative → raw[:fetchCap] panics → the model can repeat it for a restart-loop DoS. The cap must be
+// computed in float space, so a huge/Inf/sub-1 value leaves the 4 MiB ceiling intact and never negative.
+// Asserting the cap function directly makes this meaningful on arm64 (which saturates instead of wraps).
+func TestResearchHugeMaxBytesDoesNotPanic(t *testing.T) {
+	cases := []struct {
+		in   any
+		want int
+	}{
+		{1e300, maxResearchFetchBytes},       // overflows int on amd64 → must NOT lower the cap
+		{math.Inf(1), maxResearchFetchBytes}, // +Inf
+		{0.5, maxResearchFetchBytes},         // 0<mb<1 must not zero the cap
+		{0.0, maxResearchFetchBytes},
+		{-5.0, maxResearchFetchBytes},
+		{1024.0, 1024}, // a sane lower cap is honored
+		{"not a number", maxResearchFetchBytes},
+		{nil, maxResearchFetchBytes},
+	}
+	for _, c := range cases {
+		got := researchFetchCap(c.in)
+		if got != c.want {
+			t.Errorf("researchFetchCap(%v) = %d, want %d", c.in, got, c.want)
+		}
+		if got < 0 {
+			t.Errorf("researchFetchCap(%v) = %d — a negative cap panics raw[:cap]", c.in, got)
+		}
+	}
+}
+
+// TestResearchDeniesEmbeddedCredentials pins that a model-supplied userinfo URL (https://user:pass@host)
+// is denied before any dial: net/http would otherwise send an Authorization: Basic header built from the
+// model's credentials to an arbitrary host — a probing primitive. Denied at the static gate, zero dial.
+func TestResearchDeniesEmbeddedCredentials(t *testing.T) {
+	var dialed []string
+	dial := func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed = append(dialed, addr)
+		return nil, errors.New("no dial")
+	}
+	res := researchResolver(func(_ context.Context, _ string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil // public, so only the userinfo gate can stop it
+	})
+	tool := ResearchFetchTool(WithResearchResolver(res), WithResearchDialContext(dial))
+	if _, err := tool.Exec(context.Background(), toolbroker.ExecEnv{}, map[string]any{"url": "https://user:pass@example.com/"}); err == nil {
+		t.Fatal("research fetch of a URL with embedded credentials = nil, want denied")
+	}
+	if len(dialed) != 0 {
+		t.Fatalf("credentialed URL dialed %v, want NO dial (denied at the static gate)", dialed)
 	}
 }
 

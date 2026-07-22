@@ -100,17 +100,32 @@ func ResearchFetchTool(opts ...ResearchOption) toolbroker.Tool {
 	}
 }
 
+// researchFetchCap resolves the byte ceiling for one fetch. The comparison is done in FLOAT space
+// BEFORE any int conversion: a model-supplied max_bytes of 1e300 / +Inf overflows int(mb) to a NEGATIVE
+// minInt64 on amd64, which would drive a negative slice bound and panic — so a value that is not a real
+// [1, maxResearchFetchBytes) number leaves the 4 MiB ceiling intact.
+func researchFetchCap(mbArg any) int {
+	limit := maxResearchFetchBytes
+	if mb, ok := mbArg.(float64); ok && mb >= 1 && mb < float64(limit) {
+		limit = int(mb)
+	}
+	return limit
+}
+
 func (o *researchOptions) exec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
 	rawURL, _ := args["url"].(string)
-	fetchCap := maxResearchFetchBytes
-	if mb, ok := args["max_bytes"].(float64); ok && mb > 0 && int(mb) < fetchCap {
-		fetchCap = int(mb)
-	}
+	fetchCap := researchFetchCap(args["max_bytes"])
 
 	// Static gate BEFORE any dial: https-only, and a literal-IP host vetted (research NEVER allows
 	// private — allowPrivate is hard-false here, stricter than the webhook self-host downgrade).
 	if err := egress.VetURL(rawURL, false); err != nil {
 		return nil, fmt.Errorf("research: %w", err)
+	}
+	// Reject an embedded-credential URL (https://user:pass@host): net/http would send an Authorization
+	// header built from the model's credentials to an arbitrary host — a probing primitive. VetURL
+	// proved it parses.
+	if u, _ := url.Parse(rawURL); u != nil && u.User != nil {
+		return nil, fmt.Errorf("research: %w: url must not embed credentials", egress.ErrDenied)
 	}
 
 	resolver := o.resolver
@@ -155,6 +170,13 @@ func (o *researchOptions) exec(ctx context.Context, env toolbroker.ExecEnv, args
 	}
 	defer resp.Body.Close()
 
+	// Gate the content type BEFORE reading the body, so an unsupported (binary/PDF) type is rejected
+	// without wasting the full fetch.
+	contentType := resp.Header.Get("Content-Type")
+	if !supportedResearchContentType(contentType) {
+		return nil, fmt.Errorf("research: unsupported content type %q (binary/PDF is not fetched in v1)", contentType)
+	}
+
 	// Read at most fetchCap+1 so an over-cap body is detected, then truncate to the cap.
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(fetchCap)+1))
 	if err != nil {
@@ -163,11 +185,6 @@ func (o *researchOptions) exec(ctx context.Context, env toolbroker.ExecEnv, args
 	fetchTruncated := len(raw) > fetchCap
 	if fetchTruncated {
 		raw = raw[:fetchCap]
-	}
-
-	contentType := resp.Header.Get("Content-Type")
-	if !supportedResearchContentType(contentType) {
-		return nil, fmt.Errorf("research: unsupported content type %q (binary/PDF is not fetched in v1)", contentType)
 	}
 
 	title, text := extractResearchText(contentType, raw)
