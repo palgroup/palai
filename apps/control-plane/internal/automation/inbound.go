@@ -85,8 +85,10 @@ func (s *TriggerStore) IngestInbound(ctx context.Context, triggerID string, head
 	if err != nil {
 		return InboundResult{}, err
 	}
-	// A source that failed to authenticate learns nothing: every disqualifier is the SAME generic 404.
-	if !ok || tr.typ != "webhook" || !tr.enabled || tr.secretRef == "" {
+	// A source that failed to authenticate learns nothing: every disqualifier is the SAME generic 404. An
+	// unstamped created_by (a pre-023 lineage) is disqualifying too — admitting with an empty principal
+	// would blow the principals FK and strand the row in the sweep loop (review #3).
+	if !ok || tr.typ != "webhook" || !tr.enabled || tr.secretRef == "" || tr.createdBy == "" {
 		return InboundResult{}, ErrInboundNotAvailable
 	}
 	secrets := s.inboundSecretsFor(tr.org, tr.secretRef, tr.secretRefNext)

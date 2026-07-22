@@ -97,4 +97,12 @@ func TestInboundEventNormalizedStrict(t *testing.T) {
 	if _, err := parse([]byte(`not json`), "wid_5"); !errors.Is(err, ErrMalformedInbound) {
 		t.Fatalf("non-JSON err = %v, want ErrMalformedInbound", err)
 	}
+
+	// An EMPTY signed Webhook-Id is malformed: source_event_id is required (a '' id would skip the
+	// source-dedupe index, the stuck-sweep, the backlog gauge, and the raw-payload scrub → an un-deduped,
+	// un-sweepable, indefinitely-retained row). The MAC signs an empty id too, so this is a valid signature
+	// over an unusable envelope → reject before persistence (review #2).
+	if _, err := parse([]byte(`{"source":"harness"}`), ""); !errors.Is(err, ErrMalformedInbound) {
+		t.Fatalf("empty Webhook-Id err = %v, want ErrMalformedInbound", err)
+	}
 }

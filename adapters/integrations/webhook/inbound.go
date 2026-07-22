@@ -75,6 +75,11 @@ func ParseInbound(headers map[string]string, rawBody []byte, secrets [][]byte, n
 	if ev.Source == "" {
 		return InboundEvent{}, ErrMalformedInbound // an unroutable event (no dedupe/source scope)
 	}
+	if id == "" {
+		// source_event_id is required: an empty id would skip the source-dedupe index, the stuck-inbound
+		// sweep, the backlog gauge, and the raw-payload scrub — an un-deduped, un-sweepable, un-scrubbed row.
+		return InboundEvent{}, ErrMalformedInbound
+	}
 	if ev.SourceEventID != "" && ev.SourceEventID != id {
 		return InboundEvent{}, ErrMalformedInbound // a body id that disagrees with the signed Webhook-Id
 	}

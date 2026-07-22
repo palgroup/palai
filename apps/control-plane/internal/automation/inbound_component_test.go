@@ -639,3 +639,52 @@ func TestNonObjectPayloadPoisonTerminalizesNotRetries(t *testing.T) {
 		t.Fatalf("swept non-object remnant state = %v, want failed", view["state"])
 	}
 }
+
+// TestEmptyEventIdRejectedBeforePersistence pins review #2 end-to-end: a signed event with an EMPTY
+// Webhook-Id is a malformed envelope → 400 with ZERO delivery rows (an empty source_event_id would be
+// invisible to the dedupe index / sweep / backlog / scrub).
+func TestEmptyEventIdRejectedBeforePersistence(t *testing.T) {
+	h := newInboundHarness(t, 0, 0)
+	// h.post signs with the given event id; "" produces a signed but empty Webhook-Id.
+	resp := h.post(h.triggerID, "", time.Now(), []byte(`{"source":"harness","data":{"order":{"summary":"x"}}}`), h.secret)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty-id POST status = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if got := h.deliveryRows(); got != 0 {
+		t.Fatalf("empty-id POST left %d rows, want 0", got)
+	}
+}
+
+// TestTriggerWithoutCreatedByIsUnavailable pins review #3: a webhook trigger whose created_by was never
+// stamped (a pre-023 lineage that later gets a secret ref) is NOT ingestible — admitting with an empty
+// principal would blow the principals FK and strand the row in the sweep loop. It is a generic 404, zero rows.
+func TestTriggerWithoutCreatedByIsUnavailable(t *testing.T) {
+	h := newInboundHarness(t, 0, 0)
+	ctx := context.Background()
+	// A webhook trigger created with an EMPTY principal (created_by=''), given a revision + secret ref.
+	trg, err := h.store.CreateTrigger(ctx, h.org, h.proj, "", randID("no-principal"), "webhook")
+	if err != nil {
+		t.Fatalf("CreateTrigger error = %v", err)
+	}
+	if _, err := h.store.ReviseTrigger(ctx, h.org, h.proj, trg, automation.TriggerRevisionInput{
+		InputMapping: []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`),
+	}); err != nil {
+		t.Fatalf("ReviseTrigger error = %v", err)
+	}
+	if err := h.store.SetInboundSecretRefs(ctx, h.org, h.proj, trg, inboundSecretRef, ""); err != nil {
+		t.Fatalf("SetInboundSecretRefs error = %v", err)
+	}
+	resp := h.post(trg, "evt-noprin", time.Now(), []byte(`{"source":"harness","data":{"order":{"summary":"x"}}}`), h.secret)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("no-principal trigger POST status = %d, want 404", resp.StatusCode)
+	}
+	resp.Body.Close()
+	var rows int
+	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM trigger_deliveries WHERE trigger_id=$1`, trg).Scan(&rows); err != nil {
+		t.Fatalf("count rows error = %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("no-principal trigger left %d rows, want 0", rows)
+	}
+}
