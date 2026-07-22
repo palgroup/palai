@@ -133,6 +133,30 @@ func tlsReceiver(t *testing.T, secret []byte, handle func(attempt int) int) (*ht
 	return srv, pool, &calls, &verified
 }
 
+// tlsReceiverWithID is tlsReceiver but hands the delivery's Webhook-Id to handle(attempt, id) — so a
+// receiver can dedupe a redelivered callback semantically (the same id across retries is ONE callback).
+func tlsReceiverWithID(t *testing.T, secret []byte, handle func(attempt int, webhookID string) int) (*httptest.Server, *x509.CertPool, *int32, *int32) {
+	t.Helper()
+	var calls, verified int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		raw, _ := io.ReadAll(r.Body)
+		id := r.Header.Get(webhook.HeaderID)
+		ts, ok := parseUnix(r.Header.Get(webhook.HeaderTimestamp))
+		if ok && webhook.Verify(secret, id, ts, raw, r.Header.Get(webhook.HeaderSignature), time.Now(), 5*time.Minute) {
+			atomic.AddInt32(&verified, 1)
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(handle(int(n), id))
+	}))
+	t.Cleanup(srv.Close)
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	return srv, pool, &calls, &verified
+}
+
 func parseUnix(v string) (time.Time, bool) {
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {

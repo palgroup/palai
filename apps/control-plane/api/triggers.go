@@ -19,7 +19,7 @@ type TriggerAPI interface {
 	CreateTrigger(ctx context.Context, org, project, name, triggerType string) (string, error)
 	ReviseTrigger(ctx context.Context, org, project, triggerID string, in automation.TriggerRevisionInput) (automation.TriggerRevision, error)
 	GetTrigger(ctx context.Context, org, project, triggerID string) (automation.TriggerView, bool, error)
-	CreateDelivery(ctx context.Context, org, project, principal, triggerID string, payload []byte) (automation.DeliveryResult, error)
+	CreateDeliveryIdempotent(ctx context.Context, org, project, principal, triggerID, idempotencyKey string, payload []byte) (automation.DeliveryResult, error)
 	GetDelivery(ctx context.Context, org, project, deliveryID string) (automation.TriggerDeliveryView, bool, error)
 }
 
@@ -71,6 +71,8 @@ func (h *triggerHandler) reviseTrigger(w http.ResponseWriter, r *http.Request) {
 		CorrelationMode       string          `json:"correlation_mode"`
 		CorrelationKeyExpr    json.RawMessage `json:"correlation_key_expr"`
 		ConcurrencyPolicy     string          `json:"concurrency_policy"`
+		OutputMapping         json.RawMessage `json:"output_mapping"`
+		CallbackEndpointID    string          `json:"callback_endpoint_id"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body is not valid JSON")
@@ -86,9 +88,17 @@ func (h *triggerHandler) reviseTrigger(w http.ResponseWriter, r *http.Request) {
 		CorrelationMode:       body.CorrelationMode,
 		CorrelationKeyExpr:    string(body.CorrelationKeyExpr),
 		ConcurrencyPolicy:     body.ConcurrencyPolicy,
+		OutputMapping:         body.OutputMapping,
+		CallbackEndpointID:    body.CallbackEndpointID,
 	})
 	if errors.Is(err, automation.ErrTriggerNotFound) {
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such trigger in this project")
+		return
+	}
+	// A callback_endpoint_id naming an unknown/foreign endpoint is a tenant-scoped 404 (no existence
+	// disclosure) — the app-side scope guard that keeps a run result from reaching a foreign URL.
+	if errors.Is(err, automation.ErrCallbackEndpointNotFound) {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such callback endpoint in this project")
 		return
 	}
 	if err != nil {
@@ -123,15 +133,16 @@ func (h *triggerHandler) getTrigger(w http.ResponseWriter, r *http.Request) {
 }
 
 // createDelivery ingests a manual/API delivery (POST /v1/triggers/{trigger_id}/deliveries) and drives it
-// through the pipeline to a born run. The Idempotency-Key header is required (mounted); per-key delivery
-// dedup (AUT-013) is T6 — the pipeline dedupes on its own delivery id here. The delivery admits AS the
-// verified principal.
+// through the pipeline to a born run. The Idempotency-Key header is required (mounted); it scopes per-key
+// delivery idempotency (AUT-013) — the same key + body resolves to one delivery/run, a reused key with a
+// different body is a 409. The delivery admits AS the verified principal.
 func (h *triggerHandler) createDelivery(w http.ResponseWriter, r *http.Request) {
 	scope, raw, ok := h.begin(w, r)
 	if !ok {
 		return
 	}
-	del, err := h.triggers.CreateDelivery(r.Context(), scope.Organization, scope.Project, scope.Principal, r.PathValue("trigger_id"), raw)
+	key := middleware.IdempotencyKey(r.Context())
+	del, err := h.triggers.CreateDeliveryIdempotent(r.Context(), scope.Organization, scope.Project, scope.Principal, r.PathValue("trigger_id"), key, raw)
 	switch {
 	case errors.Is(err, automation.ErrTriggerNotFound):
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such trigger in this project")
@@ -141,6 +152,9 @@ func (h *triggerHandler) createDelivery(w http.ResponseWriter, r *http.Request) 
 		return
 	case errors.Is(err, automation.ErrNoActiveRevision):
 		middleware.WriteProblem(w, r, http.StatusConflict, "trigger_no_revision", "the trigger has no revision to run; revise it first")
+		return
+	case errors.Is(err, automation.ErrIdempotencyMismatch):
+		middleware.WriteProblem(w, r, http.StatusConflict, "idempotency_mismatch", "the idempotency key was reused with a different request")
 		return
 	case err != nil:
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")

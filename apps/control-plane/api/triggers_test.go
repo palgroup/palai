@@ -33,7 +33,7 @@ func (f *fakeTriggerAPI) ReviseTrigger(_ context.Context, _, _, _ string, in aut
 func (f *fakeTriggerAPI) GetTrigger(context.Context, string, string, string) (automation.TriggerView, bool, error) {
 	return automation.TriggerView{ID: "trg_1", Name: "nightly"}, f.triggerHit, nil
 }
-func (f *fakeTriggerAPI) CreateDelivery(context.Context, string, string, string, string, []byte) (automation.DeliveryResult, error) {
+func (f *fakeTriggerAPI) CreateDeliveryIdempotent(context.Context, string, string, string, string, string, []byte) (automation.DeliveryResult, error) {
 	return f.delivery, f.deliveryErr
 }
 func (f *fakeTriggerAPI) GetDelivery(context.Context, string, string, string) (automation.TriggerDeliveryView, bool, error) {

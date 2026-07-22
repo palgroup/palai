@@ -20,14 +20,24 @@ SELECT enabled FROM triggers WHERE id = $1 AND organization_id = $2 AND project_
 -- UNIQUE(trigger_id, revision_number) then rejects the loser (retry on 23505 if concurrent revise
 -- throughput ever matters — a human authoring cadence does not).
 -- name: InsertTriggerRevision
+-- output_mapping + callback_endpoint_id (T6, callback output shaping + delivery) ride the SAME immutable
+-- INSERT — the columns are pre-provisioned in 000021, so T6 adds behavior with no migration.
 INSERT INTO trigger_revisions (
     id, organization_id, project_id, trigger_id, revision_number,
     agent_revision_id, run_template_revision_id, input_mapping,
-    dedupe_key_expr, correlation_mode, correlation_key_expr, concurrency_policy)
+    dedupe_key_expr, correlation_mode, correlation_key_expr, concurrency_policy,
+    output_mapping, callback_endpoint_id)
 VALUES ($1, $2, $3, $4,
         (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM trigger_revisions WHERE trigger_id = $4),
-        $5, $6, $7, $8, $9, $10, $11)
+        $5, $6, $7, $8, $9, $10, $11, $12, $13)
 RETURNING revision_number;
+
+-- WebhookEndpointInScope verifies a callback endpoint belongs to the revising tenant (spec §39.2). The
+-- callback_endpoint_id FK is GLOBAL (any webhook_endpoints row), so without this app-side scope check a
+-- revise could name another tenant's endpoint and leak the run result to a foreign URL. Returns the id
+-- when in scope; no row otherwise.
+-- name: WebhookEndpointInScope
+SELECT id FROM webhook_endpoints WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- ActiveTriggerRevision resolves the trigger's ACTIVE revision (highest revision_number) — the revision
 -- a new delivery pins at accept. Returns the revision id + number.
@@ -140,6 +150,17 @@ WHERE d.trigger_id = $1 AND d.organization_id = $2 AND d.project_id = $3
 ORDER BY d.received_at DESC
 LIMIT 1;
 
+-- RunHasIrreversibleExecuted reports whether a run's E10 tool-call ledger (000018 rider on 000001's
+-- tool_calls) holds an EXECUTED irreversible action — a replay_class='irreversible' row in a completed or
+-- uncertain state (the plan-pinned "executed" definition). The post-irreversible guard (§32.6) reads this
+-- so replace/coalesce never cancels or subsumes a run that already performed an irreversible side effect.
+-- name: RunHasIrreversibleExecuted
+SELECT 1
+FROM tool_calls
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+  AND replay_class = 'irreversible' AND state IN ('completed', 'uncertain')
+LIMIT 1;
+
 -- LatestDeferredForKey resolves the COALESCE survivor: the newest deferred delivery of a group (a burst
 -- of events collapses into the latest — the deterministic reducer).
 -- name: LatestDeferredForKey
@@ -183,11 +204,55 @@ FROM triggers t
 WHERE t.id = $1 AND t.organization_id = $2 AND t.project_id = $3;
 
 -- GetTriggerDelivery reads a delivery's operator-facing projection (GET /v1/trigger-deliveries/{id}).
+-- callback_state exposes the post-run callback's own terminal (independent of the delivery state — a
+-- callback that dead-letters never rewinds run_created; AUT-011 link-half).
 -- name: GetTriggerDelivery
 SELECT trigger_id, trigger_revision_id, state, response_id, run_id, session_id,
-       COALESCE(duplicate_of, ''), reason, received_at, updated_at
+       COALESCE(duplicate_of, ''), reason, callback_state, received_at, updated_at
 FROM trigger_deliveries
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- CallbackDueDeliveries lists run_created deliveries whose revision names a callback endpoint, whose
+-- response has reached a terminal state, and whose callback has not yet been armed (callback_state = '').
+-- It is a system-wide sweep (like the reconciler's other sweeps — each row carries its own scope). The
+-- response's terminal state + output are the callback source projection. (spec §20.2.2, §32.1)
+-- name: CallbackDueDeliveries
+SELECT d.id, d.organization_id, d.project_id, d.session_id, d.response_id, d.run_id, d.trigger_id,
+       rev.callback_endpoint_id, rev.output_mapping, r.state, r.output
+FROM trigger_deliveries d
+JOIN trigger_revisions rev ON rev.id = d.trigger_revision_id
+JOIN responses r ON r.id = d.response_id AND r.organization_id = d.organization_id AND r.project_id = d.project_id
+WHERE d.callback_state = ''
+  AND d.state = 'run_created'
+  AND rev.callback_endpoint_id IS NOT NULL
+  AND r.state IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
+ORDER BY d.updated_at
+LIMIT $1;
+
+-- ArmDeliveryCallback marks a delivery's callback armed (callback_state → 'pending') once its signed
+-- webhook_deliveries row is enqueued in the SAME tx. The InsertDelivery ON CONFLICT + this filter make a
+-- re-sweep idempotent (an armed delivery is excluded from CallbackDueDeliveries).
+-- name: ArmDeliveryCallback
+UPDATE trigger_deliveries SET callback_state = 'pending', updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- DeadDeliveryCallback marks a callback dead WITHOUT enqueuing — the output-mapping failed at callback
+-- time (a schema-invalid shape). The run result stays intact; only the callback has its own dead terminal.
+-- name: DeadDeliveryCallback
+UPDATE trigger_deliveries SET callback_state = 'dead', reason = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- MirrorCallbackState mirrors the pump's terminal webhook_deliveries.state onto the delivery's
+-- callback_state (pending → delivered/dead). It is a set-based sweep over armed callbacks — callback_state
+-- is a bounded MIRROR of the delivery-half state the pump already drives, NOT a second state machine.
+-- name: MirrorCallbackState
+UPDATE trigger_deliveries d
+SET callback_state = whd.state, updated_at = clock_timestamp()
+FROM webhook_deliveries whd
+WHERE whd.event_id = 'cb:' || d.id
+  AND whd.organization_id = d.organization_id AND whd.project_id = d.project_id
+  AND d.callback_state = 'pending'
+  AND whd.state IN ('delivered', 'dead');
 
 -- SetDeliveryState advances a delivery's state (the SM transition persisted; the caller computes the
 -- legal transition via the TriggerDelivery table, this only writes it). Bumps updated_at.

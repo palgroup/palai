@@ -50,12 +50,16 @@ func (r *DeliveryReconciler) Run(ctx context.Context) error {
 	}
 }
 
-// Tick runs one sweep: recover stuck-mapped remnants, then admit gate-opened deferred FIFO heads.
+// Tick runs one sweep: recover stuck-mapped remnants, admit gate-opened deferred FIFO heads, then arm +
+// mirror run-terminal callbacks (T6). Each step is set-based / idempotent, so a re-run is a no-op.
 func (r *DeliveryReconciler) Tick(ctx context.Context) error {
 	if err := r.store.recoverStuckMapped(ctx, r.grace, r.limit, r.log); err != nil {
 		return err
 	}
-	return r.store.reconcileDeferred(ctx, r.log)
+	if err := r.store.reconcileDeferred(ctx, r.log); err != nil {
+		return err
+	}
+	return r.store.sweepCallbacks(ctx, r.limit, r.log)
 }
 
 // reconcileDeferred admits the FIFO head of each deferred (trigger, key) group whose gate is open (no
