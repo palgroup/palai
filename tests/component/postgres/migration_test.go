@@ -213,8 +213,10 @@ func TestSessionChainingMigrationBackfillsPreexistingEvents(t *testing.T) {
 			newID("evt"), tenant.Organization, tenant.Project, sessionID, seq)
 	}
 
-	// Clear the version marker so the one-shot backfill runs again on the next Migrate.
-	exec(t, pool, `DELETE FROM schema_migrations WHERE version = 3`)
+	// Clear the version marker so the one-shot backfill runs again on the next Migrate. Written as the
+	// owner: migration 000030 (M1) revoked the runtime role's write on schema_migrations — only the
+	// RESET-ROLE migration path may touch the ledger now, which is exactly what clearing a marker is.
+	execAsOwner(t, pool, `DELETE FROM schema_migrations WHERE version = 3`)
 	if err := cs.Migrate(ctx); err != nil {
 		t.Fatalf("re-Migrate() error = %v", err)
 	}
@@ -1441,6 +1443,94 @@ func TestMigration28Hooks(t *testing.T) {
 	}
 	if !tableExists(t, pool, "hooks") || !indexExists(t, pool, "hooks_point_order_idx") {
 		t.Fatal("after reapply, a 000028 object is missing")
+	}
+}
+
+// TestMigration30APIKeyScope proves 000030 (E13 Task 2) adds the api_keys.scopes / expires_at columns
+// idempotently and reverses cleanly, keeps api_keys under RLS (ENABLE+FORCE), records version 30 exactly
+// once, and lands the two least-privilege hardening steps: M1 revokes the runtime role's WRITE on the
+// migration ledger while retaining its SELECT, and M2's guarded role-membership grant leaves SET ROLE
+// working (a superuser compose URL is a no-op branch, but the app pool still switches roles).
+func TestMigration30APIKeyScope(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !columnExists(t, pool, "api_keys", "scopes") || !columnExists(t, pool, "api_keys", "expires_at") {
+		t.Fatal("after apply, an api_keys provisioning column is missing")
+	}
+
+	// api_keys stays a tenant table under RLS (ENABLE + FORCE) — the corpus regression relies on it.
+	var enabled, forced bool
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT c.relrowsecurity, c.relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		 WHERE n.nspname = 'public' AND c.relname = 'api_keys'`).Scan(&enabled, &forced); err != nil {
+		t.Fatalf("read api_keys RLS attributes: %v", err)
+	}
+	if !enabled || !forced {
+		t.Fatalf("api_keys row security enabled=%v forced=%v, want both true", enabled, forced)
+	}
+
+	var version30 int
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 30`).Scan(&version30); err != nil {
+		t.Fatalf("count version 30 error = %v", err)
+	}
+	if version30 != 1 {
+		t.Fatalf("schema_migrations records version 30 %d times, want 1", version30)
+	}
+
+	// M1: the runtime role may READ the ledger but not write it.
+	assertPriv := func(priv string, want bool) {
+		var got bool
+		if err := pool.QueryRow(storage.WithSystemScope(ctx),
+			`SELECT has_table_privilege('palai_app', 'schema_migrations', $1)`, priv).Scan(&got); err != nil {
+			t.Fatalf("has_table_privilege(%s) error = %v", priv, err)
+		}
+		if got != want {
+			t.Fatalf("palai_app %s on schema_migrations = %v, want %v (M1)", priv, got, want)
+		}
+	}
+	assertPriv("SELECT", true)
+	assertPriv("INSERT", false)
+	assertPriv("UPDATE", false)
+	assertPriv("DELETE", false)
+
+	// A key past its expires_at is invisible to VerifyAPIKey (expiry enforced at verify time). Seed an
+	// expired and a live key on one tenant and confirm only the live one resolves.
+	tenant, _, _ := seedRun(t, pool)
+	prin := newID("prin")
+	exec(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`,
+		prin, tenant.Organization, tenant.Project)
+	liveTok, expTok := newID("sk"), newID("sk")
+	exec(t, pool, `INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, expires_at)
+		VALUES ($1,$2,$3,$4,$5, now() + interval '1 hour')`,
+		newID("key"), tenant.Organization, tenant.Project, prin, coordinator.HashAPIKey(liveTok))
+	exec(t, pool, `INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash, expires_at)
+		VALUES ($1,$2,$3,$4,$5, now() - interval '1 hour')`,
+		newID("key"), tenant.Organization, tenant.Project, prin, coordinator.HashAPIKey(expTok))
+	if _, err := cs.VerifyAPIKey(ctx, liveTok); err != nil {
+		t.Fatalf("VerifyAPIKey(live key) error = %v, want it to resolve", err)
+	}
+	if _, err := cs.VerifyAPIKey(ctx, expTok); !errors.Is(err, coordinator.ErrInvalidToken) {
+		t.Fatalf("VerifyAPIKey(expired key) error = %v, want ErrInvalidToken (expiry enforced)", err)
+	}
+
+	// Reverse: the whole chain drops (api_keys with it), version 30 is removed, and a reapply restores the
+	// columns — the guarded down.sql is valid SQL (a broken one would fail this Rollback).
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if tableExists(t, pool, "api_keys") {
+		t.Fatal("after full rollback, api_keys still exists")
+	}
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !columnExists(t, pool, "api_keys", "scopes") || !columnExists(t, pool, "api_keys", "expires_at") {
+		t.Fatal("after reapply, an api_keys provisioning column is missing")
 	}
 }
 
