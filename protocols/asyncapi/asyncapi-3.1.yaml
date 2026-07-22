@@ -101,6 +101,7 @@ components:
         - tool_call.reconciled_completed.v1
         - tool_call.reconciled_not_applied.v1
         - tool_call.manual_resolution.v1
+        - tool_call.progress.v1
         - workspace.requested.v1
         - workspace.provisioning.v1
         - workspace.preparing.v1
