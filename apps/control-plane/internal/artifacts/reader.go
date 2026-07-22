@@ -73,6 +73,12 @@ func (rd *Reader) OpenArtifactContent(ctx context.Context, scope middleware.Scop
 	if !ok {
 		return api.ArtifactContent{NotFound: true}, nil
 	}
+	// A non-conformant or proxied S3 may omit ContentLength (size <= 0). Serve the RLS-admitted row's
+	// size_bytes instead, so Content-Length matches the logical bytes — a zero length makes net/http drop
+	// the body, returning a 200 + Content-Digest with no content.
+	if size <= 0 {
+		size = m.sizeBytes
+	}
 	return api.ArtifactContent{
 		Reader:    body,
 		SizeBytes: size,
@@ -174,7 +180,9 @@ func digestHeader(checksum string) string {
 		return ""
 	}
 	raw, err := hex.DecodeString(hexsum)
-	if err != nil {
+	if err != nil || len(raw) != 32 {
+		// A malformed or legacy row (fewer than 32 bytes) would emit a garbage sha-256 digest; skip the
+		// header instead of asserting integrity over the wrong length.
 		return ""
 	}
 	return "sha-256=:" + base64.StdEncoding.EncodeToString(raw) + ":"

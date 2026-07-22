@@ -78,6 +78,12 @@ func (w *Writer) Write(ctx context.Context, req WriteRequest) (Artifact, error) 
 	ctx = storage.ScopeToTenant(ctx, req.Organization, req.Project)
 	id := newArtifactID()
 	key := objectKey(req.Organization, req.Project, req.RunID, id)
+	// ponytail: the object PUT lands before the RLS-checked INSERT, so an internal caller whose ctx scope (A)
+	// differed from req's tenant (B) would write bytes under B's prefix that the INSERT then rejects — orphan
+	// bytes, rowless (unreadable via the API, reclaimed by the orphan-GC), never a cross-tenant read. No
+	// request-path caller can produce that mismatch (ScopeToTenant above derives the scope from req itself).
+	// Upgrade path if an internal caller ever can: INSERT-before-PUT, or a compensating delete on INSERT
+	// failure — deferred to E13-H.
 	checksum, size, err := w.store.Put(ctx, key, req.Content)
 	if err != nil {
 		return Artifact{}, err

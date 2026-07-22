@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -160,6 +162,60 @@ func TestReaderListRunArtifacts(t *testing.T) {
 	// An unknown response id is a non-disclosing miss, not an empty list.
 	if miss, err := reader.ListRunArtifacts(ctx, scope, "resp_does_not_exist"); err != nil || !miss.NotFound {
 		t.Fatalf("unknown response list = %+v (err %v), want NotFound", miss, err)
+	}
+}
+
+// TestReaderContentLengthFallsBackToRowSize covers NIT-1: an S3 that omits ContentLength on GetObject (a
+// non-conformant or proxied backend) makes Store.Open report size 0, which would serve Content-Length: 0
+// and make net/http drop the body — a 200 with a Content-Digest but no bytes. The reader must instead serve
+// the RLS-admitted row's size_bytes, so the served length matches the logical bytes and the body is intact.
+func TestReaderContentLengthFallsBackToRowSize(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	org, project, runID := h.seedRun(t)
+
+	payload := []byte("terminal output with no content-length\n")
+	// A stub S3 that streams the object body WITHOUT a Content-Length (flushing after the header forces
+	// chunked transfer-encoding), so Store.Open sees a nil ContentLength and returns size 0.
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(stub.Close)
+	stubStore, err := NewStore(Config{Endpoint: stub.URL, Bucket: "stub", AccessKey: "x", SecretKey: "x"})
+	if err != nil {
+		t.Fatalf("NewStore(stub) error = %v", err)
+	}
+
+	// Seed the row directly (system scope, like the harness): a known size_bytes + a valid 32-byte checksum,
+	// pointing at any object key — the stub serves the bytes for any GET.
+	sum := sha256.Sum256(payload)
+	artID := newID("art")
+	h.exec(t, `INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes, checksum) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		artID, org, project, runID, "stub/key", int64(len(payload)), "sha256:"+hex.EncodeToString(sum[:]))
+
+	reader := NewReader(stubStore, h.pool)
+	cnt, err := reader.OpenArtifactContent(ctx, middleware.Scope{Organization: org, Project: project}, artID)
+	if err != nil {
+		t.Fatalf("OpenArtifactContent() error = %v", err)
+	}
+	if cnt.NotFound {
+		t.Fatal("OpenArtifactContent reported NotFound for a seeded artifact")
+	}
+	if cnt.SizeBytes != int64(len(payload)) {
+		t.Fatalf("served SizeBytes = %d, want %d (fallback to the row's size_bytes)", cnt.SizeBytes, len(payload))
+	}
+	got, err := io.ReadAll(cnt.Reader)
+	_ = cnt.Reader.Close()
+	if err != nil {
+		t.Fatalf("read streamed content: %v", err)
+	}
+	if len(got) == 0 || string(got) != string(payload) {
+		t.Fatalf("streamed body = %q, want the object bytes %q (non-empty)", got, payload)
 	}
 }
 
