@@ -19,6 +19,7 @@ import (
 func PushTool() toolbroker.Tool {
 	return toolbroker.Tool{
 		Name:        "palai.publish.push",
+		Description: "Request a push of the run's work branch to its bound remote. The push is recorded for approval and happens only after approval; the destination is resolved from the run's binding, not model-supplied.",
 		ReplayClass: toolbroker.ClassIdempotent, // records a pending publication under a stable idempotency key (§26.6, TOL-002)
 		InputSchema: map[string]any{
 			"type":                 "object",

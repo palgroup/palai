@@ -28,6 +28,7 @@ func TodoTool() toolbroker.Tool { return registryTool("palai.todo", "todo") }
 func registryTool(name, kind string) toolbroker.Tool {
 	return toolbroker.Tool{
 		Name:        name,
+		Description: "Record, update, or list durable " + kind + "s for this session so progress survives a context reset; returns the current durable list.",
 		ReplayClass: toolbroker.ClassIdempotent, // durable session registry, ON CONFLICT idempotent (§26.6)
 		InputSchema: map[string]any{
 			"type": "object",

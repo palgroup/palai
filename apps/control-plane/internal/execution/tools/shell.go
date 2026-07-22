@@ -21,6 +21,7 @@ import (
 func ShellTool() toolbroker.Tool {
 	return toolbroker.Tool{
 		Name:        "palai.workspace.shell",
+		Description: "Run an explicit command (argv) inside the run's hardened, no-network sandbox and return its bounded, secret-redacted output.",
 		ReplayClass: toolbroker.ClassIrreversible, // arbitrary side effects; a kill-after-run must not auto-replay (§26.6, TOL-003)
 		InputSchema: map[string]any{
 			"type": "object",

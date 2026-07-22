@@ -90,6 +90,15 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		return false, err
 	}
 
+	// Advertise the run's effective tool set to the provider (spec §14, §28.5, E12 T1). Resolved per
+	// step — the SAME layering effectiveModel/effectiveConfigHash use — so a config change at the
+	// previous boundary is reflected here for free. An empty effective set leaves Tools nil, so a run
+	// that configures no tools routes a provider request that is bit-for-bit the pre-advertising one.
+	advertised, err := o.advertisedTools(ctx, st)
+	if err != nil {
+		return false, err
+	}
+
 	requestEvent, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID})
 	if err := o.spine.CommitModelRequest(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), requestID, eventModelStepCreated, requestEvent); err != nil {
 		return false, err
@@ -121,6 +130,10 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		IdempotencyKey: string(st.attempt.RunID) + "/" + requestID,
 		Model:          effectiveModel,
 		Messages:       messages,
+		// The effective tool set (nil when nothing is configured). ForceToolCall stays false in
+		// production: the model chooses whether to call — the forced (tool_choice:required) pattern
+		// is a test seam only (E09 T4, tools/live), never set here.
+		Tools: advertised,
 		// A ChildRun runs under its parent-intersected budget (spec §25.18); a root run stays
 		// unbounded here (0). Enforcement is the broker's Reservation.Admit at settle.
 		Reservation: modelbroker.Reservation{MaxTotalTokens: st.childBudget},
@@ -275,6 +288,51 @@ func (o *Orchestrator) effectiveModel(ctx context.Context, st *attemptState) (st
 		return revModel, nil
 	}
 	return o.route.Model, nil
+}
+
+// advertisedTools resolves the run's effective tool set at this boundary and maps each effective
+// name the broker actually registers to its advertised schema (spec §14, §28.5, E12 T1). It reads
+// the SAME three config layers effectiveConfigHash resolves through (session override, project
+// baseline, pinned agent/template revision), so the advertised set never diverges from the config
+// the run is checkpointed under. A name the effective set carries but the broker does not register
+// is silently dropped — the model is never offered a tool the broker cannot execute (broker.Execute
+// returns ErrUnknownTool for it). An empty effective set yields nil, leaving the request unchanged.
+func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState) ([]modelbroker.ToolSchema, error) {
+	override, _, err := o.spine.LatestSessionConfig(ctx, st.tenant, st.sessionID)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := o.spine.ProjectConfig(ctx, st.tenant)
+	if err != nil {
+		return nil, err
+	}
+	revID, revModel, revTools, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	if err != nil {
+		return nil, err
+	}
+	snap := Resolve(ResolveInput{
+		DeploymentModel:    o.route.Model,
+		DeploymentSecret:   string(o.route.Secret),
+		ProjectTools:       policy.DefaultTools,
+		AgentRevisionID:    revID,
+		AgentRevisionModel: revModel,
+		AgentRevisionTools: revTools,
+		SessionModel:       override.Model,
+		SessionTools:       override.Tools,
+	})
+	var advertised []modelbroker.ToolSchema
+	for _, name := range snap.Tools {
+		tool, ok := o.tools.Schema(name)
+		if !ok {
+			continue // an effective-set name the broker cannot execute is not offered
+		}
+		advertised = append(advertised, modelbroker.ToolSchema{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.InputSchema,
+		})
+	}
+	return advertised, nil
 }
 
 // watchInterrupt polls for a pending interrupt while a model call is outstanding and cancels
