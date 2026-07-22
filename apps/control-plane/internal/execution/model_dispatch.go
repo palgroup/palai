@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
@@ -108,6 +109,21 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 	// its provider request stays BIT-IDENTICAL to the pre-skills path (T1 advertising regression).
 	if len(skills) > 0 {
 		messages = append([]modelbroker.Message{skillContextMessage(skills)}, messages...)
+	}
+
+	// before_model hooks fire AFTER the effective tool set is resolved, BEFORE the request is committed or
+	// the provider is called (spec §28.17, the pin). A policy DENY here blocks the model step VISIBLY: it
+	// journals policy.denied.v1 and fails the attempt with the reason — no model.request row, no provider
+	// call. There is no result to deliver at this point (the model step itself is refused), so unlike
+	// before_tool this is a hard step failure, not a folded denial. No-op when no firer is wired.
+	if outcome, err := o.fireHook(ctx, st, extensions.HookPointBeforeModel, map[string]any{"tool_count": len(advertised), "model": effectiveModel}); err != nil {
+		return false, err
+	} else if outcome.Denied {
+		if err := o.journalPolicyDenied(ctx, st, extensions.HookPointBeforeModel, outcome.HookID, outcome.Reason,
+			map[string]any{"model_request_id": requestID}); err != nil {
+			return false, err
+		}
+		return false, fmt.Errorf("before_model policy hook %s denied the model step: %s", outcome.HookID, outcome.Reason)
 	}
 
 	requestEvent, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID})

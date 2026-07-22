@@ -75,6 +75,24 @@ export interface Event {
   type: string;
 }
 
+export interface Hook {
+  category: string;
+  created_at?: string;
+  disabled?: boolean;
+  executor: string;
+  hook_point: string;
+  id: OpaqueId;
+  name: string;
+  object: string;
+  organization_id?: OrganizationId;
+  project_id?: ProjectId;
+}
+
+export interface HookPatch {
+  arguments?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+}
+
 export interface LocalLiveEvidenceManifest {
   api_version: string;
   captured_at: string;

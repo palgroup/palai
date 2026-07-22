@@ -21,7 +21,7 @@ import (
 // correlation middleware, because it carries its own one-use-token and mTLS identity.
 // It is served over a separate mutually-authenticated listener; binding the CA and that
 // listener is Task 12, so production passes nil until then.
-func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, mcp MCPConnectionAPI, skills SkillRegistryAPI, sse SSEConfig, runner http.Handler, toolCallbacks http.Handler) http.Handler {
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, mcp MCPConnectionAPI, skills SkillRegistryAPI, hooks HookAPI, sse SSEConfig, runner http.Handler, toolCallbacks http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
@@ -114,6 +114,16 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("GET /v1/skills", sh.listSkills)
 		mux.HandleFunc("POST /v1/skills/{skill_id}/revisions", sh.installRevision)
 		mux.HandleFunc("POST /v1/skills/{skill_id}/revisions/{revision_id}/enable", sh.enableRevision)
+	}
+
+	// The E12 Task 8 hooks management surface (spec §28.17, TOL-012): admin registration of extension points
+	// that fire inside the run's single dispatch loop + the admin disable kill-switch. Deliberately ADMIN-ONLY
+	// — there is no model-facing hook-register tool (a hook is a project policy control, not a capability the
+	// model can grant itself). nil in tiers that never touch hooks.
+	if hooks != nil {
+		hh := &hookHandler{hooks: hooks}
+		mux.HandleFunc("POST /v1/hooks", hh.createHook)
+		mux.HandleFunc("POST /v1/hooks/{id}/disable", hh.disableHook)
 	}
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}

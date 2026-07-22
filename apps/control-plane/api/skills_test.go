@@ -35,7 +35,7 @@ func (f *fakeSkillRegistry) ListSkills(context.Context, middleware.Scope) (Skill
 
 func skillTestServer(t *testing.T, reg *fakeSkillRegistry) string {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, reg, SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, reg, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
@@ -99,7 +99,7 @@ func TestSkillManagementSurface(t *testing.T) {
 // TestSkillRoutesUnmountedWhenNil proves the nil-seam guard: a tier that passes no skill registry never
 // mounts the routes, so a POST is a 404 (the tools/agents nil-guard precedent).
 func TestSkillRoutesUnmountedWhenNil(t *testing.T) {
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	if resp := do(t, "POST", srv.URL+"/v1/skills", `{"name":"x"}`, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("nil skill registry POST status = %d, want 404 (route unmounted)", resp.StatusCode)

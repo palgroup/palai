@@ -2,9 +2,11 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/palgroup/palai/adapters/repositories"
+	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
@@ -16,6 +18,9 @@ import (
 // binding have a single definition shared with the publish path.
 type publicationRegistry struct {
 	store *coordinator.Store
+	// hooks fires before_repository_publish (spec §28.17, E12 T8) once the destination is resolved. Nil ⇒ no
+	// hook fires (bit-unchanged). The orchestrator propagates its firer here via SetHookFirer.
+	hooks HookFirer
 }
 
 func newPublicationRegistry(store *coordinator.Store) *publicationRegistry {
@@ -43,6 +48,34 @@ func (r *publicationRegistry) RequestPublication(ctx context.Context, scope tool
 	}
 	if !found {
 		return nil, fmt.Errorf("publication tool: the run prepared no repository, nothing to publish")
+	}
+
+	// before_repository_publish hooks fire once the destination is RESOLVED (spec §28.17, E12 T8): a policy
+	// hook sees the exact operation/branch/base/remote (not just the tool name a before_tool hook saw) and can
+	// DENY the publication. A deny journals policy.denied.v1 and returns a denied result the model sees — the
+	// publication is rejected, no pending approval recorded. No-op when no firer is wired.
+	if r.hooks != nil {
+		outcome, herr := r.hooks.Fire(ctx, extensions.HookEvent{
+			Org: scope.Org, Project: scope.Project, SessionID: scope.SessionID, ResponseID: scope.ResponseID,
+			RunID: scope.RunID, Point: extensions.HookPointBeforeRepositoryPublish,
+			Payload: map[string]any{
+				"operation": operation, "remote": target.Remote, "branch": target.Branch,
+				"base": target.Base, "head_sha": headSHA,
+			},
+		})
+		if herr != nil {
+			return nil, herr
+		}
+		if outcome.Denied {
+			payload, _ := json.Marshal(map[string]any{
+				"run_id": scope.RunID, "hook_id": outcome.HookID, "point": extensions.HookPointBeforeRepositoryPublish,
+				"reason": outcome.Reason, "operation": operation, "branch": target.Branch,
+			})
+			if jerr := r.store.JournalRunEvent(ctx, tenant, scope.SessionID, scope.ResponseID, scope.RunID, eventPolicyDenied, payload); jerr != nil {
+				return nil, jerr
+			}
+			return map[string]any{"status": "denied", "reason": outcome.Reason, "hook_id": outcome.HookID}, nil
+		}
 	}
 
 	pubOp := repositories.PublishOperation(operation)

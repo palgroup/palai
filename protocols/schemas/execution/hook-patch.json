@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/hook-patch.json",
+  "title": "HookPatch",
+  "description": "The ONLY thing a transform hook may return (spec §28.17, TOL-012): a patch to the arguments a before_tool call will execute with, or the result an after_tool call delivers to the model. It carries NO capability field — there is deliberately no tools/model/budget/secret property, so a hook can never grant itself or the model a new capability (TestHookCannotGrantCapability). A remote hook's response is strict-decoded (DisallowUnknownFields) against this shape, so an out-of-schema field is rejected fail-closed. additionalProperties is false: this is a closed shape.",
+  "type": "object",
+  "properties": {
+    "arguments": {"type": "object", "description": "The replacement arguments a before_tool call executes with (and the ledger arguments column records — honest audit of what actually ran). Ignored at any non-before_tool point.", "additionalProperties": true},
+    "result": {"type": "object", "description": "The replacement result an after_tool call delivers to the model. Ignored at any non-after_tool point.", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}

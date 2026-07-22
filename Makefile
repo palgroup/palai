@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 .PHONY: \
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
-	test-fault test-security test-live-provider test-spikes evidence-spikes \
+	test-fault test-security test-live-provider test-live-hook-deny test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation evidence-verify
 
@@ -72,6 +72,12 @@ test-security:
 test-live-provider:
 	@test -x scripts/test/live-provider || { echo "live provider suite not implemented" >&2; exit 2; }
 	@scripts/test/live-provider
+
+# E12 Task 8 approved live smoke: a real provider spontaneously calls a tool, a before_tool policy hook
+# denies it, and the model sees the structured control-plane deny mid-run (spec §28.17). A convenience
+# alias for the CASE=hook-deny-visible live-provider case (PROVIDER=provider-one).
+test-live-hook-deny:
+	@PROVIDER=provider-one CASE=hook-deny-visible scripts/test/live-provider
 
 verify: lint check-generated test-unit test-spikes check-spike-reports
 	@bash scripts/verify/repository-boundary.sh

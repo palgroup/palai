@@ -1355,6 +1355,71 @@ func TestMigration25RemoteTools(t *testing.T) {
 	}
 }
 
+// TestMigration28Hooks proves 000028 adds the hooks registry (E12 Task 8, spec §28.17, TOL-012)
+// idempotently and reverses cleanly: the hooks table + its order index are present after apply (a re-apply
+// is a clean no-op — every object IF NOT EXISTS), gone after rollback, returning after reapply. Version 28
+// is recorded exactly once. It pins the load-bearing invariant — a duplicate hook name in one project is
+// rejected (tenant-scoped unique, the admin management key) — and confirms there is NO CHECK on hook_point /
+// category / executor (an out-of-matrix value is accepted at the SQL layer, enforced in app code instead,
+// the 000024/000026 pattern).
+func TestMigration28Hooks(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "hooks") {
+		t.Fatal("after apply, hooks is missing")
+	}
+	if !indexExists(t, pool, "hooks_point_order_idx") {
+		t.Fatal("after apply, hooks_point_order_idx is missing")
+	}
+	var version28 int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 28`).Scan(&version28); err != nil {
+		t.Fatalf("count version 28 error = %v", err)
+	}
+	if version28 != 1 {
+		t.Fatalf("schema_migrations records version 28 %d times, want 1", version28)
+	}
+
+	tenant, _, _ := seedRun(t, pool)
+	insertHook := func(id, name, point, category, executor string) error {
+		_, err := pool.Exec(ctx,
+			`INSERT INTO hooks (id, organization_id, project_id, name, hook_point, category, executor, config)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,'{}'::jsonb)`,
+			id, tenant.Organization, tenant.Project, name, point, category, executor)
+		return err
+	}
+	if err := insertHook(newID("hook"), "guard", "before_tool", "policy", "platform_inline"); err != nil {
+		t.Fatalf("insert hook error = %v", err)
+	}
+	// A duplicate hook name in the same project is rejected (tenant-scoped unique).
+	if got := pgCode(insertHook(newID("hook"), "guard", "after_tool", "observer", "remote_http")); got != "23505" {
+		t.Fatalf("duplicate hook name code = %q, want 23505 unique_violation", got)
+	}
+	// No CHECK on hook_point/category/executor — an out-of-matrix combination inserts at the SQL layer (app
+	// code is the closed-set + matrix gate). A distinct name so this is not the unique reject.
+	if err := insertHook(newID("hook"), "raw", "no_such_point", "no_such_category", "no_such_executor"); err != nil {
+		t.Fatalf("uncheck-constrained insert error = %v, want accepted (no SQL CHECK, app-validated)", err)
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if tableExists(t, pool, "hooks") {
+		t.Fatal("after rollback, hooks still exists")
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "hooks") || !indexExists(t, pool, "hooks_point_order_idx") {
+		t.Fatal("after reapply, a 000028 object is missing")
+	}
+}
+
 func mustFail(_ pgconn.CommandTag, err error) error { return err }
 
 // TestMigration27Skills proves 000027 adds the skills registry (E12 Task 7, spec §28.15-28.16, TOL-011)

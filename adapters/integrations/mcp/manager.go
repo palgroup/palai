@@ -92,7 +92,7 @@ type Config struct {
 // invariant, E09 T1): an MCP server is a distinct, labelled, network-less sandbox.
 type Manager struct {
 	cfg     Config
-	breaker *breaker
+	breaker *Breaker
 }
 
 // NewManager builds a manager with sane bounds. Limits default to a modest network-less sandbox.
@@ -121,7 +121,7 @@ func NewManager(cfg Config) *Manager {
 	if cfg.Limits.NanoCPUs <= 0 {
 		cfg.Limits.NanoCPUs = 1_000_000_000
 	}
-	return &Manager{cfg: cfg, breaker: newBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown, nil)}
+	return &Manager{cfg: cfg, breaker: NewBreaker(cfg.BreakerThreshold, cfg.BreakerCooldown, nil)}
 }
 
 // Call runs one remote tools/call: breaker gate → dial a per-call transport → initialize → tools/call
@@ -129,7 +129,7 @@ func NewManager(cfg Config) *Manager {
 // surfaces; a tripped breaker returns ErrToolUnavailable BEFORE any container/dial. The result is data-only
 // (the broker output-schema-validates it); an MCP server can never widen capability through it.
 func (m *Manager) Call(ctx context.Context, scope CallScope, conn ConnConfig, remoteName string, args map[string]any) (map[string]any, error) {
-	if !m.breaker.allow(conn.ID) {
+	if !m.breaker.Allow(conn.ID) {
 		return nil, ErrToolUnavailable
 	}
 	callCtx, cancel := context.WithTimeout(ctx, m.timeout(conn))
@@ -137,7 +137,7 @@ func (m *Manager) Call(ctx context.Context, scope CallScope, conn ConnConfig, re
 
 	transport, teardown, err := m.dial(callCtx, conn)
 	if err != nil {
-		m.breaker.recordFailure(conn.ID)
+		m.breaker.RecordFailure(conn.ID)
 		return nil, err
 	}
 	defer teardown()
@@ -155,7 +155,7 @@ func (m *Manager) Call(ctx context.Context, scope CallScope, conn ConnConfig, re
 		}
 	}
 	if err := client.Initialize(callCtx); err != nil {
-		m.breaker.recordFailure(conn.ID)
+		m.breaker.RecordFailure(conn.ID)
 		return nil, err
 	}
 	var onProgress func(Progress)
@@ -174,10 +174,10 @@ func (m *Manager) Call(ctx context.Context, scope CallScope, conn ConnConfig, re
 	}
 	result, err := client.CallTool(callCtx, remoteName, args, onProgress)
 	if err != nil {
-		m.breaker.recordFailure(conn.ID)
+		m.breaker.RecordFailure(conn.ID)
 		return nil, err
 	}
-	m.breaker.recordSuccess(conn.ID)
+	m.breaker.RecordSuccess(conn.ID)
 	return result, nil
 }
 

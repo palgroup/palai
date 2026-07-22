@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/contracts"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
@@ -44,8 +45,11 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 			if storedHash != "" && storedHash != requestHash {
 				return fmt.Errorf("tool_call %q replayed with diverged content (hash %s != %s): same id, different request", callID, requestHash, storedHash)
 			}
-			// Replay the committed result LABELED; no re-execute, no re-commit (§26.7, TOL-001/016).
-			return o.deliverToolResult(ctx, st, frame, callID, stored, true)
+			// Replay the committed result LABELED; no re-execute, no re-commit (§26.7, TOL-001/016). before_tool
+			// (effect-scoped) does NOT re-fire — the effect already ran. after_tool (delivery-scoped) DOES
+			// re-fire here: it acts on the DELIVERED view, so a crash between an after_tool deny/redact and the
+			// engine consuming the result must not un-deny it. The committed row is untouched (raw result).
+			return o.deliverToolResultWithAfterTool(ctx, st, frame, callID, name, stored, true)
 		case "uncertain", "manual_resolution":
 			// §26.7 last sentence: an uncertain result blocks continuation — end the attempt, do not
 			// deliver. The reconcile job resolves it and re-enqueues the run.
@@ -65,10 +69,46 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 		}
 	}
 
+	// 1b. before_tool hooks fire AFTER the ledger consult, BEFORE any pre-write/Execute (spec §28.17, the
+	// critical seam pin). A committed-replay row already returned above, so a replay NEVER re-fires hooks
+	// (bit-unchanged). requestHash was computed from the MODEL'S ORIGINAL args and is untouched — a transform
+	// changes only what Execute runs and what the ledger records, never the replay/divergence identity. A
+	// policy DENY leaves NO executing/pre-write row: it journals policy.denied.v1 and delivers a structured
+	// deny result the model sees and continues on.
+	execArgs := args
+	outcome0, err := o.fireHook(ctx, st, extensions.HookPointBeforeTool, map[string]any{"tool_name": name, "arguments": args})
+	if err != nil {
+		return err
+	}
+	if outcome0.Denied {
+		// A deny on a re-driven executing/leased row (a kill-interrupted pure/idempotent call that fell through
+		// the consult above) must NOT leave the row 'executing' forever — nothing reconciles a non-uncertain
+		// executing row, and the effect may have applied once. Mark it uncertain so the reconciler resolves it;
+		// end the attempt like any uncertain block. A FRESH call (no row) delivers the structured denial below.
+		if found {
+			if _, err := o.spine.MarkToolCallUncertain(ctx, st.tenant, st.sessionID, st.responseID, runID, callID); err != nil {
+				return err
+			}
+			return errToolUncertainWait
+		}
+		if err := o.journalPolicyDenied(ctx, st, extensions.HookPointBeforeTool, outcome0.HookID, outcome0.Reason,
+			map[string]any{"tool_call_id": callID, "tool_name": name}); err != nil {
+			return err
+		}
+		denial, _ := json.Marshal(map[string]any{"status": "denied", "reason": outcome0.Reason, "hook_id": outcome0.HookID})
+		return o.deliverToolResult(ctx, st, frame, callID, string(denial), false)
+	}
+	if patched, ok := outcome0.Payload["arguments"].(map[string]any); ok {
+		// A transform patch changes ONLY the args Execute runs with AND the ledger `arguments` column — honest
+		// audit of what actually executed. The requestHash/identity above stays the model's original.
+		execArgs = patched
+	}
+
 	// 2. Pre-write a side-effecting tool BEFORE the effect so a kill is detectable as uncertain (§26.7).
 	// Pure/idempotent skip it (re-run/resend is safe). Skipped when a row already exists (a re-executing
 	// pure row, or a fence re-lease) — BeginToolCall is idempotent, but avoiding it keeps the fresh path lean.
-	arguments, _ := json.Marshal(args)
+	// The ledger records the PATCHED args (what actually runs), not the model's original.
+	arguments, _ := json.Marshal(execArgs)
 	// Resolve the class through the SAME lookup the executor uses, so a registered registry tool's DECLARED
 	// class (e.g. irreversible) drives the pre-write marker — not the ClassPure static-miss default (M2).
 	env := o.execEnv(st)
@@ -96,8 +136,9 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 		}
 	}
 
-	// 3. Execute + commit + deliver.
-	outcome, err := o.tools.Execute(ctx, contracts.ToolCallID(callID), name, args, st.attempt.Fence, env)
+	// 3. Execute + commit + deliver. Execute runs the PATCHED args (a transform hook's replacement, or the
+	// model's original when no transform fired), so the ledger row and the effect agree (honest audit).
+	outcome, err := o.tools.Execute(ctx, contracts.ToolCallID(callID), name, execArgs, st.attempt.Fence, env)
 	if err != nil {
 		return fmt.Errorf("execute tool %q (%s): %w", name, callID, err)
 	}
@@ -105,14 +146,51 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 
 	result, _ := json.Marshal(outcome.Result)
 	payload, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "tool_call_id": callID})
-	// The ledger row carries the tool's DECLARED replay class and the canonical request hash, so a
-	// kill-after-execute row is classified and a duplicate tool_call_id is recognised by content (§26.6,
-	// TOL-016). A stale-fence late callback is rejected here (TOL-017, ErrStaleToolCommit).
+	// The ledger row carries the tool's DECLARED replay class and the model's ORIGINAL request hash (NOT
+	// outcome.Hash, which a before_tool transform would recompute over the patched args): the identity a
+	// redelivery re-derives from the untouched original args must match, so a transform never false-diverges a
+	// replay (§26.6, the seam pin). The `arguments` column stays PATCHED (honest audit of what ran). A
+	// stale-fence late callback is rejected here (TOL-017, ErrStaleToolCommit).
 	if _, err := o.spine.CommitToolResult(ctx, st.tenant, st.sessionID, st.responseID, runID,
-		st.attempt.Fence, callID, name, arguments, result, string(outcome.ReplayClass), outcome.Hash, toolCallCompletedEvent, payload); err != nil {
+		st.attempt.Fence, callID, name, arguments, result, string(outcome.ReplayClass), requestHash, toolCallCompletedEvent, payload); err != nil {
 		return err
 	}
-	return o.deliverToolResult(ctx, st, frame, callID, string(result), false)
+
+	// after_tool fires on the delivery path (fresh here; a committed replay re-fires it in the consult above).
+	return o.deliverToolResultWithAfterTool(ctx, st, frame, callID, name, string(result), false)
+}
+
+// deliverToolResultWithAfterTool fires after_tool hooks and delivers the (possibly transformed or denied)
+// VIEW to the model (spec §28.17). after_tool is DELIVERY-scoped — unlike the effect-scoped before_tool, it
+// re-fires on BOTH the fresh commit path and the committed-replay path, so a crash between an after_tool
+// deny/redact and the engine consuming the result can NEVER convert it into an allow or un-redact it. The
+// committed ledger row + the effect are UNTOUCHED; only the delivered view is (re-)derived. rawJSON is the
+// tool's committed raw result; replayed labels a result served from the ledger after a reclaim.
+func (o *Orchestrator) deliverToolResultWithAfterTool(ctx context.Context, st *attemptState, frame contracts.EngineFrame, callID, name, rawJSON string, replayed bool) error {
+	var rawResult any
+	_ = json.Unmarshal([]byte(rawJSON), &rawResult)
+	after, err := o.fireHook(ctx, st, extensions.HookPointAfterTool, map[string]any{"tool_name": name, "result": rawResult})
+	if err != nil {
+		return err
+	}
+	if after.Denied {
+		if err := o.journalPolicyDenied(ctx, st, extensions.HookPointAfterTool, after.HookID, after.Reason,
+			map[string]any{"tool_call_id": callID, "tool_name": name}); err != nil {
+			return err
+		}
+		denial, _ := json.Marshal(map[string]any{"status": "denied", "reason": after.Reason, "hook_id": after.HookID})
+		return o.deliverToolResult(ctx, st, frame, callID, string(denial), replayed)
+	}
+	// The delivered view is re-derived from the (possibly patched) payload result. Unpatched — including a
+	// hook-less run — it round-trips to the same bytes (everything went through json.Marshal at commit), so
+	// this is bit-unchanged; a transform substitutes its redacted view.
+	delivered := rawJSON
+	if patched, ok := after.Payload["result"]; ok {
+		if patchedBytes, mErr := json.Marshal(patched); mErr == nil {
+			delivered = string(patchedBytes)
+		}
+	}
+	return o.deliverToolResult(ctx, st, frame, callID, delivered, replayed)
 }
 
 // deliverToolResult sends the tool.result frame to the engine (spec §25.9): the structured result is

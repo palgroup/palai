@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/adapters/repositories"
+	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
@@ -88,9 +89,20 @@ type Orchestrator struct {
 	// a plain bool setter, model-route pattern; DB-backed recovery policy is another epic. Default
 	// false — reconstruction is allowed.
 	reconstructionForbidden bool
+	// hooks fires the run's registered extension hooks at the five pinned dispatch points (spec §28.17,
+	// E12 T8). Nil ⇒ no hooks fire (a stack with no hook registry wired, or every pre-T8 test): the
+	// dispatch is bit-unchanged. main.go injects it via SetHookFirer.
+	hooks HookFirer
 	// DialHandshakeDeadline bounds the dial + engine.ready handshake per attempt. Zero uses
 	// dialHandshakeDeadline; NewOrchestrator sets the default. Tests shorten it.
 	DialHandshakeDeadline time.Duration
+}
+
+// HookFirer runs a run's registered hooks at a dispatch point and returns the verdict (spec §28.17, E12 T8).
+// *extensions.Store satisfies it; a test fakes it. The orchestrator depends only on this narrow seam so it
+// stays free of the registry's DB + transport mechanics.
+type HookFirer interface {
+	Fire(ctx context.Context, ev extensions.HookEvent) (extensions.HookOutcome, error)
 }
 
 // NewOrchestrator binds the durable store, the engine dialer, and the model and tool
@@ -108,6 +120,17 @@ func (o *Orchestrator) SetModelRoute(r ModelRoute) { o.route = r }
 // SetShellRunner injects the sandbox shell runner the workspace shell tool executes through. Left
 // unset, a shell tool call fails cleanly (no runner) rather than escaping the sandbox.
 func (o *Orchestrator) SetShellRunner(s toolbroker.ShellRunner) { o.shell = s }
+
+// SetHookFirer injects the hook dispatcher the five pinned points fire through (spec §28.17, E12 T8). Left
+// unset, no hook fires — the dispatch is bit-unchanged (the same discipline as SetShellRunner/SetPublisher).
+// It also propagates the firer to the publication registry, so the before_repository_publish point fires
+// from inside the publish tool's RequestPublication.
+func (o *Orchestrator) SetHookFirer(h HookFirer) {
+	o.hooks = h
+	if pr, ok := o.publications.(*publicationRegistry); ok {
+		pr.hooks = h
+	}
+}
 
 // SetChangesetWriter injects the object-store write-path the finalize changeset compile persists the
 // patch + test-log through (spec §30.6). Left unset, a terminated coding run compiles no changeset —

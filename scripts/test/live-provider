@@ -207,6 +207,21 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_postgres=1
     ;;
+  provider-one/hook-deny-visible)
+    # E12 Task 8 (approved live smoke): the real provider SPONTANEOUSLY calls the advertised file tool, a
+    # before_tool POLICY hook (platform_inline deny_all) DENIES it, and the model sees the structured
+    # control-plane denial mid-run. Evidence (what the test asserts): the first committed result carries the
+    # spontaneous tool call, a policy.denied.v1 event is journaled, NO completed palai.workspace.file ledger
+    # row exists (a deny leaves no pre-write), and the workspace stays empty. Reuses the spontaneous-tool
+    # harness (credential + throwaway Postgres + engine dir). Honest ceiling (named in the test): the hook
+    # worker is OUR fixture (the deterministic deny_all handler) — what is proven live is the REAL model
+    # seeing a REAL control-plane deny; spontaneity is probabilistic (a run where the model declines is red
+    # and re-runs); single provider (provider-one), second-provider parity is E16.
+    pkg="./apps/control-plane/internal/execution/live"
+    run="TestLiveHookDenyVisibleRealProvider"
+    required_key="OPENAI_API_KEY"
+    needs_postgres=1
+    ;;
   provider-one/checkpoint-restore)
     # E10 Task 4: a real provider forced-tool run persists a tool-boundary checkpoint to REAL S3, the
     # engine uv-subprocess is SIGKILLed post-persist, and a fresh attempt RESTORES it (ladder rung 2,
@@ -327,7 +342,7 @@ case "$provider/$case_name" in
     ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority" >&2
     exit 2
     ;;
 esac
