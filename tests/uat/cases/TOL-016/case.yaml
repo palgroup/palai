@@ -1,9 +1,10 @@
 id: TOL-016
-name: duplicate-tool-call-id-single-execution-ledger-half
+name: duplicate-tool-call-id-single-execution-ledger-and-signed-halves
 proof_class: unit
 provider: fake
-input: "a duplicate/retry carrying the same stable tool_call_id executes exactly once against a real in-process HTTP destination (a request counter proves single execution)"
+input: "a duplicate/retry carrying the same stable tool_call_id executes exactly once — proven for BOTH the in-process tool-broker ledger (E10) and the signed remote_http transport (E12): a request counter proves single execution against a real in-process HTTP destination and against the tool-http.v1 signed executor"
 expect_status: completed
 proof:
   - packages/tool-broker/broker_test.go:TestDuplicateToolCallIdSingleExecution
-# ceiling: only the tool-call LEDGER half is proven here; the signed-transport / remote-tool-SDK half of TOL-016 is E12 (shared-case discipline, SAN-005/006 pattern)
+  - adapters/tools/http/executor_test.go:TestRemoteDuplicateRetrySameToolCallIdSingleExecution
+# shared-case discipline (SAN-005/006 pattern): the E10 ledger half (broker_test) stays FIRST — E10 claims unchanged — and the E12 signed-transport half (executor_test) is now materialized; both are unit-tier so the combined list satisfies the recovery gate AND the extensibility gate off this one case.yaml.

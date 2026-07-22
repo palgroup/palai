@@ -1,9 +1,10 @@
 id: TOL-017
-name: late-callback-after-fence-advance-denied-fence-half
+name: late-callback-after-fence-advance-denied-fence-and-signed-halves
 proof_class: component-real
 provider: fake
-input: "a late async-tool callback arriving after the fence advances is rejected by the active fence/reconciliation, so a stale silent commit cannot land"
+input: "a late async-tool callback arriving after the fence advances is rejected — proven for BOTH the E10 ledger fence (a stale silent commit cannot land) and the E12 signed transport (a late signed remote-tool callback past its deadline enters reconciliation, never a silent commit; the callback token is one-use)"
 expect_status: completed
 proof:
   - apps/control-plane/internal/execution/tool_ledger_component_test.go:TestLateCallbackAfterFenceAdvanceDenied
-# ceiling: only the fence half is proven here; the signed-request / SDK transport half of TOL-017 is E12
+  - apps/control-plane/internal/execution/remote_prober_component_test.go:TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit
+# shared-case discipline: the E10 fence half (tool_ledger) stays FIRST — E10 claims unchanged — and the E12 signed-transport half (remote_prober) is now materialized; both are component-real so the combined list satisfies the recovery gate AND the extensibility gate off this one case.yaml.
