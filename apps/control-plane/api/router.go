@@ -21,7 +21,7 @@ import (
 // correlation middleware, because it carries its own one-use-token and mTLS identity.
 // It is served over a separate mutually-authenticated listener; binding the CA and that
 // listener is Task 12, so production passes nil until then.
-func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, sse SSEConfig, runner http.Handler) http.Handler {
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, sse SSEConfig, runner http.Handler, toolCallbacks http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
@@ -143,6 +143,14 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if triggers != nil {
 		ih := &inboundHandler{triggers: triggers}
 		top.Handle("POST /v1/inbound/{trigger_id}", middleware.RequestContext(http.HandlerFunc(ih.receive)))
+	}
+	// The signed remote-tool result callback (spec §28.24, E12 T4): like the inbound receiver its auth IS
+	// the per-operation HMAC signature + one-use token, so it mounts on the UNAUTHENTICATED top mux
+	// (bypassing middleware.Auth) but stays wrapped in RequestContext for the correlation id. It is
+	// ack-only and returns a generic 404 for an unknown operation/token (no config oracle). nil in tiers
+	// that never touch remote tools.
+	if toolCallbacks != nil {
+		top.Handle("POST /v1/tool-callbacks/{operation_id}", middleware.RequestContext(toolCallbacks))
 	}
 	if runner != nil {
 		top.Handle("/v1/runner/", runner)

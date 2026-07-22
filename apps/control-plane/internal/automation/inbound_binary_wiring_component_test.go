@@ -82,7 +82,7 @@ func TestInboundWebhookWiredIntoRunningBinary(t *testing.T) {
 	triggerStore := automation.NewTriggerStore(pool).WithAdmitter(repo.Spine()).
 		WithInboundSecrets(envFileInboundResolver).
 		WithInboundGate(log.Printf, 0, 256, 0)
-	router := api.NewRouter(repo, repo, repo, repo, repo, repo, automation.NewWebhookStore(pool), triggerStore, nil, nil, api.SSEConfig{}, nil)
+	router := api.NewRouter(repo, repo, repo, repo, repo, repo, automation.NewWebhookStore(pool), triggerStore, nil, nil, api.SSEConfig{}, nil, nil)
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 

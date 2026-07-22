@@ -151,12 +151,13 @@ func (f *fakeLedger) ProberRead(_ context.Context, toolCallID string) (string, [
 	return op.state, op.result, true, nil
 }
 
-// completeAsync marks an operation completed with a callback-delivered result (the async 202 test drives
-// it after a 202 so the executor's poll returns the result).
-func (f *fakeLedger) completeAsync(operationID string, result map[string]any) {
+// completeByCall marks a tool_call's operation completed with a callback-delivered result (the async 202
+// test drives it after a 202 so the executor's poll returns it — the executor's minted operation id is
+// internal, but the row is shared by tool_call_id).
+func (f *fakeLedger) completeByCall(toolCallID string, result map[string]any) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if op := f.byOp[operationID]; op != nil {
+	if op := f.byCall[toolCallID]; op != nil {
 		op.state, op.result = "completed", mustJSON(result)
 	}
 }
@@ -259,6 +260,50 @@ func TestRemoteEgressVetted(t *testing.T) {
 	}
 	if got := h.executions(); got != 0 {
 		t.Fatalf("executions after an egress-denied invoke = %d, want 0", got)
+	}
+}
+
+// TestExecutorAsync202PollsUntilCallback proves the async path: a server that answers 202 makes the
+// executor poll the durable operation until the (out-of-band) signed callback resolves it, then return
+// the callback-delivered result. Here the fake ledger stands in for the callback landing.
+func TestExecutorAsync202PollsUntilCallback(t *testing.T) {
+	h, srv := newHarness(t)
+	h.respond = func(_ *harness, w http.ResponseWriter, _ invokeSeen) {
+		w.WriteHeader(http.StatusAccepted) // 202: result comes later via the callback
+	}
+	ledger := newFakeLedger()
+	exec := NewExecutor(ledger, WithPollInterval(5*time.Millisecond))
+
+	in := baseInvocation(h, srv.URL)
+	in.ToolCallID = "tc_async_1"
+	in.TimeoutMS = 2000
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		ledger.completeByCall("tc_async_1", map[string]any{"answer": 7})
+	}()
+	out, err := exec.Invoke(context.Background(), in)
+	if err != nil {
+		t.Fatalf("async invoke error = %v", err)
+	}
+	if out["answer"] != float64(7) {
+		t.Fatalf("async result = %v, want the callback-delivered {answer:7}", out)
+	}
+}
+
+// TestExecutorAsyncTimesOutWhenNoCallback proves the deadline path: a 202 with no callback before the
+// deadline flips the operation timed_out and returns ErrRemoteTimeout — the durable executing marker then
+// carries the tool_call to uncertain (the reconcile machine), never a silent hang.
+func TestExecutorAsyncTimesOutWhenNoCallback(t *testing.T) {
+	h, srv := newHarness(t)
+	h.respond = func(_ *harness, w http.ResponseWriter, _ invokeSeen) { w.WriteHeader(http.StatusAccepted) }
+	ledger := newFakeLedger()
+	exec := NewExecutor(ledger, WithPollInterval(5*time.Millisecond))
+
+	in := baseInvocation(h, srv.URL)
+	in.ToolCallID = "tc_async_timeout"
+	in.TimeoutMS = 40 // no callback arrives before this
+	if _, err := exec.Invoke(context.Background(), in); !errors.Is(err, ErrRemoteTimeout) {
+		t.Fatalf("no-callback async invoke err = %v, want ErrRemoteTimeout", err)
 	}
 }
 

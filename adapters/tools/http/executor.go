@@ -114,18 +114,18 @@ func NewExecutor(l ledger, opts ...Option) *Executor {
 // (resolved fresh per call, never held), the tool_call identity the invoke signs + keys, and the async
 // callback base the server posts a 202 result to.
 type Invocation struct {
-	URL             string
-	AllowPrivate    bool // self-host egress downgrade (http + private ranges); false for a public server
-	Secret          []byte
-	ToolCallID      string
-	ToolRevision    string
-	RunID           string
-	AttemptID       string
-	RequestHash     string
-	Arguments       map[string]any
-	Org             string
-	Project         string
-	SecretRef       string
+	URL          string
+	AllowPrivate bool // self-host egress downgrade (http + private ranges); false for a public server
+	Secret       []byte
+	ToolCallID   string
+	ToolRevision string
+	RunID        string
+	AttemptID    string
+	RequestHash  string
+	Arguments    map[string]any
+	Org          string
+	Project      string
+	SecretRef    string
 	Fence        uint64
 	TimeoutMS    int
 }
@@ -153,7 +153,7 @@ func (e *Executor) Invoke(ctx context.Context, in Invocation) (map[string]any, e
 	if err != nil {
 		return nil, err
 	}
-	tokenHash := sha256Hex(token)
+	tokenHash := HashToken(string(token))
 
 	callback := map[string]any{"url": "", "token": string(token)}
 	if e.callbackBase != "" {
@@ -367,9 +367,17 @@ func decodeResultBody(body []byte) (map[string]any, error) {
 	return result, nil
 }
 
-// resultHash is the canonical sha256 of a result object (json.Marshal sorts keys), so a duplicate
-// callback carrying the SAME result is recognised idempotent and a diverged one is a 409.
-func resultHash(result map[string]any) string { return sha256Hex(mustJSON(result)) }
+// ResultHash is the canonical sha256 of a callback payload (json.Marshal sorts keys), so a duplicate
+// callback carrying the SAME payload is recognised idempotent and a diverged one is a 409. The executor
+// and the callback endpoint share this ONE definition of payload identity.
+func ResultHash(payload map[string]any) string { return sha256Hex(mustJSON(payload)) }
+
+// HashToken is the ONE definition of the stored callback-token hash: sha256 of the raw token string. The
+// executor stores it at mint; the callback endpoint recomputes it for a constant-time compare (one-use).
+func HashToken(token string) string { return sha256Hex([]byte(token)) }
+
+// resultHash is the executor-internal alias for ResultHash (kept for readability at the call site).
+func resultHash(result map[string]any) string { return ResultHash(result) }
 
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
