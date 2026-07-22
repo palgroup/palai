@@ -48,7 +48,7 @@ func (f *fakeTriggerAPI) GetDelivery(context.Context, string, string, string) (a
 
 func triggerTestServer(t *testing.T, api *fakeTriggerAPI) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, api, nil, SSEConfig{}, nil))
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, api, nil, nil, SSEConfig{}, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }
