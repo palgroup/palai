@@ -61,12 +61,13 @@ type ledger interface {
 // Executor signs and dispatches a tool-http.v1 invoke to a remote tool server, riding the shared egress
 // SSRF layer and the webhook signer. It is composed once and invoked per tool call by the broker binder.
 type Executor struct {
-	ledger    ledger
-	resolver  egress.Resolver
-	dial      func(ctx context.Context, network, addr string) (net.Conn, error)
-	tlsConfig *tls.Config
-	now       func() time.Time
-	pollEvery time.Duration
+	ledger       ledger
+	resolver     egress.Resolver
+	dial         func(ctx context.Context, network, addr string) (net.Conn, error)
+	tlsConfig    *tls.Config
+	now          func() time.Time
+	pollEvery    time.Duration
+	callbackBase string // this CP's public base URL for the async callback (empty => sync-only)
 }
 
 // Option configures an Executor (tests inject a resolver/dialer/TLS/clock; production takes defaults).
@@ -89,6 +90,10 @@ func WithClock(now func() time.Time) Option { return func(e *Executor) { e.now =
 
 // WithPollInterval injects the async poll cadence (default 500ms).
 func WithPollInterval(d time.Duration) Option { return func(e *Executor) { e.pollEvery = d } }
+
+// WithCallbackBaseURL sets this CP's public base URL the async result callback is posted to (e.g.
+// https://cp.example.com). Empty leaves the callback URL empty so only a synchronous 200 tool works.
+func WithCallbackBaseURL(base string) Option { return func(e *Executor) { e.callbackBase = base } }
 
 // NewExecutor builds an executor over the durable operation ledger with production defaults.
 func NewExecutor(l ledger, opts ...Option) *Executor {
@@ -121,9 +126,8 @@ type Invocation struct {
 	Org             string
 	Project         string
 	SecretRef       string
-	Fence           uint64
-	TimeoutMS       int
-	CallbackBaseURL string
+	Fence        uint64
+	TimeoutMS    int
 }
 
 // Invoke signs and dispatches one tool-http.v1 invoke and returns the tool result (the broker validates
@@ -151,9 +155,9 @@ func (e *Executor) Invoke(ctx context.Context, in Invocation) (map[string]any, e
 	}
 	tokenHash := sha256Hex(token)
 
-	callback := map[string]any{"url": "", "token": token}
-	if in.CallbackBaseURL != "" {
-		callback["url"] = in.CallbackBaseURL + "/v1/tool-callbacks/" + operationID
+	callback := map[string]any{"url": "", "token": string(token)}
+	if e.callbackBase != "" {
+		callback["url"] = e.callbackBase + "/v1/tool-callbacks/" + operationID
 	}
 	envelope := contracts.ToolHTTPInvoke{
 		Protocol:     Protocol,

@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
@@ -308,6 +309,91 @@ func TestRegistryToolsLoadIntoBrokerEffectiveSet(t *testing.T) {
 	// (3) The unpinned tool is not resolvable through the run's lookup, so the broker rejects it.
 	if _, err := broker.Execute(ctx, contracts.ToolCallID("tc_lookup"), "lookup", map[string]any{}, 2, env); !errors.Is(err, toolbroker.ErrUnknownTool) {
 		t.Fatalf("unpinned tool execute err = %v, want ErrUnknownTool (never advertised or resolvable)", err)
+	}
+}
+
+// fakeInvoker records the last Invocation the binder built and returns a fixed result — the witness the
+// registry resolved a remote_http row to the signed executor with the right non-secret wiring + secret.
+type fakeInvoker struct {
+	last   remotehttp.Invocation
+	result map[string]any
+}
+
+func (f *fakeInvoker) Invoke(_ context.Context, in remotehttp.Invocation) (map[string]any, error) {
+	f.last = in
+	return f.result, nil
+}
+
+// TestRemoteHTTPToolResolvesThroughRegistryLookup proves the T4 binder wiring: a published remote_http
+// tool pinned into a run's set resolves through the broker's per-tenant lookup to an EXEC-bound tool that
+// reaches the injected signed executor — carrying the executor_config URL, the tool_call_id + live fence
+// (broker per-call), and the secret resolved fresh from the org-scoped resolver. Without an invoker wired
+// the same row stays binder-less (the T2 posture), so a remote tool is never advertised half-built.
+func TestRemoteHTTPToolResolvesThroughRegistryLookup(t *testing.T) {
+	s, org, project := openStore(t)
+	ctx := context.Background()
+
+	// A published remote_http tool: executor_config carries only non-secret wiring; the credential is a
+	// secret_ref handle. Pin it into a published set the run names.
+	tool, err := s.CreateTool(ctx, org, project, "acme.remote.lookup")
+	if err != nil {
+		t.Fatalf("create tool: %v", err)
+	}
+	body := []byte(`{"executor":"remote_http","input_schema":{"type":"object"},"output_schema":{"type":"object"},"replay_class":"idempotent","executor_config":{"url":"https://tool.example.com/invoke","allow_private":false},"secret_ref":"sig-ref","timeout_ms":2500}`)
+	rev, err := s.CreateToolRevision(ctx, org, project, tool.ID, body)
+	if err != nil {
+		t.Fatalf("create remote_http rev: %v", err)
+	}
+	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID); err != nil {
+		t.Fatalf("publish rev: %v", err)
+	}
+	set, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins(rev.ID, nil))
+	if err != nil {
+		t.Fatalf("create set: %v", err)
+	}
+	if _, _, err := s.PublishToolSetRevision(ctx, org, project, set.ID); err != nil {
+		t.Fatalf("publish set: %v", err)
+	}
+	runID := seedRunPinnedToSet(t, s, org, project, set.ID)
+
+	// Without an invoker wired, the row stays binder-less (creatable but not resolvable — the T2 posture).
+	if _, found, err := s.LookupTool(ctx, org, project, runID, "lookup"); err != nil || found {
+		t.Fatalf("binder-less lookup = found:%v err:%v, want found=false before the invoker is wired", found, err)
+	}
+
+	// Wire the signed executor (a fake) + an org-scoped resolver, then resolve + run through the broker.
+	inv := &fakeInvoker{result: map[string]any{"echoed": true}}
+	var resolvedOrg, resolvedRef string
+	s.SetRemoteInvoker(inv, func(o, ref string) ([]byte, error) {
+		resolvedOrg, resolvedRef = o, ref
+		return []byte("resolved-secret-" + o), nil
+	})
+
+	broker := toolbroker.New()
+	broker.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
+		return s.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+	})
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: runID}}
+	out, err := broker.Execute(ctx, contracts.ToolCallID("tc_remote_1"), "lookup", map[string]any{"q": "x"}, 9, env)
+	if err != nil {
+		t.Fatalf("broker execute remote_http lookup: %v", err)
+	}
+	if out.Result["echoed"] != true {
+		t.Fatalf("remote result = %v, want the invoker's result", out.Result)
+	}
+	// The binder built the invocation from the executor_config + per-call identity, and resolved the secret
+	// fresh from the org-scoped resolver (never held in the closure).
+	if inv.last.URL != "https://tool.example.com/invoke" {
+		t.Fatalf("invocation URL = %q, want the executor_config url", inv.last.URL)
+	}
+	if inv.last.ToolCallID != "tc_remote_1" || inv.last.Fence != 9 {
+		t.Fatalf("invocation identity = call:%q fence:%d, want tc_remote_1/9 (broker per-call)", inv.last.ToolCallID, inv.last.Fence)
+	}
+	if inv.last.TimeoutMS != 2500 || inv.last.SecretRef != "sig-ref" {
+		t.Fatalf("invocation wiring = timeout:%d ref:%q, want 2500/sig-ref", inv.last.TimeoutMS, inv.last.SecretRef)
+	}
+	if resolvedOrg != org || resolvedRef != "sig-ref" || string(inv.last.Secret) != "resolved-secret-"+org {
+		t.Fatalf("secret resolution = org:%q ref:%q secret:%q, want org-scoped resolve of sig-ref", resolvedOrg, resolvedRef, inv.last.Secret)
 	}
 }
 

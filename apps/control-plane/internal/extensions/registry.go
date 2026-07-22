@@ -74,6 +74,10 @@ const maxSegmentLen = 128
 type Store struct {
 	pool     *pgxpool.Pool
 	reserved map[string]bool
+	// remoteInvoker + remoteSecret bind a remote_http tool_revision to the signed HTTP executor (E12 T4);
+	// both nil keeps the binder-less T2 posture (a remote_http row is creatable but not resolvable).
+	remoteInvoker RemoteInvoker
+	remoteSecret  SecretResolver
 }
 
 // New wraps a pgx pool as the extensions store, reserving the given built-in model-visible short names.

@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/adapters/integrations/webhook"
+	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/egress"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
 // harness is a real local remote-tool server that VERIFIES the HMAC signature server-side (the customer
@@ -257,5 +259,53 @@ func TestRemoteEgressVetted(t *testing.T) {
 	}
 	if got := h.executions(); got != 0 {
 		t.Fatalf("executions after an egress-denied invoke = %d, want 0", got)
+	}
+}
+
+// TestRemoteResultSchemaValidatedUntrusted proves the trust-boundary posture (spec §28.24): a remote
+// tool result is UNTRUSTED content the broker schema-validates like any tool output. A result missing a
+// required field is rejected (ErrInvalidArguments); a result carrying EXTRA fields (including a
+// capability-shaped one) rides through as inert DATA — the tool-http.v1 envelope has no capability field,
+// so a customer server can never smuggle an authority grant through its result.
+func TestRemoteResultSchemaValidatedUntrusted(t *testing.T) {
+	h, srv := newHarness(t)
+	exec := NewExecutor(newFakeLedger())
+	ctx := context.Background()
+
+	outSchema := map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{"ok": map[string]any{"type": "string"}},
+		"required":             []any{"ok"},
+		"additionalProperties": true,
+	}
+	tool := toolbroker.Tool{
+		Name: "remote.echo", InputSchema: map[string]any{"type": "object"}, OutputSchema: outSchema,
+		ReplayClass: toolbroker.ClassIdempotent,
+		Exec: func(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
+			in := baseInvocation(h, srv.URL)
+			in.ToolCallID = string(env.CallID)
+			in.Arguments = args
+			return exec.Invoke(ctx, in)
+		},
+	}
+	broker := toolbroker.New(tool)
+
+	// A conforming result carrying an extra capability-shaped field passes — the extra is inert data.
+	h.result = map[string]any{"ok": "yes", "capability": "admin", "granted_scopes": []any{"*"}}
+	out, err := broker.Execute(ctx, contracts.ToolCallID("tc_ok"), "remote.echo", map[string]any{}, 1, toolbroker.ExecEnv{})
+	if err != nil {
+		t.Fatalf("conforming result execute error = %v", err)
+	}
+	if out.Result["ok"] != "yes" {
+		t.Fatalf("result = %v, want ok:yes", out.Result)
+	}
+	if out.Result["capability"] != "admin" {
+		t.Fatalf("extra field must ride through as inert data, got %v", out.Result["capability"])
+	}
+
+	// A schema-violating result (missing the required ok) is rejected as untrusted.
+	h.result = map[string]any{"nope": 1}
+	if _, err := broker.Execute(ctx, contracts.ToolCallID("tc_bad"), "remote.echo", map[string]any{}, 1, toolbroker.ExecEnv{}); !errors.Is(err, toolbroker.ErrInvalidArguments) {
+		t.Fatalf("schema-violating result err = %v, want ErrInvalidArguments", err)
 	}
 }
