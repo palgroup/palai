@@ -6,6 +6,14 @@ import type { Response as PalaiResponse } from "./generated/types.ts";
 import { errorForResponse, isRetryableStatus, PalaiConnectionError } from "./errors.ts";
 import { delay, fullJitterBackoff, type StreamTransport } from "./stream.ts";
 import { Responses } from "./resources/responses.ts";
+import { Sessions } from "./resources/sessions.ts";
+import { Agents } from "./resources/agents.ts";
+import { Artifacts } from "./resources/artifacts.ts";
+import { MCPConnections, RepositoryBindings, Tools, Triggers } from "./resources/reads.ts";
+import { SecretRefs } from "./resources/secret-refs.ts";
+import { ModelRoutes } from "./resources/model-routes.ts";
+import { ApiKeys, Organizations, Projects } from "./resources/provisioning.ts";
+import type { DownloadOptions } from "./resources/shared.ts";
 
 // APIVersion is the dated contract this SDK speaks; it rides every request (spec §20.13).
 export const APIVersion = "2026-07-16";
@@ -32,6 +40,15 @@ export interface RequestOptions {
   maxRetries?: number;
   timeoutMs?: number;
   accept?: string;
+  /**
+   * Whether a NETWORK-level failure (no HTTP status seen) may be safely re-sent. A torn connection
+   * can drop AFTER the server committed, so re-sending a non-idempotent mutation would double-apply
+   * it. Defaults to true for safe methods (GET/HEAD) and for any request carrying an Idempotency-Key;
+   * a body-idempotent op (a command's command_id) sets it explicitly. Non-idempotent creates leave it
+   * false, so they fail closed rather than double-provisioning (a 429/5xx *response* still retries —
+   * that is pre-commit-safe on the server).
+   */
+  idempotent?: boolean;
 }
 
 export interface ApiResult<T> {
@@ -47,6 +64,18 @@ export class Palai implements StreamTransport {
   readonly baseURL: string;
   readonly project: string | undefined;
   readonly responses: Responses;
+  readonly sessions: Sessions;
+  readonly agents: Agents;
+  readonly artifacts: Artifacts;
+  readonly repositoryBindings: RepositoryBindings;
+  readonly tools: Tools;
+  readonly mcpConnections: MCPConnections;
+  readonly triggers: Triggers;
+  readonly secretRefs: SecretRefs;
+  readonly modelRoutes: ModelRoutes;
+  readonly organizations: Organizations;
+  readonly projects: Projects;
+  readonly apiKeys: ApiKeys;
 
   #apiKey: string;
   #fetch: typeof fetch;
@@ -74,6 +103,18 @@ export class Palai implements StreamTransport {
     this.#backoffBaseMs = options.backoffBaseMs ?? 200;
     this.#backoffMaxMs = options.backoffMaxMs ?? 10_000;
     this.responses = new Responses(this);
+    this.sessions = new Sessions(this);
+    this.agents = new Agents(this);
+    this.artifacts = new Artifacts(this);
+    this.repositoryBindings = new RepositoryBindings(this);
+    this.tools = new Tools(this);
+    this.mcpConnections = new MCPConnections(this);
+    this.triggers = new Triggers(this);
+    this.secretRefs = new SecretRefs(this);
+    this.modelRoutes = new ModelRoutes(this);
+    this.organizations = new Organizations(this);
+    this.projects = new Projects(this);
+    this.apiKeys = new ApiKeys(this);
   }
 
   async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<ApiResult<T>> {
@@ -94,6 +135,11 @@ export class Palai implements StreamTransport {
       headers["Content-Type"] = "application/json";
     }
 
+    // A network-level failure may have already committed on the server, so it is only re-sent when the
+    // request is idempotent: a safe method, an Idempotency-Key create, or a body-idempotent op that
+    // opts in. A non-idempotent create is NOT re-sent, so a connection torn after its 201 cannot
+    // double-provision a tenant/secret/route (SHOULD-1). Response-level (429/5xx) retry is unaffected.
+    const idempotent = isSafeMethod(method) || options.idempotencyKey !== undefined || options.idempotent === true;
     const maxRetries = options.maxRetries ?? this.#maxRetries;
     const deadline = Date.now() + (options.timeoutMs ?? this.#timeoutMs);
     let attempt = 0;
@@ -116,8 +162,9 @@ export class Palai implements StreamTransport {
         if (options.signal?.aborted) {
           throw new PalaiConnectionError(`${method} ${path} was canceled`, { cause });
         }
-        // Network failure or a per-attempt timeout: retry within budget.
-        if (attempt >= maxRetries || !withinBudget(deadline, attempt, this.#backoffBaseMs, this.#backoffMaxMs)) {
+        // Network failure or a per-attempt timeout: retry within budget — but only for an idempotent
+        // request, so a non-idempotent create fails closed instead of risking a double-commit.
+        if (!idempotent || attempt >= maxRetries || !withinBudget(deadline, attempt, this.#backoffBaseMs, this.#backoffMaxMs)) {
           throw new PalaiConnectionError(`${method} ${path} failed to reach the server`, { cause });
         }
         try {
@@ -181,6 +228,44 @@ export class Palai implements StreamTransport {
   retrieveResponse(responseID: string): Promise<PalaiResponse> {
     return this.responses.retrieve(responseID);
   }
+
+  // openDownload opens an authenticated GET whose body is raw bytes (an artifact download), not JSON.
+  // It applies the same Bearer auth + dated version as request() and maps a non-2xx to the typed RFC
+  // 9457 error, but returns the raw Response so the caller streams the body without buffering it.
+  //
+  // timeoutMs bounds the CONNECT phase only: the timer is cleared the moment headers arrive, so the
+  // byte stream that follows is governed solely by the caller's signal — a multi-GB object never trips
+  // a wall-clock connect deadline mid-transfer (SHOULD-2). A connect timeout surfaces as a typed
+  // PalaiConnectionError, never a raw AbortError.
+  // ponytail: single attempt — a partially-drained stream is not safely retryable; add a bounded
+  // open-retry only when a caller measurably needs one.
+  async openDownload(path: string, options: DownloadOptions = {}): Promise<globalThis.Response> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.#apiKey}`,
+      "API-Version": APIVersion,
+      Accept: "application/octet-stream",
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? this.#timeoutMs);
+    const signal = combineSignals(options.signal, controller.signal);
+    let response: globalThis.Response;
+    try {
+      response = await this.#fetch(this.baseURL + path, { method: "GET", headers, cache: "no-store", signal });
+    } catch (cause) {
+      if (options.signal?.aborted) {
+        throw new PalaiConnectionError(`GET ${path} was canceled`, { cause });
+      }
+      throw new PalaiConnectionError(`GET ${path} failed to reach the server`, { cause });
+    } finally {
+      // Headers are in (or the connect failed): stop the connect timeout so it never aborts the body.
+      clearTimeout(timer);
+    }
+    if (!response.ok) {
+      const text = await response.text();
+      throw errorForResponse(response.status, text, response.headers.get("Request-Id") ?? undefined);
+    }
+    return response;
+  }
 }
 
 // env reads a Palai-scoped variable, trimmed, or undefined. It never throws in a runtime
@@ -195,6 +280,12 @@ function env(name: string): string | undefined {
 
 function trimTrailingSlash(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
+}
+
+// isSafeMethod reports whether a method has no side effect, so re-sending it after a network failure
+// cannot double-apply anything (RFC 9110 §9.2.1). Every SDK read is a GET; nothing else is auto-safe.
+function isSafeMethod(method: string): boolean {
+  return method === "GET" || method === "HEAD";
 }
 
 // combineSignals joins the caller's cancel signal with the per-attempt timeout so either

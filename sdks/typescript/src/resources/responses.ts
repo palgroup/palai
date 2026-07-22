@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Response as PalaiResponse, ResponseCreateRequest } from "../generated/types.ts";
 import type { Palai } from "../client.ts";
 import { ResponseStream } from "../stream.ts";
+import { callArgs, listPath, type ListParams, type Page } from "./shared.ts";
 
 export interface CreateOptions {
   /** Override the auto-generated stable idempotency key (e.g. to dedupe across processes). */
@@ -59,6 +60,13 @@ export class Responses {
         ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
       },
     );
+    return result.body;
+  }
+
+  // list returns a tenant-scoped page of run history (GET /v1/responses, E13 T4), with the shared
+  // opaque cursor and the basic filters (?status=, created_at bounds).
+  async list(params: ListParams = {}, options: RetrieveOptions = {}): Promise<Page<PalaiResponse>> {
+    const result = await this.#client.request<Page<PalaiResponse>>("GET", listPath("/v1/responses", params), callArgs(options));
     return result.body;
   }
 
