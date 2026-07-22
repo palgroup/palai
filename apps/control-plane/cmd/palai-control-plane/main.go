@@ -396,6 +396,12 @@ func webhookSecretResolver(org, ref string) ([]byte, error) {
 	if org == "" || ref == "" {
 		return nil, errors.New("empty webhook secret org/ref")
 	}
+	// Belt-and-braces: "__" is the org/ref delimiter, so an org whose normalized key form already contains
+	// it would make the env key ambiguous with a different split. The org is server-minted (never
+	// tenant-forgeable), so this is defence-in-depth, not the primary tenant boundary.
+	if strings.Contains(secretEnvKey(org), "__") {
+		return nil, fmt.Errorf("ambiguous webhook secret org key %q", org)
+	}
 	path := os.Getenv("PALAI_WEBHOOK_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
 	if path == "" {
 		return nil, fmt.Errorf("no secret bridge configured for webhook ref under org %q", org)
@@ -412,6 +418,12 @@ func webhookSecretResolver(org, ref string) ([]byte, error) {
 func inboundSecretResolver(org, ref string) ([]byte, error) {
 	if org == "" || ref == "" {
 		return nil, errors.New("empty inbound secret org/ref")
+	}
+	// Belt-and-braces, as in webhookSecretResolver: a normalized org key carrying the "__" delimiter is
+	// ambiguous; reject it rather than resolve a colliding key. The org is server-minted, so this is
+	// defence-in-depth on top of the org-scoped namespace.
+	if strings.Contains(secretEnvKey(org), "__") {
+		return nil, fmt.Errorf("ambiguous inbound secret org key %q", org)
 	}
 	path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
 	if path == "" {

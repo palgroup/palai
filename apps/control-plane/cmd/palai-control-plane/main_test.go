@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,6 +32,23 @@ func TestWebhookSecretResolverIsOrgScoped(t *testing.T) {
 	}
 	if string(got) != "whsec_org_b" {
 		t.Fatalf("resolved secret = %q, want whsec_org_b", got)
+	}
+}
+
+// TestSecretResolverRejectsAmbiguousOrgKey pins a belt-and-braces guard (E11 T4 residual): an org whose
+// normalized env-key form contains the "__" org/ref delimiter would make PALAI_..._SECRET_FILE_<ORG>__<REF>
+// ambiguous with a different (org, ref) split, so BOTH secret resolvers reject it rather than resolve a
+// colliding key. The org is server-minted (never tenant-forgeable), so this is defence-in-depth on top of
+// the org-scoping tenant boundary, not the primary control.
+func TestSecretResolverRejectsAmbiguousOrgKey(t *testing.T) {
+	const ambiguous = "acme__evil" // normalizes to ACME__EVIL — carries the "__" org/ref delimiter
+	for name, resolver := range map[string]func(string, string) ([]byte, error){
+		"webhook": webhookSecretResolver,
+		"inbound": inboundSecretResolver,
+	} {
+		if _, err := resolver(ambiguous, "shared"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+			t.Fatalf("%s resolver on an ambiguous org key: err = %v, want an 'ambiguous' rejection", name, err)
+		}
 	}
 }
 
