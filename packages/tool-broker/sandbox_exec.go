@@ -24,6 +24,18 @@ type ExecEnv struct {
 	// through (spec §30.8). Nil on an attempt with no repository publication wired — the tool then
 	// fails cleanly rather than acting.
 	Publications PublicationRegistry
+	// Artifacts is the object-store write-path a tool that produces a large body (web research) persists
+	// the full bytes through (spec §22.6, T2), returning the artifact id. Nil on an attempt with no
+	// object store wired — the tool then returns its bounded excerpt only, with an empty artifact id.
+	Artifacts ArtifactWriter
+}
+
+// ArtifactWriter is the object-store write-path a body-producing tool persists through. It is
+// STRUCTURALLY identical to execution.ArtifactWriter (the changeset compiler's seam), so the
+// orchestrator's writer drops straight into ExecEnv. Primitive params keep the broker free of the
+// artifacts package's types.
+type ArtifactWriter interface {
+	WriteArtifact(ctx context.Context, org, project, runID string, content []byte, mediaType, logicalType string, provenance map[string]any) (string, error)
 }
 
 // ShellRunner runs one argv command inside the sandbox and returns its captured, bounded result. The
