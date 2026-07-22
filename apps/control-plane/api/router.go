@@ -123,10 +123,14 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	})
 	// The signed inbound-webhook receiver (spec §20.2.2/§21.7, E11 Task 5): its auth IS the per-source HMAC
 	// signature, so it mounts on the UNAUTHENTICATED top mux beside /healthz — the sole such precedent —
-	// bypassing middleware.Auth. An unresolvable/unauthenticated source is a generic 404 (no config oracle).
+	// bypassing middleware.Auth. Only Auth is bypassed: it is still wrapped in RequestContext so its problem
+	// bodies + responses carry the correlation id. An unresolvable/unauthenticated source is a generic 404
+	// (no config oracle). NOTE: no OpenAPI operation is declared for this route — the whole automation
+	// surface (triggers/webhooks/schedules, T2-T5) has zero OpenAPI ops, so an inbound-only op would be
+	// asymmetric; documenting all four consistently is a deferred E11-exit follow-up (review minor-4).
 	if triggers != nil {
 		ih := &inboundHandler{triggers: triggers}
-		top.HandleFunc("POST /v1/inbound/{trigger_id}", ih.receive)
+		top.Handle("POST /v1/inbound/{trigger_id}", middleware.RequestContext(http.HandlerFunc(ih.receive)))
 	}
 	if runner != nil {
 		top.Handle("/v1/runner/", runner)

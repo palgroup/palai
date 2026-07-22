@@ -148,7 +148,12 @@ func (s *TriggerStore) IngestInbound(ctx context.Context, triggerID string, head
 		revisionID: rev.ID, deliveryID: deliveryID, sourceTenant: ev.SourceTenant}
 	res, err := s.advanceInbound(ctx, sc, ev.Data)
 	if err != nil {
-		s.auditInboundReject(triggerID, err) // sanitized; the reconciler completes the durable row
+		// NOT an AUT-002 reject: a durable row committed but its inline continuation hit an INFRA error. The
+		// reconciler completes the durable row. Logged as a deferral (distinct from the sanitized reject
+		// line) and WITHOUT the raw error text, which could carry row values (review minor-7).
+		if s.inboundAudit != nil {
+			s.inboundAudit("inbound continuation deferred to reconciler: trigger=%s delivery=%s", triggerID, deliveryID)
+		}
 		return InboundResult{DeliveryID: deliveryID, State: string(statemachines.TriggerDeliveryReceived)}, nil
 	}
 	return InboundResult{DeliveryID: deliveryID, State: res.State, ResponseID: res.ResponseID,

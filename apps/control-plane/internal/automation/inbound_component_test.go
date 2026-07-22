@@ -688,3 +688,50 @@ func TestTriggerWithoutCreatedByIsUnavailable(t *testing.T) {
 		t.Fatalf("no-principal trigger left %d rows, want 0", rows)
 	}
 }
+
+// TestConcurrentSameSourceEventSingleCanonical pins the source-dedupe RACE (review minor-5, the T2 idiom):
+// two goroutines POST the SAME (source, source_tenant, source_event_id) at once → exactly ONE canonical
+// delivery + ONE run; the loser is a duplicate linked to the canonical, decided by the UNIQUE index (not
+// app logic).
+func TestConcurrentSameSourceEventSingleCanonical(t *testing.T) {
+	h := newInboundHarness(t, 0, 0)
+	body := []byte(`{"source":"harness","data":{"order":{"id":"o-race","summary":"once"}}}`)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp := h.post(h.triggerID, "evt-race", time.Now(), body, h.secret)
+			resp.Body.Close()
+		}()
+	}
+	wg.Wait()
+
+	var canonical, runs, dups int
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT count(*) FILTER (WHERE duplicate_of IS NULL),
+		        count(*) FILTER (WHERE run_id <> ''),
+		        count(*) FILTER (WHERE state='duplicate')
+		 FROM trigger_deliveries WHERE trigger_id=$1 AND source_event_id='evt-race'`, h.triggerID).
+		Scan(&canonical, &runs, &dups); err != nil {
+		t.Fatalf("count error = %v", err)
+	}
+	if canonical != 1 || runs != 1 || dups != 1 {
+		t.Fatalf("race result canonical=%d runs=%d dups=%d, want 1/1/1 (the index decides)", canonical, runs, dups)
+	}
+}
+
+// TestInboundRejectCarriesCorrelationID pins review minor-6: the inbound route is wrapped in
+// RequestContext (only Auth is bypassed), so a reject still stamps the Request-Id correlation header.
+func TestInboundRejectCarriesCorrelationID(t *testing.T) {
+	h := newInboundHarness(t, 0, 0)
+	resp := h.postRaw(h.triggerID, map[string]string{"Content-Type": "application/json"}, []byte(`{"source":"harness"}`))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unsigned POST status = %d, want 401", resp.StatusCode)
+	}
+	if resp.Header.Get("Request-Id") == "" {
+		t.Fatal("inbound reject carried no Request-Id header (RequestContext not wired on the top-mux route)")
+	}
+}
