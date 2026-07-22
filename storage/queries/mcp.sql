@@ -24,6 +24,16 @@ SET disabled_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND disabled_at IS NULL
 RETURNING id;
 
+-- MCPToolIDByCanonical resolves a discovered tool's lineage id by its canonical name, so re-discovery
+-- reuses the existing lineage (a new revision, never a duplicate tool).
+-- name: MCPToolIDByCanonical
+SELECT id FROM tools WHERE organization_id = $1 AND project_id = $2 AND canonical_name = $3;
+
+-- MCPLatestToolRevisionDigest reads a tool's newest revision digest, so re-discovery skips writing an
+-- identical revision (no manifest churn) and only inserts a NEW draft when the digest actually changed.
+-- name: MCPLatestToolRevisionDigest
+SELECT digest FROM tool_revisions WHERE tool_id = $1 ORDER BY revision_number DESC LIMIT 1;
+
 -- MCPConnectionForRun loads an enabled connection ONLY if the run's pinned AgentRevision (or template)
 -- mcp_connections rider names it — the capability ceiling as a single tenant-scoped join. A connection not
 -- in the rider, disabled, or out of tenant returns no row, so the broker yields ErrUnknownTool for its

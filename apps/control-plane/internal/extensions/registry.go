@@ -74,6 +74,9 @@ const maxSegmentLen = 128
 type Store struct {
 	pool     *pgxpool.Pool
 	reserved map[string]bool
+	// mcp is the MCP client the discovery + dispatch paths reach an upstream server through (E12 T5).
+	// Nil ⇒ MCP connections are creatable but not discoverable/executable (the binder-less posture).
+	mcp MCPClient
 }
 
 // New wraps a pgx pool as the extensions store, reserving the given built-in model-visible short names.

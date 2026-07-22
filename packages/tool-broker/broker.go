@@ -171,6 +171,25 @@ func (b *Broker) ReplayClassOf(name string) ReplayClass {
 	return tool.replayClass()
 }
 
+// SchemaResolved returns a tool's advertised schema, falling back to the injected per-tenant registry
+// lookup for a tool absent from the static set (E12 T5) — the twin of ReplayClassResolved. It is what lets
+// the model dispatcher advertise a REGISTERED tool (an MCP/remote tool) it can execute but that is not in
+// the static broker map; without it a registry tool is resolvable-but-never-advertised, so the model never
+// spontaneously calls it. A clean miss or no lookup returns ok=false — the dispatcher then offers nothing.
+func (b *Broker) SchemaResolved(ctx context.Context, env ExecEnv, name string) (Tool, bool, error) {
+	b.mu.Lock()
+	tool, ok := b.tools[name]
+	lookup := b.lookup
+	b.mu.Unlock()
+	if ok {
+		return tool, true, nil
+	}
+	if lookup == nil {
+		return Tool{}, false, nil
+	}
+	return lookup(ctx, env, name)
+}
+
 // ReplayClassResolved reports a tool's declared kill-recovery class, falling back to the injected registry
 // lookup for a tool absent from the static set (E12) — so a registered tool's DECLARED class (e.g.
 // irreversible) drives the pre-write-marker decision at dispatch, NOT the ClassPure static-miss default.
@@ -274,6 +293,7 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 		return Outcome{}, err
 	}
 
+	env.CallID = string(callID) // so a tool's advisory progress correlates to this dispatched call (T5)
 	result, err := tool.invoke(ctx, env, args)
 	if err != nil {
 		r.state, _, _ = statemachines.Apply(state, statemachines.ToolCallCmdFail, statemachines.ToolCallTable)

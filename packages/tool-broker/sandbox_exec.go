@@ -28,6 +28,10 @@ type ExecEnv struct {
 	// the full bytes through (spec §22.6, T2), returning the artifact id. Nil on an attempt with no
 	// object store wired — the tool then returns its bounded excerpt only, with an empty artifact id.
 	Artifacts ArtifactWriter
+	// CallID is the current tool_call_id, set by Broker.Execute before it invokes the tool (E12 T5). A tool
+	// that emits an advisory side-signal — an MCP tools/call's progress notifications — tags it with this
+	// id so the tool_call.progress.v1 event correlates to the dispatched call. Empty for a direct invoke.
+	CallID string
 }
 
 // ArtifactWriter is the object-store write-path a body-producing tool persists through. It is

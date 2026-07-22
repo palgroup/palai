@@ -84,8 +84,12 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- POSTURE: the AgentRevision.tools ceiling is NOT re-checked here — capability restriction is an
 -- advertisement-side concern (the effective set / request construction), consistent with the static tool
 -- broker, which also fences+executes any dispatched call without re-consulting the ceiling.
+-- executor_config/secret_ref/timeout_ms are added for the mcp executor (E12 T5): the mcp branch reads the
+-- connection_id + remote_name from executor_config and the per-call timeout from timeout_ms. The
+-- control_plane branch ignores them.
 -- name: LookupRunTool
-SELECT trv.executor, trv.input_schema, trv.output_schema, trv.replay_class
+SELECT trv.executor, trv.description, trv.input_schema, trv.output_schema, trv.replay_class,
+       trv.executor_config, trv.secret_ref, trv.timeout_ms
 FROM runs r
 LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
 LEFT JOIN run_template_revisions rtr ON rtr.id = r.run_template_revision_id
