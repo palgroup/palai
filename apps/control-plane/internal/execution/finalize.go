@@ -61,6 +61,23 @@ func terminalProblem(status string) *contracts.Problem {
 	return &p
 }
 
+// queueTimeoutProjection is the terminal Response body a §20.12 queue-deadline timeout finalizes to:
+// empty output/usage and the canonical timed_out problem. Built once from terminalProblem so a
+// queue-timed-out run carries the same error document as an engine-terminal timed_out run.
+var queueTimeoutProjection = mustQueueTimeoutProjection()
+
+func mustQueueTimeoutProjection() []byte {
+	body, err := json.Marshal(map[string]any{
+		"output": []contracts.ContentItem{},
+		"usage":  contracts.Usage{},
+		"error":  terminalProblem("timed_out"),
+	})
+	if err != nil {
+		panic(fmt.Sprintf("marshal queue-timeout projection: %v", err))
+	}
+	return body
+}
+
 // finalize handles run.terminal: it applies exactly one terminal run transition and
 // writes the terminal Response projection from the committed run, output, and usage.
 func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame contracts.EngineFrame) error {

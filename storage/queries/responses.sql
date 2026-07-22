@@ -8,10 +8,34 @@ FROM runs
 WHERE id = $1 AND organization_id = $2 AND project_id = $3
 FOR UPDATE;
 
+-- CountProjectRootRuns returns a project's live ROOT-run counters for §20.12 admission caps:
+-- `concurrent` is the runs currently executing (provisioning/running/waiting), `queued` the runs
+-- still in the admission backlog. Child runs (parent_run_id NOT NULL) are excluded — they are
+-- spawned by an already-admitted root and are not admitted through /v1/responses. Read inside the
+-- admission transaction, so it is tenant-scoped by RLS; the org/project predicate is defence-in-depth.
+-- ponytail: a ReadCommitted count can overshoot the cap by the number of concurrent admissions racing
+-- past it — acceptable for a soft basic-tier cap; exact enforcement would need SERIALIZABLE or a
+-- per-project advisory lock.
+-- name: CountProjectRootRuns
+SELECT
+    count(*) FILTER (WHERE state IN ('provisioning', 'running', 'waiting')) AS concurrent,
+    count(*) FILTER (WHERE state = 'queued') AS queued
+FROM runs
+WHERE organization_id = $1 AND project_id = $2 AND parent_run_id IS NULL;
+
 -- name: UpdateRunState
 UPDATE runs
 SET state = $4, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- RunQueueState locks a run and reports its state plus whether it has waited in the queue past the
+-- deadline ($4 seconds since created_at) — the §20.12 queue-deadline check. FOR UPDATE so the timeout
+-- transition that follows in the same transaction serialises against a worker's concurrent dispatch.
+-- name: RunQueueState
+SELECT state, (clock_timestamp() - created_at) > ($4 * interval '1 second') AS expired
+FROM runs
+WHERE id = $1 AND organization_id = $2 AND project_id = $3
+FOR UPDATE;
 
 -- GetResponse reads a response's terminal projection for retrieval. purged_at is
 -- non-null once the content has been reaped, which the handler renders as 410.

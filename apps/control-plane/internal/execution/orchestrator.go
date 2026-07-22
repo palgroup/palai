@@ -98,6 +98,12 @@ type Orchestrator struct {
 	// DialHandshakeDeadline bounds the dial + engine.ready handshake per attempt. Zero uses
 	// dialHandshakeDeadline; NewOrchestrator sets the default. Tests shorten it.
 	DialHandshakeDeadline time.Duration
+	// queueDeadline is the §20.12 admission queue deadline: a run that waits in the queue longer than
+	// this before it is provisioned is timed out at dispatch, BEFORE any billable compute. Zero disables
+	// the check (the pre-E13-T7 behaviour); main.go sets it from PALAI_QUEUE_DEADLINE.
+	// ponytail: one global deadline for the basic tier; a per-project deadline (a config_policy field,
+	// T2) is a later refinement, not a gate requirement.
+	queueDeadline time.Duration
 }
 
 // HookFirer runs a run's registered hooks at a dispatch point and returns the verdict (spec §28.17, E12 T8).
@@ -153,6 +159,11 @@ func (o *Orchestrator) SetSnapshotSink(ss *SnapshotSink) { o.snapshots = ss }
 func (o *Orchestrator) SetReconstructionForbidden(forbidden bool) {
 	o.reconstructionForbidden = forbidden
 }
+
+// SetQueueDeadline sets the §20.12 admission queue deadline (see the field doc). Left unset (zero),
+// a run is never timed out for queue age — the pre-E13-T7 behaviour, so every existing tier is
+// bit-unchanged. main.go injects it from PALAI_QUEUE_DEADLINE.
+func (o *Orchestrator) SetQueueDeadline(d time.Duration) { o.queueDeadline = d }
 
 // attemptState is the per-attempt working set threaded through the dispatch handlers.
 type attemptState struct {
@@ -236,6 +247,21 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// to continue it. Only waiting bails; a running/provisioning reclaim proceeds as before.
 	if statemachines.RunState(state) == statemachines.RunWaiting {
 		return nil
+	}
+
+	// §20.12 queue-deadline: a run that waited in the admission queue past its deadline is timed out
+	// HERE — before the Provision/Start transitions and the engine dial below — so no billable compute
+	// starts. A no-op when the deadline is unset, the run has already left the queue, or it is within
+	// the deadline; on a timeout the run reaches its timed_out terminal and its response is finalized,
+	// so the attempt is complete. This is the guaranteeing check the reconciler's reaper cannot give:
+	// it runs at the exact instant the worker would otherwise provision the run.
+	if o.queueDeadline > 0 {
+		switch timedOut, err := o.spine.TimeoutQueuedIfExpired(ctx, tenant, string(attempt.RunID), responseID, o.queueDeadline, queueTimeoutProjection); {
+		case err != nil:
+			return err
+		case timedOut:
+			return nil
+		}
 	}
 
 	// Move the run into execution using canonical transitions only. A run already

@@ -17,6 +17,9 @@ import (
 const (
 	createRoute  = "/v1/responses"
 	maxBodyBytes = 1 << 20 // 1 MiB request-body ceiling at the trust boundary.
+	// admissionRetryAfterSeconds is the Retry-After hint on a capacity 429 (§20.12): a run frees a
+	// slot when it terminates, which the edge cannot predict, so a short fixed hint is honest.
+	admissionRetryAfterSeconds = "1"
 )
 
 // Admitter is the store seam for response admission and retrieval. The Postgres store
@@ -74,6 +77,11 @@ type AdmitRequest struct {
 	// profile-free.
 	AgentRevisionID       string
 	RunTemplateRevisionID string
+	// MaxConcurrentRuns / MaxQueuedRuns are the §20.12 per-project run caps the handler resolves from
+	// its configured AdmissionLimits. Zero on either disables that cap; the store enforces them against
+	// live DB counters inside the admission transaction.
+	MaxConcurrentRuns int
+	MaxQueuedRuns     int
 }
 
 // AdmitResult is the admission outcome. Conflict marks a key reused with a
@@ -100,10 +108,18 @@ type AdmitResult struct {
 	// foreign revision (404); PinnedRevisionNotPublished is a pin onto a draft revision (409, spec §10).
 	PinnedRevisionNotFound     bool
 	PinnedRevisionNotPublished bool
+	// ConcurrencyLimited / QueueDepthExceeded mark an admission the §20.12 per-project caps rejected —
+	// too many executing runs, or a full queued backlog. Both render as 429 + Retry-After; the rejected
+	// request created no run and no idempotency record, so a retry after the delay is safe.
+	ConcurrencyLimited bool
+	QueueDepthExceeded bool
 }
 
 type responseHandler struct {
 	admitter Admitter
+	// limits are the per-project run-admission caps (§20.12). Zero fields disable the caps, so a
+	// stack that configures no edge limits admits exactly as before.
+	limits AdmissionLimits
 }
 
 // create admits a response: it authenticates via the scope set by Auth, validates
@@ -208,6 +224,8 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		RepositoryRef:         repositoryRef,
 		AgentRevisionID:       agentRevisionID,
 		RunTemplateRevisionID: templateRevisionID,
+		MaxConcurrentRuns:     h.limits.MaxConcurrentRuns,
+		MaxQueuedRuns:         h.limits.MaxQueuedRuns,
 	})
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
@@ -232,6 +250,21 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if out.PinnedRevisionNotPublished {
 		middleware.WriteProblem(w, r, http.StatusConflict, "revision_not_published", "the pinned revision is a draft; publish it before running it")
+		return
+	}
+	// The §20.12 per-project run caps: too many executing runs, or a full queued backlog. Both are the
+	// §20.10 stable 429 concurrency_exceeded (the registered admission-capacity code — there is no
+	// separate public queued code; the detail distinguishes them) + Retry-After. The admission created
+	// nothing, so a retry after the delay is safe. ponytail: a fixed 1s hint; a slot frees when a run
+	// terminates, which is not a clock the edge can predict, so a short constant beats a fabricated deadline.
+	if out.ConcurrencyLimited {
+		w.Header().Set("Retry-After", admissionRetryAfterSeconds)
+		middleware.WriteProblem(w, r, http.StatusTooManyRequests, "concurrency_exceeded", "the project has too many concurrent runs; retry shortly")
+		return
+	}
+	if out.QueueDepthExceeded {
+		w.Header().Set("Retry-After", admissionRetryAfterSeconds)
+		middleware.WriteProblem(w, r, http.StatusTooManyRequests, "concurrency_exceeded", "the project's run queue is full; retry shortly")
 		return
 	}
 	if out.SessionConflict {

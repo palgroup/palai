@@ -392,6 +392,61 @@ func (s *Store) ApplyRunTransition(ctx context.Context, tenant Tenant, runID str
 	return trans, nil
 }
 
+// TimeoutQueuedIfExpired times out ANY run (root or child — both flow through ExecuteAttempt) still
+// QUEUED past its queue deadline, BEFORE it is
+// provisioned, so a run that waited out the admission queue terminates as timed_out without starting
+// billable compute (spec §20.12). It is a no-op when the deadline is non-positive (disabled), the run
+// is no longer queued (already dispatched — the pre-compute window has closed), or it has not yet
+// reached the deadline. The state read, the timeout transition, and the response finalize commit in ONE
+// transaction: the FOR UPDATE lock makes a worker's concurrent Provision transition block, so a run is
+// never both timed out here and started elsewhere. Returns whether it timed the run out. The caller
+// supplies the timed_out Response projection so the coordinator stays projection-agnostic.
+func (s *Store) TimeoutQueuedIfExpired(ctx context.Context, tenant Tenant, runID, responseID string, deadline time.Duration, projection []byte) (bool, error) {
+	if deadline <= 0 {
+		return false, nil
+	}
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return false, fmt.Errorf("begin queue-deadline timeout: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	var state string
+	var expired bool
+	switch err := tx.QueryRow(ctx, storage.Query("RunQueueState"),
+		runID, tenant.Organization, tenant.Project, deadline.Seconds()).Scan(&state, &expired); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil // gone or foreign
+	case err != nil:
+		return false, fmt.Errorf("read run queue state: %w", err)
+	}
+	// Only a run STILL queued and past its deadline is reaped: a dispatched run has left the queue
+	// (its pre-compute window closed), and a run within its deadline keeps waiting.
+	if statemachines.RunState(state) != statemachines.RunQueued || !expired {
+		return false, nil
+	}
+
+	switch _, err := applyRunTransitionTx(ctx, tx, tenant, runID, statemachines.RunCmdTimeout); {
+	case errors.Is(err, ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+		return false, nil // raced to a terminal or non-queued state under the lock
+	case err != nil:
+		return false, err
+	}
+
+	// Finalize the Response projection in the SAME transaction as the transition, so a restart reads a
+	// coherent terminal — the run.timed_out.v1 event and the timed_out response body land together.
+	// UpdateResponse excludes terminal states in its WHERE, so a racing terminal write still wins once.
+	if _, err := tx.Exec(ctx, storage.Query("UpdateResponse"),
+		responseID, tenant.Organization, tenant.Project, string(statemachines.RunTimedOut), projection); err != nil {
+		return false, fmt.Errorf("finalize timed-out response: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit queue-deadline timeout: %w", err)
+	}
+	return true, nil
+}
+
 // applyRunTransitionTx applies one RunTable transition within tx: it locks the run, asks the pure
 // table whether the command is legal, then writes the new state, the session event, and the
 // outbox row, sweeping the run's still-queued commands when the transition is terminal (spec
@@ -566,6 +621,13 @@ type AdmissionInput struct {
 	// profile-free (the pre-E11 behaviour), so an absent pin resolves config exactly as before.
 	AgentRevisionID       string
 	RunTemplateRevisionID string
+	// MaxConcurrentRuns / MaxQueuedRuns are the §20.12 basic-tier per-project admission caps the caller
+	// resolves from edge config. Enforced against live DB counters at admission (before the idempotency
+	// reserve is committed): a fresh admission that would exceed the project's concurrent (executing) or
+	// queued (backlog) root-run count is rejected and the whole transaction rolls back, so the client may
+	// retry the same key once capacity frees. Zero on either disables that cap (the pre-E13-T7 behaviour).
+	MaxConcurrentRuns int
+	MaxQueuedRuns     int
 }
 
 // Admission is the committed, replayed, conflicting, or purged admission outcome.
@@ -597,6 +659,12 @@ type Admission struct {
 	// before the idempotency reserve, so a bad pin leaves no record and no run.
 	PinnedRevisionNotFound     bool
 	PinnedRevisionNotPublished bool
+	// ConcurrencyLimited / QueueDepthExceeded mark a fresh admission rejected by the §20.12 per-project
+	// run caps: too many simultaneously-executing root runs, or a full queued backlog. Both are decided
+	// AFTER the idempotency reserve but before commit, so the deferred rollback undoes the reserve — the
+	// rejected request leaves no run and no idempotency record, and a retry re-evaluates once capacity frees.
+	ConcurrencyLimited bool
+	QueueDepthExceeded bool
 }
 
 // AdmitResponse atomically reserves the idempotency key and, on a fresh key,
@@ -722,7 +790,26 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		return Admission{}, fmt.Errorf("reserve idempotency key: %w", err)
 	}
 
-	// Fresh key: create the durable resources and the birth event atomically. A chained
+	// Fresh key: enforce the §20.12 per-project run caps against live counters BEFORE creating any
+	// resource. The reserve above committed no run, so the count reflects only OTHER admissions; a
+	// rejection returns here without committing, and the deferred rollback undoes the reserve so the
+	// rejected key leaves nothing behind (a retry re-evaluates once capacity frees). Skipped entirely
+	// when neither cap is configured, so an unconfigured stack admits with no extra query.
+	if in.MaxConcurrentRuns > 0 || in.MaxQueuedRuns > 0 {
+		var concurrent, queued int
+		if err := tx.QueryRow(ctx, storage.Query("CountProjectRootRuns"),
+			tenant.Organization, tenant.Project).Scan(&concurrent, &queued); err != nil {
+			return Admission{}, fmt.Errorf("count project root runs: %w", err)
+		}
+		if in.MaxConcurrentRuns > 0 && concurrent >= in.MaxConcurrentRuns {
+			return Admission{ConcurrencyLimited: true}, nil
+		}
+		if in.MaxQueuedRuns > 0 && queued >= in.MaxQueuedRuns {
+			return Admission{QueueDepthExceeded: true}, nil
+		}
+	}
+
+	// Create the durable resources and the birth event atomically. A chained
 	// response reuses the resolved session (createSession is false); a fresh one opens it.
 	if createSession {
 		if _, err := tx.Exec(ctx, storage.Query("InsertSession"),

@@ -125,6 +125,67 @@ func TestAdmitResponseIsIdempotentAndAtomic(t *testing.T) {
 	assertCount(t, cs.Pool(), 1, `SELECT count(*) FROM durable_jobs WHERE kind='response.run' AND project_id=$1`, tenant.Project)
 }
 
+// TestAdmitResponseEnforcesPerProjectRunCaps proves the §20.12 admission caps: with a queued-run
+// bound set, the admission whose acceptance would exceed the project's queued backlog is rejected
+// (QueueDepthExceeded) and leaves NO durable trace (no run, no idempotency record — the whole tx
+// rolls back), so the client may retry the same key once capacity frees. With a concurrent-run cap
+// set, an admission is rejected (ConcurrencyLimited) once the project already holds that many
+// simultaneously-executing root runs. A run that has reached a terminal state frees its slot.
+func TestAdmitResponseEnforcesPerProjectRunCaps(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	tenant, principalID := seedTenantWithKey(t, cs.Pool(), "cap-tok")
+
+	admit := func(key string, in coordinator.AdmissionInput) coordinator.Admission {
+		t.Helper()
+		out, err := cs.AdmitResponse(ctx, tenant, in)
+		if err != nil {
+			t.Fatalf("AdmitResponse(%s) error = %v", key, err)
+		}
+		return out
+	}
+
+	// Fill the project to two queued root runs (each a fresh session → a fresh root run).
+	for i, key := range []string{"q-1", "q-2"} {
+		in := admissionInput(principalID, key, "h-"+key, `{"id":"resp"}`)
+		in.MaxConcurrentRuns = 10
+		in.MaxQueuedRuns = 5
+		if out := admit(key, in); out.QueueDepthExceeded || out.ConcurrencyLimited {
+			t.Fatalf("admission %d rejected under a slack cap: %+v", i, out)
+		}
+	}
+	assertCount(t, cs.Pool(), 2, `SELECT count(*) FROM runs WHERE state='queued' AND organization_id=$1 AND project_id=$2`, tenant.Organization, tenant.Project)
+
+	// A third admission under a queued bound of 2 is rejected — the backlog is full.
+	over := admissionInput(principalID, "q-3", "h-q-3", `{"id":"resp"}`)
+	over.MaxConcurrentRuns = 10
+	over.MaxQueuedRuns = 2
+	if out := admit("q-3", over); !out.QueueDepthExceeded {
+		t.Fatalf("admission over the queued bound = %+v, want QueueDepthExceeded", out)
+	}
+	// The rejected admission left nothing behind: still exactly two runs and no q-3 idempotency record.
+	assertCount(t, cs.Pool(), 2, `SELECT count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`, tenant.Organization, tenant.Project)
+	assertCount(t, cs.Pool(), 0, `SELECT count(*) FROM idempotency_records WHERE idempotency_key='q-3' AND project_id=$1`, tenant.Project)
+
+	// Flip both queued runs to running: the queued backlog is now empty but concurrency is at 2.
+	exec(t, cs.Pool(), `UPDATE runs SET state='running' WHERE organization_id=$1 AND project_id=$2`, tenant.Organization, tenant.Project)
+
+	// Under a concurrent-run cap of 2, a new admission is rejected — the executing slots are full —
+	// even though the queue is empty.
+	conc := admissionInput(principalID, "c-1", "h-c-1", `{"id":"resp"}`)
+	conc.MaxConcurrentRuns = 2
+	conc.MaxQueuedRuns = 5
+	if out := admit("c-1", conc); !out.ConcurrencyLimited {
+		t.Fatalf("admission over the concurrent cap = %+v, want ConcurrencyLimited", out)
+	}
+
+	// Terminating one running run frees a slot, so the same admission now succeeds.
+	exec(t, cs.Pool(), `UPDATE runs SET state='completed' WHERE organization_id=$1 AND project_id=$2 AND state='running' AND id=(SELECT id FROM runs WHERE organization_id=$1 AND project_id=$2 AND state='running' LIMIT 1)`, tenant.Organization, tenant.Project)
+	if out := admit("c-1", conc); out.ConcurrencyLimited || out.QueueDepthExceeded {
+		t.Fatalf("admission after a slot freed = %+v, want accepted", out)
+	}
+}
+
 func decodeID(t *testing.T, body []byte) string {
 	t.Helper()
 	var envelope struct {

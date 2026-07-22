@@ -21,9 +21,13 @@ import (
 // correlation middleware, because it carries its own one-use-token and mTLS identity.
 // It is served over a separate mutually-authenticated listener; binding the CA and that
 // listener is Task 12, so production passes nil until then.
-func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, mcp MCPConnectionAPI, skills SkillRegistryAPI, hooks HookAPI, provisioning ProvisioningAPI, sse SSEConfig, runner http.Handler, toolCallbacks http.Handler) http.Handler {
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, mcp MCPConnectionAPI, skills SkillRegistryAPI, hooks HookAPI, provisioning ProvisioningAPI, sse SSEConfig, runner http.Handler, toolCallbacks http.Handler, opts ...RouterOption) http.Handler {
+	var cfg routerConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	mux := http.NewServeMux()
-	responses := &responseHandler{admitter: admitter}
+	responses := &responseHandler{admitter: admitter, limits: cfg.edge.admissionLimits()}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
 	mux.HandleFunc("GET /v1/responses/{response_id}", responses.get)
 	// Cancel is naturally idempotent (a canceled terminal is monotonic), so it is not wrapped
@@ -173,6 +177,10 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 
 	var root http.Handler = mux
 	root = middleware.Auth(verifier)(root)
+	// The §20.12 request-rate limiter sits INSIDE RequestContext (so a shed 429 still carries the
+	// correlation id) but OUTSIDE Auth (so a flood is rejected before the credential DB read). A
+	// zero rate leaves it a pass-through, so a stack that configures no edge limits is unchanged.
+	root = middleware.RateLimit(cfg.edge.RequestRatePerSec, cfg.edge.RequestBurst)(root)
 	root = middleware.RequestContext(root)
 
 	// /healthz is an unauthenticated liveness probe the Compose stack's healthcheck

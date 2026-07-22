@@ -108,6 +108,8 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 			RepositoryRef:         req.RepositoryRef,
 			AgentRevisionID:       req.AgentRevisionID,
 			RunTemplateRevisionID: req.RunTemplateRevisionID,
+			MaxConcurrentRuns:     req.MaxConcurrentRuns,
+			MaxQueuedRuns:         req.MaxQueuedRuns,
 		})
 	if err != nil {
 		return api.AdmitResult{}, err
@@ -124,6 +126,8 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 		RepositoryBindingNotFound:  adm.RepositoryBindingNotFound,
 		PinnedRevisionNotFound:     adm.PinnedRevisionNotFound,
 		PinnedRevisionNotPublished: adm.PinnedRevisionNotPublished,
+		ConcurrencyLimited:         adm.ConcurrencyLimited,
+		QueueDepthExceeded:         adm.QueueDepthExceeded,
 	}
 	// On a purged replay the body is gone; the tombstone identity is the resource id.
 	if adm.Purged {
