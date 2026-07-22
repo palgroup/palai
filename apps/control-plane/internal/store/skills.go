@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -59,12 +61,18 @@ func (s *Store) MaterializeRunSkills(ctx context.Context, tenant coordinator.Ten
 	if err := json.Unmarshal(pinsJSON, &pins); err != nil {
 		return err
 	}
+	skillsRoot := filepath.Join(hostPath, ".palai", "skills")
 	for _, p := range pins {
+		// Belt-and-suspenders (SEC-1): the name is validated at create, but a pin must NEVER write outside
+		// the skills root — a `..` that slipped through cannot escape the run allocation on the shared host.
+		destDir := filepath.Join(skillsRoot, p.Name)
+		if rel, err := filepath.Rel(skillsRoot, destDir); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("skill %q resolves outside the skills root", p.Name)
+		}
 		archive, err := s.tools.LoadSkillArchive(ctx, tenant.Organization, tenant.Project, p.Digest)
 		if err != nil {
 			return err
 		}
-		destDir := filepath.Join(hostPath, ".palai", "skills", p.Name)
 		if err := extensions.ExtractSanitizedArchive(archive, destDir); err != nil {
 			return err
 		}
@@ -159,6 +167,7 @@ func skillReject(err error) (api.SkillResult, bool) {
 		return api.SkillResult{}, false
 	case errors.Is(err, extensions.ErrUnsafeArchive),
 		errors.Is(err, extensions.ErrSkillMetadataMissing),
+		errors.Is(err, extensions.ErrInvalidSkillName),
 		errors.Is(err, egress.ErrDenied):
 		return api.SkillResult{BadField: true}, true
 	case errors.Is(err, extensions.ErrSkillNameCollision),

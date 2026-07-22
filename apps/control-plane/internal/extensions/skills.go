@@ -29,6 +29,11 @@ var (
 	// ErrSkillNotFound is returned when a revision targets a skill absent from the scope, or a lifecycle
 	// action names a revision absent from the scope.
 	ErrSkillNotFound = errors.New("extensions: skill not found in scope")
+	// ErrInvalidSkillName is returned when a skill name is not a single safe path segment. The name becomes
+	// a workspace DIRECTORY at materialization (<alloc>/.palai/skills/<name>/), so a path separator, a `..`
+	// segment, a control char, a leading dot, or emptiness is a REJECT — never a traversal-write primitive
+	// (SEC-1: the management-API name is the untrusted input at this filesystem-write boundary).
+	ErrInvalidSkillName = errors.New("extensions: skill name must be a single safe path segment")
 	// ErrScanFindingsBlockEnable is returned when enable is attempted on a revision that carries static-scan
 	// findings — it is stuck at quarantined and can never be enabled (TOL-011, scan FAIL blocks enable).
 	ErrScanFindingsBlockEnable = errors.New("extensions: skill revision has scan findings and cannot be enabled")
@@ -117,8 +122,8 @@ func WithSkillTLSConfig(c *tls.Config) SkillFetchOption {
 // CreateSkill registers a named skill lineage. A name collision is a REJECT (ErrSkillNameCollision).
 func (s *Store) CreateSkill(ctx context.Context, org, project, name string) (Skill, error) {
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return Skill{}, fmt.Errorf("%w: empty name", ErrSkillNotFound)
+	if err := validateSkillName(name); err != nil {
+		return Skill{}, err
 	}
 	id := newID("skill")
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertSkill"), id, org, project, name); err != nil {
@@ -283,6 +288,18 @@ func (s *Store) LoadSkillArchive(ctx context.Context, org, project, digest strin
 		return nil, fmt.Errorf("load skill archive: %w", err)
 	}
 	return archive, nil
+}
+
+// validateSkillName enforces that a name is a single safe path segment (SEC-1). The name becomes a
+// workspace directory at materialization, so it reuses isASCIIName (letters/digits/_/-, the tool-name
+// charset) which by construction rejects a path separator, a `..`/`.` segment, a control char, and a
+// leading dot. Empty and over-length are rejected too. This — plus SkillBodyPath being derived from the
+// SAME validated name — removes the traversal-write primitive at its source.
+func validateSkillName(name string) error {
+	if name == "" || len(name) > maxSegmentLen || !isASCIIName(name) {
+		return fmt.Errorf("%w: %q", ErrInvalidSkillName, name)
+	}
+	return nil
 }
 
 // SkillBodyPath is the workspace-relative directory a skill's body materializes under — a sibling of the

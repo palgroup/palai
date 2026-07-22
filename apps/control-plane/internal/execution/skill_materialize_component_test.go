@@ -118,3 +118,59 @@ func TestSkillBodyMaterializedAndReadableViaFileTool(t *testing.T) {
 		t.Fatalf("FileTool read content = %q, want the skill body", out["content"])
 	}
 }
+
+// TestSkillMaterializationRefusesEscapingName is the SEC-1 belt-and-suspenders: even if a pin's name
+// somehow contains a `..` traversal, materialization must REFUSE to write outside <hostPath>/.palai/
+// skills/ (the restoreEntry containment idiom). The name is validated at create, but a pin must never
+// escape the skills root regardless.
+func TestSkillMaterializationRefusesEscapingName(t *testing.T) {
+	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
+	if url == "" {
+		t.Skip("PALAI_COMPONENT_POSTGRES_URL is required; run make test-component TEST=postgres")
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	pool := st.Spine().Pool()
+	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
+	exec := func(sql string, args ...any) {
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("exec %q: %v", sql, err)
+		}
+	}
+	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
+	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
+
+	// A real sanitized archive stored under a digest the malicious pin references.
+	q, err := extensions.Quarantine(buildSkillTGZ(t, "SKILL.md", []byte("---\nname: x\n---\nbody\n")))
+	if err != nil {
+		t.Fatalf("Quarantine: %v", err)
+	}
+	sessionID, skillID, skillRevID, runID := pinnedID("ses"), pinnedID("skill"), pinnedID("skillrev"), pinnedID("run")
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'ok')`, skillID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, metadata, archive)
+	      VALUES ($1,$2,$3,$4,1,$5,'enabled','{"name":"ok"}',$6)`,
+		skillRevID, tenant.Organization, tenant.Project, skillID, q.Digest, q.Sanitized)
+	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1,$2,$3,$4,'running')`,
+		runID, tenant.Organization, tenant.Project, sessionID)
+
+	// Inject a pin whose name escapes the skills root (bypassing CreateSkill validation via a raw write).
+	// "../escaped/pwned" stays under <alloc> for the test's safety but Rel() still flags the `..` escape.
+	exec(`UPDATE runs SET skill_pins = $2 WHERE id = $1`, runID,
+		[]byte(`[{"name":"../escaped/pwned","description":"","digest":"`+q.Digest+`","path":"x"}]`))
+
+	alloc := t.TempDir()
+	if err := st.MaterializeRunSkills(ctx, tenant, runID, alloc); err == nil {
+		t.Fatal("MaterializeRunSkills accepted an escaping skill name — containment must refuse it")
+	}
+	if _, statErr := os.Stat(filepath.Join(alloc, ".palai", "escaped")); statErr == nil {
+		t.Fatal("materialization wrote outside <alloc>/.palai/skills/ — containment breached")
+	}
+}
