@@ -1,9 +1,68 @@
 package extensions
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 )
+
+// TestPolicyHookTimeoutFailsClosed proves a before_tool POLICY hook whose handler HANGS is abandoned on the
+// category ceiling and fails CLOSED — the tool call is DENIED, never let through (TOL-012, spec §28.17). The
+// handler ignores its context (a genuine hang the dispatcher must abandon), so this exercises the goroutine-
+// abandon timeout path, not a cooperative ctx return.
+func TestPolicyHookTimeoutFailsClosed(t *testing.T) {
+	defer func(prev time.Duration) { policyHookCeiling = prev }(policyHookCeiling)
+	policyHookCeiling = 30 * time.Millisecond
+
+	release := make(chan struct{})
+	defer close(release) // unblock the abandoned handler goroutine at test end
+	s := &Store{hookHandlers: map[string]HookHandler{
+		"hang": func(ctx context.Context, ev HookEvent) (HookDecision, error) {
+			<-release // ignore ctx entirely — the dispatcher must abandon this on timeout
+			return HookDecision{}, nil
+		},
+	}}
+	hooks := []loadedHook{{ID: "hook_h", Point: HookPointBeforeTool, Category: HookCategoryPolicy, Executor: HookExecutorInline, Handler: "hang"}}
+	ev := HookEvent{Point: HookPointBeforeTool, Payload: map[string]any{"tool_name": "push", "arguments": map[string]any{"x": 1}}}
+
+	out, err := s.fireLoaded(context.Background(), ev, hooks)
+	if err != nil {
+		t.Fatalf("fireLoaded() infra error = %v (a fail-closed deny is not an error)", err)
+	}
+	if !out.Denied {
+		t.Fatal("a hanging policy hook did not fail closed — the tool call was allowed through")
+	}
+	if out.HookID != "hook_h" {
+		t.Fatalf("deny HookID = %q, want hook_h", out.HookID)
+	}
+	if out.Reason == "" {
+		t.Fatal("a fail-closed deny carries no reason")
+	}
+}
+
+// TestPolicyHookDenyBlocks proves a policy handler that returns Deny blocks the operation with its reason,
+// and a policy handler that allows lets the (unchanged) payload through.
+func TestPolicyHookDenyBlocks(t *testing.T) {
+	s := &Store{hookHandlers: map[string]HookHandler{
+		"deny_push": func(ctx context.Context, ev HookEvent) (HookDecision, error) {
+			if name, _ := ev.Payload["tool_name"].(string); name == "push" {
+				return HookDecision{Deny: true, Reason: "push is not allowed in this project"}, nil
+			}
+			return HookDecision{}, nil
+		},
+	}}
+	hooks := []loadedHook{{ID: "hook_p", Point: HookPointBeforeTool, Category: HookCategoryPolicy, Executor: HookExecutorInline, Handler: "deny_push"}}
+
+	denied, err := s.fireLoaded(context.Background(), HookEvent{Point: HookPointBeforeTool, Payload: map[string]any{"tool_name": "push"}}, hooks)
+	if err != nil || !denied.Denied || denied.Reason != "push is not allowed in this project" {
+		t.Fatalf("deny path = (%+v, %v), want Denied with the handler reason", denied, err)
+	}
+	allowed, err := s.fireLoaded(context.Background(), HookEvent{Point: HookPointBeforeTool, Payload: map[string]any{"tool_name": "file"}}, hooks)
+	if err != nil || allowed.Denied {
+		t.Fatalf("allow path = (%+v, %v), want not-denied", allowed, err)
+	}
+}
 
 // TestUnknownHookPointRejected proves the hook create body accepts ONLY one of the five pinned points and
 // rejects anything else (spec §28.17): a point outside the closed set is a typed reject BEFORE any write, so
@@ -37,9 +96,9 @@ func TestHookMatrixRejectsOutOfMatrixCategory(t *testing.T) {
 		}
 	}
 	bad := []string{
-		`{"name":"a","hook_point":"before_model","category":"transform","executor":"platform_inline","config":{"handler":"x"}}`,       // no args/result to patch
-		`{"name":"b","hook_point":"after_tool","category":"policy","executor":"platform_inline","config":{"handler":"x"}}`,            // effect already ran
-		`{"name":"c","hook_point":"on_terminal","category":"policy","executor":"platform_inline","config":{"handler":"x"}}`,           // nothing to deny at terminal
+		`{"name":"a","hook_point":"before_model","category":"transform","executor":"platform_inline","config":{"handler":"x"}}`,              // no args/result to patch
+		`{"name":"b","hook_point":"after_tool","category":"policy","executor":"platform_inline","config":{"handler":"x"}}`,                   // effect already ran
+		`{"name":"c","hook_point":"on_terminal","category":"policy","executor":"platform_inline","config":{"handler":"x"}}`,                  // nothing to deny at terminal
 		`{"name":"d","hook_point":"before_repository_publish","category":"transform","executor":"platform_inline","config":{"handler":"x"}}`, // no patch surface
 	}
 	for _, body := range bad {
@@ -71,8 +130,8 @@ func TestHookRemoteRequiresSignedWiring(t *testing.T) {
 		t.Fatalf("valid remote hook rejected: %v", err)
 	}
 	bad := []string{
-		`{"name":"a","hook_point":"before_tool","category":"policy","executor":"remote_http","config":{"url":"https://h.example/hook"}}`,        // no secret_ref
-		`{"name":"b","hook_point":"before_tool","category":"policy","executor":"remote_http","config":{},"secret_ref":"sref_x"}`,                // no url
+		`{"name":"a","hook_point":"before_tool","category":"policy","executor":"remote_http","config":{"url":"https://h.example/hook"}}`,                     // no secret_ref
+		`{"name":"b","hook_point":"before_tool","category":"policy","executor":"remote_http","config":{},"secret_ref":"sref_x"}`,                             // no url
 		`{"name":"c","hook_point":"before_tool","category":"policy","executor":"remote_http","config":{"url":"http://10.0.0.1/hook"},"secret_ref":"sref_x"}`, // internal/downgrade
 	}
 	for _, body := range bad {

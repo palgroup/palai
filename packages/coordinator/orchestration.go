@@ -168,6 +168,30 @@ func (s *Store) JournalChildEvent(ctx context.Context, tenant Tenant, sessionID,
 	return nil
 }
 
+// JournalRunEvent appends a run-scoped diagnostic event (e.g. policy.denied.v1 for a hook deny, spec
+// §28.17) to the run's response journal, guarded by the run being active so a canceled run appends nothing
+// after its terminal (monotonic terminality, §22.3). It is the generic twin of JournalChildEvent — a hook
+// deny is not child-specific — and returns ErrRunTerminal on a raced cancel, which the orchestrator maps to
+// a clean attempt end.
+func (s *Store) JournalRunEvent(ctx context.Context, tenant Tenant, sessionID, responseID, runID, eventType string, payload []byte) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin run event: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	if err := guardRunActive(ctx, tx, tenant, runID); err != nil {
+		return err
+	}
+	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, eventType, payload); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit run event: %w", err)
+	}
+	return nil
+}
+
 // ChildRunOutcome reads a finished ChildRun's terminal run state and response projection so the
 // parent folds its typed result (spec §25.19). Tenant-scoped by primary key.
 func (s *Store) ChildRunOutcome(ctx context.Context, tenant Tenant, childRunID string) (string, []byte, error) {

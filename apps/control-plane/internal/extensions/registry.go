@@ -89,6 +89,10 @@ type Store struct {
 	// mcp is the MCP client the discovery + dispatch paths reach an upstream server through (E12 T5).
 	// Nil ⇒ MCP connections are creatable but not discoverable/executable (the binder-less posture).
 	mcp MCPClient
+	// hookHandlers are the code-defined platform_inline hook handlers, keyed by config.handler name (E12
+	// T8). A platform_inline hook with no registered handler is fail-closed at dispatch (a policy deny),
+	// never a nil-call. Injected at composition (production) or per-test.
+	hookHandlers map[string]HookHandler
 }
 
 // New wraps a pgx pool as the extensions store, reserving the given built-in model-visible short names.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/contracts"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
@@ -65,10 +66,36 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 		}
 	}
 
+	// 1b. before_tool hooks fire AFTER the ledger consult, BEFORE any pre-write/Execute (spec §28.17, the
+	// critical seam pin). A committed-replay row already returned above, so a replay NEVER re-fires hooks
+	// (bit-unchanged). requestHash was computed from the MODEL'S ORIGINAL args and is untouched — a transform
+	// changes only what Execute runs and what the ledger records, never the replay/divergence identity. A
+	// policy DENY leaves NO executing/pre-write row: it journals policy.denied.v1 and delivers a structured
+	// deny result the model sees and continues on.
+	execArgs := args
+	outcome0, err := o.fireHook(ctx, st, extensions.HookPointBeforeTool, map[string]any{"tool_name": name, "arguments": args})
+	if err != nil {
+		return err
+	}
+	if outcome0.Denied {
+		if err := o.journalPolicyDenied(ctx, st, extensions.HookPointBeforeTool, outcome0.HookID, outcome0.Reason,
+			map[string]any{"tool_call_id": callID, "tool_name": name}); err != nil {
+			return err
+		}
+		denial, _ := json.Marshal(map[string]any{"status": "denied", "reason": outcome0.Reason, "hook_id": outcome0.HookID})
+		return o.deliverToolResult(ctx, st, frame, callID, string(denial), false)
+	}
+	if patched, ok := outcome0.Payload["arguments"].(map[string]any); ok {
+		// A transform patch changes ONLY the args Execute runs with AND the ledger `arguments` column — honest
+		// audit of what actually executed. The requestHash/identity above stays the model's original.
+		execArgs = patched
+	}
+
 	// 2. Pre-write a side-effecting tool BEFORE the effect so a kill is detectable as uncertain (§26.7).
 	// Pure/idempotent skip it (re-run/resend is safe). Skipped when a row already exists (a re-executing
 	// pure row, or a fence re-lease) — BeginToolCall is idempotent, but avoiding it keeps the fresh path lean.
-	arguments, _ := json.Marshal(args)
+	// The ledger records the PATCHED args (what actually runs), not the model's original.
+	arguments, _ := json.Marshal(execArgs)
 	// Resolve the class through the SAME lookup the executor uses, so a registered registry tool's DECLARED
 	// class (e.g. irreversible) drives the pre-write marker — not the ClassPure static-miss default (M2).
 	env := o.execEnv(st)
@@ -96,8 +123,9 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 		}
 	}
 
-	// 3. Execute + commit + deliver.
-	outcome, err := o.tools.Execute(ctx, contracts.ToolCallID(callID), name, args, st.attempt.Fence, env)
+	// 3. Execute + commit + deliver. Execute runs the PATCHED args (a transform hook's replacement, or the
+	// model's original when no transform fired), so the ledger row and the effect agree (honest audit).
+	outcome, err := o.tools.Execute(ctx, contracts.ToolCallID(callID), name, execArgs, st.attempt.Fence, env)
 	if err != nil {
 		return fmt.Errorf("execute tool %q (%s): %w", name, callID, err)
 	}

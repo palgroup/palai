@@ -180,8 +180,15 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		toolRegistry.SetMCP(mcpManager)
 		repo.SetMCP(mcpManager)
 		startMCPOrphanSweep(ctx, supervisor)
+		// Wire the E12 T8 hooks (spec §28.17): the registry fires a run's registered hooks at the five pinned
+		// dispatch points. platform_inline hooks dispatch to the code-defined handler table (deny-all is the
+		// deny-visible fixture); remote_http hooks reuse the SAME T4 signed transport + org-scoped secret
+		// resolver wired above. The orchestrator fires through the registry (SetHookFirer); no hook fires unless
+		// an admin registers one, so a hook-less run is bit-unchanged.
+		toolRegistry.SetHookHandlers(extensions.PlatformHookHandlers())
 		orch := execution.NewOrchestrator(repo, gateway, broker, toolBroker)
 		orch.SetModelRoute(route)
+		orch.SetHookFirer(toolRegistry)
 		// Wire the repository publisher the approval pump publishes through (spec §30.9-30.10), gated on
 		// the GitHub App environment. Absent it, an approved publication waits (the pump is a no-op) — no
 		// push happens without a configured destination. ponytail: the live wave sets the env; the
