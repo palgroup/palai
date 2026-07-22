@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
+	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/contracts"
@@ -68,6 +70,13 @@ type harness struct {
 	tenant    coordinator.Tenant
 	provider  *scriptedProvider
 	engineDir string
+	// The E11 automation stores wired exactly as main.go:63-78 (webhooks/triggers/schedules), so the
+	// automation journey drives POST /v1/triggers|inbound|schedules over the SAME router the binary serves.
+	// Nil-passed before E11 T7; every existing responses test ignores them (they never touch automation).
+	webhooks      *automation.WebhookStore
+	triggers      *automation.TriggerStore
+	schedules     *automation.ScheduleStore
+	inboundSecret []byte // the test inbound signing secret the harness's inbound resolver returns
 }
 
 func newHarness(t *testing.T) *harness {
@@ -83,12 +92,24 @@ func newHarness(t *testing.T) *harness {
 	}
 	token := newID("e2e-tok")
 	tenant := seedTenantWithKey(t, repo.Spine().Pool(), token)
-	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, repo, repo, repo, nil, nil, nil, api.SSEConfig{}, nil))
+
+	// main.go's OWN automation wiring (main.go:63-78): the webhook/trigger/schedule stores on the shared
+	// spine pool, the trigger store admitting through the durable spine, an inbound secret test-resolver
+	// (returns the harness secret for any ref — single-tenant journey), and the inbound gate. Passed into
+	// NewRouter so /v1/triggers|inbound|schedules are live routes, not the pre-E11 nils.
+	inboundSecret := []byte("whsec_journey_" + newID("s"))
+	webhooks := automation.NewWebhookStore(repo.Spine().Pool())
+	triggers := automation.NewTriggerStore(repo.Spine().Pool()).WithAdmitter(repo.Spine()).
+		WithInboundSecrets(func(_, _ string) ([]byte, error) { return inboundSecret, nil }).
+		WithInboundGate(log.Printf, 0, 256, 0)
+	schedules := automation.NewScheduleStore(repo.Spine().Pool(), triggers)
+	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, repo, repo, repo, webhooks, triggers, schedules, api.SSEConfig{}, nil))
 	t.Cleanup(srv.Close)
 
 	return &harness{
 		t: t, repo: repo, spine: repo.Spine(), base: srv.URL, token: token, tenant: tenant,
 		provider: &scriptedProvider{}, engineDir: requireEnv(t, "PALAI_ENGINE_DIR"),
+		webhooks: webhooks, triggers: triggers, schedules: schedules, inboundSecret: inboundSecret,
 	}
 }
 
