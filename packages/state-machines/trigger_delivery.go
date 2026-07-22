@@ -51,9 +51,15 @@ const (
 var TriggerDeliveryTable = []Transition[TriggerDeliveryState, TriggerDeliveryCommand]{
 	{TriggerDeliveryReceived, TriggerDeliveryCmdAuthenticate, TriggerDeliveryAuthenticated, "trigger.delivery.authenticated.v1"},
 	{TriggerDeliveryReceived, TriggerDeliveryCmdReject, TriggerDeliveryRejected, "trigger.delivery.rejected.v1"},
+	// A signed inbound event whose payload is poison (not a JSON object) is unmappable BEFORE it can reach
+	// `deduplicated`, so it must terminalize `failed` from the pre-map states too (E11 Task 5, §34.3). Without
+	// these edges the receiver's fail() would error and the durable, sweepable row would retry forever — the
+	// opposite of a dead-letter. The manual/API path never hits these (its payload is validated at accept).
+	{TriggerDeliveryReceived, TriggerDeliveryCmdFail, TriggerDeliveryFailed, "trigger.delivery.failed.v1"},
 
 	{TriggerDeliveryAuthenticated, TriggerDeliveryCmdDeduplicate, TriggerDeliveryDeduplicated, "trigger.delivery.deduplicated.v1"},
 	{TriggerDeliveryAuthenticated, TriggerDeliveryCmdMarkDuplicate, TriggerDeliveryDuplicate, "trigger.delivery.duplicate.v1"},
+	{TriggerDeliveryAuthenticated, TriggerDeliveryCmdFail, TriggerDeliveryFailed, "trigger.delivery.failed.v1"},
 
 	{TriggerDeliveryDeduplicated, TriggerDeliveryCmdMap, TriggerDeliveryMapped, "trigger.delivery.mapped.v1"},
 	{TriggerDeliveryDeduplicated, TriggerDeliveryCmdFail, TriggerDeliveryFailed, "trigger.delivery.failed.v1"},

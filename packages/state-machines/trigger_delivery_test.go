@@ -33,6 +33,12 @@ func TestTriggerDeliveryTransitions(t *testing.T) {
 	// a drop_if_running / coalesce-subsumed delivery → skipped (AUT-005 honest naming).
 	step(TriggerDeliveryAuthenticated, TriggerDeliveryCmdMarkDuplicate, TriggerDeliveryDuplicate, "trigger.delivery.duplicate.v1")
 	step(TriggerDeliveryDeduplicated, TriggerDeliveryCmdFail, TriggerDeliveryFailed, "trigger.delivery.failed.v1")
+	// A PRE-map poison (a signed event whose payload is not a JSON object) must be able to terminalize
+	// `failed` from received/authenticated too — otherwise the inbound receiver's fail() errors and the
+	// durable row is swept forever (E11 T5 review #1). The inbound sweep re-drives from the durable
+	// raw_payload, so it needs a legal terminal from the earliest pre-map states.
+	step(TriggerDeliveryReceived, TriggerDeliveryCmdFail, TriggerDeliveryFailed, "trigger.delivery.failed.v1")
+	step(TriggerDeliveryAuthenticated, TriggerDeliveryCmdFail, TriggerDeliveryFailed, "trigger.delivery.failed.v1")
 	step(TriggerDeliveryMapped, TriggerDeliveryCmdDefer, TriggerDeliveryDeferred, "trigger.delivery.deferred.v1")
 	step(TriggerDeliveryDeferred, TriggerDeliveryCmdAdmit, TriggerDeliveryAdmitted, "trigger.delivery.admitted.v1")
 	step(TriggerDeliveryMapped, TriggerDeliveryCmdSkip, TriggerDeliverySkipped, "trigger.delivery.skipped.v1")

@@ -578,3 +578,64 @@ func TestRawPayloadScrubbedAfterTerminalTTL(t *testing.T) {
 		t.Fatalf("terminal row within the TTL was scrubbed; want retained")
 	}
 }
+
+// nonTerminalBacklog counts a trigger's non-terminal inbound rows (the AUT-010 backlog set) — a poison
+// row that never terminalizes would stay counted here forever (review #1).
+func (h *inboundHarness) nonTerminalBacklog(triggerID string) int {
+	h.t.Helper()
+	var n int
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM trigger_deliveries WHERE trigger_id=$1 AND source_event_id <> ''
+		   AND state IN ('received','authenticated','deduplicated','mapped','admitted','deferred')`, triggerID).Scan(&n); err != nil {
+		h.t.Fatalf("count backlog error = %v", err)
+	}
+	return n
+}
+
+// TestNonObjectPayloadPoisonTerminalizesNotRetries pins review #1: a signed event whose `data` is NOT a
+// JSON object is poison BEFORE the deduplicated state, so it must terminalize `failed` (not error the
+// continuation and leave a received row the sweep retries forever + counts in the backlog + never scrubs).
+// Both the inline path and the sweep re-drive must reach `failed`.
+func TestNonObjectPayloadPoisonTerminalizesNotRetries(t *testing.T) {
+	h := newInboundHarness(t, 0, 0)
+
+	// Inline: a non-object data payload terminalizes `failed`, bears no run, and 202s (durably dead-lettered).
+	res := h.post(h.triggerID, "evt-nonobj", time.Now(), []byte(`{"source":"harness","data":5}`), h.secret)
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("non-object poison status = %d, want 202 (durably dead-lettered)", res.StatusCode)
+	}
+	out := decodeBody(t, res)
+	if out["state"] != "failed" {
+		t.Fatalf("non-object poison state = %v, want failed", out["state"])
+	}
+	if rid, _ := out["run_id"].(string); rid != "" {
+		t.Fatal("non-object poison bore a run; it must bear none")
+	}
+	id, _ := out["id"].(string)
+	if view := h.getDelivery(id); view["state"] != "failed" {
+		t.Fatalf("dead-letter view state = %v, want failed", view["state"])
+	}
+
+	// The sweep does NOT retry it, and it no longer counts in the backlog.
+	rec := automation.NewDeliveryReconciler(h.store, time.Second, 0, 100, nil)
+	for i := 0; i < 2; i++ {
+		if err := rec.Tick(context.Background()); err != nil {
+			t.Fatalf("Tick %d error = %v", i, err)
+		}
+	}
+	if view := h.getDelivery(id); view["state"] != "failed" {
+		t.Fatalf("after sweeps, poison state = %v, want failed (no retry loop)", view["state"])
+	}
+	if n := h.nonTerminalBacklog(h.triggerID); n != 0 {
+		t.Fatalf("terminalized poison still counts %d in the backlog, want 0", n)
+	}
+
+	// Sweep re-drive of a stranded non-object remnant (a JSON array `data`) also terminalizes `failed`.
+	remnant := h.seedInboundRow(h.triggerID, "evt-nonobj-remnant", `{"source":"harness","data":[1,2,3]}`, "received", 5)
+	if err := rec.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick error = %v", err)
+	}
+	if view := h.getDelivery(remnant); view["state"] != "failed" {
+		t.Fatalf("swept non-object remnant state = %v, want failed", view["state"])
+	}
+}
