@@ -108,6 +108,130 @@ func TestVerifierRejectsContinuedLogWithoutProof(t *testing.T) {
 	}
 }
 
+// TestDedupeClaimRequiresOriginalLinkage pins AUT-001 (spec §20.x): a duplicated-event case does NOT pass
+// on a "deduplicated" marker alone — it must carry a DedupeProof that links a DISTINCT original to the
+// duplicate and shows exactly one canonical action. Missing proof is a Finding; a self-linked duplicate or
+// a fan-out to two actions is invalid.
+func TestDedupeClaimRequiresOriginalLinkage(t *testing.T) {
+	m := baseManifest()
+	c := caseOf(m)
+	c["dedupe_claim"] = "deduplicated"
+	c["dedupe_proof"] = map[string]any{
+		"original_delivery_id": "del_orig", "duplicate_delivery_id": "del_dup", "canonical_action_count": 1,
+	}
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete dedupe proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["dedupe_claim"] = "deduplicated" // claims dedupe but carries NO proof
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a dedupe claim with no proof must be a Finding (a 'deduplicated' marker is not original-linkage proof)")
+	}
+
+	for _, bad := range []map[string]any{
+		{"original_delivery_id": "del_same", "duplicate_delivery_id": "del_same", "canonical_action_count": 1}, // no distinct original
+		{"original_delivery_id": "del_orig", "duplicate_delivery_id": "del_dup", "canonical_action_count": 2},  // fanned out to 2 actions
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["dedupe_claim"] = "deduplicated"
+		c["dedupe_proof"] = bad
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid dedupe proof %v must be a Finding", bad)
+		}
+	}
+}
+
+// TestOccurrenceClaimRequiresSingleCanonical pins AUT-007 (spec §33): a scheduler-occurrence case must
+// carry an OccurrenceProof with the occurrence id, both instants (planned/admitted, so lateness is
+// visible), and exactly one canonical occurrence — competing replicas racing to two rows is not proof.
+func TestOccurrenceClaimRequiresSingleCanonical(t *testing.T) {
+	m := baseManifest()
+	c := caseOf(m)
+	c["occurrence_claim"] = "single_canonical"
+	c["occurrence_proof"] = map[string]any{
+		"occurrence_id": "occ_1", "planned_at": "2026-07-21T00:00:00Z", "admitted_at": "2026-07-21T00:00:01Z", "canonical_count": 1,
+	}
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete occurrence proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["occurrence_claim"] = "single_canonical"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("an occurrence claim with no proof must be a Finding")
+	}
+
+	for _, field := range []string{"occurrence_id", "planned_at", "admitted_at"} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["occurrence_claim"] = "single_canonical"
+		proof := map[string]any{
+			"occurrence_id": "occ_1", "planned_at": "2026-07-21T00:00:00Z", "admitted_at": "2026-07-21T00:00:01Z", "canonical_count": 1,
+		}
+		delete(proof, field)
+		c["occurrence_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an occurrence proof missing %q must be a Finding", field)
+		}
+	}
+	// Two canonical occurrences (a replica race that produced duplicates) is invalid.
+	m = baseManifest()
+	c = caseOf(m)
+	c["occurrence_claim"] = "single_canonical"
+	c["occurrence_proof"] = map[string]any{
+		"occurrence_id": "occ_1", "planned_at": "2026-07-21T00:00:00Z", "admitted_at": "2026-07-21T00:00:01Z", "canonical_count": 2,
+	}
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+		t.Fatal("an occurrence proof with canonical_count != 1 must be a Finding")
+	}
+}
+
+// TestCallbackClaimRequiresSingleSemanticDelivery pins AUT-011/013 (spec §21.x): a callback case must
+// carry a CallbackProof with both delivery ids, at least one attempt, exactly one semantic receipt at the
+// receiver (a signed retry deduped to one), and a run terminal left intact — a callback counted twice or
+// one that mutated the run terminal is not proof.
+func TestCallbackClaimRequiresSingleSemanticDelivery(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{
+			"delivery_id": "del_cb", "webhook_delivery_id": "whd_1", "attempts": 2,
+			"receiver_receipt_count": 1, "run_terminal_intact": true,
+		}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["callback_claim"] = "delivered_once"
+	c["callback_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete callback proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["callback_claim"] = "delivered_once"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a callback claim with no proof must be a Finding")
+	}
+
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { delete(p, "delivery_id") },
+		func(p map[string]any) { delete(p, "webhook_delivery_id") },
+		func(p map[string]any) { p["attempts"] = 0 },                // no delivery attempt
+		func(p map[string]any) { p["receiver_receipt_count"] = 2 },  // counted twice (dedup failed)
+		func(p map[string]any) { p["run_terminal_intact"] = false }, // callback disturbed the run terminal
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["callback_claim"] = "delivered_once"
+		proof := full()
+		mutate(proof)
+		c["callback_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid callback proof %v must be a Finding", proof)
+		}
+	}
+}
+
 func TestEvidenceVerifier(t *testing.T) {
 	// A valid, redacted bundle passes with no findings.
 	if f := VerifyManifest(marshal(t, baseManifest()), nil); len(f) != 0 {

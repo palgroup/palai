@@ -76,11 +76,73 @@ type evidenceCase struct {
 	// claim requires — a marker alone is NEVER proof.
 	RecoveryClaim string                  `json:"recovery_claim"`
 	RecoveryProof *recovery.RecoveryProof `json:"recovery_proof"`
+	// The E11 automation claims (spec §20-21, §33) extend the RecoveryProof discipline — a marker alone is
+	// NEVER proof — to the three automation invariants: a duplicated event produced a single linked action
+	// (DedupeClaim), a scheduler fired a single canonical occurrence (OccurrenceClaim), and a callback was
+	// delivered exactly once without disturbing the run terminal (CallbackClaim). Each requires its proof.
+	DedupeClaim     string           `json:"dedupe_claim"`
+	DedupeProof     *DedupeProof     `json:"dedupe_proof"`
+	OccurrenceClaim string           `json:"occurrence_claim"`
+	OccurrenceProof *OccurrenceProof `json:"occurrence_proof"`
+	CallbackClaim   string           `json:"callback_claim"`
+	CallbackProof   *CallbackProof   `json:"callback_proof"`
 }
 
 type evidenceTerm struct {
 	Type  string `json:"type"`
 	Count int    `json:"count"`
+}
+
+// DedupeProof is the evidence a dedupe_claim requires (spec §20.x, AUT-001): a duplicated event produced
+// exactly ONE canonical action and the duplicate row links back to the original (original linkage). Unlike
+// recovery.RecoveryProof, these three proof types have no orchestrator emitter — they are evidence-domain
+// data assembled from the run's real DB rows — so they live here in tests/uat (deliberate).
+type DedupeProof struct {
+	OriginalDeliveryID   string `json:"original_delivery_id"`
+	DuplicateDeliveryID  string `json:"duplicate_delivery_id"`
+	CanonicalActionCount int    `json:"canonical_action_count"`
+}
+
+// Complete reports distinct original/duplicate ids (the linkage) and exactly one canonical action — a
+// duplicated event that fanned out to two actions, or a duplicate that does not link a distinct original,
+// is not proof.
+func (p DedupeProof) Complete() bool {
+	return p.OriginalDeliveryID != "" && p.DuplicateDeliveryID != "" &&
+		p.OriginalDeliveryID != p.DuplicateDeliveryID && p.CanonicalActionCount == 1
+}
+
+// OccurrenceProof is the evidence an occurrence_claim requires (spec §33, AUT-007): competing scheduler
+// replicas produced exactly ONE canonical occurrence, carrying its planned/admitted instants (lateness).
+type OccurrenceProof struct {
+	OccurrenceID   string `json:"occurrence_id"`
+	PlannedAt      string `json:"planned_at"`
+	AdmittedAt     string `json:"admitted_at"`
+	CanonicalCount int    `json:"canonical_count"`
+}
+
+// Complete reports the occurrence carries its identity + both instants and a single canonical count — two
+// replicas racing to two occurrence rows for the same (schedule,revision,planned_at) is not proof.
+func (p OccurrenceProof) Complete() bool {
+	return p.OccurrenceID != "" && p.PlannedAt != "" && p.AdmittedAt != "" && p.CanonicalCount == 1
+}
+
+// CallbackProof is the evidence a callback_claim requires (spec §21.x, AUT-011/013): a run-terminal
+// callback was delivered exactly once (the receiver deduped a signed retry to a single semantic receipt)
+// and the callback delivery did NOT disturb the run's terminal result.
+type CallbackProof struct {
+	DeliveryID           string `json:"delivery_id"`
+	WebhookDeliveryID    string `json:"webhook_delivery_id"`
+	Attempts             int    `json:"attempts"`
+	ReceiverReceiptCount int    `json:"receiver_receipt_count"`
+	RunTerminalIntact    bool   `json:"run_terminal_intact"`
+}
+
+// Complete reports the callback carries both ids, at least one delivery attempt, exactly one semantic
+// receipt at the receiver, and a run terminal left intact — a callback counted twice, or one that mutated
+// the run's terminal, is not proof.
+func (p CallbackProof) Complete() bool {
+	return p.DeliveryID != "" && p.WebhookDeliveryID != "" && p.Attempts >= 1 &&
+		p.ReceiverReceiptCount == 1 && p.RunTerminalIntact
 }
 
 // secretPattern matches a credential-shaped token (an OpenAI-style sk- key), so a plaintext
@@ -171,6 +233,33 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "recovery_proof (a recovery claim requires a §26.12 RecoveryProof; a 'continued'/'resumed' marker is not proof)"})
 			case !c.RecoveryProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "recovery_proof is incomplete — a §26.12 field group is missing (REC-006)"})
+			}
+		}
+
+		// The E11 automation claims mirror the RecoveryProof rule exactly: a non-empty marker with no
+		// proof is a "missing" finding; a proof that fails its Complete() invariant is "invalid".
+		if c.DedupeClaim != "" {
+			switch {
+			case c.DedupeProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "dedupe_proof (a dedupe claim requires original-linkage proof; a 'deduplicated' marker is not proof)"})
+			case !c.DedupeProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "dedupe_proof is incomplete: original/duplicate linkage or the single-canonical-action count is missing (AUT-001)"})
+			}
+		}
+		if c.OccurrenceClaim != "" {
+			switch {
+			case c.OccurrenceProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "occurrence_proof (an occurrence claim requires single-canonical proof; a marker is not proof)"})
+			case !c.OccurrenceProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "occurrence_proof is incomplete: occurrence id, planned/admitted instants, or the single-canonical count is missing (AUT-007)"})
+			}
+		}
+		if c.CallbackClaim != "" {
+			switch {
+			case c.CallbackProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "callback_proof (a callback claim requires single-semantic-delivery proof; a marker is not proof)"})
+			case !c.CallbackProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "callback_proof is incomplete: delivery ids, attempts, the single receiver receipt, or run-terminal-intact is missing (AUT-011/013)"})
 			}
 		}
 
