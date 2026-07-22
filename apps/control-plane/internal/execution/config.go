@@ -11,29 +11,37 @@ import (
 )
 
 // The configuration resolution layers whose names appear in a ConfigSnapshot's provenance
-// (spec §14). Ordered low → high: the env-selected deployment default, the project
-// baseline/policy, the pinned agent revision / run-template revision (E11 Task 1), and the
-// session config revision / run override on top. The remaining omitted layers (organization
+// (spec §14). Ordered low → high: the env-selected deployment default, the project's DB-backed model
+// route (E13 Task 8), the project baseline/policy, the pinned agent revision / run-template revision
+// (E11 Task 1), and the session config revision / run override on top. The remaining omitted layers (organization
 // policy, child override) arrive with later phases; a value's provenance names the layer that
 // actually set it. layerAgentRevision covers both an AgentRevision and a RunTemplateRevision —
 // spec §14 resolves both from ONE logical ExecutionSpec, and a template is a profile-free pinned
 // revision, so they share this layer.
 const (
 	layerDeployment    = "deployment"
+	layerProjectRoute  = "project_route"
 	layerProject       = "project"
 	layerAgentRevision = "agent_revision"
 	layerSession       = "session"
 )
 
 // ResolveInput is the config resolution input: the deployment default (model + credential
-// ref), the project tools baseline, and the cumulative session override (spec §14). An empty
-// SessionModel / nil SessionTools means the session never overrode that value, so it inherits
-// the lower layer. The provider is NOT a layer here — it stays env-selected (E06 §7.3
-// carve-out); only the model id and the tool set move.
+// ref), the project's model route, the project tools baseline, and the cumulative session override
+// (spec §14). An empty SessionModel / nil SessionTools means the session never overrode that value,
+// so it inherits the lower layer. The PROVIDER is not a layer here: which adapter a call goes to is
+// decided by the route itself (execution.effectiveRoute), not by config resolution — this input
+// resolves the model id, its credential ref, and the tool set.
 type ResolveInput struct {
 	DeploymentModel  string
 	DeploymentSecret string // SecretRef NAME, never a credential value
-	ProjectTools     []string
+	// ProjectRouteModel / ProjectRouteSecret are the project's DB-backed model route (E13 Task 8), the
+	// layer directly above the deployment default: the model id its published revision selects and the
+	// tenant-qualified credential REF of the connection that revision binds. Empty means the project
+	// published no route, leaving resolution bit-identical to the pre-T8 deployment-only path.
+	ProjectRouteModel  string
+	ProjectRouteSecret string
+	ProjectTools       []string
 	// AgentRevisionID / Model / Tools are the pinned AgentRevision or RunTemplateRevision layer
 	// (E11 Task 1, AGT-001). An empty AgentRevisionID means the run pins no revision — the layer is
 	// skipped and resolution behaves exactly as before (the profile-free path). AgentRevisionModel,
@@ -92,8 +100,17 @@ type ConfigSnapshot struct {
 // journal and API can explain why a model/tool was selected. Pure: no I/O, so the same input
 // always yields the same hash.
 func Resolve(in ResolveInput) ConfigSnapshot {
-	// Model: deployment default < pinned revision < session/run override.
+	// Model: deployment default < project route < pinned revision < session/run override.
 	model, modelProv := in.DeploymentModel, layerDeployment
+	// The credential ref follows the model's own two lowest layers: a project routed onto its own
+	// connection redeems THAT connection, never the deployment credential.
+	secretRef := in.DeploymentSecret
+	if in.ProjectRouteModel != "" {
+		model, modelProv = in.ProjectRouteModel, layerProjectRoute
+	}
+	if in.ProjectRouteSecret != "" {
+		secretRef = in.ProjectRouteSecret
+	}
 	if in.AgentRevisionModel != "" {
 		model, modelProv = in.AgentRevisionModel, layerAgentRevision
 	}
@@ -136,10 +153,10 @@ func Resolve(in ResolveInput) ConfigSnapshot {
 		provenance["skills"] = in.AgentRevisionID
 	}
 	return ConfigSnapshot{
-		Hash:       configContentHash(model, tools, in.DeploymentSecret, skills),
+		Hash:       configContentHash(model, tools, secretRef, skills),
 		Model:      model,
 		Tools:      tools,
-		SecretRef:  in.DeploymentSecret,
+		SecretRef:  secretRef,
 		Provenance: provenance,
 		Skills:     skills,
 	}
@@ -223,9 +240,13 @@ func (o *Orchestrator) planConfigChange(ctx context.Context, st *attemptState, c
 		return coordinator.ConfigChangePlan{}, err
 	}
 
-	snap := Resolve(ResolveInput{
-		DeploymentModel:           o.route.Model,
-		DeploymentSecret:          string(o.route.Secret),
+	// The project's DB-backed route is the same layer dispatch routes through (E13 T8), so a config
+	// revision and a checkpoint can never disagree about which model + credential the run is on.
+	route, err := o.effectiveRoute(ctx, st)
+	if err != nil {
+		return coordinator.ConfigChangePlan{}, err
+	}
+	in := ResolveInput{
 		ProjectTools:              policy.DefaultTools,
 		AgentRevisionID:           revID,
 		AgentRevisionModel:        revModel,
@@ -234,7 +255,9 @@ func (o *Orchestrator) planConfigChange(ctx context.Context, st *attemptState, c
 		SkillPinsJSON:             skillPins,
 		SessionModel:              sessionModel,
 		SessionTools:              sessionTools,
-	})
+	}
+	o.routeLayers(route, &in)
+	snap := Resolve(in)
 
 	// The row stores the session-level override; nil tools stay NULL (untouched), not [].
 	var toolsJSON []byte

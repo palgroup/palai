@@ -16,8 +16,9 @@ import (
 )
 
 // defaultAttemptLimits are the execution bounds the control plane leases to the runner for
-// one response attempt — the proven e2e/gateway-parity values. ponytail: fixed here until
-// per-route limits arrive with model_routes config (the deferred E-series carve-out).
+// one response attempt — the proven e2e/gateway-parity values. ponytail: still fixed here. E13 T8 made
+// model_routes readable, but a route revision's config carries only the model + connection: the §27.6
+// per-target concurrency/rate/latency fields are not stored, so there are no per-route limits to read yet.
 var defaultAttemptLimits = runner.Limits{
 	WallTimeMS: 60000, MaxStdoutBytes: 1 << 20, MaxStderrBytes: 1 << 16,
 	MaxFrameBytes: 1 << 20, MaxMemoryBytes: 1 << 28, MaxProcessCount: 64,

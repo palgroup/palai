@@ -1797,6 +1797,8 @@ Task 15 fork kararı 4'ün borcu. LP-0'da model seçimi instance-wide tek env-co
 
 Bu carve-out kapanana kadar model seçimi instance-wide tek env route'tur ve `model_routes`/`model_connections` tabloları okuyucusuzdur; bu bilinen bir durumdur — şemanın LP-0'dan beri hazır olması E06'nın migration yazmadan tüketmeye başlamasını sağlar.
 
+> **KAPANDI — E13 Task 8 (`phase-13-managed-cloud-infra.md`).** Tablolar artık okunuyor (`packages/coordinator/model_routes.go` + `storage/queries/model_routes.sql`, migration YOK) ve `dispatchModel` per-project route çözüyor: model id revision'ın config'inden, credential connection'ın secret-ref'inden (T3 secret store üzerinden, org-qualified handle ile). İki sapma bilinçlidir ve E13 planında yazılıdır: (1) env route SÖKÜLMEDİ, deployment-default FALLBACK katmanına indi — bu yüzden `TestUnroutedProjectFailsAdmission` yerine route'suz proje env default'unda koşar; (2) route revision run satırına PIN'lenmez (000001'de kolon yok) — attempt route'u bir kez çözer ve her model step seçtiği revision'ı `model_requests.result`'a yazar (§27.6'nın "her step seçilen target'ı kaydeder" yarısı).
+
 ### 7.4 Runtime follow-up'ları (whole-branch review, 2026-07-19)
 
 Kayıt yeri bu commit'li plandır — `.superpowers/` ledger gitignored ve makine-yereldir, oraya yazılan kaybolur. LP-0 merge'ünden (`ddf2501`) sonra tespit edildi; hiçbiri LP-0 kanıtını geçersiz kılmaz, her biri sahibinin epic child planına taşınmak ZORUNDADIR:

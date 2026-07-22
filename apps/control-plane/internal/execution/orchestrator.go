@@ -120,9 +120,9 @@ func NewOrchestrator(st *store.Store, dialer EngineDialer, models *modelbroker.B
 	return &Orchestrator{store: st, spine: st.Spine(), dialer: dialer, models: models, tools: tools, tasks: newTaskRegistry(st.Spine()), publications: newPublicationRegistry(st.Spine()), route: defaultModelRoute, DialHandshakeDeadline: dialHandshakeDeadline}
 }
 
-// SetModelRoute points the kernel at a non-default provider/model/secret selected by the
-// composition root (main.go) from the environment. ponytail: a setter, not a model_routes
-// lookup — the DB-backed routing is the deferred E-series carve-out.
+// SetModelRoute sets the DEPLOYMENT-DEFAULT provider/model/secret the composition root (main.go) selects
+// from the environment. Since E13 T8 it is the FALLBACK layer: a project with a published model route
+// dispatches through that route instead (effectiveRoute), and a project without one runs on this.
 func (o *Orchestrator) SetModelRoute(r ModelRoute) { o.route = r }
 
 // SetShellRunner injects the sandbox shell runner the workspace shell tool executes through. Left
@@ -178,6 +178,12 @@ type attemptState struct {
 	output         []contracts.ContentItem
 	usage          contracts.Usage
 	model          string // the actually-used model from the latest committed model result
+	// route is the attempt's effective ModelRoute — the project's DB-backed route when it has one, else
+	// the deployment default (E13 T8). Resolved once by effectiveRoute and cached here so every boundary
+	// of one attempt agrees on the same target; routeResolved distinguishes "not yet read" from "read,
+	// and the project has no route".
+	route         ModelRoute
+	routeResolved bool
 	// Delegation state (spec §25.18-19). depth is this run's depth (a child's is parent+1);
 	// childModel/childBudget route a ChildRun's own model call; budget/budgetBounded is the
 	// parent budget children intersect against; childReserved is the effective budget already
