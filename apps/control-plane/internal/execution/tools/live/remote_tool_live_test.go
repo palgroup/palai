@@ -4,7 +4,8 @@
 // pinned into a published set a run's AgentRevision names, is resolved through the broker's per-tenant
 // lookup and executed as a SIGNED HTTP invoke — driven by a REAL provider-one tool call. The CP signs the
 // tool-http.v1 invoke (HMAC over the raw body), a REAL local harness server VERIFIES the signature
-// (server-side, exactly as the T9 SDK will), answers 202, and POSTs a REAL signed callback to the REAL
+// (server-side, USING the T9 Extension SDK — extsdk.Verify), answers 202, and POSTs a REAL signed callback
+// to the REAL
 // callback endpoint, which one-use-consumes the token and completes the durable operation under the live
 // fence — the invoke -> 202 -> signed-callback -> completed round-trip proven end-to-end with a real
 // model driving it and real HMAC on both directions.
@@ -44,13 +45,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/palgroup/palai/adapters/integrations/webhook"
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+	extsdk "github.com/palgroup/palai/packages/extension-sdk"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
@@ -103,14 +104,15 @@ func TestLiveRemoteToolAsyncRoundtrip(t *testing.T) {
 	callbackServer := httptest.NewServer(muxA)
 	defer callbackServer.Close()
 
-	// The REAL remote tool harness: it VERIFIES the invoke HMAC server-side (the customer SDK's job),
-	// answers 202, and POSTs a REAL signed callback back to the callback endpoint.
+	// The REAL remote tool harness: it VERIFIES the invoke HMAC server-side with the T9 Extension SDK
+	// (extsdk.Verify — the customer SDK's job, now dogfooded), answers 202, and POSTs a REAL signed
+	// callback back to the callback endpoint SIGNED with the SDK (extsdk.Callback + extsdk.CallbackHeaders).
 	var execCount int32
 	toolServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		id := r.Header.Get(webhook.HeaderID)
-		unix, err := strconv.ParseInt(r.Header.Get(webhook.HeaderTimestamp), 10, 64)
-		if err != nil || !webhook.Verify(secret, id, time.Unix(unix, 0), raw, r.Header.Get(webhook.HeaderSignature), time.Now(), 5*time.Minute) {
+		id := r.Header.Get(extsdk.HeaderID)
+		unix, err := strconv.ParseInt(r.Header.Get(extsdk.HeaderTimestamp), 10, 64)
+		if err != nil || !extsdk.Verify(secret, id, time.Unix(unix, 0), raw, r.Header.Get(extsdk.HeaderSignature), time.Now(), 5*time.Minute) {
 			w.WriteHeader(http.StatusUnauthorized) // a bad/unsigned invoke never executes
 			return
 		}
@@ -223,11 +225,11 @@ func postSignedCallbackFromHarness(secret []byte, toolCallID, callbackURL, token
 		return
 	}
 	operationID := path.Base(callbackURL)
-	raw, _ := json.Marshal(map[string]any{
-		"protocol": "tool-http.v1", "tool_call_id": toolCallID, "operation_id": operationID,
-		"result": map[string]any{"answer": "sunny"},
-	})
-	headers := webhook.NewSigner(secret).Headers(operationID, time.Now(), 1, raw)
+	raw, err := extsdk.Callback(operationID, toolCallID, map[string]any{"answer": "sunny"})
+	if err != nil {
+		return
+	}
+	headers := extsdk.CallbackHeaders(operationID, time.Now(), raw, secret)
 	req, err := http.NewRequest(http.MethodPost, callbackURL, bytes.NewReader(raw))
 	if err != nil {
 		return

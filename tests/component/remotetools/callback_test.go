@@ -22,10 +22,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/palgroup/palai/adapters/integrations/webhook"
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/packages/coordinator"
+	extsdk "github.com/palgroup/palai/packages/extension-sdk"
 )
 
 const testSecretRef = "sig-ref"
@@ -124,7 +124,7 @@ func (h *harness) signAndPost(operationID, token string, secret []byte, result m
 		"protocol": "tool-http.v1", "tool_call_id": "tc_ignored_by_verify", "operation_id": operationID, "result": result,
 	}
 	raw, _ := json.Marshal(envelope)
-	headers := webhook.NewSigner(secret).Headers(operationID, time.Now(), 1, raw)
+	headers := extsdk.CallbackHeaders(operationID, time.Now(), raw, secret)
 	req, _ := http.NewRequest(http.MethodPost, h.server.URL+"/v1/tool-callbacks/"+operationID, bytes.NewReader(raw))
 	for k, v := range headers {
 		req.Header.Set(k, v)
