@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/palgroup/palai/adapters/integrations/mcp"
+	"github.com/palgroup/palai/packages/egress"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -69,6 +71,16 @@ func (s *Store) CreateMCPConnection(ctx context.Context, org, project string, ra
 	}
 	if err := validateConnectionConfig(in.Transport, in.Config); err != nil {
 		return Connection{}, err
+	}
+	// Fail-fast SSRF gate at REGISTRATION (E12 T6 step 4): resolve-vet the http URL + audience through the
+	// wired MCP client, so a name that ALREADY points internal is rejected before the connection is stored —
+	// not only at the first dial. A binderless store (no client wired) skips it, symmetric with the current
+	// creatable-but-not-discoverable posture; the static egress.VetURL in validateConnectionConfig still ran.
+	if s.mcp != nil {
+		vetConn := connConfig(org, Connection{Name: in.Name, Transport: in.Transport, Config: in.Config})
+		if err := s.mcp.VetConnection(ctx, vetConn); err != nil {
+			return Connection{}, fmt.Errorf("%w: %v", ErrInvalidConnectionConfig, err)
+		}
 	}
 	trust := in.TrustLevel
 	if trust == "" {
@@ -155,12 +167,27 @@ func validateConnectionConfig(transport string, config map[string]any) error {
 		if !ok || len(cmd) == 0 {
 			return fmt.Errorf("%w: stdio needs a non-empty cmd", ErrInvalidConnectionConfig)
 		}
-		return allowlistConfigKeys(config, "image_digest", "cmd")
+		// sampling/sampling_max_tokens are the only E12 T6 additions for stdio (a stdio server has no HTTP
+		// origin, so no url/audience/oauth). A stdio server's sampling request rides the same gate.
+		return allowlistConfigKeys(config, "image_digest", "cmd", "sampling", "sampling_max_tokens")
 	case "http":
-		if url, _ := config["url"].(string); url == "" {
+		url, _ := config["url"].(string)
+		if url == "" {
 			return fmt.Errorf("%w: http needs a url", ErrInvalidConnectionConfig)
 		}
-		return allowlistConfigKeys(config, "url")
+		// Static egress gate at REGISTRATION: an internal literal IP, an http downgrade, or a URL embedding a
+		// credential is rejected here (the resolve-vet fail-fast half is Manager.VetConnection, wired into
+		// create/discover). The pinned dialer stays the authoritative connect-time gate.
+		if err := egress.VetURL(url, false); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidConnectionConfig, err)
+		}
+		// A declared oauth block is validated passively (PKCE S256 + exact https redirect; no inline secret).
+		if oauth, ok := config["oauth"].(map[string]any); ok {
+			if err := mcp.ValidateOAuthMetadata(oauth); err != nil {
+				return fmt.Errorf("%w: %v", ErrInvalidConnectionConfig, err)
+			}
+		}
+		return allowlistConfigKeys(config, "url", "audience", "oauth", "sampling", "sampling_max_tokens")
 	default:
 		return fmt.Errorf("%w: got %q", ErrInvalidTransport, transport)
 	}
