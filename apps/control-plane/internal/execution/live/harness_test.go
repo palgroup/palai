@@ -31,8 +31,9 @@ func newID(prefix string) string {
 }
 
 // seedRun creates org -> project -> session -> response -> run (state=queued) so RunContext resolves
-// and the orchestrator can drive the run. The input prompt requests the tool (see the tool-advertising
-// ceiling in restore_test.go).
+// and the orchestrator can drive the run. The input prompt requests the tool, and the project's
+// config_policy puts recovery_note in the effective set so dispatchModel advertises it to the real
+// provider (E12 T1) — the model then reaches the tool boundary the checkpoint smokes exercise.
 func seedRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, string, string, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -44,7 +45,8 @@ func seedRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, string, stri
 		}
 	}
 	do(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
-	do(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
+	do(`INSERT INTO projects (id, organization_id, config_policy) VALUES ($1, $2, $3)`,
+		tenant.Project, tenant.Organization, []byte(`{"default_tools":["recovery_note"]}`))
 	do(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, session, tenant.Organization, tenant.Project)
 	do(`INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
 	    VALUES ($1, $2, $3, $4, 'queued', $5)`,

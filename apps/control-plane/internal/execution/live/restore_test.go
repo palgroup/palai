@@ -21,11 +21,11 @@
 //     S3: two DISTINCT real chatcmpl ids (before and after the kill) are the live evidence.
 //  2. The kill is boundary-hook'd (post-persist), not a mid-window race — mid-window kill matrices are
 //     T5/T6.
-//  3. TOOL ADVERTISING GAP: to reach a real tool boundary the run must call recovery_note, but the
-//     orchestrator's dispatchModel does not yet advertise tool schemas to the provider (no Tools field
-//     on the model-broker Request), so a real provider will not call the tool as-is. Wiring tool
-//     advertisement into dispatchModel is the live-harness prerequisite to RUN this smoke; the flow is
-//     authored here and the deterministic tier already proves the recovery behaviour it exercises.
+//  3. SPONTANEOUS TOOL CALL (E12 T1): dispatchModel now advertises the run's effective tool set, so the
+//     real provider is offered recovery_note (seedRun puts it in the project's default_tools) and calls
+//     it of its own choice to reach the tool boundary — no forcing. Spontaneity is probabilistic: a run
+//     where the model declines to call the tool never reaches the checkpoint and the smoke re-runs; a
+//     green run is the proof. The deterministic tier already proves the recovery behaviour it exercises.
 //
 // GATED: serialized with every LIVE/fault smoke on the shared :local Docker stack; NOT part of make
 // verify / CI. Skips cleanly without creds. The credential is used only as an opaque env-resolved
@@ -74,14 +74,6 @@ func TestLiveCheckpointRestoreRealProvider(t *testing.T) {
 	pgURL := requireEnv(t, "PALAI_COMPONENT_POSTGRES_URL")
 	s3Endpoint := requireEnv(t, "PALAI_S3_ENDPOINT")
 	_ = secret // resolved through the env secret resolver; never referenced directly
-
-	// Honest gate (ceiling 3): the orchestrator's dispatchModel does not yet advertise tool schemas to
-	// the provider, so a real provider won't call recovery_note and the run never reaches a tool
-	// boundary — the smoke can't pass until that live-harness wiring lands. SKIP (not FAIL) so the
-	// script's known-list carries no guaranteed-red case; flip the env once tool-advertising is wired.
-	if os.Getenv("PALAI_LIVE_TOOL_ADVERTISING") == "" {
-		t.Skip("checkpoint-restore needs orchestrator tool-advertising to the provider (dispatchModel omits Tools); set PALAI_LIVE_TOOL_ADVERTISING=1 once wired")
-	}
 
 	ctx := context.Background()
 	repo, err := store.Open(ctx, pgURL)

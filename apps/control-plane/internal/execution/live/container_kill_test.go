@@ -15,9 +15,10 @@
 //     is T6's host-kill-restore smoke), so the abrupt post-checkpoint kill is a process kill standing
 //     in for the container kill; the container kill's own semantics are ceiling 1's deterministic
 //     proof. No overclaim: this test's name asserts recovery-after-kill with a real provider.
-//  3. TOOL ADVERTISING GAP (shared with checkpoint-restore): dispatchModel does not yet advertise tool
-//     schemas to the provider, so a real provider won't call recovery_note and the run never reaches a
-//     tool boundary. SKIP until PALAI_LIVE_TOOL_ADVERTISING is set once that wiring lands.
+//  3. SPONTANEOUS TOOL CALL (E12 T1, shared with checkpoint-restore): dispatchModel now advertises the
+//     run's effective tool set, so the real provider is offered recovery_note and calls it of its own
+//     choice to reach the tool boundary. Spontaneity is probabilistic — a run where the model declines
+//     never reaches the checkpoint and re-runs; a green run is the proof.
 //
 // GATED: serialized with every LIVE/fault smoke on the shared :local Docker stack; NOT part of make
 // verify / CI. Skips cleanly without creds. The credential is an opaque env-resolved secret, never
@@ -46,10 +47,6 @@ func TestLiveContainerKillRecoveryRealProvider(t *testing.T) {
 	pgURL := requireEnv(t, "PALAI_COMPONENT_POSTGRES_URL")
 	s3Endpoint := requireEnv(t, "PALAI_S3_ENDPOINT")
 	_ = secret // resolved through the env secret resolver; never referenced directly
-
-	if os.Getenv("PALAI_LIVE_TOOL_ADVERTISING") == "" {
-		t.Skip("container-kill-recovery needs orchestrator tool-advertising to the provider (dispatchModel omits Tools); set PALAI_LIVE_TOOL_ADVERTISING=1 once wired")
-	}
 
 	ctx := context.Background()
 	repo, err := store.Open(ctx, pgURL)

@@ -7,8 +7,8 @@
 // count == deduped-event count == 1.
 //
 // HONEST CEILING (mandatory, spec §21.7, brief §6): the source is OUR harness (Slack/GitHub connectors are
-// E17). The run is single-step and REAL (the E08 pin: no tools are advertised to the provider), so this case
-// makes NO model→tool claim and therefore does NOT touch PALAI_LIVE_TOOL_ADVERTISING. The dedupe →
+// E17). The run's effective tool set is empty (no default_tools configured), so dispatchModel advertises
+// nothing and the run stays single-step + REAL; this case makes NO model→tool claim. The dedupe →
 // no-second-run invariant is proven at the broker/adapter seam (the counting adapter wraps the REAL
 // provider-one adapter, and only the canonical delivery dispatches a real completion). Verification runs
 // before persistence (AUT-002); the full backpressure/poison/rotation surface is proven in the component
