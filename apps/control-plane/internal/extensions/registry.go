@@ -54,6 +54,10 @@ var (
 	// ErrOverrideNotStricter is returned when a set-pin override widens a declared limit or carries an
 	// unknown/typo'd key rather than tightening a known one (approval-only-stricter, spec §28.4).
 	ErrOverrideNotStricter = errors.New("extensions: pin override may only tighten a known declared limit")
+	// ErrTimeoutTooLarge is returned when a revision declares a timeout_ms above the ceiling — an async
+	// remote tool cannot be allowed to pin a broker execution slot indefinitely (E12 T4 MF3). The executor
+	// caps the runtime wait too; this rejects the value at create so it is never stored.
+	ErrTimeoutTooLarge = errors.New("extensions: timeout_ms exceeds the maximum")
 	// ErrInvalidReplayClass is returned when a revision declares a replay_class outside the five known
 	// kill-recovery classes — so the broker never resolves a registry tool to a class it cannot classify.
 	ErrInvalidReplayClass = errors.New("extensions: replay_class must be one of pure|idempotent|reversible|irreversible|interactive")
@@ -67,6 +71,10 @@ var knownReplayClasses = map[string]bool{
 
 // maxSegmentLen bounds each canonical-name segment (an app-level length ceiling, spec §28.2).
 const maxSegmentLen = 128
+
+// MaxTimeoutMS is the ceiling on a revision's declared timeout_ms (E12 T4 MF3): 5 minutes, matching the
+// executor's runtime maxTimeout. An async remote tool cannot pin a broker slot longer than this.
+const MaxTimeoutMS = 5 * 60 * 1000
 
 // Store is the extensibility management store over the durable spine's pool. reserved holds the
 // code-defined built-in model-visible names a registered tool must not shadow (injected from the flat
@@ -153,6 +161,9 @@ func DecodeToolRevisionInput(raw []byte) (ToolRevisionInput, error) {
 	}
 	if !knownReplayClasses[in.ReplayClass] {
 		return ToolRevisionInput{}, fmt.Errorf("%w: got %q", ErrInvalidReplayClass, in.ReplayClass)
+	}
+	if in.TimeoutMS != nil && *in.TimeoutMS > MaxTimeoutMS {
+		return ToolRevisionInput{}, fmt.Errorf("%w: got %d ms (ceiling %d)", ErrTimeoutTooLarge, *in.TimeoutMS, MaxTimeoutMS)
 	}
 	return in, nil
 }

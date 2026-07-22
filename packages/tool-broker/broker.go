@@ -253,22 +253,30 @@ func BlocksReplayAfterKill(class ReplayClass) bool {
 // the canonical table under a strictly increasing fence, invokes the tool,
 // validates the output, and caches the completed result with one usage event.
 func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name string, args map[string]any, fence uint64, env ExecEnv) (Outcome, error) {
+	// Resolution, replay, validation, fence, and the ready→leased→executing transition run under the lock;
+	// the row is left `executing` before the lock is released so a later same-id call sees it. The tool's
+	// invoke — which for a remote_http tool WAITS on the network (a 202 poll) — runs WITHOUT the lock (MF3),
+	// so a slow async tool no longer serializes every other run's tool dispatch; only the bookkeeping is
+	// mutually excluded. A completed row still replays cached.
+	// ponytail: two concurrent Executes for the SAME tool_call_id are a non-case (one dispatch per call;
+	// cross-attempt dedup is the durable ledger's job) — the second sees `executing` and fails its lease.
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	tool, ok := b.tools[name]
 	if !ok {
 		// Static-set miss: fall back to the injected per-tenant registry lookup (E12). A hit runs the
 		// resolved tool through the SAME fence/ledger/replay machinery below; it never enters b.tools, so
 		// resolution stays tenant-scoped. A clean miss (or no lookup) is still ErrUnknownTool.
 		if b.lookup == nil {
+			b.mu.Unlock()
 			return Outcome{}, fmt.Errorf("%w: %s", ErrUnknownTool, name)
 		}
 		resolved, found, err := b.lookup(ctx, env, name)
 		if err != nil {
+			b.mu.Unlock()
 			return Outcome{}, fmt.Errorf("registry lookup %s: %w", name, err)
 		}
 		if !found {
+			b.mu.Unlock()
 			return Outcome{}, fmt.Errorf("%w: %s", ErrUnknownTool, name)
 		}
 		tool = resolved
@@ -276,12 +284,15 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 
 	// Idempotent replay: a completed row is authoritative and never re-runs.
 	if r, ok := b.rows[callID]; ok && r.state == statemachines.ToolCallCompleted {
-		return Outcome{Result: r.result, State: r.state, Hash: r.hash, ReplayClass: tool.replayClass(), Cached: true}, nil
+		out := Outcome{Result: r.result, State: r.state, Hash: r.hash, ReplayClass: tool.replayClass(), Cached: true}
+		b.mu.Unlock()
+		return out, nil
 	}
 
 	// Strict validation happens before the row or fence is touched, so a rejected
 	// argument set produces no side effect and no wasted fence.
 	if err := validate(tool.InputSchema, args); err != nil {
+		b.mu.Unlock()
 		return Outcome{}, fmt.Errorf("%w: input: %v", ErrInvalidArguments, err)
 	}
 
@@ -291,6 +302,7 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 		b.rows[callID] = r
 	}
 	if err := statemachines.AcceptFence(r.fence, fence); err != nil {
+		b.mu.Unlock()
 		return Outcome{}, err
 	}
 	r.fence = fence
@@ -298,30 +310,37 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 
 	state, _, err := statemachines.Apply(r.state, statemachines.ToolCallCmdLease, statemachines.ToolCallTable)
 	if err != nil {
+		b.mu.Unlock()
 		return Outcome{}, err
 	}
 	if state, _, err = statemachines.Apply(state, statemachines.ToolCallCmdExecute, statemachines.ToolCallTable); err != nil {
+		b.mu.Unlock()
 		return Outcome{}, err
 	}
+	r.state = state // mark executing in the map, then release the lock across the (possibly network-bound) invoke
+	b.mu.Unlock()
 
 	// env is a value copy, so stamping the per-call identity here never touches the caller's template.
 	// A remote_http tool reads these for its invoke Idempotency-Key + durable operation row (E12 T4).
 	env.CallID = callID
 	env.Fence = fence
-	result, err := tool.invoke(ctx, env, args)
-	if err != nil {
-		r.state, _, _ = statemachines.Apply(state, statemachines.ToolCallCmdFail, statemachines.ToolCallTable)
-		return Outcome{State: r.state, Hash: r.hash}, fmt.Errorf("tool %s: %w", name, err)
+	result, invokeErr := tool.invoke(ctx, env, args)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if invokeErr != nil {
+		r.state, _, _ = statemachines.Apply(r.state, statemachines.ToolCallCmdFail, statemachines.ToolCallTable)
+		return Outcome{State: r.state, Hash: r.hash}, fmt.Errorf("tool %s: %w", name, invokeErr)
 	}
 	if err := validate(tool.OutputSchema, result); err != nil {
-		r.state, _, _ = statemachines.Apply(state, statemachines.ToolCallCmdFail, statemachines.ToolCallTable)
+		r.state, _, _ = statemachines.Apply(r.state, statemachines.ToolCallCmdFail, statemachines.ToolCallTable)
 		return Outcome{State: r.state, Hash: r.hash}, fmt.Errorf("%w: output: %v", ErrInvalidArguments, err)
 	}
-
-	if state, _, err = statemachines.Apply(state, statemachines.ToolCallCmdComplete, statemachines.ToolCallTable); err != nil {
+	final, _, err := statemachines.Apply(r.state, statemachines.ToolCallCmdComplete, statemachines.ToolCallTable)
+	if err != nil {
 		return Outcome{}, err
 	}
-	r.state = state
+	r.state = final
 	r.result = result
 	return Outcome{Result: result, State: r.state, Usage: contracts.Usage{ToolCalls: 1}, Hash: r.hash, ReplayClass: tool.replayClass()}, nil
 }
