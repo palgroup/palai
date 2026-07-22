@@ -27,6 +27,9 @@ func (s scriptedAdmitter) GetResponse(context.Context, middleware.Scope, string)
 func (s scriptedAdmitter) CancelResponse(context.Context, middleware.Scope, string) (RetrieveResult, error) {
 	return RetrieveResult{}, nil
 }
+func (s scriptedAdmitter) ListResponses(context.Context, middleware.Scope, ListQuery) ([]ListRow, error) {
+	return nil, nil
+}
 
 func admissionTestServer(t *testing.T, result AdmitResult) *httptest.Server {
 	t.Helper()

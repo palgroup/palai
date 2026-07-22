@@ -190,6 +190,48 @@ func (s *Store) GetResponse(ctx context.Context, scope middleware.Scope, id stri
 	return api.RetrieveResult{Body: body, Found: true}, nil
 }
 
+// ListResponses returns a tenant-scoped page of run history within the request's verified scope
+// (spec §22.3, E13 T4). It runs under RLS, so the scope confines the rows; the ListQuery carries
+// only the keyset position and the basic filters. Each row is rendered as the same Response
+// projection GetResponse returns, minus the decoded output blob — model/usage/output come from the
+// per-id GET, so a page is a cheap keyset scan.
+func (s *Store) ListResponses(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
+	items, err := s.spine.ListResponses(ctx, tenantOf(scope), toListParams(q))
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]api.ListRow, 0, len(items))
+	for _, it := range items {
+		body, err := json.Marshal(contracts.Response{
+			ID:             contracts.ResponseID(it.ID),
+			Object:         "response",
+			Status:         it.State,
+			CreatedAt:      it.CreatedAt.UTC().Format(time.RFC3339Nano),
+			Output:         []contracts.ContentItem{},
+			Usage:          contracts.Usage{},
+			SessionID:      contracts.SessionID(it.SessionID),
+			OrganizationID: contracts.OrganizationID(scope.Organization),
+			ProjectID:      contracts.ProjectID(scope.Project),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal response list row: %w", err)
+		}
+		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
+	}
+	return rows, nil
+}
+
+// toListParams maps the API's resolved ListQuery onto the coordinator's keyset request, adding the
+// +1 over-fetch the handler uses to detect a further page.
+func toListParams(q api.ListQuery) coordinator.ListParams {
+	p := coordinator.ListParams{Status: q.Status, CreatedGTE: q.CreatedGTE, CreatedLTE: q.CreatedLTE, Limit: q.Limit + 1}
+	if q.After != nil {
+		p.AfterCreatedAt = &q.After.CreatedAt
+		p.AfterID = q.After.ID
+	}
+	return p
+}
+
 // CancelResponse cancels a response's run within the request's verified scope and returns
 // the canceled terminal projection to render (spec §22.3). An unknown or foreign id is a
 // miss (Found=false → 404, same contract as retrieval, leaking no cross-tenant existence).

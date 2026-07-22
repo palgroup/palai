@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -32,15 +33,25 @@ var testScope = middleware.Scope{
 // The durable admission invariants themselves are proven against real Postgres in
 // tests/component/postgres.
 type fakeBackend struct {
-	mu   sync.Mutex
-	seen map[string]stored
-	byID map[string][]byte
+	mu    sync.Mutex
+	seen  map[string]stored
+	byID  map[string][]byte
+	order []listed // admission order, so ListResponses can page a run history keyset
+	seq   int64
 }
 
 type stored struct {
 	hash   string
 	respID string
 	body   []byte
+}
+
+// listed is one admitted response the fake pages over. created is a synthetic monotonic
+// timestamp (an admission counter) so the keyset order is deterministic in-process.
+type listed struct {
+	id      string
+	created time.Time
+	body    []byte
 }
 
 func newFakeBackend() *fakeBackend {
@@ -65,7 +76,39 @@ func (f *fakeBackend) AdmitResponse(_ context.Context, req api.AdmitRequest) (ap
 	}
 	f.seen[req.IdempotencyKey] = stored{hash: req.RequestHash, respID: req.ResponseID, body: req.Body}
 	f.byID[req.ResponseID] = req.Body
+	f.seq++
+	f.order = append(f.order, listed{id: req.ResponseID, created: time.Unix(0, f.seq), body: req.Body})
 	return api.AdmitResult{ResponseID: req.ResponseID, Body: req.Body}, nil
+}
+
+// ListResponses pages the admitted responses newest-first, honoring the decoded keyset cursor and
+// the page size. It fetches Limit+1 like the real store so the handler detects a further page. The
+// durable keyset query itself is proven against real Postgres in the e2e responses tier; this fake
+// exercises the handler's cursor + Page envelope contract Docker-free.
+func (f *fakeBackend) ListResponses(_ context.Context, _ middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rows := make([]api.ListRow, 0, q.Limit+1)
+	for i := len(f.order) - 1; i >= 0; i-- {
+		it := f.order[i]
+		if q.After != nil && !keysetBefore(it.created, it.id, q.After.CreatedAt, q.After.ID) {
+			continue
+		}
+		rows = append(rows, api.ListRow{ID: it.id, CreatedAt: it.created, Body: it.body})
+		if len(rows) >= q.Limit+1 {
+			break
+		}
+	}
+	return rows, nil
+}
+
+// keysetBefore reports whether (aTime, aID) sorts strictly before (bTime, bID) in the
+// (created_at DESC, id DESC) order the list pages over.
+func keysetBefore(aTime time.Time, aID string, bTime time.Time, bID string) bool {
+	if aTime.Equal(bTime) {
+		return aID < bID
+	}
+	return aTime.Before(bTime)
 }
 
 // GetResponse serves the retrieval seam from the by-id index: an unknown id is a
