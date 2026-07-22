@@ -14,13 +14,15 @@ import (
 
 // doctorChecks is the exact set of checks `local doctor --json` must report, each with a
 // status and a human detail (spec §44 doctor surface; LP-002). supervisor surfaces the
-// control-plane background-loop restart counters (H2).
+// control-plane background-loop restart counters (H2); host_quarantine surfaces the
+// SAN-008 quarantine ledger (E10 Task 6).
 var doctorChecks = []string{
 	"api", "migration", "object_store", "runner", "image_digests",
 	"provider", "clock", "retention_ttl", "runner_tls_reject", "supervisor",
+	"host_quarantine",
 }
 
-// TestDoctorJSONShape proves the doctor --json contract: all ten checks are present and
+// TestDoctorJSONShape proves the doctor --json contract: every check is present and
 // each carries {status, detail}. retention_ttl is read from GET /v1/capabilities (the
 // Task 11d discovery surface) and object_store reports the ADR-0004 digest reachable via
 // an S3-endpoint ping.
