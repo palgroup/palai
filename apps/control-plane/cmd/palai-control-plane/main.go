@@ -62,10 +62,15 @@ func main() {
 	// view) and the delivery pump (spec §21.4-21.6). It rides the durable spine's pool.
 	webhookStore := automation.NewWebhookStore(repo.Spine().Pool())
 
-	// The trigger store is shared by the HTTP surface (trigger management + manual/API delivery) and the
-	// delivery-reconciler (spec §20.2.2, E11 Task 2). It admits a triggered run through the durable spine
-	// — the SAME §20.9 admission path a POST /v1/responses takes.
-	triggerStore := automation.NewTriggerStore(repo.Spine().Pool()).WithAdmitter(repo.Spine())
+	// The trigger store is shared by the HTTP surface (trigger management + manual/API delivery + the signed
+	// inbound-webhook receiver) and the delivery-reconciler (spec §20.2.2, E11 Task 2/5). It admits a
+	// triggered run through the durable spine — the SAME §20.9 admission path a POST /v1/responses takes. The
+	// inbound receiver verifies against the org-scoped secret bridge, audits rejects (log-only ceiling — E13/
+	// E15 durable store), and bounds a flood (in-flight semaphore default 256, per-trigger backlog opt-in).
+	triggerStore := automation.NewTriggerStore(repo.Spine().Pool()).WithAdmitter(repo.Spine()).
+		WithInboundSecrets(inboundSecretResolver).
+		WithInboundGate(log.Printf, envDuration("PALAI_INBOUND_TOLERANCE"),
+			envIntDefault("PALAI_INBOUND_MAX_INFLIGHT", 256), envIntDefault("PALAI_INBOUND_BACKLOG_MAX", 0))
 
 	// The schedule store is shared by the HTTP surface (schedule management + occurrence log) and the
 	// schedule-ticker (spec §33, E11 Task 3). It fires schedules through the SAME trigger-delivery pipeline
@@ -359,7 +364,10 @@ func startDeliveryReconciler(ctx context.Context, store *automation.TriggerStore
 		envDurationOr("PALAI_TRIGGER_RECONCILE_TICK", time.Second),
 		envDurationOr("PALAI_TRIGGER_MAPPED_GRACE", time.Minute),
 		envIntDefault("PALAI_TRIGGER_RECONCILE_BATCH", 100),
-		log.Printf)
+		log.Printf).
+		// Short-retention scrub of terminal inbound raw payloads (0 ⇒ disabled, the operator opt-in shape of
+		// PALAI_RETENTION_STORE_FALSE_TTL; encryption-at-rest is E13, no "encrypted" claim here).
+		WithInboundRawTTL(envDuration("PALAI_INBOUND_RAW_TTL"))
 	go supervisor.Supervise(ctx, "delivery-reconciler", rec.Run)
 }
 
@@ -391,6 +399,23 @@ func webhookSecretResolver(org, ref string) ([]byte, error) {
 	path := os.Getenv("PALAI_WEBHOOK_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
 	if path == "" {
 		return nil, fmt.Errorf("no secret bridge configured for webhook ref under org %q", org)
+	}
+	return os.ReadFile(path)
+}
+
+// inboundSecretResolver is the receiver-side sibling of webhookSecretResolver (E11 Task 5): it bridges a
+// trigger's inbound source-secret ref to bytes via PALAI_INBOUND_SECRET_FILE_<ORG>__<REF> (a FILE PATH,
+// never inline; E13 seals the file at rest). The org prefix is a server-minted hard tenant boundary, so a
+// tenant's ref can only name a secret provisioned under its OWN org — and the inbound namespace is
+// DISTINCT from the outbound PALAI_WEBHOOK_SECRET_FILE_ one, so the two secret sets are non-interchangeable.
+// An unresolved ref fails verification (a generic 404 upstream — no config oracle), never an unsigned accept.
+func inboundSecretResolver(org, ref string) ([]byte, error) {
+	if org == "" || ref == "" {
+		return nil, errors.New("empty inbound secret org/ref")
+	}
+	path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	if path == "" {
+		return nil, fmt.Errorf("no secret bridge configured for inbound ref under org %q", org)
 	}
 	return os.ReadFile(path)
 }
