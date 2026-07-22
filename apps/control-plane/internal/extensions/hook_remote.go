@@ -32,10 +32,18 @@ func (s *Store) runRemoteHook(ctx context.Context, h loadedHook, ev HookEvent) (
 	if h.SecretRef == "" {
 		return HookDecision{}, fmt.Errorf("remote hook %s: no secret_ref (a signed transport needs a secret)", h.ID)
 	}
+	// Circuit breaker (EXT-005): a hook that has failed repeatedly is shed FAST — keyed by hook id, so one
+	// broken/down hook worker never stalls a run firing a DIFFERENT hook, and a hook-less run never touches
+	// this at all. A tripped breaker returns fail-closed BEFORE any dial. The breaker takes only a short mutex
+	// (no lock held across the network wait — the T4 MF3 lesson).
+	if s.hookBreaker != nil && !s.hookBreaker.Allow(h.ID) {
+		return HookDecision{}, fmt.Errorf("remote hook %s: circuit breaker open (worker shed)", h.ID)
+	}
 	// Resolve the signing secret FRESH per invoke (org-scoped), never captured in a closure (the remoteExec
 	// idiom): a hook binding holds only non-secret wiring (url, secret_ref handle).
 	secret, err := s.remoteSecret(ev.Org, h.SecretRef)
 	if err != nil {
+		s.recordHookFailure(h.ID)
 		return HookDecision{}, fmt.Errorf("resolve remote hook secret for %s: %w", h.ID, err)
 	}
 	// A hook fire is not a durable tool call: the synthetic id only keys the signed envelope + the transport
@@ -58,10 +66,26 @@ func (s *Store) runRemoteHook(ctx context.Context, h loadedHook, ev HookEvent) (
 		TimeoutMS:   int(hookTimeout(h.Category, h.TimeoutMS) / time.Millisecond),
 	})
 	if err != nil {
-		// Fail-CLOSED for policy/transform; the observer path discards this (fail-open).
+		// A transport/reach failure counts toward the breaker (a down worker trips it) and is fail-CLOSED for
+		// policy/transform; the observer path discards this (fail-open).
+		s.recordHookFailure(h.ID)
 		return HookDecision{}, err
 	}
+	s.recordHookSuccess(h.ID)
 	return interpretRemoteHookResponse(h.Category, resp)
+}
+
+// recordHookFailure/recordHookSuccess feed the per-hook breaker (nil-safe for unit stores built without one).
+func (s *Store) recordHookFailure(hookID string) {
+	if s.hookBreaker != nil {
+		s.hookBreaker.RecordFailure(hookID)
+	}
+}
+
+func (s *Store) recordHookSuccess(hookID string) {
+	if s.hookBreaker != nil {
+		s.hookBreaker.RecordSuccess(hookID)
+	}
 }
 
 // interpretRemoteHookResponse maps a remote hook's inline result to a decision by category. A policy hook must

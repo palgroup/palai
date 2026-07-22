@@ -111,6 +111,12 @@ run_pg_fault_suite() {
 
 run_coordinator() { run_pg_fault_suite coordinator ./tests/fault/coordinator; }
 
+# run_extensions proves the E12 Task 8 hook fail-mode under fault (EXT-005, spec §28.17): a down remote hook
+# worker fails CLOSED, its per-hook circuit breaker trips + sheds fast, the control plane stays up, and a
+# DIFFERENT hook still flows — against REAL Postgres over the REAL signed transport. The proof lives in-package
+# (the extensions store is internal), selected by the fault-tagged hook worker-down test.
+run_extensions() { PALAI_FAULT_RUN='TestHookWorkerDown' run_pg_fault_suite extensions ./apps/control-plane/internal/extensions; }
+
 # run_scheduler proves the schedule ticker's outage recovery (AUT-008) against real Postgres: the REAL
 # supervised loop is stopped (context cancel, fully drained — not a sleep) across a planned per-minute
 # fire window whose passage is modelled by an injected clock jump, then restarted; the misfire policy
@@ -160,13 +166,14 @@ run_recovery() {
 
 case "$suite" in
   coordinator) run_coordinator ;;
+  extensions) run_extensions ;;
   scheduler) run_scheduler ;;
   subagents) run_subagents ;;
   runner) run_runner ;;
   sandbox) run_sandbox ;;
   recovery) run_recovery ;;
   *)
-    echo "unknown fault suite: $suite (known: coordinator, scheduler, subagents, runner, sandbox, recovery)" >&2
+    echo "unknown fault suite: $suite (known: coordinator, extensions, scheduler, subagents, runner, sandbox, recovery)" >&2
     exit 2
     ;;
 esac

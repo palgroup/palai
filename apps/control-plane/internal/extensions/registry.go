@@ -27,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -93,6 +94,11 @@ type Store struct {
 	// T8). A platform_inline hook with no registered handler is fail-closed at dispatch (a policy deny),
 	// never a nil-call. Injected at composition (production) or per-test.
 	hookHandlers map[string]HookHandler
+	// hookBreaker sheds a repeatedly-failing REMOTE hook FAST, keyed by hook id (E12 T8, EXT-005): a down
+	// hook worker trips it, so a tenant's broken/hostile hook cannot stall every run that fires it, and the
+	// control plane stays up. Keyed per hook id, so one hook's trip never affects ANOTHER hook or a
+	// hook-less run. It reuses the SAME breaker the MCP connection layer uses (one implementation).
+	hookBreaker *mcp.Breaker
 }
 
 // New wraps a pgx pool as the extensions store, reserving the given built-in model-visible short names.
@@ -101,7 +107,7 @@ func New(pool *pgxpool.Pool, reserved ...string) *Store {
 	for _, name := range reserved {
 		set[name] = true
 	}
-	return &Store{pool: pool, reserved: set}
+	return &Store{pool: pool, reserved: set, hookBreaker: mcp.NewBreaker(0, 0, nil)}
 }
 
 // Tool is a created tool lineage's committed shape.

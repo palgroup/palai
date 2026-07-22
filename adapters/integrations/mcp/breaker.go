@@ -13,11 +13,11 @@ import (
 // silent hang.
 var ErrToolUnavailable = errors.New("mcp: tool unavailable (connection circuit breaker open)")
 
-// breaker is a per-connection, in-memory circuit breaker. Ceiling (named): in-memory only — a control-plane
+// Breaker is a per-connection, in-memory circuit breaker. Ceiling (named): in-memory only — a control-plane
 // restart resets it, and it re-trips on the next failures; a durable breaker is the upgrade path if
 // cross-restart shedding ever matters. It trips after threshold consecutive failures, stays open for
 // cooldown, then admits ONE half-open trial whose outcome re-opens or closes it.
-type breaker struct {
+type Breaker struct {
 	mu        sync.Mutex
 	states    map[string]*breakerState
 	threshold int
@@ -32,8 +32,8 @@ type breakerState struct {
 	halfOpen bool
 }
 
-// newBreaker builds a breaker. A non-positive threshold defaults to 5; a non-positive cooldown to 30s.
-func newBreaker(threshold int, cooldown time.Duration, now func() time.Time) *breaker {
+// NewBreaker builds a breaker. A non-positive threshold defaults to 5; a non-positive cooldown to 30s.
+func NewBreaker(threshold int, cooldown time.Duration, now func() time.Time) *Breaker {
 	if threshold <= 0 {
 		threshold = 5
 	}
@@ -43,14 +43,14 @@ func newBreaker(threshold int, cooldown time.Duration, now func() time.Time) *br
 	if now == nil {
 		now = time.Now
 	}
-	return &breaker{states: map[string]*breakerState{}, threshold: threshold, cooldown: cooldown, now: now}
+	return &Breaker{states: map[string]*breakerState{}, threshold: threshold, cooldown: cooldown, now: now}
 }
 
-// allow reports whether a call to connID may proceed. An open breaker denies until the cooldown elapses,
+// Allow reports whether a call to connID may proceed. An open breaker denies until the cooldown elapses,
 // then admits half-open trials until one records an outcome (recordSuccess closes it, recordFailure
 // re-opens). ponytail: per-call containers are serial per connection, so in practice this is one trial at a
 // time; under hypothetical concurrent calls it admits each until the first outcome — acceptable, not a wedge.
-func (b *breaker) allow(connID string) bool {
+func (b *Breaker) Allow(connID string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	s := b.states[connID]
@@ -64,16 +64,16 @@ func (b *breaker) allow(connID string) bool {
 	return false
 }
 
-// recordSuccess closes the breaker for connID (a healthy call clears the failure streak).
-func (b *breaker) recordSuccess(connID string) {
+// RecordSuccess closes the breaker for connID (a healthy call clears the failure streak).
+func (b *Breaker) RecordSuccess(connID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.states[connID] = &breakerState{}
 }
 
-// recordFailure counts a failure. A half-open trial that fails re-opens immediately; otherwise the streak
+// RecordFailure counts a failure. A half-open trial that fails re-opens immediately; otherwise the streak
 // trips the breaker once it reaches the threshold.
-func (b *breaker) recordFailure(connID string) {
+func (b *Breaker) RecordFailure(connID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	s := b.states[connID]
