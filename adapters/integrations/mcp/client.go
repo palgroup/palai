@@ -52,9 +52,12 @@ type Transport interface {
 	Close(ctx context.Context) error
 }
 
-// Client is the protocol driver over a Transport.
+// Client is the protocol driver over a Transport. advertiseSampling controls whether Initialize advertises
+// the `sampling` capability — the manager sets it ONLY when the connection enables sampling AND a router is
+// wired, so a server never sees a sampling capability it cannot exercise (default-deny is invisible).
 type Client struct {
-	t Transport
+	t                 Transport
+	advertiseSampling bool
 }
 
 // NewClient wraps a transport as an MCP client.
@@ -63,9 +66,16 @@ func NewClient(t Transport) *Client { return &Client{t: t} }
 // Initialize performs the MCP handshake: initialize (asserting the negotiated protocol version) then the
 // notifications/initialized acknowledgement. A version mismatch or a JSON-RPC error is ErrProtocol.
 func (c *Client) Initialize(ctx context.Context) error {
+	capabilities := map[string]any{}
+	if c.advertiseSampling {
+		// Advertised ONLY when sampling is enabled + a router is wired: a server that sees this may send
+		// sampling/createMessage, which the gate routes to a budgeted model step; a server that does not
+		// see it should not send one (and if it does anyway, the gate default-denies).
+		capabilities["sampling"] = map[string]any{}
+	}
 	raw, err := c.t.Call(ctx, "initialize", map[string]any{
 		"protocolVersion": ProtocolVersion,
-		"capabilities":    map[string]any{},
+		"capabilities":    capabilities,
 		"clientInfo":      map[string]any{"name": "palai", "version": "0.1.0"},
 	}, nil)
 	if err != nil {
