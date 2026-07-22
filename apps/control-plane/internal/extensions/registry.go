@@ -86,6 +86,9 @@ type Store struct {
 	// both nil keeps the binder-less T2 posture (a remote_http row is creatable but not resolvable).
 	remoteInvoker RemoteInvoker
 	remoteSecret  SecretResolver
+	// mcp is the MCP client the discovery + dispatch paths reach an upstream server through (E12 T5).
+	// Nil ⇒ MCP connections are creatable but not discoverable/executable (the binder-less posture).
+	mcp MCPClient
 }
 
 // New wraps a pgx pool as the extensions store, reserving the given built-in model-visible short names.

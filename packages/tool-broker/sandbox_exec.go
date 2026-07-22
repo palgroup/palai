@@ -23,7 +23,9 @@ type ExecEnv struct {
 	// CallID and Fence are the per-call identity Execute stamps on a COPY of the env before invoking a
 	// tool (never on the caller's template). A remote_http tool (E12 T4) keys its invoke Idempotency-Key
 	// on CallID (a duplicate retry settles one server-side execution) and stamps Fence on the durable
-	// async-operation row (the audit/reconcile bond to the ledger). Pure/workspace tools ignore them.
+	// async-operation row (the audit/reconcile bond to the ledger). An mcp tool (E12 T5) tags its advisory
+	// tool_call.progress.v1 events with CallID so they correlate to the dispatched call (string(CallID)).
+	// Pure/workspace tools ignore them.
 	CallID contracts.ToolCallID
 	Fence  uint64
 	// Scope binds a durable task/todo operation to its tenant and session; Tasks is the durable

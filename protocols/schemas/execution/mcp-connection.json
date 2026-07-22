@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/mcp-connection.json",
+  "title": "MCPConnection",
+  "description": "An admin-registered upstream MCP server binding a project discovers connection-namespaced tools from (spec §28.13-28.14). Never model-creatable. A credential is a secret_ref handle only — the config carries non-secret wiring.",
+  "type": "object",
+  "required": ["id", "object", "name", "transport"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/opaque_id"},
+    "object": {"type": "string", "const": "mcp_connection"},
+    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
+    "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
+    "name": {"type": "string", "description": "The discovery namespace segment (mcp.<name>.<tool>); a single ASCII segment, unique per project."},
+    "transport": {"type": "string", "enum": ["stdio", "http"]},
+    "trust_level": {"type": "string", "description": "Explicit trust level; 'untrusted' by default. The capability ceiling is the AgentRevision.mcp_connections rider intersection regardless of this value."},
+    "disabled": {"type": "boolean", "description": "The admin kill-switch: a disabled connection resolves no tools."},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

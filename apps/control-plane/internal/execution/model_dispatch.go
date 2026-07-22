@@ -325,11 +325,21 @@ func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState) ([
 		SessionModel:              override.Model,
 		SessionTools:              override.Tools,
 	})
+	// SchemaResolved checks the static broker set first, then the per-tenant registry lookup — so a
+	// REGISTERED tool (an MCP/remote executor) the broker can execute but that is not code-defined is
+	// advertised too (E12 T5). Without this fallback a registry tool is resolvable-at-dispatch but never
+	// advertised, so the model never spontaneously calls it. The lookup chain only resolves published +
+	// pinned tools, so a draft (untrusted, unapproved description) is never advertised (EXT-006). The env
+	// carries the run scope the tenant-scoped lookup needs.
+	env := o.execEnv(st)
 	var advertised []modelbroker.ToolSchema
 	for _, name := range snap.Tools {
-		tool, ok := o.tools.Schema(name)
+		tool, ok, err := o.tools.SchemaResolved(ctx, env, name)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
-			continue // an effective-set name the broker cannot execute is not offered
+			continue // an effective-set name the broker cannot execute or resolve is not offered
 		}
 		advertised = append(advertised, modelbroker.ToolSchema{
 			Name:        tool.Name,
