@@ -16,6 +16,7 @@
     "tool_call.leased.v1", "tool_call.executing.v1", "tool_call.completed.v1", "tool_call.failed.v1",
     "tool_call.canceled.v1", "tool_call.uncertain.v1", "tool_call.reconciled_completed.v1",
     "tool_call.reconciled_not_applied.v1", "tool_call.manual_resolution.v1",
+    "tool_call.progress.v1",
     "workspace.requested.v1", "workspace.provisioning.v1", "workspace.preparing.v1", "workspace.ready.v1",
     "workspace.leased.v1", "workspace.snapshotting.v1", "workspace.paused.v1", "workspace.restoring.v1",
     "workspace.host_lost.v1", "workspace.recovering.v1", "workspace.restored.v1", "workspace.failed.v1",

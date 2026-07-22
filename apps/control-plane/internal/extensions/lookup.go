@@ -100,7 +100,9 @@ func (s *Store) mcpTool(ctx context.Context, org, project, runID, name, descript
 		ReplayClass:  toolbroker.ReplayClass(replayClass),
 		Exec: func(ctx context.Context, env toolbroker.ExecEnv, args map[string]any) (map[string]any, error) {
 			return s.mcp.Call(ctx, mcp.CallScope{
-				Org: env.Scope.Org, Project: env.Scope.Project, RunID: env.Scope.RunID, CallID: env.CallID,
+				Org: env.Scope.Org, Project: env.Scope.Project,
+				SessionID: env.Scope.SessionID, ResponseID: env.Scope.ResponseID,
+				RunID: env.Scope.RunID, CallID: env.CallID,
 			}, cc, remoteName, args)
 		},
 	}

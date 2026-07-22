@@ -52,6 +52,10 @@ const (
 	// E10 T6): its bytes could not be reclaimed, so no new allocation may be placed there. The doctor
 	// surfaces it; an operator clears it.
 	eventHostQuarantined = "host.quarantined.v1"
+	// eventToolCallProgress journals an MCP tools/call's advisory progress (E12 T5). It is NOT a
+	// ToolCallTable transition — like model_step.delta it advances no state machine; it is emitted through
+	// the MCP progress sink (coordinator.AppendToolProgress), best-effort.
+	eventToolCallProgress = "tool_call.progress.v1"
 )
 
 // toolCallCompletedEvent is the event the tool-call table emits on Executing->Completed,
@@ -78,6 +82,7 @@ var emittedEventTypes = []string{
 	eventRecoveryProof,
 	eventWorkspaceRestored,
 	eventHostQuarantined,
+	eventToolCallProgress,
 	toolCallCompletedEvent,
 }
 

@@ -84,6 +84,18 @@ export interface LocalLiveEvidenceManifest {
   release: string;
 }
 
+export interface MCPConnection {
+  created_at?: string;
+  disabled?: boolean;
+  id: OpaqueId;
+  name: string;
+  object: string;
+  organization_id?: OrganizationId;
+  project_id?: ProjectId;
+  transport: string;
+  trust_level?: string;
+}
+
 export interface Message {
   content: ContentItem[];
   created_at: string;

@@ -33,10 +33,11 @@ type ConnConfig struct {
 	TimeoutMS   int
 }
 
-// CallScope carries the tenant + call identity a progress event needs, without importing the tool-broker's
-// ExecEnv into this adapter.
+// CallScope carries the tenant + session/response + call identity a progress event needs, without importing
+// the tool-broker's ExecEnv into this adapter. SessionID/ResponseID scope the advisory progress event to the
+// right journal.
 type CallScope struct {
-	Org, Project, RunID, CallID string
+	Org, Project, SessionID, ResponseID, RunID, CallID string
 }
 
 // ProgressSink receives advisory progress notifications during a tools/call. The compose wiring appends a
