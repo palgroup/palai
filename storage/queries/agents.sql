@@ -77,17 +77,19 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- picks it; revision_id is NULL for a profile-free run (the resolver then skips the revision layer).
 -- The pin is fixed on the run row, so a later revision of the same profile leaves this read unchanged
 -- (AGT-001 old-run reproducibility).
--- name: PinnedRunConfig
 -- tool_set_tools resolves the E12 grant (spec §28.2-28.4): the model-visible short names of every tool
 -- pinned by a PUBLISHED tool_set_revision the pinned revision names in its tool_sets JSONB array. Walks
 -- tool_sets → tool_set_revisions → tool_pins → tool_revisions → tools, tenant-scoped, DISTINCT, and
--- COALESCEd to an empty array so a profile-free / set-free run returns [] (the resolver then unions nothing).
+-- COALESCEd to an empty array so a profile-free / set-free run returns [] (the resolver then unions
+-- nothing). The array_agg is ORDER BY the short name so the list is deterministic — it flows into
+-- ConfigSnapshot.Hash (checkpoint reproducibility + config.revised), and an unordered DISTINCT aggregate
+-- may hash on PG16+ → undefined order → the SAME pinned config hashing differently across two reads.
 -- name: PinnedRunConfig
 SELECT COALESCE(ar.id, rtr.id)              AS revision_id,
        COALESCE(ar.model, rtr.model, '')    AS model,
        COALESCE(ar.tools, rtr.tools)        AS tools,
        COALESCE((
-           SELECT array_agg(DISTINCT t.model_visible_name)
+           SELECT array_agg(DISTINCT t.model_visible_name ORDER BY t.model_visible_name)
            FROM tool_set_revisions tsr
            CROSS JOIN LATERAL jsonb_array_elements(tsr.tool_pins) AS pin
            JOIN tool_revisions trv ON trv.id = (pin->>'tool_revision_id')

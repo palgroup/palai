@@ -326,3 +326,114 @@ func contains(xs []string, x string) bool {
 	}
 	return false
 }
+
+// publishEcho registers a control_plane echo tool with the given canonical name and returns its published
+// revision id.
+func publishEcho(t *testing.T, s *Store, org, project, canonical string) string {
+	t.Helper()
+	ctx := context.Background()
+	tool, err := s.CreateTool(ctx, org, project, canonical)
+	if err != nil {
+		t.Fatalf("create tool %s: %v", canonical, err)
+	}
+	rev, err := s.CreateToolRevision(ctx, org, project, tool.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"},"replay_class":"pure"}`))
+	if err != nil {
+		t.Fatalf("create rev %s: %v", canonical, err)
+	}
+	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID); err != nil {
+		t.Fatalf("publish rev %s: %v", canonical, err)
+	}
+	return rev.ID
+}
+
+// seedRunPinnedToSet seeds a session + agent profile/revision (tool_sets = [setID]) + run, and returns the runID.
+func seedRunPinnedToSet(t *testing.T, s *Store, org, project, setID string) string {
+	t.Helper()
+	sessionID, runID := testID("ses"), testID("run")
+	profileID, arevID := testID("aprof"), testID("arev")
+	mustExec(t, s.pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, project)
+	mustExec(t, s.pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`, profileID, org, project)
+	mustExec(t, s.pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, published_at, tool_sets)
+	                     VALUES ($1,$2,$3,$4,1,'model-x',clock_timestamp(),$5::jsonb)`, arevID, org, project, profileID, `["`+setID+`"]`)
+	mustExec(t, s.pool, `INSERT INTO runs (id, organization_id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4,$5)`, runID, org, project, sessionID, arevID)
+	return runID
+}
+
+// TestPinnedRunConfigToolOrderStable proves M1: PinnedRunConfig returns the tool-set short names in a
+// DETERMINISTIC (sorted) order — the array_agg is ORDER BY the short name — so the list that flows into
+// ConfigSnapshot.Hash is stable across reads (no spurious checkpoint/config-hash divergence for a
+// multi-tool set). Two tools are created in reverse-sorted order to prove the read is not insertion order.
+func TestPinnedRunConfigToolOrderStable(t *testing.T) {
+	s, org, project := openStore(t)
+	ctx := context.Background()
+
+	// Create "zebra" first, "apple" second — insertion order is the REVERSE of sorted order.
+	revZebra := publishEcho(t, s, org, project, "acme.a.zebra")
+	revApple := publishEcho(t, s, org, project, "acme.a.apple")
+	set, err := s.CreateToolSetRevision(ctx, org, project, "reviewers",
+		[]byte(`{"tools":[{"tool_revision_id":"`+revZebra+`"},{"tool_revision_id":"`+revApple+`"}]}`))
+	if err != nil {
+		t.Fatalf("create set: %v", err)
+	}
+	if _, _, err := s.PublishToolSetRevision(ctx, org, project, set.ID); err != nil {
+		t.Fatalf("publish set: %v", err)
+	}
+	runID := seedRunPinnedToSet(t, s, org, project, set.ID)
+
+	cs, err := coordinator.Open(ctx, os.Getenv("PALAI_COMPONENT_POSTGRES_URL"))
+	if err != nil {
+		t.Fatalf("coordinator.Open: %v", err)
+	}
+	t.Cleanup(cs.Close)
+	tenant := coordinator.Tenant{Organization: org, Project: project}
+
+	want := []string{"apple", "zebra"} // sorted, regardless of insertion order
+	for i := 0; i < 3; i++ {
+		_, _, _, tools, err := cs.PinnedExecConfig(ctx, tenant, runID)
+		if err != nil {
+			t.Fatalf("PinnedExecConfig read %d: %v", i, err)
+		}
+		if len(tools) != 2 || tools[0] != want[0] || tools[1] != want[1] {
+			t.Fatalf("read %d tool_set tools = %v, want deterministic sorted %v", i, tools, want)
+		}
+	}
+}
+
+// TestLookupToolIsTenantIsolated proves L5: a run in tenant A cannot resolve a tool registered + pinned
+// in tenant B — the lookup and PinnedRunConfig joins are tenant-pinned, so no cross-tenant tool leaks.
+func TestLookupToolIsTenantIsolated(t *testing.T) {
+	s, orgA, projectA := openStore(t)
+	ctx := context.Background()
+
+	// Tenant B (a second org/project on the same pool) registers + pins an echo tool.
+	orgB, projectB := testID("org"), testID("prj")
+	mustExec(t, s.pool, `INSERT INTO organizations (id) VALUES ($1)`, orgB)
+	mustExec(t, s.pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, projectB, orgB)
+	revB := publishEcho(t, s, orgB, projectB, "acme.search.fetch")
+	setB, _ := s.CreateToolSetRevision(ctx, orgB, projectB, "reviewers", []byte(`{"tools":[{"tool_revision_id":"`+revB+`"}]}`))
+	if _, _, err := s.PublishToolSetRevision(ctx, orgB, projectB, setB.ID); err != nil {
+		t.Fatalf("publish set B: %v", err)
+	}
+
+	// Tenant A has a run pinned to a set of its own (empty of B's tool). Even naming B's set id in A's
+	// agent revision resolves nothing — the join is pinned to A's tenant, and setB is not in A's scope.
+	runA := seedRunPinnedToSet(t, s, orgA, projectA, setB.ID)
+
+	// A's lookup for B's tool name resolves nothing (tenant isolation).
+	if _, found, err := s.LookupTool(ctx, orgA, projectA, runA, "fetch"); err != nil || found {
+		t.Fatalf("tenant A lookup of B's tool = found:%v err:%v, want found=false (tenant-isolated)", found, err)
+	}
+	// And A's effective set carries none of B's tools.
+	cs, err := coordinator.Open(ctx, os.Getenv("PALAI_COMPONENT_POSTGRES_URL"))
+	if err != nil {
+		t.Fatalf("coordinator.Open: %v", err)
+	}
+	t.Cleanup(cs.Close)
+	_, _, _, tools, err := cs.PinnedExecConfig(ctx, coordinator.Tenant{Organization: orgA, Project: projectA}, runA)
+	if err != nil {
+		t.Fatalf("PinnedExecConfig A: %v", err)
+	}
+	if len(tools) != 0 {
+		t.Fatalf("tenant A effective tool_set tools = %v, want empty (B's set is out of scope)", tools)
+	}
+}
