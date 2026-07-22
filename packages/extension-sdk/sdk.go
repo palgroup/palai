@@ -47,12 +47,25 @@ const (
 	HeaderID        = "Webhook-Id"
 	HeaderTimestamp = "Webhook-Timestamp"
 	HeaderSignature = "Webhook-Signature"
+
+	// HeaderCallbackToken carries the one-use audience-bound callback token a tool
+	// server echoes from the invoke's callback.token (separate from the signature).
+	// Exported so a Go customer imports it instead of hardcoding the string —
+	// symmetric with the TS HEADER_CALLBACK_TOKEN export.
+	HeaderCallbackToken = "Tool-Callback-Token"
 )
 
-// canonical renders v as sorted-key compact JSON with HTML escaping OFF, so the
-// bytes are identical to the TS (sorted-key JSON.stringify) and Python
-// (json.dumps sort_keys, compact) legs. It marshals through a generic value so
-// every nested map's keys sort — the ONE definition of canonical bytes.
+// canonical renders v as sorted-key compact JSON with HTML escaping OFF. It marshals
+// through a generic value so every nested map's keys sort — the ONE definition of
+// canonical bytes for this leg.
+//
+// Byte-IDENTITY across the Go/TS/Py legs is PROVEN for JSON-Schema-shaped tool
+// definitions: strings, integers within ±2^53, booleans, null, and nested
+// objects/arrays (the tool-definition emit domain; see the json-schema-edges corpus
+// vector). It does NOT hold for a bare float or an integer beyond 2^53 as a value —
+// Go/TS carry those as float64 (5.0 -> "5", big ints truncate) while Python keeps
+// float/arbitrary-precision (5.0 -> "5.0", big ints exact). Those are outside the emit
+// domain; a tool definition that needs them is a divergence to catch upstream.
 func canonical(v any) ([]byte, error) {
 	raw, err := json.Marshal(v)
 	if err != nil {

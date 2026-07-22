@@ -24,9 +24,13 @@ export const HEADER_TIMESTAMP = "Webhook-Timestamp";
 export const HEADER_SIGNATURE = "Webhook-Signature";
 export const HEADER_CALLBACK_TOKEN = "Tool-Callback-Token";
 
-// canonical renders v as sorted-key compact JSON — byte-identical to the Go
-// (encoding/json sorted map keys, HTML escaping off) and Python (json.dumps
-// sort_keys, compact) legs. The ONE definition of canonical bytes for this leg.
+// canonical renders v as sorted-key compact JSON — the ONE definition of canonical
+// bytes for this leg. Byte-IDENTITY across the Go/TS/Py legs is PROVEN for
+// JSON-Schema-shaped tool definitions (strings, integers within ±2^53, booleans,
+// null, nested objects/arrays — see the json-schema-edges corpus vector). It does
+// NOT hold for a bare float or an integer beyond 2^53 as a value: JS/Go carry those
+// as float64 (5.0 -> "5", big ints truncate) while Python keeps float/arbitrary
+// precision. Those are outside the tool-definition emit domain.
 function sortKeys(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(sortKeys);
   if (v !== null && typeof v === "object") {

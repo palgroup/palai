@@ -18,7 +18,15 @@ SIGNATURE_VERSION = "v1"
 
 
 def canonical(obj) -> bytes:
-    """Sorted-key compact JSON bytes, byte-identical to the Go/TS canonical form."""
+    """Sorted-key compact JSON bytes — the canonical form for this leg.
+
+    Byte-identity with the Go/TS legs is PROVEN for JSON-Schema-shaped tool
+    definitions (strings, integers within +/-2^53, booleans, null, nested
+    objects/arrays; see the json-schema-edges corpus vector). It does NOT hold for a
+    bare float or an integer beyond 2^53 as a value: Go/TS carry those as float64
+    (5.0 -> "5", big ints truncate) while Python keeps float/arbitrary precision
+    (5.0 -> "5.0", big ints exact). Those are outside the emit domain.
+    """
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 

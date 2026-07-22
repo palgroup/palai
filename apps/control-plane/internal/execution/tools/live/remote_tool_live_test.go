@@ -237,7 +237,7 @@ func postSignedCallbackFromHarness(secret []byte, toolCallID, callbackURL, token
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	req.Header.Set(remotehttp.HeaderCallbackToken, token)
+	req.Header.Set(extsdk.HeaderCallbackToken, token)
 	resp, err := http.DefaultClient.Do(req)
 	if err == nil {
 		resp.Body.Close()
