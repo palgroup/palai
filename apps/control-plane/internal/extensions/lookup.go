@@ -77,6 +77,9 @@ func (s *Store) LookupTool(ctx context.Context, org, project, runID, name string
 			return toolbroker.Tool{}, false, nil // binder-less until the T4 executor is wired
 		}
 		tool.Exec = s.remoteExec(name, canonicalName, revisionNumber, configJSON, secretRef, timeoutMS)
+		// A remote_http invoke keys its HTTP Idempotency-Key on the tool_call_id, so its durable pre-write
+		// records external_idempotency_key = tool_call_id for reconcile correlation (E12 T4).
+		tool.ExternalKeyed = true
 	default:
 		return toolbroker.Tool{}, false, nil // mcp/etc. — creatable but binder-less (T5)
 	}

@@ -65,6 +65,11 @@ type Tool struct {
 	ReplayClass  ReplayClass
 	Invoke       func(args map[string]any) (map[string]any, error)
 	Exec         func(ctx context.Context, env ExecEnv, args map[string]any) (map[string]any, error)
+	// ExternalKeyed marks a tool that sends a real EXTERNAL idempotency key for its side effect (the
+	// remote_http invoke's Idempotency-Key = tool_call_id, E12 T4). Its durable pre-write records that key
+	// (external_idempotency_key = tool_call_id) so a reconcile can correlate; a built-in with no external
+	// key records none (honest: the column is empty unless a real external key exists).
+	ExternalKeyed bool
 }
 
 // replayClass reports the tool's declared class, defaulting an unset one to ClassPure.
@@ -194,6 +199,31 @@ func (b *Broker) ReplayClassResolved(ctx context.Context, env ExecEnv, name stri
 		return ClassPure, nil
 	}
 	return resolved.replayClass(), nil
+}
+
+// ExternalKeyedResolved reports whether a tool sends a real EXTERNAL idempotency key for its side effect
+// (e.g. the remote_http Idempotency-Key = tool_call_id, E12 T4), so a side-effecting tool's durable
+// pre-write records that key for reconcile correlation while a built-in records none. It mirrors
+// ReplayClassResolved's static-then-registry-lookup resolution; a clean miss or no lookup is false.
+func (b *Broker) ExternalKeyedResolved(ctx context.Context, env ExecEnv, name string) (bool, error) {
+	b.mu.Lock()
+	tool, ok := b.tools[name]
+	lookup := b.lookup
+	b.mu.Unlock()
+	if ok {
+		return tool.ExternalKeyed, nil
+	}
+	if lookup == nil {
+		return false, nil
+	}
+	resolved, found, err := lookup(ctx, env, name)
+	if err != nil {
+		return false, fmt.Errorf("registry lookup %s: %w", name, err)
+	}
+	if !found {
+		return false, nil
+	}
+	return resolved.ExternalKeyed, nil
 }
 
 // NeedsPreWrite reports whether a class must be durably marked 'executing' BEFORE it runs so a
