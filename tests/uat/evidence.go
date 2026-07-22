@@ -86,6 +86,18 @@ type evidenceCase struct {
 	OccurrenceProof *OccurrenceProof `json:"occurrence_proof"`
 	CallbackClaim   string           `json:"callback_claim"`
 	CallbackProof   *CallbackProof   `json:"callback_proof"`
+	// The E12 extensibility claims (spec §28) extend the same marker-alone-is-NEVER-proof discipline to the
+	// three invariants this epic owns: the run's effective tool set was ADVERTISED to the provider
+	// (AdvertisingClaim), an enabled skill rode the run pinned by digest + scan with NO authority
+	// (SkillClaim), and an extension crash was ISOLATED — breaker + tool_unavailable, core stayed up, another
+	// run flowed (CrashIsolationClaim, the EXT-005 exit gate). The remote-tool async callback reuses the
+	// existing CallbackClaim/CallbackProof (a signed one-use callback fits its fields). Each requires proof.
+	AdvertisingClaim    string               `json:"advertising_claim"`
+	AdvertisingProof    *AdvertisingProof    `json:"advertising_proof"`
+	SkillClaim          string               `json:"skill_claim"`
+	SkillProof          *SkillProof          `json:"skill_proof"`
+	CrashIsolationClaim string               `json:"crash_isolation_claim"`
+	CrashIsolationProof *CrashIsolationProof `json:"crash_isolation_proof"`
 }
 
 type evidenceTerm struct {
@@ -145,6 +157,60 @@ func (p CallbackProof) Complete() bool {
 		p.ReceiverReceiptCount == 1 && p.RunTerminalIntact
 }
 
+// AdvertisingProof is the evidence an advertising_claim requires (spec §28.5, EXT-001/002): the run's
+// EFFECTIVE tool set was advertised to the provider — the schema list the provider request actually carried,
+// hashed (AdvertisedSchemaHash), with the model-visible tool names. Mode records HOW the tool was selected:
+// "spontaneous" (the model chose it with NO tool_choice forcing) or "forced" (a pre-advertising broker-seam
+// forced call). A "forced" proof is HONESTLY named "forced" and is never described in spontaneous language —
+// the manifest cannot overclaim spontaneity, an empty/other Mode fails the completeness gate.
+type AdvertisingProof struct {
+	AdvertisedSchemaHash string   `json:"advertised_schema_hash"`
+	ToolNames            []string `json:"tool_names"`
+	Mode                 string   `json:"mode"`
+}
+
+// Complete reports a hashed advertised schema list, at least one advertised tool name, and an honest
+// selection mode ("spontaneous" or "forced"). An empty hash, no tool names, or an unnamed/other mode is not
+// proof — a case that advertised nothing, or that hides whether the call was forced, does not pass.
+func (p AdvertisingProof) Complete() bool {
+	return p.AdvertisedSchemaHash != "" && len(p.ToolNames) >= 1 &&
+		(p.Mode == "spontaneous" || p.Mode == "forced")
+}
+
+// SkillProof is the evidence a skill_claim requires (spec §28.15-28.16, TOL-011): an enabled skill rode the
+// run pinned by an EXACT digest with a recorded quarantine scan result. A skill grants NO authority, so the
+// load-bearing proof is the digest pin + scan outcome (never the skill body). A "loaded" marker with no
+// digest, or a skill enabled without a scan result, is not proof.
+type SkillProof struct {
+	Digest     string `json:"digest"`
+	ScanResult string `json:"scan_result"`
+}
+
+// Complete reports the skill carries both a non-empty pinned digest and a non-empty scan result — a skill
+// that recorded no digest (so the run could drift to "latest") or no scan outcome is not proof.
+func (p SkillProof) Complete() bool {
+	return p.Digest != "" && p.ScanResult != ""
+}
+
+// CrashIsolationProof is the evidence a crash_isolation_claim requires (spec §28.21, EXT-005 — the E12 EXIT
+// gate): an extension crash (an MCP server SIGKILL / a remote tool down / a hook worker down) tripped the
+// per-connection circuit BREAKER, surfaced tool_unavailable VISIBLY to the run, left the control-plane
+// process STABLE (it did not fall), and a SEPARATE run still FLOWED afterward. All four must hold — a crash
+// that took the core down, or one the run never saw, is the opposite of isolation and is not proof.
+type CrashIsolationProof struct {
+	BreakerTripped         bool `json:"breaker_tripped"`
+	ToolUnavailableVisible bool `json:"tool_unavailable_visible"`
+	ControlPlaneStable     bool `json:"control_plane_stable"`
+	OtherRunFlowed         bool `json:"other_run_flowed"`
+}
+
+// Complete reports all four isolation facts hold. A false on ANY of them — the breaker never tripped, the
+// run never saw tool_unavailable, the control-plane fell, or no other run flowed — is not crash isolation,
+// so the EXT-005 release gate cannot be marker-passed.
+func (p CrashIsolationProof) Complete() bool {
+	return p.BreakerTripped && p.ToolUnavailableVisible && p.ControlPlaneStable && p.OtherRunFlowed
+}
+
 // secretPattern matches a credential-shaped token (an OpenAI-style sk- key), so a plaintext
 // credential fails the redaction scan even when the exact value is not supplied as a needle.
 var secretPattern = regexp.MustCompile(`sk-[A-Za-z0-9_-]{12,}`)
@@ -158,6 +224,15 @@ var gitCredentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`),    // ghp_ PAT, gho_/ghu_ OAuth, ghs_ installation, ghr_ refresh
 	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY`), // a GitHub App private key committed in the clear
 }
+
+// remoteSigningSecretPattern catches a leaked webhook/callback signing secret (the whsec_ prefix, spec
+// §21.5). The E11 outbound callback AND the E12 remote-tool + hook signed transports all sign with the SAME
+// webhook signer (adapters/integrations/webhook, Webhook-Signature), so a plaintext whsec_ in the manifest
+// fails the bundle by construction — the same discipline scripts/verify/e01.sh applies to spike artifacts,
+// now enforced in the evidence tier too (E12 T10; whsec_ was previously in e01.sh only). Opaque MCP
+// connection bearers carry no distinctive prefix, so they are caught by-value as needles (the strongest,
+// shape-independent redaction), never a made-up regex.
+var remoteSigningSecretPattern = regexp.MustCompile(`whsec_[A-Za-z0-9_-]{6,}`)
 
 // checksumPattern is the required checksum shape (sha256:<64 hex>).
 var checksumPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -194,6 +269,9 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 			findings = append(findings, Finding{Kind: "secret", Detail: "manifest contains a Git-credential-shaped token (PAT/App key/installation token)"})
 			break
 		}
+	}
+	if remoteSigningSecretPattern.Match(raw) {
+		findings = append(findings, Finding{Kind: "secret", Detail: "manifest contains a webhook/remote-tool signing secret (whsec_...)"})
 	}
 
 	var m evidenceManifest
@@ -260,6 +338,33 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "callback_proof (a callback claim requires single-semantic-delivery proof; a marker is not proof)"})
 			case !c.CallbackProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "callback_proof is incomplete: delivery ids, attempts, the single receiver receipt, or run-terminal-intact is missing (AUT-011/013)"})
+			}
+		}
+
+		// The E12 extensibility claims mirror the rule exactly: a non-empty marker with no proof is "missing";
+		// a proof that fails its Complete() invariant is "invalid".
+		if c.AdvertisingClaim != "" {
+			switch {
+			case c.AdvertisingProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "advertising_proof (an advertising claim requires the advertised schema hash + tool names + selection mode; a marker is not proof)"})
+			case !c.AdvertisingProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "advertising_proof is incomplete: the advertised schema hash, the tool names, or an honest selection mode (spontaneous/forced) is missing (EXT-001/002)"})
+			}
+		}
+		if c.SkillClaim != "" {
+			switch {
+			case c.SkillProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "skill_proof (a skill claim requires a pinned digest + scan result; a 'loaded' marker is not proof)"})
+			case !c.SkillProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "skill_proof is incomplete: the exact digest pin or the quarantine scan result is missing (TOL-011)"})
+			}
+		}
+		if c.CrashIsolationClaim != "" {
+			switch {
+			case c.CrashIsolationProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "crash_isolation_proof (a crash-isolation claim requires breaker + tool_unavailable + control-plane-stable + other-run-flowed; a marker is not proof)"})
+			case !c.CrashIsolationProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "crash_isolation_proof is incomplete: the breaker did not trip, tool_unavailable was not visible, the control-plane was not stable, or no other run flowed (EXT-005)"})
 			}
 		}
 
