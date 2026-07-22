@@ -51,6 +51,23 @@ type ResolveInput struct {
 	AgentRevisionToolSetTools []string
 	SessionModel              string   // cumulative session model override ("" = never set)
 	SessionTools              []string // cumulative session tools override (nil = never set)
+	// SkillPinsJSON is the run's frozen skill set (E12 Task 7, spec §28.16): the JSON-encoded
+	// []{name,description,digest,path} pinned at run-start. nil/empty means the run resolved no skills —
+	// the snapshot then carries no Skills and the hash is BIT-IDENTICAL to the pre-skills path (a
+	// skill-less run's config address never moves, the T1 advertising regression discipline). A non-empty
+	// pin folds into both the Skills rider and the content hash, so a mid-run enable that would change the
+	// pin (it cannot — the pin is frozen) would change the hash, keeping the checkpoint coherent.
+	SkillPinsJSON []byte
+}
+
+// SkillRef is one entry of a run's progressively-loaded skill set (spec §28.16): the model-visible name
+// + description (the context rider), the exact pinned digest, and the workspace-relative body path the
+// file tool reads on-demand. It grants NO capability — metadata + a file location, never a tool.
+type SkillRef struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Digest      string `json:"digest"`
+	Path        string `json:"path"`
 }
 
 // ConfigSnapshot is the resolved, redacted, content-addressed effective configuration with
@@ -63,6 +80,10 @@ type ConfigSnapshot struct {
 	Tools      []string          `json:"tools"`
 	SecretRef  string            `json:"secret_ref"`
 	Provenance map[string]string `json:"provenance"`
+	// Skills is the run's frozen skill set (E12 Task 7, spec §28.16), empty for a skill-less run. It rides
+	// the snapshot as a progressive-loading rider (metadata only — the body reads from Path via the file
+	// tool), and folds into Hash only when non-empty (bit-compat for a skill-less run).
+	Skills []SkillRef `json:"skills,omitempty"`
 }
 
 // Resolve layers deployment → project → session into the effective ConfigSnapshot (spec §14).
@@ -104,12 +125,23 @@ func Resolve(in ResolveInput) ConfigSnapshot {
 		// equivalent config from a different revision still content-addresses identically.
 		provenance["agent_revision"] = in.AgentRevisionID
 	}
+	// Decode the run's frozen skill pins (E12 Task 7). An empty pin leaves skills nil, so the snapshot
+	// and hash are bit-identical to the pre-skills path; a non-empty pin rides the snapshot and folds into
+	// the hash. A malformed pin decodes to nil — a run never fails to resolve on its own frozen JSON.
+	var skills []SkillRef
+	if len(in.SkillPinsJSON) > 0 {
+		_ = json.Unmarshal(in.SkillPinsJSON, &skills)
+	}
+	if in.AgentRevisionID != "" && len(skills) > 0 {
+		provenance["skills"] = in.AgentRevisionID
+	}
 	return ConfigSnapshot{
-		Hash:       configContentHash(model, tools, in.DeploymentSecret),
+		Hash:       configContentHash(model, tools, in.DeploymentSecret, skills),
 		Model:      model,
 		Tools:      tools,
 		SecretRef:  in.DeploymentSecret,
 		Provenance: provenance,
+		Skills:     skills,
 	}
 }
 
@@ -186,7 +218,7 @@ func (o *Orchestrator) planConfigChange(ctx context.Context, st *attemptState, c
 	// and effectiveModel resolve through, so a config.revised snapshot and a checkpoint never record
 	// divergent config for the same state (the checkpoint.go:185-186 promise). Without this a pinned
 	// run's config.revised would drop the ceiling and the provenance and diverge from the checkpoint hash.
-	revID, revModel, revTools, revToolSetTools, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	revID, revModel, revTools, revToolSetTools, skillPins, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
 	if err != nil {
 		return coordinator.ConfigChangePlan{}, err
 	}
@@ -199,6 +231,7 @@ func (o *Orchestrator) planConfigChange(ctx context.Context, st *attemptState, c
 		AgentRevisionModel:        revModel,
 		AgentRevisionTools:        revTools,
 		AgentRevisionToolSetTools: revToolSetTools,
+		SkillPinsJSON:             skillPins,
 		SessionModel:              sessionModel,
 		SessionTools:              sessionTools,
 	})
@@ -233,7 +266,7 @@ func newConfigRevisionID() string {
 // configContentHash is the canonical content address of a snapshot's effective values. It
 // hashes only the effective config (model, tools, secret ref), never the provenance, so the
 // address is stable across equivalent resolutions from different layers.
-func configContentHash(model string, tools []string, secretRef string) string {
+func configContentHash(model string, tools []string, secretRef string, skills []SkillRef) string {
 	if tools == nil {
 		tools = []string{}
 	}
@@ -241,7 +274,10 @@ func configContentHash(model string, tools []string, secretRef string) string {
 		Model     string   `json:"model"`
 		Tools     []string `json:"tools"`
 		SecretRef string   `json:"secret_ref"`
-	}{model, tools, secretRef})
+		// Skills is omitted entirely when empty (omitempty), so a skill-less run hashes over EXACTLY the
+		// pre-skills fields — the address never moves for a run that configures no skills (T1 regression).
+		Skills []SkillRef `json:"skills,omitempty"`
+	}{model, tools, secretRef, skills})
 	sum := sha256.Sum256(canonical)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }

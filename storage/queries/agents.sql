@@ -85,6 +85,10 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- ConfigSnapshot.Hash (checkpoint reproducibility + config.revised), and an unordered DISTINCT aggregate
 -- may hash on PG16+ → undefined order → the SAME pinned config hashing differently across two reads.
 -- name: PinnedRunConfig
+-- skill_pins is the run's FROZEN skill set (E12 Task 7, spec §28.16), pinned once at run-start by
+-- PinRunSkills — the resolver reads it back verbatim (never re-resolving "latest"), so a mid-run enable
+-- of a new revision leaves this read unchanged. NULL for a skill-less run (the resolver then carries no
+-- skills and the config hash + provider request stay bit-identical to a skill-less run).
 SELECT COALESCE(ar.id, rtr.id)              AS revision_id,
        COALESCE(ar.model, rtr.model, '')    AS model,
        COALESCE(ar.tools, rtr.tools)        AS tools,
@@ -98,8 +102,31 @@ SELECT COALESCE(ar.id, rtr.id)              AS revision_id,
            WHERE tsr.organization_id = r.organization_id AND tsr.project_id = r.project_id
                AND tsr.published_at IS NOT NULL
                AND tsr.id IN (SELECT jsonb_array_elements_text(COALESCE(ar.tool_sets, rtr.tool_sets, '[]'::jsonb)))
-       ), ARRAY[]::text[])                   AS tool_set_tools
+       ), ARRAY[]::text[])                   AS tool_set_tools,
+       r.skill_pins                          AS skill_pins
 FROM runs r
 LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
 LEFT JOIN run_template_revisions rtr ON rtr.id = r.run_template_revision_id
 WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
+
+-- RunSkillPinInputs resolves the inputs the run-start pin write needs (E12 Task 7, spec §28.16): the
+-- pinned revision's REQUESTED skill names (the opaque JSONB rider T2 stored unvalidated) and whether the
+-- run's skill_pins are already frozen. A run pins at most one revision source, so COALESCE picks it. The
+-- already_pinned flag makes the pin write idempotent: a resumed attempt sees it true and skips resolution
+-- entirely, so a skill disabled mid-run never fails a re-resolution on a run that already froze its pins.
+-- name: RunSkillPinInputs
+SELECT COALESCE(ar.skills, rtr.skills, '[]'::jsonb) AS requested_skills,
+       (r.skill_pins IS NOT NULL)                   AS already_pinned
+FROM runs r
+LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
+LEFT JOIN run_template_revisions rtr ON rtr.id = r.run_template_revision_id
+WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
+
+-- PinRunSkills freezes a run's resolved skill pins ONCE (E12 Task 7, spec §28.16). The skill_pins IS NULL
+-- guard makes it a no-op on a run already pinned (a resumed attempt), so the frozen digest set is
+-- immutable for the life of the run — a later enable never re-pins. RETURNING id reports whether it wrote.
+-- name: PinRunSkills
+UPDATE runs
+SET skill_pins = $4
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND skill_pins IS NULL
+RETURNING id;

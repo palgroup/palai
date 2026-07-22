@@ -9,8 +9,36 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/egress"
 )
+
+// PinRunSkills freezes a run's skill pins ONCE at run-start (spec §28.16, TOL-011): it resolves the
+// pinned revision's REQUESTED skill names to their ENABLED revisions' digest + metadata and writes the
+// frozen {name,description,digest,path} set to the run row. An unknown or not-enabled requested skill is
+// a VISIBLE error — the run fails at start rather than silently dropping a skill the revision named. A
+// run with no requested skills, or one already pinned (a resumed attempt), is a no-op. It spans both
+// stores (the spine reads the request + writes the pin; the extensions store resolves the digests), so
+// it lives here where both are in scope.
+func (s *Store) PinRunSkills(ctx context.Context, tenant coordinator.Tenant, runID string) error {
+	requested, alreadyPinned, err := s.spine.RunSkillPinInputs(ctx, tenant, runID)
+	if err != nil {
+		return err
+	}
+	if alreadyPinned || len(requested) == 0 {
+		return nil
+	}
+	pins, err := s.tools.ResolveEnabledSkills(ctx, tenant.Organization, tenant.Project, requested)
+	if err != nil {
+		return err // an unknown / not-enabled skill surfaces as a run-start failure (never a silent drop)
+	}
+	pinsJSON, err := json.Marshal(pins)
+	if err != nil {
+		return err
+	}
+	_, err = s.spine.PinRunSkills(ctx, tenant, runID, pinsJSON)
+	return err
+}
 
 // The E12 skills management surface (spec §20.2, §28.15-28.16, TOL-011). These methods adapt the
 // tenant-scoped api.SkillRegistryAPI contract to the extensions store: scope → (organization, project),

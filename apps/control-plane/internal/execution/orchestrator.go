@@ -241,6 +241,15 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		return err
 	}
 
+	// Freeze the run's skill pins ONCE at run-start (spec §28.16, E12 Task 7): resolve the pinned
+	// revision's requested skills to their enabled digests + metadata and record them on the run row, so a
+	// mid-run enable of a new revision never changes what THIS run sees (never "latest"). Idempotent — a
+	// resumed attempt sees the pins already frozen and skips. An unknown/not-enabled skill fails the run
+	// here, VISIBLY. A skill-less run writes nothing, so its config + provider request stay bit-identical.
+	if err := o.store.PinRunSkills(ctx, tenant, string(attempt.RunID)); err != nil {
+		return fmt.Errorf("pin run skills: %w", err)
+	}
+
 	// Read this run's delegation context (spec §25.18): its depth, the required delegations a root
 	// run seeds into run.start, its parent budget children intersect against, and — for a ChildRun
 	// — its own model and budget. A plain run carries none and behaves exactly as before. Read here

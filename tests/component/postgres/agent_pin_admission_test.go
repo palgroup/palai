@@ -69,7 +69,7 @@ func TestUnpublishedRevisionCannotBePinnedOrRun(t *testing.T) {
 	if out3.Replayed || out3.Conflict || out3.PinnedRevisionNotFound || out3.PinnedRevisionNotPublished {
 		t.Fatalf("published pin admission = %+v, want a fresh create", out3)
 	}
-	revID, model, tools, _, err := cs.PinnedExecConfig(ctx, tenant, ok.RunID)
+	revID, model, tools, _, _, err := cs.PinnedExecConfig(ctx, tenant, ok.RunID)
 	if err != nil {
 		t.Fatalf("PinnedExecConfig() error = %v", err)
 	}
@@ -103,7 +103,7 @@ func TestRunTemplateRevisionStartsProfileFreeRun(t *testing.T) {
 	}
 
 	// The run resolves the template's config, and NO agent profile exists for this tenant.
-	revID, model, tools, _, err := cs.PinnedExecConfig(ctx, tenant, in.RunID)
+	revID, model, tools, _, _, err := cs.PinnedExecConfig(ctx, tenant, in.RunID)
 	if err != nil {
 		t.Fatalf("PinnedExecConfig() error = %v", err)
 	}

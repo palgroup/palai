@@ -281,7 +281,7 @@ func TestRegistryToolsLoadIntoBrokerEffectiveSet(t *testing.T) {
 		t.Fatalf("coordinator.Open: %v", err)
 	}
 	t.Cleanup(cs.Close)
-	_, _, _, toolSetTools, err := cs.PinnedExecConfig(ctx, coordinator.Tenant{Organization: org, Project: project}, runID)
+	_, _, _, toolSetTools, _, err := cs.PinnedExecConfig(ctx, coordinator.Tenant{Organization: org, Project: project}, runID)
 	if err != nil {
 		t.Fatalf("PinnedExecConfig: %v", err)
 	}
@@ -475,7 +475,7 @@ func TestPinnedRunConfigToolOrderStable(t *testing.T) {
 
 	want := []string{"apple", "zebra"} // sorted, regardless of insertion order
 	for i := 0; i < 3; i++ {
-		_, _, _, tools, err := cs.PinnedExecConfig(ctx, tenant, runID)
+		_, _, _, tools, _, err := cs.PinnedExecConfig(ctx, tenant, runID)
 		if err != nil {
 			t.Fatalf("PinnedExecConfig read %d: %v", i, err)
 		}
@@ -515,7 +515,7 @@ func TestLookupToolIsTenantIsolated(t *testing.T) {
 		t.Fatalf("coordinator.Open: %v", err)
 	}
 	t.Cleanup(cs.Close)
-	_, _, _, tools, err := cs.PinnedExecConfig(ctx, coordinator.Tenant{Organization: orgA, Project: projectA}, runA)
+	_, _, _, tools, _, err := cs.PinnedExecConfig(ctx, coordinator.Tenant{Organization: orgA, Project: projectA}, runA)
 	if err != nil {
 		t.Fatalf("PinnedExecConfig A: %v", err)
 	}
