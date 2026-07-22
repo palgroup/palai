@@ -20,8 +20,14 @@ type fakeTriggerAPI struct {
 	deliveryHit bool
 }
 
-func (f *fakeTriggerAPI) CreateTrigger(context.Context, string, string, string, string) (string, error) {
+func (f *fakeTriggerAPI) CreateTrigger(context.Context, string, string, string, string, string) (string, error) {
 	return "trg_created", nil
+}
+func (f *fakeTriggerAPI) IngestInbound(context.Context, string, map[string]string, []byte) (automation.InboundResult, error) {
+	return automation.InboundResult{}, nil
+}
+func (f *fakeTriggerAPI) SetInboundSecretRefs(context.Context, string, string, string, string, string) error {
+	return nil
 }
 func (f *fakeTriggerAPI) ReviseTrigger(_ context.Context, _, _, _ string, in automation.TriggerRevisionInput) (automation.TriggerRevision, error) {
 	f.revised = &in

@@ -98,7 +98,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("PublishRevision error = %v", err)
 	}
 	triggers := automation.NewTriggerStore(pool).WithAdmitter(spine)
-	triggerID, err := triggers.CreateTrigger(ctx, org, proj, randID("cron-trg"), "cron")
+	triggerID, err := triggers.CreateTrigger(ctx, org, proj, principal, randID("cron-trg"), "cron")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}

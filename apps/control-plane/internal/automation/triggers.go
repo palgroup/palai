@@ -21,6 +21,15 @@ import (
 type TriggerStore struct {
 	pool     *pgxpool.Pool
 	admitter RunAdmitter
+
+	// Inbound signed-webhook config (E11 Task 5), wired via WithInboundSecrets / WithInboundGate. Nil
+	// resolver ⇒ inbound ingestion is unwired (every inbound POST is a generic 404 — the management-only
+	// surface tiers keep them off). See inbound.go.
+	inboundSecrets   func(org, ref string) ([]byte, error)
+	inboundAudit     func(string, ...any)
+	inboundTolerance time.Duration
+	inboundInflight  chan struct{} // in-flight semaphore (nil ⇒ unbounded); bounds concurrent-request memory
+	inboundBacklog   int           // durable non-terminal-inbound backlog ceiling per trigger (0 ⇒ unbounded)
 }
 
 // NewTriggerStore wraps a shared connection pool. The admitter (the durable coordinator) is wired
@@ -31,6 +40,29 @@ func NewTriggerStore(pool *pgxpool.Pool) *TriggerStore { return &TriggerStore{po
 // in production). Returns the store for chaining.
 func (s *TriggerStore) WithAdmitter(a RunAdmitter) *TriggerStore {
 	s.admitter = a
+	return s
+}
+
+// WithInboundSecrets binds the source-secret resolver the signed-inbound receiver verifies under (the
+// org-scoped env-file bridge in production, the WithAdmitter shape). Returns the store for chaining. A
+// nil resolver keeps inbound ingestion unwired.
+func (s *TriggerStore) WithInboundSecrets(resolver func(org, ref string) ([]byte, error)) *TriggerStore {
+	s.inboundSecrets = resolver
+	return s
+}
+
+// WithInboundGate binds the inbound audit sink (AUT-002 sanitized reject log), the signature timestamp
+// tolerance (0 ⇒ the 5m default), the in-flight semaphore size (0 ⇒ unbounded), and the per-trigger
+// durable-backlog ceiling (0 ⇒ unbounded) that AUT-010 backpressure enforces. Returns the store.
+func (s *TriggerStore) WithInboundGate(audit func(string, ...any), tolerance time.Duration, maxInflight, backlogMax int) *TriggerStore {
+	s.inboundAudit = audit
+	if tolerance > 0 {
+		s.inboundTolerance = tolerance
+	}
+	if maxInflight > 0 {
+		s.inboundInflight = make(chan struct{}, maxInflight)
+	}
+	s.inboundBacklog = backlogMax
 	return s
 }
 
@@ -105,15 +137,32 @@ type TriggerRevision struct {
 }
 
 // CreateTrigger inserts a named trigger lineage and returns its id. triggerType defaults to manual_api.
-func (s *TriggerStore) CreateTrigger(ctx context.Context, org, project, name, triggerType string) (string, error) {
+// principal is stamped as created_by — the identity a non-interactive (inbound/scheduled) run admits AS
+// (§20.9 idempotency is principal-scoped), the schedules.created_by precedent for the source case.
+func (s *TriggerStore) CreateTrigger(ctx context.Context, org, project, principal, name, triggerType string) (string, error) {
 	if triggerType == "" {
 		triggerType = "manual_api"
 	}
 	id := newID("trg")
-	if _, err := s.pool.Exec(ctx, storage.Query("InsertTrigger"), id, org, project, name, triggerType); err != nil {
+	if _, err := s.pool.Exec(ctx, storage.Query("InsertTrigger"), id, org, project, name, triggerType, principal); err != nil {
 		return "", fmt.Errorf("insert trigger: %w", err)
 	}
 	return id, nil
+}
+
+// SetInboundSecretRefs rotates the trigger's inbound source-secret HANDLES in place (the ref currently
+// verified + the overlap ref), WITHOUT minting a pipeline revision (the mutable-endpoint-column precedent
+// — rotation is not a config edit). The refs are handles, never bytes; the resolver redeems them. An
+// unknown trigger in scope is ErrTriggerNotFound.
+func (s *TriggerStore) SetInboundSecretRefs(ctx context.Context, org, project, triggerID, ref, refNext string) error {
+	tag, err := s.pool.Exec(ctx, storage.Query("SetInboundSecretRefs"), triggerID, org, project, ref, refNext)
+	if err != nil {
+		return fmt.Errorf("set inbound secret refs: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrTriggerNotFound
+	}
+	return nil
 }
 
 // ReviseTrigger inserts a NEW immutable revision under a trigger (revise = new INSERT, never an in-place
@@ -160,20 +209,25 @@ func (s *TriggerStore) GetActiveRevision(ctx context.Context, org, project, trig
 	return rev, true, nil
 }
 
-// TriggerView is a trigger's management projection (GET /v1/triggers/{id}).
+// TriggerView is a trigger's management projection (GET /v1/triggers/{id}). The inbound secret-ref
+// HANDLES + created_by are surfaced so security config is visible to the API/view (never the bytes —
+// the ref is a handle the resolver redeems).
 type TriggerView struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Type           string `json:"type"`
-	Enabled        bool   `json:"enabled"`
-	ActiveRevision int    `json:"active_revision"`
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	Type                 string `json:"type"`
+	Enabled              bool   `json:"enabled"`
+	ActiveRevision       int    `json:"active_revision"`
+	CreatedBy            string `json:"created_by,omitempty"`
+	InboundSecretRef     string `json:"inbound_secret_ref,omitempty"`
+	InboundSecretRefNext string `json:"inbound_secret_ref_next,omitempty"`
 }
 
 // GetTrigger reads a trigger's management projection, or found=false when it is absent from the scope.
 func (s *TriggerStore) GetTrigger(ctx context.Context, org, project, triggerID string) (TriggerView, bool, error) {
 	v := TriggerView{ID: triggerID}
 	switch err := s.pool.QueryRow(ctx, storage.Query("GetTrigger"), triggerID, org, project).
-		Scan(&v.Name, &v.Type, &v.Enabled, &v.ActiveRevision); {
+		Scan(&v.Name, &v.Type, &v.Enabled, &v.ActiveRevision, &v.CreatedBy, &v.InboundSecretRef, &v.InboundSecretRefNext); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return TriggerView{}, false, nil
 	case err != nil:

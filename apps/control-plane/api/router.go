@@ -60,6 +60,9 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		th := &triggerHandler{triggers: triggers}
 		mux.HandleFunc("POST /v1/triggers", th.createTrigger)
 		mux.HandleFunc("POST /v1/triggers/{trigger_id}/revisions", th.reviseTrigger)
+		// PATCH rotates the inbound source-secret handles in place (E11 Task 5) — NOT a revise (rotation must
+		// not mint a pipeline revision); it accepts ONLY the two secret refs.
+		mux.HandleFunc("PATCH /v1/triggers/{trigger_id}", th.reviseInboundSecret)
 		mux.HandleFunc("GET /v1/triggers/{trigger_id}", th.getTrigger)
 		mux.Handle("POST /v1/triggers/{trigger_id}/deliveries", middleware.RequireIdempotencyKey(http.HandlerFunc(th.createDelivery)))
 		mux.HandleFunc("GET /v1/trigger-deliveries/{delivery_id}", th.getDelivery)
@@ -118,6 +121,17 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	})
+	// The signed inbound-webhook receiver (spec §20.2.2/§21.7, E11 Task 5): its auth IS the per-source HMAC
+	// signature, so it mounts on the UNAUTHENTICATED top mux beside /healthz — the sole such precedent —
+	// bypassing middleware.Auth. Only Auth is bypassed: it is still wrapped in RequestContext so its problem
+	// bodies + responses carry the correlation id. An unresolvable/unauthenticated source is a generic 404
+	// (no config oracle). NOTE: no OpenAPI operation is declared for this route — the whole automation
+	// surface (triggers/webhooks/schedules, T2-T5) has zero OpenAPI ops, so an inbound-only op would be
+	// asymmetric; documenting all four consistently is a deferred E11-exit follow-up (review minor-4).
+	if triggers != nil {
+		ih := &inboundHandler{triggers: triggers}
+		top.Handle("POST /v1/inbound/{trigger_id}", middleware.RequestContext(http.HandlerFunc(ih.receive)))
+	}
 	if runner != nil {
 		top.Handle("/v1/runner/", runner)
 	}

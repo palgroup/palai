@@ -16,11 +16,18 @@ import (
 // not touch triggers pass nil so the routes stay unmounted. Every method is scoped by the verified
 // identity, never a request-body field (§39.2). A delivery admits AS the verified principal.
 type TriggerAPI interface {
-	CreateTrigger(ctx context.Context, org, project, name, triggerType string) (string, error)
+	CreateTrigger(ctx context.Context, org, project, principal, name, triggerType string) (string, error)
 	ReviseTrigger(ctx context.Context, org, project, triggerID string, in automation.TriggerRevisionInput) (automation.TriggerRevision, error)
 	GetTrigger(ctx context.Context, org, project, triggerID string) (automation.TriggerView, bool, error)
 	CreateDeliveryIdempotent(ctx context.Context, org, project, principal, triggerID, idempotencyKey string, payload []byte) (automation.DeliveryResult, error)
 	GetDelivery(ctx context.Context, org, project, deliveryID string) (automation.TriggerDeliveryView, bool, error)
+	// IngestInbound is the unauthenticated signed-webhook receiver (E11 Task 5): the source signature is
+	// the auth. Global by server-minted id; verification precedes persistence; a durable row commits before
+	// the ack. Mounted on the top mux (see router.go).
+	IngestInbound(ctx context.Context, triggerID string, headers map[string]string, rawBody []byte) (automation.InboundResult, error)
+	// SetInboundSecretRefs rotates the trigger's inbound source-secret handles in place (the PATCH surface;
+	// rotation is not a pipeline revision).
+	SetInboundSecretRefs(ctx context.Context, org, project, triggerID, ref, refNext string) error
 }
 
 type triggerHandler struct {
@@ -46,13 +53,42 @@ func (h *triggerHandler) createTrigger(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "name is required")
 		return
 	}
-	id, err := h.triggers.CreateTrigger(r.Context(), scope.Organization, scope.Project, body.Name, body.Type)
+	id, err := h.triggers.CreateTrigger(r.Context(), scope.Organization, scope.Project, scope.Principal, body.Name, body.Type)
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
 	}
 	w.Header().Set("Location", "/v1/triggers/"+id)
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+// reviseInboundSecret rotates a trigger's inbound source-secret handles (PATCH /v1/triggers/{trigger_id}).
+// It accepts ONLY inbound_secret_ref / inbound_secret_ref_next — rotation is a mutable-endpoint-column
+// write, NOT a config revise (a revise would mint a pipeline revision). The refs are handles, never bytes.
+func (h *triggerHandler) reviseInboundSecret(w http.ResponseWriter, r *http.Request) {
+	scope, raw, ok := h.begin(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		InboundSecretRef     string `json:"inbound_secret_ref"`
+		InboundSecretRefNext string `json:"inbound_secret_ref_next"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body is not valid JSON")
+		return
+	}
+	err := h.triggers.SetInboundSecretRefs(r.Context(), scope.Organization, scope.Project, r.PathValue("trigger_id"), body.InboundSecretRef, body.InboundSecretRefNext)
+	if errors.Is(err, automation.ErrTriggerNotFound) {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such trigger in this project")
+		return
+	}
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": r.PathValue("trigger_id"),
+		"inbound_secret_ref": body.InboundSecretRef, "inbound_secret_ref_next": body.InboundSecretRefNext})
 }
 
 // reviseTrigger creates a NEW immutable revision under a trigger (POST /v1/triggers/{trigger_id}/revisions).

@@ -234,6 +234,9 @@ func (s *TriggerStore) createDelivery(ctx context.Context, org, project, princip
 type deliveryScope struct {
 	org, project, principal, triggerID, revisionID, deliveryID string
 	dedupeOverride                                             string
+	// sourceTenant scopes the correlation hash for a signed inbound source (the sender's sub-tenant).
+	// Empty for manual/API and scheduled firings (no signed source envelope).
+	sourceTenant string
 }
 
 // revisionConfig is a pinned revision's delivery-pipeline config (mapping + key exprs + modes).
@@ -309,8 +312,17 @@ func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []
 		return DeliveryResult{}, err
 	}
 
-	// Map (AUT-003): compile + evaluate the mapping into the canonical action input. A schema-invalid
-	// mapping FAILS the delivery WITHOUT a run — no billable run is ever born from an unmappable event.
+	// Map → concurrency policy → correlate → admit (the post-dedupe pipeline, shared with the inbound
+	// receiver: source-dedupe replaces the dedupe_key claim above, so inbound enters here at deduplicated).
+	return s.mapAndAdmit(ctx, sc, cfg, source)
+}
+
+// mapAndAdmit runs the pipeline from a `deduplicated` delivery: compile + evaluate the mapping into the
+// canonical action input (a schema-invalid mapping FAILS the delivery WITHOUT a run — no billable run is
+// born from an unmappable event, AUT-003 / the §34.3 poison terminal), persist the mapped input +
+// correlation hash TOGETHER (a crash after this leaves a recoverable `mapped` remnant), then apply the
+// concurrency policy at the admit gate. Shared by the manual/API advance() and the inbound advanceInbound().
+func (s *TriggerStore) mapAndAdmit(ctx context.Context, sc deliveryScope, cfg revisionConfig, source map[string]any) (DeliveryResult, error) {
 	mapping, err := CompileMapping(cfg.InputMapping, nil)
 	if err != nil {
 		return s.fail(ctx, sc, "input mapping is invalid: "+err.Error())
@@ -319,9 +331,6 @@ func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []
 	if err != nil {
 		return s.fail(ctx, sc, "input mapping failed: "+err.Error())
 	}
-	// Validate the deduplicated → mapped transition, then persist the mapped input + correlation hash
-	// TOGETHER (a delivery that crashes after this is a recoverable remnant the reconciler re-decides
-	// from the stored state, without the now-gone source payload).
 	if _, _, err := statemachines.Apply(statemachines.TriggerDeliveryDeduplicated, statemachines.TriggerDeliveryCmdMap, statemachines.TriggerDeliveryTable); err != nil {
 		return DeliveryResult{}, err
 	}
@@ -329,8 +338,6 @@ func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []
 	if _, err := s.pool.Exec(ctx, storage.Query("RecordDeliveryMapped"), sc.deliveryID, sc.org, sc.project, mappedInput, hash); err != nil {
 		return DeliveryResult{}, fmt.Errorf("record mapped delivery: %w", err)
 	}
-
-	// Apply the concurrency policy at the admit gate, then correlate + admit.
 	return s.applyPolicy(ctx, sc, cfg, source, mappedInput, hash)
 }
 
@@ -388,8 +395,8 @@ func computeCorrelationHash(sc deliveryScope, expr string, source map[string]any
 	if err != nil || raw == "" {
 		return ""
 	}
-	// source_tenant is '' in T2 (manual/api carries no signed source envelope — T5).
-	scoped := sc.project + "\x00" + sc.revisionID + "\x00" + "" + "\x00" + raw
+	// source_tenant scopes the hash for a signed inbound source; '' for manual/api + scheduled firings.
+	scoped := sc.project + "\x00" + sc.revisionID + "\x00" + sc.sourceTenant + "\x00" + raw
 	sum := sha256.Sum256([]byte(scoped))
 	return hex.EncodeToString(sum[:])
 }

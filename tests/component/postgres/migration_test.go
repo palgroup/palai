@@ -1063,6 +1063,49 @@ func TestMigration22Schedules(t *testing.T) {
 	}
 }
 
+// TestMigration23InboundTriggerAuthIdempotentAndDown proves 000023 adds the three inbound-auth columns to
+// triggers (created_by + inbound_secret_ref + inbound_secret_ref_next, E11 Task 5, spec §20.2.2/§21.7)
+// idempotently and reverses cleanly: present after apply (a re-apply is a clean no-op — ADD COLUMN IF NOT
+// EXISTS), gone after rollback, returning after reapply. Version 23 is recorded exactly once.
+func TestMigration23InboundTriggerAuth(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (ADD COLUMN IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, col := range []string{"created_by", "inbound_secret_ref", "inbound_secret_ref_next"} {
+		if !columnExists(t, pool, "triggers", col) {
+			t.Fatalf("after apply, triggers.%s is missing", col)
+		}
+	}
+	var version23 int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 23`).Scan(&version23); err != nil {
+		t.Fatalf("count version 23 error = %v", err)
+	}
+	if version23 != 1 {
+		t.Fatalf("schema_migrations records version 23 %d times, want 1", version23)
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	for _, col := range []string{"created_by", "inbound_secret_ref", "inbound_secret_ref_next"} {
+		if columnExists(t, pool, "triggers", col) {
+			t.Fatalf("after rollback, triggers.%s still exists", col)
+		}
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !columnExists(t, pool, "triggers", "inbound_secret_ref") {
+		t.Fatal("after reapply, a 000023 column is missing")
+	}
+}
+
 func TestMigrationApplyRollbackReapply(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
