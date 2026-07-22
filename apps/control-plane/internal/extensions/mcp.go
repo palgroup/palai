@@ -141,8 +141,9 @@ func decodeMCPConnectionInput(raw []byte) (MCPConnectionInput, error) {
 }
 
 // validateConnectionConfig enforces the transport-specific non-secret wiring. A stdio connection must pin a
-// sha256 image digest and a non-empty argv; an http connection must carry a url. A credential is never
-// inline — it is the secret_ref handle, which this never inspects.
+// sha256 image digest and a non-empty argv; an http connection must carry a url. It also ALLOWLISTS the keys
+// per transport, so a credential can never land inline in the connection JSONB (e.g. {"bearer":"sk-.."}) —
+// the secret_ref handle is the ONLY credential path (spec §28.4). An unknown/credential-shaped key is a reject.
 func validateConnectionConfig(transport string, config map[string]any) error {
 	switch transport {
 	case "stdio":
@@ -154,15 +155,30 @@ func validateConnectionConfig(transport string, config map[string]any) error {
 		if !ok || len(cmd) == 0 {
 			return fmt.Errorf("%w: stdio needs a non-empty cmd", ErrInvalidConnectionConfig)
 		}
-		return nil
+		return allowlistConfigKeys(config, "image_digest", "cmd")
 	case "http":
 		if url, _ := config["url"].(string); url == "" {
 			return fmt.Errorf("%w: http needs a url", ErrInvalidConnectionConfig)
 		}
-		return nil
+		return allowlistConfigKeys(config, "url")
 	default:
 		return fmt.Errorf("%w: got %q", ErrInvalidTransport, transport)
 	}
+}
+
+// allowlistConfigKeys rejects any config key outside the transport's non-secret allowlist — the guard that
+// keeps a credential out of the connection row entirely (it can only enter as a secret_ref handle).
+func allowlistConfigKeys(config map[string]any, allowed ...string) error {
+	set := make(map[string]bool, len(allowed))
+	for _, k := range allowed {
+		set[k] = true
+	}
+	for k := range config {
+		if !set[k] {
+			return fmt.Errorf("%w: unexpected config key %q (a credential must be a secret_ref, never inline)", ErrInvalidConnectionConfig, k)
+		}
+	}
+	return nil
 }
 
 // immutableImageDigest reports whether s is a canonical lowercase sha256 content digest (the oci driver's

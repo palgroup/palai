@@ -5,8 +5,8 @@
 // credentials; the HTTP transport sends the connection's own bearer only, never the platform's.
 //
 // This file is the transport-agnostic protocol layer: the Client drives a Transport with typed requests and
-// parses typed results. Resources/prompts and every non-tools method are surfaced as an explicit
-// "unsupported surface" error rather than silently skipped (E17 deferral, honest naming).
+// parses typed results. It speaks ONLY the tools subset (initialize/tools-list/tools-call) — it never
+// requests resources/prompts (E17 deferral), so there is no non-tools surface to skip.
 package mcp
 
 import (
@@ -24,9 +24,6 @@ var (
 	// ErrProtocol marks a malformed or protocol-violating server message (bad JSON-RPC, wrong version, a
 	// JSON-RPC error result). It classifies a connection failure the breaker counts.
 	ErrProtocol = errors.New("mcp: protocol error")
-	// ErrUnsupportedSurface marks a server capability the client does not implement (resources/prompts) —
-	// surfaced, never silently skipped.
-	ErrUnsupportedSurface = errors.New("mcp: unsupported server surface")
 )
 
 // Progress is one advisory progress notification (spec §basic/utilities/progress). It never advances the

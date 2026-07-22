@@ -354,7 +354,13 @@ func mcpSecretResolver(org, ref string) ([]byte, error) {
 	if path == "" {
 		return nil, fmt.Errorf("no secret bridge configured for mcp ref under org %q", org)
 	}
-	return os.ReadFile(path)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	// Trim trailing whitespace/newline: a secret file written with a trailing \n would otherwise corrupt
+	// the Authorization header (an opaque upstream 401).
+	return []byte(strings.TrimSpace(string(b))), nil
 }
 
 // startMCPOrphanSweep launches the label-scoped MCP orphan-container sweep (spec §28.13 named gap, E12 T5):

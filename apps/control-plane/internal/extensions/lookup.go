@@ -30,11 +30,10 @@ func (s *Store) LookupTool(ctx context.Context, org, project, runID, name string
 		outputJSON  []byte
 		replayClass string
 		configJSON  []byte
-		secretRef   *string
 		timeoutMS   *int
 	)
 	err := s.pool.QueryRow(ctx, storage.Query("LookupRunTool"), runID, org, project, name).
-		Scan(&executor, &description, &inputJSON, &outputJSON, &replayClass, &configJSON, &secretRef, &timeoutMS)
+		Scan(&executor, &description, &inputJSON, &outputJSON, &replayClass, &configJSON, &timeoutMS)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return toolbroker.Tool{}, false, nil
 	}

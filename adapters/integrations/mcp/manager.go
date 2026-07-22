@@ -17,6 +17,14 @@ import (
 const sandboxLabel = "io.palai.sandbox"
 const sandboxLabelMCP = "mcp"
 
+// maxProgressPerCall bounds the advisory progress events one tools/call may journal (flood defence).
+const maxProgressPerCall = 100
+
+// defaultMaxTimeout is the hard ceiling on a per-call container's wall-time. It MUST stay below the orphan
+// sweep's grace window (default 2m) so a legitimate long call's container is never swept mid-flight — the
+// clamp bounds the container's lifetime regardless of a revision's declared timeout_ms.
+const defaultMaxTimeout = 90 * time.Second
+
 // ConnConfig is the non-secret wiring the manager dials a connection with, plus the SECRET_REF handle (never
 // the resolved bearer) — the credential is resolved from the handle at REQUEST time inside Call, so it never
 // enters argv, a log, or a DB row. It is the manager's own type (adapters never import control-plane
@@ -66,6 +74,9 @@ type Config struct {
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
 	DefaultTimeout   time.Duration
+	// MaxTimeout is the hard ceiling on a per-call container's wall-time; it MUST stay below the orphan
+	// sweep grace so a live container is never swept mid-call. Zero defaults to defaultMaxTimeout.
+	MaxTimeout time.Duration
 }
 
 // Manager dials MCP connections and runs tools/call + discovery through per-call transports, guarded by a
@@ -86,6 +97,9 @@ func NewManager(cfg Config) *Manager {
 	}
 	if cfg.DefaultTimeout <= 0 {
 		cfg.DefaultTimeout = 30 * time.Second
+	}
+	if cfg.MaxTimeout <= 0 {
+		cfg.MaxTimeout = defaultMaxTimeout
 	}
 	if cfg.Limits.WallTime <= 0 {
 		cfg.Limits.WallTime = cfg.DefaultTimeout
@@ -127,7 +141,17 @@ func (m *Manager) Call(ctx context.Context, scope CallScope, conn ConnConfig, re
 	}
 	var onProgress func(Progress)
 	if m.cfg.Sink != nil {
-		onProgress = func(p Progress) { m.cfg.Sink.ToolProgress(ctx, scope, p) }
+		// Cap progress events per call: a hostile server flooding notifications cannot write an unbounded
+		// number of journal rows (one tx each). Progress is single-threaded per call, so a plain counter is
+		// safe. ponytail: fixed cap; make it configurable if a legitimate long tool ever needs more.
+		count := 0
+		onProgress = func(p Progress) {
+			count++
+			if count > maxProgressPerCall {
+				return
+			}
+			m.cfg.Sink.ToolProgress(ctx, scope, p)
+		}
 	}
 	result, err := client.CallTool(callCtx, remoteName, args, onProgress)
 	if err != nil {
@@ -191,12 +215,13 @@ func (m *Manager) dialStdio(ctx context.Context, conn ConnConfig) (Transport, fu
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: start mcp sandbox: %v", ErrProtocol, err)
 	}
+	transport := NewStdioTransport(proc.Stdin(), proc.Stdout(), func(ctx context.Context) error { return proc.Kill(ctx) })
 	teardown := func() {
 		killCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = proc.Kill(killCtx)
+		_ = transport.Close(killCtx) // stops the reader goroutine (no flood-park leak) AND kills the container
 	}
-	return NewStdioTransport(proc.Stdin(), proc.Stdout(), func(ctx context.Context) error { return proc.Kill(ctx) }), teardown, nil
+	return transport, teardown, nil
 }
 
 // dialHTTP builds a Streamable HTTP transport, resolving the bearer from the secret_ref at request time.
@@ -237,10 +262,15 @@ func (m *Manager) resolveBearer(conn ConnConfig) (string, error) {
 	return string(b), nil
 }
 
-// timeout resolves the per-call wall-time from the connection (falling back to the manager default).
+// timeout resolves the per-call wall-time from the connection (falling back to the manager default), CLAMPED
+// to MaxTimeout so a container's lifetime always stays below the orphan sweep grace (never swept mid-call).
 func (m *Manager) timeout(conn ConnConfig) time.Duration {
+	d := m.cfg.DefaultTimeout
 	if conn.TimeoutMS > 0 {
-		return time.Duration(conn.TimeoutMS) * time.Millisecond
+		d = time.Duration(conn.TimeoutMS) * time.Millisecond
 	}
-	return m.cfg.DefaultTimeout
+	if m.cfg.MaxTimeout > 0 && d > m.cfg.MaxTimeout {
+		d = m.cfg.MaxTimeout
+	}
+	return d
 }

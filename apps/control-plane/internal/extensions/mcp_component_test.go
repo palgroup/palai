@@ -54,16 +54,31 @@ func TestMCPConnectionCreateReadIdempotentMigration(t *testing.T) {
 		t.Fatalf("duplicate name: err = %v, want ErrConnectionNameCollision", err)
 	}
 
-	// A mutable stdio image / missing http url / unknown transport are rejected before any write.
+	// A mutable stdio image / missing http url / an INLINE credential in config are rejected before any
+	// write — the config JSONB must carry only non-secret wiring (allowlisted keys).
 	for name, bad := range map[string]string{
 		"mutable stdio image": `{"name":"a","transport":"stdio","config":{"image_digest":"latest","cmd":["/mcp"]}}`,
 		"empty stdio cmd":     `{"name":"b","transport":"stdio","config":{"image_digest":"sha256:` + hex64() + `","cmd":[]}}`,
 		"http no url":         `{"name":"c","transport":"http","config":{}}`,
-		"unknown transport":   `{"name":"d","transport":"carrier-pigeon","config":{}}`,
+		"http inline bearer":  `{"name":"f","transport":"http","config":{"url":"https://x","bearer":"sk-live-abc"}}`,
+		"stdio inline token":  `{"name":"g","transport":"stdio","config":{"image_digest":"sha256:` + hex64() + `","cmd":["/mcp"],"token":"sk-live-abc"}}`,
 	} {
-		if _, err := s.CreateMCPConnection(ctx, org, project, []byte(bad)); err == nil {
-			t.Errorf("%s: create accepted an invalid config, want a reject", name)
+		if _, err := s.CreateMCPConnection(ctx, org, project, []byte(bad)); !errors.Is(err, ErrInvalidConnectionConfig) {
+			t.Errorf("%s: create err = %v, want ErrInvalidConnectionConfig (no inline secret / invalid wiring)", name, err)
 		}
+	}
+	// An unknown transport is its own typed reject.
+	if _, err := s.CreateMCPConnection(ctx, org, project, []byte(`{"name":"d","transport":"carrier-pigeon","config":{}}`)); !errors.Is(err, ErrInvalidTransport) {
+		t.Errorf("unknown transport: err = %v, want ErrInvalidTransport", err)
+	}
+	// Prove the inline credential never reached the DB: no connection row carries a bearer/token in config.
+	var leaked int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM mcp_connections WHERE jsonb_exists(config, 'bearer') OR jsonb_exists(config, 'token')`).Scan(&leaked); err != nil {
+		t.Fatalf("scan for leaked inline credential: %v", err)
+	}
+	if leaked != 0 {
+		t.Fatalf("an inline credential landed in %d mcp_connections config rows; a secret must be a secret_ref handle only", leaked)
 	}
 
 	// An inline credential field is rejected (DisallowUnknownFields — no secret inline).

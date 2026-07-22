@@ -47,7 +47,9 @@ func newBreaker(threshold int, cooldown time.Duration, now func() time.Time) *br
 }
 
 // allow reports whether a call to connID may proceed. An open breaker denies until the cooldown elapses,
-// then admits exactly one half-open trial.
+// then admits half-open trials until one records an outcome (recordSuccess closes it, recordFailure
+// re-opens). ponytail: per-call containers are serial per connection, so in practice this is one trial at a
+// time; under hypothetical concurrent calls it admits each until the first outcome — acceptable, not a wedge.
 func (b *breaker) allow(connID string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()

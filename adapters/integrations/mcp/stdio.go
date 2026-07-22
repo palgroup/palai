@@ -27,16 +27,19 @@ type stdioTransport struct {
 	closer func(context.Context) error
 	nextID atomic.Int64
 
-	inbound chan rpcMessage
-	readErr atomic.Pointer[error]
-	writeMu sync.Mutex
+	inbound   chan rpcMessage
+	readErr   atomic.Pointer[error]
+	writeMu   sync.Mutex
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // NewStdioTransport frames JSON-RPC over w (the server's stdin) and r (its stdout). closer tears the
-// underlying process/container down; a nil closer is a no-op. The reader goroutine exits when r reaches
-// EOF (closer/teardown closes it).
+// underlying process/container down; a nil closer is a no-op. The reader goroutine exits when r reaches EOF
+// OR when Close is called — so a hostile server flooding notifications after answering cannot park it on a
+// full inbound channel forever (goroutine + memory leak).
 func NewStdioTransport(w io.Writer, r io.Reader, closer func(context.Context) error) Transport {
-	t := &stdioTransport{w: w, closer: closer, inbound: make(chan rpcMessage, 32)}
+	t := &stdioTransport{w: w, closer: closer, inbound: make(chan rpcMessage, 32), done: make(chan struct{})}
 	go t.readLoop(r)
 	return t
 }
@@ -59,6 +62,7 @@ type rpcError struct {
 // readLoop drains stdout, unmarshals each line, and fans it onto inbound until EOF/error, then closes
 // inbound so a blocked Call unblocks with the recorded read error.
 func (t *stdioTransport) readLoop(r io.Reader) {
+	defer close(t.inbound)
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), maxStdioMessage)
 	for sc.Scan() {
@@ -66,14 +70,18 @@ func (t *stdioTransport) readLoop(r io.Reader) {
 		if err := json.Unmarshal(sc.Bytes(), &msg); err != nil {
 			continue // ignore a non-JSON line
 		}
-		t.inbound <- msg
+		select {
+		case t.inbound <- msg:
+		case <-t.done:
+			return // Close aborted us: stop parking on a full channel (a post-answer notification flood
+			// would otherwise leak this goroutine + its buffered messages forever).
+		}
 	}
 	err := sc.Err()
 	if err == nil {
 		err = io.EOF
 	}
 	t.readErr.Store(&err)
-	close(t.inbound)
 }
 
 // Call writes a request and consumes inbound until the matching-id response arrives, routing any
@@ -116,8 +124,10 @@ func (t *stdioTransport) Notify(ctx context.Context, method string, params any) 
 	return t.writeMessage(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
 }
 
-// Close tears down the underlying process/container.
+// Close signals the reader goroutine to stop (unblocking it if it is parked sending to a full inbound), then
+// tears the underlying process/container down. Idempotent — the manager's teardown always routes through it.
 func (t *stdioTransport) Close(ctx context.Context) error {
+	t.closeOnce.Do(func() { close(t.done) })
 	if t.closer == nil {
 		return nil
 	}

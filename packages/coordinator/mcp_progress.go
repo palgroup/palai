@@ -12,9 +12,16 @@ import (
 // WITHOUT touching the tool-call state machine, fence, or ledger row. It is best-effort: the MCP manager's
 // progress sink calls it and ignores its error, so a progress append that fails never stalls or fails the
 // tools/call itself. The payload carries the tool_call_id it correlates to plus the progress numbers.
+// maxProgressMessage caps the advisory message stored per progress event, so a hostile server cannot bloat
+// the events journal with a giant message per notification (the per-call COUNT is capped in the MCP manager).
+const maxProgressMessage = 4 * 1024
+
 func (s *Store) AppendToolProgress(ctx context.Context, tenant Tenant, sessionID, responseID, callID string, progress, total float64, message string) error {
 	if sessionID == "" {
 		return fmt.Errorf("tool progress needs a session id")
+	}
+	if len(message) > maxProgressMessage {
+		message = message[:maxProgressMessage]
 	}
 	payload := mustMarshal(map[string]any{
 		"tool_call_id": callID,

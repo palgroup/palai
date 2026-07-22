@@ -31,3 +31,6 @@ __pycache__/
 # SDD scratch
 .superpowers/
 /engine
+
+# Accidental bare-name build output of ./tests/sandboxes/mcp
+/mcp
