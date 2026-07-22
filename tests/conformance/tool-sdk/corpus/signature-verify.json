@@ -1,0 +1,104 @@
+{
+  "vectors": [
+    {
+      "name": "valid-exact",
+      "secret": "secret-key-alpha",
+      "webhook_id": "tcall_conf_001",
+      "timestamp": 1700000000,
+      "body": "{\"operation_id\":\"rop_conf_001\",\"protocol\":\"tool-http.v1\",\"result\":{\"answer\":\"sunny\"},\"tool_call_id\":\"tcall_conf_001\"}",
+      "signature": "v1=331c05b40f99e9aeb3e256739c0c0cf4004146216c18f2092eda99602538621d",
+      "now": 1700000000,
+      "tolerance_seconds": 300,
+      "expect": true,
+      "expect_signature": "331c05b40f99e9aeb3e256739c0c0cf4004146216c18f2092eda99602538621d"
+    },
+    {
+      "name": "valid-within-window",
+      "secret": "secret-key-alpha",
+      "webhook_id": "tcall_conf_001",
+      "timestamp": 1700000000,
+      "body": "{\"operation_id\":\"rop_conf_001\",\"protocol\":\"tool-http.v1\",\"result\":{\"answer\":\"sunny\"},\"tool_call_id\":\"tcall_conf_001\"}",
+      "signature": "v1=331c05b40f99e9aeb3e256739c0c0cf4004146216c18f2092eda99602538621d",
+      "now": 1700000200,
+      "tolerance_seconds": 300,
+      "expect": true
+    },
+    {
+      "name": "expired-timestamp",
+      "secret": "secret-key-alpha",
+      "webhook_id": "tcall_conf_001",
+      "timestamp": 1700000000,
+      "body": "{\"operation_id\":\"rop_conf_001\",\"protocol\":\"tool-http.v1\",\"result\":{\"answer\":\"sunny\"},\"tool_call_id\":\"tcall_conf_001\"}",
+      "signature": "v1=331c05b40f99e9aeb3e256739c0c0cf4004146216c18f2092eda99602538621d",
+      "now": 1700000600,
+      "tolerance_seconds": 300,
+      "expect": false
+    },
+    {
+      "name": "future-timestamp",
+      "secret": "secret-key-alpha",
+      "webhook_id": "tcall_conf_001",
+      "timestamp": 1700000000,
+      "body": "{\"operation_id\":\"rop_conf_001\",\"protocol\":\"tool-http.v1\",\"result\":{\"answer\":\"sunny\"},\"tool_call_id\":\"tcall_conf_001\"}",
+      "signature": "v1=331c05b40f99e9aeb3e256739c0c0cf4004146216c18f2092eda99602538621d",
+      "now": 1699999400,
+      "tolerance_seconds": 300,
+      "expect": false
+    },
+    {
+      "name": "tampered-body",
+      "secret": "secret-key-alpha",
+      "webhook_id": "tcall_conf_001",
+      "timestamp": 1700000000,
+      "body": "{\"operation_id\":\"rop_conf_001\",\"protocol\":\"tool-http.v1\",\"result\":{\"answer\":\"rainy\"},\"tool_call_id\":\"tcall_conf_001\"}",
+      "signature": "v1=331c05b40f99e9aeb3e256739c0c0cf4004146216c18f2092eda99602538621d",
+      "now": 1700000000,
+      "tolerance_seconds": 300,
+      "expect": false
+    },
+    {
+      "name": "wrong-secret",
+      "secret": "secret-key-bravo",
+      "webhook_id": "tcall_conf_001",
+      "timestamp": 1700000000,
+      "body": "{\"operation_id\":\"rop_conf_001\",\"protocol\":\"tool-http.v1\",\"result\":{\"answer\":\"sunny\"},\"tool_call_id\":\"tcall_conf_001\"}",
+      "signature": "v1=331c05b40f99e9aeb3e256739c0c0cf4004146216c18f2092eda99602538621d",
+      "now": 1700000000,
+      "tolerance_seconds": 300,
+      "expect": false
+    },
+    {
+      "name": "malformed-no-v1",
+      "secret": "secret-key-alpha",
+      "webhook_id": "tcall_conf_001",
+      "timestamp": 1700000000,
+      "body": "{\"operation_id\":\"rop_conf_001\",\"protocol\":\"tool-http.v1\",\"result\":{\"answer\":\"sunny\"},\"tool_call_id\":\"tcall_conf_001\"}",
+      "signature": "garbage",
+      "now": 1700000000,
+      "tolerance_seconds": 300,
+      "expect": false
+    },
+    {
+      "name": "rotation-accept-old",
+      "secret": "secret-key-alpha",
+      "webhook_id": "tcall_conf_001",
+      "timestamp": 1700000000,
+      "body": "{\"operation_id\":\"rop_conf_001\",\"protocol\":\"tool-http.v1\",\"result\":{\"answer\":\"sunny\"},\"tool_call_id\":\"tcall_conf_001\"}",
+      "signature": "v1=331c05b40f99e9aeb3e256739c0c0cf4004146216c18f2092eda99602538621d v1=c2727445e839c203ec338e81942f7eb925daff32fdbd44a3bc36403ba4cbbe94",
+      "now": 1700000000,
+      "tolerance_seconds": 300,
+      "expect": true
+    },
+    {
+      "name": "rotation-accept-new",
+      "secret": "secret-key-bravo",
+      "webhook_id": "tcall_conf_001",
+      "timestamp": 1700000000,
+      "body": "{\"operation_id\":\"rop_conf_001\",\"protocol\":\"tool-http.v1\",\"result\":{\"answer\":\"sunny\"},\"tool_call_id\":\"tcall_conf_001\"}",
+      "signature": "v1=331c05b40f99e9aeb3e256739c0c0cf4004146216c18f2092eda99602538621d v1=c2727445e839c203ec338e81942f7eb925daff32fdbd44a3bc36403ba4cbbe94",
+      "now": 1700000000,
+      "tolerance_seconds": 300,
+      "expect": true
+    }
+  ]
+}

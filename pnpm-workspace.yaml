@@ -1,5 +1,6 @@
 packages:
   - sdks/typescript
+  - sdks/typescript/extension-sdk
   - examples/nextjs-sdk
   - spikes/control-plane/node-server
   - spikes/contracts/tooling
