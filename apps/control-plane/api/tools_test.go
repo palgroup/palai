@@ -40,7 +40,7 @@ func (f *fakeToolRegistry) PublishToolSetRevision(context.Context, middleware.Sc
 
 func toolTestServer(t *testing.T, reg *fakeToolRegistry) string {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, reg, nil, nil, nil, SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, reg, nil, nil, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
@@ -107,7 +107,7 @@ func TestToolManagementSurface(t *testing.T) {
 // TestToolRoutesUnmountedWhenNil proves the nil-seam guard: a tier that passes no tool registry never
 // mounts the routes, so a POST is a 404 (the agents/webhooks/schedules nil-guard precedent).
 func TestToolRoutesUnmountedWhenNil(t *testing.T) {
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	if resp := do(t, "POST", srv.URL+"/v1/tools", `{"canonical_name":"acme.search.fetch"}`, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("nil tool registry POST status = %d, want 404 (route unmounted)", resp.StatusCode)

@@ -28,7 +28,7 @@ func (f *fakeHookRegistry) DisableHook(_ context.Context, _ middleware.Scope, id
 
 func hookTestServer(t *testing.T, reg *fakeHookRegistry) string {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, reg, SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, reg, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
@@ -77,7 +77,7 @@ func TestHookManagementSurface(t *testing.T) {
 // passes no hook registry mounts no hook route at all (a POST is 404). Hook registration is an admin API
 // surface only — there is no model-callable tool for it (the broker exposes no such name).
 func TestHookRoutesUnmountedWhenNil(t *testing.T) {
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	if resp := do(t, "POST", srv.URL+"/v1/hooks", `{"name":"guard"}`, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("nil hook registry POST status = %d, want 404 (route unmounted)", resp.StatusCode)
