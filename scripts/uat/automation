@@ -12,8 +12,10 @@
 #        reference-engine subprocess). The supervised loops (delivery-reconciler / webhook-pump /
 #        schedule-ticker) are hand-triggered via Tick in the journey; the SUPERVISED proof is the
 #        *WiredIntoRunningBinary component tests — the journey names that ceiling, it does not claim it.
-#     2. test-fault CASE=scheduler — the scheduler outage fault suite (AUT-008): a real container/host
-#        outage bounds the misfire policy (fire-once-now / catch-up oldest-first) against real Postgres.
+#     2. test-fault CASE=scheduler — the scheduler outage fault suite (AUT-008): a real stopped-then-
+#        restarted supervised ticker (the loop is context-cancelled and fully drains, then restarts) across
+#        a missed fire window modelled by an injected clock jump, against real Postgres, bounds the misfire
+#        policy (fire-once-now / catch-up oldest-first) — NOT a container/host kill.
 #     3. evidence-verify RELEASE=automation-0.1.0 — the committed automation bundle verifies clean with all
 #        FOUR rules active (dedupe/occurrence/callback/recovery); a claimed case with a missing/incomplete
 #        proof fails (marker-alone-is-never-proof).

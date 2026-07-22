@@ -35,7 +35,8 @@
       "checksum": "sha256:af8c500e1f46f56b299c5f3868cdc9b70aae1a0ab1142f6270ca5821b4c97e7d",
       "db_assertions": [
         "occurrence unique by (schedule, revision, planned_at); a re-tick added no second occurrence; lateness (planned_at vs admitted_at) is visible",
-        "single-PG replicas ceiling: the two-replica race is the AUT-007 component proof; here one hand-triggered ticker fires the canonical occurrence"
+        "single-PG replicas ceiling: the two-replica race is the AUT-007 component proof; here one hand-triggered ticker fires the canonical occurrence",
+        "the occurrence_proof (the real schedule_occurrences row) is the load-bearing evidence; the model-run receipt fields (run_id/terminal) are illustrative, borrowed from the journey's investigation run whose admitted occurrence-run does not itself reach terminal"
       ],
       "id": "AUT-007",
       "image_digest": "sha256:aa8b161d9128e09ff50fb83be2a2d1bddd1e2574829c15ec6e24876d1e660d40",
@@ -73,7 +74,8 @@
       "checksum": "sha256:442dd6370d9a0c63c97fe5d8526d6b987100059ca9a2dd543f932664313fe86c",
       "db_assertions": [
         "a run-terminal callback was delivered exactly once: the receiver deduped a 5xx-then-2xx retry to a single semantic receipt on Webhook-Id; callback_state=delivered",
-        "the callback delivery did NOT disturb the run terminal; encryption-at-rest is E13 (no 'encrypted' claim here)"
+        "the callback delivery did NOT disturb the run terminal; encryption-at-rest is E13 (no 'encrypted' claim here)",
+        "the callback_proof (the real webhook_deliveries + trigger_deliveries rows) is the load-bearing evidence; the model-run receipt fields (run_id/terminal) are illustrative, shared with the journey's investigation run"
       ],
       "id": "AUT-013",
       "image_digest": "sha256:aa8b161d9128e09ff50fb83be2a2d1bddd1e2574829c15ec6e24876d1e660d40",
