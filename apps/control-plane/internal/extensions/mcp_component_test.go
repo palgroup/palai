@@ -96,6 +96,41 @@ func TestMCPConnectionCreateReadIdempotentMigration(t *testing.T) {
 	}
 }
 
+// TestMCPConnectionSamplingAuthConfig proves the E12 T6 create-path: sampling + audience are accepted as
+// non-secret wiring and map into the dial config; a declared oauth block is passively validated; and neither
+// the widened allowlist nor the oauth block opens an inline-credential door (a client_secret, an internal
+// URL, or a plain-PKCE block is a typed reject).
+func TestMCPConnectionSamplingAuthConfig(t *testing.T) {
+	s, org, project := openStore(t)
+	ctx := context.Background()
+
+	body := []byte(`{"name":"sampled","transport":"http","config":{"url":"https://mcp.example.test/mcp","audience":"https://mcp.example.test","sampling":true,"sampling_max_tokens":50,"oauth":{"code_challenge_method":"S256","redirect_uri":"https://app.example.test/cb"}}}`)
+	conn, err := s.CreateMCPConnection(ctx, org, project, body)
+	if err != nil {
+		t.Fatalf("create sampling connection: %v", err)
+	}
+	got, err := s.GetMCPConnection(ctx, org, project, conn.ID)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	cc := connConfig(org, got)
+	if !cc.SamplingEnabled || cc.SamplingMaxTokens != 50 || cc.Audience != "https://mcp.example.test" {
+		t.Fatalf("connConfig = %+v, want sampling on, budget 50, audience bound", cc)
+	}
+
+	// A plain-PKCE oauth block, an inline oauth client_secret, and an internal URL are all typed rejects —
+	// the widened allowlist stays a closed credential door + SSRF gate.
+	for name, bad := range map[string]string{
+		"plain pkce":   `{"name":"badpkce","transport":"http","config":{"url":"https://x","oauth":{"code_challenge_method":"plain","redirect_uri":"https://app.example.test/cb"}}}`,
+		"oauth secret": `{"name":"oauthsec","transport":"http","config":{"url":"https://x","oauth":{"code_challenge_method":"S256","redirect_uri":"https://app.example.test/cb","client_secret":"sk-oops"}}}`,
+		"internal url": `{"name":"ssrf","transport":"http","config":{"url":"https://169.254.169.254/mcp"}}`,
+	} {
+		if _, err := s.CreateMCPConnection(ctx, org, project, []byte(bad)); !errors.Is(err, ErrInvalidConnectionConfig) {
+			t.Errorf("%s: err = %v, want ErrInvalidConnectionConfig", name, err)
+		}
+	}
+}
+
 // hex64 returns a fixed 64-char lowercase hex string for a pinned digest fixture.
 func hex64() string { return "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
 
