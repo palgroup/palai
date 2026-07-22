@@ -109,6 +109,17 @@ def checkpoint_offer_state() -> dict:
     return checkpoint.offer_data({"step": 1, "state": "awaiting_model"}, "pause")
 
 
+def test_tool_call_carries_optional_provider_id() -> None:
+    # E12 T1b: the provider's tool_call id rides an OPTIONAL, additive `id` field on
+    # $defs/tool_call. It is recorded verbatim on the assistant turn so the engine can translate the
+    # synthetic tcall_ id to it when writing the tool RESULT to the provider conversation (loop.py
+    # _provider_call_id). It must stay OUT of required: deterministic fakes and pre-T1b checkpoints
+    # omit it, and the engine falls back to the synthetic id then.
+    tool_call = SCHEMA["$defs"]["tool_call"]
+    assert tool_call["properties"].get("id", {}).get("type") == "string", "tool_call.id must be an optional string field"
+    assert "id" not in tool_call.get("required", []), "tool_call.id must stay optional (additive)"
+
+
 def test_engine_ready_announces_the_supported_commands() -> None:
     # engine.ready.commands must declare exactly the command kinds the engine really applies
     # (spec §9.1); a drift here is a false capability advertisement.
