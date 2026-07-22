@@ -365,6 +365,18 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_postgres=1
     ;;
+  provider-one/run-history-list)
+    # E13 Task 4 (MCI-003 + TEN-001 cursor-fuzz): over the REAL router + real store, a tenant lists its run
+    # history (a run produced by a REAL provider-one completion) with a plain HTTP client (no SDK), and a
+    # SECOND tenant presenting the first tenant's pagination cursor is an EXPLICIT 400 invalid_cursor — never
+    # a silently-empty page — while its own history is RLS-empty. Needs the credential + a throwaway Postgres
+    # + the reference engine (PALAI_ENGINE_DIR, exported by run_live_with_postgres). Honest ceiling (named in
+    # the test): single provider; process-random cursor key (single-replica compose, matches T7).
+    pkg="./apps/control-plane/internal/execution/live"
+    run="TestLiveRunHistoryListCrossTenantCursor"
+    required_key="OPENAI_API_KEY"
+    needs_postgres=1
+    ;;
   provider-one/edge-admission)
     # E13 Task 7 (MCI-005, §20.12 basic tier): §20.12 edge admission control on a REAL router over a
     # throwaway Postgres. A rapid burst on one API key is shed by the per-key request-rate token bucket
