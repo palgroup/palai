@@ -51,10 +51,19 @@ var (
 	// ErrRevisionNotPublished is returned when a set pins a DRAFT tool revision (only published revisions
 	// may be pinned, spec §28.4).
 	ErrRevisionNotPublished = errors.New("extensions: pinned tool revision is not published")
-	// ErrOverrideNotStricter is returned when a set-pin override widens a declared limit rather than
-	// tightening it (approval-only-stricter, spec §28.4).
-	ErrOverrideNotStricter = errors.New("extensions: pin override may only tighten a declared limit")
+	// ErrOverrideNotStricter is returned when a set-pin override widens a declared limit or carries an
+	// unknown/typo'd key rather than tightening a known one (approval-only-stricter, spec §28.4).
+	ErrOverrideNotStricter = errors.New("extensions: pin override may only tighten a known declared limit")
+	// ErrInvalidReplayClass is returned when a revision declares a replay_class outside the five known
+	// kill-recovery classes — so the broker never resolves a registry tool to a class it cannot classify.
+	ErrInvalidReplayClass = errors.New("extensions: replay_class must be one of pure|idempotent|reversible|irreversible|interactive")
 )
+
+// knownReplayClasses is the closed set of kill-recovery classes a revision may declare (mirrors the
+// toolbroker Class* constants; an empty class defaults to pure at storage).
+var knownReplayClasses = map[string]bool{
+	"": true, "pure": true, "idempotent": true, "reversible": true, "irreversible": true, "interactive": true,
+}
 
 // maxSegmentLen bounds each canonical-name segment (an app-level length ceiling, spec §28.2).
 const maxSegmentLen = 128
@@ -137,6 +146,9 @@ func DecodeToolRevisionInput(raw []byte) (ToolRevisionInput, error) {
 	var in ToolRevisionInput
 	if err := dec.Decode(&in); err != nil {
 		return ToolRevisionInput{}, fmt.Errorf("%w: %v", ErrUnknownField, err)
+	}
+	if !knownReplayClasses[in.ReplayClass] {
+		return ToolRevisionInput{}, fmt.Errorf("%w: got %q", ErrInvalidReplayClass, in.ReplayClass)
 	}
 	return in, nil
 }
@@ -331,10 +343,16 @@ func isASCIIName(s string) bool {
 	return true
 }
 
-// checkOverrideStricter rejects a pin override that widens a declared limit. Today only timeout_ms is a
-// declared limit: an override above the declared ceiling is rejected; equal/below — or bounding a
-// previously-unbounded (nil) declaration — is stricter and accepted.
+// checkOverrideStricter rejects a pin override that widens a declared limit or carries an unknown key.
+// Today only timeout_ms is a declared limit: an override above the declared ceiling is rejected;
+// equal/below — or bounding a previously-unbounded (nil) declaration — is stricter and accepted. Any key
+// other than timeout_ms (a typo or a not-yet-supported limit) is rejected, not silently stored.
 func checkOverrideStricter(overrides map[string]any, declaredTimeoutMS *int) error {
+	for key := range overrides {
+		if key != "timeout_ms" {
+			return fmt.Errorf("%w: unknown override key %q", ErrOverrideNotStricter, key)
+		}
+	}
 	raw, ok := overrides["timeout_ms"]
 	if !ok {
 		return nil

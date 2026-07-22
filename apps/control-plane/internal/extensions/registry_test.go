@@ -26,6 +26,32 @@ func TestDecodeToolRevisionInputRejectsUnknownField(t *testing.T) {
 	}
 }
 
+// TestDecodeToolRevisionInputRejectsUnknownReplayClass proves an unknown replay_class is rejected at decode
+// (M3): only the five known classes are stored, so the broker never resolves a registry tool to an
+// unrecognised class that silently skips the kill-recovery pre-write marker.
+func TestDecodeToolRevisionInputRejectsUnknownReplayClass(t *testing.T) {
+	if _, err := DecodeToolRevisionInput([]byte(`{"executor":"control_plane","replay_class":"banana"}`)); !errors.Is(err, ErrInvalidReplayClass) {
+		t.Fatalf("banana replay_class: err = %v, want ErrInvalidReplayClass", err)
+	}
+	for _, class := range []string{"", "pure", "idempotent", "reversible", "irreversible", "interactive"} {
+		if _, err := DecodeToolRevisionInput([]byte(`{"executor":"control_plane","replay_class":"` + class + `"}`)); err != nil {
+			t.Errorf("known replay_class %q rejected: %v", class, err)
+		}
+	}
+}
+
+// TestCheckOverrideStricterRejectsUnknownKey proves a pin override may carry ONLY known keys (L3): an
+// unknown/typo'd override key is rejected rather than silently stored (the package's "dead config never
+// silently stored" principle).
+func TestCheckOverrideStricterRejectsUnknownKey(t *testing.T) {
+	if err := checkOverrideStricter(map[string]any{"timeoutms": float64(500)}, nil); !errors.Is(err, ErrOverrideNotStricter) {
+		t.Fatalf("typo override key: err = %v, want ErrOverrideNotStricter", err)
+	}
+	if err := checkOverrideStricter(map[string]any{"retries": float64(3)}, nil); !errors.Is(err, ErrOverrideNotStricter) {
+		t.Fatalf("unknown override key: err = %v, want ErrOverrideNotStricter", err)
+	}
+}
+
 // TestCanonicalNameValidationAndShortName pins the publisher.namespace.tool contract: exactly three
 // non-empty ASCII segments within the length bound; the model-visible short name is deterministically the
 // LAST segment (no auto-suffix). A malformed name is a typed reject BEFORE any write.

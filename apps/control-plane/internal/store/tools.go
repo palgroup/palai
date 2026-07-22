@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,7 +21,13 @@ func (s *Store) CreateTool(ctx context.Context, scope middleware.Scope, body []b
 	var req struct {
 		CanonicalName string `json:"canonical_name"`
 	}
-	_ = json.Unmarshal(body, &req)
+	// Strict-decode: an unknown field in the create body is a 400, symmetric with every revision body
+	// (DisallowUnknownFields), never silently swallowed (L2).
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return api.ToolResult{BadField: true}, nil
+	}
 	tool, err := s.tools.CreateTool(ctx, scope.Organization, scope.Project, req.CanonicalName)
 	if res, mapped := toolReject(err); mapped {
 		return res, nil
@@ -87,6 +94,7 @@ func toolReject(err error) (api.ToolResult, bool) {
 		return api.ToolResult{}, false
 	case errors.Is(err, extensions.ErrUnknownField),
 		errors.Is(err, extensions.ErrInvalidCanonicalName),
+		errors.Is(err, extensions.ErrInvalidReplayClass),
 		errors.Is(err, extensions.ErrOverrideNotStricter):
 		return api.ToolResult{BadField: true}, true
 	case errors.Is(err, extensions.ErrNameCollision),
