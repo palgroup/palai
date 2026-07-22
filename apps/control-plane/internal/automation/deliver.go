@@ -83,6 +83,19 @@ func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, org, projec
 	if idempotencyKey == "" {
 		return DeliveryResult{}, errors.New("automation: delivery idempotency key is required")
 	}
+	route := deliveryRoute(triggerID)
+	sum := sha256.Sum256(payload)
+	reqHash := hex.EncodeToString(sum[:])
+
+	// Replay an ALREADY-RECORDED delivery for this key BEFORE the trigger-state preconditions: a retry must
+	// replay the winner's real projection even if the trigger was DISABLED after the delivery was accepted
+	// (an accepted delivery is idempotent regardless of later config — an honest replay, not ErrTriggerDisabled).
+	// A hash mismatch is also surfaced here, before the preconditions. found=false falls through to the
+	// preconditions + claim, so a genuinely-new delivery on a disabled trigger still errors.
+	if res, found, err := s.recordedDelivery(ctx, org, project, principal, route, idempotencyKey, reqHash); found || err != nil {
+		return res, err
+	}
+
 	enabled, err := s.triggerEnabled(ctx, org, project, triggerID)
 	if err != nil {
 		return DeliveryResult{}, err
@@ -98,9 +111,6 @@ func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, org, projec
 		return DeliveryResult{}, ErrNoActiveRevision
 	}
 
-	route := deliveryRoute(triggerID)
-	sum := sha256.Sum256(payload)
-	reqHash := hex.EncodeToString(sum[:])
 	deliveryID := newID("tdel")
 	respBody, err := json.Marshal(map[string]string{"id": deliveryID})
 	if err != nil {
@@ -118,8 +128,16 @@ func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, org, projec
 	switch err := tx.QueryRow(ctx, storage.Query("ReserveIdempotency"),
 		org, project, principal, "POST", route, idempotencyKey, reqHash, respBody).Scan(new(int64)); {
 	case errors.Is(err, pgx.ErrNoRows):
+		// A concurrent request won the claim between our recordedDelivery read and now; replay its row.
 		_ = tx.Rollback(ctx)
-		return s.replayDelivery(ctx, org, project, principal, route, idempotencyKey, reqHash)
+		res, found, err := s.recordedDelivery(ctx, org, project, principal, route, idempotencyKey, reqHash)
+		if err != nil {
+			return DeliveryResult{}, err
+		}
+		if !found {
+			return DeliveryResult{}, errors.New("automation: idempotency claim vanished; retry")
+		}
+		return res, nil
 	case err != nil:
 		return DeliveryResult{}, fmt.Errorf("claim delivery idempotency: %w", err)
 	}
@@ -139,10 +157,13 @@ func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, org, projec
 	return s.advance(ctx, scope, payload)
 }
 
-// replayDelivery is the AUT-013 loser/retry path: the claim already exists. A matching request_hash returns
-// the winning delivery's CURRENT durable projection (honest — a mid-pipeline winner is shown at its live
-// state); a different hash is a typed mismatch.
-func (s *TriggerStore) replayDelivery(ctx context.Context, org, project, principal, route, key, reqHash string) (DeliveryResult, error) {
+// recordedDelivery reads an already-claimed AUT-013 delivery for a key. found=false means no claim exists
+// yet (a genuinely-new delivery — the caller proceeds to claim). A matching request_hash returns the
+// winning delivery's CURRENT durable projection (honest — a mid-pipeline winner is shown at its live
+// state); a different hash returns (found=true, ErrIdempotencyMismatch). It is called both before the
+// trigger-state preconditions (so a recorded delivery replays regardless of a later disable) and on a lost
+// claim race.
+func (s *TriggerStore) recordedDelivery(ctx context.Context, org, project, principal, route, key, reqHash string) (DeliveryResult, bool, error) {
 	var (
 		storedHash string
 		respBody   []byte
@@ -152,28 +173,28 @@ func (s *TriggerStore) replayDelivery(ctx context.Context, org, project, princip
 	switch err := s.pool.QueryRow(ctx, storage.Query("GetIdempotency"), org, project, principal, "POST", route, key).
 		Scan(&storedHash, &respBody, &purgedAt, &tombstone); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return DeliveryResult{}, errors.New("automation: idempotency claim vanished; retry")
+		return DeliveryResult{}, false, nil
 	case err != nil:
-		return DeliveryResult{}, fmt.Errorf("read delivery idempotency: %w", err)
+		return DeliveryResult{}, false, fmt.Errorf("read delivery idempotency: %w", err)
 	}
 	if storedHash != reqHash {
-		return DeliveryResult{}, ErrIdempotencyMismatch
+		return DeliveryResult{}, true, ErrIdempotencyMismatch
 	}
 	var body map[string]string
 	if err := json.Unmarshal(respBody, &body); err != nil {
-		return DeliveryResult{}, fmt.Errorf("decode idempotency body: %w", err)
+		return DeliveryResult{}, true, fmt.Errorf("decode idempotency body: %w", err)
 	}
 	view, found, err := s.GetDelivery(ctx, org, project, body["id"])
 	if err != nil {
-		return DeliveryResult{}, err
+		return DeliveryResult{}, true, err
 	}
 	if !found {
-		return DeliveryResult{}, errors.New("automation: idempotent delivery projection missing")
+		return DeliveryResult{}, true, errors.New("automation: idempotent delivery projection missing")
 	}
 	return DeliveryResult{
 		ID: view.ID, State: view.State, ResponseID: view.ResponseID, RunID: view.RunID,
 		SessionID: view.SessionID, DuplicateOf: view.DuplicateOf, Reason: view.Reason,
-	}, nil
+	}, true, nil
 }
 
 // deliveryRoute is the concrete AUT-013 idempotency route: the trigger id is embedded, so the same key on a
@@ -519,6 +540,12 @@ func (s *TriggerStore) applyGatedPolicy(ctx context.Context, sc deliveryScope, c
 		// latest — the deterministic reducer) and skips the rest linked to it. But if the active run
 		// EXECUTED an irreversible tool action, the new event is REJECTED, not deferred (§32.6 fail-closed):
 		// an irreversible run's follow-on events must not be silently coalesced away.
+		// ponytail: RunHasIrreversibleExecuted is a point-in-time ledger read — a tool that becomes
+		// irreversible-executed AFTER this SELECT is not caught by THIS admission, so the event defers/
+		// coalesces rather than rejecting. Narrower than replace's window (coalesce never cancels the active
+		// run) and bounded by the gate advisory lock (concurrent same-key deliveries serialize; the only
+		// race is with the run's own in-flight tool, which reconciles to 'uncertain' on the kill-path). Full
+		// closure: re-check inside a ledger-locked tx — a future epic on the E10 recovery substrate.
 		_, runID, busy, err := s.activeRunForKey(ctx, sc, hash)
 		if err != nil {
 			return DeliveryResult{}, err
@@ -539,6 +566,13 @@ func (s *TriggerStore) applyGatedPolicy(ctx context.Context, sc deliveryScope, c
 		// EXECUTED an irreversible tool action, in which case the replace is REJECTED without canceling it
 		// (§32.6 fail-closed): a run that performed an irreversible side effect is never canceled without a
 		// reconciliation contract. Resolve the active run BEFORE canceling so the guard runs first.
+		// ponytail: TOCTOU window — between this RunHasIrreversibleExecuted SELECT and CancelRunReconciled an
+		// irreversible tool_call could drop to 'completed', so the cancel finalizes a clean 'canceled'
+		// (coordinator hasUncertainSideEffect only trips on uncertain/manual_resolution) and a new run admits
+		// → a double-execute risk of the irreversible action. Narrow: the gate advisory lock serializes
+		// concurrent deliveries, so the race is only with the run's OWN in-flight tool, which reconciles to
+		// 'uncertain' on the kill-path. Full closure: re-check RunHasIrreversibleExecuted INSIDE the cancel tx,
+		// or a ledger-lock — a future epic on the E10 recovery substrate.
 		responseID, runID, active, err := s.activeRunForKey(ctx, sc, hash)
 		if err != nil {
 			return DeliveryResult{}, err

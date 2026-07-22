@@ -113,6 +113,46 @@ func TestSameIdempotencyKeyDifferentBodyConflict409(t *testing.T) {
 	}
 }
 
+// TestRetryAfterTriggerDisabledReplaysWinner pins replay honesty: once a delivery is recorded under a key,
+// a retry replays the winner's real projection even if the trigger was DISABLED in between — an accepted
+// delivery is idempotent regardless of later config, so the retry must NOT return ErrTriggerDisabled.
+func TestRetryAfterTriggerDisabledReplaysWinner(t *testing.T) {
+	store, pool := wiredTriggerStore(t)
+	ctx := context.Background()
+	org, project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, org, project)
+	triggerID, _ := seedTrigger(t, store, org, project, "disable-replay", TriggerRevisionInput{
+		InputMapping: []byte(`{"fields":{"input":{"const":"x"}}}`),
+	})
+
+	payload := []byte(`{"o":1}`)
+	key := "retry-after-disable"
+	first, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, key, payload)
+	if err != nil {
+		t.Fatalf("first CreateDeliveryIdempotent error = %v", err)
+	}
+	if first.State != "run_created" {
+		t.Fatalf("first delivery state = %q, want run_created", first.State)
+	}
+
+	// The trigger is disabled AFTER the delivery was accepted.
+	mustExec(t, pool, `UPDATE triggers SET enabled=false WHERE id=$1`, triggerID)
+
+	// A retry under the same key+body replays the winner's projection, NOT ErrTriggerDisabled.
+	retry, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, key, payload)
+	if err != nil {
+		t.Fatalf("retry after disable error = %v, want the recorded winner (not ErrTriggerDisabled)", err)
+	}
+	if retry.ID != first.ID || retry.State != "run_created" {
+		t.Fatalf("retry replayed %+v, want the winner %s run_created", retry, first.ID)
+	}
+
+	// A genuinely-NEW delivery on the disabled trigger still errors (the reorder didn't weaken the gate).
+	if _, err := store.CreateDeliveryIdempotent(ctx, org, project, principal, triggerID, "brand-new-key", payload); !errors.Is(err, ErrTriggerDisabled) {
+		t.Fatalf("new delivery on disabled trigger error = %v, want ErrTriggerDisabled", err)
+	}
+}
+
 // TestOrchestratorRetryDifferentKeySameDedupeSingleAction pins that AUT-013 (per-key) and AUT-001 (source
 // dedupe) compose: two DIFFERENT idempotency keys create two delivery rows, but the trigger's dedupe key
 // collapses the second to a duplicate linked to the original — ONE run in total.
