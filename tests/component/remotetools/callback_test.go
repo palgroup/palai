@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -109,6 +110,16 @@ func (h *harness) openOperation(t *testing.T, deadline time.Time, fence uint64) 
 // matching the CP's verify id. secret/token override the operation's real ones for the reject-path tests.
 func (h *harness) postCallback(t *testing.T, operationID, token string, secret []byte, result map[string]any) *http.Response {
 	t.Helper()
+	resp, err := h.signAndPost(operationID, token, secret, result)
+	if err != nil {
+		t.Fatalf("post callback error = %v", err)
+	}
+	return resp
+}
+
+// signAndPost is the goroutine-safe POST (no t.Fatalf): the concurrent double-callback race test calls it
+// from multiple goroutines and asserts the outcomes in the main goroutine.
+func (h *harness) signAndPost(operationID, token string, secret []byte, result map[string]any) (*http.Response, error) {
 	envelope := map[string]any{
 		"protocol": "tool-http.v1", "tool_call_id": "tc_ignored_by_verify", "operation_id": operationID, "result": result,
 	}
@@ -119,11 +130,59 @@ func (h *harness) postCallback(t *testing.T, operationID, token string, secret [
 		req.Header.Set(k, v)
 	}
 	req.Header.Set(remotehttp.HeaderCallbackToken, token)
-	resp, err := h.server.Client().Do(req)
-	if err != nil {
-		t.Fatalf("post callback error = %v", err)
+	return h.server.Client().Do(req)
+}
+
+// TestConcurrentDoubleCallbackAtomicOneUse proves the one-use token consume is atomic under a REAL race
+// (m4): two goroutines POST callbacks with DIFFERENT results bearing the SAME valid token, concurrently.
+// Exactly one commits (200) and the other is rejected (409) — the atomic UPDATE ... WHERE state='pending'
+// picks a single winner, so a diverged concurrent replay can never double-commit.
+func TestConcurrentDoubleCallbackAtomicOneUse(t *testing.T) {
+	h := newHarness(t)
+	operationID, token := h.openOperation(t, time.Now().Add(time.Minute), 1)
+
+	type outcome struct {
+		status int
+		err    error
 	}
-	return resp
+	results := make(chan outcome, 2)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for _, answer := range []int{1, 2} { // DIFFERENT results → the loser must 409, not idempotent-200
+		wg.Add(1)
+		go func(a int) {
+			defer wg.Done()
+			<-start // release both goroutines together to force the race
+			resp, err := h.signAndPost(operationID, token, testSecret, map[string]any{"answer": a})
+			if err != nil {
+				results <- outcome{err: err}
+				return
+			}
+			resp.Body.Close()
+			results <- outcome{status: resp.StatusCode}
+		}(answer)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var oks, conflicts int
+	for o := range results {
+		if o.err != nil {
+			t.Fatalf("concurrent callback POST error = %v", o.err)
+		}
+		switch o.status {
+		case http.StatusOK:
+			oks++
+		case http.StatusConflict:
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent callback status = %d", o.status)
+		}
+	}
+	if oks != 1 || conflicts != 1 {
+		t.Fatalf("concurrent diverged callbacks = %d ok / %d conflict, want exactly 1 each (atomic one-use)", oks, conflicts)
+	}
 }
 
 // TestAsync202CallbackAcceptedOnceUnderFence proves the signed-callback half of TOL-016/017: a signed

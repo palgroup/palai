@@ -13,5 +13,5 @@
     "problem": {"type": "object"}
   },
   "additionalProperties": true,
-  "allOf": [{"not": {"required": ["result", "problem"]}}]
+  "allOf": [{"oneOf": [{"required": ["result"]}, {"required": ["problem"]}]}]
 }

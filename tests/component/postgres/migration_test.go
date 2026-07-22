@@ -1285,12 +1285,11 @@ func TestAuditAppendOnlyToApplicationRole(t *testing.T) {
 // TestMigration25RemoteTools proves 000025 adds the remote_tool_operations table (E12 Task 4, spec
 // §28.24-28.25) idempotently and reverses cleanly: present after apply (a re-apply is a clean no-op —
 // every object IF NOT EXISTS), gone after rollback, returning after reapply. Version 25 is recorded
-// exactly once. It also pins the load-bearing invariants: an operation row keyed to a real tool_call
-// inserts while one keyed to a missing tool_call is FK-rejected (the tool_call_id ref), and the
-// partial-unique index rejects a SECOND pending row for the same tool_call (a duplicate live invoke can
-// never open two operations) while a resolved (completed) row lets a fresh pending one open. tool_call_id
-// is a soft correlation key (NOT an FK): the operation opens before the invoke, before a pure/idempotent
-// tool's tool_calls row is committed, so a row for a not-yet-committed call inserts fine.
+// exactly once. It also pins the load-bearing invariants: the partial-unique index rejects a SECOND
+// pending row for the same tool_call (a duplicate live invoke can never open two operations) while a
+// resolved (completed) row lets a fresh pending one open. tool_call_id is a soft correlation key (NOT an
+// FK): the operation opens before the invoke, before a pure/idempotent tool's tool_calls row is committed,
+// so a row for a not-yet-committed call inserts fine.
 func TestMigration25RemoteTools(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
