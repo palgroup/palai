@@ -6,4 +6,4 @@ input: "a real SIGKILL of the engine mid-tool-loop, after the boundary checkpoin
 expect_status: completed
 proof:
   - apps/control-plane/e2e/responses/kill_matrix_test.go:TestEngineProcessKillRecoversViaLadder
-# ceiling: the real-provider restore-realness is the gated CASE=container-kill-recovery live smoke (SKIP until PALAI_LIVE_TOOL_ADVERTISING — dispatchModel omits tool schemas)
+# ceiling: this deterministic tier is the load-bearing restore proof. The CASE=container-kill-recovery live smoke SKIPs on a multi-step tool-continuation follow-up (attempt 2 re-threads the tool call + result; the engine wire drops the tool_call id) — an engine-wire follow-up, not an advertising gap. Advertising itself (E12 T1) is proven live by CASE=spontaneous-tool-roundtrip.

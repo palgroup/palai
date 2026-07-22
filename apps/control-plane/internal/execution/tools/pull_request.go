@@ -20,6 +20,7 @@ import (
 func PullRequestTool() toolbroker.Tool {
 	return toolbroker.Tool{
 		Name:        "palai.publish.pull_request",
+		Description: "Propose a pull request from the run's work branch to its bound base. The request is recorded for approval; no PR is opened until approved, and the destination is resolved from the run's binding, not model-supplied.",
 		ReplayClass: toolbroker.ClassIdempotent, // one PR per branch under a stable idempotency key (§26.6, REP-008)
 		InputSchema: map[string]any{
 			"type": "object",

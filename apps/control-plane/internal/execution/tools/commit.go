@@ -18,6 +18,7 @@ import (
 func CommitTool() toolbroker.Tool {
 	return toolbroker.Tool{
 		Name:        "palai.workspace.commit",
+		Description: "Commit the current workspace changes to the run's Git repository with the given message.",
 		ReplayClass: toolbroker.ClassReversible, // a workspace git commit is revertible (§26.6)
 		InputSchema: map[string]any{
 			"type": "object",

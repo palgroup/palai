@@ -55,7 +55,11 @@ const (
 // one of Invoke/Exec is set. ReplayClass declares the operation's kill-recovery class (spec §26.6);
 // empty means ClassPure.
 type Tool struct {
-	Name         string
+	Name string
+	// Description is the fixed platform text the model reads when the tool is advertised (E12 T1).
+	// It is authored by the platform, never tenant-supplied — a tenant description bound to approval
+	// is T2's job (§28.2 untrusted-claim discipline). Empty is allowed (a bare conformance tool).
+	Description  string
 	InputSchema  map[string]any
 	OutputSchema map[string]any
 	ReplayClass  ReplayClass
@@ -140,6 +144,17 @@ func (b *Broker) Discoverable(name string) bool {
 	defer b.mu.Unlock()
 	_, ok := b.tools[name]
 	return ok
+}
+
+// Schema returns a copy of a registered tool's advertised schema (name, description, input schema),
+// so the model dispatcher can offer the effective set to the provider without reaching into the
+// broker's map. A name outside the set returns ok=false — the dispatcher then never advertises a
+// tool the broker cannot execute (spec §28.5, §26.7).
+func (b *Broker) Schema(name string) (Tool, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	tool, ok := b.tools[name]
+	return tool, ok
 }
 
 // ReplayClassOf reports a tool's declared kill-recovery class BEFORE it executes (spec §26.6), so the

@@ -22,16 +22,19 @@
 //     tests/fault/subagents) already proves release/wake/rebind/exactly-once + child-addressing with a
 //     fake provider. This tier CONFIRMS the DETACH + DURABLE half with a REAL provider and REAL S3: two
 //     DISTINCT real chatcmpl ids + a real checkpoint in S3 are the live evidence.
-//  2. SPAWN IS CONFIG-FORCED, not model-spontaneous: the delegation is seeded in the run (the E09 T7
-//     forced-tool discipline). The proof is DETACH + DURABLE, not the model electing to delegate. The
-//     model-driven `agent` tool_call path needs orchestrator tool-advertising to the provider, which
-//     dispatchModel does not yet do (the same ceiling the checkpoint-restore smoke names).
-//  3. PARENT↔CHILD CONVERSATION (send_message to the detached child, DET-002): a real provider run is
-//     SINGLE-STEP today (dispatchModel advertises no tools), so a detached child completes in one step
-//     and offers no boundary to deliver a spine message at. The conversation half is proven
-//     deterministically (TestDetachedChildIdleReceivesSpineMessage, gated child) and re-enables here
-//     once the child can be driven multi-step; PALAI_LIVE_TOOL_ADVERTISING gates it, consistent with the
-//     restore smoke.
+//  2. SPAWN IS CONFIG-SEEDED, not model-spontaneous: the delegation is seeded in the run. The proof is
+//     DETACH + DURABLE, not the model electing to delegate. dispatchModel now advertises the effective
+//     tool set (E12 T1), but model-driven SPONTANEOUS delegation — the `agent` tool advertised and
+//     chosen by the model — is a distinct claim a later task owns; this smoke deliberately keeps the
+//     spawn config-seeded so its assertion stays honest.
+//  3. PARENT↔CHILD CONVERSATION (send_message to the detached child at a tool boundary, DET-002): proven
+//     deterministically (TestDetachedChildIdleReceivesSpineMessage). Its live half — a detached child
+//     driven multi-step by real advertised tool calls, receiving a spine message at its tool boundary — is
+//     bound to the SAME engine-wire tool_call-id follow-up (T1b) as checkpoint-restore: a multi-step child
+//     re-threads the assistant tool_call + tool result, which the engine wire (dropped tool_call id) makes
+//     malformed for the real chat API, so the child cannot be driven multi-step live until T1b lands. It is
+//     NOT gated on any env flag. This smoke proves the DETACH + DURABLE half with the real provider (its
+//     parent + child are single-step, so it is unaffected by T1b and PASSES live).
 //
 // GATED: serialized with every LIVE/fault smoke on the shared :local Docker stack; NOT part of make
 // verify / CI. Skips cleanly without creds. The credential is used only as an opaque env-resolved

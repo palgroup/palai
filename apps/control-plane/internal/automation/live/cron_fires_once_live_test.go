@@ -11,9 +11,9 @@
 // N replicas share one PG (the AUT-007 proof is two loops, one PG); a multi-host fleet scheduler is E14.
 // Exactly-once OCCURRENCE ≠ exactly-once run SIDE EFFECTS: the fired run recovers via the E10 ladder; the
 // scheduler's own outage recovery is durable-row + misfire policy (proven in the fault CASE=scheduler),
-// NOT checkpoints. The run is single-step and REAL (the E08 pin: no tools are advertised to the provider),
-// so this case makes NO model→tool claim and therefore does NOT touch PALAI_LIVE_TOOL_ADVERTISING — a tool
-// claim would use the broker-seam forced pattern (CASE=coding-tools, tool_choice: required). Minute
+// NOT checkpoints. The run's effective tool set is empty (no default_tools configured), so dispatchModel
+// advertises nothing and the run stays single-step + REAL; this case makes NO model→tool claim — that
+// claim lives in the tool live cases (CASE=coding-tools / CASE=spontaneous-tool-roundtrip). Minute
 // granularity is the cron floor. The credential lives ONLY in .env.local (loaded via `set -a`, never
 // `set -x`), is used only as an opaque needle for the leak scan, and appears in no captured surface.
 package live

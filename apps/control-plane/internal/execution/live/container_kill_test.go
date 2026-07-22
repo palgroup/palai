@@ -15,9 +15,14 @@
 //     is T6's host-kill-restore smoke), so the abrupt post-checkpoint kill is a process kill standing
 //     in for the container kill; the container kill's own semantics are ceiling 1's deterministic
 //     proof. No overclaim: this test's name asserts recovery-after-kill with a real provider.
-//  3. TOOL ADVERTISING GAP (shared with checkpoint-restore): dispatchModel does not yet advertise tool
-//     schemas to the provider, so a real provider won't call recovery_note and the run never reaches a
-//     tool boundary. SKIP until PALAI_LIVE_TOOL_ADVERTISING is set once that wiring lands.
+//  3. SPONTANEOUS TOOL CALL (E12 T1, shared with checkpoint-restore): dispatchModel now advertises the
+//     run's effective tool set, so the real provider is offered recovery_note and calls it of its own
+//     choice to reach the tool boundary (proven live by CASE=spontaneous-tool-roundtrip).
+//  4. MULTI-STEP TOOL-CONTINUATION FOLLOW-UP (shared with checkpoint-restore, NOT advertising): attempt 2
+//     restores the transcript and re-threads the assistant tool_call + tool result, which the engine wire
+//     (dropped tool_call id) makes malformed for the real chat API. This smoke SKIPs on that follow-up
+//     (engine-wire tool_call id), naming the wire gap, not the deleted advertising env. The container-kill
+//     dimension + fencing are proven deterministically (tests/fault/recovery, REC-001 + ENG-005).
 //
 // GATED: serialized with every LIVE/fault smoke on the shared :local Docker stack; NOT part of make
 // verify / CI. Skips cleanly without creds. The credential is an opaque env-resolved secret, never
@@ -41,15 +46,17 @@ import (
 
 // TestLiveContainerKillRecoveryRealProvider is CASE=container-kill-recovery (see the file ceilings).
 func TestLiveContainerKillRecoveryRealProvider(t *testing.T) {
+	// Ceiling 4 (shared with checkpoint-restore): attempt 2's restored continuation re-threads the tool
+	// call + result, which the engine wire (dropped tool_call id) makes malformed for the real chat API.
+	// SKIP on that multi-step tool-continuation follow-up (T1b) — NOT an advertising gap. Skip BEFORE
+	// requireEnv so a creds-less env shows this honest reason, not a misleading "OPENAI_API_KEY required".
+	t.Skip("container-kill-recovery's attempt-2 completion re-threads the assistant tool_call + tool result to the real provider; the engine wire drops the tool_call id, so the threaded continuation is malformed for the real chat API. A multi-step tool-continuation follow-up (T1b engine-wire tool_call id) — not an advertising gap (proven by CASE=spontaneous-tool-roundtrip). The container-kill dimension + fencing are proven deterministically (tests/fault/recovery).")
+
 	secret := requireEnv(t, credentialEnv)
 	engineDir := requireEnv(t, "PALAI_ENGINE_DIR")
 	pgURL := requireEnv(t, "PALAI_COMPONENT_POSTGRES_URL")
 	s3Endpoint := requireEnv(t, "PALAI_S3_ENDPOINT")
 	_ = secret // resolved through the env secret resolver; never referenced directly
-
-	if os.Getenv("PALAI_LIVE_TOOL_ADVERTISING") == "" {
-		t.Skip("container-kill-recovery needs orchestrator tool-advertising to the provider (dispatchModel omits Tools); set PALAI_LIVE_TOOL_ADVERTISING=1 once wired")
-	}
 
 	ctx := context.Background()
 	repo, err := store.Open(ctx, pgURL)

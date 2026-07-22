@@ -15,11 +15,15 @@
 #
 #   live tier (PROVIDER=provider-one): FOUR live-provider CASEs are authored + wired
 #     (scripts/test/live-provider): checkpoint-restore (T4), container-kill-recovery (T5),
-#     host-kill-restore (T6), detached-child-conversation (T8). HONEST CEILING: all four share the
-#     tool-advertising gate — dispatchModel does not advertise tool schemas to the provider, so a real
-#     provider never reaches a tool boundary; they SKIP until PALAI_LIVE_TOOL_ADVERTISING is set. They
-#     serialize on the shared :local Docker stack, so this target does NOT run them inline — it names them
-#     so the gate is explicit and points at the per-case live runner.
+#     host-kill-restore (T6), detached-child-conversation (T8). dispatchModel now advertises the run's
+#     effective tool set (E12 T1) — advertising is proven live by CASE=spontaneous-tool-roundtrip.
+#     detached-child-conversation PASSES live (single-step, no tool threading). checkpoint-restore +
+#     container-kill-recovery SKIP on a multi-step tool-continuation follow-up: attempt 2's restored
+#     continuation re-threads the tool call + result, which the engine wire (dropped tool_call id) makes
+#     malformed for the real chat API — an engine-wire follow-up, NOT an advertising gap. host-kill-restore
+#     SKIPs on the container-engine live harness (a named follow-up). They serialize on the shared :local
+#     Docker stack, so this target runs them per-case in sequence when PROVIDER=provider-one (each SKIPs
+#     cleanly without .env.local creds).
 #
 #     The other three recovery halves have NO live-provider CASE authored — checkpoint-create (T1),
 #     steer-survives-kill (T2), and tool-replay-reconcile (T7). They are proven at the fault/component
@@ -40,11 +44,17 @@ CASE=recovery scripts/test/fault
 # Core 3 — the recovery-0.1.0 evidence bundle verifies clean.
 RELEASE=recovery-0.1.0 scripts/evidence/verify
 
-# Live tier — named-but-gated. The FOUR authored recovery live smokes need PALAI_LIVE_TOOL_ADVERTISING
-# (dispatchModel omits tool schemas) and serialize on :local; they are not run inline here. The other
-# three halves (T1/T2/T7) have no live-provider CASE — they are named as a follow-up, not run.
+# Live tier — run the authored recovery live smokes per-case, serialized on the shared :local stack.
+# Advertising landed (E12 T1, proven by CASE=spontaneous-tool-roundtrip): detached-child-conversation
+# PASSES live; checkpoint-restore + container-kill-recovery SKIP on a multi-step tool-continuation
+# follow-up (attempt 2 re-threads the tool call + result; the engine wire drops the tool_call id) — an
+# engine-wire follow-up, not an advertising gap; host-kill-restore SKIPs on the container-engine live
+# harness follow-up. Each SKIPs cleanly without creds. The other three halves (T1/T2/T7) have no
+# live-provider CASE — a named follow-up, not run.
 if [ "${PROVIDER:-fake}" = "provider-one" ]; then
-  echo "uat-recovery: PROVIDER=provider-one — the 4 authored live recovery smokes are GATED on PALAI_LIVE_TOOL_ADVERTISING (dispatchModel omits tool schemas) and serialize on :local." >&2
-  echo "  run them per-case: make test-live-provider PROVIDER=provider-one CASE=<checkpoint-restore|container-kill-recovery|host-kill-restore|detached-child-conversation>" >&2
-  echo "  no live-provider CASE authored for checkpoint-create (T1), steer-survives-kill (T2), tool-replay-reconcile (T7) — proven at the fault/component tier; wiring their live layer is a named follow-up." >&2
+  for recovery_case in checkpoint-restore container-kill-recovery detached-child-conversation host-kill-restore; do
+    echo "uat-recovery: live case $recovery_case" >&2
+    PROVIDER=provider-one CASE="$recovery_case" scripts/test/live-provider
+  done
+  echo "uat-recovery: no live-provider CASE authored for checkpoint-create (T1), steer-survives-kill (T2), tool-replay-reconcile (T7) — proven at the fault/component tier; wiring their live layer is a named follow-up." >&2
 fi

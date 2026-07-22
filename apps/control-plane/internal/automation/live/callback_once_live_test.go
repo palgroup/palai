@@ -8,8 +8,9 @@
 //
 // HONEST CEILING (mandatory, spec §20.2.2/§32.1, brief §6): the receiver is OUR harness — the proof class
 // is the run-terminal/callback SEPARATION + the exactly-once delivery, not a third-party endpoint. The run
-// is single-step + REAL (E08 pin: no tools advertised), so this case makes NO model→tool claim and does
-// NOT touch PALAI_LIVE_TOOL_ADVERTISING. The post-irreversible guard is NOT exercised live (a live variant
+// run's effective tool set is empty (no default_tools configured), so dispatchModel advertises nothing and
+// the run stays single-step + REAL; this case makes NO model→tool claim — that claim lives in the tool
+// live cases. The post-irreversible guard is NOT exercised live (a live variant
 // would need a forced tool call at the broker seam — tool_choice: required); it is proven in the component
 // tier with seeded ledger rows (TestReplace/CoalesceDeniedAfterIrreversibleToolCall). The provider
 // credential and the webhook signing secret are used as opaque needles for the leak scan and never printed.

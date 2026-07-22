@@ -7,8 +7,8 @@
 //
 // HONEST CEILING (mandatory, spec §20.2.2, brief §5): the source is manual/API — signed inbound HTTP
 // ingestion (durable ack, source-dedupe, backpressure) is T5. The run is single-step and REAL (the E08
-// pin: no tools are advertised to the provider, so this case makes NO model→tool claim and therefore does
-// NOT touch PALAI_LIVE_TOOL_ADVERTISING). The dedupe → no-second-run invariant is proven at the
+// pin: the effective tool set is empty (no default_tools configured), so dispatchModel advertises nothing
+// and the run stays single-step, making NO model→tool claim). The dedupe → no-second-run invariant is proven at the
 // broker/adapter seam: the counting adapter wraps the REAL provider-one adapter, and only the deliveries
 // that actually bore a run dispatch a real completion — the deduped second delivery bears none, so the
 // count is 1, not "probably not called". The full durable admission→worker→engine path is proven in the
