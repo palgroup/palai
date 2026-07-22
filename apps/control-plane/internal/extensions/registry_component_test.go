@@ -1,0 +1,225 @@
+//go:build component
+
+package extensions
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"os"
+	"testing"
+
+	"github.com/palgroup/palai/packages/coordinator"
+)
+
+// openStore opens a migrated spine, seeds an org+project, and returns the extensions store scoped to it.
+// The store reserves the built-in short name "file" so the reserved-collision leg has a target.
+func openStore(t *testing.T) (*Store, string, string) {
+	t.Helper()
+	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
+	if url == "" {
+		t.Skip("PALAI_COMPONENT_POSTGRES_URL is required; run make test-component TEST=postgres")
+	}
+	ctx := context.Background()
+	cs, err := coordinator.Open(ctx, url)
+	if err != nil {
+		t.Fatalf("coordinator.Open() error = %v", err)
+	}
+	t.Cleanup(cs.Close)
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	org, project := testID("org"), testID("prj")
+	pool := cs.Pool()
+	if _, err := pool.Exec(ctx, `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
+		t.Fatalf("seed org: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	return New(pool, "file"), org, project
+}
+
+func testID(prefix string) string {
+	var raw [8]byte
+	_, _ = rand.Read(raw[:])
+	return prefix + "_" + hex.EncodeToString(raw[:])
+}
+
+// rawRevisionRow reads a tool revision's config columns + digest + publish stamp as one comparable
+// string, so a test can assert the whole row is byte-stable after a later revise.
+func rawRevisionRow(t *testing.T, s *Store, revisionID string) string {
+	t.Helper()
+	var executor, input, digest, published string
+	err := s.pool.QueryRow(context.Background(),
+		`SELECT executor, input_schema::text, digest, COALESCE(published_at::text,'') FROM tool_revisions WHERE id=$1`,
+		revisionID).Scan(&executor, &input, &digest, &published)
+	if err != nil {
+		t.Fatalf("read raw revision row %s: %v", revisionID, err)
+	}
+	return executor + "\x1f" + input + "\x1f" + digest + "\x1f" + published
+}
+
+// TestToolRevisionImmutableAndDigestPinned proves the core §28.4 invariant: once published, a tool
+// revision's config + digest are frozen — a revise creates a NEW revision, the published row is
+// byte-for-byte unchanged, and identical config yields an identical digest. Publish is a once-only flip.
+func TestToolRevisionImmutableAndDigestPinned(t *testing.T) {
+	s, org, project := openStore(t)
+	ctx := context.Background()
+
+	tool, err := s.CreateTool(ctx, org, project, "acme.search.fetch")
+	if err != nil {
+		t.Fatalf("create tool: %v", err)
+	}
+	body := []byte(`{"executor":"control_plane","description":"v1","input_schema":{"type":"object"},"replay_class":"pure"}`)
+	v1, err := s.CreateToolRevision(ctx, org, project, tool.ID, body)
+	if err != nil {
+		t.Fatalf("create v1: %v", err)
+	}
+	if v1.RevisionNumber != 1 {
+		t.Fatalf("first revision number = %d, want 1", v1.RevisionNumber)
+	}
+	// An identical body produces an identical digest (content address, not row identity).
+	v1b, _ := s.CreateToolRevision(ctx, org, project, tool.ID, body)
+	if v1b.Digest != v1.Digest {
+		t.Fatalf("identical config produced different digests: %s vs %s", v1.Digest, v1b.Digest)
+	}
+
+	published, _, err := s.PublishToolRevision(ctx, org, project, v1.ID)
+	if err != nil || !published {
+		t.Fatalf("publish v1 = %v err = %v, want published", published, err)
+	}
+	rawBefore := rawRevisionRow(t, s, v1.ID)
+
+	// A revise is a NEW revision with different config; v1's row is untouched.
+	v2, err := s.CreateToolRevision(ctx, org, project, tool.ID, []byte(`{"executor":"control_plane","description":"v2","input_schema":{"type":"object","x":1},"replay_class":"idempotent"}`))
+	if err != nil {
+		t.Fatalf("revise -> v2: %v", err)
+	}
+	if v2.ID == v1.ID || v2.Digest == v1.Digest {
+		t.Fatalf("revise produced id=%s digest=%s, want a NEW distinct revision", v2.ID, v2.Digest)
+	}
+	if rawAfter := rawRevisionRow(t, s, v1.ID); rawAfter != rawBefore {
+		t.Fatalf("published v1 row mutated by a later revise:\n before=%s\n after =%s", rawBefore, rawAfter)
+	}
+
+	// Publish is once-only: re-publishing v1 is a no-op, never a re-stamp.
+	again, _, err := s.PublishToolRevision(ctx, org, project, v1.ID)
+	if err != nil {
+		t.Fatalf("re-publish v1: %v", err)
+	}
+	if again {
+		t.Fatal("re-publish reported a fresh publish, want a no-op on an already-published revision")
+	}
+}
+
+// TestCanonicalNamespaceCollisionRejected proves the canonical-name contract: a duplicate canonical name
+// in the project is a typed collision reject, and a malformed canonical name (≠3 segments, non-ASCII) is
+// rejected before any write (spec §28.2).
+func TestCanonicalNamespaceCollisionRejected(t *testing.T) {
+	s, org, project := openStore(t)
+	ctx := context.Background()
+
+	if _, err := s.CreateTool(ctx, org, project, "acme.search.fetch"); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	if _, err := s.CreateTool(ctx, org, project, "acme.search.fetch"); !errors.Is(err, ErrNameCollision) {
+		t.Fatalf("duplicate canonical name: err = %v, want ErrNameCollision", err)
+	}
+	for name, canonical := range map[string]string{
+		"two segments": "acme.fetch",
+		"non-ascii":    "acme.search.fetché",
+	} {
+		if _, err := s.CreateTool(ctx, org, project, canonical); !errors.Is(err, ErrInvalidCanonicalName) {
+			t.Errorf("%s (%q): err = %v, want ErrInvalidCanonicalName", name, canonical, err)
+		}
+	}
+}
+
+// TestModelVisibleShortNameDeterministicCollisionChecked proves the model-visible short name is the
+// deterministic last segment with NO auto-suffix: a second tool whose last segment repeats an existing
+// one in the project is rejected, and a tool whose short name shadows a code-defined built-in is rejected.
+func TestModelVisibleShortNameDeterministicCollisionChecked(t *testing.T) {
+	s, org, project := openStore(t)
+	ctx := context.Background()
+
+	if _, err := s.CreateTool(ctx, org, project, "acme.search.fetch"); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	// A different canonical name whose LAST segment is the same short name collides (no auto-suffix).
+	if _, err := s.CreateTool(ctx, org, project, "acme.other.fetch"); !errors.Is(err, ErrNameCollision) {
+		t.Fatalf("second *.fetch: err = %v, want ErrNameCollision (deterministic short name, no suffix)", err)
+	}
+	// A short name shadowing a reserved built-in (the store reserves "file") is rejected before any write.
+	if _, err := s.CreateTool(ctx, org, project, "acme.workspace.file"); !errors.Is(err, ErrModelNameReserved) {
+		t.Fatalf("built-in shadow: err = %v, want ErrModelNameReserved", err)
+	}
+}
+
+// TestToolSetPinsExactRevisionsApprovalOnlyStricter proves a ToolSetRevision pins only PUBLISHED
+// revisions with only-tightening overrides: a draft pin is rejected, an unknown pin is rejected, an
+// override above the declared timeout is rejected while one at/below it is accepted, and the set revision
+// is itself immutable + publishable once.
+func TestToolSetPinsExactRevisionsApprovalOnlyStricter(t *testing.T) {
+	s, org, project := openStore(t)
+	ctx := context.Background()
+
+	tool, err := s.CreateTool(ctx, org, project, "acme.search.fetch")
+	if err != nil {
+		t.Fatalf("create tool: %v", err)
+	}
+	rev, err := s.CreateToolRevision(ctx, org, project, tool.ID, []byte(`{"executor":"control_plane","description":"d","input_schema":{"type":"object"},"replay_class":"pure","timeout_ms":1000}`))
+	if err != nil {
+		t.Fatalf("create rev: %v", err)
+	}
+
+	// A pin of a DRAFT revision is rejected (only published revisions may be pinned).
+	if _, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins(rev.ID, nil)); !errors.Is(err, ErrRevisionNotPublished) {
+		t.Fatalf("draft pin: err = %v, want ErrRevisionNotPublished", err)
+	}
+	// An unknown pin is rejected.
+	if _, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins("trev_missing", nil)); !errors.Is(err, ErrUnknownToolRevision) {
+		t.Fatalf("unknown pin: err = %v, want ErrUnknownToolRevision", err)
+	}
+
+	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID); err != nil {
+		t.Fatalf("publish rev: %v", err)
+	}
+
+	// An override above the declared timeout (1000) is rejected; at/below is accepted.
+	if _, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins(rev.ID, map[string]any{"timeout_ms": 2000})); !errors.Is(err, ErrOverrideNotStricter) {
+		t.Fatalf("widening override: err = %v, want ErrOverrideNotStricter", err)
+	}
+	set, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins(rev.ID, map[string]any{"timeout_ms": 500}))
+	if err != nil {
+		t.Fatalf("stricter override rejected: %v", err)
+	}
+	if set.RevisionNumber != 1 {
+		t.Fatalf("set revision number = %d, want 1", set.RevisionNumber)
+	}
+
+	// The set revision is publishable once.
+	published, _, err := s.PublishToolSetRevision(ctx, org, project, set.ID)
+	if err != nil || !published {
+		t.Fatalf("publish set = %v err = %v, want published", published, err)
+	}
+	again, _, err := s.PublishToolSetRevision(ctx, org, project, set.ID)
+	if err != nil {
+		t.Fatalf("re-publish set: %v", err)
+	}
+	if again {
+		t.Fatal("re-publish set reported a fresh publish, want a no-op")
+	}
+}
+
+// pins builds a raw set-revision body pinning one revision with an optional override.
+func pins(revisionID string, overrides map[string]any) []byte {
+	pin := map[string]any{"tool_revision_id": revisionID}
+	if overrides != nil {
+		pin["overrides"] = overrides
+	}
+	body, _ := json.Marshal(map[string]any{"tools": []any{pin}})
+	return body
+}

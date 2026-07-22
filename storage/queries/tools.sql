@@ -3,3 +3,75 @@
 -- broker lookup's pin-chain resolution. A revise always INSERTs a new revision — no statement here ever
 -- rewrites a revision's config columns, so a published revision is immutable by discipline (the only
 -- UPDATE is the publish flip). Every statement is tenant-scoped by (organization_id, project_id).
+
+-- name: InsertTool
+INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name)
+VALUES ($1, $2, $3, $4, $5);
+
+-- ToolExists verifies a tool is in scope before a revision is attached to it.
+-- name: ToolExists
+SELECT 1 FROM tools WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- InsertToolRevision creates a DRAFT revision (published_at NULL). revision_number is the tool's next
+-- monotonic number, computed in-statement so a revise never has to read-then-write. Returns it.
+-- ponytail: the MAX+1 subselect can race two concurrent inserts to the same number; the
+-- UNIQUE(tool_id, revision_number) constraint then rejects the loser (retry on 23505 if it ever matters).
+-- name: InsertToolRevision
+INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number, executor,
+        description, input_schema, output_schema, replay_class, timeout_ms, limits, executor_config, secret_ref, digest)
+VALUES ($1, $2, $3, $4,
+        (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM tool_revisions WHERE tool_id = $4),
+        $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+RETURNING revision_number;
+
+-- PublishToolRevision is the ONE legitimate mutation: it flips published_at exactly once. The
+-- WHERE published_at IS NULL guard makes a re-publish a zero-row no-op, so a published revision never
+-- re-stamps (immutable publish). RETURNING id distinguishes published-now from already-published/unknown.
+-- name: PublishToolRevision
+UPDATE tool_revisions
+SET published_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND published_at IS NULL
+RETURNING id;
+
+-- ToolRevisionPublished returns whether a revision exists in scope and is published (publish
+-- disambiguation): no rows = unknown, false = draft, true = published.
+-- name: ToolRevisionPublished
+SELECT published_at IS NOT NULL
+FROM tool_revisions
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- GetToolRevision reads a revision's identity + digest + publish state (management + immutability check).
+-- name: GetToolRevision
+SELECT tool_id, revision_number, executor, digest, published_at
+FROM tool_revisions
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- ToolRevisionForPin reads a pinned revision's publish state + declared timeout so a set create can
+-- reject a draft pin and an override that widens the declared limit.
+-- name: ToolRevisionForPin
+SELECT published_at IS NOT NULL, timeout_ms
+FROM tool_revisions
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- InsertToolSetRevision creates a DRAFT set revision. revision_number is the set name's next monotonic
+-- number. Returns it.
+-- name: InsertToolSetRevision
+INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name, revision_number, tool_pins, digest)
+VALUES ($1, $2, $3, $4,
+        (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM tool_set_revisions
+         WHERE organization_id = $2 AND project_id = $3 AND set_name = $4),
+        $5, $6)
+RETURNING revision_number;
+
+-- PublishToolSetRevision mirrors PublishToolRevision: a once-only conditional flip.
+-- name: PublishToolSetRevision
+UPDATE tool_set_revisions
+SET published_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND published_at IS NULL
+RETURNING id;
+
+-- ToolSetRevisionPublished is the set-revision publish-state read (see ToolRevisionPublished).
+-- name: ToolSetRevisionPublished
+SELECT published_at IS NOT NULL
+FROM tool_set_revisions
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
