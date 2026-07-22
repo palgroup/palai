@@ -1,0 +1,11 @@
+id: TOL-009
+name: mcp-token-passthrough-confused-deputy-denied-audience-bound
+proof_class: unit
+provider: fake
+input: "an MCP confused-deputy / token-passthrough attempt is denied: the platform bearer is never forwarded to an MCP server, an audience-mismatched token replay is rejected, and a server cannot call platform endpoints with received credentials (real malicious MCP fixture corpus)"
+expect_status: completed
+proof:
+  - tests/security/extensions/mcp_test.go:TestMCPServerCannotReplayTokenToAnotherUpstream
+  - tests/security/extensions/mcp_test.go:TestMCPServerCannotCallPlatformWithReceivedCredentials
+  - adapters/integrations/mcp/auth_test.go:TestUpstreamTokenNeverForwardedToMCPServer
+  - adapters/integrations/mcp/auth_test.go:TestAudienceMismatchDenied

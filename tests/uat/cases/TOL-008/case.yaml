@@ -1,0 +1,10 @@
+id: TOL-008
+name: mcp-stdio-discovery-call-progress-cancel-connection-namespaced-standard-dispatch
+proof_class: component-real
+provider: fake
+input: "an MCP stdio server's discovery/call/progress/cancel maps onto canonical tool events, discovered tools are namespaced by connection (no collision), and the call flows through the STANDARD dispatch path with a tool_calls ledger row (real MCP server process + real Postgres)"
+expect_status: completed
+proof:
+  - adapters/integrations/mcp/stdio_component_test.go:TestMCPStdioDiscoveryCallProgressCancel
+  - apps/control-plane/internal/extensions/mcp_dispatch_component_test.go:TestDiscoveredToolsNamespacedByConnectionNoCollision
+  - apps/control-plane/internal/extensions/mcp_dispatch_component_test.go:TestMCPCallFlowsThroughStandardDispatch

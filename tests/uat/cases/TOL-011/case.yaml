@@ -1,0 +1,10 @@
+id: TOL-011
+name: malicious-skill-archive-rejected-instructions-grant-no-capability
+proof_class: unit
+provider: fake
+input: "a malicious skill archive (traversal/symlink/bomb) is hard-rejected in quarantine, and skill instructions asking for a tool outside the revision ceiling grant NO capability (the requested tool is never in the effective set) — the load-bearing invariant is the capability boundary, not a model-behavior guarantee"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/extensions/skill_security_test.go:TestSkillSecurityMaliciousArchivesHardRejected
+  - apps/control-plane/internal/extensions/quarantine_test.go:TestSkillArchiveTraversalSymlinkBombRejected
+  - apps/control-plane/internal/execution/config_test.go:TestSkillInstructionsGrantNoCapability

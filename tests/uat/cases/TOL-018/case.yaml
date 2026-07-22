@@ -1,0 +1,10 @@
+id: TOL-018
+name: extension-sdk-schema-signature-result-parity-go-ts-py-subset
+proof_class: unit
+provider: fake
+input: "the Go and TypeScript SDKs (Python is a verify+schema subset) emit byte-equivalent JSON Schema, agree on signature verify (valid/tampered/expired), and normalize results identically against the shared conformance corpus — polyglot drift = fail"
+expect_status: completed
+proof:
+  - tests/conformance/tool-sdk/conformance_test.go:TestSchemaEmitCanonicalBytes
+  - tests/conformance/tool-sdk/conformance_test.go:TestSignatureVerifyMatchesReference
+  - tests/conformance/tool-sdk/conformance_test.go:TestResultNormalizeCanonicalBytes

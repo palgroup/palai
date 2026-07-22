@@ -1,0 +1,10 @@
+id: EXT-004
+name: web-research-citations-no-publish-capability-private-metadata-denied
+proof_class: unit
+provider: fake
+input: "the web-research tool fetch produces citations, denies private/metadata targets after DNS resolve + redirect, and its network capability never expands to a repository/store-write tool (real test resolver + local server; no search backend — fetch+cite only, search is E17)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/execution/tools/research_test.go:TestResearchFetchProducesCitations
+  - apps/control-plane/internal/execution/tools/research_test.go:TestResearchDeniesPrivateAndMetadataTargetsAfterResolveAndRedirect
+  - apps/control-plane/internal/execution/config_research_test.go:TestResearchRequiresNetworkCapabilityAndNeverPublishCapability

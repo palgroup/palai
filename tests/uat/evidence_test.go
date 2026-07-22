@@ -232,6 +232,139 @@ func TestCallbackClaimRequiresSingleSemanticDelivery(t *testing.T) {
 	}
 }
 
+// TestAdvertisingClaimRequiresHonestProof pins EXT-001/002 (spec §28.5): an advertising case does NOT pass
+// on a marker alone — it must carry an AdvertisingProof with a hashed advertised schema list, at least one
+// tool name, and an HONEST selection mode. Missing proof is a Finding; an empty hash, no tool names, or an
+// unnamed/other mode is invalid — a "forced" call is named "forced", never dressed as spontaneous.
+func TestAdvertisingClaimRequiresHonestProof(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{
+			"advertised_schema_hash": "sha256:" + strings.Repeat("d", 64),
+			"tool_names":             []any{"palai.workspace.file"}, "mode": "spontaneous",
+		}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["advertising_claim"] = "advertised"
+	c["advertising_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete advertising proof should pass, got %v", f)
+	}
+	// A forced mode is a valid, HONEST proof — the point is that it is NAMED forced, not that it is rejected.
+	m = baseManifest()
+	c = caseOf(m)
+	c["advertising_claim"] = "advertised"
+	forced := full()
+	forced["mode"] = "forced"
+	c["advertising_proof"] = forced
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a forced advertising proof (honestly named) should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["advertising_claim"] = "advertised" // no proof
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("an advertising claim with no proof must be a Finding")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { delete(p, "advertised_schema_hash") },
+		func(p map[string]any) { p["tool_names"] = []any{} }, // advertised nothing
+		func(p map[string]any) { p["mode"] = "" },            // hides how the tool was selected
+		func(p map[string]any) { p["mode"] = "auto-magic" },  // not an honest mode
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["advertising_claim"] = "advertised"
+		proof := full()
+		mutate(proof)
+		c["advertising_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid advertising proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestSkillClaimRequiresDigestAndScan pins TOL-011 (spec §28.15-28.16): a skill case must carry a SkillProof
+// with an exact pinned digest AND a recorded scan result — a "loaded" marker, a skill with no digest (so the
+// run could drift to "latest"), or one enabled without a scan is not proof.
+func TestSkillClaimRequiresDigestAndScan(t *testing.T) {
+	m := baseManifest()
+	c := caseOf(m)
+	c["skill_claim"] = "enabled"
+	c["skill_proof"] = map[string]any{"digest": "sha256:" + strings.Repeat("e", 64), "scan_result": "clean"}
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete skill proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["skill_claim"] = "enabled" // no proof
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a skill claim with no proof must be a Finding")
+	}
+	for _, field := range []string{"digest", "scan_result"} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["skill_claim"] = "enabled"
+		proof := map[string]any{"digest": "sha256:" + strings.Repeat("e", 64), "scan_result": "clean"}
+		delete(proof, field)
+		c["skill_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("a skill proof missing %q must be a Finding", field)
+		}
+	}
+}
+
+// TestCrashIsolationClaimCannotBeMarkerPassed pins EXT-005 (spec §28.21, the E12 EXIT gate): a crash-
+// isolation case must carry a CrashIsolationProof where ALL FOUR facts hold — the breaker tripped, the run
+// saw tool_unavailable, the control-plane stayed stable, and a separate run flowed. A marker alone, or ANY
+// one fact false, is not isolation, so the EXT-005 release gate can never be marker-passed.
+func TestCrashIsolationClaimCannotBeMarkerPassed(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{
+			"breaker_tripped": true, "tool_unavailable_visible": true,
+			"control_plane_stable": true, "other_run_flowed": true,
+		}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["crash_isolation_claim"] = "isolated"
+	c["crash_isolation_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete crash-isolation proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["crash_isolation_claim"] = "isolated" // marker, no proof
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a crash-isolation claim with no proof must be a Finding (EXT-005 cannot be marker-passed)")
+	}
+	// ANY one isolation fact false makes it invalid — a crash that took the core down, or that the run never
+	// saw, is the opposite of isolation.
+	for _, field := range []string{"breaker_tripped", "tool_unavailable_visible", "control_plane_stable", "other_run_flowed"} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["crash_isolation_claim"] = "isolated"
+		proof := full()
+		proof[field] = false
+		c["crash_isolation_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("a crash-isolation proof with %q false must be a Finding", field)
+		}
+	}
+}
+
+// TestRemoteSigningSecretRedacted pins the E12 T10 credential-marker extension: a leaked whsec_ webhook/
+// remote-tool signing secret (the E11 callback + E12 remote-tool/hook signed transports share the same
+// webhook signer) is caught by the redaction pattern scan, so a plaintext signing secret fails the bundle
+// by construction — the same whsec_ discipline scripts/verify/e01.sh applies, now in the evidence tier.
+func TestRemoteSigningSecretRedacted(t *testing.T) {
+	m := baseManifest()
+	caseOf(m)["mtls_enroll"] = "signed with whsec_SENTINELdontleak0123456789"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "secret") {
+		t.Error("a leaked whsec_ signing secret was not caught by the redaction scan")
+	}
+}
+
 func TestEvidenceVerifier(t *testing.T) {
 	// A valid, redacted bundle passes with no findings.
 	if f := VerifyManifest(marshal(t, baseManifest()), nil); len(f) != 0 {

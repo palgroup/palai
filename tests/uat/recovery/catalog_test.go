@@ -42,8 +42,12 @@ var honestNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // be in expectedRecoveryCatalog, so a recovery case cannot be added outside the map and escape proof
 // resolution. SAN is deliberately absent: it is shared with E09 (SAN-001..004 are E09 sandbox cases), so a
 // prefix sweep can't own it — the SAN-005..008 recovery cases are still validated as map keys above.
+// TOL- is ALSO absent: E12 T10 materialized the extensibility half of the TOL- family (TOL-008..012/018),
+// so the extensibility catalog (tests/uat/extensibility/catalog_test.go) is now the SINGLE owner of TOL-
+// orphan resolution — it allowlists the recovery-only TOL-001..004 and maps the shared TOL-016/017. This
+// gate's map loop still validates the recovery-owned TOL cases below; it just no longer sweeps TOL- dirs.
 // ponytail: exclusive-family sweep only; a shared-family orphan (e.g. a stray SAN-009) is not auto-caught.
-var recoveryIDPrefixes = []string{"ENG-", "TOL-", "SES-", "REC-", "DET-"}
+var recoveryIDPrefixes = []string{"ENG-", "SES-", "REC-", "DET-"}
 
 // expectedRecoveryCatalog is the E10 recovery UAT catalog: every case ID this slice materializes (spec §3
 // acceptance contract ENG/TOL/SAN/SES + §64 authored REC/DET), mapped to the proof class its case.yaml
@@ -69,14 +73,23 @@ var expectedRecoveryCatalog = map[string]struct {
 	"ENG-013": {"e2e-deterministic", []string{"apps/control-plane/e2e/responses/kill_matrix_test.go:TestRedeliveredTerminalStaysSingleByMonotonicity"}},
 	"ENG-014": {"e2e-deterministic", []string{"apps/control-plane/e2e/responses/kill_matrix_test.go:TestExitWithoutTerminalNeverFalseSuccess"}},
 
-	// TOL — tool replay classes + uncertain reconciliation (spec §26.6-26.7). TOL-016/017's signed-transport
-	// half is E12; only the ledger/fence half is proven here.
+	// TOL — tool replay classes + uncertain reconciliation (spec §26.6-26.7). TOL-016/017 are SHARED cases:
+	// E12 T10 materialized their signed-transport half, so their proof list now carries BOTH the E10 ledger/
+	// fence half AND the E12 signed half — both halves share a tier (016 both unit, 017 both component), so
+	// the combined list satisfies this gate AND the extensibility gate off the one case.yaml. The E10 half
+	// stays FIRST in the list (E10 claims unchanged); the extensibility gate expects the identical list.
 	"TOL-001": {"component-real", []string{"apps/control-plane/internal/execution/tool_ledger_component_test.go:TestPureToolReplayLabeledNoDuplication"}},
 	"TOL-002": {"unit", []string{"packages/tool-broker/broker_test.go:TestIdempotentToolSameKeySingleExternalObject"}},
 	"TOL-003": {"component-real", []string{"apps/control-plane/internal/execution/tool_ledger_component_test.go:TestIrreversibleUncertainNeverAutoReplays"}},
 	"TOL-004": {"unit", []string{"apps/control-plane/internal/execution/reconcile_unit_test.go:TestReversibleReconcilesThenCompensates"}},
-	"TOL-016": {"unit", []string{"packages/tool-broker/broker_test.go:TestDuplicateToolCallIdSingleExecution"}},
-	"TOL-017": {"component-real", []string{"apps/control-plane/internal/execution/tool_ledger_component_test.go:TestLateCallbackAfterFenceAdvanceDenied"}},
+	"TOL-016": {"unit", []string{
+		"packages/tool-broker/broker_test.go:TestDuplicateToolCallIdSingleExecution",
+		"adapters/tools/http/executor_test.go:TestRemoteDuplicateRetrySameToolCallIdSingleExecution",
+	}},
+	"TOL-017": {"component-real", []string{
+		"apps/control-plane/internal/execution/tool_ledger_component_test.go:TestLateCallbackAfterFenceAdvanceDenied",
+		"apps/control-plane/internal/execution/remote_prober_component_test.go:TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit",
+	}},
 
 	// SAN — snapshot restore + host-kill fence + reuse hygiene + quarantine (spec §26.8, §28-29).
 	"SAN-005": {"unit", []string{"adapters/sandboxes/oci/snapshot/archive_test.go:TestSnapshotRestoreChecksumsMatchCreate"}},

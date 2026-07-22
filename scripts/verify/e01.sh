@@ -107,7 +107,11 @@ done
 
 credential_assignment_pattern='(^|[^[:alnum:]_])"?([[:alpha:]][[:alnum:]_]*(API_?KEY|SECRET(_ACCESS)?_KEY|ACCESS_?KEY(_ID)?|TOKEN|PASSWORD|CREDENTIALS?)|DATABASE_URL)"?[[:space:]]*[:=][[:space:]]*"?[^[:space:]",}]+'
 # whsec_ is the outbound-webhook signing-secret prefix (E11 Task 4, §21.5): a leaked webhook secret in
-# any scanned artifact is caught here alongside sk-*, bearer tokens, and private keys.
+# any scanned artifact is caught here alongside sk-*, bearer tokens, and private keys. The E12 remote-tool
+# and hook signed transports reuse the SAME webhook signer (Webhook-Signature), so whsec_ also covers their
+# signing secrets; opaque MCP connection bearers carry no distinctive prefix and are caught by the generic
+# Authorization: Bearer marker above (evidence.go mirrors this whsec_ marker for the manifest tier — E12 T10
+# updated both points).
 secret_marker_pattern='(Authorization:[[:space:]]*Bearer|BEGIN[[:space:]]+PRIVATE[[:space:]]+KEY|(^|[^[:alnum:]])sk-[[:alnum:]]|(^|[^[:alnum:]])whsec_[[:alnum:]]|/Users/|/home/)'
 scan_files=("$index")
 for report in "${expected_reports[@]}"; do

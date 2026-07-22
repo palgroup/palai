@@ -1,0 +1,9 @@
+id: TOL-012
+name: hook-policy-timeout-fails-closed-observer-crash-fails-open
+proof_class: unit
+provider: fake
+input: "a before_tool policy hook that times out fails CLOSED (the tool call is denied, the run visible), and an observer hook crash fails OPEN (the operation proceeds, the core process unaffected)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/extensions/hooks_test.go:TestPolicyHookTimeoutFailsClosed
+  - apps/control-plane/internal/extensions/hooks_test.go:TestObserverHookCrashFailsOpenRunUnaffected

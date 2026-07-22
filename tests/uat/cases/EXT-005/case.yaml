@@ -1,0 +1,8 @@
+id: EXT-005
+name: extension-crash-breaker-tool-unavailable-control-plane-stays-up
+proof_class: fault-live
+provider: fake
+input: "an extension crash (a hook worker down) fails CLOSED, trips the per-hook circuit breaker, keeps the control-plane process up, and a DIFFERENT hook still flows — a real worker-down kill against real Postgres over the real signed transport (the MCP-server-SIGKILL half is exercised by the extensibility journey step 6, real process kill)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/extensions/hook_worker_down_fault_test.go:TestHookWorkerDownFailsClosedTripsBreakerControlPlaneUp

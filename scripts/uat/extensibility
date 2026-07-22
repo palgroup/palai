@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Extensibility UAT — the E12 EXIT gate. One target, a deterministic/fault/evidence CORE (always) + a
+# PROVIDER-gated live tier. The core is provider-agnostic: the extension crash is a real process kill, the
+# provider is fake.
+#
+#   deterministic core (always):
+#     1. TestExtensibilityJourneyDeterministic — the §28 extensibility integration journey: the real router +
+#        registry + MCP client (a REAL stdio fixture server) + remote-tool signed transport + skill + hook
+#        seams + orchestrator + reference engine prove, across the journey's runs, that a registered tool, an
+#        MCP tool, and a remote async tool (202->signed callback) all flow through the SINGLE dispatchTool->
+#        tool-broker ledger path; that a skill's requested extra capability is REFUSED and a hook DENY is
+#        visible; and that a real MCP-server SIGKILL trips the breaker + surfaces tool_unavailable while the
+#        control-plane stays up and a SECOND run still flows (EXT-005) — capability expanded at NO layer, the
+#        extension crash did not drop core, with the FAKE provider and NO credential. Routed through the
+#        responses e2e infra it already provisions (throwaway Postgres + reference-engine subprocess).
+#        (Web-research is NOT re-exercised in this journey; it is proven at EXT-004's tier + the live
+#        web-research-citations smoke below.)
+#     2. test-fault CASE=extensions — the E12 Task 8 hook fail-mode fault suite (EXT-005/TOL-012): a down
+#        remote hook worker fails CLOSED, its per-hook circuit breaker trips + sheds fast, the control plane
+#        stays up, and a DIFFERENT hook still flows — against REAL Postgres over the REAL signed transport.
+#     3. evidence-verify RELEASE=extensibility-0.1.0 — the committed extensibility bundle verifies clean with
+#        every E12 rule active (advertising/skill/callback/crash-isolation); an EXT-005-claimless bundle FAILS
+#        (marker-alone-is-never-proof; no PASS without a crash-isolation proof).
+#
+#   live tier (PROVIDER=provider-one): EIGHT live-provider CASEs are authored + wired
+#     (scripts/test/live-provider) and run INLINE — each opens its own throwaway Postgres (some also the
+#     fixture MCP/engine image), so they do not serialize on a shared :local stack:
+#     spontaneous-tool-roundtrip, registry-tool-roundtrip, remote-tool-async-roundtrip, mcp-tool-roundtrip,
+#     mcp-sampling-budgeted, skill-no-authority, web-research-citations, hook-deny-visible. HONEST CEILINGS
+#     (named per-case in scripts/test/live-provider): advertising is proven SPONTANEOUS by
+#     spontaneous-tool-roundtrip and mcp-tool-roundtrip; registry/remote/web-research remain FORCED (the
+#     pre-T1 forced-seam, per each case's scripts/test/live-provider header); the remote/MCP
+#     result->continuation half is a T1b engine-wire follow-up; the MCP and hook servers are our fixtures —
+#     the load-bearing live element is the real model + the real
+#     control-plane behavior. Credentials load ONLY from .env.local via `set -a` — never argv, never `set -x`.
+#
+# uat-coding / uat-local-live / uat-interactive / uat-recovery / uat-automation stay UNTOUCHED.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# Core 1 — the extensibility integration journey through the responses e2e infra.
+E2E_RUN='TestExtensibilityJourneyDeterministic' TEST=responses scripts/test/e2e
+
+# Core 2 — the hook fail-mode fault suite (real worker-down kill, provider-agnostic).
+CASE=extensions scripts/test/fault
+
+# Core 3 — the extensibility-0.1.0 evidence bundle verifies clean.
+RELEASE=extensibility-0.1.0 scripts/evidence/verify
+
+# Live tier — PROVIDER=provider-one runs the eight authored extensibility smokes inline. Each opens its own
+# throwaway Postgres (and, where needed, the fixture MCP/engine image); the credential is loaded from the
+# git-ignored .env.local at runtime (set -a, never set -x / argv / log).
+if [ "${PROVIDER:-fake}" = "provider-one" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  for case in spontaneous-tool-roundtrip registry-tool-roundtrip remote-tool-async-roundtrip \
+    mcp-tool-roundtrip mcp-sampling-budgeted skill-no-authority web-research-citations hook-deny-visible; do
+    echo "uat-extensibility: live smoke CASE=$case (PROVIDER=provider-one)" >&2
+    PROVIDER=provider-one CASE="$case" scripts/test/live-provider
+  done
+fi

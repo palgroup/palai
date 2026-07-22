@@ -5,7 +5,7 @@ SHELL := /bin/bash
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
 	test-fault test-security test-live-provider test-live-hook-deny test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
-	uat-interactive uat-coding uat-recovery uat-automation evidence-verify
+	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility evidence-verify
 
 bootstrap:
 	go mod download
@@ -125,6 +125,14 @@ uat-recovery:
 uat-automation:
 	@test -x scripts/uat/automation || { echo "automation UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' scripts/uat/automation
+
+# E12 EXIT gate: the deterministic extensibility journey + hook fault + evidence-verify core (always) + the
+# eight already-registered live extensibility smokes (PROVIDER=provider-one). The core is provider-agnostic —
+# the extension crash is a real process kill, the provider is fake. uat-local-live / uat-interactive /
+# uat-coding / uat-recovery / uat-automation above stay untouched.
+uat-extensibility:
+	@test -x scripts/uat/extensibility || { echo "extensibility UAT not implemented" >&2; exit 2; }
+	@PROVIDER='$(PROVIDER)' scripts/uat/extensibility
 
 evidence-verify:
 	@test -x scripts/evidence/verify || { echo "evidence verifier not implemented" >&2; exit 2; }

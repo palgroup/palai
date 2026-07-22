@@ -1,0 +1,8 @@
+id: EXT-001
+name: advertised-effective-tool-schemas-spontaneous-multistep-terminal
+proof_class: e2e-deterministic
+provider: fake
+input: "dispatchModel advertises the run's effective tool set schemas to the provider and a tool call rides the multi-step model->tool->model loop to a terminal run; the LIVE spontaneous half (a real provider choosing the tool with no tool_choice forcing) is the script tier (scripts/uat/extensibility CASE=spontaneous-tool-roundtrip)"
+expect_status: completed
+proof:
+  - apps/control-plane/e2e/responses/tool_advertising_test.go:TestDispatchModelAdvertisesEffectiveToolSchemas
