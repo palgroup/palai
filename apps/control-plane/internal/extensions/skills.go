@@ -253,6 +253,25 @@ func (s *Store) ResolveEnabledSkills(ctx context.Context, org, project string, n
 	return pins, nil
 }
 
+// ListSkills lists a project's skill lineages (management GET).
+func (s *Store) ListSkills(ctx context.Context, org, project string) ([]Skill, error) {
+	rows, err := s.pool.Query(ctx, storage.Query("ListSkills"), org, project)
+	if err != nil {
+		return nil, fmt.Errorf("list skills: %w", err)
+	}
+	defer rows.Close()
+	var out []Skill
+	for rows.Next() {
+		var sk Skill
+		var createdAt time.Time
+		if err := rows.Scan(&sk.ID, &sk.Name, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan skill: %w", err)
+		}
+		out = append(out, sk)
+	}
+	return out, rows.Err()
+}
+
 // LoadSkillArchive loads the sanitized archive bytes for a digest (workspace materialization).
 func (s *Store) LoadSkillArchive(ctx context.Context, org, project, digest string) ([]byte, error) {
 	var archive []byte
