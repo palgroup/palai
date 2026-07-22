@@ -16,6 +16,8 @@ import (
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // The E10 T7 tool-ledger reconciliation proof (spec §26.6-26.7): drive dispatchTool against a REAL
@@ -147,7 +149,7 @@ func TestIrreversibleUncertainNeverAutoReplays(t *testing.T) {
 		t.Fatalf("irreversible tool ran %d times, want 1 (never auto-replays, TOL-003)", n)
 	}
 	var state, recon string
-	if err := cs.Pool().QueryRow(ctx, `SELECT state, reconciliation_state FROM tool_calls WHERE id=$1`, callID).Scan(&state, &recon); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT state, reconciliation_state FROM tool_calls WHERE id=$1`, callID).Scan(&state, &recon); err != nil {
 		t.Fatalf("read uncertain row error = %v", err)
 	}
 	if state != "uncertain" || recon != "reconciling" {
@@ -157,7 +159,7 @@ func TestIrreversibleUncertainNeverAutoReplays(t *testing.T) {
 	if err := cs.ReconcileToolCall(ctx, tenant, sessionID, "", runID, callID, "manual_resolution", nil); err != nil {
 		t.Fatalf("escalate to manual_resolution error = %v", err)
 	}
-	if err := cs.Pool().QueryRow(ctx, `SELECT state FROM tool_calls WHERE id=$1`, callID).Scan(&state); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM tool_calls WHERE id=$1`, callID).Scan(&state); err != nil {
 		t.Fatalf("re-read row error = %v", err)
 	}
 	if state != "manual_resolution" {
@@ -185,7 +187,7 @@ func TestLateCallbackAfterFenceAdvanceDenied(t *testing.T) {
 	}
 	// The row is untouched — still executing, not falsely completed by the stale writer.
 	var state string
-	if err := cs.Pool().QueryRow(ctx, `SELECT state FROM tool_calls WHERE id=$1`, callID).Scan(&state); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM tool_calls WHERE id=$1`, callID).Scan(&state); err != nil {
 		t.Fatalf("read row error = %v", err)
 	}
 	if state != "executing" {
@@ -311,7 +313,7 @@ func TestRecoveryProofCarriesClassLabeledReplay(t *testing.T) {
 func readRecoveryProof(t *testing.T, cs *coordinator.Store, sessionID string) recovery.RecoveryProof {
 	t.Helper()
 	var payload []byte
-	if err := cs.Pool().QueryRow(context.Background(),
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT payload FROM events WHERE session_id=$1 AND type='recovery.proof.v1' ORDER BY seq DESC LIMIT 1`, sessionID).Scan(&payload); err != nil {
 		t.Fatalf("read recovery.proof.v1 error = %v", err)
 	}
@@ -433,7 +435,7 @@ func TestRemoteBeginToolCallCarriesIdempotencyKeyAndBoundary(t *testing.T) {
 		t.Fatalf("remote dispatchTool error = %v", err)
 	}
 	var extKey, boundary string
-	if err := cs.Pool().QueryRow(ctx, `SELECT external_idempotency_key, commit_boundary FROM tool_calls WHERE id=$1`, remoteCall).Scan(&extKey, &boundary); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT external_idempotency_key, commit_boundary FROM tool_calls WHERE id=$1`, remoteCall).Scan(&extKey, &boundary); err != nil {
 		t.Fatalf("read remote row error = %v", err)
 	}
 	if extKey != remoteCall || boundary != "mr_step7" {
@@ -447,7 +449,7 @@ func TestRemoteBeginToolCallCarriesIdempotencyKeyAndBoundary(t *testing.T) {
 	if err := orch2.dispatchTool(ctx, st2, toolRequestFrame(builtinCall, "builtin.effect", map[string]any{})); err != nil {
 		t.Fatalf("builtin dispatchTool error = %v", err)
 	}
-	if err := cs.Pool().QueryRow(ctx, `SELECT external_idempotency_key, commit_boundary FROM tool_calls WHERE id=$1`, builtinCall).Scan(&extKey, &boundary); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT external_idempotency_key, commit_boundary FROM tool_calls WHERE id=$1`, builtinCall).Scan(&extKey, &boundary); err != nil {
 		t.Fatalf("read builtin row error = %v", err)
 	}
 	if extKey != "" {

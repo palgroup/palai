@@ -78,6 +78,7 @@ func (r *DeliveryReconciler) Tick(ctx context.Context) error {
 // active run for the key). It advances at most one delivery per group per pass, so the per-key ordering
 // is strict: the head admits, and the next head is not admitted until this run terminates.
 func (s *TriggerStore) reconcileDeferred(ctx context.Context, log func(string, ...any)) error {
+	ctx = storage.WithSystemScope(ctx) // cross-tenant sweep: the catalogue query spans every tenant by construction
 	rows, err := s.pool.Query(ctx, storage.Query("DeferredDeliveryGroups"))
 	if err != nil {
 		return fmt.Errorf("scan deferred groups: %w", err)
@@ -112,6 +113,7 @@ func (s *TriggerStore) reconcileDeferred(ctx context.Context, log func(string, .
 // skipping the rest). Errors are returned to the caller, which logs + skips the group.
 func (s *TriggerStore) admitDeferredGroup(ctx context.Context, triggerID, org, project, hash string) error {
 	sc := deliveryScope{org: org, project: project, triggerID: triggerID}
+	ctx = scoped(ctx, sc)
 	// The FIFO head names the group's revision + policy (which gate + which survivor to admit).
 	var headID, headPrincipal, headRevision string
 	var headInput []byte
@@ -165,6 +167,7 @@ func (s *TriggerStore) admitDeferredGroup(ctx context.Context, triggerID, org, p
 // mapping and the concurrency decision. Their mapped_input + correlation hash are stored, so the decision
 // re-runs from the durable row (no source payload needed).
 func (s *TriggerStore) recoverStuckMapped(ctx context.Context, grace time.Duration, limit int, log func(string, ...any)) error {
+	ctx = storage.WithSystemScope(ctx) // cross-tenant sweep: the catalogue query spans every tenant by construction
 	if limit <= 0 {
 		limit = 100
 	}
@@ -212,6 +215,7 @@ func (s *TriggerStore) recoverStuckMapped(ctx context.Context, grace time.Durati
 // delivery serializes into a fresh session (the correlation mode drives the exact target); the stored
 // mapped_input + hash are authoritative, so no source payload is needed.
 func (s *TriggerStore) resumeDelivery(ctx context.Context, sc deliveryScope, hash string, mappedInput []byte) (DeliveryResult, error) {
+	ctx = scoped(ctx, sc)
 	cfg, err := s.loadRevisionConfig(ctx, sc)
 	if err != nil {
 		return DeliveryResult{}, err

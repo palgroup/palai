@@ -77,6 +77,7 @@ type PersistInput struct {
 // invariants the control plane relies on: a checksum is present, the size is bounded, and the id is
 // written at most once (immutability).
 func (o *Objects) Persist(ctx context.Context, in PersistInput) error {
+	ctx = storage.ScopeToTenant(ctx, in.Organization, in.Project)
 	if in.ContentChecksum == "" {
 		return ErrChecksumRequired
 	}

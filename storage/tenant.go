@@ -43,6 +43,25 @@ func WithSystemScope(ctx context.Context) context.Context {
 	return context.WithValue(ctx, scopeKey{}, scope{system: true})
 }
 
+// ScopeToTenant narrows ctx to the tenant a repository method was called for, but ONLY when the
+// context does not already carry a scope. Precedence is the point:
+//
+//   - On an HTTP request the auth middleware has already published the scope verified from the API
+//     key, and that wins. A method invoked with a different tenant than the credential proves then
+//     reads zero rows — the database catches the mismatch instead of trusting the argument.
+//   - The background worker's per-job scope and the explicit system scopes win the same way.
+//   - Everything else — an internal caller or a test driving the repository directly — is scoped by
+//     the tenant it declared in the call, so its queries run under the policies rather than around
+//     them.
+//
+// A caller that declares neither still gets the zero scope, and the zero scope still sees nothing.
+func ScopeToTenant(ctx context.Context, organization, project string) context.Context {
+	if s := scopeFrom(ctx); s.system || s.organization != "" {
+		return ctx
+	}
+	return WithTenant(ctx, organization, project)
+}
+
 // scopeFrom reads the scope a connection should be acquired under. A context that was never marked
 // yields the zero scope, which denies.
 func scopeFrom(ctx context.Context) scope {

@@ -15,6 +15,8 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestHostMoveKeepsLogicalIdNewFencedAllocation (REC-005/ENG-006): a leased workspace whose host is
@@ -38,7 +40,7 @@ func TestHostMoveKeepsLogicalIdNewFencedAllocation(t *testing.T) {
 		t.Fatalf("Capture() error = %v", err)
 	}
 	var oldFence int64
-	if err := h.pool.QueryRow(ctx, `SELECT fence FROM workspace_allocations WHERE id=$1`, oldAllocID).Scan(&oldFence); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT fence FROM workspace_allocations WHERE id=$1`, oldAllocID).Scan(&oldFence); err != nil {
 		t.Fatalf("read old fence: %v", err)
 	}
 
@@ -58,7 +60,7 @@ func TestHostMoveKeepsLogicalIdNewFencedAllocation(t *testing.T) {
 		t.Fatalf("new fence %d is not > old fence %d", res.Allocation.Fence, oldFence)
 	}
 	var newWorkspaceID string
-	if err := h.pool.QueryRow(ctx, `SELECT workspace_id FROM workspace_allocations WHERE id=$1`, res.Allocation.ID).Scan(&newWorkspaceID); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT workspace_id FROM workspace_allocations WHERE id=$1`, res.Allocation.ID).Scan(&newWorkspaceID); err != nil {
 		t.Fatalf("read new allocation workspace: %v", err)
 	}
 	if newWorkspaceID != workspaceID {
@@ -67,13 +69,13 @@ func TestHostMoveKeepsLogicalIdNewFencedAllocation(t *testing.T) {
 
 	// The workspace is back to ready, and the restore is checksum-equal to the create-side snapshot.
 	var state, wantTree string
-	if err := h.pool.QueryRow(ctx, `SELECT state FROM workspaces WHERE id=$1`, workspaceID).Scan(&state); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM workspaces WHERE id=$1`, workspaceID).Scan(&state); err != nil {
 		t.Fatalf("read workspace state: %v", err)
 	}
 	if state != "ready" {
 		t.Fatalf("workspace state = %q, want ready after recovery", state)
 	}
-	if err := h.pool.QueryRow(ctx, `SELECT tree_checksum FROM workspace_snapshots WHERE id=$1`, snapID).Scan(&wantTree); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT tree_checksum FROM workspace_snapshots WHERE id=$1`, snapID).Scan(&wantTree); err != nil {
 		t.Fatalf("read create tree: %v", err)
 	}
 	if res.Manifest.TreeChecksum != wantTree {
@@ -92,7 +94,7 @@ func TestHostMoveKeepsLogicalIdNewFencedAllocation(t *testing.T) {
 
 	// The restored move is journaled.
 	var events int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE type='workspace.restored.v1' AND payload->>'workspace_id'=$1`, workspaceID).Scan(&events); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM events WHERE type='workspace.restored.v1' AND payload->>'workspace_id'=$1`, workspaceID).Scan(&events); err != nil {
 		t.Fatalf("read restored events: %v", err)
 	}
 	if events != 1 {
@@ -151,7 +153,7 @@ func TestOldHostAuthoritativeFramesDeniedDiagnosticsAllowed(t *testing.T) {
 func recoveryEventCount(t *testing.T, h *artifactsHarness, session string) int {
 	t.Helper()
 	var n int
-	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM events WHERE session_id=$1 AND type='attempt.recovering.v1'`, session).Scan(&n); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT count(*) FROM events WHERE session_id=$1 AND type='attempt.recovering.v1'`, session).Scan(&n); err != nil {
 		t.Fatalf("count diagnostics events: %v", err)
 	}
 	return n
@@ -176,7 +178,7 @@ func TestRecoveringFailsExplicitlyWhenRestoreImpossible(t *testing.T) {
 		t.Fatal("RecoverWorkspace() with no restorable snapshot returned nil, want ErrRecoveryImpossible")
 	}
 	var state string
-	if err := h.pool.QueryRow(ctx, `SELECT state FROM workspaces WHERE id=$1`, workspaceID).Scan(&state); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM workspaces WHERE id=$1`, workspaceID).Scan(&state); err != nil {
 		t.Fatalf("read workspace state: %v", err)
 	}
 	if state != "failed" {
@@ -220,7 +222,7 @@ func TestAllocationReuseLeavesNoTenantResidue(t *testing.T) {
 	}
 	// The workspace reached destroyed (the teardown completed), and the host is NOT quarantined.
 	var state string
-	if err := h.pool.QueryRow(ctx, `SELECT state FROM workspaces WHERE id=$1`, workspaceID).Scan(&state); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM workspaces WHERE id=$1`, workspaceID).Scan(&state); err != nil {
 		t.Fatalf("read workspace state: %v", err)
 	}
 	if state != "destroyed" {
@@ -265,7 +267,7 @@ func TestFailedDestroyQuarantinesHost(t *testing.T) {
 		t.Fatalf("quarantined host %q not visible to the doctor (list=%v)", hostRoot, hosts)
 	}
 	var events int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE type='host.quarantined.v1' AND payload->>'host_id'=$1`, hostRoot).Scan(&events); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM events WHERE type='host.quarantined.v1' AND payload->>'host_id'=$1`, hostRoot).Scan(&events); err != nil {
 		t.Fatalf("count quarantine events: %v", err)
 	}
 	if events != 1 {
@@ -295,7 +297,7 @@ func containsHost(hosts []coordinator.QuarantinedHost, hostID string) bool {
 func sessionOf(t *testing.T, h *artifactsHarness, workspaceID string) string {
 	t.Helper()
 	var session string
-	if err := h.pool.QueryRow(context.Background(), `SELECT session_id FROM workspaces WHERE id=$1`, workspaceID).Scan(&session); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT session_id FROM workspaces WHERE id=$1`, workspaceID).Scan(&session); err != nil {
 		t.Fatalf("read workspace session: %v", err)
 	}
 	return session

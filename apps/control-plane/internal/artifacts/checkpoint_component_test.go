@@ -21,6 +21,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // seedRunWithAttempt creates org -> project -> session -> run -> attempt and returns the ids a
@@ -74,7 +76,7 @@ func TestCheckpointOfferPersistsImmutableRowAndBytes(t *testing.T) {
 	// The row is present and points at the object; the recorded checksum is the SHA-256 of the bytes.
 	var objectKey, checksum string
 	var size int64
-	if err := h.pool.QueryRow(ctx,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT object_key, content_checksum, size_bytes FROM checkpoints WHERE run_id=$1 AND organization_id=$2 AND project_id=$3`,
 		runID, org, project).Scan(&objectKey, &checksum, &size); err != nil {
 		t.Fatalf("read checkpoint row: %v", err)
@@ -101,7 +103,7 @@ func TestCheckpointOfferPersistsImmutableRowAndBytes(t *testing.T) {
 		t.Fatalf("second Persist() = %v, want ErrCheckpointExists", err)
 	}
 	var rows int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM checkpoints WHERE run_id=$1`, runID).Scan(&rows); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM checkpoints WHERE run_id=$1`, runID).Scan(&rows); err != nil {
 		t.Fatalf("count checkpoints: %v", err)
 	}
 	if rows != 1 {
@@ -138,7 +140,7 @@ func TestCheckpointMigrationPreservesOriginalWithProvenance(t *testing.T) {
 	}
 	var fromID, v1Key, v1Checksum string
 	var v1Version int
-	if err := h.pool.QueryRow(ctx,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT id, object_key, content_checksum, format_version FROM checkpoints WHERE run_id=$1`,
 		runID).Scan(&fromID, &v1Key, &v1Checksum, &v1Version); err != nil {
 		t.Fatalf("read v1 checkpoint: %v", err)
@@ -164,7 +166,7 @@ func TestCheckpointMigrationPreservesOriginalWithProvenance(t *testing.T) {
 
 	// TWO separate immutable rows.
 	var rows int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM checkpoints WHERE run_id=$1`, runID).Scan(&rows); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM checkpoints WHERE run_id=$1`, runID).Scan(&rows); err != nil {
 		t.Fatalf("count checkpoints: %v", err)
 	}
 	if rows != 2 {
@@ -174,7 +176,7 @@ func TestCheckpointMigrationPreservesOriginalWithProvenance(t *testing.T) {
 	// The ORIGINAL row is byte-for-byte untouched: same version/key/checksum, and the S3 bytes intact.
 	var origVersion int
 	var origKey, origChecksum string
-	if err := h.pool.QueryRow(ctx,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT format_version, object_key, content_checksum FROM checkpoints WHERE id=$1`, fromID).
 		Scan(&origVersion, &origKey, &origChecksum); err != nil {
 		t.Fatalf("read original checkpoint: %v", err)
@@ -190,7 +192,7 @@ func TestCheckpointMigrationPreservesOriginalWithProvenance(t *testing.T) {
 	// The NEW row: format_version 2, a NEW content_checksum.
 	var newVersion int
 	var newChecksum string
-	if err := h.pool.QueryRow(ctx,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT format_version, content_checksum FROM checkpoints WHERE id=$1`, toID).
 		Scan(&newVersion, &newChecksum); err != nil {
 		t.Fatalf("read migrated checkpoint: %v", err)
@@ -204,7 +206,7 @@ func TestCheckpointMigrationPreservesOriginalWithProvenance(t *testing.T) {
 
 	// Provenance journal event linking the two.
 	var payload []byte
-	if err := h.pool.QueryRow(ctx,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT payload FROM events WHERE session_id=$1 AND type='checkpoint.migrated.v1'`, session).Scan(&payload); err != nil {
 		t.Fatalf("read provenance event: %v", err)
 	}
@@ -248,7 +250,7 @@ func TestCheckpointRejectsEmptyState(t *testing.T) {
 		t.Fatalf("Persist(empty state) = %v, want ErrEmptyCheckpoint", err)
 	}
 	var rows int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM checkpoints WHERE run_id=$1`, runID).Scan(&rows); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM checkpoints WHERE run_id=$1`, runID).Scan(&rows); err != nil {
 		t.Fatalf("count checkpoints: %v", err)
 	}
 	if rows != 0 {
@@ -276,7 +278,7 @@ func TestCheckpointMetadataCarriesSpecFields(t *testing.T) {
 			newID("evt"), org, project, session, seq)
 	}
 	var journalSeq int64
-	if err := h.pool.QueryRow(ctx, `SELECT max(seq) FROM events WHERE session_id=$1`, session).Scan(&journalSeq); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT max(seq) FROM events WHERE session_id=$1`, session).Scan(&journalSeq); err != nil {
 		t.Fatalf("read journal seq: %v", err)
 	}
 
@@ -296,7 +298,7 @@ func TestCheckpointMetadataCarriesSpecFields(t *testing.T) {
 		pendingOps                                                       string
 		workspaceSnapshot                                                *string
 	)
-	if err := h.pool.QueryRow(ctx,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT format, format_version, engine_digest, engine_version, protocol_version,
 		        config_snapshot_hash, transcript_sequence, pending_operations::text, workspace_snapshot_id
 		 FROM checkpoints WHERE run_id=$1`, runID).Scan(

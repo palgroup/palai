@@ -17,6 +17,8 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // openStore opens a migrated spine, seeds an org+project, and returns the extensions store scoped to it.
@@ -38,10 +40,10 @@ func openStore(t *testing.T) (*Store, string, string) {
 	}
 	org, project := testID("org"), testID("prj")
 	pool := cs.Pool()
-	if _, err := pool.Exec(ctx, `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
 		t.Fatalf("seed org: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	return New(pool, "file"), org, project
@@ -58,7 +60,7 @@ func testID(prefix string) string {
 func rawRevisionRow(t *testing.T, s *Store, revisionID string) string {
 	t.Helper()
 	var executor, input, digest, published string
-	err := s.pool.QueryRow(context.Background(),
+	err := s.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT executor, input_schema::text, digest, COALESCE(published_at::text,'') FROM tool_revisions WHERE id=$1`,
 		revisionID).Scan(&executor, &input, &digest, &published)
 	if err != nil {
@@ -399,7 +401,7 @@ func TestRemoteHTTPToolResolvesThroughRegistryLookup(t *testing.T) {
 
 func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q: %v", sql, err)
 	}
 }

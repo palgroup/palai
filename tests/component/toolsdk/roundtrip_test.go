@@ -36,6 +36,8 @@ import (
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func newID(prefix string) string {
@@ -46,7 +48,7 @@ func newID(prefix string) string {
 
 func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q: %v", sql, err)
 	}
 }
@@ -120,7 +122,7 @@ func TestToolSDKServerVariantSignedRoundtrip(t *testing.T) {
 
 	// The durable operation completed via the one-use SDK-signed callback (not a silent commit).
 	var state string
-	if err := pool.QueryRow(ctx, `SELECT state FROM remote_tool_operations ORDER BY created_at DESC LIMIT 1`).Scan(&state); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM remote_tool_operations ORDER BY created_at DESC LIMIT 1`).Scan(&state); err != nil {
 		t.Fatalf("read operation state: %v", err)
 	}
 	if state != "completed" {

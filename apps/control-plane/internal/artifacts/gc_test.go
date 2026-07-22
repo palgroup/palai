@@ -10,6 +10,8 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // graceElapsed is a negative grace window: the cutoff moves into the future, so every
@@ -121,7 +123,7 @@ func TestGCSweepsFailedRetentionDelete(t *testing.T) {
 	}
 	// The row is scrubbed (object_key cleared) yet the byte survives — a lost orphan.
 	var objectKey string
-	if err := h.pool.QueryRow(ctx, `SELECT object_key FROM artifacts WHERE id = $1`, art.ID).Scan(&objectKey); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT object_key FROM artifacts WHERE id = $1`, art.ID).Scan(&objectKey); err != nil {
 		t.Fatalf("read artifact row error = %v", err)
 	}
 	if objectKey != "" {
@@ -205,7 +207,7 @@ func TestGCNeverDeletesLiveCheckpointObject(t *testing.T) {
 		t.Fatalf("Persist() error = %v", err)
 	}
 	var checkpointKey string
-	if err := h.pool.QueryRow(ctx, `SELECT object_key FROM checkpoints WHERE run_id=$1`, runID).Scan(&checkpointKey); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT object_key FROM checkpoints WHERE run_id=$1`, runID).Scan(&checkpointKey); err != nil {
 		t.Fatalf("read checkpoint object_key: %v", err)
 	}
 	if !h.objectPresent(t, checkpointKey) {

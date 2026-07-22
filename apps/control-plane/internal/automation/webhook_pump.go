@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/adapters/integrations/webhook"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // journalLag is the re-scan window (in journal_id units) the fan-out reads BACK past each endpoint's
@@ -107,6 +109,7 @@ func (p *WebhookPump) Run(ctx context.Context) error {
 
 // Tick runs one fan-out + delivery pass. Exported so the component suite drives it deterministically.
 func (p *WebhookPump) Tick(ctx context.Context) error {
+	ctx = storage.WithSystemScope(ctx) // cross-tenant sweep: the catalogue query spans every tenant by construction
 	if err := p.fanOut(ctx); err != nil {
 		return err
 	}

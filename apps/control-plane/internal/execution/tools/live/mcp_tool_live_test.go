@@ -35,6 +35,8 @@ import (
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 const mcpConnName = "fixture"
@@ -178,7 +180,7 @@ func TestLiveMCPToolRoundtripSpontaneous(t *testing.T) {
 func latestMCPRevisionID(t *testing.T, pool *pgxpool.Pool, org, project, canonical string) string {
 	t.Helper()
 	var id string
-	err := pool.QueryRow(context.Background(),
+	err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT tr.id FROM tools t JOIN tool_revisions tr ON tr.tool_id=t.id
 		 WHERE t.canonical_name=$1 AND t.organization_id=$2 AND t.project_id=$3
 		 ORDER BY tr.revision_number DESC LIMIT 1`, canonical, org, project).Scan(&id)

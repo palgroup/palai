@@ -61,6 +61,7 @@ type rowQuerier interface {
 // reads the current durable state (REG-001). It guards the run active — a canceled run's stale
 // attempt records nothing, the same discipline as every other commit-before-deliver write.
 func (s *Store) UpsertTask(ctx context.Context, tenant Tenant, in TaskUpsert) ([]Task, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return nil, fmt.Errorf("begin task upsert: %w", err)
@@ -130,6 +131,7 @@ func (s *Store) UpsertTask(ctx context.Context, tenant Tenant, in TaskUpsert) ([
 // session yields no rows (no cross-tenant existence disclosure). This is the context-recovery read —
 // a fresh attempt reads exactly what is done and what is not (REG-001).
 func (s *Store) ListTasks(ctx context.Context, tenant Tenant, sessionID string) ([]Task, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	return listTasks(ctx, s.pool, tenant, sessionID)
 }
 

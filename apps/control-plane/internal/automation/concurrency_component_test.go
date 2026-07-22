@@ -6,6 +6,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestConcurrencyPoliciesDocumentedOutcomes pins AUT-005: the remaining concurrency policies produce
@@ -98,7 +100,7 @@ func TestConcurrencyPoliciesDocumentedOutcomes(t *testing.T) {
 		}
 		// The subsumed row is LINKED to the survivor (recorded, not lost).
 		var link *string
-		if err := pool.QueryRow(ctx, `SELECT duplicate_of FROM trigger_deliveries WHERE id=$1`, mid.ID).Scan(&link); err != nil {
+		if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT duplicate_of FROM trigger_deliveries WHERE id=$1`, mid.ID).Scan(&link); err != nil {
 			t.Fatalf("read coalesce link error = %v", err)
 		}
 		if link == nil || *link != last.ID {
@@ -126,7 +128,7 @@ func TestConcurrencyPoliciesDocumentedOutcomes(t *testing.T) {
 		}
 		// The first (replaced) run is canceled.
 		var firstState string
-		if err := pool.QueryRow(ctx, `SELECT state FROM runs WHERE id=$1`, first.RunID).Scan(&firstState); err != nil {
+		if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM runs WHERE id=$1`, first.RunID).Scan(&firstState); err != nil {
 			t.Fatalf("read replaced run state error = %v", err)
 		}
 		if firstState != "canceled" {

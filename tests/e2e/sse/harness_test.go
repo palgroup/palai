@@ -34,6 +34,8 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func requireEnv(t *testing.T, name string) string {
@@ -98,7 +100,7 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinat
 	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
 	principalID := newID("prin")
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
@@ -116,7 +118,7 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinat
 func (h *harness) seedSession() string {
 	h.t.Helper()
 	sessionID := newID("ses")
-	if _, err := h.spine.Pool().Exec(context.Background(),
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
 		`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
 		sessionID, h.tenant.Organization, h.tenant.Project); err != nil {
 		h.t.Fatalf("seed session error = %v", err)
@@ -130,13 +132,13 @@ func (h *harness) seedEvent(sessionID string, seq int, typ, payloadJSON string) 
 	h.t.Helper()
 	ctx := context.Background()
 	id := newID("evt")
-	if _, err := h.spine.Pool().Exec(ctx,
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
 		id, h.tenant.Organization, h.tenant.Project, sessionID, seq, typ, payloadJSON); err != nil {
 		h.t.Fatalf("seed event error = %v", err)
 	}
-	if _, err := h.spine.Pool().Exec(ctx,
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO session_sequences (session_id, last_seq) VALUES ($1, $2)
 		 ON CONFLICT (session_id) DO UPDATE SET last_seq = GREATEST(session_sequences.last_seq, EXCLUDED.last_seq)`,
 		sessionID, seq); err != nil {
@@ -153,7 +155,7 @@ func (h *harness) seedBulkEvents(sessionID string, count, payloadBytes int) {
 	h.t.Helper()
 	ctx := context.Background()
 	tag := newID("bulk")
-	if _, err := h.spine.Pool().Exec(ctx, `
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), `
 		INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
 		SELECT 'evt_' || $6 || '_' || lpad(g::text, 9, '0'), $1, $2, $3, g, 'run.running.v1',
 		       jsonb_build_object('pad', repeat('x', $5))
@@ -161,13 +163,13 @@ func (h *harness) seedBulkEvents(sessionID string, count, payloadBytes int) {
 		h.tenant.Organization, h.tenant.Project, sessionID, count, payloadBytes, tag); err != nil {
 		h.t.Fatalf("seed bulk events error = %v", err)
 	}
-	if _, err := h.spine.Pool().Exec(ctx, `
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), `
 		INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
 		VALUES ('evt_' || $5 || '_terminal', $1, $2, $3, $4, 'run.completed.v1', '{}'::jsonb)`,
 		h.tenant.Organization, h.tenant.Project, sessionID, count+1, tag); err != nil {
 		h.t.Fatalf("seed terminal event error = %v", err)
 	}
-	if _, err := h.spine.Pool().Exec(ctx,
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO session_sequences (session_id, last_seq) VALUES ($1, $2)
 		 ON CONFLICT (session_id) DO UPDATE SET last_seq = EXCLUDED.last_seq`,
 		sessionID, count+1); err != nil {
@@ -237,7 +239,7 @@ func (h *harness) apply(runID string, cmd statemachines.RunCommand) {
 func (h *harness) runState(runID string) string {
 	h.t.Helper()
 	var state string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		runID, h.tenant.Organization, h.tenant.Project).Scan(&state); err != nil {
 		h.t.Fatalf("read run state error = %v", err)

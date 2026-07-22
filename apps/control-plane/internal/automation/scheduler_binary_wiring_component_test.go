@@ -23,6 +23,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestScheduleTickerWiredIntoRunningBinary proves the schedule tick runs under main.go's own router +
@@ -170,7 +172,7 @@ func seedScopedTenant(t *testing.T, pool *pgxpool.Pool, token string) (org, proj
 	ctx := context.Background()
 	org, project, principal := randID("org"), randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}

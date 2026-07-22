@@ -14,6 +14,8 @@ import (
 
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // The E10 Task 2 redelivery-wiring proof (spec §26.9): drive the boundary pump against a REAL spine
@@ -131,7 +133,7 @@ func (h *redeliveryHarness) enqueue(t *testing.T, delivery, message string) stri
 
 func execSQL(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q error = %v", sql, err)
 	}
 }
@@ -315,7 +317,7 @@ func TestRedeliveryFailsClosedOnEmptyBoundary(t *testing.T) {
 		t.Fatalf("delivered %v under empty boundary, want none", got)
 	}
 	var rows int
-	if err := h.orch.spine.Pool().QueryRow(ctx,
+	if err := h.orch.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT count(*) FROM delivered_messages WHERE run_id = $1`, h.runID).Scan(&rows); err != nil {
 		t.Fatalf("count delivered rows error = %v", err)
 	}
@@ -339,7 +341,7 @@ func slicesEqual(a, b []string) bool {
 func foldStateOf(t *testing.T, h *redeliveryHarness, commandID string) string {
 	t.Helper()
 	var fold string
-	if err := h.orch.spine.Pool().QueryRow(context.Background(),
+	if err := h.orch.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT fold_state FROM delivered_messages WHERE command_id = $1`, commandID).Scan(&fold); err != nil {
 		t.Fatalf("read fold_state error = %v", err)
 	}

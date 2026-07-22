@@ -26,6 +26,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/packages/coordinator"
 	extsdk "github.com/palgroup/palai/packages/extension-sdk"
+
+	"github.com/palgroup/palai/storage"
 )
 
 const testSecretRef = "sig-ref"
@@ -202,7 +204,7 @@ func TestAsync202CallbackAcceptedOnceUnderFence(t *testing.T) {
 	var state, resultHash string
 	var fence int64
 	var result []byte
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state, result, result_hash, fence FROM remote_tool_operations WHERE id=$1`, operationID).
 		Scan(&state, &result, &resultHash, &fence); err != nil {
 		t.Fatalf("read operation error = %v", err)
@@ -259,7 +261,7 @@ func TestCallbackTokenOneUseAudienceBound(t *testing.T) {
 	}
 	ok.Body.Close()
 	var state string
-	if err := h.pool.QueryRow(context.Background(), `SELECT state FROM remote_tool_operations WHERE id=$1`, opA).Scan(&state); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT state FROM remote_tool_operations WHERE id=$1`, opA).Scan(&state); err != nil {
 		t.Fatalf("read A error = %v", err)
 	}
 	if state != "completed" {
@@ -269,7 +271,7 @@ func TestCallbackTokenOneUseAudienceBound(t *testing.T) {
 
 func exec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q error = %v", sql, err)
 	}
 }

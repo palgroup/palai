@@ -95,6 +95,7 @@ type OccurrenceView struct {
 // the tenant's scope (a schedule can never fire a foreign trigger). created_by records the principal the
 // firing admits AS.
 func (s *ScheduleStore) CreateSchedule(ctx context.Context, org, project, principal string, in ScheduleInput) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	spec, err := s.validate(ctx, org, project, in)
 	if err != nil {
 		return "", err
@@ -117,6 +118,7 @@ func (s *ScheduleStore) CreateSchedule(ctx context.Context, org, project, princi
 // (the no-schedule_revisions-table decision — occurrences pin the revision they fired under). A revise
 // re-activates a paused/failed schedule. Returns found=false when the schedule is absent from scope.
 func (s *ScheduleStore) ReviseSchedule(ctx context.Context, org, project, id string, in ScheduleInput) (int, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	// A revise edits only the firing config — name/trigger are immutable and the schedule already exists in
 	// scope, so only the firing shape (cron/tz/kind) is re-validated (not name/trigger/scope).
 	spec, err := validateFiring(in)
@@ -146,6 +148,7 @@ func (s *ScheduleStore) ReviseSchedule(ctx context.Context, org, project, id str
 // window (which for policy=fail would re-enter the misfire machine and re-fail — review #4). Returns
 // found=false when absent from scope.
 func (s *ScheduleStore) SetPaused(ctx context.Context, org, project, id string, paused bool) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if paused {
 		switch err := s.pool.QueryRow(ctx, storage.Query("PauseSchedule"), id, org, project).Scan(new(string)); {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -197,6 +200,7 @@ func scheduleInputFromView(v ScheduleView) ScheduleInput {
 // DeleteSchedule soft-deletes a schedule (deleted_at set): the due-scan skips it while its occurrence rows
 // + linked deliveries stay queryable under retention (B9). Returns found=false when absent.
 func (s *ScheduleStore) DeleteSchedule(ctx context.Context, org, project, id string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	switch err := s.pool.QueryRow(ctx, storage.Query("SoftDeleteSchedule"), id, org, project).Scan(new(string)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
@@ -208,6 +212,7 @@ func (s *ScheduleStore) DeleteSchedule(ctx context.Context, org, project, id str
 
 // GetSchedule reads a schedule's management projection, or found=false when absent (or soft-deleted).
 func (s *ScheduleStore) GetSchedule(ctx context.Context, org, project, id string) (ScheduleView, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	var v ScheduleView
 	switch err := s.pool.QueryRow(ctx, storage.Query("GetSchedule"), id, org, project).Scan(
 		&v.ID, &v.Name, &v.TriggerID, &v.Kind, &v.CronExpr, &v.Timezone, &v.MisfirePolicy, &v.MisfireGraceSeconds,
@@ -223,6 +228,7 @@ func (s *ScheduleStore) GetSchedule(ctx context.Context, org, project, id string
 
 // ListOccurrences reads a schedule's occurrences newest-first (tenant-scoped through the parent schedule).
 func (s *ScheduleStore) ListOccurrences(ctx context.Context, org, project, id string, limit int) ([]OccurrenceView, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
@@ -246,6 +252,7 @@ func (s *ScheduleStore) ListOccurrences(ctx context.Context, org, project, id st
 // scope (a schedule can never fire a foreign trigger), then the firing shape (validateFiring). It is
 // fail-closed.
 func (s *ScheduleStore) validate(ctx context.Context, org, project string, in ScheduleInput) (scheduleSpec, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if in.Name == "" || in.TriggerID == "" {
 		return scheduleSpec{}, fmt.Errorf("%w: name and trigger_id are required", ErrScheduleInvalid)
 	}
@@ -347,6 +354,7 @@ type dueSchedule struct {
 // compute at trigger cadence is cheap. Add SKIP LOCKED as a contention optimization only if the due-scan
 // ever profiles hot.
 func (s *ScheduleStore) fireDueSchedules(ctx context.Context, now time.Time, limit int, log func(string, ...any)) error {
+	ctx = storage.WithSystemScope(ctx) // cross-tenant sweep: the catalogue query spans every tenant by construction
 	if limit <= 0 {
 		limit = 100
 	}
@@ -432,6 +440,7 @@ type pendingOccurrence struct {
 // double handoff collapses to one run. A jitter-gated occurrence whose admit-after instant is still future
 // is left pending for a later tick. A poison occurrence is logged and SKIPPED.
 func (s *ScheduleStore) sweepPendingOccurrences(ctx context.Context, now time.Time, limit int, log func(string, ...any)) error {
+	ctx = storage.WithSystemScope(ctx) // cross-tenant sweep: the catalogue query spans every tenant by construction
 	if limit <= 0 {
 		limit = 100
 	}

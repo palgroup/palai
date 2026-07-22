@@ -31,6 +31,8 @@ import (
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	"github.com/palgroup/palai/tests/uat"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // --- callback receiver -----------------------------------------------------------------------------
@@ -181,7 +183,7 @@ func (h *harness) admittedOccurrence(t *testing.T, ctx context.Context, schedule
 	var occID string
 	var planned time.Time
 	var admitted *time.Time
-	err := h.spine.Pool().QueryRow(ctx,
+	err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT occurrence_id, planned_at, admitted_at FROM schedule_occurrences
 		 WHERE schedule_id=$1 AND state='admitted' ORDER BY planned_at LIMIT 1`, scheduleID).Scan(&occID, &planned, &admitted)
 	if err != nil {
@@ -210,7 +212,7 @@ func (h *harness) driveCallback(t *testing.T, ctx context.Context, pump *automat
 		time.Sleep(10 * time.Millisecond)
 	}
 	var whdID string
-	if err := h.spine.Pool().QueryRow(ctx,
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT id FROM webhook_deliveries WHERE event_id=$1`, "cb:"+deliveryID).Scan(&whdID); err != nil {
 		t.Fatalf("read callback webhook_delivery id: %v", err)
 	}
@@ -348,7 +350,7 @@ func (h *harness) assertSeparateCodingFork(t *testing.T, ctx context.Context) st
 	// The fork's response is under the SECOND tenant, so read its state in that scope (h.response is scoped
 	// to the harness tenant — a distinct authority boundary, the point of this step).
 	var st string
-	if err := h.spine.Pool().QueryRow(ctx,
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		responseID, tenant2.Organization, tenant2.Project).Scan(&st); err != nil {
 		t.Fatalf("fork: read response state: %v", err)

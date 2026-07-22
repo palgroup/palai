@@ -22,6 +22,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // codingProvisionOrch builds an orchestrator wired exactly as production does for a coding stack: the
@@ -41,7 +43,7 @@ func codingProvisionOrch(h *harness, marker, provisionRoot string) *execution.Or
 func (h *harness) workspaceIDFor(sessionID string) string {
 	h.t.Helper()
 	var id string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT id FROM workspaces WHERE session_id=$1 AND organization_id=$2 AND project_id=$3`,
 		sessionID, h.tenant.Organization, h.tenant.Project).Scan(&id); err != nil {
 		h.t.Fatalf("read workspace id: %v", err)

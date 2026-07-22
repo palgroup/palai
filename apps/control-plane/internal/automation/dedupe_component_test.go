@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestDuplicateDeliveryLinksOriginalSingleAction pins AUT-001: two deliveries carrying the SAME dedupe
@@ -90,7 +92,7 @@ func TestDuplicateDeliveryLinksOriginalSingleAction(t *testing.T) {
 func runCount(t *testing.T, pool *pgxpool.Pool, triggerID, key string) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM trigger_deliveries WHERE trigger_id = $1 AND dedupe_key = $2 AND run_id <> ''`,
 		triggerID, key).Scan(&n); err != nil {
 		t.Fatalf("run count error = %v", err)
@@ -103,7 +105,7 @@ func runCount(t *testing.T, pool *pgxpool.Pool, triggerID, key string) int {
 func canonicalCount(t *testing.T, pool *pgxpool.Pool, triggerID, key string) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM trigger_deliveries WHERE trigger_id = $1 AND dedupe_key = $2 AND duplicate_of IS NULL`,
 		triggerID, key).Scan(&n); err != nil {
 		t.Fatalf("canonical count error = %v", err)

@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // skillResolverFunc is the injectable DNS seam: a test maps a PUBLIC hostname to a public IP so the
@@ -149,7 +151,7 @@ func TestModelCannotInstallSkill(t *testing.T) {
 	// is the tool broker; a skill never becomes a broker-dispatchable tool, and install is a scope-gated
 	// admin Store method with no ExecEnv, so no model-reachable path installs one.
 	var toolCount int
-	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM tools WHERE organization_id=$1 AND project_id=$2`, org, project).Scan(&toolCount); err != nil {
+	if err := store.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM tools WHERE organization_id=$1 AND project_id=$2`, org, project).Scan(&toolCount); err != nil {
 		t.Fatalf("count tools: %v", err)
 	}
 	if toolCount != 0 {

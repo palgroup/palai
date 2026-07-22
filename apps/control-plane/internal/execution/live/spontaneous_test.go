@@ -49,6 +49,8 @@ import (
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestLiveSpontaneousToolRoundTripRealProvider is CASE=spontaneous-tool-roundtrip (see the file ceilings).
@@ -135,7 +137,7 @@ func seedSpontaneousRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, s
 	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
 	session, response, runID := newID("ses"), newID("resp"), newID("run")
 	do := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
@@ -155,7 +157,7 @@ func seedSpontaneousRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, s
 func responseState(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, respID string) string {
 	t.Helper()
 	var state string
-	if err := pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		respID, tenant.Organization, tenant.Project).Scan(&state); err != nil {
 		t.Fatalf("read response state: %v", err)
@@ -166,7 +168,7 @@ func responseState(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, 
 // distinctProviderIDs returns the set of real chatcmpl-... ids across the run's completed model results.
 func distinctProviderIDs(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, runID string) []string {
 	t.Helper()
-	rows, err := pool.Query(context.Background(),
+	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT result FROM model_requests WHERE run_id=$1 AND organization_id=$2 AND project_id=$3 AND state='completed'`,
 		runID, tenant.Organization, tenant.Project)
 	if err != nil {
@@ -198,7 +200,7 @@ func distinctProviderIDs(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Te
 // evidence that the model spontaneously chose the tool on its first step (the round-trip's opening move).
 func firstResultHasToolCalls(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, runID string) bool {
 	t.Helper()
-	rows, err := pool.Query(context.Background(),
+	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT result FROM model_requests WHERE run_id=$1 AND organization_id=$2 AND project_id=$3 AND state='completed' ORDER BY updated_at ASC`,
 		runID, tenant.Organization, tenant.Project)
 	if err != nil {
@@ -226,11 +228,11 @@ func firstResultHasToolCalls(t *testing.T, pool *pgxpool.Pool, tenant coordinato
 func dumpRunDiagnostics(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, sessionID, runID string) {
 	t.Helper()
 	var output []byte
-	_ = pool.QueryRow(context.Background(),
+	_ = pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT output FROM responses WHERE id IN (SELECT response_id FROM runs WHERE id=$1) AND organization_id=$2 AND project_id=$3`,
 		runID, tenant.Organization, tenant.Project).Scan(&output)
 	t.Logf("diagnostic: response output = %s", string(output))
-	rows, err := pool.Query(context.Background(),
+	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT type, payload FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 ORDER BY seq DESC LIMIT 12`,
 		sessionID, tenant.Organization, tenant.Project)
 	if err != nil {
@@ -244,7 +246,7 @@ func dumpRunDiagnostics(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Ten
 			t.Logf("diagnostic: event %s %s", typ, string(payload))
 		}
 	}
-	mrows, err := pool.Query(context.Background(),
+	mrows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT state, result FROM model_requests WHERE run_id=$1 AND organization_id=$2 AND project_id=$3 ORDER BY updated_at ASC`,
 		runID, tenant.Organization, tenant.Project)
 	if err == nil {
@@ -257,7 +259,7 @@ func dumpRunDiagnostics(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Ten
 			}
 		}
 	}
-	trows, err := pool.Query(context.Background(),
+	trows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT name, state, request_hash FROM tool_calls WHERE run_id=$1 AND organization_id=$2 AND project_id=$3`,
 		runID, tenant.Organization, tenant.Project)
 	if err == nil {

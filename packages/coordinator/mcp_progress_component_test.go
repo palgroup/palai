@@ -6,6 +6,8 @@ import (
 	"context"
 	"os"
 	"testing"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestMCPProgressEmitsAdvisoryToolCallProgressEvent proves an MCP tools/call progress notification journals a
@@ -38,7 +40,7 @@ func TestMCPProgressEmitsAdvisoryToolCallProgressEvent(t *testing.T) {
 
 	// The advisory event is in the journal, scoped to the session, carrying the tool_call_id.
 	var count int
-	if err := cs.pool.QueryRow(ctx,
+	if err := cs.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT count(*) FROM events WHERE session_id=$1 AND type='tool_call.progress.v1' AND payload->>'tool_call_id'='tc_progress_1'`,
 		session).Scan(&count); err != nil {
 		t.Fatalf("read progress event: %v", err)
@@ -48,7 +50,7 @@ func TestMCPProgressEmitsAdvisoryToolCallProgressEvent(t *testing.T) {
 	}
 	// No tool-call row was created — progress advances no state machine.
 	var toolRows int
-	if err := cs.pool.QueryRow(ctx, `SELECT count(*) FROM tool_calls WHERE id='tc_progress_1'`).Scan(&toolRows); err != nil {
+	if err := cs.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM tool_calls WHERE id='tc_progress_1'`).Scan(&toolRows); err != nil {
 		t.Fatalf("read tool_calls: %v", err)
 	}
 	if toolRows != 0 {
@@ -58,7 +60,7 @@ func TestMCPProgressEmitsAdvisoryToolCallProgressEvent(t *testing.T) {
 
 func mustExecPin(t *testing.T, cs *Store, sql string, args ...any) {
 	t.Helper()
-	if _, err := cs.pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := cs.pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q: %v", sql, err)
 	}
 }

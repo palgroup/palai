@@ -19,6 +19,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // envFileInboundResolver mirrors main.go's inboundSecretResolver (the PALAI_INBOUND_SECRET_FILE_<ORG>__<REF>
@@ -134,11 +136,11 @@ func TestInboundWebhookWiredIntoRunningBinary(t *testing.T) {
 
 	// (b) A durably-inserted pre-map inbound row reaches run_created via the SUPERVISED reconciler (no tick).
 	var rev string
-	if err := pool.QueryRow(ctx, `SELECT id FROM trigger_revisions WHERE trigger_id=$1 ORDER BY revision_number DESC LIMIT 1`, triggerID).Scan(&rev); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT id FROM trigger_revisions WHERE trigger_id=$1 ORDER BY revision_number DESC LIMIT 1`, triggerID).Scan(&rev); err != nil {
 		t.Fatalf("read revision error = %v", err)
 	}
 	swept := randID("tdel")
-	if _, err := pool.Exec(ctx, `INSERT INTO trigger_deliveries
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO trigger_deliveries
 	        (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id,
 	         source, source_tenant, source_event_id, raw_payload, state, received_at, updated_at)
 	      VALUES ($1,$2,$3,$4,$5,$6,'harness','','evt-swept',$7,'received',

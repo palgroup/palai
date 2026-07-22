@@ -10,6 +10,8 @@ import (
 	"github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/packages/contracts"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // fakeMCP is a deterministic MCP client double: Discover returns a canned tool list, Call returns a canned
@@ -57,7 +59,7 @@ func createStdioConnection(t *testing.T, s *Store, org, project, name string) st
 func latestRevisionID(t *testing.T, s *Store, org, project, canonical string) string {
 	t.Helper()
 	var id string
-	err := s.pool.QueryRow(context.Background(),
+	err := s.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT tr.id FROM tools t JOIN tool_revisions tr ON tr.tool_id=t.id
 		 WHERE t.canonical_name=$1 AND t.organization_id=$2 AND t.project_id=$3
 		 ORDER BY tr.revision_number DESC LIMIT 1`, canonical, org, project).Scan(&id)

@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestDeliveryRunEntersSameAdmissionPath pins the headline of AUT (spec §20.2.2): a triggered run is born
@@ -38,7 +40,7 @@ func TestDeliveryRunEntersSameAdmissionPath(t *testing.T) {
 
 	// A response row exists, queued, in the delivery's session (same shape as /v1/responses).
 	var respState, respSession string
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT state, session_id FROM responses WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
 		del.ResponseID, org, project).Scan(&respState, &respSession); err != nil {
 		t.Fatalf("read response error = %v", err)
@@ -52,7 +54,7 @@ func TestDeliveryRunEntersSameAdmissionPath(t *testing.T) {
 
 	// The run row exists and pins EXACTLY the trigger's agent revision (AGT-001).
 	var pinnedAgentRev *string
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT agent_revision_id FROM runs WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
 		del.RunID, org, project).Scan(&pinnedAgentRev); err != nil {
 		t.Fatalf("read run error = %v", err)
@@ -105,7 +107,7 @@ func TestMappingFailureFailedDeliveryNoRunEndToEnd(t *testing.T) {
 func count(t *testing.T, pool *pgxpool.Pool, query string, args ...any) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(context.Background(), query, args...).Scan(&n); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), query, args...).Scan(&n); err != nil {
 		t.Fatalf("count %q error = %v", query, err)
 	}
 	return n

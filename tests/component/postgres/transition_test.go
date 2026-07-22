@@ -13,6 +13,8 @@ import (
 
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func TestSessionSequenceStrictlyAllocatedInTransaction(t *testing.T) {
@@ -39,7 +41,7 @@ func TestSessionSequenceStrictlyAllocatedInTransaction(t *testing.T) {
 			defer wg.Done()
 			<-start
 			var seq int64
-			err := cs.Pool().QueryRow(ctx,
+			err := cs.Pool().QueryRow(storage.WithSystemScope(ctx),
 				`INSERT INTO session_sequences (session_id, last_seq) VALUES ($1, 1)
 				 ON CONFLICT (session_id) DO UPDATE SET last_seq = session_sequences.last_seq + 1
 				 RETURNING last_seq`, sessionID).Scan(&seq)
@@ -81,7 +83,7 @@ func TestRunTerminalStateCannotReturnToNonTerminal(t *testing.T) {
 	}
 
 	// The database trigger rejects a raw update out of a terminal state.
-	_, err := cs.Pool().Exec(ctx, `UPDATE runs SET state = 'running' WHERE id = $1`, runID)
+	_, err := cs.Pool().Exec(storage.WithSystemScope(ctx), `UPDATE runs SET state = 'running' WHERE id = $1`, runID)
 	if got := pgCode(err); got != "23514" {
 		t.Fatalf("terminal-run update code = %q (%v), want 23514 check_violation", got, err)
 	}
@@ -174,7 +176,7 @@ func TestJobLeaseFenceIncreasesAfterReclaim(t *testing.T) {
 		t.Fatalf("completed snapshot = %+v, want completed/final-result", snap)
 	}
 	var outbox int
-	if err := cs.Pool().QueryRow(ctx, `SELECT count(*) FROM outbox WHERE dedupe_key = $1`,
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM outbox WHERE dedupe_key = $1`,
 		"job:"+jobID+":fence:"+strconv.FormatInt(second.Fence, 10)+":completed").Scan(&outbox); err != nil {
 		t.Fatalf("count job outbox error = %v", err)
 	}
@@ -206,7 +208,7 @@ func waitLeaseExpiry(t *testing.T, cs *coordinator.Store, tenant coordinator.Ten
 func assertRunState(t *testing.T, cs *coordinator.Store, runID, want string) {
 	t.Helper()
 	var state string
-	if err := cs.Pool().QueryRow(context.Background(), `SELECT state FROM runs WHERE id = $1`, runID).Scan(&state); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(context.Background()), `SELECT state FROM runs WHERE id = $1`, runID).Scan(&state); err != nil {
 		t.Fatalf("read run state error = %v", err)
 	}
 	if state != want {
@@ -217,7 +219,7 @@ func assertRunState(t *testing.T, cs *coordinator.Store, runID, want string) {
 func eventCount(t *testing.T, cs *coordinator.Store, sessionID string) int {
 	t.Helper()
 	var count int
-	if err := cs.Pool().QueryRow(context.Background(), `SELECT count(*) FROM events WHERE session_id = $1`, sessionID).Scan(&count); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(context.Background()), `SELECT count(*) FROM events WHERE session_id = $1`, sessionID).Scan(&count); err != nil {
 		t.Fatalf("count events error = %v", err)
 	}
 	return count
@@ -227,7 +229,7 @@ func outboxCount(t *testing.T, cs *coordinator.Store, runID string, seq int64) i
 	t.Helper()
 	var count int
 	dedupe := "run:" + runID + ":seq:" + strconv.FormatInt(seq, 10)
-	if err := cs.Pool().QueryRow(context.Background(), `SELECT count(*) FROM outbox WHERE dedupe_key = $1`, dedupe).Scan(&count); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(context.Background()), `SELECT count(*) FROM outbox WHERE dedupe_key = $1`, dedupe).Scan(&count); err != nil {
 		t.Fatalf("count outbox error = %v", err)
 	}
 	return count

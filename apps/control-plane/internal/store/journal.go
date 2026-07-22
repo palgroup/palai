@@ -31,6 +31,7 @@ func NewJournal(pool *pgxpool.Pool) *Journal { return &Journal{pool: pool} }
 // A false result is the 404 gate for a foreign or unknown session id: without it
 // a foreign session would be indistinguishable from an empty one.
 func (j *Journal) SessionExists(ctx context.Context, org, project, sessionID string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	var exists bool
 	err := j.pool.QueryRow(ctx, storage.Query("SessionExistsInScope"), sessionID, org, project).Scan(&exists)
 	if err != nil {
@@ -44,6 +45,7 @@ func (j *Journal) SessionExists(ctx context.Context, org, project, sessionID str
 // second result is false when the id is unknown in this session/scope, which the
 // caller treats as "resume from the beginning".
 func (j *Journal) ResolveCursor(ctx context.Context, org, project, sessionID, eventID string) (int64, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	var seq int64
 	err := j.pool.QueryRow(ctx, storage.Query("EventSequenceInScope"), eventID, sessionID, org, project).Scan(&seq)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -61,6 +63,7 @@ func (j *Journal) ResolveCursor(ctx context.Context, org, project, sessionID, ev
 // and an unknown one produce the identical denial — no existence is disclosed (spec §39.2,
 // §50.3).
 func (j *Journal) RecordAttachDenied(ctx context.Context, org, project, principal, sessionID string) error {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if _, err := j.pool.Exec(ctx, storage.Query("InsertAttachDenial"), org, project, principal, sessionID); err != nil {
 		return fmt.Errorf("record attach denial: %w", err)
 	}
@@ -71,6 +74,7 @@ func (j *Journal) RecordAttachDenied(ctx context.Context, org, project, principa
 // ascending sequence order, as CloudEvents envelopes. Passing the last delivered
 // sequence tails the journal without gaps or duplicates.
 func (j *Journal) After(ctx context.Context, org, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := j.pool.Query(ctx, storage.Query("ReadEventsAfter"), sessionID, org, project, afterSeq, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read events: %w", err)

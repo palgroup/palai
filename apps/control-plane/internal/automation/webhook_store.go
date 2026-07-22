@@ -104,6 +104,7 @@ func (s *WebhookStore) FanOutEndpoints(ctx context.Context) ([]endpointCursor, e
 // the global journal_id), tenant-scoped to the endpoint's own org+project so a delivery never carries
 // another tenant's journal (§39.2).
 func (s *WebhookStore) ReadJournalForEndpoint(ctx context.Context, org, project string, cursor int64, filter []string, limit int) ([]journalEvent, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if filter == nil {
 		filter = []string{}
 	}
@@ -197,6 +198,7 @@ func (s *WebhookStore) MarkDead(ctx context.Context, id string, attempts int) er
 // (session-scoped metadata the per-response retention purge leaves untouched). Best-effort: the
 // durable delivery/attempt rows are the source of truth, so a failed emit does not fail the delivery.
 func (s *WebhookStore) EmitDeliveryEvent(ctx context.Context, org, project, sessionID, eventType string, payload []byte) error {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -231,6 +233,7 @@ type EndpointCreate struct {
 
 // CreateEndpoint registers an endpoint in the verified scope and returns its server-minted id.
 func (s *WebhookStore) CreateEndpoint(ctx context.Context, org, project string, c EndpointCreate) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	id := newID("whe")
 	fixed := c.FixedHeaders
 	if fixed == nil {
@@ -267,6 +270,7 @@ type EndpointView struct {
 
 // ListEndpoints returns the scope's endpoints, newest first.
 func (s *WebhookStore) ListEndpoints(ctx context.Context, org, project string) ([]EndpointView, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListWebhookEndpoints"), org, project)
 	if err != nil {
 		return nil, err
@@ -298,6 +302,7 @@ type DeliveryView struct {
 
 // ListDeliveries returns the scope's deliveries, optionally filtered by state (state="" = all).
 func (s *WebhookStore) ListDeliveries(ctx context.Context, org, project, state string, limit int) ([]DeliveryView, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if limit <= 0 {
 		limit = 100
 	}
@@ -311,6 +316,7 @@ func (s *WebhookStore) ListDeliveries(ctx context.Context, org, project, state s
 
 // GetDelivery returns a single delivery in scope, or (nil, false) if not found.
 func (s *WebhookStore) GetDelivery(ctx context.Context, org, project, id string) (*DeliveryView, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("GetWebhookDelivery"), id, org, project)
 	if err != nil {
 		return nil, false, err
@@ -347,6 +353,7 @@ type AttemptView struct {
 
 // ListAttempts returns the sanitized attempt view for a delivery in scope.
 func (s *WebhookStore) ListAttempts(ctx context.Context, org, project, deliveryID string) ([]AttemptView, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("ListDeliveryAttempts"), deliveryID, org, project)
 	if err != nil {
 		return nil, err
@@ -366,6 +373,7 @@ func (s *WebhookStore) ListAttempts(ctx context.Context, org, project, deliveryI
 // Redeliver revives a dead/pending delivery with the same id + payload (spec §21.6). Returns false if
 // no such delivery exists in scope.
 func (s *WebhookStore) Redeliver(ctx context.Context, org, project, id string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	var out string
 	err := s.pool.QueryRow(ctx, storage.Query("RedeliverDelivery"), id, org, project).Scan(&out)
 	if err == pgx.ErrNoRows {

@@ -91,6 +91,10 @@ func (s *TriggerStore) IngestInbound(ctx context.Context, triggerID string, head
 	if !ok || tr.typ != "webhook" || !tr.enabled || tr.secretRef == "" || tr.createdBy == "" {
 		return InboundResult{}, ErrInboundNotAvailable
 	}
+	// The trigger id resolved a tenant, so from here the request IS that tenant's work and runs under
+	// its scope — the route is unauthenticated, but it is not unscoped. Nothing has been written yet;
+	// the signature is verified below, before the first durable row.
+	ctx = storage.WithTenant(ctx, tr.org, tr.project)
 	secrets := s.inboundSecretsFor(tr.org, tr.secretRef, tr.secretRefNext)
 	if len(secrets) == 0 {
 		return InboundResult{}, ErrInboundNotAvailable // a set-but-unresolvable ref: no oracle, log server-side
@@ -166,6 +170,7 @@ func (s *TriggerStore) IngestInbound(ctx context.Context, triggerID string, head
 // index at insert, so the deduplicated edge is bookkeeping, not a second claim. data is the event's opaque
 // payload (ev.Data) — the mapping operates on it exactly as a manual/API delivery maps its posted body.
 func (s *TriggerStore) advanceInbound(ctx context.Context, sc deliveryScope, data []byte) (DeliveryResult, error) {
+	ctx = scoped(ctx, sc)
 	cfg, err := s.loadRevisionConfig(ctx, sc)
 	if err != nil {
 		return DeliveryResult{}, err
@@ -225,6 +230,7 @@ func (s *TriggerStore) linkInboundDuplicate(ctx context.Context, tr inboundTrigg
 // remnant (unparseable raw_payload) terminalizes `failed` instead of retrying forever. A bad remnant is
 // logged + skipped, never returned — one row must not wedge the sweep behind a supervisor restart.
 func (s *TriggerStore) recoverStuckInbound(ctx context.Context, grace time.Duration, limit int, rawTTL time.Duration, log func(string, ...any)) error {
+	ctx = storage.WithSystemScope(ctx) // cross-tenant sweep: the catalogue query spans every tenant by construction
 	if rawTTL > 0 {
 		if _, err := s.pool.Exec(ctx, storage.Query("ScrubInboundRawPayload"), rawTTL.Seconds()); err != nil {
 			return fmt.Errorf("scrub inbound raw payloads: %w", err)
@@ -277,6 +283,11 @@ func (s *TriggerStore) recoverStuckInbound(ctx context.Context, grace time.Durat
 
 // resolveInboundTrigger resolves a trigger globally by its server-minted id (unauthenticated route).
 func (s *TriggerStore) resolveInboundTrigger(ctx context.Context, triggerID string) (inboundTrigger, bool, error) {
+	// Structurally the same exception as VerifyAPIKey: this read ESTABLISHES the tenant, so there is
+	// none to scope it by yet. It is keyed by the server-minted trigger id, and the caller still has to
+	// present a valid signature over that trigger's secret before anything is written — everything past
+	// this point runs under the resolved tenant's scope (advanceInbound narrows it).
+	ctx = storage.WithSystemScope(ctx)
 	var tr inboundTrigger
 	switch err := s.pool.QueryRow(ctx, storage.Query("ResolveInboundTrigger"), triggerID).
 		Scan(&tr.org, &tr.project, &tr.enabled, &tr.typ, &tr.createdBy, &tr.secretRef, &tr.secretRefNext); {

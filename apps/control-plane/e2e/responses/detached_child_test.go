@@ -13,6 +13,8 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // newDetachOrchestrator builds a kernel with a checkpoint sink wired (detach REQUIRES a durable
@@ -119,11 +121,11 @@ func TestChildEventReachesParentResumeHistory(t *testing.T) {
 	_, respID, _, _ := h.runDetachedDelegation(t)
 
 	var requestedSeq, completedSeq int
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT seq FROM events WHERE response_id=$1 AND type='child.requested.v1'`, respID).Scan(&requestedSeq); err != nil {
 		t.Fatalf("read child.requested.v1 seq error = %v", err)
 	}
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT seq FROM events WHERE response_id=$1 AND type='child.completed.v1'`, respID).Scan(&completedSeq); err != nil {
 		t.Fatalf("read child.completed.v1 seq error = %v", err)
 	}
@@ -179,7 +181,7 @@ func TestCrashedInlineChildReexecutesOnRebindNotHang(t *testing.T) {
 
 func mustExec(t *testing.T, h *harness, sql string, args ...any) {
 	t.Helper()
-	if _, err := h.spine.Pool().Exec(context.Background(), sql, args...); err != nil {
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q error = %v", sql, err)
 	}
 }

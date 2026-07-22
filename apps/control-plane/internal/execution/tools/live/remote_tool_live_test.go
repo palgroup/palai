@@ -54,6 +54,8 @@ import (
 	extsdk "github.com/palgroup/palai/packages/extension-sdk"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 const remoteToolShortName = "lookup"
@@ -208,7 +210,7 @@ func TestLiveRemoteToolAsyncRoundtrip(t *testing.T) {
 	}
 	// The durable operation completed via the one-use signed callback (not a silent commit).
 	var opState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM remote_tool_operations WHERE tool_call_id=$1`, callID).Scan(&opState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM remote_tool_operations WHERE tool_call_id=$1`, callID).Scan(&opState); err != nil {
 		t.Fatalf("read operation error = %v", err)
 	}
 	if opState != "completed" {

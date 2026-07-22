@@ -8,13 +8,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // sessionState reads a session's lifecycle state straight from the table.
 func (h *harness) sessionState(sessionID string) string {
 	h.t.Helper()
 	var state string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state FROM sessions WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		sessionID, h.tenant.Organization, h.tenant.Project).Scan(&state); err != nil {
 		h.t.Fatalf("read session state %s error = %v", sessionID, err)
@@ -281,7 +283,7 @@ func TestForkCopiesHistoryBoundaryIsolatesFuture(t *testing.T) {
 		t.Fatalf("child response count = %d, want 1 (the pre-fork history copy)", n)
 	}
 	var childOutput string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT output::text FROM responses WHERE session_id=$1`, childID).Scan(&childOutput); err != nil {
 		t.Fatalf("read child copied response error = %v", err)
 	}

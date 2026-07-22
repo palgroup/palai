@@ -89,6 +89,7 @@ type PublicationTarget struct {
 // targets — from the run's latest preparation receipt joined to its binding (spec §30.9). It is
 // infrastructure-owned: the model never supplies a remote, so an agent cannot redirect a publication.
 func (s *Store) RunPublicationTarget(ctx context.Context, tenant Tenant, runID string) (PublicationTarget, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var t PublicationTarget
 	err := s.pool.QueryRow(ctx, storage.Query("RunPublicationTarget"), runID, tenant.Organization, tenant.Project).
 		Scan(&t.Remote, &t.Branch, &t.Base)
@@ -106,6 +107,7 @@ func (s *Store) RunPublicationTarget(ctx context.Context, tenant Tenant, runID s
 // re-proposing the same operation resolves to the existing pending approval, never a second. It journals
 // approval.requested.v1 on the first insert only, so a replay does not re-journal.
 func (s *Store) RequestPublication(ctx context.Context, tenant Tenant, in PublicationRequest) (Publication, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	args := in.Args
 	if args == nil {
 		args = map[string]any{}
@@ -166,6 +168,7 @@ func (s *Store) RequestPublication(ctx context.Context, tenant Tenant, in Public
 // command spine's read to decide whether an approve/deny has a target (spec §22.4). found=false → the
 // E08 no_pending_approval rejection is preserved (TestApproveWithoutPendingApprovalRejected).
 func (s *Store) PendingApprovalForSession(ctx context.Context, tenant Tenant, sessionID string) (Publication, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	row := s.pool.QueryRow(ctx, storage.Query("PendingApprovalForSession"), sessionID, tenant.Organization, tenant.Project)
 	pub, err := scanPublication(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -185,6 +188,7 @@ func (s *Store) PendingApprovalForSession(ctx context.Context, tenant Tenant, se
 // approve command: a mismatch (a stale approve for a head that moved, or an edited request) authorizes
 // nothing but still settles the command. A missing pending approval is a no-op that settles the command.
 func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, kind, requestHash string) (int64, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin apply approval: %w", err)
@@ -288,6 +292,7 @@ func expirePublicationTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionI
 // (bit-identical). The lock serializes it against a concurrent publish so the transition is
 // single-winner.
 func (s *Store) ExpireApprovalIfElapsed(ctx context.Context, tenant Tenant, sessionID, responseID, publicationID string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("begin expire-if-elapsed: %w", err)
@@ -322,6 +327,7 @@ func (s *Store) ExpireApprovalIfElapsed(ctx context.Context, tenant Tenant, sess
 // consume). Not a timer-scheduled sweep (that is E11) — one supervised reconcile pass, the retention/GC
 // pattern. Returns the number expired this pass.
 func (s *Store) SweepExpiredApprovals(ctx context.Context) (int, error) {
+	ctx = storage.WithSystemScope(ctx) // reconcile sweep: spans every tenant by construction
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin sweep expired approvals: %w", err)
@@ -374,6 +380,7 @@ func (s *Store) SweepExpiredApprovals(ctx context.Context) (int, error) {
 // here for E10's detached execution if the run ended before the pump published it (the honest E09
 // ceiling — E09 publishes at a live-run boundary).
 func (s *Store) ApprovedPublicationsForRun(ctx context.Context, tenant Tenant, runID string) ([]Publication, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("ApprovedPublicationsForRun"), runID, tenant.Organization, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read approved publications: %w", err)
@@ -396,6 +403,7 @@ func (s *Store) ApprovedPublicationsForRun(ctx context.Context, tenant Tenant, r
 // so a lost-ack retry that re-reconciled the remote settles cleanly. sessionID/responseID scope the
 // event.
 func (s *Store) MarkPublicationPublished(ctx context.Context, tenant Tenant, sessionID, responseID, publicationID, operation string, receipt map[string]any) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	receiptJSON, err := json.Marshal(receipt)
 	if err != nil {
 		return fmt.Errorf("marshal publication receipt: %w", err)
@@ -434,6 +442,7 @@ func (s *Store) MarkPublicationPublished(ctx context.Context, tenant Tenant, ses
 // surfaces the choice (rebase/merge/wait) without silently dropping the operation. detail carries the
 // error text — a brokered credential never reaches git output, so it carries no secret.
 func (s *Store) RecordPublicationWarning(ctx context.Context, tenant Tenant, sessionID, responseID, publicationID, detail string) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin publication warning: %w", err)

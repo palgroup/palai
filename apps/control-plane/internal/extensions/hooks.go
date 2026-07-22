@@ -201,6 +201,7 @@ func allowlistHookConfigKeys(config map[string]any, allowed ...string) error {
 // CreateHook registers a hook after strict validation. It is an admin action — never reachable from a tool
 // the model can call. A duplicate name in the project is a typed collision reject.
 func (s *Store) CreateHook(ctx context.Context, org, project string, raw []byte) (Hook, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	in, err := DecodeHookInput(raw)
 	if err != nil {
 		return Hook{}, err
@@ -222,6 +223,7 @@ func (s *Store) CreateHook(ctx context.Context, org, project string, raw []byte)
 
 // GetHook reads a hook's committed shape (admin read-back + the CRUD roundtrip), disabled or not.
 func (s *Store) GetHook(ctx context.Context, org, project, id string) (Hook, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	h := Hook{ID: id}
 	var configJSON []byte
 	var secretRef *string
@@ -259,6 +261,7 @@ type loadedHook struct {
 // order — the ONLY read the run dispatch loop issues per fire point. A tenant with no hooks at the point
 // returns an empty slice (Fire is then a no-op).
 func (s *Store) loadHooks(ctx context.Context, org, project, point string) ([]loadedHook, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	rows, err := s.pool.Query(ctx, storage.Query("HooksForPoint"), org, project, point)
 	if err != nil {
 		return nil, fmt.Errorf("load hooks for %q: %w", point, err)
@@ -291,6 +294,7 @@ func (s *Store) loadHooks(ctx context.Context, org, project, point string) ([]lo
 
 // DisableHook flips the admin kill-switch once. Reports whether the hook existed in scope.
 func (s *Store) DisableHook(ctx context.Context, org, project, id string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	switch err := s.pool.QueryRow(ctx, storage.Query("DisableHook"), id, org, project).Scan(new(string)); {
 	case err == nil:
 		return true, nil

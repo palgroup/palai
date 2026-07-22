@@ -13,6 +13,8 @@ import (
 
 	"github.com/palgroup/palai/packages/contracts"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // capturingProvider is the deterministic scripted provider (tool call, then final "12")
@@ -179,7 +181,7 @@ func TestCreateOnClosedSessionConflicts(t *testing.T) {
 	h := newHarness(t)
 
 	_, session1, _ := h.admitWith(`{"input":"first"}`, newID("idem"))
-	if _, err := h.spine.Pool().Exec(context.Background(),
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
 		`UPDATE sessions SET state='closed' WHERE id=$1`, session1); err != nil {
 		t.Fatalf("close session error = %v", err)
 	}

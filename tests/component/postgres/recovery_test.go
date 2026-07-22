@@ -12,6 +12,8 @@ import (
 
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // seedAttempt inserts an attempt (fence 1) for a run and returns its id — a checkpoint FKs the
@@ -53,14 +55,14 @@ func TestPersistCheckpointWritesImmutableBoundaryAndRow(t *testing.T) {
 	}
 
 	var boundaryOnCheckpoint string
-	if err := pool.QueryRow(ctx, `SELECT boundary_id FROM checkpoints WHERE id=$1`, in.CheckpointID).Scan(&boundaryOnCheckpoint); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT boundary_id FROM checkpoints WHERE id=$1`, in.CheckpointID).Scan(&boundaryOnCheckpoint); err != nil {
 		t.Fatalf("read checkpoint.boundary_id: %v", err)
 	}
 	if boundaryOnCheckpoint != in.BoundaryID {
 		t.Fatalf("checkpoint.boundary_id = %q, want the shared boundary %q", boundaryOnCheckpoint, in.BoundaryID)
 	}
 	var boundaryCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM transcript_boundaries WHERE id=$1`, in.BoundaryID).Scan(&boundaryCount); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM transcript_boundaries WHERE id=$1`, in.BoundaryID).Scan(&boundaryCount); err != nil {
 		t.Fatalf("count boundary: %v", err)
 	}
 	if boundaryCount != 1 {
@@ -168,15 +170,15 @@ func TestRecoveryObjectsAppendOnlyToApplicationRole(t *testing.T) {
 		t.Fatalf("Acquire() error = %v", err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, `SET ROLE palai_app`); err != nil {
+	if _, err := conn.Exec(storage.WithSystemScope(ctx), `SET ROLE palai_app`); err != nil {
 		t.Fatalf("SET ROLE palai_app error = %v", err)
 	}
-	defer func() { _, _ = conn.Exec(ctx, `RESET ROLE`) }()
+	defer func() { _, _ = conn.Exec(storage.WithSystemScope(ctx), `RESET ROLE`) }()
 
-	if got := pgCode(mustFail(conn.Exec(ctx, `UPDATE checkpoints SET content_checksum = 'tampered'`))); got != "42501" {
+	if got := pgCode(mustFail(conn.Exec(storage.WithSystemScope(ctx), `UPDATE checkpoints SET content_checksum = 'tampered'`))); got != "42501" {
 		t.Fatalf("checkpoints UPDATE code = %q, want 42501 (immutable, UPDATE withheld)", got)
 	}
-	if got := pgCode(mustFail(conn.Exec(ctx, `UPDATE transcript_boundaries SET transcript_sequence = 999`))); got != "42501" {
+	if got := pgCode(mustFail(conn.Exec(storage.WithSystemScope(ctx), `UPDATE transcript_boundaries SET transcript_sequence = 999`))); got != "42501" {
 		t.Fatalf("transcript_boundaries UPDATE code = %q, want 42501 (immutable, UPDATE withheld)", got)
 	}
 }
@@ -236,7 +238,7 @@ func TestLatestRunCheckpointReadsNewestWithBoundary(t *testing.T) {
 	if err := obj.Persist(ctx, older); err != nil {
 		t.Fatalf("Persist(older) error = %v", err)
 	}
-	exec(t, pool, `UPDATE checkpoints SET created_at = clock_timestamp() - interval '1 hour' WHERE id=$1`, older.CheckpointID)
+	execAsOwner(t, pool, `UPDATE checkpoints SET created_at = clock_timestamp() - interval '1 hour' WHERE id=$1`, older.CheckpointID)
 
 	newer := baseCheckpointInput(tenant, runID, attemptID)
 	newer.TranscriptSequence = 11
@@ -295,7 +297,7 @@ func TestCheckpointSizeBoundRejected(t *testing.T) {
 		t.Fatalf("Persist(oversize) = %v, want ErrCheckpointTooLarge", err)
 	}
 	var boundaries int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM transcript_boundaries WHERE id=$1`, in.BoundaryID).Scan(&boundaries); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM transcript_boundaries WHERE id=$1`, in.BoundaryID).Scan(&boundaries); err != nil {
 		t.Fatalf("count boundary: %v", err)
 	}
 	if boundaries != 0 {
@@ -329,6 +331,10 @@ func TestBoundaryLinksThreeObjectsIndependently(t *testing.T) {
 	ctx := context.Background()
 	pool := cs.Pool()
 	tenant, sessionID, runID := seedRun(t, pool)
+	// AllocateWorkspace / GetPreparationReceipt are keyed by an opaque id, not by a tenant, so under
+	// migration 000029 the CONTEXT is what scopes them — the same way the run worker scopes a claimed
+	// job. Declaring it here is what a production caller already does.
+	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
 	attemptID := seedAttempt(t, pool, tenant, runID)
 	obj := recovery.New(pool)
 
@@ -339,7 +345,7 @@ func TestBoundaryLinksThreeObjectsIndependently(t *testing.T) {
 		t.Fatalf("Persist() error = %v", err)
 	}
 	var wsnap *string
-	if err := pool.QueryRow(ctx, `SELECT workspace_snapshot_id FROM checkpoints WHERE id=$1`, in.CheckpointID).Scan(&wsnap); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT workspace_snapshot_id FROM checkpoints WHERE id=$1`, in.CheckpointID).Scan(&wsnap); err != nil {
 		t.Fatalf("read checkpoint.workspace_snapshot_id: %v", err)
 	}
 	if wsnap != nil {
@@ -359,7 +365,7 @@ func TestBoundaryLinksThreeObjectsIndependently(t *testing.T) {
 	exec(t, pool, `UPDATE workspace_snapshots SET boundary_id=$1 WHERE id=$2`, in.BoundaryID, snapID)
 
 	var snapBoundary string
-	if err := pool.QueryRow(ctx, `SELECT boundary_id FROM workspace_snapshots WHERE id=$1`, snapID).Scan(&snapBoundary); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT boundary_id FROM workspace_snapshots WHERE id=$1`, snapID).Scan(&snapBoundary); err != nil {
 		t.Fatalf("read snapshot.boundary_id: %v", err)
 	}
 	if snapBoundary != in.BoundaryID {

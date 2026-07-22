@@ -17,6 +17,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/contracts"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // The E12 Task 8 component proof (spec §28.17, TOL-012): a REAL local HTTP hook worker gives a real before_tool
@@ -144,7 +146,7 @@ func deliveredDeny(ch *recordingChannel, callID string) bool {
 func ledgerRowCount(t *testing.T, pool *pgxpool.Pool, callID string) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM tool_calls WHERE id = $1`, callID).Scan(&n); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT count(*) FROM tool_calls WHERE id = $1`, callID).Scan(&n); err != nil {
 		t.Fatalf("count tool_calls: %v", err)
 	}
 	return n

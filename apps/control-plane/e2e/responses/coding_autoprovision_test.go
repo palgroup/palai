@@ -29,6 +29,8 @@ import (
 	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func TestCodingAutoProvisionDeterministic(t *testing.T) {
@@ -57,7 +59,7 @@ func TestCodingAutoProvisionDeterministic(t *testing.T) {
 
 	// Admit attached the workspace: session-scoped, still requested, carrying the binding + ref.
 	var wsState, wsBinding, wsRef string
-	if err := h.spine.Pool().QueryRow(ctx,
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT state, repository_binding_id, requested_ref FROM workspaces
 		 WHERE session_id=$1 AND organization_id=$2 AND project_id=$3`,
 		sessionID, h.tenant.Organization, h.tenant.Project).Scan(&wsState, &wsBinding, &wsRef); err != nil {
@@ -117,7 +119,7 @@ func TestCodingAutoProvisionDeterministic(t *testing.T) {
 func (h *harness) allocationRootFor(sessionID string) string {
 	h.t.Helper()
 	var hostPath string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT a.host_path FROM workspace_allocations a
 		 JOIN workspaces w ON w.id = a.workspace_id
 		 WHERE w.session_id = $1 AND w.organization_id = $2 AND w.project_id = $3

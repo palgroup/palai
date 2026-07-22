@@ -26,6 +26,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // recorder captures the sanitized audit lines the reject path emits, so a test can assert what they DO
@@ -166,7 +168,7 @@ func (h *inboundHarness) postRaw(triggerID string, headers map[string]string, bo
 func (h *inboundHarness) deliveryRows() int {
 	h.t.Helper()
 	var n int
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM trigger_deliveries WHERE trigger_id=$1`, h.triggerID).Scan(&n); err != nil {
 		h.t.Fatalf("count deliveries error = %v", err)
 	}
@@ -269,7 +271,7 @@ func TestAckOnlyAfterDurableRecordAndDedupe(t *testing.T) {
 	// The durable row is committed with the source envelope + raw_payload + the trigger's created_by.
 	var src, srcTenant, srcEvent, principal string
 	var raw []byte
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT source, source_tenant, source_event_id, principal_id, raw_payload FROM trigger_deliveries WHERE id=$1`, id).
 		Scan(&src, &srcTenant, &srcEvent, &principal, &raw); err != nil {
 		t.Fatalf("read durable row error = %v", err)
@@ -306,7 +308,7 @@ func TestDuplicateSourceEventSingleActionOriginalLinkage(t *testing.T) {
 
 	// Exactly one canonical (non-duplicate) row → exactly one run.
 	var canonical, withRun int
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FILTER (WHERE duplicate_of IS NULL), count(*) FILTER (WHERE run_id <> '')
 		 FROM trigger_deliveries WHERE trigger_id=$1 AND source_event_id='evt-dup'`, h.triggerID).Scan(&canonical, &withRun); err != nil {
 		t.Fatalf("count error = %v", err)
@@ -333,7 +335,7 @@ func TestRedeliveryAfterLostAckDoesNotDuplicate(t *testing.T) {
 	}
 
 	var runs int
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM trigger_deliveries WHERE trigger_id=$1 AND run_id <> ''`, h.triggerID).Scan(&runs); err != nil {
 		t.Fatalf("count runs error = %v", err)
 	}
@@ -364,7 +366,7 @@ func (h *inboundHarness) newTrigger(in automation.TriggerRevisionInput) string {
 func (h *inboundHarness) activeRevision(triggerID string) string {
 	h.t.Helper()
 	var rev string
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT id FROM trigger_revisions WHERE trigger_id=$1 ORDER BY revision_number DESC LIMIT 1`, triggerID).Scan(&rev); err != nil {
 		h.t.Fatalf("read active revision error = %v", err)
 	}
@@ -377,7 +379,7 @@ func (h *inboundHarness) seedInboundRow(triggerID, eventID, envelope, state stri
 	h.t.Helper()
 	id := randID("tdel")
 	rev := h.activeRevision(triggerID)
-	if _, err := h.pool.Exec(context.Background(),
+	if _, err := h.pool.Exec(storage.WithSystemScope(context.Background()),
 		`INSERT INTO trigger_deliveries
 		   (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id,
 		    source, source_tenant, source_event_id, raw_payload, state, received_at, updated_at)
@@ -566,7 +568,7 @@ func TestRawPayloadScrubbedAfterTerminalTTL(t *testing.T) {
 
 	raw := func(id string) []byte {
 		var b []byte
-		if err := h.pool.QueryRow(context.Background(), `SELECT raw_payload FROM trigger_deliveries WHERE id=$1`, id).Scan(&b); err != nil {
+		if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT raw_payload FROM trigger_deliveries WHERE id=$1`, id).Scan(&b); err != nil {
 			t.Fatalf("read raw_payload error = %v", err)
 		}
 		return b
@@ -584,7 +586,7 @@ func TestRawPayloadScrubbedAfterTerminalTTL(t *testing.T) {
 func (h *inboundHarness) nonTerminalBacklog(triggerID string) int {
 	h.t.Helper()
 	var n int
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM trigger_deliveries WHERE trigger_id=$1 AND source_event_id <> ''
 		   AND state IN ('received','authenticated','deduplicated','mapped','admitted','deferred')`, triggerID).Scan(&n); err != nil {
 		h.t.Fatalf("count backlog error = %v", err)
@@ -681,7 +683,7 @@ func TestTriggerWithoutCreatedByIsUnavailable(t *testing.T) {
 	}
 	resp.Body.Close()
 	var rows int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM trigger_deliveries WHERE trigger_id=$1`, trg).Scan(&rows); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM trigger_deliveries WHERE trigger_id=$1`, trg).Scan(&rows); err != nil {
 		t.Fatalf("count rows error = %v", err)
 	}
 	if rows != 0 {
@@ -709,7 +711,7 @@ func TestConcurrentSameSourceEventSingleCanonical(t *testing.T) {
 	wg.Wait()
 
 	var canonical, runs, dups int
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FILTER (WHERE duplicate_of IS NULL),
 		        count(*) FILTER (WHERE run_id <> ''),
 		        count(*) FILTER (WHERE state='duplicate')

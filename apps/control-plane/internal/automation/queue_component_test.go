@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestQueuePolicyOrdersRunsPerKey pins AUT-004: under the `queue` concurrency policy, deliveries sharing a
@@ -143,7 +145,7 @@ func TestReconcilerReplayRecordsRealIds(t *testing.T) {
 		t.Fatalf("the recorded run does not exist as a real row (count=%d) — a ghost id", n)
 	}
 	var sess, resp string
-	if err := pool.QueryRow(ctx, `SELECT session_id, response_id FROM trigger_deliveries WHERE id=$1`, del.ID).Scan(&sess, &resp); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT session_id, response_id FROM trigger_deliveries WHERE id=$1`, del.ID).Scan(&sess, &resp); err != nil {
 		t.Fatalf("read delivery ids error = %v", err)
 	}
 	if sess != origSession || resp != origResp {
@@ -176,7 +178,7 @@ func insertMappedRemnant(t *testing.T, pool *pgxpool.Pool, org, project, princip
 func deliveryState(t *testing.T, pool *pgxpool.Pool, id string) string {
 	t.Helper()
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM trigger_deliveries WHERE id=$1`, id).Scan(&state); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT state FROM trigger_deliveries WHERE id=$1`, id).Scan(&state); err != nil {
 		t.Fatalf("read delivery state error = %v", err)
 	}
 	return state
@@ -186,7 +188,7 @@ func deliveryState(t *testing.T, pool *pgxpool.Pool, id string) string {
 func deliveryRun(t *testing.T, pool *pgxpool.Pool, id string) string {
 	t.Helper()
 	var runID string
-	if err := pool.QueryRow(context.Background(), `SELECT run_id FROM trigger_deliveries WHERE id=$1`, id).Scan(&runID); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT run_id FROM trigger_deliveries WHERE id=$1`, id).Scan(&runID); err != nil {
 		t.Fatalf("read delivery run error = %v", err)
 	}
 	return runID

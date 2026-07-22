@@ -27,6 +27,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // artifactsHarness is a migrated durable spine plus a bucket-ensured object store and a
@@ -87,7 +89,7 @@ func (h *artifactsHarness) seedRun(t *testing.T) (org, project, runID string) {
 
 func (h *artifactsHarness) exec(t *testing.T, sql string, args ...any) {
 	t.Helper()
-	if _, err := h.pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := h.pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q error = %v", sql, err)
 	}
 }
@@ -124,7 +126,7 @@ func TestArtifactPutRecordsRowAndBytes(t *testing.T) {
 		size      int64
 		checksum  string
 	)
-	if err := h.pool.QueryRow(ctx,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT run_id, object_key, size_bytes, checksum FROM artifacts WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
 		art.ID, org, project).Scan(&gotRun, &objectKey, &size, &checksum); err != nil {
 		t.Fatalf("read artifacts row error = %v", err)
@@ -259,7 +261,7 @@ func TestStoreFalsePurgeDeletesArtifactBytes(t *testing.T) {
 		objectKey string
 		size      int64
 	)
-	if err := h.pool.QueryRow(ctx,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT object_key, size_bytes FROM artifacts WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
 		art.ID, org, project).Scan(&objectKey, &size); err != nil {
 		t.Fatalf("read artifact row error = %v", err)
@@ -295,7 +297,7 @@ func TestPatchArtifactWrittenToObjectStore(t *testing.T) {
 
 	// The changeset row is recorded with its content hash.
 	var contentHash string
-	if err := h.pool.QueryRow(ctx, `SELECT content_hash FROM changesets WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT content_hash FROM changesets WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		rec.ID, org, project).Scan(&contentHash); err != nil {
 		t.Fatalf("read changeset row: %v", err)
 	}
@@ -308,7 +310,7 @@ func TestPatchArtifactWrittenToObjectStore(t *testing.T) {
 func (h *artifactsHarness) assertArtifact(t *testing.T, org, project, id, wantLogical, wantMedia, wantSubstr string) {
 	t.Helper()
 	var objectKey, logical, media string
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT object_key, logical_type, media_type FROM artifacts WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		id, org, project).Scan(&objectKey, &logical, &media); err != nil {
 		t.Fatalf("read artifact %s row: %v", id, err)
@@ -417,7 +419,7 @@ func TestChangesetRecompileIsIdempotent(t *testing.T) {
 	}
 
 	var rows int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM changesets WHERE run_id=$1 AND organization_id=$2 AND project_id=$3`,
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM changesets WHERE run_id=$1 AND organization_id=$2 AND project_id=$3`,
 		runID, org, project).Scan(&rows); err != nil {
 		t.Fatalf("count changesets: %v", err)
 	}

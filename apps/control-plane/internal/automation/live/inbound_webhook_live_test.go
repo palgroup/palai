@@ -36,6 +36,8 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestLiveInboundWebhookRun ingests two identical SIGNED inbound events over real HTTP against a real PG:
@@ -64,7 +66,7 @@ func TestLiveInboundWebhookRun(t *testing.T) {
 	pool := spine.Pool()
 	org, project, principal := randID("org"), randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
@@ -210,7 +212,7 @@ func inboundRowDurable(t *testing.T, pool *pgxpool.Pool, deliveryID string) bool
 	t.Helper()
 	var raw []byte
 	var srcEvent string
-	if err := pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT raw_payload, source_event_id FROM trigger_deliveries WHERE id=$1`, deliveryID).Scan(&raw, &srcEvent); err != nil {
 		return false
 	}

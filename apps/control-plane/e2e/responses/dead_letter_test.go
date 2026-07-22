@@ -14,6 +14,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // violatingDialer returns a fresh channel on every Dial whose stream violates the intake
@@ -161,7 +163,7 @@ func TestRetrieveDeadLetteredResponseCarriesProblemError(t *testing.T) {
 func (h *harness) runState(runID string) string {
 	h.t.Helper()
 	var state string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		runID, h.tenant.Organization, h.tenant.Project).Scan(&state); err != nil {
 		h.t.Fatalf("read run state error = %v", err)
@@ -175,7 +177,7 @@ func (h *harness) awaitJobStatus(runID, want string, within time.Duration) {
 	deadline := time.Now().Add(within)
 	var last string
 	for time.Now().Before(deadline) {
-		if err := h.spine.Pool().QueryRow(context.Background(),
+		if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 			`SELECT status FROM durable_jobs WHERE payload->>'run_id'=$1 AND organization_id=$2 AND project_id=$3`,
 			runID, h.tenant.Organization, h.tenant.Project).Scan(&last); err == nil && last == want {
 			return

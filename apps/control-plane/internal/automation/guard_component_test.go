@@ -11,6 +11,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestReplaceDeniedAfterIrreversibleToolCall pins B6 (replace half): a replace against a key whose active
@@ -50,7 +52,7 @@ func TestReplaceDeniedAfterIrreversibleToolCall(t *testing.T) {
 			}
 			// The active run was NOT canceled — a run that performed an irreversible side effect is left intact.
 			var firstState string
-			if err := pool.QueryRow(ctx, `SELECT state FROM runs WHERE id=$1`, first.RunID).Scan(&firstState); err != nil {
+			if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM runs WHERE id=$1`, first.RunID).Scan(&firstState); err != nil {
 				t.Fatalf("read first run state error = %v", err)
 			}
 			if firstState == "canceled" {
@@ -80,7 +82,7 @@ func TestReplaceDeniedAfterIrreversibleToolCall(t *testing.T) {
 			t.Fatalf("pure-class replace state = %q, want run_created (normal replace)", second.State)
 		}
 		var firstState string
-		if err := pool.QueryRow(ctx, `SELECT state FROM runs WHERE id=$1`, first.RunID).Scan(&firstState); err != nil {
+		if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM runs WHERE id=$1`, first.RunID).Scan(&firstState); err != nil {
 			t.Fatalf("read first run state error = %v", err)
 		}
 		if firstState != "canceled" {

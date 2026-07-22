@@ -44,6 +44,8 @@ import (
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/tests/uat"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func TestCodingLiveJourney(t *testing.T) {
@@ -153,7 +155,7 @@ func TestCodingLiveJourney(t *testing.T) {
 		h.liveRequestPublication(ctx, "open_pull_request", sessionID, responseID, runID, repoURL, workBranch, base, head)
 	}
 	// Approve every pending publication for the run, then drain the pump through the real publisher.
-	if _, err := h.spine.Pool().Exec(ctx, `UPDATE publications SET state='approved' WHERE run_id=$1 AND state='pending_approval'`, runID); err != nil {
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), `UPDATE publications SET state='approved' WHERE run_id=$1 AND state='pending_approval'`, runID); err != nil {
 		t.Fatalf("approve live publications: %v", err)
 	}
 	approved, err := h.spine.ApprovedPublicationsForRun(ctx, h.tenant, runID)

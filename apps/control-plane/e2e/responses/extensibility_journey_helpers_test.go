@@ -39,6 +39,8 @@ import (
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/tests/uat"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // --- real-subprocess MCP driver (killable, no Docker) -------------------------------------------------
@@ -230,7 +232,7 @@ func (h *harness) setupExtensions(t *testing.T, ctx context.Context) *extSetup {
 		t.Fatalf("discover MCP connection: %v", err)
 	}
 	var mcpRevID string
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT tr.id FROM tools t JOIN tool_revisions tr ON tr.tool_id=t.id
 		 WHERE t.canonical_name=$1 AND t.organization_id=$2 AND t.project_id=$3
 		 ORDER BY tr.revision_number DESC LIMIT 1`, "mcp.fixture.echo", org, proj).Scan(&mcpRevID); err != nil {
@@ -292,7 +294,7 @@ func (h *harness) seedExtRevision(t *testing.T, ctx context.Context, toolSets, m
 	org, proj := h.tenant.Organization, h.tenant.Project
 	profileID, revID := newID("aprof"), newID("arev")
 	must := func(sql string, args ...any) {
-		if _, err := h.spine.Pool().Exec(ctx, sql, args...); err != nil {
+		if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
@@ -310,7 +312,7 @@ func (h *harness) seedExtRun(t *testing.T, ctx context.Context, revID, input str
 	org, proj := h.tenant.Organization, h.tenant.Project
 	sessionID, respID, runID = newID("ses"), newID("resp"), newID("run")
 	must := func(sql string, args ...any) {
-		if _, err := h.spine.Pool().Exec(ctx, sql, args...); err != nil {
+		if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
@@ -411,7 +413,7 @@ func (h *harness) installNoAuthoritySkill(t *testing.T, ctx context.Context) str
 	}
 	skillID, skillRevID := newID("skill"), newID("skillrev")
 	must := func(sql string, args ...any) {
-		if _, err := h.spine.Pool().Exec(ctx, sql, args...); err != nil {
+		if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}

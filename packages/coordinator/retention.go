@@ -53,6 +53,7 @@ type ResponseView struct {
 // or foreign row is Found=false (the handler renders 404, never leaking existence across
 // tenants), and a reaped row is Purged=true (410).
 func (s *Store) GetResponse(ctx context.Context, tenant Tenant, id string) (ResponseView, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var (
 		view     ResponseView
 		output   []byte

@@ -34,6 +34,8 @@ import (
 	mcpclient "github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/packages/contracts"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func TestExtensibilityJourneyDeterministic(t *testing.T) {
@@ -100,7 +102,7 @@ func TestExtensibilityJourneyDeterministic(t *testing.T) {
 
 	// The signed remote_http round-trip completed via the one-use callback (invoke -> 202 -> signed callback).
 	var remoteOpID, remoteCallID, remoteOpState string
-	if err := h.spine.Pool().QueryRow(ctx,
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT id, tool_call_id, state FROM remote_tool_operations WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at DESC LIMIT 1`,
 		h.tenant.Organization, h.tenant.Project).Scan(&remoteOpID, &remoteCallID, &remoteOpState); err != nil {
 		t.Fatalf("read remote_tool_operations: %v", err)

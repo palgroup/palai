@@ -185,6 +185,7 @@ func DecodeToolRevisionInput(raw []byte) (ToolRevisionInput, error) {
 // canonical name's last segment. A malformed canonical name, a built-in collision, or a duplicate name
 // in the project is a typed reject BEFORE any partial write.
 func (s *Store) CreateTool(ctx context.Context, org, project, canonicalName string) (Tool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	short, err := validateCanonicalName(canonicalName)
 	if err != nil {
 		return Tool{}, err
@@ -206,6 +207,7 @@ func (s *Store) CreateTool(ctx context.Context, org, project, canonicalName stri
 // the tool is in scope first, then digest-addresses the config. A revise is just another CreateToolRevision
 // — earlier revisions' config columns are never touched.
 func (s *Store) CreateToolRevision(ctx context.Context, org, project, toolID string, raw []byte) (ToolRevision, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	in, err := DecodeToolRevisionInput(raw)
 	if err != nil {
 		return ToolRevision{}, err
@@ -230,11 +232,13 @@ func (s *Store) CreateToolRevision(ctx context.Context, org, project, toolID str
 
 // PublishToolRevision flips a draft revision to published exactly once (see automation.PublishRevision).
 func (s *Store) PublishToolRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.publish(ctx, "PublishToolRevision", "ToolRevisionPublished", revisionID, org, project)
 }
 
 // GetToolRevision reads a revision's committed shape (management + the immutability check).
 func (s *Store) GetToolRevision(ctx context.Context, org, project, revisionID string) (ToolRevision, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	var (
 		rev       ToolRevision
 		published *any
@@ -256,6 +260,7 @@ func (s *Store) GetToolRevision(ctx context.Context, org, project, revisionID st
 // tool revision in scope (an unknown or draft revision is a typed reject), and any per-pin override may
 // only tighten a declared limit — so the whole set is validated BEFORE it is written.
 func (s *Store) CreateToolSetRevision(ctx context.Context, org, project, setName string, raw []byte) (ToolSetRevision, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	in, err := decodeToolSetRevisionInput(raw)
 	if err != nil {
 		return ToolSetRevision{}, err
@@ -284,12 +289,14 @@ func (s *Store) CreateToolSetRevision(ctx context.Context, org, project, setName
 
 // PublishToolSetRevision flips a draft set revision to published exactly once.
 func (s *Store) PublishToolSetRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.publish(ctx, "PublishToolSetRevision", "ToolSetRevisionPublished", revisionID, org, project)
 }
 
 // pinTarget reads a pinned tool revision's publish state + declared timeout, distinguishing an unknown
 // revision (ErrUnknownToolRevision) from a known one.
 func (s *Store) pinTarget(ctx context.Context, org, project, revisionID string) (published bool, timeoutMS *int, err error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	err = s.pool.QueryRow(ctx, storage.Query("ToolRevisionForPin"), revisionID, org, project).Scan(&published, &timeoutMS)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil, ErrUnknownToolRevision

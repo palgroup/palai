@@ -25,6 +25,8 @@ import (
 
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func faultID(prefix string) string {
@@ -52,10 +54,10 @@ func openHookFaultStore(t *testing.T) (*Store, *pgxpool.Pool, string, string) {
 	}
 	pool := cs.Pool()
 	org, project := faultID("org"), faultID("prj")
-	if _, err := pool.Exec(ctx, `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
 		t.Fatalf("seed org: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	s := New(pool)
@@ -74,7 +76,7 @@ func openHookFaultStore(t *testing.T) (*Store, *pgxpool.Pool, string, string) {
 // httptest worker. Distinct points keep two hooks isolated in the per-point dispatch load.
 func insertRemoteFaultHook(t *testing.T, pool *pgxpool.Pool, org, project, name, point, workerURL string) {
 	t.Helper()
-	_, err := pool.Exec(context.Background(),
+	_, err := pool.Exec(storage.WithSystemScope(context.Background()),
 		`INSERT INTO hooks (id, organization_id, project_id, name, hook_point, category, executor, config, secret_ref)
 		 VALUES ($1,$2,$3,$4,$5,'policy','remote_http', jsonb_build_object('url',$6::text,'allow_private',true), 'sref_hook')`,
 		faultID("hook"), org, project, name, point, workerURL)

@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/packages/contracts"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // attachFrame is one SSE frame reduced to what SES-001 compares: the per-session event
@@ -224,7 +226,7 @@ func TestUnauthorizedAttachIsTenantScoped404WithAuditDenial(t *testing.T) {
 	// discloses nothing about tenant A.
 	var org, project, actor, action, outcome, resource string
 	var detail []byte
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT organization_id, project_id, actor, action, outcome, resource, detail
 		   FROM audit_events WHERE resource=$1 AND outcome='denied' ORDER BY id DESC LIMIT 1`,
 		sessionA).Scan(&org, &project, &actor, &action, &outcome, &resource, &detail); err != nil {

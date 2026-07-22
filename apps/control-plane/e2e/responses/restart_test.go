@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestRestartPreservesTerminalResponseAndEvents proves the terminal outcome is durable
@@ -38,7 +40,7 @@ func TestRestartPreservesTerminalResponseAndEvents(t *testing.T) {
 
 	var stateAfter string
 	var outputAfter []byte
-	if err := restarted.Spine().Pool().QueryRow(ctx,
+	if err := restarted.Spine().Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT state, output FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		responseID, h.tenant.Organization, h.tenant.Project).Scan(&stateAfter, &outputAfter); err != nil {
 		t.Fatalf("read response after restart error = %v", err)

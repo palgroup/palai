@@ -13,6 +13,8 @@ import (
 
 	"github.com/palgroup/palai/packages/contracts"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // gatedProvider is the scripted provider (tool call, then final "12") whose FIRST model call
@@ -202,7 +204,7 @@ func (h *harness) submitCommand(sessionID, body string) contracts.Command {
 // commandRow reads a command's durable state and applied_sequence straight from the table.
 func (h *harness) commandRow(commandID string) (state string, appliedSeq *int64) {
 	h.t.Helper()
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state, applied_sequence FROM commands WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		commandID, h.tenant.Organization, h.tenant.Project).Scan(&state, &appliedSeq); err != nil {
 		h.t.Fatalf("read command %s error = %v", commandID, err)
@@ -437,7 +439,7 @@ func TestCancelWithUncertainSideEffectTerminalizesUncertain(t *testing.T) {
 
 	ctx := context.Background()
 	mustExec := func(sql string, args ...any) {
-		if _, err := h.spine.Pool().Exec(ctx, sql, args...); err != nil {
+		if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("exec %q error = %v", sql, err)
 		}
 	}
@@ -457,10 +459,10 @@ func TestCancelWithUncertainSideEffectTerminalizesUncertain(t *testing.T) {
 	h.awaitResponseState(respID, "failed_with_uncertain_side_effect", 60*time.Second)
 
 	var childRunState, childRespState string
-	if err := h.spine.Pool().QueryRow(ctx, `SELECT state FROM runs WHERE id=$1`, childRun).Scan(&childRunState); err != nil {
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM runs WHERE id=$1`, childRun).Scan(&childRunState); err != nil {
 		t.Fatalf("read child run state error = %v", err)
 	}
-	if err := h.spine.Pool().QueryRow(ctx, `SELECT state FROM responses WHERE id=$1`, childResp).Scan(&childRespState); err != nil {
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM responses WHERE id=$1`, childResp).Scan(&childRespState); err != nil {
 		t.Fatalf("read child response state error = %v", err)
 	}
 	if childRunState != "canceled" || childRespState != "canceled" {

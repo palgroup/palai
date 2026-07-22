@@ -59,6 +59,8 @@ import (
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	"github.com/palgroup/palai/packages/runner"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // seedDetachParent seeds org→project→session→response→run where the run carries a config-seeded
@@ -74,7 +76,7 @@ func seedDetachParent(t *testing.T, pool *pgxpool.Pool, childModel string) (coor
 		"model": childModel, "required": true, "detach": true, "workspace_mode": "none",
 	}}})
 	do := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
@@ -125,7 +127,7 @@ func TestLiveDetachedChildConversationRealProvider(t *testing.T) {
 	tenant, sessionID, responseID, runID := seedDetachParent(t, pool, childModel)
 	// The project must allow the child model or the required delegation is unroutable.
 	allow, _ := json.Marshal(map[string]any{"allowed_models": []string{liveModel(), childModel}})
-	if _, err := pool.Exec(ctx, `UPDATE projects SET config_policy=$1 WHERE id=$2 AND organization_id=$3`, allow, tenant.Project, tenant.Organization); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `UPDATE projects SET config_policy=$1 WHERE id=$2 AND organization_id=$3`, allow, tenant.Project, tenant.Organization); err != nil {
 		t.Fatalf("set allowed models: %v", err)
 	}
 
@@ -164,7 +166,7 @@ func TestLiveDetachedChildConversationRealProvider(t *testing.T) {
 	}
 	// Exactly one child (rebind, not clone), and it ran on the real provider with its own chatcmpl id.
 	var childRun string
-	if err := pool.QueryRow(ctx, `SELECT id FROM runs WHERE parent_run_id=$1 AND organization_id=$2 AND project_id=$3`,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT id FROM runs WHERE parent_run_id=$1 AND organization_id=$2 AND project_id=$3`,
 		runID, tenant.Organization, tenant.Project).Scan(&childRun); err != nil {
 		t.Fatalf("read child run: %v", err)
 	}
@@ -184,7 +186,7 @@ func awaitState(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, res
 	deadline := time.Now().Add(within)
 	var last string
 	for time.Now().Before(deadline) {
-		if err := pool.QueryRow(context.Background(),
+		if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 			`SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 			responseID, tenant.Organization, tenant.Project).Scan(&last); err == nil && last == want {
 			return
@@ -197,7 +199,7 @@ func awaitState(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, res
 func countRows(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), sql, args...).Scan(&n); err != nil {
 		t.Fatalf("count %q: %v", sql, err)
 	}
 	return n

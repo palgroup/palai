@@ -24,6 +24,7 @@ type SessionView struct {
 // the session starts active. It is the standalone counterpart of admission's implicit session
 // creation, deferred from T1.
 func (s *Store) CreateSession(ctx context.Context, tenant Tenant, sessionID string) (SessionView, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertSession"), sessionID, tenant.Organization, tenant.Project); err != nil {
 		return SessionView{}, fmt.Errorf("insert session: %w", err)
 	}
@@ -34,6 +35,7 @@ func (s *Store) CreateSession(ctx context.Context, tenant Tenant, sessionID stri
 // or unknown id yields Found=false, so the caller renders a 404 that leaks no cross-tenant
 // existence (§39.2).
 func (s *Store) GetSession(ctx context.Context, tenant Tenant, sessionID string) (SessionView, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var v SessionView
 	err := s.pool.QueryRow(ctx, storage.Query("GetSessionInScope"), sessionID, tenant.Organization, tenant.Project).
 		Scan(&v.ID, &v.State, &v.CreatedAt)

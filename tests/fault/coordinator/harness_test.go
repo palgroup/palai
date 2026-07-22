@@ -26,6 +26,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func faultURL(t *testing.T) string {
@@ -83,14 +85,14 @@ func seedTenant(t *testing.T, pool *pgxpool.Pool) coordinator.Tenant {
 	ctx := context.Background()
 	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
 	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM durable_jobs WHERE organization_id = $1`, tenant.Organization)
+		_, _ = pool.Exec(storage.WithSystemScope(context.Background()), `DELETE FROM durable_jobs WHERE organization_id = $1`, tenant.Organization)
 	})
 	return tenant
 }

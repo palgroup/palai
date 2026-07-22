@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // seedTerminalResponse inserts a session-bound response in a terminal state with an
@@ -31,7 +33,7 @@ func seedTerminalResponse(t *testing.T, pool *pgxpool.Pool, tenant coordinator.T
 // responseContent reads a response's tombstone-relevant columns.
 func responseContent(t *testing.T, pool *pgxpool.Pool, id string) (output *string, purgedAt *time.Time) {
 	t.Helper()
-	if err := pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT output::text, purged_at FROM responses WHERE id = $1`, id).Scan(&output, &purgedAt); err != nil {
 		t.Fatalf("read response %s error = %v", id, err)
 	}
@@ -116,7 +118,7 @@ func TestPurgeKeepsTombstoneRequestHashAndFingerprint(t *testing.T) {
 		fingerprint    *string
 		resultPurgedAt *time.Time
 	)
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT request_hash, response_body::text, resource_tombstone, outcome_fingerprint, result_purged_at
 		 FROM idempotency_records WHERE project_id = $1 AND resource_tombstone = $2`,
 		tenant.Project, respID).Scan(&gotHash, &responseBody, &resourceTomb, &fingerprint, &resultPurgedAt); err != nil {
@@ -154,7 +156,7 @@ func seedEvent(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, sess
 func eventPayload(t *testing.T, pool *pgxpool.Pool, responseID string, seq int) string {
 	t.Helper()
 	var payload string
-	if err := pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT payload::text FROM events WHERE response_id = $1 AND seq = $2`, responseID, seq).Scan(&payload); err != nil {
 		t.Fatalf("read event payload response=%s seq=%d error = %v", responseID, seq, err)
 	}
@@ -228,7 +230,7 @@ func TestPurgeReplacesEventPayloadsButKeepsSequence(t *testing.T) {
 		t.Fatalf("PurgeExpiredStoreFalse() error = %v", err)
 	}
 
-	rows, err := pool.Query(ctx,
+	rows, err := pool.Query(storage.WithSystemScope(ctx),
 		`SELECT seq, payload::text FROM events WHERE session_id = $1 ORDER BY seq`, sessionID)
 	if err != nil {
 		t.Fatalf("read events error = %v", err)

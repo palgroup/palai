@@ -27,6 +27,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func randID(prefix string) string {
@@ -196,7 +198,7 @@ func seedTenantReturning(t *testing.T, pool *pgxpool.Pool, token string) (org, p
 	ctx := context.Background()
 	org, project, principal = randID("org"), randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
@@ -210,7 +212,7 @@ func seedTenantReturning(t *testing.T, pool *pgxpool.Pool, token string) (org, p
 
 func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q error = %v", sql, err)
 	}
 }

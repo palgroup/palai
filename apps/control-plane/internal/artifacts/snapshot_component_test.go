@@ -19,6 +19,8 @@ import (
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // seedAllocationOnDisk lays out a REAL allocation directory (git repo + a scratch file + an excluded
@@ -33,7 +35,7 @@ func (h *artifactsHarness) seedAllocationOnDisk(t *testing.T) (org, project, wor
 	org, project, runID := h.seedRun(t)
 	// The session id the run belongs to (workspaces.session_id FKs sessions).
 	var sessionID string
-	if err := h.pool.QueryRow(context.Background(), `SELECT session_id FROM runs WHERE id=$1`, runID).Scan(&sessionID); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT session_id FROM runs WHERE id=$1`, runID).Scan(&sessionID); err != nil {
 		t.Fatalf("read run session: %v", err)
 	}
 
@@ -94,7 +96,7 @@ func TestSnapshotObjectsSurviveOrphanGC(t *testing.T) {
 		t.Fatalf("Capture() error = %v", err)
 	}
 	var snapKey string
-	if err := h.pool.QueryRow(ctx, `SELECT object_key FROM workspace_snapshots WHERE id=$1`, snapID).Scan(&snapKey); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT object_key FROM workspace_snapshots WHERE id=$1`, snapID).Scan(&snapKey); err != nil {
 		t.Fatalf("read snapshot object_key: %v", err)
 	}
 	if snapKey == "" || !h.objectPresent(t, snapKey) {
@@ -138,7 +140,7 @@ func TestSnapshotRestoreRoundTripsThroughStore(t *testing.T) {
 		t.Fatalf("Capture() error = %v", err)
 	}
 	var wantTree string
-	if err := h.pool.QueryRow(ctx, `SELECT tree_checksum FROM workspace_snapshots WHERE id=$1`, snapID).Scan(&wantTree); err != nil {
+	if err := h.pool.QueryRow(storage.WithSystemScope(ctx), `SELECT tree_checksum FROM workspace_snapshots WHERE id=$1`, snapID).Scan(&wantTree); err != nil {
 		t.Fatalf("read create-side tree checksum: %v", err)
 	}
 

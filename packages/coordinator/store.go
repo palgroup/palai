@@ -121,6 +121,7 @@ func (s *Store) asOwner(ctx context.Context, statements string) error {
 // CurrentJournalSequence returns the highest event seq in the session's journal, or 0 for an empty
 // journal — the transcript boundary a checkpoint records (spec §26.1-26.2).
 func (s *Store) CurrentJournalSequence(ctx context.Context, tenant Tenant, sessionID string) (int64, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var seq int64
 	if err := s.pool.QueryRow(ctx, storage.Query("CurrentJournalSequence"), sessionID, tenant.Organization, tenant.Project).Scan(&seq); err != nil {
 		return 0, fmt.Errorf("read current journal sequence: %w", err)
@@ -160,6 +161,7 @@ type RunCheckpoint struct {
 // rolling back to v1. Harmless while production stays single-format v1; when a real format bump lands,
 // return an ordered candidate list here and let the ladder fall to the next on a rejected-newest.
 func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID string) (RunCheckpoint, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var cp RunCheckpoint
 	var workspaceSnapshot *string
 	err := s.pool.QueryRow(ctx, storage.Query("LatestRunCheckpoint"), runID, tenant.Organization, tenant.Project).
@@ -182,6 +184,7 @@ func (s *Store) LatestRunCheckpoint(ctx context.Context, tenant Tenant, runID st
 // transcript-boundary, and workspace-snapshot FKs reference. Idempotent on id (a reclaim re-recording
 // the same attempt is a no-op). Called at attempt start so a checkpoint offered mid-run can persist.
 func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attemptID string) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin record attempt: %w", err)
@@ -211,6 +214,7 @@ func (s *Store) RecordAttempt(ctx context.Context, tenant Tenant, runID, attempt
 // original attempt is still driving the run, so a new attempt takes the "exact" rung and stands
 // down. excludeJobID is the caller's own claimed job ("" for a direct-drive attempt with no job).
 func (s *Store) RunHasLiveResponseJob(ctx context.Context, tenant Tenant, runID, excludeJobID string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var live bool
 	if err := s.pool.QueryRow(ctx, storage.Query("RunHasLiveResponseJob"), runID, tenant.Organization, tenant.Project, excludeJobID).Scan(&live); err != nil {
 		return false, fmt.Errorf("read run live response job: %w", err)
@@ -223,6 +227,7 @@ func (s *Store) RunHasLiveResponseJob(ctx context.Context, tenant Tenant, runID,
 // a fresh queued message folds at the boundary preceding step M+1 (the first live step), never into
 // a replayed step. Captured once at attempt start, before this attempt commits any new step.
 func (s *Store) CommittedModelStepCount(ctx context.Context, tenant Tenant, runID string) (int, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var n int
 	if err := s.pool.QueryRow(ctx, storage.Query("CommittedModelStepCount"), runID, tenant.Organization, tenant.Project).Scan(&n); err != nil {
 		return 0, fmt.Errorf("read committed model step count: %w", err)
@@ -235,6 +240,7 @@ func (s *Store) CommittedModelStepCount(ctx context.Context, tenant Tenant, runI
 // It is a plain diagnostic append with no run-active guard: the record must survive whatever the
 // recovery does next (a stand-down under a live sibling, a restore, or an imminent explicit failure).
 func (s *Store) RecordRecoveryEvent(ctx context.Context, tenant Tenant, sessionID, responseID, eventType string, payload []byte) (int64, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin recovery event: %w", err)
@@ -252,6 +258,7 @@ func (s *Store) RecordRecoveryEvent(ctx context.Context, tenant Tenant, sessionI
 
 // Enqueue inserts a queued job.
 func (s *Store) Enqueue(ctx context.Context, tenant Tenant, jobID, kind string) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	if strings.TrimSpace(jobID) == "" {
 		return errors.New("job ID is required")
 	}
@@ -267,6 +274,7 @@ func (s *Store) Enqueue(ctx context.Context, tenant Tenant, jobID, kind string) 
 // attempt in the same transaction. A reclaim after lease expiry always returns a
 // strictly higher fence than the previous holder (spec §53.5).
 func (s *Store) Claim(ctx context.Context, tenant Tenant, jobID, owner string, lease time.Duration) (Claim, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	if strings.TrimSpace(jobID) == "" || strings.TrimSpace(owner) == "" || lease <= 0 {
 		return Claim{}, errors.New("job ID, owner and positive lease are required")
 	}
@@ -297,6 +305,7 @@ func (s *Store) Claim(ctx context.Context, tenant Tenant, jobID, owner string, l
 
 // LeaseExpired reports whether the job's lease has lapsed by database time.
 func (s *Store) LeaseExpired(ctx context.Context, tenant Tenant, jobID string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var expired bool
 	err := s.pool.QueryRow(ctx, storage.Query("JobLeaseExpired"), jobID, tenant.Organization, tenant.Project).Scan(&expired)
 	if err != nil {
@@ -343,6 +352,7 @@ func (s *Store) Complete(ctx context.Context, claim Claim, resultHash string) er
 
 // Snapshot reads authoritative job state.
 func (s *Store) Snapshot(ctx context.Context, tenant Tenant, jobID string) (Snapshot, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var snap Snapshot
 	err := s.pool.QueryRow(ctx, storage.Query("JobSnapshot"), jobID, tenant.Organization, tenant.Project).
 		Scan(&snap.Status, &snap.Fence, &snap.AttemptCount, &snap.ResultHash)
@@ -365,6 +375,7 @@ type Transition struct {
 // The committed Transition is returned only after commit succeeds; a rejected
 // command or a failed commit leaves no state, event, or outbox row behind.
 func (s *Store) ApplyRunTransition(ctx context.Context, tenant Tenant, runID string, command statemachines.RunCommand) (Transition, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Transition{}, fmt.Errorf("begin transition: %w", err)
@@ -593,6 +604,7 @@ type Admission struct {
 // conflict — both without a second side effect. Nothing is dispatched here: the
 // outbox row is the post-commit handoff, so dispatch never begins before commit.
 func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionInput) (Admission, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Admission{}, fmt.Errorf("begin admission: %w", err)
@@ -835,6 +847,7 @@ func verifyPublishedRevision(ctx context.Context, tx pgx.Tx, query, revisionID s
 // the resolver skips the pinned-revision layer; toolSetTools is empty then too. The pin is fixed on the
 // run row, so a later revision of the same profile leaves this unchanged (old-run reproducibility).
 func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID string) (revisionID, model string, tools, toolSetTools []string, skillPins []byte, err error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var (
 		revID     *string
 		toolsJSON []byte
@@ -862,6 +875,7 @@ func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID strin
 // are already frozen (E12 Task 7, spec §28.16) — the inputs the run-start pin write consults. A run whose
 // pins are already frozen returns alreadyPinned=true so the resolver skips re-resolution on a resume.
 func (s *Store) RunSkillPinInputs(ctx context.Context, tenant Tenant, runID string) (requested []string, alreadyPinned bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var requestedJSON []byte
 	err = s.pool.QueryRow(ctx, storage.Query("RunSkillPinInputs"), runID, tenant.Organization, tenant.Project).
 		Scan(&requestedJSON, &alreadyPinned)
@@ -882,6 +896,7 @@ func (s *Store) RunSkillPinInputs(ctx context.Context, tenant Tenant, runID stri
 // life. pinsJSON is the JSON-encoded []{name,description,digest,path}; a nil/empty pin is not written
 // (the run stays skill-less, its config bit-identical to before). It reports whether it wrote the pin.
 func (s *Store) PinRunSkills(ctx context.Context, tenant Tenant, runID string, pinsJSON []byte) (pinned bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	if len(pinsJSON) == 0 {
 		return false, nil
 	}

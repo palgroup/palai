@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // AppendToolProgress journals an advisory tool_call.progress.v1 event (E12 T5, MCP progress). Progress is
@@ -23,6 +25,7 @@ const maxProgressMessage = 4 * 1024
 // (those belong to the engine's OWN model steps, not a nested sampling call) — it is a pure durable event
 // append, run-active-guarded so a sampling step on a dead run journals nothing.
 func (s *Store) AppendModelStep(ctx context.Context, tenant Tenant, sessionID, responseID, runID, eventType string, payload []byte) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin model step: %w", err)
@@ -41,6 +44,7 @@ func (s *Store) AppendModelStep(ctx context.Context, tenant Tenant, sessionID, r
 }
 
 func (s *Store) AppendToolProgress(ctx context.Context, tenant Tenant, sessionID, responseID, callID string, progress, total float64, message string) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	if sessionID == "" {
 		return fmt.Errorf("tool progress needs a session id")
 	}

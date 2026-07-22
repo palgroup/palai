@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestOutputMappingBoundedSameLanguageAsInput pins B1: a revise ACCEPTS an output_mapping compiled through
@@ -51,7 +53,7 @@ func TestOutputMappingBoundedSameLanguageAsInput(t *testing.T) {
 	}
 	var storedMapping []byte
 	var storedEndpoint *string
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT output_mapping, callback_endpoint_id FROM trigger_revisions WHERE id=$1`, rev.ID).
 		Scan(&storedMapping, &storedEndpoint); err != nil {
 		t.Fatalf("read revision callback columns error = %v", err)
@@ -132,7 +134,7 @@ func TestCallbackEnqueuedOnRunTerminal(t *testing.T) {
 
 	// Exactly one webhook_deliveries row for the callback endpoint, keyed cb:<deliveryID>, pending.
 	var count int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT count(*) FROM webhook_deliveries WHERE endpoint_id=$1 AND event_id=$2`, endpointID, "cb:"+del.ID).Scan(&count); err != nil {
 		t.Fatalf("count callback deliveries error = %v", err)
 	}
@@ -146,7 +148,7 @@ func TestCallbackEnqueuedOnRunTerminal(t *testing.T) {
 	// The envelope carries the SHAPED output as its data (trigger.callback.v1, data.result = the output).
 	var payload []byte
 	var eventType string
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT payload, event_type FROM webhook_deliveries WHERE event_id=$1`, "cb:"+del.ID).Scan(&payload, &eventType); err != nil {
 		t.Fatalf("read callback payload error = %v", err)
 	}
@@ -275,7 +277,7 @@ func TestCallbackFailureLeavesRunTerminalIntact(t *testing.T) {
 	// The run result is INTACT and independent of the callback failure (AUT-011 link-half).
 	var respState string
 	var output []byte
-	if err := pool.QueryRow(ctx, `SELECT state, output FROM responses WHERE id=$1`, del.ResponseID).Scan(&respState, &output); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state, output FROM responses WHERE id=$1`, del.ResponseID).Scan(&respState, &output); err != nil {
 		t.Fatalf("read response error = %v", err)
 	}
 	if respState != "completed" {
@@ -299,14 +301,14 @@ func TestCallbackFailureLeavesRunTerminalIntact(t *testing.T) {
 		t.Fatalf("map-fail callback_state = %q, want dead", got)
 	}
 	var enqueued int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM webhook_deliveries WHERE event_id=$1`, "cb:"+del2.ID).Scan(&enqueued); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM webhook_deliveries WHERE event_id=$1`, "cb:"+del2.ID).Scan(&enqueued); err != nil {
 		t.Fatalf("count map-fail deliveries error = %v", err)
 	}
 	if enqueued != 0 {
 		t.Fatalf("a map-failed callback enqueued %d deliveries, want 0", enqueued)
 	}
 	var resp2State string
-	if err := pool.QueryRow(ctx, `SELECT state FROM responses WHERE id=$1`, del2.ResponseID).Scan(&resp2State); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM responses WHERE id=$1`, del2.ResponseID).Scan(&resp2State); err != nil {
 		t.Fatalf("read map-fail response error = %v", err)
 	}
 	if resp2State != "completed" {
@@ -318,7 +320,7 @@ func TestCallbackFailureLeavesRunTerminalIntact(t *testing.T) {
 func callbackState(t *testing.T, pool *pgxpool.Pool, id string) string {
 	t.Helper()
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT callback_state FROM trigger_deliveries WHERE id=$1`, id).Scan(&state); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT callback_state FROM trigger_deliveries WHERE id=$1`, id).Scan(&state); err != nil {
 		t.Fatalf("read callback_state error = %v", err)
 	}
 	return state

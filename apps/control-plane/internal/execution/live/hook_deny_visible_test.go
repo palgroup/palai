@@ -30,6 +30,8 @@ import (
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestLiveHookDenyVisibleRealProvider is CASE=hook-deny-visible (see the file ceilings).
@@ -113,7 +115,7 @@ func TestLiveHookDenyVisibleRealProvider(t *testing.T) {
 func hookPolicyDeniedCount(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, sessionID string) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='policy.denied.v1'`,
 		sessionID, tenant.Organization, tenant.Project).Scan(&n); err != nil {
 		t.Fatalf("count policy.denied.v1 events: %v", err)
