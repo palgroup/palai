@@ -1,0 +1,5 @@
+-- Extensibility registry management + broker-lookup resolution (spec §28.2-28.4, E12 Task 2). Writes
+-- are the management surface (create/revise/publish); reads back the immutable-check + the per-tenant
+-- broker lookup's pin-chain resolution. A revise always INSERTs a new revision — no statement here ever
+-- rewrites a revision's config columns, so a published revision is immutable by discipline (the only
+-- UPDATE is the publish flip). Every statement is tenant-scoped by (organization_id, project_id).

@@ -47,6 +47,7 @@ var allTables = []string{
 	"webhook_endpoints", "webhook_deliveries", "delivery_attempts",
 	"triggers", "trigger_revisions", "trigger_deliveries",
 	"schedules", "schedule_occurrences",
+	"tools", "tool_revisions", "tool_set_revisions",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
