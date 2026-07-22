@@ -464,7 +464,7 @@ func (o *Orchestrator) parentTools(ctx context.Context, st *attemptState) ([]str
 	if found {
 		tools = override.Tools
 	}
-	_, _, revTools, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	_, _, revTools, _, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
 	if err != nil {
 		return nil, err
 	}

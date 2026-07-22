@@ -805,30 +805,31 @@ func verifyPublishedRevision(ctx context.Context, tx pgx.Tx, query, revisionID s
 	return Admission{}, true, nil
 }
 
-// PinnedExecConfig resolves a run's pinned executable config (spec §14, AGT-001): the model and tool
-// ceiling of whichever revision — agent or template — the run pinned. revisionID is "" for a
-// profile-free run, so the resolver skips the pinned-revision layer. The pin is fixed on the run row,
-// so a later revision of the same profile leaves this unchanged (old-run reproducibility).
-func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID string) (revisionID, model string, tools []string, err error) {
+// PinnedExecConfig resolves a run's pinned executable config (spec §14, AGT-001): the model, the tool
+// ceiling, and the E12 tool-set grant (the short names the pinned revision's tool_sets contribute) of
+// whichever revision — agent or template — the run pinned. revisionID is "" for a profile-free run, so
+// the resolver skips the pinned-revision layer; toolSetTools is empty then too. The pin is fixed on the
+// run row, so a later revision of the same profile leaves this unchanged (old-run reproducibility).
+func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID string) (revisionID, model string, tools, toolSetTools []string, err error) {
 	var (
 		revID     *string
 		toolsJSON []byte
 	)
 	err = s.pool.QueryRow(ctx, storage.Query("PinnedRunConfig"), runID, tenant.Organization, tenant.Project).
-		Scan(&revID, &model, &toolsJSON)
+		Scan(&revID, &model, &toolsJSON, &toolSetTools)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", nil, nil // unknown run: treat as no pin (the caller's run existence is already established)
+		return "", "", nil, nil, nil // unknown run: treat as no pin (the caller's run existence is already established)
 	}
 	if err != nil {
-		return "", "", nil, fmt.Errorf("read pinned run config: %w", err)
+		return "", "", nil, nil, fmt.Errorf("read pinned run config: %w", err)
 	}
 	if revID == nil {
-		return "", "", nil, nil // profile-free run: no pinned revision
+		return "", "", nil, nil, nil // profile-free run: no pinned revision
 	}
 	if len(toolsJSON) > 0 {
 		_ = json.Unmarshal(toolsJSON, &tools)
 	}
-	return *revID, model, tools, nil
+	return *revID, model, tools, toolSetTools, nil
 }
 
 // isUniqueViolation reports whether err is a PostgreSQL unique_violation (SQLSTATE 23505),

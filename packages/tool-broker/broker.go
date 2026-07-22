@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/palgroup/palai/packages/contracts"
@@ -82,11 +83,18 @@ type Outcome struct {
 	Cached      bool
 }
 
+// LookupFunc resolves a tool absent from the static conformance set by name, scoped by the per-attempt
+// ExecEnv (its Scope carries tenant + RunID, so resolution is tenant-scoped). It is how a DB-backed
+// registry tool (E12) reaches the broker WITHOUT ever entering the global tool map — no cross-tenant
+// leak, no second dispatch loop. Returns (tool, true, nil) on a hit, (_, false, nil) on a clean miss.
+type LookupFunc func(ctx context.Context, env ExecEnv, name string) (Tool, bool, error)
+
 // Broker holds the explicit conformance tool set and the fenced tool-call rows.
 type Broker struct {
-	mu    sync.Mutex
-	tools map[string]Tool
-	rows  map[contracts.ToolCallID]*row
+	mu     sync.Mutex
+	tools  map[string]Tool
+	rows   map[contracts.ToolCallID]*row
+	lookup LookupFunc
 }
 
 type row struct {
@@ -103,6 +111,27 @@ func New(tools ...Tool) *Broker {
 		set[t.Name] = t
 	}
 	return &Broker{tools: set, rows: map[contracts.ToolCallID]*row{}}
+}
+
+// SetLookup injects the per-tenant registry lookup the broker falls back to on a static-set miss (E12).
+// It is set once at composition; a nil lookup keeps the broker's static-only behaviour unchanged.
+func (b *Broker) SetLookup(fn LookupFunc) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lookup = fn
+}
+
+// Names returns the static conformance tool names (sorted), so a caller can enumerate the built-in set
+// without a lock dance. Registry tools resolved through SetLookup are per-tenant and never listed here.
+func (b *Broker) Names() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	names := make([]string, 0, len(b.tools))
+	for name := range b.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Discoverable reports whether a tool name is in the explicit conformance set.
@@ -159,7 +188,20 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 
 	tool, ok := b.tools[name]
 	if !ok {
-		return Outcome{}, fmt.Errorf("%w: %s", ErrUnknownTool, name)
+		// Static-set miss: fall back to the injected per-tenant registry lookup (E12). A hit runs the
+		// resolved tool through the SAME fence/ledger/replay machinery below; it never enters b.tools, so
+		// resolution stays tenant-scoped. A clean miss (or no lookup) is still ErrUnknownTool.
+		if b.lookup == nil {
+			return Outcome{}, fmt.Errorf("%w: %s", ErrUnknownTool, name)
+		}
+		resolved, found, err := b.lookup(ctx, env, name)
+		if err != nil {
+			return Outcome{}, fmt.Errorf("registry lookup %s: %w", name, err)
+		}
+		if !found {
+			return Outcome{}, fmt.Errorf("%w: %s", ErrUnknownTool, name)
+		}
+		tool = resolved
 	}
 
 	// Idempotent replay: a completed row is authoritative and never re-runs.

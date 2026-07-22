@@ -11,7 +11,11 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
 // openStore opens a migrated spine, seeds an org+project, and returns the extensions store scoped to it.
@@ -222,4 +226,103 @@ func pins(revisionID string, overrides map[string]any) []byte {
 	}
 	body, _ := json.Marshal(map[string]any{"tools": []any{pin}})
 	return body
+}
+
+// TestRegistryToolsLoadIntoBrokerEffectiveSet proves the EXT-002/EXT-003 registry face end-to-end: a
+// published control_plane echo tool pinned into a published set that a run's agent revision names in its
+// tool_sets (1) contributes its model-visible short name to the run's effective set, (2) resolves through
+// the broker's per-tenant lookup and runs the SAME fenced path, while (3) a second registered+published
+// tool that is NOT pinned appears in NEITHER — the effective set nor the broker lookup.
+func TestRegistryToolsLoadIntoBrokerEffectiveSet(t *testing.T) {
+	s, org, project := openStore(t)
+	ctx := context.Background()
+	pool := s.pool
+
+	// A published control_plane echo tool.
+	tool, err := s.CreateTool(ctx, org, project, "acme.search.fetch")
+	if err != nil {
+		t.Fatalf("create tool: %v", err)
+	}
+	rev, err := s.CreateToolRevision(ctx, org, project, tool.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"},"replay_class":"pure"}`))
+	if err != nil {
+		t.Fatalf("create rev: %v", err)
+	}
+	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID); err != nil {
+		t.Fatalf("publish rev: %v", err)
+	}
+	// A second published tool, NOT pinned into any set.
+	tool2, _ := s.CreateTool(ctx, org, project, "acme.other.lookup")
+	rev2, _ := s.CreateToolRevision(ctx, org, project, tool2.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"}}`))
+	if _, _, err := s.PublishToolRevision(ctx, org, project, rev2.ID); err != nil {
+		t.Fatalf("publish rev2: %v", err)
+	}
+	// A published set pinning ONLY the first tool.
+	set, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins(rev.ID, nil))
+	if err != nil {
+		t.Fatalf("create set: %v", err)
+	}
+	if _, _, err := s.PublishToolSetRevision(ctx, org, project, set.ID); err != nil {
+		t.Fatalf("publish set: %v", err)
+	}
+
+	// A session + run pinned to an agent revision whose tool_sets names the published set.
+	sessionID, runID := testID("ses"), testID("run")
+	profileID, arevID := testID("aprof"), testID("arev")
+	mustExec(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, sessionID, org, project)
+	mustExec(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,'reviewer')`, profileID, org, project)
+	mustExec(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, published_at, tool_sets)
+	                   VALUES ($1,$2,$3,$4,1,'model-x',clock_timestamp(),$5::jsonb)`, arevID, org, project, profileID, `["`+set.ID+`"]`)
+	mustExec(t, pool, `INSERT INTO runs (id, organization_id, project_id, session_id, agent_revision_id) VALUES ($1,$2,$3,$4,$5)`, runID, org, project, sessionID, arevID)
+
+	// (1) The effective set: the run's pinned tool_sets contribute "fetch", never the unpinned "lookup".
+	cs, err := coordinator.Open(ctx, os.Getenv("PALAI_COMPONENT_POSTGRES_URL"))
+	if err != nil {
+		t.Fatalf("coordinator.Open: %v", err)
+	}
+	t.Cleanup(cs.Close)
+	_, _, _, toolSetTools, err := cs.PinnedExecConfig(ctx, coordinator.Tenant{Organization: org, Project: project}, runID)
+	if err != nil {
+		t.Fatalf("PinnedExecConfig: %v", err)
+	}
+	if !contains(toolSetTools, "fetch") {
+		t.Fatalf("effective tool_set tools = %v, want the pinned short name fetch", toolSetTools)
+	}
+	if contains(toolSetTools, "lookup") {
+		t.Fatalf("effective tool_set tools = %v, want the UNPINNED lookup absent", toolSetTools)
+	}
+
+	// (2) The broker's per-tenant lookup resolves fetch and runs it through the fenced path.
+	broker := toolbroker.New()
+	broker.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
+		return s.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+	})
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: runID}}
+	out, err := broker.Execute(ctx, contracts.ToolCallID("tc_fetch"), "fetch", map[string]any{"q": "x"}, 1, env)
+	if err != nil {
+		t.Fatalf("broker execute fetch: %v", err)
+	}
+	if out.Result["q"] != "x" {
+		t.Fatalf("echo result = %v, want the input args back", out.Result)
+	}
+
+	// (3) The unpinned tool is not resolvable through the run's lookup, so the broker rejects it.
+	if _, err := broker.Execute(ctx, contracts.ToolCallID("tc_lookup"), "lookup", map[string]any{}, 2, env); !errors.Is(err, toolbroker.ErrUnknownTool) {
+		t.Fatalf("unpinned tool execute err = %v, want ErrUnknownTool (never advertised or resolvable)", err)
+	}
+}
+
+func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+		t.Fatalf("exec %q: %v", sql, err)
+	}
+}
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
 }

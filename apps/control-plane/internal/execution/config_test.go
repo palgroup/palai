@@ -60,3 +60,53 @@ func TestConfigSnapshotContentAddressedWithProvenance(t *testing.T) {
 		t.Fatalf("snapshot leaked a credential value: %s", blob)
 	}
 }
+
+// TestResolveUnionsToolSetGrantsThenCeiling proves the E12 effective-set semantics: a pinned revision's
+// tool_sets GRANT their short names onto the baseline (provenance agent_revision), and the AgentRevisionTools
+// CEILING still intersects LAST — so a set-granted tool outside the ceiling is dropped. With no tool_sets
+// and no ceiling, resolution is bit-identical to before (deterministic regression).
+func TestResolveUnionsToolSetGrantsThenCeiling(t *testing.T) {
+	base := ResolveInput{DeploymentModel: "m", ProjectTools: []string{"file"}}
+
+	// Empty tool_sets + no ceiling: bit-identical to the un-extended resolve.
+	before := Resolve(base)
+	base.AgentRevisionToolSetTools = nil
+	if got := Resolve(base); got.Hash != before.Hash {
+		t.Fatalf("empty tool_sets changed the hash: %q vs %q (must be bit-identical)", got.Hash, before.Hash)
+	}
+
+	// A pinned revision granting "fetch" via a set unions it onto the baseline with agent_revision provenance.
+	granted := Resolve(ResolveInput{
+		DeploymentModel:           "m",
+		ProjectTools:              []string{"file"},
+		AgentRevisionID:           "arev_1",
+		AgentRevisionToolSetTools: []string{"fetch"},
+	})
+	if !hasTool(granted.Tools, "fetch") || !hasTool(granted.Tools, "file") {
+		t.Fatalf("effective tools = %v, want the baseline file + the granted fetch", granted.Tools)
+	}
+	if granted.Provenance["tools"] != layerAgentRevision {
+		t.Fatalf("tools provenance = %q, want %q after a set grant", granted.Provenance["tools"], layerAgentRevision)
+	}
+
+	// The ceiling intersects LAST: a set granting "fetch" but a ceiling of only {file} drops fetch.
+	ceilinged := Resolve(ResolveInput{
+		DeploymentModel:           "m",
+		ProjectTools:              []string{"file"},
+		AgentRevisionID:           "arev_1",
+		AgentRevisionToolSetTools: []string{"fetch"},
+		AgentRevisionTools:        []string{"file"},
+	})
+	if hasTool(ceilinged.Tools, "fetch") {
+		t.Fatalf("effective tools = %v, want fetch dropped by the {file} ceiling (ceiling intersects last)", ceilinged.Tools)
+	}
+}
+
+func hasTool(tools []string, name string) bool {
+	for _, t := range tools {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}

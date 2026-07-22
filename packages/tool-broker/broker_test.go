@@ -2,6 +2,7 @@ package toolbroker
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -177,5 +178,53 @@ func TestPureToolReplayLabeledNoDuplication(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&runs); got != 1 {
 		t.Fatalf("pure tool ran %d times, want 1 (the replay is served cached, semantically single)", got)
+	}
+}
+
+// TestRegistryLookupFallback proves the E12 SetLookup fallback: a tool absent from the static conformance
+// set is resolved by the injected per-tenant lookup and then runs through the SAME fence/ledger/replay
+// machinery — a completed row replays cached. A lookup miss (or no lookup) is ErrUnknownTool, and the
+// resolved tool never enters the static set (Discoverable stays false, tenant isolation).
+func TestRegistryLookupFallback(t *testing.T) {
+	echo := Tool{
+		Name: "fetch", InputSchema: openObject,
+		Invoke: func(args map[string]any) (map[string]any, error) { return args, nil },
+	}
+	var calls int32
+	broker := New() // empty static set
+	broker.SetLookup(func(_ context.Context, _ ExecEnv, name string) (Tool, bool, error) {
+		atomic.AddInt32(&calls, 1)
+		if name == "fetch" {
+			return echo, true, nil
+		}
+		return Tool{}, false, nil
+	})
+	ctx := context.Background()
+
+	// A static-set miss resolves through the lookup and executes.
+	out, err := broker.Execute(ctx, contracts.ToolCallID("tc_r1"), "fetch", map[string]any{"q": "x"}, 1, ExecEnv{})
+	if err != nil {
+		t.Fatalf("registry tool execute error = %v, want a resolved run", err)
+	}
+	if out.Result["q"] != "x" {
+		t.Fatalf("echo result = %v, want the input args back", out.Result)
+	}
+	// The resolved tool never entered the static set.
+	if broker.Discoverable("fetch") {
+		t.Fatal("a lookup-resolved tool must not enter the static conformance set")
+	}
+	// A completed row replays cached without re-invoking the lookup's tool.
+	replay, err := broker.Execute(ctx, contracts.ToolCallID("tc_r1"), "fetch", map[string]any{"q": "x"}, 2, ExecEnv{})
+	if err != nil || !replay.Cached {
+		t.Fatalf("replay cached = %v err = %v, want a cached replay", replay.Cached, err)
+	}
+
+	// An unknown name is ErrUnknownTool even with a lookup wired.
+	if _, err := broker.Execute(ctx, contracts.ToolCallID("tc_r2"), "nope", map[string]any{}, 3, ExecEnv{}); !errors.Is(err, ErrUnknownTool) {
+		t.Fatalf("unknown registry tool err = %v, want ErrUnknownTool", err)
+	}
+	// With no lookup wired at all, a miss is still ErrUnknownTool (static-only behaviour unchanged).
+	if _, err := New().Execute(ctx, contracts.ToolCallID("tc_r3"), "fetch", map[string]any{}, 1, ExecEnv{}); !errors.Is(err, ErrUnknownTool) {
+		t.Fatalf("no-lookup miss err = %v, want ErrUnknownTool", err)
 	}
 }

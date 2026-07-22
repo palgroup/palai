@@ -30,6 +30,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	tools "github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
+	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
@@ -145,6 +146,14 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			tools.PushTool(),
 			tools.PullRequestTool(),
 		)
+		// Wire the E12 per-tenant registry lookup: a tool absent from the static set above is resolved
+		// through the run's pinned tool_sets (control_plane echo binder in T2) and runs the SAME fenced
+		// path. ExecEnv.Scope carries tenant + RunID, so resolution is tenant-scoped; a registered tool
+		// never enters the static map (no cross-tenant leak).
+		toolRegistry := extensions.New(spine.Pool())
+		toolBroker.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
+			return toolRegistry.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+		})
 		orch := execution.NewOrchestrator(repo, gateway, broker, toolBroker)
 		orch.SetModelRoute(route)
 		// Wire the repository publisher the approval pump publishes through (spec §30.9-30.10), gated on

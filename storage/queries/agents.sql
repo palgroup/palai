@@ -78,9 +78,25 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- The pin is fixed on the run row, so a later revision of the same profile leaves this read unchanged
 -- (AGT-001 old-run reproducibility).
 -- name: PinnedRunConfig
+-- tool_set_tools resolves the E12 grant (spec §28.2-28.4): the model-visible short names of every tool
+-- pinned by a PUBLISHED tool_set_revision the pinned revision names in its tool_sets JSONB array. Walks
+-- tool_sets → tool_set_revisions → tool_pins → tool_revisions → tools, tenant-scoped, DISTINCT, and
+-- COALESCEd to an empty array so a profile-free / set-free run returns [] (the resolver then unions nothing).
+-- name: PinnedRunConfig
 SELECT COALESCE(ar.id, rtr.id)              AS revision_id,
        COALESCE(ar.model, rtr.model, '')    AS model,
-       COALESCE(ar.tools, rtr.tools)        AS tools
+       COALESCE(ar.tools, rtr.tools)        AS tools,
+       COALESCE((
+           SELECT array_agg(DISTINCT t.model_visible_name)
+           FROM tool_set_revisions tsr
+           CROSS JOIN LATERAL jsonb_array_elements(tsr.tool_pins) AS pin
+           JOIN tool_revisions trv ON trv.id = (pin->>'tool_revision_id')
+               AND trv.organization_id = r.organization_id AND trv.project_id = r.project_id
+           JOIN tools t ON t.id = trv.tool_id
+           WHERE tsr.organization_id = r.organization_id AND tsr.project_id = r.project_id
+               AND tsr.published_at IS NOT NULL
+               AND tsr.id IN (SELECT jsonb_array_elements_text(COALESCE(ar.tool_sets, rtr.tool_sets, '[]'::jsonb)))
+       ), ARRAY[]::text[])                   AS tool_set_tools
 FROM runs r
 LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
 LEFT JOIN run_template_revisions rtr ON rtr.id = r.run_template_revision_id
