@@ -21,7 +21,7 @@ import (
 // correlation middleware, because it carries its own one-use-token and mTLS identity.
 // It is served over a separate mutually-authenticated listener; binding the CA and that
 // listener is Task 12, so production passes nil until then.
-func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, mcp MCPConnectionAPI, skills SkillRegistryAPI, hooks HookAPI, provisioning ProvisioningAPI, sse SSEConfig, runner http.Handler, toolCallbacks http.Handler, opts ...RouterOption) http.Handler {
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, mcp MCPConnectionAPI, skills SkillRegistryAPI, hooks HookAPI, provisioning ProvisioningAPI, artifacts ArtifactAPI, sse SSEConfig, runner http.Handler, toolCallbacks http.Handler, opts ...RouterOption) http.Handler {
 	var cfg routerConfig
 	for _, opt := range opts {
 		opt(&cfg)
@@ -148,6 +148,18 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("GET /v1/api-keys", ph.listAPIKeys)
 		mux.HandleFunc("GET /v1/api-keys/{key_id}", ph.getAPIKey)
 		mux.HandleFunc("POST /v1/api-keys/{key_id}/revoke", ph.revokeAPIKey)
+	}
+
+	// The artifact retrieval surface (spec §22.6, E13 Task 5, DAT-006/MCI-004): the never-opened READ half
+	// of the E09 write-path — an artifact's metadata, its authenticated streaming byte download, and a
+	// response's run-scoped artifact list. Read-only, so no Idempotency-Key. Every route is tenant-scoped
+	// by the verified key and renders a wrong-tenant/unknown id as a non-disclosing 404. nil in tiers with
+	// no object store configured (the Docker-free conformance tiers), so the routes stay unmounted.
+	if artifacts != nil {
+		ah := &artifactHandler{artifacts: artifacts}
+		mux.HandleFunc("GET /v1/artifacts/{artifact_id}", ah.get)
+		mux.HandleFunc("GET /v1/artifacts/{artifact_id}/content", ah.content)
+		mux.HandleFunc("GET /v1/responses/{response_id}/artifacts", ah.listForResponse)
 	}
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}

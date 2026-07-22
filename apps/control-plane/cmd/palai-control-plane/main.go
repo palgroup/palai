@@ -98,6 +98,21 @@ func main() {
 	// than silently dying and stalling dispatch (H2; LP-15 — no restart cap).
 	supervisor := coordinator.NewSupervisor(log.Printf, time.Second)
 
+	// The S3 artifact store is a single main-level instance shared by its consumers (spec §24 — the
+	// credential lives only here). Today the retention reaper's byte-deleter, the changeset write-path, and
+	// the E13 T5 retrieval read-path share it. nil when no PALAI_S3_ENDPOINT is set.
+	artStore := artifactStoreFromEnv(ctx)
+
+	// The artifact retrieval read-path (spec §22.6, E13 Task 5): the never-opened READ half of the E09
+	// write-path, mounted on the public API. It streams bytes from the same control-plane-only object store
+	// (the credential never leaves) and reads the tenant-scoped rows over the durable spine's pool. Left nil
+	// when no object store is configured, so the retrieval routes stay unmounted rather than 500 on an
+	// absent store (the nil-seam guard NewRouter honours for every optional surface).
+	var artifactReader api.ArtifactAPI
+	if artStore != nil {
+		artifactReader = artifacts.NewReader(artStore, repo.Spine().Pool())
+	}
+
 	addr := os.Getenv("PALAI_LISTEN_ADDR")
 	if addr == "" {
 		addr = ":8080"
@@ -114,18 +129,11 @@ func main() {
 		// The §20.12 edge admission control (E13 T7): the per-API-key request-rate limiter and the
 		// per-project concurrent/queued run caps, read from the environment. Every value defaults to
 		// zero = disabled, so a stack that configures none admits exactly as before.
-		Handler: withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, repo, repo, repo, identityStore, sseConfigFromEnv(), nil,
+		Handler: withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, repo, repo, repo, identityStore, artifactReader, sseConfigFromEnv(), nil,
 			api.NewToolCallbackHandler(remotehttp.NewOperations(repo.Spine().Pool()), remoteToolSecretResolver),
 			api.WithEdgeLimits(edgeLimitsFromEnv())), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
-	// The S3 artifact store is a single main-level instance shared by its consumers (spec §24 — the
-	// credential lives only here). Today the retention reaper's byte-deleter is the in-binary consumer;
-	// the changeset write-path (spec §30.6) is a composed step the live smoke + coding journey drive
-	// with their own Writer over this same store, and the exact consumer the finalize gate wires once
-	// workspace provisioning lands (repository.go deferral). nil when no PALAI_S3_ENDPOINT is set.
-	artStore := artifactStoreFromEnv(ctx)
 
 	startDispatch(ctx, repo, gateway, supervisor, artStore)
 	startWebhookPump(ctx, webhookStore, supervisor)
