@@ -5,7 +5,7 @@ SHELL := /bin/bash
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
 	test-fault test-security test-live-provider test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
-	uat-interactive uat-coding uat-recovery evidence-verify
+	uat-interactive uat-coding uat-recovery uat-automation evidence-verify
 
 bootstrap:
 	go mod download
@@ -112,6 +112,13 @@ uat-coding:
 uat-recovery:
 	@test -x scripts/uat/recovery || { echo "recovery UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' scripts/uat/recovery
+
+# E11 exit gate: the deterministic automation journey + scheduler fault + evidence-verify core (always) +
+# the four already-registered live automation smokes (PROVIDER=provider-one). uat-local-live /
+# uat-interactive / uat-coding / uat-recovery above stay untouched.
+uat-automation:
+	@test -x scripts/uat/automation || { echo "automation UAT not implemented" >&2; exit 2; }
+	@PROVIDER='$(PROVIDER)' scripts/uat/automation
 
 evidence-verify:
 	@test -x scripts/evidence/verify || { echo "evidence verifier not implemented" >&2; exit 2; }
