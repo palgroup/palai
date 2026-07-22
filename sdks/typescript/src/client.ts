@@ -6,6 +6,14 @@ import type { Response as PalaiResponse } from "./generated/types.ts";
 import { errorForResponse, isRetryableStatus, PalaiConnectionError } from "./errors.ts";
 import { delay, fullJitterBackoff, type StreamTransport } from "./stream.ts";
 import { Responses } from "./resources/responses.ts";
+import { Sessions } from "./resources/sessions.ts";
+import { Agents } from "./resources/agents.ts";
+import { Artifacts } from "./resources/artifacts.ts";
+import { MCPConnections, RepositoryBindings, Tools, Triggers } from "./resources/reads.ts";
+import { SecretRefs } from "./resources/secret-refs.ts";
+import { ModelRoutes } from "./resources/model-routes.ts";
+import { ApiKeys, Organizations, Projects } from "./resources/provisioning.ts";
+import type { CallOptions } from "./resources/shared.ts";
 
 // APIVersion is the dated contract this SDK speaks; it rides every request (spec §20.13).
 export const APIVersion = "2026-07-16";
@@ -47,6 +55,18 @@ export class Palai implements StreamTransport {
   readonly baseURL: string;
   readonly project: string | undefined;
   readonly responses: Responses;
+  readonly sessions: Sessions;
+  readonly agents: Agents;
+  readonly artifacts: Artifacts;
+  readonly repositoryBindings: RepositoryBindings;
+  readonly tools: Tools;
+  readonly mcpConnections: MCPConnections;
+  readonly triggers: Triggers;
+  readonly secretRefs: SecretRefs;
+  readonly modelRoutes: ModelRoutes;
+  readonly organizations: Organizations;
+  readonly projects: Projects;
+  readonly apiKeys: ApiKeys;
 
   #apiKey: string;
   #fetch: typeof fetch;
@@ -74,6 +94,18 @@ export class Palai implements StreamTransport {
     this.#backoffBaseMs = options.backoffBaseMs ?? 200;
     this.#backoffMaxMs = options.backoffMaxMs ?? 10_000;
     this.responses = new Responses(this);
+    this.sessions = new Sessions(this);
+    this.agents = new Agents(this);
+    this.artifacts = new Artifacts(this);
+    this.repositoryBindings = new RepositoryBindings(this);
+    this.tools = new Tools(this);
+    this.mcpConnections = new MCPConnections(this);
+    this.triggers = new Triggers(this);
+    this.secretRefs = new SecretRefs(this);
+    this.modelRoutes = new ModelRoutes(this);
+    this.organizations = new Organizations(this);
+    this.projects = new Projects(this);
+    this.apiKeys = new ApiKeys(this);
   }
 
   async request<T>(method: string, path: string, options: RequestOptions = {}): Promise<ApiResult<T>> {
@@ -180,6 +212,35 @@ export class Palai implements StreamTransport {
 
   retrieveResponse(responseID: string): Promise<PalaiResponse> {
     return this.responses.retrieve(responseID);
+  }
+
+  // openDownload opens an authenticated GET whose body is raw bytes (an artifact download), not JSON.
+  // It applies the same Bearer auth + dated version as request() and maps a non-2xx to the typed RFC
+  // 9457 error, but returns the raw Response so the caller streams the body without buffering it.
+  // ponytail: single attempt — a partially-drained stream is not safely retryable and downloads do not
+  // need it yet; add a bounded open-retry when a caller measurably needs one.
+  async openDownload(path: string, options: CallOptions = {}): Promise<globalThis.Response> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.#apiKey}`,
+      "API-Version": APIVersion,
+      Accept: "application/octet-stream",
+    };
+    const timeout = AbortSignal.timeout(options.timeoutMs ?? this.#timeoutMs);
+    const signal = combineSignals(options.signal, timeout);
+    let response: globalThis.Response;
+    try {
+      response = await this.#fetch(this.baseURL + path, { method: "GET", headers, cache: "no-store", signal });
+    } catch (cause) {
+      if (options.signal?.aborted) {
+        throw new PalaiConnectionError(`GET ${path} was canceled`, { cause });
+      }
+      throw new PalaiConnectionError(`GET ${path} failed to reach the server`, { cause });
+    }
+    if (!response.ok) {
+      const text = await response.text();
+      throw errorForResponse(response.status, text, response.headers.get("Request-Id") ?? undefined);
+    }
+    return response;
   }
 }
 
