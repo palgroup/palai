@@ -1,7 +1,9 @@
 package extensions
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -211,6 +213,20 @@ func applyTransformPatch(point string, payload map[string]any, patch *contracts.
 		return nil, fmt.Errorf("point %q is not transformable", point)
 	}
 	return out, nil
+}
+
+// decodeHookPatch strictly decodes an (untrusted) remote hook's JSON body into the closed HookPatch shape,
+// rejecting ANY field outside arguments/result via DisallowUnknownFields. The generated contracts.HookPatch
+// carries NO capability field (tools/model/budget/secret), so a capability-granting patch is rejected
+// fail-closed — a hook can never grant a capability (TestHookCannotGrantCapability, the exit-gate invariant).
+func decodeHookPatch(raw []byte) (*contracts.HookPatch, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var p contracts.HookPatch
+	if err := dec.Decode(&p); err != nil {
+		return nil, fmt.Errorf("hook patch is not a valid arguments/result patch: %w", err)
+	}
+	return &p, nil
 }
 
 // clonePayload shallow-copies a payload map so a transform's replacement never mutates the caller's map.
