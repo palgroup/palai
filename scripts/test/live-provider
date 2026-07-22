@@ -365,6 +365,20 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_postgres=1
     ;;
+  provider-one/secret-rotation-restartless)
+    # E13 Task 3 (SEC-002/MCI-002): on a running store, a tenant's secret is written and ROTATED through the
+    # API's engine (internal/identity.SecretStore, the code behind POST /v1/secret-refs) with NO restart, and
+    # the SAME live process resolves each version through the production resolver seam; a second tenant is
+    # RLS-denied the ref (migration 000031), and the tenant then drives a REAL provider-one completion. Needs
+    # the credential + a throwaway Postgres + the reference engine (PALAI_ENGINE_DIR, exported by
+    # run_live_with_postgres). Honest ceiling (named in the test): single process-held master-key AES-256-GCM
+    # (KMS/lease is E13-H); the model-redeems-an-MCP-secret causal join is the mcp-tool-roundtrip machinery —
+    # the resolver seam + restart-less rotation + live RLS isolation are what this case proves.
+    pkg="./apps/control-plane/internal/execution/live"
+    run="TestLiveSecretRefRestartlessRotation"
+    required_key="OPENAI_API_KEY"
+    needs_postgres=1
+    ;;
   provider-one/edge-admission)
     # E13 Task 7 (MCI-005, §20.12 basic tier): §20.12 edge admission control on a REAL router over a
     # throwaway Postgres. A rapid burst on one API key is shed by the per-key request-rate token bucket
@@ -381,7 +395,7 @@ case "$provider/$case_name" in
     ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation, PROVIDER=provider-one CASE=second-tenant-provisioning, PROVIDER=provider-one CASE=edge-admission" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation, PROVIDER=provider-one CASE=second-tenant-provisioning, PROVIDER=provider-one CASE=secret-rotation-restartless, PROVIDER=provider-one CASE=edge-admission" >&2
     exit 2
     ;;
 esac
