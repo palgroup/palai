@@ -81,7 +81,11 @@ func (s *TriggerStore) armDueCallbacks(ctx context.Context, limit int, log func(
 	}
 
 	for _, d := range due {
-		if err := s.armCallback(ctx, d); err != nil {
+		// Re-narrow each callback's WRITES to its own tenant (defense-in-depth, M4): the sweep spans
+		// tenants to FIND due rows, but the arm/dead-letter writes then run under that row's tenant scope,
+		// so migration 000029's RLS applies to them — the same idiom Worker.process / deliver.go use.
+		rowCtx := storage.WithTenant(ctx, d.org, d.project)
+		if err := s.armCallback(rowCtx, d); err != nil {
 			log("delivery-reconciler: arm callback %s: %v", d.deliveryID, err)
 		}
 	}

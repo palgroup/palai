@@ -119,9 +119,11 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 	}
 }
 
-// asOrg runs fn inside one transaction whose palai.org_id GUC names org, mirroring the per-request
-// scope the auth middleware resolves. An empty org leaves the GUC unset — the "connection that never
-// declared a tenant" case.
+// asOrg runs fn inside one transaction whose palai.org_id GUC names org. It mirrors the per-request scope
+// the auth middleware resolves, though the mechanism differs on purpose: this test sets the GUC
+// transaction-locally (set_config is_local=true) for isolation between subtests, whereas production sets it
+// session-level once per pool acquisition (storage.OpenPool, is_local=false). Both reach the same policy.
+// An empty org leaves the GUC unset — the "connection that never declared a tenant" case.
 func (s *suite) asOrg(t *testing.T, org string, fn func(tx pgx.Tx)) {
 	t.Helper()
 	ctx := context.Background()

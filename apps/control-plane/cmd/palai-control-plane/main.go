@@ -33,6 +33,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	tools "github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
+	"github.com/palgroup/palai/apps/control-plane/internal/identity"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
@@ -65,6 +66,11 @@ func main() {
 	if err := repo.Bootstrap(ctx, readFileEnv("PALAI_BOOTSTRAP_API_KEY_FILE")); err != nil {
 		log.Fatalf("seed bootstrap identity: %v", err)
 	}
+
+	// The tenancy provisioning store backs the /v1/organizations, /v1/projects, and /v1/api-keys surface
+	// (E13 Task 2). It rides the durable spine's pool; organization creation opens a new tenant with no
+	// restart, and the config_policy PATCH makes the §14 resolver's project layer API-reachable.
+	identityStore := identity.New(repo.Spine().Pool())
 
 	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"))
 
@@ -105,7 +111,7 @@ func main() {
 		// The signed remote-tool result callback endpoint (spec §28.24, E12 T4): its auth IS the per-operation
 		// HMAC signature + one-use token, so it rides the top mux unauthenticated (like the inbound receiver).
 		// The SAME org-scoped secret bridge signs the outbound invoke and verifies the inbound callback.
-		Handler: withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, repo, repo, repo, sseConfigFromEnv(), nil,
+		Handler: withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, repo, repo, repo, identityStore, sseConfigFromEnv(), nil,
 			api.NewToolCallbackHandler(remotehttp.NewOperations(repo.Spine().Pool()), remoteToolSecretResolver)), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

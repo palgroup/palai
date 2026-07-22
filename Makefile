@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 .PHONY: \
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
-	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-spikes evidence-spikes \
+	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility evidence-verify
 
@@ -84,6 +84,12 @@ test-live-hook-deny:
 # A convenience alias for the CASE=tenancy-isolation live-provider case (PROVIDER=provider-one).
 test-live-tenancy:
 	@PROVIDER=provider-one CASE=tenancy-isolation scripts/test/live-provider
+
+# E13 Task 2 live smoke: a running store provisions a BRAND-NEW tenant via the API with no restart, its
+# config_policy is visible in the §14 resolver, and the fresh tenant runs a REAL provider completion
+# (MCI-001/TEN-003). A convenience alias for the CASE=second-tenant-provisioning case (PROVIDER=provider-one).
+test-live-second-tenant:
+	@PROVIDER=provider-one CASE=second-tenant-provisioning scripts/test/live-provider
 
 verify: lint check-generated test-unit test-spikes check-spike-reports
 	@bash scripts/verify/repository-boundary.sh

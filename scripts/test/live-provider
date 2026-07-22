@@ -340,6 +340,18 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_postgres=1
     ;;
+  provider-one/second-tenant-provisioning)
+    # E13 Task 2 (MCI-001/TEN-003): a running store provisions a BRAND-NEW tenant through the API's engine
+    # (internal/identity) with NO restart — its admin key resolves through the production credential path,
+    # its config_policy written via the PATCH write-path is visible in the §14 resolver, and the fresh
+    # tenant then drives a REAL provider-one completion. Needs the credential + a throwaway Postgres + the
+    # reference engine (PALAI_ENGINE_DIR, exported by run_live_with_postgres). Honest ceiling (named in the
+    # test): single provider, basic scopes (no roles/OIDC — E13-H/E17).
+    pkg="./apps/control-plane/internal/execution/live"
+    run="TestLiveSecondTenantProvisionedViaAPI"
+    required_key="OPENAI_API_KEY"
+    needs_postgres=1
+    ;;
   provider-one/tenancy-isolation)
     # E13 Task 1 (TEN-001/TEN-002 live half): a two-organization stack on ONE real Postgres. A REAL
     # provider-one completion produces org-A's run, then org-B's real API key gets a 404 retrieving it
@@ -355,7 +367,7 @@ case "$provider/$case_name" in
     ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation, PROVIDER=provider-one CASE=second-tenant-provisioning" >&2
     exit 2
     ;;
 esac

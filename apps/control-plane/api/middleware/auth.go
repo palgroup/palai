@@ -16,6 +16,24 @@ type Scope struct {
 	Organization string
 	Project      string
 	Principal    string
+	// Scopes is the key's coarse capability set (E13 T2). Empty means unrestricted (the ConfigPolicy
+	// §9.3 idiom); the tenancy provisioning surface requires the `provision` capability. HONEST CEILING:
+	// basic scopes only — named roles, relationships, and OIDC are E13-H/E17.
+	Scopes []string
+}
+
+// HasScope reports whether the key may perform an operation guarded by capability. An empty scope set is
+// unrestricted (an admin/bootstrap key), matching how an empty ConfigPolicy allowlist permits everything.
+func (s Scope) HasScope(capability string) bool {
+	if len(s.Scopes) == 0 {
+		return true
+	}
+	for _, c := range s.Scopes {
+		if c == capability {
+			return true
+		}
+	}
+	return false
 }
 
 // Verifier resolves a bearer token to its tenant scope. The stored verifier is a

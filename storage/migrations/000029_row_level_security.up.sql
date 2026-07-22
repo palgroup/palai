@@ -2,7 +2,9 @@
 -- TEN-001/TEN-002). Until now every tenant boundary lived in a hand-written WHERE clause: one omitted
 -- predicate in one query leaked another organization's rows. This migration enables and FORCES row
 -- level security on every tenant-scoped table and grants visibility only to the organization named by
--- the transaction-local `palai.org_id` GUC, which the API's verified scope sets (never a body field).
+-- the `palai.org_id` GUC, which the API's verified scope sets (never a body field). That GUC is
+-- session-level, set once per pool acquisition by storage.OpenPool (set_config is_local=false), NOT
+-- per transaction — the scope a borrowed connection publishes cannot outlive the acquisition that set it.
 --
 -- The runtime role is 000001's already-declared, never-used `palai_app`: NOLOGIN, not a table owner,
 -- not superuser. storage.OpenPool switches every application connection onto it with SET ROLE, so the

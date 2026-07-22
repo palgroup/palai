@@ -124,7 +124,7 @@ func newInboundHarness(t *testing.T, maxInflight, backlogMax int) *inboundHarnes
 		t.Fatalf("SetInboundSecretRefs error = %v", err)
 	}
 
-	router := api.NewRouter(repo, repo, repo, repo, repo, repo, automation.NewWebhookStore(pool), ts, nil, nil, nil, nil, nil, api.SSEConfig{}, nil, nil)
+	router := api.NewRouter(repo, repo, repo, repo, repo, repo, automation.NewWebhookStore(pool), ts, nil, nil, nil, nil, nil, nil, api.SSEConfig{}, nil, nil)
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 

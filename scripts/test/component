@@ -101,6 +101,13 @@ run_postgres() {
       go test -tags=component -count=1 -v -run 'TestVerifyPublishedRevision' ./packages/coordinator
     status=$?
   fi
+  # The E13 Task 2 tenancy provisioning store drives the real spine: second-tenant provisioning (MCI-001),
+  # the config_policy resolver reachability (§14), strict-decode rejects, and cross-tenant key denial (RLS).
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v ./apps/control-plane/internal/identity
+    status=$?
+  fi
   set -e
   if test "$status" -ne 0; then
     docker logs "$container" >&2 || true
