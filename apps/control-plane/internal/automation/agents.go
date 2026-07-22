@@ -54,6 +54,13 @@ func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 // conflict shield). T2 CONSUMES only ToolSets (a list of published ToolSetRevision ids the resolver
 // unions into the effective set); MCPConnections/Skills/Hooks ride OPAQUE — persisted but validated and
 // consumed by their owning task, never here.
+//
+// Reference validation (that a ToolSets id names an existing, published, in-tenant ToolSetRevision) is
+// DEFERRED to consumption, not enforced at create: the resolver (PinnedRunConfig) and the broker lookup
+// both filter on published_at + tenant, so a typo'd/draft/foreign id fails CLOSED — it grants no
+// capability and leaks nothing. This is deliberate: validating references at create would force each
+// wave-2 task (T5/T7/T8) to add its own cross-table check here, re-coupling the very seam the conflict
+// shield protects. A future loud-at-create validation is a documented, non-blocking follow-up.
 type RevisionInput struct {
 	Model          string   `json:"model"`
 	Tools          []string `json:"tools"`

@@ -81,6 +81,9 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- tool_revisions → tools (tenant-scoped by $2/$3). It is the per-tenant broker-lookup chain: only a tool
 -- pinned by a published set the run's pinned revision names is resolvable, so nothing outside the pin
 -- surface ever reaches the broker. Returns the executor binding + schemas + replay class for the row.
+-- POSTURE: the AgentRevision.tools ceiling is NOT re-checked here — capability restriction is an
+-- advertisement-side concern (the effective set / request construction), consistent with the static tool
+-- broker, which also fences+executes any dispatched call without re-consulting the ceiling.
 -- name: LookupRunTool
 SELECT trv.executor, trv.input_schema, trv.output_schema, trv.replay_class
 FROM runs r
