@@ -1,0 +1,9 @@
+id: AUT-008
+name: scheduler-outage-misfire-policy-bounded
+proof_class: fault-live
+provider: fake
+input: "after a scheduler outage the misfire policy is BOUNDED — fire-once-now collapses the missed backlog to the latest-missed instant, and catch-up is bounded and replays oldest-first (real container/host outage, fault tier)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/automation/fault/outage_test.go:TestSchedulerOutageFireOnceNowLatestMissed
+  - apps/control-plane/internal/automation/fault/outage_test.go:TestSchedulerOutageCatchUpBoundedOldestFirst

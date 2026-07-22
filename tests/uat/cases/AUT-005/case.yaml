@@ -1,0 +1,10 @@
+id: AUT-005
+name: concurrency-policies-documented-irreversible-guarded
+proof_class: component-real
+provider: fake
+input: "the concurrency policies have documented outcomes, and replace/coalesce are DENIED once an irreversible tool call has run — an in-flight run past an irreversible boundary is never silently superseded"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/automation/concurrency_component_test.go:TestConcurrencyPoliciesDocumentedOutcomes
+  - apps/control-plane/internal/automation/guard_component_test.go:TestReplaceDeniedAfterIrreversibleToolCall
+  - apps/control-plane/internal/automation/guard_component_test.go:TestCoalesceDeniedAfterIrreversibleToolCall

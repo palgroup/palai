@@ -1,0 +1,8 @@
+id: AUT-002
+name: invalid-signature-rejected-before-persistence
+proof_class: component-real
+provider: fake
+input: "an inbound event with an invalid HMAC signature is rejected BEFORE any persistence (no delivery row, no run); the stale-timestamp/rotation half is the unit-tier adapters/integrations/webhook/inbound_test.go:TestInboundVerifyTamperStaleAndRotation, named here but not re-listed to keep the proof single-tier"
+expect_status: rejected
+proof:
+  - apps/control-plane/internal/automation/inbound_component_test.go:TestInvalidSignatureRejectedBeforePersistence

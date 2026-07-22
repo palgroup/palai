@@ -1,0 +1,9 @@
+id: AUT-001
+name: duplicate-event-single-action-original-linkage
+proof_class: component-real
+provider: fake
+input: "a duplicated source event (same source_event_id) produces exactly ONE canonical delivery + one run; the second row is recorded duplicate with duplicate_of linking the original (original linkage), not a second action"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/automation/dedupe_component_test.go:TestDuplicateDeliveryLinksOriginalSingleAction
+  - apps/control-plane/internal/automation/inbound_component_test.go:TestDuplicateSourceEventSingleActionOriginalLinkage

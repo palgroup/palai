@@ -1,0 +1,8 @@
+id: AUT-004
+name: queue-policy-fifo-per-correlation-key
+proof_class: component-real
+provider: fake
+input: "the queue concurrency policy orders admitted runs FIFO per correlation key — deliveries in one correlation-key group admit head-first, in order"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/automation/queue_component_test.go:TestQueuePolicyOrdersRunsPerKey
