@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/palgroup/palai/packages/contracts"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
 	"github.com/palgroup/palai/storage"
 )
@@ -446,7 +447,7 @@ func (s *Store) LookupModelResult(ctx context.Context, tenant Tenant, requestID 
 // result event in one transaction. The orchestrator calls it before delivering
 // model.result to the engine, so no provider result reaches the engine until its state
 // is durable (spec §24.7).
-func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID, requestID string, result []byte, eventType string, payload []byte) (int64, error) {
+func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID, requestID string, result []byte, eventType string, payload []byte, usage contracts.Usage) (int64, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -469,6 +470,13 @@ func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID,
 	if _, err := tx.Exec(ctx, storage.Query("MarkDeliveredMessagesFolded"),
 		runID, tenant.Organization, tenant.Project); err != nil {
 		return 0, fmt.Errorf("mark delivered messages folded: %w", err)
+	}
+	// Settle the step's provider usage into the append-only ledger in THIS transaction (spec §43.1, E13
+	// T6): metering that is not atomic with the fact it meters loses usage on a crash between the two.
+	// The ledger identity is derived from the model request id, so a redelivered commit of the same step
+	// re-derives the same rows and settles nothing new (BIL-001, replay without double settlement).
+	if err := settleUsage(ctx, tx, tenant, modelUsageEntries(sessionID, runID, requestID, usage)...); err != nil {
+		return 0, err
 	}
 	seq, err := appendEvent(ctx, tx, tenant, sessionID, responseID, eventType, payload)
 	if err != nil {

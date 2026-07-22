@@ -43,6 +43,7 @@ type RouterOption func(*routerConfig)
 type routerConfig struct {
 	edge    EdgeLimits
 	secrets SecretRefAPI
+	usage   UsageAPI
 }
 
 // WithEdgeLimits supplies the §20.12 request-rate limiter and per-project admission caps.
@@ -55,4 +56,16 @@ func WithEdgeLimits(e EdgeLimits) RouterOption {
 // caller compiles unchanged, and a stack with no master key leaves it unset so the routes stay unmounted.
 func WithSecretRefs(secrets SecretRefAPI) RouterOption {
 	return func(c *routerConfig) { c.secrets = secrets }
+}
+
+// WithUsage mounts the metering surface (E13 Task 6): the durable budget/quota limits and the
+// tenant-scoped view of what has been settled. A trailing option for the same reason as WithSecretRefs —
+// only production and its dedicated tests wire it, so every other caller compiles unchanged and a tier
+// that passes none leaves the routes unmounted.
+//
+// The limits themselves are enforced in the admission transaction, NOT here: leaving this option unset
+// unmounts the management routes but does not disable a limit a tenant has already set. Enforcement
+// lives with the data, so it cannot be bypassed by a caller that mounted a smaller router.
+func WithUsage(usage UsageAPI) RouterOption {
+	return func(c *routerConfig) { c.usage = usage }
 }

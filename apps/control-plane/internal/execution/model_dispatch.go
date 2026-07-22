@@ -203,7 +203,11 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 
 	stored, _ := json.Marshal(data)
 	resultEvent, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID})
-	if _, err := o.spine.CommitModelResult(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), requestID, stored, eventModelStepCompleted, resultEvent); err != nil {
+	// result.Usage rides the commit so the step's provider usage is settled into the ledger in the same
+	// transaction as the result itself (spec §43.1, E13 T6). It is deliberately NOT folded into `data`:
+	// that map is also the model.result frame the engine receives, and usage is control-plane metering,
+	// not engine input.
+	if _, err := o.spine.CommitModelResult(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), requestID, stored, eventModelStepCompleted, resultEvent, result.Usage); err != nil {
 		return false, err
 	}
 	return len(toolCalls) > 0, st.ch.Send(ctx, o.frame(st, "model.result", data, string(frame.ID)))

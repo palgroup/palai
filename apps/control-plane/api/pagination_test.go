@@ -37,7 +37,7 @@ func assertPageLen(t *testing.T, resp *http.Response, want int) contracts.Page {
 func TestCursorRoundTrips(t *testing.T) {
 	key := testCursorKey()
 	scope := middleware.Scope{Organization: "org_a", Project: "prj_a"}
-	pos := listCursor{CreatedAt: time.Unix(0, 1_700_000_000_123_456_789).UTC(), ID: "resp_abc123"}
+	pos := ListCursor{CreatedAt: time.Unix(0, 1_700_000_000_123_456_789).UTC(), ID: "resp_abc123"}
 
 	tok := encodeCursor(key, "responses", scope, pos)
 	got, err := decodeCursor(key, "responses", scope, tok)
@@ -55,7 +55,7 @@ func TestCursorRejectsForeignTenant(t *testing.T) {
 	key := testCursorKey()
 	orgA := middleware.Scope{Organization: "org_a", Project: "prj_a"}
 	orgB := middleware.Scope{Organization: "org_b", Project: "prj_a"}
-	tok := encodeCursor(key, "responses", orgA, listCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
+	tok := encodeCursor(key, "responses", orgA, ListCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
 
 	if _, err := decodeCursor(key, "responses", orgB, tok); err == nil {
 		t.Fatal("a cursor minted for org_a decoded under org_b; the foreign cursor was not rejected")
@@ -72,7 +72,7 @@ func TestCursorRejectsForeignTenant(t *testing.T) {
 func TestCursorRejectsForeignKind(t *testing.T) {
 	key := testCursorKey()
 	scope := middleware.Scope{Organization: "org_a", Project: "prj_a"}
-	tok := encodeCursor(key, "responses", scope, listCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
+	tok := encodeCursor(key, "responses", scope, ListCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
 	if _, err := decodeCursor(key, "sessions", scope, tok); err == nil {
 		t.Fatal("a responses cursor decoded on the sessions list; the cross-kind cursor was not rejected")
 	}
@@ -83,7 +83,7 @@ func TestCursorRejectsForeignKind(t *testing.T) {
 func TestCursorRejectsTamperAndGarbage(t *testing.T) {
 	key := testCursorKey()
 	scope := middleware.Scope{Organization: "org_a", Project: "prj_a"}
-	tok := encodeCursor(key, "responses", scope, listCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
+	tok := encodeCursor(key, "responses", scope, ListCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
 
 	raw, err := base64.RawURLEncoding.DecodeString(tok)
 	if err != nil {
@@ -109,7 +109,7 @@ func TestCursorRejectsTamperAndGarbage(t *testing.T) {
 func TestCursorDoesNotLeakTenant(t *testing.T) {
 	key := testCursorKey()
 	scope := middleware.Scope{Organization: "org_secret_tenant", Project: "prj_secret_tenant"}
-	tok := encodeCursor(key, "responses", scope, listCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
+	tok := encodeCursor(key, "responses", scope, ListCursor{CreatedAt: time.Now().UTC(), ID: "resp_x"})
 
 	raw, err := base64.RawURLEncoding.DecodeString(tok)
 	if err != nil {

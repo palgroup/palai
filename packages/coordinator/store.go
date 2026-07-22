@@ -665,6 +665,11 @@ type Admission struct {
 	// rejected request leaves no run and no idempotency record, and a retry re-evaluates once capacity frees.
 	ConcurrencyLimited bool
 	QueueDepthExceeded bool
+	// LimitExceeded, when non-nil, names the DURABLE budget or quota that refused this admission (E13 T6,
+	// BIL-003/QUO-001). Unlike the caps above it survives a restart — it is read from the tenant's own
+	// budgets/quotas rows against the settled ledger — and it is decided BEFORE the idempotency reserve,
+	// so the refused request leaves nothing behind at all.
+	LimitExceeded *LimitExceeded
 }
 
 // AdmitResponse atomically reserves the idempotency key and, on a fresh key,
@@ -743,6 +748,17 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		case !ok:
 			return adm, nil
 		}
+	}
+
+	// The durable budget/quota gate (E13 T6, BIL-003/QUO-001). Like the binding and revision checks it
+	// runs BEFORE the idempotency reserve, so a refused request leaves no record, no run, and a key that
+	// is free to retry the moment the limit is raised or the quota window releases. Unlike the §20.12
+	// caps below it needs no configuration argument: the limits are the tenant's own durable rows, so a
+	// tenant with none configured is unaffected (both queries return no row).
+	if limit, err := checkDurableLimits(ctx, tx, tenant); err != nil {
+		return Admission{}, err
+	} else if limit != nil {
+		return Admission{LimitExceeded: limit}, nil
 	}
 
 	// The response body carries the resolved session id (the minted one is only correct for a
@@ -832,6 +848,17 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 			return Admission{ActiveRunConflict: true}, nil
 		}
 		return Admission{}, fmt.Errorf("insert run: %w", err)
+	}
+
+	// The run's reservation in the ledger (E13 T6): recorded in the SAME transaction as the run, so the
+	// run-count meter a quota reads counts exactly the runs that were admitted — no more (a rolled-back
+	// admission takes its reservation with it) and no less (a run cannot exist unmetered). It rides after
+	// InsertRun so a one-active-root rejection never leaves a reservation for a run that was refused.
+	if err := settleUsage(ctx, tx, tenant, usageEntry{
+		sessionID: sessionID, runID: in.RunID, meter: meterRunAdmitted, unit: unitRun,
+		dedupeKey: "run:" + in.RunID + ":admitted", quantity: 1,
+	}); err != nil {
+		return Admission{}, err
 	}
 
 	// Attach the session's coding workspace when the request carried a repository binding (spec §30.1,

@@ -34,6 +34,7 @@ import (
 	tools "github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/apps/control-plane/internal/identity"
+	"github.com/palgroup/palai/apps/control-plane/internal/metering"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
@@ -144,7 +145,14 @@ func main() {
 	// WithSecretRefs is passed ONLY when a store exists: passing a typed-nil *identity.SecretStore through
 	// api.WithSecretRefs would set a non-nil interface wrapping a nil pointer and mount routes over a nil
 	// store (the classic Go nil-interface trap), so the option is appended conditionally.
-	routerOpts := []api.RouterOption{api.WithEdgeLimits(edgeLimitsFromEnv())}
+	// The metering surface (spec §43, E13 T6): the durable budget/quota limits and the tenant's view of
+	// what has been settled, over the same spine pool. It is always wired — unlike secret-refs it needs no
+	// external key material — and mounting it only opens the MANAGEMENT routes: a limit already stored is
+	// enforced inside the admission transaction whether or not this option is passed.
+	routerOpts := []api.RouterOption{
+		api.WithEdgeLimits(edgeLimitsFromEnv()),
+		api.WithUsage(metering.New(repo.Spine().Pool())),
+	}
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))
 	}

@@ -108,6 +108,13 @@ run_postgres() {
       go test -tags=component -count=1 -v ./apps/control-plane/internal/identity
     status=$?
   fi
+  # The E13 Task 6 metering store drives the real spine: the limit upsert's scope binding, the summary's
+  # org/project narrowing, and the ledger keyset page (the SQL the fake-seam handler tests cannot reach).
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v ./apps/control-plane/internal/metering
+    status=$?
+  fi
   set -e
   if test "$status" -ne 0; then
     docker logs "$container" >&2 || true

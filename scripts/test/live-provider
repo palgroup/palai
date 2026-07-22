@@ -418,9 +418,25 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_postgres=1
     ;;
+  provider-one/budget-admission)
+    # E13 Task 6 (BIL-001/BIL-003/QUO-001): durable metering on a REAL router over a throwaway Postgres.
+    # A project carrying a LOW budget admits its first run, that run completes on the REAL provider-one and
+    # settles its token usage into the append-only ledger, and the SECOND POST /v1/responses is refused at
+    # admission with 429 quota_exceeded + a stable remediation body — leaving no run and no idempotency
+    # record; raising the budget admits the same request. The ledger total is reconciled against the run's
+    # own terminal projection (two independent accumulations of the same provider receipts). Needs the
+    # credential + a throwaway Postgres + the reference engine (PALAI_ENGINE_DIR, exported by
+    # run_live_with_postgres). Honest ceiling (named in the test): metering only (no price/invoice/
+    # adjustment/exporter — E13-H/SaaS), and the gate reads SETTLED usage, so an in-flight run can
+    # overshoot a budget by its own usage (the BIL-003 documented variance).
+    pkg="./apps/control-plane/internal/execution/live"
+    run="TestLiveBudgetRejectsSecondRunAndLedgerReconciles"
+    required_key="OPENAI_API_KEY"
+    needs_postgres=1
+    ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=artifact-retrieval, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation, PROVIDER=provider-one CASE=second-tenant-provisioning, PROVIDER=provider-one CASE=secret-rotation-restartless, PROVIDER=provider-one CASE=run-history-list, PROVIDER=provider-one CASE=edge-admission" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=artifact-retrieval, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation, PROVIDER=provider-one CASE=second-tenant-provisioning, PROVIDER=provider-one CASE=secret-rotation-restartless, PROVIDER=provider-one CASE=run-history-list, PROVIDER=provider-one CASE=edge-admission, PROVIDER=provider-one CASE=budget-admission" >&2
     exit 2
     ;;
 esac

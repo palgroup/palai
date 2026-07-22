@@ -218,7 +218,7 @@ func TestAppliedFoldedTurnPresentInPostResumeHistory(t *testing.T) {
 	if err := h.orch.spine.CommitModelRequest(ctx, h.tenant, h.sessionID, "", h.runID, "mr_step3", "model_step.created.v1", []byte(`{}`)); err != nil {
 		t.Fatalf("CommitModelRequest() error = %v", err)
 	}
-	if _, err := h.orch.spine.CommitModelResult(ctx, h.tenant, h.sessionID, "", h.runID, "mr_step3", []byte(`{"output":"ok"}`), "model_step.completed.v1", []byte(`{}`)); err != nil {
+	if _, err := h.orch.spine.CommitModelResult(ctx, h.tenant, h.sessionID, "", h.runID, "mr_step3", []byte(`{"output":"ok"}`), "model_step.completed.v1", []byte(`{}`), contracts.Usage{}); err != nil {
 		t.Fatalf("CommitModelResult() error = %v", err)
 	}
 	if got := foldStateOf(t, h, h.commandID); got != "folded" {
