@@ -44,6 +44,8 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func TestManagedCloudJourney(t *testing.T) {
@@ -76,6 +78,15 @@ func TestManagedCloudJourney(t *testing.T) {
 	// Two tenants on the SAME stack: A owns a real run; B is a second tenant with its own key.
 	tokenA, tenantA, sessionA, respA, runA := seedTenantWithRun(t, pool, "managed-cloud journey: reply with the single word done.")
 	tokenB, _ := seedTenantWithKey(t, pool, "org-B")
+
+	// A second bare response gives tenant A a 2-row history, so a limit=1 page mints a next_cursor for the
+	// cross-tenant cursor-reject step below (matches the run-history-list smoke).
+	respA2 := newID("resp")
+	if _, err := pool.Exec(storage.WithSystemScope(ctx),
+		`INSERT INTO responses (id, organization_id, project_id, session_id, state, input) VALUES ($1,$2,$3,$4,'queued','{}'::jsonb)`,
+		respA2, tenantA.Organization, tenantA.Project, sessionA); err != nil {
+		t.Fatalf("seed tenant-A second response: %v", err)
+	}
 
 	// Step (real provider run): drive tenant A's run to a terminal completion on the REAL provider — the run
 	// the rest of the journey lists, steers, and isolates is genuine (a real chatcmpl id).
