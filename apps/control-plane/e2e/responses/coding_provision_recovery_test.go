@@ -110,7 +110,7 @@ func TestCodingProvisionNoLeaseLeakOnStuckState(t *testing.T) {
 // rather than reuse the partial allocation and error on Head() forever.
 func TestCodingProvisionRecoversFromStuckPreparing(t *testing.T) {
 	h := newHarness(t)
-	ctx := context.Background()
+	ctx := storage.WithTenant(context.Background(), h.tenant.Organization, h.tenant.Project)
 	const marker = "PROVISION-RECOVER-DET-8d21"
 
 	remote := newCodingRemote(t)

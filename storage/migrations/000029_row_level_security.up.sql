@@ -139,6 +139,17 @@ CREATE POLICY tenant_isolation ON schedule_occurrences FOR ALL TO PUBLIC
                        WHERE s.id = schedule_occurrences.schedule_id
                          AND s.organization_id = current_setting('palai.org_id', true)));
 
+-- The runtime role must hold DML on every tenant table, or RLS is not the thing gating it: a missing
+-- GRANT fails closed as a blunt "permission denied for table" instead of the row-scoped policy. Several
+-- tables created after 000001 (commands, config_revisions, delivered_messages, skills, …) were never
+-- re-granted — they worked only because the app used to connect AS the owner. This is where the role
+-- becomes load-bearing, so assert the complete set here, then re-apply the append-only REVOKEs so audit
+-- and checkpoint/boundary immutability (spec §50.3, §26.1) still hold.
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO palai_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO palai_app;
+REVOKE UPDATE, DELETE ON audit_events FROM palai_app;
+REVOKE UPDATE ON transcript_boundaries, checkpoints FROM palai_app;
+
 -- Deliberately NOT under RLS, and named here so the omission is a decision rather than an oversight:
 --   schema_migrations  the chain's own ledger, written by the owner before any tenant exists.
 --   host_quarantine    coordinator infrastructure keyed by host, holding no tenant data.

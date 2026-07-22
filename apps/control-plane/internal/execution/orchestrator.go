@@ -25,6 +25,8 @@ import (
 	"github.com/palgroup/palai/packages/runner"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 const engineProtocol = "engine.v1"
@@ -220,6 +222,11 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	if err != nil {
 		return err
 	}
+	// RunContext established the tenant; from here the whole attempt runs under it, so every
+	// orchestrator write is gated by migration 000029's policies. In the worker path the context is
+	// already this tenant's; when the orchestrator is driven directly (recovery, tests) this is what
+	// narrows the system-scoped read back to the run's own tenant.
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 
 	// A waiting run was pre-empted by a pause (spec §22.3, SES-009); a job redelivered in the ms
 	// window between PauseRun's commit and the paused attempt settling must not drive it. Provision

@@ -64,6 +64,12 @@ func (s *Store) RunContext(ctx context.Context, runID string) (Tenant, string, s
 		state      string
 		input      []byte
 	)
+	// Like the job claim and VerifyAPIKey, this read ESTABLISHES the tenant it returns — the by-primary-
+	// key lookup cannot itself be tenant-scoped. In the production worker path the context is already
+	// narrowed to the claimed job's tenant, so this resolves within it; the system scope keeps the read
+	// working when the orchestrator is driven directly (recovery, tests). The caller (ExecuteAttempt)
+	// re-scopes to the returned tenant before any write.
+	ctx = storage.WithSystemScope(ctx)
 	err := s.pool.QueryRow(ctx, storage.Query("RunContext"), runID).
 		Scan(&tenant.Organization, &tenant.Project, &sessionID, &responseID, &state, &input)
 	if err != nil {
@@ -670,6 +676,9 @@ type UncertainToolCall struct {
 // UncertainToolCalls reads up to limit uncertain tool_calls awaiting reconciliation across all tenants —
 // the reconcile loop's sweep read (spec §26.7). Ordered oldest-first so resolution is deterministic.
 func (s *Store) UncertainToolCalls(ctx context.Context, limit int) ([]UncertainToolCall, error) {
+	// The reconcile sweep spans every tenant by construction (each row carries its own tenant, which
+	// scopes the ReconcileToolCall/ReenqueueResponseRun that follow). System-scoped like the job claim.
+	ctx = storage.WithSystemScope(ctx)
 	rows, err := s.pool.Query(ctx, storage.Query("SelectUncertainToolCalls"), limit)
 	if err != nil {
 		return nil, fmt.Errorf("select uncertain tool calls: %w", err)

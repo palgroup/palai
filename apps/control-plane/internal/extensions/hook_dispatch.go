@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/packages/contracts"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // Hook dispatch (spec §28.17, E12 Task 8, TOL-012). Fire runs a point's ENABLED hooks in registration order
@@ -74,6 +76,10 @@ func (s *Store) SetHookHandlers(handlers map[string]HookHandler) { s.hookHandler
 // Fire loads a point's enabled hooks (registration order) and dispatches them. A tenant with no hooks at the
 // point is a no-op returning the input payload unchanged, so a run that configures no hooks is bit-unchanged.
 func (s *Store) Fire(ctx context.Context, ev HookEvent) (HookOutcome, error) {
+	// The event names the tenant the hooks belong to; scope the dispatch to it so a remote hook's own
+	// ledger writes (the operation row the signed invoke opens) run under migration 000029's policies.
+	// The observer path forks a fresh background context, so it captures the tenant explicitly below.
+	ctx = storage.ScopeToTenant(ctx, ev.Org, ev.Project)
 	hooks, err := s.loadHooks(ctx, ev.Org, ev.Project, ev.Point)
 	if err != nil {
 		return HookOutcome{}, err
@@ -158,7 +164,9 @@ func (s *Store) invokeHook(ctx context.Context, h loadedHook, ev HookEvent) (Hoo
 func (s *Store) fireObserver(h loadedHook, ev HookEvent) {
 	go func() {
 		defer func() { _ = recover() }() // fail-OPEN: an observer panic never propagates
-		octx, cancel := context.WithTimeout(context.Background(), hookTimeout(h.Category, h.TimeoutMS))
+		// A fresh context (the run's may already be canceling), but scoped to the event's tenant so an
+		// observer hook that touches the DB is gated by migration 000029's policies like any other write.
+		octx, cancel := context.WithTimeout(storage.WithTenant(context.Background(), ev.Org, ev.Project), hookTimeout(h.Category, h.TimeoutMS))
 		defer cancel()
 		_, _ = s.runHook(octx, h, ev) // result intentionally discarded — an observer cannot affect the run
 	}()
