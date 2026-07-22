@@ -144,6 +144,7 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			tools.CommitTool(),
 			tools.PushTool(),
 			tools.PullRequestTool(),
+			tools.ResearchFetchTool(), // web-research fetch + citations (E12 T3); code-defined, no registry seed
 		)
 		orch := execution.NewOrchestrator(repo, gateway, broker, toolBroker)
 		orch.SetModelRoute(route)
