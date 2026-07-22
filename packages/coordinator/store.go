@@ -563,6 +563,13 @@ type AdmissionInput struct {
 	// profile-free (the pre-E11 behaviour), so an absent pin resolves config exactly as before.
 	AgentRevisionID       string
 	RunTemplateRevisionID string
+	// MaxConcurrentRuns / MaxQueuedRuns are the §20.12 basic-tier per-project admission caps the caller
+	// resolves from edge config. Enforced against live DB counters at admission (before the idempotency
+	// reserve is committed): a fresh admission that would exceed the project's concurrent (executing) or
+	// queued (backlog) root-run count is rejected and the whole transaction rolls back, so the client may
+	// retry the same key once capacity frees. Zero on either disables that cap (the pre-E13-T7 behaviour).
+	MaxConcurrentRuns int
+	MaxQueuedRuns     int
 }
 
 // Admission is the committed, replayed, conflicting, or purged admission outcome.
@@ -594,6 +601,12 @@ type Admission struct {
 	// before the idempotency reserve, so a bad pin leaves no record and no run.
 	PinnedRevisionNotFound     bool
 	PinnedRevisionNotPublished bool
+	// ConcurrencyLimited / QueueDepthExceeded mark a fresh admission rejected by the §20.12 per-project
+	// run caps: too many simultaneously-executing root runs, or a full queued backlog. Both are decided
+	// AFTER the idempotency reserve but before commit, so the deferred rollback undoes the reserve — the
+	// rejected request leaves no run and no idempotency record, and a retry re-evaluates once capacity frees.
+	ConcurrencyLimited bool
+	QueueDepthExceeded bool
 }
 
 // AdmitResponse atomically reserves the idempotency key and, on a fresh key,
@@ -719,7 +732,26 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		return Admission{}, fmt.Errorf("reserve idempotency key: %w", err)
 	}
 
-	// Fresh key: create the durable resources and the birth event atomically. A chained
+	// Fresh key: enforce the §20.12 per-project run caps against live counters BEFORE creating any
+	// resource. The reserve above committed no run, so the count reflects only OTHER admissions; a
+	// rejection returns here without committing, and the deferred rollback undoes the reserve so the
+	// rejected key leaves nothing behind (a retry re-evaluates once capacity frees). Skipped entirely
+	// when neither cap is configured, so an unconfigured stack admits with no extra query.
+	if in.MaxConcurrentRuns > 0 || in.MaxQueuedRuns > 0 {
+		var concurrent, queued int
+		if err := tx.QueryRow(ctx, storage.Query("CountProjectRootRuns"),
+			tenant.Organization, tenant.Project).Scan(&concurrent, &queued); err != nil {
+			return Admission{}, fmt.Errorf("count project root runs: %w", err)
+		}
+		if in.MaxConcurrentRuns > 0 && concurrent >= in.MaxConcurrentRuns {
+			return Admission{ConcurrencyLimited: true}, nil
+		}
+		if in.MaxQueuedRuns > 0 && queued >= in.MaxQueuedRuns {
+			return Admission{QueueDepthExceeded: true}, nil
+		}
+	}
+
+	// Create the durable resources and the birth event atomically. A chained
 	// response reuses the resolved session (createSession is false); a fresh one opens it.
 	if createSession {
 		if _, err := tx.Exec(ctx, storage.Query("InsertSession"),
