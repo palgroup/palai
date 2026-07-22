@@ -124,6 +124,10 @@ func TestMCPConnectionSamplingAuthConfig(t *testing.T) {
 		"plain pkce":   `{"name":"badpkce","transport":"http","config":{"url":"https://x","oauth":{"code_challenge_method":"plain","redirect_uri":"https://app.example.test/cb"}}}`,
 		"oauth secret": `{"name":"oauthsec","transport":"http","config":{"url":"https://x","oauth":{"code_challenge_method":"S256","redirect_uri":"https://app.example.test/cb","client_secret":"sk-oops"}}}`,
 		"internal url": `{"name":"ssrf","transport":"http","config":{"url":"https://169.254.169.254/mcp"}}`,
+		// A raw-string oauth (a secret smuggled as the value) must not silently pass the type assertion and
+		// land as plaintext in config JSONB; a secret hiding in an endpoint value must also be rejected.
+		"oauth not object":      `{"name":"oauthstr","transport":"http","config":{"url":"https://x","oauth":"sk-live-RAW-BEARER"}}`,
+		"oauth endpoint secret": `{"name":"oauthep","transport":"http","config":{"url":"https://x","oauth":{"authorization_endpoint":"sk-live-SECRET","token_endpoint":"https://idp/t","code_challenge_method":"S256","redirect_uri":"https://app.example.test/cb"}}}`,
 	} {
 		if _, err := s.CreateMCPConnection(ctx, org, project, []byte(bad)); !errors.Is(err, ErrInvalidConnectionConfig) {
 			t.Errorf("%s: err = %v, want ErrInvalidConnectionConfig", name, err)

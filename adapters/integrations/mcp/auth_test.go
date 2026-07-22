@@ -159,11 +159,19 @@ func TestPassiveOAuthValidator(t *testing.T) {
 	if err := ValidateOAuthMetadata(ok); err != nil {
 		t.Fatalf("valid oauth block: err = %v, want nil", err)
 	}
+	// Present-and-valid endpoints stay accepted (they are https URLs, not a hiding place for a secret).
+	okEndpoints := map[string]any{"authorization_endpoint": "https://idp.example.test/authorize", "token_endpoint": "https://idp.example.test/token", "code_challenge_method": "S256", "redirect_uri": "https://app.example.test/cb"}
+	if err := ValidateOAuthMetadata(okEndpoints); err != nil {
+		t.Fatalf("valid oauth block with endpoints: err = %v, want nil", err)
+	}
 	for name, bad := range map[string]map[string]any{
 		"plain PKCE":        {"code_challenge_method": "plain", "redirect_uri": "https://app.example.test/cb"},
 		"wildcard redirect": {"code_challenge_method": "S256", "redirect_uri": "https://*.example.test/cb"},
 		"http redirect":     {"code_challenge_method": "S256", "redirect_uri": "http://app.example.test/cb"},
 		"inline secret":     {"code_challenge_method": "S256", "redirect_uri": "https://app.example.test/cb", "client_secret": "sk-oops"},
+		// A secret hiding in an endpoint VALUE must be rejected — an endpoint that is not an https URL.
+		"authz endpoint secret": {"authorization_endpoint": "sk-live-SECRET", "token_endpoint": "https://idp.example.test/token", "code_challenge_method": "S256", "redirect_uri": "https://app.example.test/cb"},
+		"token endpoint secret": {"authorization_endpoint": "https://idp.example.test/authorize", "token_endpoint": "not-a-url", "code_challenge_method": "S256", "redirect_uri": "https://app.example.test/cb"},
 	} {
 		if err := ValidateOAuthMetadata(bad); !errors.Is(err, ErrOAuthMetadata) {
 			t.Fatalf("%s: err = %v, want ErrOAuthMetadata", name, err)

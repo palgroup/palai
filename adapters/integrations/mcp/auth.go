@@ -97,6 +97,18 @@ func ValidateOAuthMetadata(oauth map[string]any) error {
 			return fmt.Errorf("%w: unexpected oauth key %q (a credential must be a secret_ref, never inline)", ErrOAuthMetadata, k)
 		}
 	}
+	// An endpoint, when present, MUST parse as an https URL — so a secret cannot hide as an endpoint VALUE
+	// (the allowlist gates keys; this gates the values a would-be smuggler controls).
+	for _, k := range []string{"authorization_endpoint", "token_endpoint"} {
+		v, present := oauth[k]
+		if !present {
+			continue
+		}
+		s, _ := v.(string)
+		if u, err := url.Parse(s); err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("%w: %s must be an https URL", ErrOAuthMetadata, k)
+		}
+	}
 	if m, _ := oauth["code_challenge_method"].(string); m != "S256" {
 		return fmt.Errorf("%w: PKCE code_challenge_method must be S256, got %q", ErrOAuthMetadata, m)
 	}

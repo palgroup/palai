@@ -182,7 +182,13 @@ func validateConnectionConfig(transport string, config map[string]any) error {
 			return fmt.Errorf("%w: %v", ErrInvalidConnectionConfig, err)
 		}
 		// A declared oauth block is validated passively (PKCE S256 + exact https redirect; no inline secret).
-		if oauth, ok := config["oauth"].(map[string]any); ok {
+		// A PRESENT oauth that is not an object is rejected outright — otherwise a raw-string oauth (a secret
+		// smuggled as the value) would silently pass the type assertion and land as PLAINTEXT in config JSONB.
+		if raw, present := config["oauth"]; present {
+			oauth, ok := raw.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%w: oauth must be an object", ErrInvalidConnectionConfig)
+			}
 			if err := mcp.ValidateOAuthMetadata(oauth); err != nil {
 				return fmt.Errorf("%w: %v", ErrInvalidConnectionConfig, err)
 			}
