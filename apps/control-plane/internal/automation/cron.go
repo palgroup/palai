@@ -27,10 +27,11 @@ import (
 // it into a 400). Callers use errors.Is; the wrapped message names the exact field/term at fault.
 var ErrInvalidCron = errors.New("automation: invalid cron expression")
 
-// ErrNonexistentLocalTime is returned by Next/resolveInstant when a cron-matched wall time falls in a DST
-// spring-forward GAP (the local time never occurs). The ticker maps it to the schedule's misfire policy —
-// it is never silently resolved to a guessed instant (spec §33.2: time.Date's gap choice is "not
-// well-defined", so it is never trusted).
+// ErrNonexistentLocalTime is the raw DST-gap sentinel resolveInstant returns when a matched wall time
+// falls in a spring-forward GAP (the local time never occurs). Next CATCHES it and skips the gap
+// wall-forward to the next valid instant (the Next scan loop below) — it is never surfaced to the ticker,
+// and a gap is never silently resolved to a guessed instant (spec §33.2: time.Date's gap choice is "not
+// well-defined", so it is never trusted). resolveInstant is unit-tested directly for the gap case.
 var ErrNonexistentLocalTime = errors.New("automation: nonexistent local time (DST gap)")
 
 // ErrNoCronOccurrence is returned when no matching instant exists within the bounded 5-year lookahead — an

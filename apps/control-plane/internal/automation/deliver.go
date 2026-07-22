@@ -841,7 +841,9 @@ func (s *TriggerStore) admitChained(ctx context.Context, sc deliveryScope, cfg r
 	if adm.ActiveRunConflict {
 		return s.defer_(ctx, sc, "chained session has an active root run; queued")
 	}
-	if adm.Conflict || adm.SessionNotFound || adm.SessionConflict || adm.PinnedRevisionNotFound || adm.PinnedRevisionNotPublished || adm.RepositoryBindingNotFound {
+	// adm.Purged is a fail-closed guard: a replay onto a reaped/tombstoned response (spec §20.9) created
+	// no live run, so recording it admitted would leave the delivery pointing at a ghost id (a later 404).
+	if adm.Conflict || adm.SessionNotFound || adm.SessionConflict || adm.PinnedRevisionNotFound || adm.PinnedRevisionNotPublished || adm.RepositoryBindingNotFound || adm.Purged {
 		return s.fail(ctx, sc, admissionFailureReason(adm))
 	}
 
@@ -906,6 +908,8 @@ func (s *TriggerStore) emitRunCreated(ctx context.Context, sc deliveryScope, ses
 // admissionFailureReason maps a typed admission rejection to a delivery failure reason.
 func admissionFailureReason(adm coordinator.Admission) string {
 	switch {
+	case adm.Purged:
+		return "admitted response was purged; delivery fails closed"
 	case adm.PinnedRevisionNotFound:
 		return "pinned revision not found"
 	case adm.PinnedRevisionNotPublished:
