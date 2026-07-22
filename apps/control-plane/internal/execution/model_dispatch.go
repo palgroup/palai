@@ -57,6 +57,10 @@ var defaultModelRoute = ModelRoute{Provider: "fake", Model: "fake", Secret: mode
 // queued/steered message into. A final result (no tool calls) is the run's last step.
 func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, frame contracts.EngineFrame) (bool, error) {
 	requestID, _ := frame.Data["model_request_id"].(string)
+	// Record the boundary a tool call produced by THIS step's model.result belongs to, so a side-effecting
+	// tool's durable pre-write records commit_boundary = this model_request_id (E12 T4). One assign; both
+	// the replay and the live branch route through here.
+	st.lastModelRequestID = requestID
 
 	if stored, found, err := o.spine.LookupModelResult(ctx, st.tenant, requestID); err != nil {
 		return false, err

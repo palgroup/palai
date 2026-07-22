@@ -16,8 +16,10 @@
 --                            'pure' default keeps a legacy completed row re-runnable-cached (safe).
 --   request_hash             the canonical sha256 of (name, arguments) — the same digest the broker
 --                            computes — so a duplicate tool_call_id is recognised by content (TOL-016).
---   external_idempotency_key a stable destination key an idempotent tool resends under so the external
---                            side settles ONE object across retries (TOL-002); '' when not idempotent.
+--   external_idempotency_key the external idempotency key a tool's side effect is keyed on so a reconcile
+--                            can correlate it — the remote_http invoke's Idempotency-Key = tool_call_id
+--                            (E12 T4, filled by the durable pre-write); '' for a built-in with no external
+--                            key (and for a non-side-effecting tool).
 --   lease_owner              the attempt fence that holds the execution lease, so a late callback after
 --                            the fence advanced is a stale writer (TOL-017); '' when unleased.
 --   reconciliation_state     the uncertain-row reconciliation sub-state

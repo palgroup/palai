@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/tool-http-callback.json",
+  "title": "ToolHTTPCallback",
+  "description": "The tool-http.v1 result CALLBACK envelope (spec §28.24): a remote-tool server POSTs it to the invoke's `callback.url` to deliver a result it answered 202 for. It is signed with the SAME shared secret + standard-webhooks input as the invoke (`v1.<Webhook-Id>.<Webhook-Timestamp>.<raw-body>`, constant-time verify, timestamp replay window), and carries the one-use audience-bound token in the `Tool-Callback-Token` header. Exactly one of `result` (the tool output, schema-validated as UNTRUSTED before it re-enters reasoning) or `problem` (an RFC 9457 problem object) is present. The control plane VERIFIES before persisting, consumes the token exactly once, commits the result under the waiting executor's live fence, and NEVER returns tool data (an ack-only 200/404).",
+  "type": "object",
+  "required": ["protocol", "tool_call_id", "operation_id"],
+  "properties": {
+    "protocol": {"type": "string", "const": "tool-http.v1"},
+    "tool_call_id": {"type": "string"},
+    "operation_id": {"type": "string"},
+    "result": {"type": "object"},
+    "problem": {"type": "object"}
+  },
+  "additionalProperties": true,
+  "allOf": [{"oneOf": [{"required": ["result"]}, {"required": ["problem"]}]}]
+}

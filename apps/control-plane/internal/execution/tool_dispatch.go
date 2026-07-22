@@ -77,11 +77,21 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 		return err
 	}
 	if toolbroker.NeedsPreWrite(class) && !found {
-		// external_idempotency_key + commit_boundary are left empty: TOL-017's fence half is real (the
-		// CommitToolResult fence guard), but the async-callback transport half that would key on
-		// commit_boundary is a signed-transport/SDK concern (E12) — no async-callback tool exists yet.
+		// TOL-017's fence half is the CommitToolResult fence guard; the async-callback transport half keys
+		// on the durable pre-write (E12 T4). external_idempotency_key = tool_call_id ONLY for a tool that
+		// sends a real external Idempotency-Key (the remote_http invoke); a built-in records none (honest).
+		// commit_boundary = the model_request_id that produced this call, so a late-callback reconcile knows
+		// the boundary it belongs to.
+		externalKey := ""
+		keyed, err := o.tools.ExternalKeyedResolved(ctx, env, name)
+		if err != nil {
+			return err
+		}
+		if keyed {
+			externalKey = callID
+		}
 		if err := o.spine.BeginToolCall(ctx, st.tenant, st.sessionID, st.responseID, runID, st.attempt.Fence,
-			callID, name, arguments, string(class), requestHash, "", ""); err != nil {
+			callID, name, arguments, string(class), requestHash, externalKey, st.lastModelRequestID); err != nil {
 			return err
 		}
 	}

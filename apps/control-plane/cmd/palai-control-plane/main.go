@@ -25,6 +25,7 @@ import (
 	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
+	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
@@ -93,7 +94,11 @@ func main() {
 		// (Task 12 binds the local CA and that listener); the public API server carries no
 		// runner routes, so it is passed nil here. The handler is wrapped so `palai doctor`
 		// can surface the supervisor's restart counters over /healthz/supervisor.
-		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, sseConfigFromEnv(), nil), supervisor),
+		// The signed remote-tool result callback endpoint (spec §28.24, E12 T4): its auth IS the per-operation
+		// HMAC signature + one-use token, so it rides the top mux unauthenticated (like the inbound receiver).
+		// The SAME org-scoped secret bridge signs the outbound invoke and verifies the inbound callback.
+		Handler: withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, sseConfigFromEnv(), nil,
+			api.NewToolCallbackHandler(remotehttp.NewOperations(repo.Spine().Pool()), remoteToolSecretResolver)), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -152,6 +157,16 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// path. ExecEnv.Scope carries tenant + RunID, so resolution is tenant-scoped; a registered tool
 		// never enters the static map (no cross-tenant leak).
 		toolRegistry := extensions.New(spine.Pool())
+		// Wire the E12 T4 remote_http executor: a registered remote-tool revision resolves to a signed HTTP
+		// invoke over the shared egress layer, opening a durable async operation the signed callback resolves
+		// under a live fence. The signing secret is resolved fresh per invoke from the org-scoped file bridge
+		// (never held). PALAI_TOOL_CALLBACK_BASE_URL is this CP's public base the 202 result is posted back to;
+		// unset leaves the async callback URL empty (a remote tool can then only answer synchronously).
+		toolRegistry.SetRemoteInvoker(
+			remotehttp.NewExecutor(remotehttp.NewOperations(spine.Pool()),
+				remotehttp.WithCallbackBaseURL(os.Getenv("PALAI_TOOL_CALLBACK_BASE_URL"))),
+			remoteToolSecretResolver,
+		)
 		toolBroker.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
 			return toolRegistry.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
 		})
@@ -219,11 +234,13 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 	reconciler := execution.NewReconciler(spine, 30*time.Second, retry.MaxAttempts)
 	go supervisor.Supervise(ctx, "reconciler", reconciler.Run)
 	// Uncertain-tool reconciliation loop (spec §26.7, E10 T7): resolves tool_calls stuck `uncertain` by a
-	// kill-between-execute-and-commit. No destination prober is wired yet (the probe is a tool's own read
-	// surface, per-tool — a named future wiring), so a reversible/irreversible uncertain call escalates to
-	// manual_resolution rather than guessing an effect landed; the LIVE reconcile smoke wires a real prober.
-	// ponytail: nil prober = safe manual_resolution default; add a prober registry when a probe-capable tool ships.
-	toolReconciler := execution.NewUncertainReconciler(spine, nil, 30*time.Second, 100)
+	// kill-between-execute-and-commit. The RemoteToolProber (E12 T4) is the FIRST real destination prober:
+	// for an uncertain remote_http call it reads the durable remote-operation ledger, so a LATE signed
+	// callback (which wrote late_result there, never touching the tool ledger) resolves the call to
+	// reconciled_completed. A non-remote uncertain call has no operation row, so it still escalates to
+	// manual_resolution — the pre-T4 behaviour, unchanged.
+	toolReconciler := execution.NewUncertainReconciler(spine,
+		execution.NewRemoteToolProber(remotehttp.NewOperations(spine.Pool())), 30*time.Second, 100)
 	go supervisor.Supervise(ctx, "tool-reconciler", toolReconciler.Run)
 }
 
@@ -442,6 +459,30 @@ func inboundSecretResolver(org, ref string) ([]byte, error) {
 	path := os.Getenv("PALAI_INBOUND_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
 	if path == "" {
 		return nil, fmt.Errorf("no secret bridge configured for inbound ref under org %q", org)
+	}
+	return os.ReadFile(path)
+}
+
+// remoteToolSecretResolver is the third sibling of webhook/inboundSecretResolver (E12 Task 4): it bridges
+// a tool_revision.secret_ref handle to the HMAC signing-secret bytes via PALAI_REMOTE_TOOL_SECRET_FILE_
+// <ORG>__<REF> (a FILE PATH, never inline; E13 seals the file at rest). The SAME secret signs the outbound
+// invoke and verifies the inbound callback. The org prefix is a server-minted hard tenant boundary, so a
+// tenant's ref can only name a secret provisioned under its OWN org — and the remote-tool namespace is
+// DISTINCT from the webhook/inbound ones, so the three secret sets are non-interchangeable. An unresolved
+// ref fails the invoke (a retry) / a generic-404 callback, never an unsigned request or accept.
+func remoteToolSecretResolver(org, ref string) ([]byte, error) {
+	if org == "" || ref == "" {
+		return nil, errors.New("empty remote tool secret org/ref")
+	}
+	// Belt-and-braces, as in the sibling resolvers: a normalized org key carrying the "__" delimiter is
+	// ambiguous; reject it rather than resolve a colliding key. The org is server-minted, so this is
+	// defence-in-depth on top of the org-scoped namespace.
+	if strings.Contains(secretEnvKey(org), "__") {
+		return nil, fmt.Errorf("ambiguous remote tool secret org key %q", org)
+	}
+	path := os.Getenv("PALAI_REMOTE_TOOL_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	if path == "" {
+		return nil, fmt.Errorf("no secret bridge configured for remote tool ref under org %q", org)
 	}
 	return os.ReadFile(path)
 }

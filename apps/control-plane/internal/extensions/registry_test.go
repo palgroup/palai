@@ -2,6 +2,7 @@ package extensions
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 )
 
@@ -37,6 +38,22 @@ func TestDecodeToolRevisionInputRejectsUnknownReplayClass(t *testing.T) {
 		if _, err := DecodeToolRevisionInput([]byte(`{"executor":"control_plane","replay_class":"` + class + `"}`)); err != nil {
 			t.Errorf("known replay_class %q rejected: %v", class, err)
 		}
+	}
+}
+
+// TestDecodeToolRevisionInputRejectsOversizeTimeout proves MF3(a): a timeout_ms above the ceiling is
+// rejected at create, so a remote tool can never be stored with a value that would pin a broker execution
+// slot indefinitely. A value at the ceiling (and no value) is accepted; the executor caps the runtime wait too.
+func TestDecodeToolRevisionInputRejectsOversizeTimeout(t *testing.T) {
+	over := MaxTimeoutMS + 1
+	if _, err := DecodeToolRevisionInput([]byte(`{"executor":"remote_http","replay_class":"idempotent","timeout_ms":` + strconv.Itoa(over) + `}`)); !errors.Is(err, ErrTimeoutTooLarge) {
+		t.Fatalf("timeout_ms %d: err = %v, want ErrTimeoutTooLarge", over, err)
+	}
+	if _, err := DecodeToolRevisionInput([]byte(`{"executor":"remote_http","replay_class":"idempotent","timeout_ms":` + strconv.Itoa(MaxTimeoutMS) + `}`)); err != nil {
+		t.Fatalf("timeout_ms at the ceiling rejected: %v", err)
+	}
+	if _, err := DecodeToolRevisionInput([]byte(`{"executor":"remote_http","replay_class":"idempotent"}`)); err != nil {
+		t.Fatalf("no timeout_ms rejected: %v", err)
 	}
 }
 

@@ -1,6 +1,10 @@
 package toolbroker
 
-import "context"
+import (
+	"context"
+
+	"github.com/palgroup/palai/packages/contracts"
+)
 
 // This file is the sandbox-backed execution seam behind the in-process broker (spec §28.7-28.8).
 // The broker stays dependency-light: it defines the seam types a workspace-touching tool needs but
@@ -16,6 +20,12 @@ type ExecEnv struct {
 	WorkspaceRoot string
 	ReadOnly      bool
 	Shell         ShellRunner
+	// CallID and Fence are the per-call identity Execute stamps on a COPY of the env before invoking a
+	// tool (never on the caller's template). A remote_http tool (E12 T4) keys its invoke Idempotency-Key
+	// on CallID (a duplicate retry settles one server-side execution) and stamps Fence on the durable
+	// async-operation row (the audit/reconcile bond to the ledger). Pure/workspace tools ignore them.
+	CallID contracts.ToolCallID
+	Fence  uint64
 	// Scope binds a durable task/todo operation to its tenant and session; Tasks is the durable
 	// registry it persists through. Both zero on an attempt with no registry wired.
 	Scope TaskScope

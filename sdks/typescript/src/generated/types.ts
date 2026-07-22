@@ -226,6 +226,26 @@ export interface Tool {
   project_id?: ProjectId;
 }
 
+export interface ToolHTTPCallback {
+  operation_id: string;
+  problem?: Record<string, unknown>;
+  protocol: string;
+  result?: Record<string, unknown>;
+  tool_call_id: string;
+}
+
+export interface ToolHTTPInvoke {
+  arguments: Record<string, unknown>;
+  attempt_id: string;
+  callback: Record<string, unknown>;
+  deadline: string;
+  protocol: string;
+  request_hash: string;
+  run_id: string;
+  tool_call_id: string;
+  tool_revision: string;
+}
+
 export interface ToolSet {
   created_at?: string;
   digest?: string;

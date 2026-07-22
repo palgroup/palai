@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/tool-http.json",
+  "title": "ToolHTTPInvoke",
+  "description": "The tool-http.v1 INVOKE envelope (spec §28.24): a control-plane -> remote-tool-server HTTP transport message, NOT an engine frame or command kind (the engine only ever sees tool.request/tool.result; the remote path lives entirely inside the broker's dispatch). The request is signed with the tool revision's shared secret over the standard-webhooks input `v1.<Webhook-Id>.<Webhook-Timestamp>.<raw-body>` (HMAC-SHA-256, constant-time verify, timestamp replay window); the Webhook-Id header carries the tool_call_id, which also rides as `Idempotency-Key` so a duplicate retry settles ONE execution server-side. A server answers 200 with the result inline, or 202 to deliver it later by POSTing the result callback (tool-http-callback.json) to `callback.url` bearing the one-use `callback.token`. The T9 SDK verifier implements this SAME signed input verbatim.",
+  "type": "object",
+  "required": ["protocol", "tool_call_id", "tool_revision", "run_id", "attempt_id", "request_hash", "deadline", "arguments", "callback"],
+  "properties": {
+    "protocol": {"type": "string", "const": "tool-http.v1"},
+    "tool_call_id": {"type": "string"},
+    "tool_revision": {"type": "string"},
+    "run_id": {"type": "string"},
+    "attempt_id": {"type": "string"},
+    "request_hash": {"type": "string"},
+    "deadline": {"type": "string", "format": "date-time"},
+    "arguments": {"type": "object"},
+    "callback": {
+      "type": "object",
+      "properties": {
+        "url": {"type": "string"},
+        "token": {"type": "string"}
+      },
+      "required": ["url", "token"],
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

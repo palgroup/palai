@@ -243,13 +243,111 @@ run_repository() {
   echo "component_repository=PASS"
 }
 
+# The remote-tools suite proves the E12 T4 remote HTTP tool against a real Postgres (migration 000025 +
+# the operation ledger) AND real local HTTP with real HMAC: migration idempotency/down, the registry
+# remote_http binder resolution, the signed one-use-token callback endpoint, the ledger idempotency-key +
+# boundary fill, and the late-callback -> reconciliation timeline. The Docker-free executor tests (signed
+# invoke, Idempotency-Key dedupe, SSRF vet, schema-validate) run in `make verify`; this tier adds the
+# DB-backed half. It reuses the throwaway-postgres pattern (the run_postgres idiom).
+run_remote_tools() {
+  local image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  local label="io.palai.component=remote-tools"
+  local run_id="$$-${RANDOM}"
+  local container="palai-component-remote-tools-$run_id"
+  local volume="palai-component-remote-tools-$run_id"
+  local password="palai-component-${RANDOM}${RANDOM}"
+
+  count_containers() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_volumes() { docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+  }
+
+  local containers_before volumes_before
+  containers_before="$(count_containers)"
+  volumes_before="$(count_volumes)"
+  trap cleanup EXIT
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never \
+    --name "$container" \
+    --label "$label" \
+    --env POSTGRES_DB=palai \
+    --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 \
+    --volume "$volume:/var/lib/postgresql/data" \
+    "$image" >/dev/null
+
+  local ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "remote-tools component container did not become ready" >&2
+    exit 1
+  fi
+
+  local binding port url
+  binding="$(docker port "$container" 5432/tcp)"
+  port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+
+  set +e
+  # The signed callback endpoint + one-use token + late-callback timeline suite.
+  PALAI_COMPONENT_POSTGRES_URL="$url" go test -tags=component -count=1 -v ./tests/component/remotetools
+  local status=$?
+  # Migration 000025 idempotency/down, the remote_http registry binder resolution, the async
+  # late-callback reconciliation via the RemoteToolProber, and the ledger idempotency-key + boundary fill.
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" go test -tags=component -count=1 -v \
+      -run 'TestMigration25RemoteTools' ./tests/component/postgres
+    status=$?
+  fi
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" go test -tags=component -count=1 -v \
+      -run 'TestRemoteHTTPToolResolvesThroughRegistryLookup' ./apps/control-plane/internal/extensions
+    status=$?
+  fi
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" go test -tags=component -count=1 -v \
+      -run 'TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit|TestRemoteBeginToolCallCarriesIdempotencyKeyAndBoundary' \
+      ./apps/control-plane/internal/execution
+    status=$?
+  fi
+  set -e
+  if test "$status" -ne 0; then
+    docker logs "$container" >&2 || true
+  fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers)"
+  volumes_after="$(count_volumes)"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "remote-tools component suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then
+    exit "$status"
+  fi
+  echo "component_remote_tools=PASS containers=$containers_after volumes=$volumes_after"
+}
+
 case "$suite" in
   postgres) run_postgres ;;
   runner) run_runner ;;
   artifacts) run_artifacts ;;
   repository) run_repository ;;
+  remote-tools) run_remote_tools ;;
   *)
-    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository)" >&2
+    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository, remote-tools)" >&2
     exit 2
     ;;
 esac

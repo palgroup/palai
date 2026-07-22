@@ -35,6 +35,40 @@ func TestWebhookSecretResolverIsOrgScoped(t *testing.T) {
 	}
 }
 
+// TestRemoteToolSecretResolverIsOrgScoped pins the E12 T4 secret hygiene: the remote-tool HMAC secret
+// (which signs the outbound invoke AND verifies the inbound callback) is bridged as a FILE PATH under an
+// org-scoped, namespace-DISTINCT env key. A tenant's secret_ref can only reach a secret provisioned under
+// its OWN org, and the remote-tool namespace never collides with the webhook/inbound ones — the three
+// secret sets are non-interchangeable. The raw secret is never an env value, argument, or log line.
+func TestRemoteToolSecretResolverIsOrgScoped(t *testing.T) {
+	dir := t.TempDir()
+	secretFile := filepath.Join(dir, "b.secret")
+	if err := os.WriteFile(secretFile, []byte("rtsec_org_b"), 0o600); err != nil {
+		t.Fatalf("write secret file: %v", err)
+	}
+	// Only org_b's "sig-ref" is bridged, under the remote-tool namespace.
+	t.Setenv("PALAI_REMOTE_TOOL_SECRET_FILE_"+secretEnvKey("org_b")+"__"+secretEnvKey("sig-ref"), secretFile)
+
+	// org_a naming the same ref resolves nothing — it cannot reach org_b's secret.
+	if _, err := remoteToolSecretResolver("org_a", "sig-ref"); err == nil {
+		t.Fatal("org_a resolved a remote-tool secret bridged only under org_b — env namespace is not org-scoped")
+	}
+	// A webhook/inbound bridge for the SAME (org, ref) does NOT satisfy the remote-tool resolver (distinct
+	// namespaces) — the three secret sets are non-interchangeable.
+	t.Setenv("PALAI_WEBHOOK_SECRET_FILE_"+secretEnvKey("org_b")+"__"+secretEnvKey("only-webhook"), secretFile)
+	if _, err := remoteToolSecretResolver("org_b", "only-webhook"); err == nil {
+		t.Fatal("the remote-tool resolver read a WEBHOOK-namespaced secret — namespaces must be non-interchangeable")
+	}
+	// org_b resolves its own remote-tool secret from the file (a PATH, never inline bytes).
+	got, err := remoteToolSecretResolver("org_b", "sig-ref")
+	if err != nil {
+		t.Fatalf("org_b failed to resolve its own remote-tool secret: %v", err)
+	}
+	if string(got) != "rtsec_org_b" {
+		t.Fatalf("resolved secret = %q, want rtsec_org_b", got)
+	}
+}
+
 // TestSecretResolverRejectsAmbiguousOrgKey pins a belt-and-braces guard (E11 T4 residual): an org whose
 // normalized env-key form contains the "__" org/ref delimiter would make PALAI_..._SECRET_FILE_<ORG>__<REF>
 // ambiguous with a different (org, ref) split, so BOTH secret resolvers reject it rather than resolve a
@@ -43,8 +77,9 @@ func TestWebhookSecretResolverIsOrgScoped(t *testing.T) {
 func TestSecretResolverRejectsAmbiguousOrgKey(t *testing.T) {
 	const ambiguous = "acme__evil" // normalizes to ACME__EVIL — carries the "__" org/ref delimiter
 	for name, resolver := range map[string]func(string, string) ([]byte, error){
-		"webhook": webhookSecretResolver,
-		"inbound": inboundSecretResolver,
+		"webhook":     webhookSecretResolver,
+		"inbound":     inboundSecretResolver,
+		"remote-tool": remoteToolSecretResolver,
 	} {
 		if _, err := resolver(ambiguous, "shared"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 			t.Fatalf("%s resolver on an ambiguous org key: err = %v, want an 'ambiguous' rejection", name, err)

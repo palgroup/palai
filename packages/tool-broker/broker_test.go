@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/palgroup/palai/packages/contracts"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
@@ -178,6 +179,78 @@ func TestPureToolReplayLabeledNoDuplication(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&runs); got != 1 {
 		t.Fatalf("pure tool ran %d times, want 1 (the replay is served cached, semantically single)", got)
+	}
+}
+
+// TestExecuteDoesNotSerializeAcrossSlowTool proves MF3: the broker no longer holds b.mu across a tool's
+// (possibly network-bound) invoke, so a slow async tool in one run does NOT block another run's fast tool.
+// On the base code Execute held the lock across invoke, so the fast Execute would block until the slow one
+// released — a process-wide tool-dispatch stall. Deterministic via channels (no timing flakiness).
+func TestExecuteDoesNotSerializeAcrossSlowTool(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	slow := Tool{
+		Name: "slow", InputSchema: openObject, OutputSchema: openObject,
+		Exec: func(_ context.Context, _ ExecEnv, args map[string]any) (map[string]any, error) {
+			close(entered)
+			<-release // block inside invoke, holding NO broker lock if MF3 is fixed
+			return args, nil
+		},
+	}
+	fast := Tool{
+		Name: "fast", InputSchema: openObject, OutputSchema: openObject,
+		Invoke: func(args map[string]any) (map[string]any, error) { return args, nil },
+	}
+	broker := New(slow, fast)
+	ctx := context.Background()
+
+	go func() {
+		_, _ = broker.Execute(ctx, contracts.ToolCallID("tc_slow"), "slow", map[string]any{}, 1, ExecEnv{})
+	}()
+	<-entered // the slow tool is now inside invoke
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = broker.Execute(ctx, contracts.ToolCallID("tc_fast"), "fast", map[string]any{}, 2, ExecEnv{})
+		close(done)
+	}()
+	select {
+	case <-done: // the fast tool completed while the slow one was still blocked — the lock was released
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("the fast tool blocked on the slow tool's invoke — the broker serialized across the network wait (MF3)")
+	}
+	close(release)
+}
+
+// TestExecReceivesCallIDAndFence proves the broker hands a workspace/registry tool the per-call identity
+// its Exec surface needs (E12 T4): the remote_http binder keys the invoke Idempotency-Key on the
+// tool_call_id and stamps the operation row with the live attempt fence, so both must reach Exec through
+// ExecEnv. Execute sets them per-call on a copy, so a caller's shared ExecEnv template is never mutated.
+func TestExecReceivesCallIDAndFence(t *testing.T) {
+	var gotCall contracts.ToolCallID
+	var gotFence uint64
+	tool := Tool{
+		Name: "remote.echo", InputSchema: openObject, OutputSchema: openObject, ReplayClass: ClassIdempotent,
+		Exec: func(_ context.Context, env ExecEnv, args map[string]any) (map[string]any, error) {
+			gotCall, gotFence = env.CallID, env.Fence
+			return args, nil
+		},
+	}
+	broker := New(tool)
+	// A template ExecEnv the caller reuses across calls — Execute must not mutate it.
+	template := ExecEnv{}
+	if _, err := broker.Execute(context.Background(), contracts.ToolCallID("tc_remote_1"), "remote.echo", map[string]any{}, 7, template); err != nil {
+		t.Fatalf("execute error = %v", err)
+	}
+	if gotCall != contracts.ToolCallID("tc_remote_1") {
+		t.Fatalf("Exec saw CallID %q, want tc_remote_1", gotCall)
+	}
+	if gotFence != 7 {
+		t.Fatalf("Exec saw Fence %d, want 7", gotFence)
+	}
+	if template.CallID != "" || template.Fence != 0 {
+		t.Fatalf("Execute mutated the caller's ExecEnv template (CallID=%q Fence=%d)", template.CallID, template.Fence)
 	}
 }
 

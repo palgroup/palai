@@ -48,6 +48,7 @@ var allTables = []string{
 	"triggers", "trigger_revisions", "trigger_deliveries",
 	"schedules", "schedule_occurrences",
 	"tools", "tool_revisions", "tool_set_revisions",
+	"remote_tool_operations",
 	"usage_events", "audit_events",
 	"schema_migrations",
 }
@@ -1278,6 +1279,79 @@ func TestAuditAppendOnlyToApplicationRole(t *testing.T) {
 	}
 	if got := pgCode(mustFail(conn.Exec(ctx, `DELETE FROM audit_events`))); got != "42501" {
 		t.Fatalf("audit DELETE code = %q, want 42501 insufficient_privilege", got)
+	}
+}
+
+// TestMigration25RemoteTools proves 000025 adds the remote_tool_operations table (E12 Task 4, spec
+// §28.24-28.25) idempotently and reverses cleanly: present after apply (a re-apply is a clean no-op —
+// every object IF NOT EXISTS), gone after rollback, returning after reapply. Version 25 is recorded
+// exactly once. It also pins the load-bearing invariants: the partial-unique index rejects a SECOND
+// pending row for the same tool_call (a duplicate live invoke can never open two operations) while a
+// resolved (completed) row lets a fresh pending one open. tool_call_id is a soft correlation key (NOT an
+// FK): the operation opens before the invoke, before a pure/idempotent tool's tool_calls row is committed,
+// so a row for a not-yet-committed call inserts fine.
+func TestMigration25RemoteTools(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// Present after apply, and a second Migrate is a clean no-op (CREATE TABLE / INDEX IF NOT EXISTS).
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "remote_tool_operations") {
+		t.Fatal("after apply, remote_tool_operations is missing")
+	}
+	if !indexExists(t, pool, "remote_tool_operations_one_pending") {
+		t.Fatal("after apply, remote_tool_operations_one_pending is missing")
+	}
+	var version25 int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 25`).Scan(&version25); err != nil {
+		t.Fatalf("count version 25 error = %v", err)
+	}
+	if version25 != 1 {
+		t.Fatalf("schema_migrations records version 25 %d times, want 1", version25)
+	}
+
+	tenant, _, _ := seedRun(t, pool)
+	callID := newID("tcall") // a correlation key; no tool_calls row need exist (no FK)
+
+	openOp := func(id, call, state string) error {
+		_, err := pool.Exec(ctx,
+			`INSERT INTO remote_tool_operations (id, organization_id, project_id, tool_call_id, secret_ref, callback_token_hash, deadline, state, fence)
+			 VALUES ($1, $2, $3, $4, 'sig-ref', 'tokenhash', clock_timestamp() + interval '30 seconds', $5, 5)`,
+			id, tenant.Organization, tenant.Project, call, state)
+		return err
+	}
+	if err := openOp(newID("rop"), callID, "pending"); err != nil {
+		t.Fatalf("open pending operation error = %v", err)
+	}
+	// A second PENDING row for the same tool_call is rejected — a duplicate live invoke can never open two.
+	if got := pgCode(openOp(newID("rop"), callID, "pending")); got != "23505" {
+		t.Fatalf("second pending operation code = %q, want 23505 unique_violation (partial-unique on pending)", got)
+	}
+	// A resolved (completed) row for the same call is allowed (the partial-unique only indexes pending).
+	if err := openOp(newID("rop"), callID, "completed"); err != nil {
+		t.Fatalf("completed operation alongside a resolved one error = %v", err)
+	}
+	// tool_call_id is a soft correlation key (no FK): an operation for a not-yet-committed call inserts —
+	// the executor opens it BEFORE the invoke, before a pure/idempotent tool's tool_calls row is committed.
+	if err := openOp(newID("rop"), newID("tcall"), "pending"); err != nil {
+		t.Fatalf("operation for an uncommitted tool_call error = %v, want accepted (no FK)", err)
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if tableExists(t, pool, "remote_tool_operations") {
+		t.Fatal("after rollback, remote_tool_operations still exists")
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "remote_tool_operations") || !indexExists(t, pool, "remote_tool_operations_one_pending") {
+		t.Fatal("after reapply, a 000025 object is missing")
 	}
 }
 

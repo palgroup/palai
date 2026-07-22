@@ -402,6 +402,62 @@ func TestStaleCommitOnReclaimerParkedRowRejected(t *testing.T) {
 	}
 }
 
+// TestRemoteBeginToolCallCarriesIdempotencyKeyAndBoundary proves the E12 T4 ledger fill: a side-effecting
+// tool's durable pre-write now records external_idempotency_key = tool_call_id for a tool that sends a
+// REAL external Idempotency-Key (the remote_http invoke) and ” for a built-in that does not, and always
+// records commit_boundary = the model_request_id of the step that produced the call — so a late-callback
+// reconcile is keyed to the boundary it belongs to. Both columns were left ” before T4.
+func TestRemoteBeginToolCallCarriesIdempotencyKeyAndBoundary(t *testing.T) {
+	ctx := context.Background()
+	cs, tenant, sessionID, runID := openLedgerSpine(t)
+
+	// A remote-keyed reversible tool (stands in for a resolved remote_http revision) and a built-in
+	// reversible tool with no external key.
+	remote := toolbroker.Tool{
+		Name: "remote.effect", InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"},
+		ReplayClass: toolbroker.ClassReversible, ExternalKeyed: true,
+		Invoke: func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil },
+	}
+	builtin := toolbroker.Tool{
+		Name: "builtin.effect", InputSchema: map[string]any{"type": "object"}, OutputSchema: map[string]any{"type": "object"},
+		ReplayClass: toolbroker.ClassReversible,
+		Invoke:      func(map[string]any) (map[string]any, error) { return map[string]any{"ok": true}, nil },
+	}
+	broker := toolbroker.New(remote, builtin)
+
+	// Remote tool: the pre-write records the idempotency key (= tool_call_id) AND the boundary.
+	remoteCall := redeliveryID("tc")
+	orch, st, _ := ledgerAttempt(cs, broker, tenant, sessionID, runID, 1)
+	st.lastModelRequestID = "mr_step7"
+	if err := orch.dispatchTool(ctx, st, toolRequestFrame(remoteCall, "remote.effect", map[string]any{})); err != nil {
+		t.Fatalf("remote dispatchTool error = %v", err)
+	}
+	var extKey, boundary string
+	if err := cs.Pool().QueryRow(ctx, `SELECT external_idempotency_key, commit_boundary FROM tool_calls WHERE id=$1`, remoteCall).Scan(&extKey, &boundary); err != nil {
+		t.Fatalf("read remote row error = %v", err)
+	}
+	if extKey != remoteCall || boundary != "mr_step7" {
+		t.Fatalf("remote pre-write = {ext:%q boundary:%q}, want {%s mr_step7}", extKey, boundary, remoteCall)
+	}
+
+	// Built-in tool: no external key ('' — honest), but the boundary is still recorded.
+	builtinCall := redeliveryID("tc")
+	orch2, st2, _ := ledgerAttempt(cs, broker, tenant, sessionID, runID, 2)
+	st2.lastModelRequestID = "mr_step7"
+	if err := orch2.dispatchTool(ctx, st2, toolRequestFrame(builtinCall, "builtin.effect", map[string]any{})); err != nil {
+		t.Fatalf("builtin dispatchTool error = %v", err)
+	}
+	if err := cs.Pool().QueryRow(ctx, `SELECT external_idempotency_key, commit_boundary FROM tool_calls WHERE id=$1`, builtinCall).Scan(&extKey, &boundary); err != nil {
+		t.Fatalf("read builtin row error = %v", err)
+	}
+	if extKey != "" {
+		t.Fatalf("built-in external_idempotency_key = %q, want '' (no real external key)", extKey)
+	}
+	if boundary != "mr_step7" {
+		t.Fatalf("built-in commit_boundary = %q, want mr_step7", boundary)
+	}
+}
+
 // toolResult captures a delivered tool.result frame's content + replayed label.
 type toolResult struct {
 	content  string

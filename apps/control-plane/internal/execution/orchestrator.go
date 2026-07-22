@@ -172,6 +172,10 @@ type attemptState struct {
 	committedStepWatermark int
 	modelStepIndex         int
 	attemptStart           time.Time
+	// lastModelRequestID is the model_request_id of the step whose model.result produced the tool calls
+	// this attempt is now dispatching — the commit_boundary a side-effecting tool's durable pre-write
+	// records (spec §26.6, E12 T4), so an async-callback ledger row is keyed to the boundary it belongs to.
+	lastModelRequestID string
 }
 
 // budgetRemaining reports the parent budget a child may still intersect against: the total less
