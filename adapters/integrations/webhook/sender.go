@@ -5,13 +5,14 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/palgroup/palai/packages/egress"
 )
 
 // maxExcerpt bounds the response body captured for the sanitized attempt view (spec §21.6): a
@@ -22,11 +23,14 @@ const maxExcerpt = 2048
 // (spec §21.6) and the sender can classify it as a terminal deny rather than a retryable error.
 var errRedirectDenied = errors.New("webhook: redirect not followed")
 
-// errEgressDenied marks a destination the egress policy blocked (SSRF defense, AUT-012).
-var errEgressDenied = errors.New("webhook: destination denied by egress policy")
+// errEgressDenied marks a destination the egress policy blocked (SSRF defense, AUT-012). It ALIASES
+// egress.ErrDenied so Deliver's errors.Is classification stays intact now that the vet logic lives in
+// the shared packages/egress layer (webhook + research + later transports vet through one copy).
+var errEgressDenied = egress.ErrDenied
 
 // Resolver is the DNS seam the sender re-resolves through on every attempt. Production uses
-// net.DefaultResolver; a test injects a resolver that flips a name to prove rebinding is closed.
+// net.DefaultResolver; a test injects a resolver that flips a name to prove rebinding is closed. It is
+// structurally egress.Resolver — the sender hands it straight to the shared egress vetting.
 type Resolver interface {
 	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
 }
@@ -136,138 +140,27 @@ func (s *Sender) Deliver(ctx context.Context, dst Destination, body []byte) Resu
 func (s *Sender) elapsed(start time.Time) int64 { return s.now().Sub(start).Milliseconds() }
 
 // pinnedDial re-resolves the host through the injected resolver, vets every candidate IP against the
-// egress policy, and dials the FIRST vetted IP by address — never re-resolving the hostname. This is
-// the resolve→vet→connect-the-same-IP idiom that closes the DNS-rebinding TOCTOU (AUT-012).
+// egress policy, and dials the FIRST vetted IP by address — never re-resolving the hostname. It
+// delegates to egress.PinnedDialer (the shared resolve→vet→connect-the-same-IP idiom that closes the
+// DNS-rebinding TOCTOU, AUT-012).
 func (s *Sender) pinnedDial(allowPrivate bool) func(context.Context, string, string) (net.Conn, error) {
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, err
-		}
-		var candidates []net.IP
-		if ip := net.ParseIP(host); ip != nil {
-			candidates = []net.IP{ip}
-		} else {
-			resolved, err := s.resolver.LookupIPAddr(ctx, host)
-			if err != nil {
-				return nil, err
-			}
-			for _, a := range resolved {
-				candidates = append(candidates, a.IP)
-			}
-		}
-		for _, ip := range candidates {
-			if vetIP(ip, allowPrivate) == nil {
-				return s.dial(ctx, network, net.JoinHostPort(ip.String(), port))
-			}
-		}
-		return nil, errEgressDenied
-	}
+	return egress.PinnedDialer(s.resolver, allowPrivate, s.dial)
 }
 
-// VetDestinationURL enforces the static egress policy (spec §21.4): the scheme must be https (http is
-// a downgrade allowed only for a self-host/dev receiver via the allowlist flag), and a literal-IP host
-// must pass the same IP vet the per-attempt dialer applies. A hostname is NOT resolved here — this is
-// the cheap static gate on the hot send path; hostname resolution is vetted for real at connect time
-// by pinnedDial (the authoritative layer) and, fail-fast, at registration by VetDestination.
+// VetDestinationURL enforces the static egress policy (spec §21.4): https-only (http is a self-host
+// downgrade under the allowlist flag) and a literal-IP host vetted. It delegates to egress.VetURL — the
+// cheap static gate; hostname resolution is vetted for real at connect time by pinnedDial (authoritative)
+// and, fail-fast, at registration by VetDestination.
 func VetDestinationURL(rawURL string, allowPrivate bool) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("parse destination: %w", err)
-	}
-	switch u.Scheme {
-	case "https":
-	case "http":
-		if !allowPrivate {
-			return fmt.Errorf("%w: http is not allowed for a public destination (use https)", errEgressDenied)
-		}
-	default:
-		return fmt.Errorf("%w: scheme %q not allowed", errEgressDenied, u.Scheme)
-	}
-	if u.Hostname() == "" {
-		return fmt.Errorf("%w: empty host", errEgressDenied)
-	}
-	if ip := net.ParseIP(u.Hostname()); ip != nil {
-		return vetIP(ip, allowPrivate)
-	}
-	return nil
+	return egress.VetURL(rawURL, allowPrivate)
 }
 
-// VetDestination is the fail-fast registration gate (AUT-012): the static VetDestinationURL check PLUS,
-// when the host is a name, a DNS resolution whose every answer is vetted — so a hostname that ALREADY
-// points at a private/loopback/metadata range is rejected at registration rather than only at the
-// first delivery. Resolution failure is NOT a rejection: DNS can rebind, so the authoritative check is
-// pinnedDial at connect time; registration only rejects a name it can prove resolves internal. The
-// resolver is injectable for tests; nil uses net.DefaultResolver.
+// VetDestination is the fail-fast registration gate (AUT-012): the static check PLUS, when the host is a
+// name, a DNS resolution whose every answer is vetted. It delegates to egress.VetResolved — resolution
+// failure is permissive (the connect-time pinnedDial is authoritative), and the rejection carries no
+// target host. The resolver is injectable for tests; nil uses net.DefaultResolver.
 func VetDestination(ctx context.Context, resolver Resolver, rawURL string, allowPrivate bool) error {
-	if err := VetDestinationURL(rawURL, allowPrivate); err != nil {
-		return err
-	}
-	u, _ := url.Parse(rawURL) // VetDestinationURL already proved it parses
-	host := u.Hostname()
-	if net.ParseIP(host) != nil {
-		return nil // a literal IP was already vetted by VetDestinationURL
-	}
-	if resolver == nil {
-		resolver = net.DefaultResolver
-	}
-	addrs, err := resolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil // cannot resolve now — connect-time pinnedDial is the authoritative gate
-	}
-	for _, a := range addrs {
-		if err := vetIP(a.IP, allowPrivate); err != nil {
-			return fmt.Errorf("%w: host resolves to a blocked address", errEgressDenied)
-		}
-	}
-	return nil
-}
-
-// specialUseCIDRs are ranges that are NEVER a valid webhook destination and stay denied even under the
-// allowlist flag (F8): RFC6598 CGNAT (Alibaba metadata lives at 100.100.100.200), IETF protocol
-// assignments, benchmarking, and future-use space. net.IP.IsPrivate/IsLinkLocal* miss these.
-var specialUseCIDRs = parseCIDRs(
-	"100.64.0.0/10", // RFC6598 shared address space / CGNAT (Alibaba metadata)
-	"192.0.0.0/24",  // RFC6890 IETF protocol assignments
-	"198.18.0.0/15", // RFC2544 benchmarking
-	"240.0.0.0/4",   // RFC1112 reserved for future use
-)
-
-func parseCIDRs(cidrs ...string) []*net.IPNet {
-	out := make([]*net.IPNet, 0, len(cidrs))
-	for _, c := range cidrs {
-		if _, n, err := net.ParseCIDR(c); err == nil {
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
-// vetIP is the single IP egress decision. Unspecified, multicast, link-local (which includes the
-// 169.254.169.254 cloud-metadata address), and the special-use ranges above are NEVER allowed — not
-// even under the allowlist flag, because a webhook has no legitimate reason to reach them. Loopback and
-// private/ULA ranges are denied by default and opened only for a self-host receiver via the explicit
-// allowlist flag (§21.4).
-func vetIP(ip net.IP, allowPrivate bool) error {
-	if ip == nil {
-		return fmt.Errorf("%w: unparseable IP", errEgressDenied)
-	}
-	switch {
-	case ip.IsUnspecified(), ip.IsMulticast(), ip.IsLinkLocalUnicast(), ip.IsInterfaceLocalMulticast():
-		return fmt.Errorf("%w: %s is a reserved/metadata address", errEgressDenied, ip)
-	}
-	for _, n := range specialUseCIDRs {
-		if n.Contains(ip) {
-			return fmt.Errorf("%w: %s is a special-use address", errEgressDenied, ip)
-		}
-	}
-	if allowPrivate {
-		return nil
-	}
-	if ip.IsLoopback() || ip.IsPrivate() {
-		return fmt.Errorf("%w: %s is a private/loopback address", errEgressDenied, ip)
-	}
-	return nil
+	return egress.VetResolved(ctx, resolver, rawURL, allowPrivate)
 }
 
 // unwrapURLError strips the *url.Error envelope so the stored attempt error is the sanitized cause,
