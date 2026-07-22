@@ -1534,6 +1534,63 @@ func TestMigration30APIKeyScope(t *testing.T) {
 	}
 }
 
+// TestMigration31SecretRefsGrantsAppendOnlyAcrossReboots pins the append-only grant on secret_refs across a
+// SECOND boot (E13 Task 3). secret_refs is the first table created after 000029's blanket
+// `GRANT ... ON ALL TABLES`, so on boot #2 both 000001 and 000029's blanket grants re-run and — now that the
+// table exists — hand palai_app UPDATE+DELETE it must never hold (silent ciphertext replacement / version
+// deletion). 000031's REVOKE (it runs LAST in the chain, self-re-asserting every boot) is what keeps them
+// withheld — the load-bearing half the 000015 precedent documents. This test migrates TWICE, then proves as
+// the runtime role that SELECT+INSERT are held but UPDATE+DELETE are denied (42501). It FAILS without the
+// REVOKE line and PASSES with it; the RLS-catalogue gate checks policies, not grants, so this class needs
+// its own grant test.
+func TestMigration31SecretRefsGrantsAppendOnlyAcrossReboots(t *testing.T) {
+	cs := openHarness(t)
+	ctx := storage.WithSystemScope(context.Background())
+	pool := cs.Pool()
+
+	// The second boot: main.go re-runs the whole chain on every start. This is the boot that re-exposes the
+	// blanket grants to the now-existing secret_refs table.
+	if err := cs.Migrate(context.Background()); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+
+	// The definitive privilege assertion (RLS-independent): after two boots, palai_app holds SELECT+INSERT
+	// and NOT UPDATE/DELETE.
+	assertPriv := func(priv string, want bool) {
+		var got bool
+		if err := pool.QueryRow(ctx, `SELECT has_table_privilege('palai_app', 'secret_refs', $1)`, priv).Scan(&got); err != nil {
+			t.Fatalf("has_table_privilege(%s) error = %v", priv, err)
+		}
+		if got != want {
+			t.Fatalf("palai_app %s on secret_refs = %v, want %v (append-only grant eroded across reboots)", priv, got, want)
+		}
+	}
+	assertPriv("SELECT", true)
+	assertPriv("INSERT", true)
+	assertPriv("UPDATE", false)
+	assertPriv("DELETE", false)
+
+	// Behavioral half: as the runtime role itself, an UPDATE/DELETE on secret_refs is refused by the
+	// privilege check (42501) before RLS is even consulted — a compromised handler cannot silently replace a
+	// ciphertext or delete version history.
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET ROLE palai_app`); err != nil {
+		t.Fatalf("SET ROLE palai_app error = %v", err)
+	}
+	defer func() { _, _ = conn.Exec(ctx, `RESET ROLE`) }()
+
+	if got := pgCode(mustFail(conn.Exec(ctx, `UPDATE secret_refs SET ciphertext = '\x00'`))); got != "42501" {
+		t.Fatalf("secret_refs UPDATE code = %q, want 42501 (append-only: UPDATE withheld)", got)
+	}
+	if got := pgCode(mustFail(conn.Exec(ctx, `DELETE FROM secret_refs`))); got != "42501" {
+		t.Fatalf("secret_refs DELETE code = %q, want 42501 (append-only: DELETE withheld)", got)
+	}
+}
+
 func mustFail(_ pgconn.CommandTag, err error) error { return err }
 
 // TestMigration27Skills proves 000027 adds the skills registry (E12 Task 7, spec §28.15-28.16, TOL-011)

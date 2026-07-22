@@ -33,7 +33,15 @@ CALL palai_apply_tenant_policy('secret_refs', 'organization_id', false);
 -- secret_refs is the FIRST table created after 000029's blanket `GRANT ... ON ALL TABLES`, so that sweep
 -- never saw it — a new table needs its own grant or the runtime role fails closed with "permission denied
 -- for table secret_refs" instead of the row-scoped policy. Append-only (INSERT on create/rotate, SELECT on
--- resolve/list/get; never UPDATE/DELETE), so grant only those two — the 000015/000017 append-only precedent.
+-- resolve/list/get; never UPDATE/DELETE), so grant only those two.
+--
+-- The REVOKE is load-bearing, not decoration (the 000015 §26.1 precedent): main.go re-runs the WHOLE chain
+-- on every boot, so on boot #2 both 000001 and 000029's blanket `GRANT ... ON ALL TABLES` re-run and — now
+-- that secret_refs EXISTS — re-hand palai_app UPDATE+DELETE (silent ciphertext replacement / version-history
+-- deletion). 000031 runs LAST in the chain, so this REVOKE re-asserts after them every boot and keeps the
+-- store append-only. DELETE stays withheld too — version history is retained for audit; a future retention
+-- sweep would re-grant DELETE narrowly (like transcript_boundaries), not open UPDATE.
 GRANT SELECT, INSERT ON secret_refs TO palai_app;
+REVOKE UPDATE, DELETE ON secret_refs FROM palai_app;
 
 INSERT INTO schema_migrations (version) VALUES (31) ON CONFLICT DO NOTHING;
