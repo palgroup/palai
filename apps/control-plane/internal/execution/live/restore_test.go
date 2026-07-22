@@ -77,8 +77,9 @@ func requireEnv(t *testing.T, name string) string {
 func TestLiveCheckpointRestoreRealProvider(t *testing.T) {
 	// E12 T1b threaded the tool_call id through the engine wire, so attempt 2's restored continuation
 	// re-threads a well-formed conversation (assistant.tool_calls[].id == the tool message's
-	// tool_call_id) and completes on the real provider — proven live by the distinct second chatcmpl id
-	// asserted below. Re-enabled (was skipped on the pre-T1b wire gap).
+	// tool_call_id) and completes on the real provider — provable live WHEN this case runs green via the
+	// distinct second chatcmpl id asserted below (the restore-boundary threading itself is proven
+	// deterministically in the engine RED tests). Re-enabled (was skipped on the pre-T1b wire gap).
 	secret := requireEnv(t, credentialEnv)
 	engineDir := requireEnv(t, "PALAI_ENGINE_DIR")
 	pgURL := requireEnv(t, "PALAI_COMPONENT_POSTGRES_URL")
