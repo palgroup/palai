@@ -453,7 +453,7 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 
 ### E12 — MCP, skills, hooks ve remote tools
 
-**Child plan:** `docs/superpowers/plans/phase-12-extensions.md`
+**Child plan:** `docs/superpowers/plans/phase-12-extensibility.md`
 
 **Files:** `packages/extension-sdk/`, `adapters/integrations/mcp/`, `adapters/tools/http/`, `tests/security/extensions/`, `tests/conformance/tool-sdk/`
 
