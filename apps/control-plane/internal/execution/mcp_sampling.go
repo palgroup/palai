@@ -66,9 +66,13 @@ func (r *MCPSamplingRouter) RouteSampling(ctx context.Context, scope mcp.CallSco
 		Secret:         r.route.Secret,
 	}, nil)
 	if routeErr != nil {
+		// A budget cutoff still MADE the provider call (the tokens were spent, the result rejected at Admit):
+		// carry the provider request id + usage so the denial event is honest evidence that a REAL provider
+		// Route happened and the SEPARATE budget cut it off — the live smoke asserts exactly this.
 		r.journal(ctx, scope, eventModelStepCompleted, map[string]any{
 			"run_id": scope.RunID, "model_request_id": requestID, "source": "mcp_sampling",
 			"connection_id": conn.ID, "denied": true, "reason": samplingDenyReason(routeErr),
+			"provider_request_id": result.ProviderRequestID, "total_tokens": result.Usage.TotalTokens,
 		})
 		return nil, routeErr
 	}
