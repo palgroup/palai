@@ -120,7 +120,7 @@ func TestLiveInboundWebhookRun(t *testing.T) {
 
 	// Only the unauthenticated inbound route is exercised (it lives on the top mux, bypassing Auth), so every
 	// other seam is nil — those routes simply do not mount.
-	router := api.NewRouter(nil, nil, nil, nil, nil, nil, nil, store, nil, nil, api.SSEConfig{}, nil)
+	router := api.NewRouter(nil, nil, nil, nil, nil, nil, nil, store, nil, nil, nil, api.SSEConfig{}, nil)
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 

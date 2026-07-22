@@ -19,6 +19,7 @@ import (
 	// container without /usr/share/zoneinfo (spec §33.1; time.LoadLocation's documented final fallback).
 	_ "time/tzdata"
 
+	mcpclient "github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/adapters/integrations/webhook"
 	fake "github.com/palgroup/palai/adapters/models/fake"
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
@@ -93,7 +94,7 @@ func main() {
 		// (Task 12 binds the local CA and that listener); the public API server carries no
 		// runner routes, so it is passed nil here. The handler is wrapped so `palai doctor`
 		// can surface the supervisor's restart counters over /healthz/supervisor.
-		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, sseConfigFromEnv(), nil), supervisor),
+		Handler:           withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, repo, sseConfigFromEnv(), nil), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -155,6 +156,15 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		toolBroker.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
 			return toolRegistry.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
 		})
+		// Wire the MCP client (E12 T5): a discovered MCP tool resolves through its run's connection rider and
+		// runs in a per-call, network-less OCI sandbox (stdio) or a vetted HTTP transport. The SAME manager
+		// backs the dispatch lookup (Call) and the admin discover API (repo.SetMCP), and a label-scoped orphan
+		// sweep reclaims any container a crash left behind. Absent a Docker driver, stdio MCP fails cleanly;
+		// HTTP MCP still works.
+		mcpManager := mcpManagerFromEnv(spine)
+		toolRegistry.SetMCP(mcpManager)
+		repo.SetMCP(mcpManager)
+		startMCPOrphanSweep(ctx, supervisor)
 		orch := execution.NewOrchestrator(repo, gateway, broker, toolBroker)
 		orch.SetModelRoute(route)
 		// Wire the repository publisher the approval pump publishes through (spec §30.9-30.10), gated on
@@ -308,6 +318,59 @@ func shellRunnerFromEnv() toolbroker.ShellRunner {
 		NanoCPUs:        int64(envIntDefault("PALAI_SANDBOX_NANO_CPUS", 1_000_000_000)),
 	}
 	return workspace.NewShellExecutor(driver, image, limits)
+}
+
+// mcpManagerFromEnv builds the MCP client the discovered-tool dispatch + admin discover paths share (spec
+// §28.13-28.14, E12 T5). The stdio transport needs a Docker interactive driver (a per-call, network-less,
+// mount-less sandbox); absent it, stdio MCP fails cleanly while HTTP MCP still works. The bearer for an HTTP
+// connection is resolved from its secret_ref at request time via the org-scoped file bridge (never inline),
+// and progress notifications journal advisory tool_call.progress.v1 events through the spine.
+func mcpManagerFromEnv(spine *coordinator.Store) *mcpclient.Manager {
+	driver, err := oci.NewDockerInteractiveDriver()
+	if err != nil {
+		log.Printf("mcp: bind docker interactive driver: %v (stdio MCP disabled; http MCP still available)", err)
+		driver = nil
+	}
+	return mcpclient.NewManager(mcpclient.Config{
+		Driver:         driver,
+		Secrets:        mcpSecretResolver,
+		Sink:           execution.NewMCPProgressSink(spine),
+		DefaultTimeout: envDurationOr("PALAI_MCP_TIMEOUT", 30*time.Second),
+	})
+}
+
+// mcpSecretResolver bridges an MCP connection's secret_ref handle to the bearer bytes at request time (the
+// webhookSecretResolver twin): PALAI_MCP_SECRET_FILE_<ORG>__<REF> holds a FILE PATH, never the secret
+// inline, read only here and never logged. The org prefix is a server-minted hard tenant boundary, so a
+// tenant's ref can only name a secret provisioned under its OWN org.
+func mcpSecretResolver(org, ref string) ([]byte, error) {
+	if org == "" || ref == "" {
+		return nil, errors.New("empty mcp secret org/ref")
+	}
+	if strings.Contains(secretEnvKey(org), "__") {
+		return nil, fmt.Errorf("ambiguous mcp secret org key %q", org)
+	}
+	path := os.Getenv("PALAI_MCP_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	if path == "" {
+		return nil, fmt.Errorf("no secret bridge configured for mcp ref under org %q", org)
+	}
+	return os.ReadFile(path)
+}
+
+// startMCPOrphanSweep launches the label-scoped MCP orphan-container sweep (spec §28.13 named gap, E12 T5):
+// a crash between a per-call container's Start and its teardown leaves an orphan, which this reclaims. It is
+// STRICTLY io.palai.sandbox=mcp — an engine/shell container is never touched (and the engine reaper never
+// touches an MCP one). It runs like the artifact-orphan-gc sweep: unconditionally supervised, a killed
+// process just misses ticks. Grace/interval are env-tunable.
+func startMCPOrphanSweep(ctx context.Context, supervisor *coordinator.Supervisor) {
+	grace := envDurationOr("PALAI_MCP_SWEEP_GRACE", 2*time.Minute)
+	interval := envDurationOr("PALAI_MCP_SWEEP_INTERVAL", time.Minute)
+	sweeper, err := mcpclient.NewSweeper(grace)
+	if err != nil {
+		log.Printf("mcp orphan-sweep: %v (disabled)", err)
+		return
+	}
+	go supervisor.Supervise(ctx, "mcp-orphan-sweep", func(ctx context.Context) error { return sweeper.Run(ctx, interval) })
 }
 
 // repositoryPublisherFromEnv builds the repository publisher the approval pump publishes through (spec

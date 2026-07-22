@@ -21,7 +21,7 @@ import (
 // correlation middleware, because it carries its own one-use-token and mTLS identity.
 // It is served over a separate mutually-authenticated listener; binding the CA and that
 // listener is Task 12, so production passes nil until then.
-func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, sse SSEConfig, runner http.Handler) http.Handler {
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, mcp MCPConnectionAPI, sse SSEConfig, runner http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
@@ -93,6 +93,15 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/tools/{tool_id}/revisions/{revision_id}/publish", th.publishRevision)
 		mux.HandleFunc("POST /v1/tool-sets/{set}/revisions", th.createSetRevision)
 		mux.HandleFunc("POST /v1/tool-sets/{set}/revisions/{revision_id}/publish", th.publishSetRevision)
+	}
+
+	// The E12 Task 5 MCP connection management surface (spec §28.13-28.14): admin registration of upstream
+	// MCP servers + the admin discover action. Deliberately ADMIN-ONLY — there is no model-facing MCP-add or
+	// discover tool. nil in tiers that never touch MCP.
+	if mcp != nil {
+		mh := &mcpConnectionHandler{mcp: mcp}
+		mux.HandleFunc("POST /v1/mcp-connections", mh.createConnection)
+		mux.HandleFunc("POST /v1/mcp-connections/{id}/discover", mh.discoverConnection)
 	}
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}
