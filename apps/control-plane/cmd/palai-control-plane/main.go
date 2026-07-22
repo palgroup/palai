@@ -164,6 +164,11 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		if artStore != nil {
 			orch.SetCheckpointSink(execution.NewCheckpointSink(artStore, recovery.New(spine.Pool())))
 			orch.SetSnapshotSink(execution.NewSnapshotSink(artStore, spine))
+			// The changeset writer doubles as the research tool's body-artifact seam, so it is wired on the
+			// object store — NOT the coding workspace. The changeset compile still only runs for a
+			// workspace-bound run (it needs a base to diff), so hoisting it here is behavior-preserving for
+			// the changeset while letting a workspace-less research run persist its full fetched body.
+			orch.SetChangesetWriter(artifacts.NewWriter(artStore, spine.Pool()))
 		}
 		// Wire the root run's workspace auto-provisioning + coding-tool sandbox, gated on
 		// PALAI_WORKSPACE_ROOT (spec §29.7-30.3, E09 Task 10). This is what makes a coding session
@@ -179,9 +184,8 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// holds the mount — a NAMED FUTURE split-deploy hardening, not built here.
 		if root := os.Getenv("PALAI_WORKSPACE_ROOT"); root != "" {
 			orch.SetWorkspaceProvisioner(root, repositoryBrokerFromEnv())
-			if artStore != nil {
-				orch.SetChangesetWriter(artifacts.NewWriter(artStore, spine.Pool()))
-			}
+			// The changeset writer is wired above on the object store (it doubles as the research
+			// body-artifact seam); a workspace-bound run reuses that same writer for its changeset compile.
 			if shell := shellRunnerFromEnv(); shell != nil {
 				orch.SetShellRunner(shell)
 			}

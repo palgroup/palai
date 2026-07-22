@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -226,6 +227,77 @@ func TestResearchFetchProducesCitations(t *testing.T) {
 	cite2 := out2["citations"].([]any)[0].(map[string]any)
 	if cite2["url"] != "https://example.com/final" {
 		t.Errorf("post-redirect citation url = %v, want the final URL", cite2["url"])
+	}
+}
+
+type fakeResearchArtifactWriter struct {
+	content     []byte
+	mediaType   string
+	logicalType string
+}
+
+func (f *fakeResearchArtifactWriter) WriteArtifact(_ context.Context, _, _, _ string, content []byte, mediaType, logicalType string, _ map[string]any) (string, error) {
+	f.content = append([]byte(nil), content...)
+	f.mediaType, f.logicalType = mediaType, logicalType
+	return "art_research_1", nil
+}
+
+// TestResearchLargeBodyBoundedExcerptPlusArtifact pins the large-page path: the model gets a bounded
+// excerpt while the FULL (fetch-capped) body is persisted to the artifact store, and the citation's
+// content_hash is exactly the persisted bytes — model claim → citation → artifact → bytes. When no
+// store is wired the tool still returns the excerpt with an empty artifact id (clean fall).
+func TestResearchLargeBodyBoundedExcerptPlusArtifact(t *testing.T) {
+	big := bytes.Repeat([]byte("A"), 100<<10) // 100 KiB: over the 64 KiB excerpt cap, under the 4 MiB fetch cap
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write(big)
+	}))
+	defer srv.Close()
+
+	pubResolver := researchResolver(func(_ context.Context, _ string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+	})
+	dial, _ := dialRecorder(srv.Listener.Addr().String())
+	tool := ResearchFetchTool(WithResearchResolver(pubResolver), WithResearchDialContext(dial), WithResearchTLSConfig(trustServer(srv)))
+
+	// --- With an artifact store: bounded excerpt + full body persisted, hash pins the persisted bytes. ---
+	aw := &fakeResearchArtifactWriter{}
+	env := toolbroker.ExecEnv{Artifacts: aw, Scope: toolbroker.TaskScope{Org: "o", Project: "p", RunID: "run_1"}}
+	out, err := tool.Exec(context.Background(), env, map[string]any{"url": "https://example.com/"})
+	if err != nil {
+		t.Fatalf("research fetch (large) = %v, want success", err)
+	}
+	if excerpt, _ := out["excerpt"].(string); len(excerpt) > maxResearchExcerptBytes {
+		t.Errorf("excerpt is %d bytes, want ≤ %d (bounded)", len(excerpt), maxResearchExcerptBytes)
+	}
+	if out["truncated"] != true {
+		t.Errorf("truncated = %v, want true (the excerpt was capped)", out["truncated"])
+	}
+	if out["artifact_id"] != "art_research_1" {
+		t.Errorf("artifact_id = %v, want the persisted id", out["artifact_id"])
+	}
+	if !bytes.Equal(aw.content, big) {
+		t.Errorf("artifact stored %d bytes, want the full %d-byte body", len(aw.content), len(big))
+	}
+	if aw.logicalType != "research_fetch" {
+		t.Errorf("artifact logicalType = %q, want research_fetch", aw.logicalType)
+	}
+	cite := out["citations"].([]any)[0].(map[string]any)
+	wantHash := "sha256:" + hex.EncodeToString(sha256Sum(aw.content))
+	if cite["content_hash"] != wantHash {
+		t.Errorf("content_hash = %v, want the hash of the persisted bytes %s", cite["content_hash"], wantHash)
+	}
+
+	// --- No artifact store: excerpt still returned, artifact id empty (a workspace-less run is fine). ---
+	out2, err := tool.Exec(context.Background(), toolbroker.ExecEnv{}, map[string]any{"url": "https://example.com/"})
+	if err != nil {
+		t.Fatalf("research fetch (no store) = %v, want success", err)
+	}
+	if out2["artifact_id"] != "" {
+		t.Errorf("artifact_id = %v, want empty with no store", out2["artifact_id"])
+	}
+	if excerpt, _ := out2["excerpt"].(string); excerpt == "" {
+		t.Error("excerpt is empty with no store, want the bounded excerpt still returned")
 	}
 }
 

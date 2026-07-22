@@ -122,6 +122,7 @@ func (o *Orchestrator) execEnv(st *attemptState) toolbroker.ExecEnv {
 		Shell:         o.shell,
 		Tasks:         o.tasks,
 		Publications:  o.publications,
+		Artifacts:     o.artifacts, // the research tool persists a large body here; nil ⇒ excerpt-only
 		Scope: toolbroker.TaskScope{
 			Org: st.tenant.Organization, Project: st.tenant.Project,
 			SessionID: st.sessionID, RunID: string(st.attempt.RunID), ResponseID: st.responseID,
