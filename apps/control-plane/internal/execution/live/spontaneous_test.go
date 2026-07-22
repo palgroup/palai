@@ -5,8 +5,8 @@
 // effective tool set to the real provider (the project's default_tools = [palai.workspace.file]); the
 // model is OFFERED the file tool and calls it OF ITS OWN CHOICE (the prompt instructs but does NOT force
 // — no tool_choice:required), and the broker executes it from the fenced ledger against a REAL workspace.
-// This is the ceiling PALAI_LIVE_TOOL_ADVERTISING named across E08-E11 finally lifted: a real model sees
-// the schema → SPONTANEOUSLY calls the tool → the broker runs it against a real workspace. Evidence: a
+// This is the tool-advertising ceiling named across E08-E11 finally lifted: a real model sees the schema
+// → SPONTANEOUSLY calls the tool → the broker runs it against a real workspace. Evidence: a
 // real chatcmpl id on the spontaneous tool step, a completed palai.workspace.file ledger row, and the
 // file actually on disk.
 //

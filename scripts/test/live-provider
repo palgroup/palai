@@ -124,9 +124,12 @@ case "$provider/$case_name" in
     # run.restore) and completes on the real provider — two DISTINCT chatcmpl ids + a complete §26.12
     # RecoveryProof + the completed tool not re-run. Needs the credential + a throwaway object store
     # (PG + SeaweedFS) + the engine dir. Honest ceilings (named in the test): the deterministic tier
-    # already proves the ladder/restore/proof with a fake provider + hook kill; this confirms with a
-    # REAL provider + REAL S3. dispatchModel now advertises the run's effective tool set (E12 T1), so the
-    # real provider is offered recovery_note and SPONTANEOUSLY calls it to reach the tool boundary.
+    # already proves the ladder/restore/proof with a fake provider + hook kill. dispatchModel now
+    # advertises the tool set (E12 T1) so the model spontaneously calls recovery_note, BUT this smoke
+    # SKIPs on a multi-step tool-continuation follow-up: attempt 2's restored continuation re-threads the
+    # tool call + result, which the engine wire (dropped tool_call id) makes malformed for the real chat
+    # API — an engine-wire follow-up, not an advertising gap (advertising is proven by
+    # CASE=spontaneous-tool-roundtrip).
     pkg="./apps/control-plane/internal/execution/live"
     run="TestLiveCheckpointRestoreRealProvider"
     required_key="OPENAI_API_KEY"
@@ -138,9 +141,11 @@ case "$provider/$case_name" in
     # completes on the real provider — two DISTINCT chatcmpl ids + a complete §26.12 RecoveryProof +
     # the completed tool not re-run. Needs the credential + a throwaway object store (PG + SeaweedFS) +
     # the engine dir. Honest ceilings (named in the test): the container-kill dimension itself is proven
-    # DETERMINISTICALLY against a real container in tests/fault/recovery (REC-001 + ENG-005); this tier
-    # confirms the ladder-restore completes with a REAL provider. dispatchModel now advertises the
-    # effective tool set (E12 T1), so the real provider spontaneously calls recovery_note to reach the boundary.
+    # DETERMINISTICALLY against a real container in tests/fault/recovery (REC-001 + ENG-005). dispatchModel
+    # now advertises the tool set (E12 T1) so the model spontaneously calls recovery_note, BUT this smoke
+    # SKIPs on the same multi-step tool-continuation follow-up as checkpoint-restore (attempt 2 re-threads
+    # the tool call + result; the engine wire drops the tool_call id) — an engine-wire follow-up, not an
+    # advertising gap.
     pkg="./apps/control-plane/internal/execution/live"
     run="TestLiveContainerKillRecoveryRealProvider"
     required_key="OPENAI_API_KEY"
