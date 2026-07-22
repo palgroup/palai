@@ -150,6 +150,19 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/api-keys/{key_id}/revoke", ph.revokeAPIKey)
 	}
 
+	// The restart-less secret-ref write-path (spec §39.x, E13 Task 3, SEC-002/MCI-002): a tenant POSTs a
+	// secret VALUE (write-only — it never comes back) that the resolver chain reads fresh, so a rotation
+	// takes effect with no restart; reads return metadata only. Wired via WithSecretRefs (a trailing option)
+	// only when a master key is configured, so a stack without one — and every non-production caller —
+	// mounts no secret-ref route. Gated on the same `provision` capability as tenancy provisioning.
+	if cfg.secrets != nil {
+		sh := &secretRefHandler{secrets: cfg.secrets}
+		mux.HandleFunc("POST /v1/secret-refs", sh.create)
+		mux.HandleFunc("GET /v1/secret-refs", sh.list)
+		mux.HandleFunc("GET /v1/secret-refs/{secret_name}", sh.get)
+		mux.HandleFunc("POST /v1/secret-refs/{secret_name}/rotate", sh.rotate)
+	}
+
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}
 	mux.HandleFunc("GET /v1/sessions/{session_id}/events", stream.stream)
 

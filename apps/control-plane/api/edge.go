@@ -41,10 +41,18 @@ type AdmissionLimits struct {
 type RouterOption func(*routerConfig)
 
 type routerConfig struct {
-	edge EdgeLimits
+	edge    EdgeLimits
+	secrets SecretRefAPI
 }
 
 // WithEdgeLimits supplies the §20.12 request-rate limiter and per-project admission caps.
 func WithEdgeLimits(e EdgeLimits) RouterOption {
 	return func(c *routerConfig) { c.edge = e }
+}
+
+// WithSecretRefs mounts the restart-less secret-ref write-path (E13 Task 3). It is a trailing option rather
+// than a positional NewRouter param because only production (and its dedicated test) wires it — every other
+// caller compiles unchanged, and a stack with no master key leaves it unset so the routes stay unmounted.
+func WithSecretRefs(secrets SecretRefAPI) RouterOption {
+	return func(c *routerConfig) { c.secrets = secrets }
 }
