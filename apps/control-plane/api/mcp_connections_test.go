@@ -107,6 +107,17 @@ func TestMCPConnectionReadRoutes(t *testing.T) {
 	}
 }
 
+// TestMCPListRejectsStatusFilter pins the honest-filter contract (review SHOULD 1): a ?status= on a list
+// that has no status column is a 400, not a silently-ignored filter returning unfiltered rows.
+func TestMCPListRejectsStatusFilter(t *testing.T) {
+	reg := &fakeMCPRegistry{list: []ListRow{{ID: "mcpc_1", Body: []byte(`{"id":"mcpc_1"}`)}}}
+	base := mcpTestServer(t, reg)
+	resp := do(t, "GET", base+"/v1/mcp-connections?status=disabled", ``, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("list ?status= status = %d, want 400 (status filtering unsupported here)", resp.StatusCode)
+	}
+}
+
 // TestMCPRoutesUnmountedWhenNil proves the nil-seam guard AND the model-facing-absence posture: a tier that
 // passes no MCP registry mounts no MCP route at all (a POST is 404). MCP add/discover is an admin API
 // surface only — there is no model-callable tool for it (the broker exposes no such name).

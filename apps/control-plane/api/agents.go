@@ -138,7 +138,11 @@ func (h *agentHandler) listRevisions(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	q, ok := beginList(w, r, "agent-revisions", scope)
+	// The cursor kind carries the profile id: a revisions list is scoped to ONE profile, so a cursor
+	// minted on profile A must NOT MAC-validate on profile B's revisions (which would silently skip B's
+	// rows past A's keyset position). Both beginList and renderPage use the same profile-scoped kind.
+	kind := "agent-revisions:" + r.PathValue("agent_id")
+	q, ok := beginList(w, r, kind, scope)
 	if !ok {
 		return
 	}
@@ -147,7 +151,7 @@ func (h *agentHandler) listRevisions(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
 	}
-	renderPage(w, r, "agent-revisions", scope, rows, q.Limit)
+	renderPage(w, r, kind, scope, rows, q.Limit)
 }
 
 // begin authenticates and reads the bounded body, shared by the create handlers.

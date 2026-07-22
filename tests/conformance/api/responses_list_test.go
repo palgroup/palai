@@ -70,6 +70,20 @@ func TestListResponsesPagesWithCursor(t *testing.T) {
 	}
 }
 
+// TestListResponsesAcceptsStatusFilter guards that responses (a status-capable list) still accepts
+// ?status= with a 200 — the honest-filter reject (review SHOULD 1) is scoped to lists WITHOUT a status
+// column, never responses/sessions.
+func TestListResponsesAcceptsStatusFilter(t *testing.T) {
+	srv := newTestServer(t)
+	resp := postResponses(t, srv, authedHeaders("idem-s"), `{"input":"x"}`)
+	resp.Body.Close()
+	got := listResponses(t, srv, "status=queued&limit=10")
+	if got.StatusCode != http.StatusOK {
+		t.Fatalf("responses ?status= status = %d, want 200 (status filtering IS supported here)", got.StatusCode)
+	}
+	got.Body.Close()
+}
+
 // TestListResponsesRejectsForeignCursor is the TEN-001 cursor-fuzz half at the HTTP edge: a
 // tampered/garbage cursor is a 400 invalid_cursor, never a silently-empty 200.
 func TestListResponsesRejectsForeignCursor(t *testing.T) {

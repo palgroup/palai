@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -61,5 +62,27 @@ func TestAgentReadRoutes(t *testing.T) {
 	reg.profile = AgentResult{NotFound: true}
 	if resp := do(t, "GET", srv.URL+"/v1/agents/aprof_missing", ``, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown profile get status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestAgentRevisionsCursorIsProfileScoped is the review SHOULD 2 guard: a revisions cursor minted on
+// profile A must be REJECTED when replayed on profile B's revisions — otherwise it MAC-validates (same
+// tenant + flat kind) and silently skips B's rows newer than A's keyset position. Docker-free: the fake
+// returns 2 rows so a limit=1 page mints a real next_cursor.
+func TestAgentRevisionsCursorIsProfileScoped(t *testing.T) {
+	reg := &fakeAgentRegistry{revisions: []ListRow{
+		{ID: "arev_1", Body: []byte(`{"id":"arev_1"}`)},
+		{ID: "arev_2", Body: []byte(`{"id":"arev_2"}`)},
+	}}
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, reg, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
+	t.Cleanup(srv.Close)
+
+	page := assertPageLen(t, do(t, "GET", srv.URL+"/v1/agents/aprof_A/revisions?limit=1", ``, nil), 1)
+	if page.NextCursor == nil {
+		t.Fatal("expected a next_cursor to replay across profiles")
+	}
+	resp := do(t, "GET", srv.URL+"/v1/agents/aprof_B/revisions?limit=1&after="+url.QueryEscape(*page.NextCursor), ``, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("profile-B replay of profile-A's revisions cursor = %d, want 400 (profile-scoped cursor)", resp.StatusCode)
 	}
 }

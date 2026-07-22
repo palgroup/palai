@@ -37,6 +37,11 @@ const (
 // cursor is an EXPLICIT reject, never a silently-empty page (the TEN-001 cursor-fuzz contract).
 var errBadCursor = errors.New("api: invalid pagination cursor")
 
+// statusFilterKinds are the list kinds that carry a lifecycle-state column ?status= can filter on. Every
+// other list rejects ?status= (a silently-dropped filter would let a client act on unfiltered rows). The
+// agent-revisions kind is profile-suffixed at the call site, so it is correctly absent here too.
+var statusFilterKinds = map[string]bool{"responses": true, "sessions": true}
+
 // listCursor is a keyset position: the (created_at, id) of the last row a page returned. A list
 // orders by (created_at DESC, id DESC), so the next page is every row strictly before this point.
 type listCursor struct {
@@ -166,7 +171,21 @@ func beginList(w http.ResponseWriter, r *http.Request, kind string, scope middle
 		}
 		q.After = &c
 	}
+	// Forward-only pagination (contracts.Page advertises previous_cursor/before, but this surface never
+	// populates them): a ?before= is rejected rather than silently ignored, so a client cannot believe it
+	// paged backward. Backward pagination is YAGNI here.
+	if r.URL.Query().Get("before") != "" {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "backward pagination is not supported")
+		return ListQuery{}, false
+	}
+	// The status filter only exists on lists with a lifecycle-state column (responses, sessions). On any
+	// other kind a ?status= is rejected, never silently dropped — a client that believes it filtered must
+	// not act on unfiltered rows (review SHOULD 1).
 	q.Status = r.URL.Query().Get("status")
+	if q.Status != "" && !statusFilterKinds[kind] {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "status filtering is not supported for this resource")
+		return ListQuery{}, false
+	}
 	var err error
 	if q.CreatedGTE, err = parseTimeParam(r, "created_after"); err != nil {
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "created_after must be an RFC3339 timestamp")
@@ -197,7 +216,7 @@ func parseTimeParam(r *http.Request, name string) (*time.Time, error) {
 // scope, and writes the contracts.Page envelope. has_more is true exactly when the store returned
 // more than Limit rows; next_cursor is the last returned row's tenant-bound position.
 func renderPage(w http.ResponseWriter, r *http.Request, kind string, scope middleware.Scope, rows []ListRow, limit int) {
-	page := contracts.Page{Data: []any{}}
+	var page contracts.Page
 	if len(rows) > limit {
 		rows = rows[:limit]
 		last := rows[len(rows)-1]
