@@ -123,7 +123,14 @@ func (o *Orchestrator) SetShellRunner(s toolbroker.ShellRunner) { o.shell = s }
 
 // SetHookFirer injects the hook dispatcher the five pinned points fire through (spec §28.17, E12 T8). Left
 // unset, no hook fires — the dispatch is bit-unchanged (the same discipline as SetShellRunner/SetPublisher).
-func (o *Orchestrator) SetHookFirer(h HookFirer) { o.hooks = h }
+// It also propagates the firer to the publication registry, so the before_repository_publish point fires
+// from inside the publish tool's RequestPublication.
+func (o *Orchestrator) SetHookFirer(h HookFirer) {
+	o.hooks = h
+	if pr, ok := o.publications.(*publicationRegistry); ok {
+		pr.hooks = h
+	}
+}
 
 // SetChangesetWriter injects the object-store write-path the finalize changeset compile persists the
 // patch + test-log through (spec §30.6). Left unset, a terminated coding run compiles no changeset —
