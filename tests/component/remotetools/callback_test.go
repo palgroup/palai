@@ -40,13 +40,12 @@ func newID(prefix string) string {
 // harness is a migrated spine + the operation ledger + a live callback endpoint (the real handler over
 // the real Operations store, verifying real HMAC + consuming the real one-use token).
 type harness struct {
-	ops        *remotehttp.Operations
-	pool       *pgxpool.Pool
-	server     *httptest.Server
-	org        string
-	project    string
-	runID      string
-	toleranceN time.Duration
+	ops     *remotehttp.Operations
+	pool    *pgxpool.Pool
+	server  *httptest.Server
+	org     string
+	project string
+	runID   string
 }
 
 func newHarness(t *testing.T) *harness {

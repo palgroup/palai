@@ -234,11 +234,13 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 	reconciler := execution.NewReconciler(spine, 30*time.Second, retry.MaxAttempts)
 	go supervisor.Supervise(ctx, "reconciler", reconciler.Run)
 	// Uncertain-tool reconciliation loop (spec §26.7, E10 T7): resolves tool_calls stuck `uncertain` by a
-	// kill-between-execute-and-commit. No destination prober is wired yet (the probe is a tool's own read
-	// surface, per-tool — a named future wiring), so a reversible/irreversible uncertain call escalates to
-	// manual_resolution rather than guessing an effect landed; the LIVE reconcile smoke wires a real prober.
-	// ponytail: nil prober = safe manual_resolution default; add a prober registry when a probe-capable tool ships.
-	toolReconciler := execution.NewUncertainReconciler(spine, nil, 30*time.Second, 100)
+	// kill-between-execute-and-commit. The RemoteToolProber (E12 T4) is the FIRST real destination prober:
+	// for an uncertain remote_http call it reads the durable remote-operation ledger, so a LATE signed
+	// callback (which wrote late_result there, never touching the tool ledger) resolves the call to
+	// reconciled_completed. A non-remote uncertain call has no operation row, so it still escalates to
+	// manual_resolution — the pre-T4 behaviour, unchanged.
+	toolReconciler := execution.NewUncertainReconciler(spine,
+		execution.NewRemoteToolProber(remotehttp.NewOperations(spine.Pool())), 30*time.Second, 100)
 	go supervisor.Supervise(ctx, "tool-reconciler", toolReconciler.Run)
 }
 
