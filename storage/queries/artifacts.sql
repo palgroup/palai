@@ -22,6 +22,28 @@ SELECT run_id, object_key, size_bytes, checksum
 FROM artifacts
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- ArtifactByID reads one artifact's full retrieval metadata within the tenant scope (E13 T5). Like
+-- GetArtifact it returns no row for an unknown or foreign id, which the retrieval API renders as a 404
+-- — a foreign tenant cannot tell a real artifact from a missing one, so the read leaks no cross-tenant
+-- existence (§22.6 non-disclosure). object_key names the S3 object the content download streams;
+-- size_bytes/checksum carry integrity; media_type/logical_type/malware_scan_status are the §22.6
+-- classification the metadata projection surfaces.
+-- name: ArtifactByID
+SELECT run_id, object_key, size_bytes, checksum, media_type, logical_type, malware_scan_status, created_at
+FROM artifacts
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- ListArtifactsByRun lists a run's artifacts within the tenant scope (E13 T5, the run-scoped retrieval
+-- list). Tenant-scoped like every artifact read; a run with no artifacts returns zero rows (an empty
+-- list, not a miss). Ordered by created_at then id for a stable listing. ponytail: a run's artifact set
+-- is small and bounded (a patch + a test log today), so this is unpaginated — cursor pagination is a
+-- later concern if a run ever produces many.
+-- name: ListArtifactsByRun
+SELECT id, run_id, size_bytes, checksum, media_type, logical_type, malware_scan_status, created_at
+FROM artifacts
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
+ORDER BY created_at, id;
+
 -- ReferencedArtifactObjectKeys lists every object key a live artifacts row still points at
 -- — the reference set the orphan GC subtracts from the bucket listing (E10 Task 3). A
 -- tombstoned row (retention cleared object_key to '') is excluded by the non-empty filter,

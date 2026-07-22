@@ -152,6 +152,28 @@ func (s *Store) Get(ctx context.Context, key string) (body []byte, found bool, e
 	return data, true, nil
 }
 
+// Open streams the object at key WITHOUT buffering it in memory: it returns the S3 GetObject body (an
+// io.ReadCloser the caller drains and closes) plus the store-reported size. found is false (nil reader,
+// nil error) when the object is absent, so a caller distinguishes a miss from a transport failure. Unlike
+// Get it imposes no read bound — the bytes flow straight to the caller (the API download handler
+// io.Copy-streams them to the client), so a large artifact never lands wholesale in control-plane memory.
+func (s *Store) Open(ctx context.Context, key string) (body io.ReadCloser, size int64, found bool, err error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if hasHTTPStatus(err, http.StatusNotFound) {
+			return nil, 0, false, nil
+		}
+		return nil, 0, false, fmt.Errorf("open object %q: %w", key, err)
+	}
+	if out.ContentLength != nil {
+		size = *out.ContentLength
+	}
+	return out.Body, size, true, nil
+}
+
 // ObjectInfo is a stored object's key and server-recorded last-modified time — the two
 // facts the orphan reconcile needs: the key to join against the artifacts index, and the
 // modified time to spare an object still inside the write grace window.

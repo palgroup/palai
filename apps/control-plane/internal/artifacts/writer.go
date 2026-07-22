@@ -70,8 +70,20 @@ func (w *Writer) Write(ctx context.Context, req WriteRequest) (Artifact, error) 
 	if req.Organization == "" || req.Project == "" || req.RunID == "" {
 		return Artifact{}, errors.New("artifacts: write requires organization, project, and run")
 	}
+	// Scope the INSERT to the row's own tenant so migration 000029's FORCE ROW LEVEL SECURITY admits it
+	// (its WITH CHECK reads palai.org_id / palai.project_id). ScopeToTenant defers to an already-scoped
+	// context, so the production path (a request, or WriteArtifact, which scopes before calling Write) is
+	// unchanged; a direct caller with an unscoped context — the write-path's own tests — is scoped to the
+	// tenant it is writing for, exactly as Read and WriteArtifact already do.
+	ctx = storage.ScopeToTenant(ctx, req.Organization, req.Project)
 	id := newArtifactID()
 	key := objectKey(req.Organization, req.Project, req.RunID, id)
+	// ponytail: the object PUT lands before the RLS-checked INSERT, so an internal caller whose ctx scope (A)
+	// differed from req's tenant (B) would write bytes under B's prefix that the INSERT then rejects — orphan
+	// bytes, rowless (unreadable via the API, reclaimed by the orphan-GC), never a cross-tenant read. No
+	// request-path caller can produce that mismatch (ScopeToTenant above derives the scope from req itself).
+	// Upgrade path if an internal caller ever can: INSERT-before-PUT, or a compensating delete on INSERT
+	// failure — deferred to E13-H.
 	checksum, size, err := w.store.Put(ctx, key, req.Content)
 	if err != nil {
 		return Artifact{}, err

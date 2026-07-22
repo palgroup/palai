@@ -31,7 +31,7 @@ func (s scriptedAdmitter) CancelResponse(context.Context, middleware.Scope, stri
 func admissionTestServer(t *testing.T, result AdmitResult) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(NewRouter(fakeVerifier{}, scriptedAdmitter{result: result},
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }

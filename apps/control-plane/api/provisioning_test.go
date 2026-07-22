@@ -70,11 +70,13 @@ func (f *fakeProvisioning) RevokeAPIKey(_ context.Context, s middleware.Scope, i
 // scopedVerifier resolves every bearer to a fixed scope, so a test can drive the provision-capability gate.
 type scopedVerifier struct{ scope middleware.Scope }
 
-func (v scopedVerifier) VerifyAPIKey(context.Context, string) (middleware.Scope, error) { return v.scope, nil }
+func (v scopedVerifier) VerifyAPIKey(context.Context, string) (middleware.Scope, error) {
+	return v.scope, nil
+}
 
 func provisioningTestServer(t *testing.T, verifier middleware.Verifier, prov ProvisioningAPI) string {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, prov, SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(NewRouter(verifier, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, prov, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }

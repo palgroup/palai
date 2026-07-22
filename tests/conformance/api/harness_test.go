@@ -122,7 +122,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	// Sessions + bindings seams are nil: this Docker-free tier exercises only the response surface, so
 	// the standalone session/command + repository-binding routes stay unmounted here (proven in the e2e
 	// responses tier).
-	srv := httptest.NewServer(api.NewRouter(backend, backend, backend, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, api.SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(api.NewRouter(backend, backend, backend, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, api.SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }

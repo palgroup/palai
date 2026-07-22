@@ -105,7 +105,7 @@ func newHarness(t *testing.T) *harness {
 		WithInboundSecrets(func(_, _ string) ([]byte, error) { return inboundSecret, nil }).
 		WithInboundGate(log.Printf, 0, 256, 0)
 	schedules := automation.NewScheduleStore(repo.Spine().Pool(), triggers)
-	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, repo, repo, repo, webhooks, triggers, schedules, nil, nil, nil, nil, nil, api.SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(api.NewRouter(repo, repo, repo, repo, repo, repo, webhooks, triggers, schedules, nil, nil, nil, nil, nil, nil, api.SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 
 	return &harness{

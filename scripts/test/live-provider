@@ -80,6 +80,19 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_object_store=1
     ;;
+  provider-one/artifact-retrieval)
+    # E13 Task 5 (DAT-006 basic / MCI-004): a real provider completion's output is persisted as an artifact
+    # to a REAL SeaweedFS + Postgres, then DOWNLOADED through the public HTTP retrieval API and proven
+    # bit-identical to the produced file (the streamed bytes' checksum + the RFC 9530 Content-Digest agree
+    # with what the write-path recorded). Needs the credential and a throwaway object store + database.
+    # Honest ceiling (named in the test): the produced "file" is the run's completion output (the model-driven
+    # file tool is registry work), and the download is an authenticated DIRECT stream — a pre-signed URL +
+    # expiry ceremony is E13-H (DAT-006's remainder).
+    pkg="./apps/control-plane/internal/artifacts/live"
+    run="TestLiveArtifactRetrievalOverAPI"
+    required_key="OPENAI_API_KEY"
+    needs_object_store=1
+    ;;
   provider-one/coding-tools)
     # E09 Task 4: the FIRST real multi-step tool loop. A real provider is FORCED (tool_choice:
     # required) to call the file tool then the shell tool; both execute through the production broker
@@ -381,7 +394,7 @@ case "$provider/$case_name" in
     ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation, PROVIDER=provider-one CASE=second-tenant-provisioning, PROVIDER=provider-one CASE=edge-admission" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=artifact-retrieval, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation, PROVIDER=provider-one CASE=second-tenant-provisioning, PROVIDER=provider-one CASE=edge-admission" >&2
     exit 2
     ;;
 esac
