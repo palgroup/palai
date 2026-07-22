@@ -1,0 +1,91 @@
+{
+  "vectors": [
+    {
+      "name": "minimal-remote-http",
+      "definition": {
+        "executor": "remote_http",
+        "input_schema": {
+          "type": "object"
+        }
+      },
+      "canonical": "{\"executor\":\"remote_http\",\"input_schema\":{\"type\":\"object\"}}"
+    },
+    {
+      "name": "full-remote-http",
+      "definition": {
+        "executor": "remote_http",
+        "description": "Look up an answer via a remote service.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        },
+        "output_schema": {
+          "type": "object",
+          "properties": {
+            "answer": {
+              "type": "string"
+            }
+          }
+        },
+        "replay_class": "idempotent",
+        "timeout_ms": 15000,
+        "executor_config": {
+          "url": "https://tool.example.com/invoke",
+          "allow_private": false
+        },
+        "secret_ref": "sig-ref"
+      },
+      "canonical": "{\"description\":\"Look up an answer via a remote service.\",\"executor\":\"remote_http\",\"executor_config\":{\"allow_private\":false,\"url\":\"https://tool.example.com/invoke\"},\"input_schema\":{\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"],\"type\":\"object\"},\"output_schema\":{\"properties\":{\"answer\":{\"type\":\"string\"}},\"type\":\"object\"},\"replay_class\":\"idempotent\",\"secret_ref\":\"sig-ref\",\"timeout_ms\":15000}"
+    },
+    {
+      "name": "json-schema-edges",
+      "definition": {
+        "executor": "remote_http",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 10
+            },
+            "nested": {
+              "type": "object",
+              "properties": {
+                "deep": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "required": [
+            "count",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        "timeout_ms": 30000
+      },
+      "canonical": "{\"executor\":\"remote_http\",\"input_schema\":{\"additionalProperties\":false,\"properties\":{\"count\":{\"maximum\":100,\"minimum\":0,\"type\":\"integer\"},\"name\":{\"maxLength\":255,\"minLength\":1,\"type\":\"string\"},\"nested\":{\"properties\":{\"deep\":{\"type\":\"boolean\"}},\"type\":\"object\"},\"tags\":{\"items\":{\"type\":\"string\"},\"maxItems\":10,\"type\":\"array\"}},\"required\":[\"count\",\"name\"],\"type\":\"object\"},\"timeout_ms\":30000}"
+    }
+  ]
+}

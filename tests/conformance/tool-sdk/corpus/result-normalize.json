@@ -1,0 +1,49 @@
+{
+  "vectors": [
+    {
+      "name": "sync-result",
+      "kind": "sync",
+      "outcome": "result",
+      "payload": {
+        "answer": "sunny",
+        "score": 7
+      },
+      "canonical": "{\"result\":{\"answer\":\"sunny\",\"score\":7}}"
+    },
+    {
+      "name": "sync-problem",
+      "kind": "sync",
+      "outcome": "problem",
+      "payload": {
+        "type": "about:blank",
+        "title": "boom",
+        "status": 500
+      },
+      "canonical": "{\"problem\":{\"status\":500,\"title\":\"boom\",\"type\":\"about:blank\"}}"
+    },
+    {
+      "name": "callback-result",
+      "kind": "callback",
+      "outcome": "result",
+      "operation_id": "rop_conf_001",
+      "tool_call_id": "tcall_conf_001",
+      "payload": {
+        "answer": "sunny"
+      },
+      "canonical": "{\"operation_id\":\"rop_conf_001\",\"protocol\":\"tool-http.v1\",\"result\":{\"answer\":\"sunny\"},\"tool_call_id\":\"tcall_conf_001\"}"
+    },
+    {
+      "name": "callback-problem",
+      "kind": "callback",
+      "outcome": "problem",
+      "operation_id": "rop_conf_001",
+      "tool_call_id": "tcall_conf_001",
+      "payload": {
+        "type": "about:blank",
+        "title": "nope",
+        "status": 502
+      },
+      "canonical": "{\"operation_id\":\"rop_conf_001\",\"problem\":{\"status\":502,\"title\":\"nope\",\"type\":\"about:blank\"},\"protocol\":\"tool-http.v1\",\"tool_call_id\":\"tcall_conf_001\"}"
+    }
+  ]
+}

@@ -340,6 +340,89 @@ run_remote_tools() {
   echo "component_remote_tools=PASS containers=$containers_after volumes=$volumes_after"
 }
 
+# The tool-sdk suite proves the E12 T9 Extension SDK end to end (spec §28.24, TOL-018): a remote tool
+# server built ENTIRELY on the TypeScript SDK verifies a REAL signed invoke and answers with an
+# SDK-signed callback, so the same signed round-trip the remote-tools suite runs is proven through TWO
+# SDK implementations (Go executor signs the invoke -> TS SDK verifies; TS SDK signs the callback -> Go
+# control-plane endpoint verifies). It reuses the throwaway-postgres idiom; the Go test spawns the TS
+# server itself with `node --experimental-strip-types`.
+run_tool_sdk() {
+  local image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  local label="io.palai.component=tool-sdk"
+  local run_id="$$-${RANDOM}"
+  local container="palai-component-tool-sdk-$run_id"
+  local volume="palai-component-tool-sdk-$run_id"
+  local password="palai-component-${RANDOM}${RANDOM}"
+
+  if ! command -v node >/dev/null 2>&1; then
+    echo "tool-sdk component suite needs node (--experimental-strip-types) on PATH" >&2
+    exit 1
+  fi
+
+  count_containers() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_volumes() { docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+  }
+
+  local containers_before volumes_before
+  containers_before="$(count_containers)"
+  volumes_before="$(count_volumes)"
+  trap cleanup EXIT
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never \
+    --name "$container" \
+    --label "$label" \
+    --env POSTGRES_DB=palai \
+    --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 \
+    --volume "$volume:/var/lib/postgresql/data" \
+    "$image" >/dev/null
+
+  local ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "tool-sdk component container did not become ready" >&2
+    exit 1
+  fi
+
+  local binding port url
+  binding="$(docker port "$container" 5432/tcp)"
+  port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+
+  set +e
+  PALAI_COMPONENT_POSTGRES_URL="$url" go test -tags=component -count=1 -v ./tests/component/toolsdk
+  local status=$?
+  set -e
+  if test "$status" -ne 0; then
+    docker logs "$container" >&2 || true
+  fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers)"
+  volumes_after="$(count_volumes)"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "tool-sdk component suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then
+    exit "$status"
+  fi
+  echo "component_tool_sdk=PASS containers=$containers_after volumes=$volumes_after"
+}
+
 run_mcp() {
   local pg_image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
   local pg_label="io.palai.component=mcp"
@@ -449,9 +532,10 @@ case "$suite" in
   artifacts) run_artifacts ;;
   repository) run_repository ;;
   remote-tools) run_remote_tools ;;
+  tool-sdk) run_tool_sdk ;;
   mcp) run_mcp ;;
   *)
-    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository, remote-tools, mcp)" >&2
+    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository, remote-tools, tool-sdk, mcp)" >&2
     exit 2
     ;;
 esac
