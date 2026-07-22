@@ -105,8 +105,12 @@ func main() {
 		// The signed remote-tool result callback endpoint (spec §28.24, E12 T4): its auth IS the per-operation
 		// HMAC signature + one-use token, so it rides the top mux unauthenticated (like the inbound receiver).
 		// The SAME org-scoped secret bridge signs the outbound invoke and verifies the inbound callback.
+		// The §20.12 edge admission control (E13 T7): the per-API-key request-rate limiter and the
+		// per-project concurrent/queued run caps, read from the environment. Every value defaults to
+		// zero = disabled, so a stack that configures none admits exactly as before.
 		Handler: withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, repo, repo, repo, sseConfigFromEnv(), nil,
-			api.NewToolCallbackHandler(remotehttp.NewOperations(repo.Spine().Pool()), remoteToolSecretResolver)), supervisor),
+			api.NewToolCallbackHandler(remotehttp.NewOperations(repo.Spine().Pool()), remoteToolSecretResolver),
+			api.WithEdgeLimits(edgeLimitsFromEnv())), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -195,6 +199,10 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		toolRegistry.SetHookHandlers(extensions.PlatformHookHandlers())
 		orch := execution.NewOrchestrator(repo, gateway, broker, toolBroker)
 		orch.SetModelRoute(route)
+		// §20.12 queue-deadline: a run that waited in the admission queue past PALAI_QUEUE_DEADLINE is
+		// timed out at dispatch, before any billable compute. Unset ⇒ disabled (runs never expire on
+		// queue age), so the deterministic tiers are bit-unchanged.
+		orch.SetQueueDeadline(envDuration("PALAI_QUEUE_DEADLINE"))
 		orch.SetHookFirer(toolRegistry)
 		// Wire the repository publisher the approval pump publishes through (spec §30.9-30.10), gated on
 		// the GitHub App environment. Absent it, an approved publication waits (the pump is a no-op) — no
@@ -815,6 +823,27 @@ func sseConfigFromEnv() api.SSEConfig {
 		WriteTimeout: envDuration("PALAI_SSE_WRITE_TIMEOUT"),
 		BatchLimit:   envInt("PALAI_SSE_BATCH_LIMIT"),
 	}
+}
+
+// edgeLimitsFromEnv reads the §20.12 basic-tier edge admission control (E13 T7). Every value
+// defaults to zero = disabled, so a stack that sets none keeps the pre-E13-T7 behaviour (no
+// request-rate limiter, no per-project run caps). Operators (and the live smoke) enable them
+// without a rebuild.
+func edgeLimitsFromEnv() api.EdgeLimits {
+	return api.EdgeLimits{
+		RequestRatePerSec: envFloat("PALAI_REQUEST_RATE_PER_SEC"),
+		RequestBurst:      envInt("PALAI_REQUEST_BURST"),
+		MaxConcurrentRuns: envInt("PALAI_MAX_CONCURRENT_RUNS"),
+		MaxQueuedRuns:     envInt("PALAI_MAX_QUEUED_RUNS"),
+	}
+}
+
+func envFloat(name string) float64 {
+	f, err := strconv.ParseFloat(os.Getenv(name), 64)
+	if err != nil {
+		return 0
+	}
+	return f
 }
 
 func envDuration(name string) time.Duration {
