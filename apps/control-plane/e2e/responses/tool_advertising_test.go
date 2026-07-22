@@ -32,6 +32,7 @@ type advertisingProvider struct {
 	mu       sync.Mutex
 	tools    [][]modelbroker.ToolSchema
 	force    []bool
+	messages [][]modelbroker.Message
 	toolCall *modelbroker.ToolCall
 }
 
@@ -39,6 +40,7 @@ func (p *advertisingProvider) Execute(_ context.Context, req modelbroker.Request
 	p.mu.Lock()
 	p.tools = append(p.tools, append([]modelbroker.ToolSchema(nil), req.Tools...))
 	p.force = append(p.force, req.ForceToolCall)
+	p.messages = append(p.messages, append([]modelbroker.Message(nil), req.Messages...))
 	p.mu.Unlock()
 
 	sawTool := false
@@ -67,6 +69,14 @@ func (p *advertisingProvider) snapshot() ([][]modelbroker.ToolSchema, []bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.tools, p.force
+}
+
+// messagesSnapshot returns the per-call conversation the provider was sent — the exact input
+// wireMessages serializes to the wire, so a test reads what the real provider would see (E12 T1b).
+func (p *advertisingProvider) messagesSnapshot() [][]modelbroker.Message {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.messages
 }
 
 // TestDispatchModelAdvertisesEffectiveToolSchemas is the key proof: a project baseline of three tool
