@@ -14,12 +14,24 @@ cd "$root"
 # shellcheck source=scripts/test/runner-engine.sh
 source "$root/scripts/test/runner-engine.sh"
 
-# Default runs the engine-isolation suite and the E09 Task 4 workspace shell-tool suite; select one
-# with TEST=runner or TEST=sandbox.
-suites="${TEST:-runner sandbox}"
+# Default runs the engine-isolation suite, the E09 Task 4 workspace shell-tool suite, and the E12 Task 7
+# skill security corpus; select one with TEST=runner|sandbox|skills.
+suites="${TEST:-runner sandbox skills}"
 
 run_runner() {
   run_runner_suite security ./tests/security/runner
+}
+
+# The skills suite is the E12 Task 7 capability-boundary corpus (spec §28.15-28.16, TOL-011): malicious
+# archives are hard-rejected + a prompt-injection SKILL.md is installable but flagged for nothing (the
+# quarantine + scan half, in the extensions package), and a skill grants no authority (the resolver's
+# no-authority test, in the execution package). Pure Go — Quarantine + Resolve are internal-package
+# symbols, so the corpus runs in-package (the internal-import constraint keeps it out of tests/), selected
+# by name; it needs no Docker fixture engine.
+run_skills() {
+  go test -count=1 -v -run 'TestSkillSecurity' ./apps/control-plane/internal/extensions
+  go test -count=1 -v -run 'TestSkillInstructionsGrantNoCapability' ./apps/control-plane/internal/execution
+  echo "security_skills=PASS"
 }
 
 # The sandbox suite proves the workspace shell tool's isolation (spec §28.8, SAN-002/004): argv-form,
@@ -33,8 +45,9 @@ for suite in $suites; do
   case "$suite" in
     runner) run_runner ;;
     sandbox) run_sandbox ;;
+    skills) run_skills ;;
     *)
-      echo "unknown security suite: $suite (known: runner, sandbox)" >&2
+      echo "unknown security suite: $suite (known: runner, sandbox, skills)" >&2
       exit 2
       ;;
   esac

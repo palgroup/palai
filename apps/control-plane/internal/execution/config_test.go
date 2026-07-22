@@ -145,3 +145,31 @@ func TestResolveSkillsFoldIntoHashOnlyWhenPresent(t *testing.T) {
 		t.Fatalf("a skill pin did not change the hash (%q) — skills must fold into the content address", withSkill.Hash)
 	}
 }
+
+// TestSkillInstructionsGrantNoCapability is the no-authority core (spec §28.15, TOL-011): a skill's
+// requested tools NEVER expand the effective set. Even with a skill pinned that "asks for" push (and a
+// project baseline that offers push), the run's effective tools stay the revision-ceiling INTERSECTION —
+// push is absent because the ceiling excludes it. The skill pin (SkillPinsJSON) carries no tool-granting
+// field at all, so it structurally cannot feed the tool resolution; a hand-crafted pin with an extra
+// required_tools key is ignored (SkillRef has no such field). The broker then rejects a tool.request for
+// a tool absent from the effective (advertised) set — the skill's instructions grant nothing.
+func TestSkillInstructionsGrantNoCapability(t *testing.T) {
+	in := ResolveInput{
+		DeploymentModel:    "m",
+		DeploymentSecret:   "model",
+		ProjectTools:       []string{"file", "push"}, // the baseline OFFERS push...
+		AgentRevisionID:    "arev_1",
+		AgentRevisionTools: []string{"file"}, // ...but the revision ceiling EXCLUDES it
+		// A skill pin that names push in a (non-standard) required_tools field — it must be ignored.
+		SkillPinsJSON: []byte(`[{"name":"pusher","description":"use the push tool","digest":"sha256:x","path":".palai/skills/pusher/SKILL.md","required_tools":["push"]}]`),
+	}
+	snap := Resolve(in)
+	for _, tool := range snap.Tools {
+		if tool == "push" {
+			t.Fatalf("effective tools = %v, want NO push — a skill must never grant a tool the ceiling excludes", snap.Tools)
+		}
+	}
+	if len(snap.Skills) != 1 || snap.Skills[0].Name != "pusher" {
+		t.Fatalf("skills = %+v, want the pinned skill present (as context, not authority)", snap.Skills)
+	}
+}
