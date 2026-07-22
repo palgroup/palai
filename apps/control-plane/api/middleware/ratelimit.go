@@ -17,16 +17,29 @@ import (
 // through untouched (Auth answers it 401). ratePerSec is the sustained refill and burst the bucket
 // depth; ratePerSec <= 0 disables the limiter entirely (the middleware becomes a pass-through).
 //
+// The limiter sits BEFORE Auth, so the key is an ATTACKER-controlled bearer string: the bucket map is
+// hard-capped at maxLimiterBuckets and evicts fully-refilled (idle) buckets — resetting outright if a
+// live flood of distinct keys still fills it — so a `Bearer junk$i` storm cannot exhaust memory. A
+// reset costs at most one legitimate key its throttle state (a single burst slips through), never the
+// process.
+//
 // ponytail: an in-process bucket is correct for the single-replica compose deployment — every
 // request for a key hits the same process, so one bucket bounds it. A multi-replica distributed
 // limiter (shared counter) + weighted per-tenant fairness (QUO-002) is SaaS scope, not basic tier.
-// The bucket map grows one entry per distinct key and is never evicted; the basic tier serves a
-// handful of keys, so that is fine — add TTL/LRU eviction if key cardinality ever grows unbounded.
 func RateLimit(ratePerSec float64, burst int) func(http.Handler) http.Handler {
 	if ratePerSec <= 0 {
 		return func(next http.Handler) http.Handler { return next }
 	}
-	lim := newKeyedLimiter(ratePerSec, burst, time.Now)
+	// Clamp burst to at least the per-second rate: a rate set with burst forgotten (<=0) would start
+	// every bucket at 0 and 429 EVERY authenticated request forever (total lockout). A configured
+	// burst is honoured as-is.
+	if burst < 1 {
+		burst = int(math.Ceil(ratePerSec))
+		if burst < 1 {
+			burst = 1
+		}
+	}
+	lim := newKeyedLimiter(ratePerSec, burst, maxLimiterBuckets, time.Now)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, ok := bearerToken(r.Header.Get("Authorization"))
@@ -47,11 +60,16 @@ func RateLimit(ratePerSec float64, burst int) func(http.Handler) http.Handler {
 	}
 }
 
+// maxLimiterBuckets hard-caps the live bucket map. Pre-Auth the key is an attacker-controlled bearer
+// string, so this bound (≈ a few MB at ~200B/entry) is the memory-exhaustion backstop, not a tuning knob.
+const maxLimiterBuckets = 50_000
+
 // keyedLimiter is a set of per-key token buckets sharing one refill rate and depth. One mutex
 // guards the whole map: the limiter itself caps throughput, so contention on it is self-bounded.
 type keyedLimiter struct {
 	ratePerSec float64
 	burst      float64
+	maxBuckets int
 	now        func() time.Time
 
 	mu      sync.Mutex
@@ -63,10 +81,11 @@ type bucket struct {
 	last   time.Time
 }
 
-func newKeyedLimiter(ratePerSec float64, burst int, now func() time.Time) *keyedLimiter {
+func newKeyedLimiter(ratePerSec float64, burst, maxBuckets int, now func() time.Time) *keyedLimiter {
 	return &keyedLimiter{
 		ratePerSec: ratePerSec,
 		burst:      float64(burst),
+		maxBuckets: maxBuckets,
 		now:        now,
 		buckets:    map[string]*bucket{},
 	}
@@ -81,6 +100,9 @@ func (l *keyedLimiter) allow(key string) (bool, time.Duration) {
 	t := l.now()
 	b, ok := l.buckets[key]
 	if !ok {
+		if l.maxBuckets > 0 && len(l.buckets) >= l.maxBuckets {
+			l.evict(t)
+		}
 		b = &bucket{tokens: l.burst, last: t}
 		l.buckets[key] = b
 	}
@@ -96,4 +118,20 @@ func (l *keyedLimiter) allow(key string) (bool, time.Duration) {
 	// Time for the fractional shortfall to refill to one whole token.
 	wait := time.Duration((1 - b.tokens) / l.ratePerSec * float64(time.Second))
 	return false, wait
+}
+
+// evict bounds the map (caller holds the lock). It first drops every bucket that has sat idle long
+// enough to fully refill — those carry no state a fresh bucket wouldn't, so dropping them is free. If a
+// live flood of distinct keys still fills the map (the DoS: buckets all just created, none refilled),
+// it resets the map outright: bounded memory wins over one key's throttle state (a lone burst slips).
+func (l *keyedLimiter) evict(now time.Time) {
+	fullRefill := l.burst / l.ratePerSec // seconds for an empty bucket to reach full depth
+	for k, b := range l.buckets {
+		if now.Sub(b.last).Seconds() >= fullRefill {
+			delete(l.buckets, k)
+		}
+	}
+	if len(l.buckets) >= l.maxBuckets {
+		l.buckets = make(map[string]*bucket, l.maxBuckets)
+	}
 }

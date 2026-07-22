@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,7 +16,7 @@ import (
 // `ratePerSec` so a request is admitted again once a whole token has accrued.
 func TestKeyedLimiterBurstThenRefill(t *testing.T) {
 	now := time.Unix(0, 0)
-	lim := newKeyedLimiter(2 /* rate/sec */, 3 /* burst */, func() time.Time { return now })
+	lim := newKeyedLimiter(2 /* rate/sec */, 3 /* burst */, 1000, func() time.Time { return now })
 
 	// The full burst drains without denial.
 	for i := 0; i < 3; i++ {
@@ -45,7 +46,7 @@ func TestKeyedLimiterBurstThenRefill(t *testing.T) {
 // TestKeyedLimiterIsolatesKeys proves one key exhausting its bucket does not throttle another.
 func TestKeyedLimiterIsolatesKeys(t *testing.T) {
 	now := time.Unix(0, 0)
-	lim := newKeyedLimiter(1, 1, func() time.Time { return now })
+	lim := newKeyedLimiter(1, 1, 1000, func() time.Time { return now })
 	if ok, _ := lim.allow("a"); !ok {
 		t.Fatal("first request for a denied")
 	}
@@ -54,6 +55,24 @@ func TestKeyedLimiterIsolatesKeys(t *testing.T) {
 	}
 	if ok, _ := lim.allow("b"); !ok {
 		t.Fatal("first request for b denied — buckets are not isolated per key")
+	}
+}
+
+// TestKeyedLimiterBoundsMapAgainstDistinctKeys proves the bucket map cannot grow without bound when
+// presented an attacker-controlled stream of distinct keys (the pre-Auth junk-bearer DoS): after
+// maxBuckets distinct keys the map stays at or below the ceiling instead of one entry per key.
+func TestKeyedLimiterBoundsMapAgainstDistinctKeys(t *testing.T) {
+	now := time.Unix(0, 0)
+	const ceiling = 16
+	lim := newKeyedLimiter(1, 1, ceiling, func() time.Time { return now })
+	for i := 0; i < 100*ceiling; i++ {
+		lim.allow(fmt.Sprintf("junk-%d", i)) // each key distinct — the flood
+	}
+	lim.mu.Lock()
+	n := len(lim.buckets)
+	lim.mu.Unlock()
+	if n > ceiling {
+		t.Fatalf("bucket map grew to %d entries, want <= ceiling %d (unbounded = memory-exhaustion DoS)", n, ceiling)
 	}
 }
 
