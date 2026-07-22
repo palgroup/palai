@@ -21,17 +21,13 @@
 //     declines to call the tool produces no tool call and this test goes RED and is re-run — a GREEN run
 //     IS the proof. The prompt carries no tool_choice:required.
 //  3. SMALL TOOL SET is a deliberate cost bound: one tool, not a 5-tool orchestrator loop.
-//  4. MULTI-STEP TERMINAL CONTINUATION IS A FOLLOW-UP, NOT T1: this smoke proves advertising → real
-//     spontaneous call → broker execution. It does NOT assert the run reaches a terminal completion,
-//     because the engine wire (contracts.ToolCall / engine.schema.json tool_call) carries only {name,
-//     arguments} — the provider's tool_call id is dropped at toEngineToolCalls. So the threaded
-//     assistant-tool_calls + tool-result conversation the orchestrator sends back for the NEXT step is
-//     malformed for the real OpenAI chat API (the same limitation the coding-tools live smoke works
-//     around with self-contained turns), and the second step returns empty → the run fails after the tool
-//     executes. Lifting THAT ceiling — carry the tool_call id through the engine wire (an engine.schema
-//     change + adapter serialization) — is a follow-up OUTSIDE T1's scope (T1 makes no schema/adapter
-//     change). What T1 delivers and this smoke proves live: the advertised schema reaches the real model
-//     and it spontaneously calls the tool, which the broker really executes.
+//  4. MULTI-STEP TERMINAL CONTINUATION (E12 T1b, now threaded): the engine wire carries the provider
+//     tool_call id (engine.schema.json $defs/tool_call.id; toEngineToolCalls threads it and the engine
+//     translates the synthetic tcall_ id to it on the tool result), so the threaded assistant-tool_calls
+//     + tool-result conversation the orchestrator sends back for the NEXT step is well-formed for the
+//     real OpenAI chat API. This smoke now asserts the run reaches a terminal COMPLETION with >=2 distinct
+//     real chatcmpl ids — the spontaneous tool step, then the continuation that reads the tool result and
+//     completes: the model spontaneously calls the tool, the broker executes it, and the run finishes.
 //
 // GATED: serialized with every LIVE/fault smoke on the shared :local Docker stack; NOT part of make
 // verify / CI. Skips cleanly without creds. The credential is an opaque env-resolved secret, never printed.
@@ -76,7 +72,7 @@ func TestLiveSpontaneousToolRoundTripRealProvider(t *testing.T) {
 	// A real workspace on the host: the file tool writes here directly (no provisioning infra needed —
 	// WorkspaceHostPath alone gives the tool a confined root).
 	alloc := t.TempDir()
-	tenant, sessionID, _, runID := seedSpontaneousRun(t, pool)
+	tenant, sessionID, respID, runID := seedSpontaneousRun(t, pool)
 
 	broker := modelbroker.New(modelbroker.Config{
 		Adapters: map[string]modelbroker.ModelAdapter{"provider-one": providerone.Adapter{}},
@@ -89,32 +85,37 @@ func TestLiveSpontaneousToolRoundTripRealProvider(t *testing.T) {
 
 	desc := descriptor(runID, 1)
 	desc.WorkspaceHostPath = alloc
-	// ExecuteAttempt drives the real engine + provider. It may return nil even though the run later
-	// terminalizes as failed on the multi-step continuation (ceiling 4) — the tool executes first, which
-	// is what this smoke proves. A dial/engine error, though, is a hard failure worth surfacing.
+	// ExecuteAttempt drives the real engine + provider through to a terminal run: T1b threads the
+	// tool_call id, so the continuation after the tool executes is well-formed and completes. A
+	// dial/engine error is a hard failure worth surfacing.
 	if err := orch.ExecuteAttempt(ctx, desc); err != nil {
 		t.Fatalf("execute spontaneous tool round-trip: %v", err)
 	}
 
-	// (a) A real chatcmpl id: the spontaneous tool step went to the real provider.
-	ids := distinctProviderIDs(t, pool, tenant, runID)
-	if len(ids) < 1 {
+	// (a) The run reached a terminal COMPLETION on the real provider: the spontaneous tool step AND the
+	//     continuation that reads the tool result both completed (T1b's well-formed threaded conversation).
+	if state := responseState(t, pool, tenant, respID); state != "completed" {
 		dumpRunDiagnostics(t, pool, tenant, sessionID, runID)
-		t.Fatalf("real chatcmpl ids = %d (%v), want >=1 (the spontaneous tool step reaches the real provider)", len(ids), ids)
+		t.Fatalf("response state = %q, want completed (T1b threads the tool_call id, so the continuation completes)", state)
 	}
 
-	// (b) The FIRST committed result carried tool_calls — the model SPONTANEOUSLY chose the file tool
-	//     from the advertised schema (the T1 claim; probabilistic — re-run if red).
+	// (b) >=2 distinct real chatcmpl ids: the model called the tool (step 1), read its result, and
+	//     continued to a REAL terminal completion (step 2) — two separate provider round-trips.
+	ids := distinctProviderIDs(t, pool, tenant, runID)
+	if len(ids) < 2 {
+		dumpRunDiagnostics(t, pool, tenant, sessionID, runID)
+		t.Fatalf("real chatcmpl ids = %d (%v), want >=2 (tool step then the continuation that completes)", len(ids), ids)
+	}
+
+	// (c) The FIRST committed result carried tool_calls — the model SPONTANEOUSLY chose the file tool
+	//     from the advertised schema (probabilistic — re-run if red).
 	if !firstResultHasToolCalls(t, pool, tenant, runID) {
 		dumpRunDiagnostics(t, pool, tenant, sessionID, runID)
 		t.Fatal("the first committed model result carried no tool_calls — the model did not spontaneously call the advertised tool (spontaneity is probabilistic; re-run if red)")
 	}
 
-	// (c) A COMPLETED palai.workspace.file tool_calls ledger row exists, and (the round-trip's point) the
-	//     file is actually on disk — the broker really executed the spontaneously-chosen tool. NOTE: the
-	//     run reaching a terminal COMPLETION is a follow-up (ceiling 4: the engine wire drops the tool_call
-	//     id, so the threaded next step is malformed for the real chat API); this smoke stops at the proven
-	//     T1 claim — advertise → spontaneous call → real execution.
+	// (d) A COMPLETED palai.workspace.file tool_calls ledger row exists, and the file is actually on disk
+	//     — the broker really executed the spontaneously-chosen tool.
 	if n := countRows(t, pool, `SELECT count(*) FROM tool_calls WHERE run_id=$1 AND name='palai.workspace.file' AND state='completed'`, runID); n < 1 {
 		dumpRunDiagnostics(t, pool, tenant, sessionID, runID)
 		t.Fatalf("completed palai.workspace.file tool_calls rows = %d, want >=1 (the broker executes the spontaneously-chosen tool)", n)
@@ -122,7 +123,7 @@ func TestLiveSpontaneousToolRoundTripRealProvider(t *testing.T) {
 	if !workspaceHasAnyFile(t, alloc) {
 		t.Fatalf("the file tool executed but wrote no file into the real workspace %s", alloc)
 	}
-	t.Logf("spontaneous-tool-roundtrip PASS: real model spontaneously called palai.workspace.file (chatcmpl id present), the broker executed it against a real workspace, and the file is on disk. Multi-step terminal continuation is a documented follow-up (engine-wire tool_call id).")
+	t.Logf("spontaneous-tool-roundtrip PASS: real model spontaneously called palai.workspace.file, the broker executed it against a real workspace, and the run completed with %d distinct chatcmpl ids (tool step + threaded continuation, T1b).", len(ids))
 }
 
 // seedSpontaneousRun seeds org→project→session→response→run where the project's config_policy puts the
@@ -148,6 +149,18 @@ func seedSpontaneousRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, s
 	do(`INSERT INTO runs (id, organization_id, project_id, session_id, response_id, state) VALUES ($1,$2,$3,$4,$5,'queued')`,
 		runID, tenant.Organization, tenant.Project, session, response)
 	return tenant, session, response, runID
+}
+
+// responseState reads the terminal state the run's response projection settled at.
+func responseState(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, respID string) string {
+	t.Helper()
+	var state string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT state FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
+		respID, tenant.Organization, tenant.Project).Scan(&state); err != nil {
+		t.Fatalf("read response state: %v", err)
+	}
+	return state
 }
 
 // distinctProviderIDs returns the set of real chatcmpl-... ids across the run's completed model results.
