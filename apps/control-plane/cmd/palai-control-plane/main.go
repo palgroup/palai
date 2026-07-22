@@ -79,8 +79,16 @@ func main() {
 	// the four resolvers stay env-file-only, and the secret-ref routes stay unmounted — every pre-T3 stack is
 	// unchanged. Set here (before any component that resolves a secret is built) so the front-door is live.
 	var secretStore *identity.SecretStore
-	if raw := readFileEnv("PALAI_SECRET_MASTER_KEY_FILE"); raw != "" {
-		key, err := identity.ParseMasterKey(raw)
+	if keyFile := os.Getenv("PALAI_SECRET_MASTER_KEY_FILE"); keyFile != "" {
+		// A SET-but-unreadable key file is FATAL, the same posture as bad hex/length below: a broken key-file
+		// permission on redeploy must not boot "healthy" with the secret store silently disabled (which would
+		// serve superseded env secrets). Only an UNSET env var leaves the store nil — the documented opt-out.
+		// readFileEnv is NOT used here because it swallows the read error into an empty string.
+		raw, err := os.ReadFile(keyFile)
+		if err != nil {
+			log.Fatalf("secret master key: read %s: %v", keyFile, err) // path only — never the contents
+		}
+		key, err := identity.ParseMasterKey(string(raw))
 		if err != nil {
 			log.Fatalf("secret master key: %v", err)
 		}
@@ -426,20 +434,35 @@ func mcpManagerFromEnv(spine *coordinator.Store, broker *modelbroker.Broker, rou
 // is written once before any goroutine starts, so no synchronization is needed.
 var dbSecretStore *identity.SecretStore
 
-// dbSecret consults the DB-backed store (when configured) before the env-file fallback. A resolve error is
-// logged (never with the value) and treated as a miss, so a store hiccup degrades to the env bridge rather
-// than failing an otherwise-satisfiable secret lookup. The org is server-minted, so the store scopes the
-// read to it and RLS denies any foreign row.
-func dbSecret(org, ref string) ([]byte, bool) {
+// secretResolveTimeout bounds a DB-backed secret resolve. It now runs on live request paths (MCP connect,
+// webhook/remote-tool delivery) that previously did only local file reads, so a hung/partitioned Postgres
+// must not block them indefinitely — a timeout degrades to the env bridge.
+// ponytail: fixed 2s; make it an env knob (envDurationOr, off the hot path) only if operators ask.
+const secretResolveTimeout = 2 * time.Second
+
+// dbSecret consults the DB-backed store (when configured) before the env-file fallback, returning
+// (value, hit, err). The error is load-bearing:
+//   - a DECRYPT failure (the row exists but the master key is wrong/corrupt) FAILS CLOSED — the caller must
+//     NOT serve the superseded env secret, or a rotation is silently defeated (the SEC-002 failure);
+//   - a timeout / DB-unavailable error (bounded by secretResolveTimeout) or a genuine miss degrades to the
+//     env bridge (the allowed fallback), so a store hiccup does not fail an env-satisfiable lookup.
+//
+// The org is server-minted, so the store scopes the read to it and RLS denies any foreign row.
+func dbSecret(org, ref string) ([]byte, bool, error) {
 	if dbSecretStore == nil {
-		return nil, false
+		return nil, false, nil
 	}
-	v, ok, err := dbSecretStore.Resolve(context.Background(), org, ref)
+	ctx, cancel := context.WithTimeout(context.Background(), secretResolveTimeout)
+	defer cancel()
+	v, ok, err := dbSecretStore.Resolve(ctx, org, ref)
 	if err != nil {
+		if errors.Is(err, identity.ErrSecretDecrypt) {
+			return nil, false, err // fail closed: never fall back to a superseded env secret
+		}
 		log.Printf("secret store: resolve ref %q under org %q: %v (falling back to env bridge)", ref, org, err)
-		return nil, false
+		return nil, false, nil
 	}
-	return v, ok
+	return v, ok, nil
 }
 
 // mcpSecretResolver bridges an MCP connection's secret_ref handle to the bearer bytes at request time (the
@@ -451,7 +474,9 @@ func mcpSecretResolver(org, ref string) ([]byte, error) {
 	if org == "" || ref == "" {
 		return nil, errors.New("empty mcp secret org/ref")
 	}
-	if v, ok := dbSecret(org, ref); ok {
+	if v, ok, err := dbSecret(org, ref); err != nil {
+		return nil, err
+	} else if ok {
 		return v, nil
 	}
 	if strings.Contains(secretEnvKey(org), "__") {
@@ -586,7 +611,9 @@ func webhookSecretResolver(org, ref string) ([]byte, error) {
 	if org == "" || ref == "" {
 		return nil, errors.New("empty webhook secret org/ref")
 	}
-	if v, ok := dbSecret(org, ref); ok {
+	if v, ok, err := dbSecret(org, ref); err != nil {
+		return nil, err
+	} else if ok {
 		return v, nil
 	}
 	// Belt-and-braces: "__" is the org/ref delimiter, so an org whose normalized key form already contains
@@ -612,7 +639,9 @@ func inboundSecretResolver(org, ref string) ([]byte, error) {
 	if org == "" || ref == "" {
 		return nil, errors.New("empty inbound secret org/ref")
 	}
-	if v, ok := dbSecret(org, ref); ok {
+	if v, ok, err := dbSecret(org, ref); err != nil {
+		return nil, err
+	} else if ok {
 		return v, nil
 	}
 	// Belt-and-braces, as in webhookSecretResolver: a normalized org key carrying the "__" delimiter is
@@ -639,7 +668,9 @@ func remoteToolSecretResolver(org, ref string) ([]byte, error) {
 	if org == "" || ref == "" {
 		return nil, errors.New("empty remote tool secret org/ref")
 	}
-	if v, ok := dbSecret(org, ref); ok {
+	if v, ok, err := dbSecret(org, ref); err != nil {
+		return nil, err
+	} else if ok {
 		return v, nil
 	}
 	// Belt-and-braces, as in the sibling resolvers: a normalized org key carrying the "__" delimiter is

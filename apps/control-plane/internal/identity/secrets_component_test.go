@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 
@@ -126,6 +127,33 @@ func TestSecretRefCrossOrgResolveDenied(t *testing.T) {
 		t.Fatalf("Resolve(a) error = %v", err)
 	} else if ok {
 		t.Fatalf("org A resolved org B's secret (%q) — RLS did not isolate", got)
+	}
+}
+
+// TestSecretRefResolveWrongKeyIsDecryptError proves the fail-closed primitive (SEC-002): a secret written
+// under one master key and resolved by a store holding a DIFFERENT key is a DECRYPT error (errors.Is
+// ErrSecretDecrypt, ok=false), NOT a silent miss. The resolver chain relies on this to fail closed rather
+// than serve a superseded env secret when a rotated DB secret cannot be decrypted.
+func TestSecretRefResolveWrongKeyIsDecryptError(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	idstore := identity.New(cs.Pool())
+
+	org, _, _ := provisionOrg(t, idstore, "sec-wrongkey")
+	writer := identity.NewSecretStore(cs.Pool(), masterKey(t))
+	if _, err := writer.CreateSecretRef(ctx, middleware.Scope{Organization: org}, []byte(`{"name":"k","value":"sk-under-key-a"}`)); err != nil {
+		t.Fatalf("CreateSecretRef error = %v", err)
+	}
+
+	// A DIFFERENT store (different master key) reading the same row: the row exists, so this is a decrypt
+	// failure, not a miss.
+	reader := identity.NewSecretStore(cs.Pool(), masterKey(t))
+	got, ok, err := reader.Resolve(ctx, org, "k")
+	if ok || got != nil {
+		t.Fatalf("Resolve with wrong key returned ok=%v got=%q, want a decrypt error", ok, got)
+	}
+	if !errors.Is(err, identity.ErrSecretDecrypt) {
+		t.Fatalf("Resolve with wrong key err = %v, want errors.Is ErrSecretDecrypt (fail-closed primitive)", err)
 	}
 }
 

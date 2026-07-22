@@ -30,6 +30,12 @@ import (
 	"github.com/palgroup/palai/storage"
 )
 
+// ErrSecretDecrypt marks a stored secret that EXISTS but could not be decrypted (wrong master key or
+// corruption) — distinct from a genuine miss (no row). It is errors.Is-able so the resolver chain fails
+// CLOSED on it: falling back to a superseded env-file secret when a rotated DB secret cannot be decrypted
+// would silently defeat the rotation (the SEC-002 failure). A miss returns ok=false with a nil error.
+var ErrSecretDecrypt = errors.New("secret ref exists but could not be decrypted")
+
 // SecretStore envelope-encrypts each secret value at rest and resolves the latest version at request time.
 // It shares one pool with the provisioning Store; each method scopes itself to the caller's org, so RLS
 // (migration 000031) isolates one tenant's secrets from another's.
@@ -193,8 +199,9 @@ func (s *SecretStore) Resolve(ctx context.Context, org, name string) ([]byte, bo
 	}
 	value, err := s.open(ciphertext)
 	if err != nil {
-		// The name is safe to name in an error; the value never is.
-		return nil, false, fmt.Errorf("decrypt secret ref %q: %w", name, err)
+		// The name is safe to name in an error; the value never is. Tag with ErrSecretDecrypt so the caller
+		// fails closed rather than serving a superseded env-file secret (SEC-002).
+		return nil, false, fmt.Errorf("decrypt secret ref %q: %w", name, ErrSecretDecrypt)
 	}
 	return value, true, nil
 }
