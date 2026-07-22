@@ -443,6 +443,71 @@ run_mcp() {
   echo "component_mcp=PASS pg=$pg_after mcp=$mcp_after"
 }
 
+# The skills suite proves the E12 Task 7 quarantine → install-by-URL (real local TLS server) → digest
+# pin → lifecycle (approve/enable, scan-blocks-enable) → run-start pin resolution against a real
+# Postgres (spec §28.15-28.16, TOL-011). Component-tagged tests in the extensions + execution packages.
+run_skills() {
+  local image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  local label="io.palai.component=skills"
+  local run_id="$$-${RANDOM}"
+  local container="palai-component-skills-$run_id"
+  local volume="palai-component-skills-$run_id"
+  local password="palai-component-${RANDOM}${RANDOM}"
+
+  count_containers() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_volumes() { docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+  }
+  local containers_before volumes_before
+  containers_before="$(count_containers)"
+  volumes_before="$(count_volumes)"
+  trap cleanup EXIT
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never --name "$container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 --volume "$volume:/var/lib/postgresql/data" "$image" >/dev/null
+  local ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then docker logs "$container" >&2 || true; echo "postgres skills container did not become ready" >&2; exit 1; fi
+  local binding port url
+  binding="$(docker port "$container" 5432/tcp)"
+  port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+
+  set +e
+  # Quarantine + install-by-URL + digest + lifecycle (extensions package, component-tagged).
+  PALAI_COMPONENT_POSTGRES_URL="$url" \
+    go test -tags=component -count=1 -v -run 'Skill|ScanFailure' ./apps/control-plane/internal/extensions
+  local status=$?
+  # Run-start pin freeze + progressive-loading rider + workspace materialization + no-authority
+  # (execution package, component-tagged — drives the orchestrator against the same real spine).
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v -run 'Skill' ./apps/control-plane/internal/execution
+    status=$?
+  fi
+  set -e
+  if test "$status" -ne 0; then docker logs "$container" >&2 || true; fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers)"
+  volumes_after="$(count_volumes)"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "skills component suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+  echo "component_skills=PASS containers=$containers_after volumes=$volumes_after"
+}
+
 case "$suite" in
   postgres) run_postgres ;;
   runner) run_runner ;;
@@ -450,8 +515,9 @@ case "$suite" in
   repository) run_repository ;;
   remote-tools) run_remote_tools ;;
   mcp) run_mcp ;;
+  skills) run_skills ;;
   *)
-    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository, remote-tools, mcp)" >&2
+    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository, remote-tools, mcp, skills)" >&2
     exit 2
     ;;
 esac

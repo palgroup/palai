@@ -228,6 +228,21 @@ export interface Session {
   status: string;
 }
 
+export interface Skill {
+  created_at?: string;
+  digest?: string;
+  id: OpaqueId;
+  name?: string;
+  object: string;
+  organization_id?: OrganizationId;
+  project_id?: ProjectId;
+  revision_number?: number;
+  scan_findings?: Record<string, unknown>[];
+  skill_id?: OpaqueId;
+  source_url?: string;
+  state?: string;
+}
+
 export interface Tool {
   canonical_name: string;
   created_at?: string;

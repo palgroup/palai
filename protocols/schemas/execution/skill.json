@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/skill.json",
+  "title": "Skill",
+  "description": "A skill lineage or one of its immutable revisions (spec §28.15-28.16, TOL-011). A skill is UNTRUSTED content: its metadata rides the run context, its body is read on-demand via the workspace file tool, and it grants NO capability. object is 'skill' for the lineage projection and 'skill_revision' for a revision, which carries the sanitized-archive digest, the quarantine scan findings, and the lifecycle state.",
+  "type": "object",
+  "required": ["id", "object"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/opaque_id"},
+    "object": {"type": "string"},
+    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
+    "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
+    "name": {"type": "string"},
+    "skill_id": {"$ref": "../common/id.json#/$defs/opaque_id"},
+    "revision_number": {"type": "integer"},
+    "digest": {"type": "string", "description": "sha256 over the quarantine-sanitized archive; the run pin records THIS, never 'latest'."},
+    "state": {"type": "string", "enum": ["quarantined", "approved", "enabled"]},
+    "scan_findings": {
+      "type": "array",
+      "description": "Static-scan hits (secret / executable) that keep a revision quarantined until resolved; carries the rule and path, never a captured value.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {"type": "string"},
+          "path": {"type": "string"},
+          "rule": {"type": "string"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "source_url": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}
