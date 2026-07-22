@@ -70,6 +70,12 @@ func (w *Writer) Write(ctx context.Context, req WriteRequest) (Artifact, error) 
 	if req.Organization == "" || req.Project == "" || req.RunID == "" {
 		return Artifact{}, errors.New("artifacts: write requires organization, project, and run")
 	}
+	// Scope the INSERT to the row's own tenant so migration 000029's FORCE ROW LEVEL SECURITY admits it
+	// (its WITH CHECK reads palai.org_id / palai.project_id). ScopeToTenant defers to an already-scoped
+	// context, so the production path (a request, or WriteArtifact, which scopes before calling Write) is
+	// unchanged; a direct caller with an unscoped context — the write-path's own tests — is scoped to the
+	// tenant it is writing for, exactly as Read and WriteArtifact already do.
+	ctx = storage.ScopeToTenant(ctx, req.Organization, req.Project)
 	id := newArtifactID()
 	key := objectKey(req.Organization, req.Project, req.RunID, id)
 	checksum, size, err := w.store.Put(ctx, key, req.Content)
