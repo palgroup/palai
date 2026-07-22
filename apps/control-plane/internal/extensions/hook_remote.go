@@ -14,8 +14,11 @@ import (
 // SAME T4 signed transport the remote-tool executor uses (the Store's remoteInvoker + remoteSecret, the
 // lookup.go remoteExec idiom): the signing secret is resolved FRESH per invoke from the org-scoped bridge and
 // never held in a closure, the egress SSRF vet runs inside Invoke for free, and the tool-http.v1 envelope is
-// signed by the shared webhook signer. Policy/transform accept ONLY a 200-inline result; a transport error or
-// a non-inline (202/timeout/rejection) answer is fail-CLOSED. An observer's error is tolerated (fail-open) —
+// signed by the shared webhook signer. The hook contract is SYNCHRONOUS: a 200 returns the decision inline.
+// A 202 opens an async operation the sync hook contract does not resolve (no hook-callback flow is wired), so
+// the reused executor awaits it and times out at the clamped hook ceiling → a transport error → fail-CLOSED
+// for policy/transform. (A 202 whose signed callback DID land within the ceiling would resolve to a result —
+// but that async path is not part of the hook contract.) An observer's error is tolerated (fail-open) —
 // fireObserver discards runHook's return entirely.
 
 // runRemoteHook invokes a remote_http hook over the T4 signed transport and interprets the inline result by

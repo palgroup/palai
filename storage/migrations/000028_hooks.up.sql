@@ -11,8 +11,8 @@
 -- Category drives the fail-mode: policy = sync fail-CLOSED (a deny blocks the guarded operation, visibly);
 -- transform = a schema-validated patch to before_tool.arguments / after_tool.result, fail-CLOSED; observer =
 -- async fail-OPEN (a crash never affects the operation). The (category × point) matrix is APP-validated
--- (extensions.validateHookPointCategory), NOT a CHECK — a new point/category needs no migration (the 000024
--- executor pattern).
+-- (extensions.DecodeHookInput against hookMatrix), NOT a CHECK — a new point/category needs no migration (the
+-- 000024 executor pattern).
 --
 -- Secret hygiene: config carries only NON-secret wiring (remote: {"url":..,"allow_private"?}; inline:
 -- {"handler":..}); a signing credential is a secret_ref HANDLE resolved fresh per invoke from the org-scoped
