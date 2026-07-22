@@ -35,6 +35,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/contracts"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 const credentialEnv = "OPENAI_API_KEY"
@@ -182,7 +184,7 @@ func seedRun(t *testing.T, pool *pgxpool.Pool) (org, project, runID string) {
 
 func execSQL(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q error = %v", sql, err)
 	}
 }

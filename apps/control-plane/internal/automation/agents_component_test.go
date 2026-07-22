@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // openStore opens a migrated spine, seeds an org+project, and returns the automation store scoped to it.
@@ -30,10 +32,10 @@ func openStore(t *testing.T) (*Store, string, string) {
 	}
 	org, project := testID("org"), testID("prj")
 	pool := cs.Pool()
-	if _, err := pool.Exec(ctx, `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO organizations (id) VALUES ($1)`, org); err != nil {
 		t.Fatalf("seed org: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, project, org); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	return New(pool), org, project
@@ -50,7 +52,7 @@ func testID(prefix string) string {
 func rawRevisionRow(t *testing.T, s *Store, revisionID string) string {
 	t.Helper()
 	var model, tools, instructions, published string
-	err := s.pool.QueryRow(context.Background(),
+	err := s.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT model, COALESCE(tools::text,''), instructions, COALESCE(published_at::text,'') FROM agent_revisions WHERE id=$1`,
 		revisionID).Scan(&model, &tools, &instructions, &published)
 	if err != nil {
@@ -140,7 +142,7 @@ func TestAgentRevisionPersistsExtensionFields(t *testing.T) {
 		t.Fatalf("returned tool_sets = %v, want [tsrev_a]", rev.ToolSets)
 	}
 	var toolSets, mcp, skills, hooks string
-	err = s.pool.QueryRow(ctx,
+	err = s.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT tool_sets::text, mcp_connections::text, skills::text, hooks::text FROM agent_revisions WHERE id=$1`, rev.ID).
 		Scan(&toolSets, &mcp, &skills, &hooks)
 	if err != nil {

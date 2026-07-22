@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestCorrelationModesScopedAndBounded pins the four correlation modes (spec §20.2.2): per_event opens a
@@ -119,7 +121,7 @@ func TestCorrelationModesScopedAndBounded(t *testing.T) {
 // completeRun terminalizes a run so a chained delivery is not blocked by one-active-root.
 func completeRun(t *testing.T, pool *pgxpool.Pool, runID string) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `UPDATE runs SET state='completed' WHERE id=$1`, runID); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(context.Background()), `UPDATE runs SET state='completed' WHERE id=$1`, runID); err != nil {
 		t.Fatalf("complete run error = %v", err)
 	}
 }

@@ -20,6 +20,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // allTables is every relation the core migration must create (brief Step 3).
@@ -100,8 +102,27 @@ func seedRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, string, stri
 
 func exec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q error = %v", sql, err)
+	}
+}
+
+// execAsOwner runs fixture SQL that the runtime role is deliberately not granted — a mutation of an
+// append-only table (audit_events, checkpoints). The system scope clears RLS but not the GRANTs, so
+// this steps the connection back off storage.RuntimeRole, exactly as the migration path does.
+func execAsOwner(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
+	t.Helper()
+	ctx := storage.WithSystemScope(context.Background())
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire owner connection: %v", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `RESET ROLE`); err != nil {
+		t.Fatalf("reset to owning role: %v", err)
+	}
+	if _, err := conn.Exec(ctx, sql, args...); err != nil {
+		t.Fatalf("exec (owner) %q error = %v", sql, err)
 	}
 }
 
@@ -117,7 +138,7 @@ func pgCode(err error) string {
 func tableExists(t *testing.T, pool *pgxpool.Pool, name string) bool {
 	t.Helper()
 	var reg *string
-	if err := pool.QueryRow(context.Background(), `SELECT to_regclass('public.' || $1)::text`, name).Scan(&reg); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT to_regclass('public.' || $1)::text`, name).Scan(&reg); err != nil {
 		t.Fatalf("to_regclass(%s) error = %v", name, err)
 	}
 	return reg != nil
@@ -126,7 +147,7 @@ func tableExists(t *testing.T, pool *pgxpool.Pool, name string) bool {
 func columnExists(t *testing.T, pool *pgxpool.Pool, table, column string) bool {
 	t.Helper()
 	var exists bool
-	if err := pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2)`,
 		table, column).Scan(&exists); err != nil {
 		t.Fatalf("column exists %s.%s error = %v", table, column, err)
@@ -201,7 +222,7 @@ func TestSessionChainingMigrationBackfillsPreexistingEvents(t *testing.T) {
 	// The legacy events are now keyed to their session's sole response, so the per-response
 	// purge can reach them (the upgrade-boundary gap is closed).
 	var keyed int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT count(*) FROM events WHERE session_id = $1 AND response_id = $2`, sessionID, respID).Scan(&keyed); err != nil {
 		t.Fatalf("count keyed events error = %v", err)
 	}
@@ -253,7 +274,7 @@ func TestConfigRevisionsMigration(t *testing.T) {
 func indexExists(t *testing.T, pool *pgxpool.Pool, name string) bool {
 	t.Helper()
 	var reg *string
-	if err := pool.QueryRow(context.Background(), `SELECT to_regclass('public.' || $1)::text`, name).Scan(&reg); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT to_regclass('public.' || $1)::text`, name).Scan(&reg); err != nil {
 		t.Fatalf("to_regclass(%s) error = %v", name, err)
 	}
 	return reg != nil
@@ -372,7 +393,7 @@ func TestDeliveredMessagesMigration(t *testing.T) {
 		`INSERT INTO delivered_messages (command_id, organization_id, project_id, run_id, boundary_request_id, applied_sequence)
 		 VALUES ($1, $2, $3, $4, 'mr_step2', 7)`,
 		cmdID, tenant.Organization, tenant.Project, runID)
-	if got := pgCode(mustFail(pool.Exec(ctx,
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO delivered_messages (command_id, organization_id, project_id, run_id, applied_sequence)
 		 VALUES ('cmd_missing', $1, $2, $3, 1)`,
 		tenant.Organization, tenant.Project, runID))); got != "23503" {
@@ -408,7 +429,7 @@ func TestChildRunDoesNotConsumeRootSlot(t *testing.T) {
 	// The seeded root run is queued (non-terminal): it holds the session's single root slot.
 	// A child run of that root, in the SAME session and non-terminal, is admitted — it is
 	// excluded from the root-only index.
-	if _, err := pool.Exec(ctx,
+	if _, err := pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO runs (id, organization_id, project_id, session_id, state, parent_run_id, depth)
 		 VALUES ($1, $2, $3, $4, 'running', $5, 1)`,
 		newID("run"), tenant.Organization, tenant.Project, sessionID, rootRunID); err != nil {
@@ -416,7 +437,7 @@ func TestChildRunDoesNotConsumeRootSlot(t *testing.T) {
 	}
 	// A second concurrent ROOT run (parent_run_id NULL) for the same session is still the
 	// one-active-root violation — the child did not free or fill the root slot.
-	_, err := pool.Exec(ctx,
+	_, err := pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`,
 		newID("run"), tenant.Organization, tenant.Project, sessionID)
 	if got := pgCode(err); got != "23505" {
@@ -435,7 +456,7 @@ func TestSecondConcurrentRootRunConflicts(t *testing.T) {
 	tenant, sessionID, runID := seedRun(t, pool)
 
 	insertRun := func(session, state string) error {
-		_, err := pool.Exec(ctx,
+		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, $5)`,
 			newID("run"), tenant.Organization, tenant.Project, session, state)
 		return err
@@ -497,7 +518,7 @@ func TestLateTerminalCannotOverwriteTerminalRow(t *testing.T) {
 	// because JSONB normalizes key order and spacing on round-trip).
 	var state string
 	var output []byte
-	if err := pool.QueryRow(ctx, `SELECT state, output FROM responses WHERE id=$1`, respID).Scan(&state, &output); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state, output FROM responses WHERE id=$1`, respID).Scan(&state, &output); err != nil {
 		t.Fatalf("read response error = %v", err)
 	}
 	if state != "canceled" {
@@ -599,7 +620,7 @@ func TestRecordMergeRoundTrip(t *testing.T) {
 
 	var merged bool
 	var source, conflicts string
-	if err := pool.QueryRow(ctx, `SELECT merged, source_child_run_id, conflict_paths::text FROM merge_records WHERE parent_run_id=$1`, parentRun).
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT merged, source_child_run_id, conflict_paths::text FROM merge_records WHERE parent_run_id=$1`, parentRun).
 		Scan(&merged, &source, &conflicts); err != nil {
 		t.Fatalf("read merge record: %v", err)
 	}
@@ -724,7 +745,7 @@ func TestToolCallLedgerMigration(t *testing.T) {
 		 VALUES ($1, $2, $3, $4, 3, 'completed', 'add', '{"a":1}', '{"sum":1}')`,
 		legacyID, tenant.Organization, tenant.Project, runID)
 	var replayClass string
-	if err := pool.QueryRow(ctx, `SELECT replay_class FROM tool_calls WHERE id=$1`, legacyID).Scan(&replayClass); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT replay_class FROM tool_calls WHERE id=$1`, legacyID).Scan(&replayClass); err != nil {
 		t.Fatalf("read replay_class error = %v", err)
 	}
 	if replayClass != "pure" {
@@ -738,7 +759,7 @@ func TestToolCallLedgerMigration(t *testing.T) {
 		 VALUES ($1, $2, $3, $4, 4, 'uncertain', 'push', '{}', 'irreversible', 'sha256:abc', 'push:main', '4', 'reconciling', 'mr_step2')`,
 		uncertainID, tenant.Organization, tenant.Project, runID)
 	var state, reconState, boundary string
-	if err := pool.QueryRow(ctx, `SELECT state, reconciliation_state, commit_boundary FROM tool_calls WHERE id=$1`, uncertainID).
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state, reconciliation_state, commit_boundary FROM tool_calls WHERE id=$1`, uncertainID).
 		Scan(&state, &reconState, &boundary); err != nil {
 		t.Fatalf("read uncertain row error = %v", err)
 	}
@@ -802,18 +823,18 @@ func TestAgentsMigration(t *testing.T) {
 
 	// The conditional publish flip sets published_at once; a re-run against the now-published row
 	// affects zero rows, so a published revision never re-stamps (immutable publish boundary).
-	tag, err := pool.Exec(ctx, `UPDATE agent_revisions SET published_at = clock_timestamp() WHERE id=$1 AND published_at IS NULL`, revID)
+	tag, err := pool.Exec(storage.WithSystemScope(ctx), `UPDATE agent_revisions SET published_at = clock_timestamp() WHERE id=$1 AND published_at IS NULL`, revID)
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("first publish rows = %d err = %v, want exactly 1", tag.RowsAffected(), err)
 	}
-	tag2, err := pool.Exec(ctx, `UPDATE agent_revisions SET published_at = clock_timestamp() WHERE id=$1 AND published_at IS NULL`, revID)
+	tag2, err := pool.Exec(storage.WithSystemScope(ctx), `UPDATE agent_revisions SET published_at = clock_timestamp() WHERE id=$1 AND published_at IS NULL`, revID)
 	if err != nil || tag2.RowsAffected() != 0 {
 		t.Fatalf("second publish rows = %d err = %v, want 0 (already published)", tag2.RowsAffected(), err)
 	}
 
 	// A run may pin the published revision (rider FK resolves); a pin to a missing revision is rejected.
 	exec(t, pool, `UPDATE runs SET agent_revision_id=$1 WHERE id=$2`, revID, runID)
-	if got := pgCode(mustFail(pool.Exec(ctx, `UPDATE runs SET agent_revision_id='arev_missing' WHERE id=$1`, runID))); got != "23503" {
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx), `UPDATE runs SET agent_revision_id='arev_missing' WHERE id=$1`, runID))); got != "23503" {
 		t.Fatalf("pin to a missing revision code = %q, want 23503 foreign_key_violation", got)
 	}
 	_ = sessionID
@@ -872,12 +893,12 @@ func TestWebhooksMigration(t *testing.T) {
 	var j1, j2 int64
 	exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type) VALUES ($1,$2,$3,$4,1,'run.completed.v1')`,
 		newID("evt"), tenant.Organization, tenant.Project, sessionID)
-	if err := pool.QueryRow(ctx, `SELECT max(journal_id) FROM events WHERE session_id=$1`, sessionID).Scan(&j1); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT max(journal_id) FROM events WHERE session_id=$1`, sessionID).Scan(&j1); err != nil {
 		t.Fatalf("read first journal_id error = %v", err)
 	}
 	exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type) VALUES ($1,$2,$3,$4,2,'run.failed.v1')`,
 		newID("evt"), tenant.Organization, tenant.Project, sessionID)
-	if err := pool.QueryRow(ctx, `SELECT max(journal_id) FROM events WHERE session_id=$1`, sessionID).Scan(&j2); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT max(journal_id) FROM events WHERE session_id=$1`, sessionID).Scan(&j2); err != nil {
 		t.Fatalf("read second journal_id error = %v", err)
 	}
 	if j2 <= j1 {
@@ -891,7 +912,7 @@ func TestWebhooksMigration(t *testing.T) {
 	deliveryID := newID("whd")
 	exec(t, pool, `INSERT INTO webhook_deliveries (id, organization_id, project_id, endpoint_id, session_id, event_id, event_type) VALUES ($1,$2,$3,$4,$5,'evt_x','run.completed.v1')`,
 		deliveryID, tenant.Organization, tenant.Project, endpointID, sessionID)
-	if got := pgCode(mustFail(pool.Exec(ctx,
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO webhook_deliveries (id, organization_id, project_id, endpoint_id, session_id, event_id, event_type) VALUES ($1,$2,$3,$4,$5,'evt_x','run.completed.v1')`,
 		newID("whd"), tenant.Organization, tenant.Project, endpointID, sessionID))); got != "23505" {
 		t.Fatalf("duplicate (endpoint, event) delivery code = %q, want 23505 unique_violation", got)
@@ -941,7 +962,7 @@ func TestTriggersMigration(t *testing.T) {
 	// The forward migration records its version (the guarded down.sql DELETEs it before the table drop —
 	// exercised, without a partial-rollback helper, by the clean full Rollback + reapply below).
 	var version21 int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 21`).Scan(&version21); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 21`).Scan(&version21); err != nil {
 		t.Fatalf("count version 21 error = %v", err)
 	}
 	if version21 != 1 {
@@ -958,7 +979,7 @@ func TestTriggersMigration(t *testing.T) {
 	rev1 := newID("trev")
 	exec(t, pool, `INSERT INTO trigger_revisions (id, organization_id, project_id, trigger_id, revision_number) VALUES ($1,$2,$3,$4,1)`,
 		rev1, tenant.Organization, tenant.Project, triggerID)
-	if got := pgCode(mustFail(pool.Exec(ctx,
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO trigger_revisions (id, organization_id, project_id, trigger_id, revision_number) VALUES ($1,$2,$3,$4,1)`,
 		newID("trev"), tenant.Organization, tenant.Project, triggerID))); got != "23505" {
 		t.Fatalf("duplicate revision_number code = %q, want 23505 unique_violation", got)
@@ -969,7 +990,7 @@ func TestTriggersMigration(t *testing.T) {
 	// row (duplicate_of set) is exempt.
 	exec(t, pool, `INSERT INTO trigger_deliveries (id, organization_id, project_id, trigger_id, trigger_revision_id, dedupe_key) VALUES ($1,$2,$3,$4,$5,'k1')`,
 		newID("tdel"), tenant.Organization, tenant.Project, triggerID, rev1)
-	if got := pgCode(mustFail(pool.Exec(ctx,
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO trigger_deliveries (id, organization_id, project_id, trigger_id, trigger_revision_id, dedupe_key) VALUES ($1,$2,$3,$4,$5,'k1')`,
 		newID("tdel"), tenant.Organization, tenant.Project, triggerID, rev1))); got != "23505" {
 		t.Fatalf("second live canonical dedupe row code = %q, want 23505 unique_violation", got)
@@ -1014,7 +1035,7 @@ func TestMigration22Schedules(t *testing.T) {
 		}
 	}
 	var version22 int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 22`).Scan(&version22); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 22`).Scan(&version22); err != nil {
 		t.Fatalf("count version 22 error = %v", err)
 	}
 	if version22 != 1 {
@@ -1033,7 +1054,7 @@ func TestMigration22Schedules(t *testing.T) {
 
 	// The max_catch_up ceiling is a DB CHECK — a value above 100 is rejected (catch_up can never be
 	// unbounded, §33.3).
-	if got := pgCode(mustFail(pool.Exec(ctx, `UPDATE schedules SET max_catch_up = 101 WHERE id=$1`, scheduleID))); got != "23514" {
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx), `UPDATE schedules SET max_catch_up = 101 WHERE id=$1`, scheduleID))); got != "23514" {
 		t.Fatalf("max_catch_up=101 code = %q, want 23514 check_violation (the cap is uncrossable)", got)
 	}
 
@@ -1042,7 +1063,7 @@ func TestMigration22Schedules(t *testing.T) {
 	planned := "2026-07-22T06:30:00Z"
 	exec(t, pool, `INSERT INTO schedule_occurrences (occurrence_id, schedule_id, schedule_revision, planned_at) VALUES ($1,$2,1,$3)`,
 		newID("occ"), scheduleID, planned)
-	if got := pgCode(mustFail(pool.Exec(ctx,
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO schedule_occurrences (occurrence_id, schedule_id, schedule_revision, planned_at) VALUES ($1,$2,1,$3)`,
 		newID("occ"), scheduleID, planned))); got != "23505" {
 		t.Fatalf("second occurrence for the same (schedule, revision, instant) code = %q, want 23505 unique_violation", got)
@@ -1084,7 +1105,7 @@ func TestMigration23InboundTriggerAuth(t *testing.T) {
 		}
 	}
 	var version23 int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 23`).Scan(&version23); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 23`).Scan(&version23); err != nil {
 		t.Fatalf("count version 23 error = %v", err)
 	}
 	if version23 != 1 {
@@ -1153,7 +1174,7 @@ func TestTenantScopeOwnsExecutionRows(t *testing.T) {
 
 	// Claiming another org's project for this org's session is a composite-FK
 	// violation: one project (within one organization) owns every session row.
-	_, err := pool.Exec(ctx,
+	_, err := pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
 		newID("ses"), tenant.Organization, otherProject)
 	if got := pgCode(err); got != "23503" {
@@ -1161,7 +1182,7 @@ func TestTenantScopeOwnsExecutionRows(t *testing.T) {
 	}
 
 	// A response cannot exist without a project scope at all.
-	_, err = pool.Exec(ctx,
+	_, err = pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO responses (id, organization_id, project_id, session_id) VALUES ($1, $2, NULL, $3)`,
 		newID("resp"), tenant.Organization, newID("ses"))
 	if got := pgCode(err); got != "23502" {
@@ -1176,7 +1197,7 @@ func TestActiveAttemptFenceIsUniquePerRun(t *testing.T) {
 	tenant, _, runID := seedRun(t, pool)
 
 	insertAttempt := func(fence int, state string) error {
-		_, err := pool.Exec(ctx,
+		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO attempts (id, organization_id, project_id, run_id, fence, state) VALUES ($1, $2, $3, $4, $5, $6)`,
 			newID("att"), tenant.Organization, tenant.Project, runID, fence, state)
 		return err
@@ -1210,7 +1231,7 @@ func TestIdempotencyScopeKeyUnique(t *testing.T) {
 		principal, tenant.Organization, tenant.Project)
 
 	insert := func(key string) error {
-		_, err := pool.Exec(ctx,
+		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO idempotency_records
 			 (organization_id, project_id, principal_id, method, route, idempotency_key, request_hash, status)
 			 VALUES ($1, $2, $3, 'POST', '/v1/responses', $4, 'hash', 'completed')`,
@@ -1235,7 +1256,7 @@ func TestUsageDedupeKeyUnique(t *testing.T) {
 	tenant, _, _ := seedRun(t, pool)
 
 	insert := func(dedupe string) error {
-		_, err := pool.Exec(ctx,
+		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO usage_events (organization_id, project_id, dedupe_key, kind, quantity)
 			 VALUES ($1, $2, $3, 'tokens', 100)`,
 			tenant.Organization, tenant.Project, dedupe)
@@ -1255,7 +1276,10 @@ func TestUsageDedupeKeyUnique(t *testing.T) {
 func TestAuditAppendOnlyToApplicationRole(t *testing.T) {
 	cs := openHarness(t)
 	pool := cs.Pool()
-	ctx := context.Background()
+	// The connection is acquired under the system scope because this test drops to the runtime role
+	// BY HAND to prove the append-only GRANTs; without a scope the tenant policies would deny the
+	// insert first and the grant assertion would never be reached.
+	ctx := storage.WithSystemScope(context.Background())
 	tenant, _, _ := seedRun(t, pool)
 
 	// Drop to the application role for the duration of this connection.
@@ -1264,20 +1288,20 @@ func TestAuditAppendOnlyToApplicationRole(t *testing.T) {
 		t.Fatalf("Acquire() error = %v", err)
 	}
 	defer conn.Release()
-	if _, err := conn.Exec(ctx, `SET ROLE palai_app`); err != nil {
+	if _, err := conn.Exec(storage.WithSystemScope(ctx), `SET ROLE palai_app`); err != nil {
 		t.Fatalf("SET ROLE palai_app error = %v", err)
 	}
-	defer func() { _, _ = conn.Exec(ctx, `RESET ROLE`) }()
+	defer func() { _, _ = conn.Exec(storage.WithSystemScope(ctx), `RESET ROLE`) }()
 
-	if _, err := conn.Exec(ctx,
+	if _, err := conn.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO audit_events (organization_id, actor, action, outcome) VALUES ($1, 'actor', 'run.create', 'allowed')`,
 		tenant.Organization); err != nil {
 		t.Fatalf("append audit as palai_app error = %v", err)
 	}
-	if got := pgCode(mustFail(conn.Exec(ctx, `UPDATE audit_events SET outcome = 'tampered'`))); got != "42501" {
+	if got := pgCode(mustFail(conn.Exec(storage.WithSystemScope(ctx), `UPDATE audit_events SET outcome = 'tampered'`))); got != "42501" {
 		t.Fatalf("audit UPDATE code = %q, want 42501 insufficient_privilege", got)
 	}
-	if got := pgCode(mustFail(conn.Exec(ctx, `DELETE FROM audit_events`))); got != "42501" {
+	if got := pgCode(mustFail(conn.Exec(storage.WithSystemScope(ctx), `DELETE FROM audit_events`))); got != "42501" {
 		t.Fatalf("audit DELETE code = %q, want 42501 insufficient_privilege", got)
 	}
 }
@@ -1306,7 +1330,7 @@ func TestMigration25RemoteTools(t *testing.T) {
 		t.Fatal("after apply, remote_tool_operations_one_pending is missing")
 	}
 	var version25 int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 25`).Scan(&version25); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 25`).Scan(&version25); err != nil {
 		t.Fatalf("count version 25 error = %v", err)
 	}
 	if version25 != 1 {
@@ -1317,7 +1341,7 @@ func TestMigration25RemoteTools(t *testing.T) {
 	callID := newID("tcall") // a correlation key; no tool_calls row need exist (no FK)
 
 	openOp := func(id, call, state string) error {
-		_, err := pool.Exec(ctx,
+		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO remote_tool_operations (id, organization_id, project_id, tool_call_id, secret_ref, callback_token_hash, deadline, state, fence)
 			 VALUES ($1, $2, $3, $4, 'sig-ref', 'tokenhash', clock_timestamp() + interval '30 seconds', $5, 5)`,
 			id, tenant.Organization, tenant.Project, call, state)
@@ -1377,7 +1401,7 @@ func TestMigration28Hooks(t *testing.T) {
 		t.Fatal("after apply, hooks_point_order_idx is missing")
 	}
 	var version28 int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 28`).Scan(&version28); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 28`).Scan(&version28); err != nil {
 		t.Fatalf("count version 28 error = %v", err)
 	}
 	if version28 != 1 {
@@ -1386,7 +1410,7 @@ func TestMigration28Hooks(t *testing.T) {
 
 	tenant, _, _ := seedRun(t, pool)
 	insertHook := func(id, name, point, category, executor string) error {
-		_, err := pool.Exec(ctx,
+		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO hooks (id, organization_id, project_id, name, hook_point, category, executor, config)
 			 VALUES ($1,$2,$3,$4,$5,$6,$7,'{}'::jsonb)`,
 			id, tenant.Organization, tenant.Project, name, point, category, executor)
@@ -1443,7 +1467,7 @@ func TestMigration27Skills(t *testing.T) {
 		t.Fatal("after apply, runs.skill_pins is missing")
 	}
 	var version27 int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 27`).Scan(&version27); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM schema_migrations WHERE version = 27`).Scan(&version27); err != nil {
 		t.Fatalf("count version 27 error = %v", err)
 	}
 	if version27 != 1 {
@@ -1452,18 +1476,18 @@ func TestMigration27Skills(t *testing.T) {
 
 	tenant, _, _ := seedRun(t, pool)
 	skillID := newID("skill")
-	if _, err := pool.Exec(ctx, `INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'commit')`,
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'commit')`,
 		skillID, tenant.Organization, tenant.Project); err != nil {
 		t.Fatalf("insert skill error = %v", err)
 	}
 	// A duplicate skill name in the same project is rejected (tenant-scoped unique).
-	if got := pgCode(mustFail(pool.Exec(ctx, `INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'commit')`,
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx), `INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'commit')`,
 		newID("skill"), tenant.Organization, tenant.Project))); got != "23505" {
 		t.Fatalf("duplicate skill name code = %q, want 23505 unique_violation", got)
 	}
 
 	insertRev := func(id string, revNo int, state string) error {
-		_, err := pool.Exec(ctx,
+		_, err := pool.Exec(storage.WithSystemScope(ctx),
 			`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, archive)
 			 VALUES ($1,$2,$3,$4,$5,'sha256:x',$6,'\x00')`,
 			id, tenant.Organization, tenant.Project, skillID, revNo, state)

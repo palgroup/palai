@@ -105,6 +105,7 @@ type CallbackRow struct {
 // ForCallback reads the callback verification inputs by operation id. found=false is a generic 404 (no
 // config oracle).
 func (o *Operations) ForCallback(ctx context.Context, operationID string) (CallbackRow, bool, error) {
+	ctx = storage.WithSystemScope(ctx) // callback/prober path: keyed by opaque operation id, tenant not yet established (auth is the HMAC token)
 	var row CallbackRow
 	err := o.pool.QueryRow(ctx, storage.Query("RemoteOperationForCallback"), operationID).
 		Scan(&row.Org, &row.SecretRef, &row.TokenHash, &row.State, &row.ResultHash)
@@ -122,6 +123,7 @@ func (o *Operations) ForCallback(ctx context.Context, operationID string) (Callb
 // consumed=false means the token was already spent (or the row terminal) — the caller then compares
 // result_hash for idempotent-200 vs 409. The token itself is verified constant-time BEFORE this runs.
 func (o *Operations) Consume(ctx context.Context, operationID string, result []byte, resultHash string) (newState string, consumed bool, err error) {
+	ctx = storage.WithSystemScope(ctx) // callback/prober path: keyed by opaque operation id, tenant not yet established (auth is the HMAC token)
 	err = o.pool.QueryRow(ctx, storage.Query("ConsumeRemoteCallback"), operationID, result, resultHash).Scan(&newState)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
@@ -136,6 +138,7 @@ func (o *Operations) Consume(ctx context.Context, operationID string, result []b
 // read, spec §26.7): the newest row carrying a result. found=false -> the operation never resolved, so
 // the prober escalates to manual_resolution.
 func (o *Operations) ProberRead(ctx context.Context, toolCallID string) (state string, result []byte, found bool, err error) {
+	ctx = storage.WithSystemScope(ctx) // callback/prober path: keyed by opaque operation id, tenant not yet established (auth is the HMAC token)
 	err = o.pool.QueryRow(ctx, storage.Query("ProberReadRemoteOperation"), toolCallID).Scan(&state, &result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil, false, nil

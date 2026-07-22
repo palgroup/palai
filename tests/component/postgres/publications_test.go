@@ -8,6 +8,8 @@ import (
 
 	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestApprovalsPublicationsMigration proves 000013 adds its two tables idempotently and reverses
@@ -76,7 +78,7 @@ func TestRequestPublicationIdempotent(t *testing.T) {
 		t.Fatalf("duplicate request = {id:%s replayed:%v}, want the original id %s replayed", second.ID, second.Replayed, first.ID)
 	}
 	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM publications WHERE run_id=$1`, runID).Scan(&count); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM publications WHERE run_id=$1`, runID).Scan(&count); err != nil {
 		t.Fatalf("count publications error = %v", err)
 	}
 	if count != 1 {
@@ -144,7 +146,7 @@ func TestPendingApprovalApproveProceedsDenyBlocks(t *testing.T) {
 		t.Fatalf("ApplyApprovalDecision(deny) error = %v", err)
 	}
 	var state string
-	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, pub2.ID).Scan(&state); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM publications WHERE id=$1`, pub2.ID).Scan(&state); err != nil {
 		t.Fatalf("read denied publication error = %v", err)
 	}
 	if state != "denied" {
@@ -178,7 +180,7 @@ func TestMarkPublicationPublishedIdempotent(t *testing.T) {
 		t.Fatalf("MarkPublicationPublished error = %v", err)
 	}
 	var state string
-	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, pub.ID).Scan(&state); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM publications WHERE id=$1`, pub.ID).Scan(&state); err != nil {
 		t.Fatalf("read published state error = %v", err)
 	}
 	if state != "published" {
@@ -186,7 +188,7 @@ func TestMarkPublicationPublishedIdempotent(t *testing.T) {
 	}
 	eventCount := func() int {
 		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE session_id=$1 AND type='push.completed.v1'`, sessionID).Scan(&n); err != nil {
+		if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM events WHERE session_id=$1 AND type='push.completed.v1'`, sessionID).Scan(&n); err != nil {
 			t.Fatalf("count push.completed events error = %v", err)
 		}
 		return n
@@ -230,7 +232,7 @@ func TestStaleApprovalHashLeavesPublicationPending(t *testing.T) {
 	}
 
 	var state string
-	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, pub.ID).Scan(&state); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM publications WHERE id=$1`, pub.ID).Scan(&state); err != nil {
 		t.Fatalf("read publication state error = %v", err)
 	}
 	if state != "pending_approval" {
@@ -281,10 +283,10 @@ func TestExpiredApprovalNeverPublishesAndEmitsExpiredEvent(t *testing.T) {
 	}
 
 	var staleState, liveState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, stale.ID).Scan(&staleState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM publications WHERE id=$1`, stale.ID).Scan(&staleState); err != nil {
 		t.Fatalf("read stale state error = %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, live.ID).Scan(&liveState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM publications WHERE id=$1`, live.ID).Scan(&liveState); err != nil {
 		t.Fatalf("read live state error = %v", err)
 	}
 	if staleState != "expired" {
@@ -295,7 +297,7 @@ func TestExpiredApprovalNeverPublishesAndEmitsExpiredEvent(t *testing.T) {
 	}
 	// Exactly one approval.expired.v1, for the stale publication only.
 	var expiredEvents int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE session_id=$1 AND type='approval.expired.v1'`, sessionID).Scan(&expiredEvents); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM events WHERE session_id=$1 AND type='approval.expired.v1'`, sessionID).Scan(&expiredEvents); err != nil {
 		t.Fatalf("count approval.expired events error = %v", err)
 	}
 	if expiredEvents != 1 {
@@ -313,7 +315,7 @@ func TestExpiredApprovalNeverPublishesAndEmitsExpiredEvent(t *testing.T) {
 	if again, err := cs.ExpireApprovalIfElapsed(ctx, tenant, sessionID, respID, stale.ID); err != nil || again {
 		t.Fatalf("re-expire = (%v, %v), want (false, nil) — idempotent no-op", again, err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE session_id=$1 AND type='approval.expired.v1'`, sessionID).Scan(&expiredEvents); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM events WHERE session_id=$1 AND type='approval.expired.v1'`, sessionID).Scan(&expiredEvents); err != nil {
 		t.Fatalf("recount approval.expired events error = %v", err)
 	}
 	if expiredEvents != 1 {
@@ -347,7 +349,7 @@ func TestExpiredApprovalSweepAndConsumeGuard(t *testing.T) {
 		t.Fatalf("swept expired approvals = %d, want 1", swept)
 	}
 	var idleState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, idle.ID).Scan(&idleState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM publications WHERE id=$1`, idle.ID).Scan(&idleState); err != nil {
 		t.Fatalf("read idle state error = %v", err)
 	}
 	if idleState != "expired" {
@@ -370,10 +372,10 @@ func TestExpiredApprovalSweepAndConsumeGuard(t *testing.T) {
 		t.Fatalf("ApplyApprovalDecision(expired) error = %v", err)
 	}
 	var lateState, cmdState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM publications WHERE id=$1`, late.ID).Scan(&lateState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM publications WHERE id=$1`, late.ID).Scan(&lateState); err != nil {
 		t.Fatalf("read late state error = %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT state FROM commands WHERE id=$1`, approveCmd.CommandID).Scan(&cmdState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM commands WHERE id=$1`, approveCmd.CommandID).Scan(&cmdState); err != nil {
 		t.Fatalf("read command state error = %v", err)
 	}
 	if lateState != "expired" {

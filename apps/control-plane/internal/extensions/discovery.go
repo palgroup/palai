@@ -43,6 +43,7 @@ type DiscoverResult struct {
 // admin must approve it before it is advertised (EXT-006). Re-discovery with a changed description/schema is
 // a NEW draft (the published revision stays, re-approval required); an unchanged tool writes nothing.
 func (s *Store) DiscoverConnection(ctx context.Context, org, project, connID string) (DiscoverResult, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if s.mcp == nil {
 		return DiscoverResult{}, errors.New("extensions: no MCP client wired for discovery")
 	}
@@ -82,6 +83,7 @@ func (s *Store) DiscoverConnection(ctx context.Context, org, project, connID str
 // materialiseDiscoveredTool creates-or-reuses the tool lineage and inserts a new DRAFT revision only when
 // the config digest changed. Returns "new" | "unchanged" | "rejected" (a model-visible collision).
 func (s *Store) materialiseDiscoveredTool(ctx context.Context, org, project, connName, connID string, rt mcp.RemoteTool) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	canonical := "mcp." + connName + "." + rt.Name
 	modelVisible := connName + "__" + rt.Name
 
@@ -125,6 +127,7 @@ func (s *Store) materialiseDiscoveredTool(ctx context.Context, org, project, con
 // than the canonical last segment, so two connections' identically-named tools stay distinct to the model.
 // The 000024 UNIQUE(model_visible) constraint still catches a genuine collision as a typed reject.
 func (s *Store) createDiscoveredTool(ctx context.Context, org, project, canonical, modelVisible string) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if _, err := validateCanonicalName(canonical); err != nil {
 		return "", err
 	}
@@ -143,6 +146,7 @@ func (s *Store) createDiscoveredTool(ctx context.Context, org, project, canonica
 
 // discoveredToolID resolves an existing lineage id by canonical name.
 func (s *Store) discoveredToolID(ctx context.Context, org, project, canonical string) (string, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	var id string
 	switch err := s.pool.QueryRow(ctx, storage.Query("MCPToolIDByCanonical"), org, project, canonical).Scan(&id); {
 	case errors.Is(err, pgx.ErrNoRows):

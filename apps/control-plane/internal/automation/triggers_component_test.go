@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // componentSpine opens the durable coordinator against the throwaway PG (the RunAdmitter a triggered run
@@ -160,7 +162,7 @@ func TestAcceptedDeliveryPinsExactRevision(t *testing.T) {
 
 	// The delivery is still pinned to rev1 — the revise did not move it (immutable pin).
 	var pinned string
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT trigger_revision_id FROM trigger_deliveries WHERE id = $1`, del.ID).Scan(&pinned); err != nil {
 		t.Fatalf("read pinned revision error = %v", err)
 	}
@@ -170,7 +172,7 @@ func TestAcceptedDeliveryPinsExactRevision(t *testing.T) {
 
 	// rev1's config columns were never rewritten: it still exists at number 1 alongside the new rev2.
 	var count int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT count(*) FROM trigger_revisions WHERE trigger_id = $1`, triggerID).Scan(&count); err != nil {
 		t.Fatalf("count revisions error = %v", err)
 	}

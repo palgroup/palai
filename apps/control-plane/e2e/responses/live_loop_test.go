@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/packages/contracts"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestLiveLoopCompletesOneResponseThroughSubprocessEngine drives the full kernel:
@@ -202,7 +204,7 @@ func TestCommitBeforeDeliverOnToolResult(t *testing.T) {
 		}
 		callID, _ := frame.Data["tool_call_id"].(string)
 		var state string
-		if err := h.spine.Pool().QueryRow(context.Background(),
+		if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 			`SELECT state FROM tool_calls WHERE id=$1`, callID).Scan(&state); err != nil {
 			t.Errorf("tool_call %s not committed before tool.result delivery: %v", callID, err)
 			return

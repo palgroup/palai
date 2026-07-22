@@ -44,6 +44,9 @@ type RetryPolicy struct {
 // was reclaimed after this worker stalled) renews nothing and returns ErrStaleFence,
 // so a paused host cannot resurrect a lost lease.
 func (s *Store) Heartbeat(ctx context.Context, claim Claim, extend time.Duration) (time.Time, error) {
+	// Scoped by the CLAIM's own tenant: the claim is the verified job identity, so this lease
+	// operation is tenant-scoped even though the loop that issued it spans tenants.
+	ctx = storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
 	if claim.JobID == "" || claim.Fence < 1 || claim.Owner == "" || extend <= 0 {
 		return time.Time{}, errors.New("valid claim and positive extension are required")
 	}
@@ -67,6 +70,9 @@ func (s *Store) Heartbeat(ctx context.Context, claim Claim, extend time.Duration
 // the ledger in the same transaction. The bool reports whether the job was
 // dead-lettered.
 func (s *Store) Fail(ctx context.Context, claim Claim, policy RetryPolicy) (bool, error) {
+	// Scoped by the CLAIM's own tenant: the claim is the verified job identity, so this lease
+	// operation is tenant-scoped even though the loop that issued it spans tenants.
+	ctx = storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
 	if claim.JobID == "" || claim.Fence < 1 || claim.Owner == "" {
 		return false, errors.New("valid claim is required")
 	}
@@ -114,6 +120,9 @@ var ErrSoftRequeue = errors.New("soft_requeue")
 // the budget and dead-letter a live run. Fenced to the holder; a superseded worker matches nothing
 // and returns ErrStaleFence. The jitter breaks a mutual-standoff symmetry so one sibling proceeds.
 func (s *Store) RequeueSoft(ctx context.Context, claim Claim) error {
+	// Scoped by the CLAIM's own tenant: the claim is the verified job identity, so this lease
+	// operation is tenant-scoped even though the loop that issued it spans tenants.
+	ctx = storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
 	if claim.JobID == "" || claim.Fence < 1 || claim.Owner == "" {
 		return errors.New("valid claim is required")
 	}
@@ -135,6 +144,7 @@ func (s *Store) RequeueSoft(ctx context.Context, claim Claim) error {
 // it inline at a higher fence. The sweep is bounded per call and returns the number
 // dead-lettered.
 func (s *Store) ReclaimExpired(ctx context.Context, maxAttempts int) (int, error) {
+	ctx = storage.WithSystemScope(ctx) // reconciler sweep: spans every tenant by construction
 	if maxAttempts < 1 {
 		return 0, errors.New("maxAttempts must be positive")
 	}
@@ -165,6 +175,7 @@ type deadLetteredRun struct {
 // job is left dead for operator retry/reconcile actions. Bounded per sweep; returns the
 // number driven to failed.
 func (s *Store) SweepDeadLetteredRuns(ctx context.Context) (int, error) {
+	ctx = storage.WithSystemScope(ctx) // reconciler sweep: spans every tenant by construction
 	rows, err := s.pool.Query(ctx, storage.Query("DeadLetteredResponseRuns"), deadLetterBatch)
 	if err != nil {
 		return 0, fmt.Errorf("query dead-lettered runs: %w", err)

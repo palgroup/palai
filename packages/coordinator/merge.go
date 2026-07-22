@@ -23,6 +23,7 @@ type MergeRecordInput struct {
 
 // RecordMerge persists a merge outcome, naming the source child run (spec §30.5, REP-011).
 func (s *Store) RecordMerge(ctx context.Context, tenant Tenant, in MergeRecordInput) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	conflicts, err := json.Marshal(nonNilSlice(in.ConflictPaths))
 	if err != nil {
 		return fmt.Errorf("marshal conflict paths: %w", err)

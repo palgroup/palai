@@ -25,6 +25,8 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func faultURL(t *testing.T) string {
@@ -76,7 +78,7 @@ func newHarness(t *testing.T) *harness {
 	pool := spine.Pool()
 	org, proj, principal := randID("org"), randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
@@ -115,7 +117,7 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) seedSchedule(t *testing.T, nextFireAt time.Time, policy string, maxCatchUp int) string {
 	t.Helper()
 	id := randID("sch")
-	if _, err := h.pool.Exec(context.Background(),
+	if _, err := h.pool.Exec(storage.WithSystemScope(context.Background()),
 		`INSERT INTO schedules (id, organization_id, project_id, name, trigger_id, created_by, kind, cron_expr,
 		 timezone, misfire_policy, misfire_grace_seconds, max_catch_up, jitter_seconds, next_fire_at)
 		 VALUES ($1,$2,$3,$4,$5,$6,'cron','* * * * *','UTC',$7,60,$8,0,$9)`,
@@ -150,7 +152,7 @@ func runLoopUntil(t *testing.T, store *automation.ScheduleStore, clock *fakeCloc
 // oldest-first, plus the count of skipped-window rows and the distinct-occurrence-id invariant.
 func (h *harness) occurrenceState(t *testing.T, scheduleID string) (firing []time.Time, skipRows, distinctIDs, totalRows int) {
 	t.Helper()
-	rows, err := h.pool.Query(context.Background(),
+	rows, err := h.pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT planned_at, state FROM schedule_occurrences WHERE schedule_id=$1 ORDER BY planned_at`, scheduleID)
 	if err != nil {
 		t.Fatalf("read occurrences error = %v", err)
@@ -170,7 +172,7 @@ func (h *harness) occurrenceState(t *testing.T, scheduleID string) (firing []tim
 			firing = append(firing, planned)
 		}
 	}
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(DISTINCT occurrence_id) FROM schedule_occurrences WHERE schedule_id=$1`, scheduleID).Scan(&distinctIDs); err != nil {
 		t.Fatalf("count distinct occurrence ids error = %v", err)
 	}
@@ -180,7 +182,7 @@ func (h *harness) occurrenceState(t *testing.T, scheduleID string) (firing []tim
 func (h *harness) admitted(t *testing.T, scheduleID string, planned time.Time) bool {
 	t.Helper()
 	var n int
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM schedule_occurrences WHERE schedule_id=$1 AND planned_at=$2 AND state='admitted'`,
 		scheduleID, planned.UTC()).Scan(&n); err != nil {
 		t.Fatalf("count admitted error = %v", err)
@@ -220,7 +222,7 @@ func TestSchedulerOutageFireOnceNowLatestMissed(t *testing.T) {
 	}
 	// Lateness visible: the recovered occurrence admitted well after its planned instant.
 	var planned, admitted time.Time
-	if err := h.pool.QueryRow(context.Background(),
+	if err := h.pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT planned_at, admitted_at FROM schedule_occurrences WHERE schedule_id=$1 AND planned_at=$2`,
 		schID, latest.UTC()).Scan(&planned, &admitted); err != nil {
 		t.Fatalf("read recovered occurrence error = %v", err)

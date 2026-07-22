@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestMCPConnectionCreateReadIdempotentMigration proves the 000026 store spine: a connection is created and
@@ -73,7 +75,7 @@ func TestMCPConnectionCreateReadIdempotentMigration(t *testing.T) {
 	}
 	// Prove the inline credential never reached the DB: no connection row carries a bearer/token in config.
 	var leaked int
-	if err := s.pool.QueryRow(ctx,
+	if err := s.pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT count(*) FROM mcp_connections WHERE jsonb_exists(config, 'bearer') OR jsonb_exists(config, 'token')`).Scan(&leaked); err != nil {
 		t.Fatalf("scan for leaked inline credential: %v", err)
 	}

@@ -28,6 +28,7 @@ type ToolCallRow struct {
 // RunToolCalls reads a run's completed tool-call ledger in chronological order (spec §30.6). It is the
 // authoritative, model-independent record the changeset is compiled from.
 func (s *Store) RunToolCalls(ctx context.Context, tenant Tenant, runID string) ([]ToolCallRow, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("RunToolCalls"), runID, tenant.Organization, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read tool-call ledger: %w", err)
@@ -47,6 +48,7 @@ func (s *Store) RunToolCalls(ctx context.Context, tenant Tenant, runID string) (
 // RunBaseCommit reads the run's latest preparation base commit (spec §30.3). found is false when the
 // run prepared no repository — then there is no base to diff against and no changeset to compile.
 func (s *Store) RunBaseCommit(ctx context.Context, tenant Tenant, runID string) (string, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var base string
 	err := s.pool.QueryRow(ctx, storage.Query("RunBaseCommit"), runID, tenant.Organization, tenant.Project).Scan(&base)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -100,6 +102,7 @@ type ChangesetRecord struct {
 // compiled event are emitted only on the FIRST record, never duplicated by an E10 replay.
 // sessionID/responseID scope the journal event.
 func (s *Store) RecordChangeset(ctx context.Context, tenant Tenant, sessionID, responseID string, rec ChangesetRecord) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	files, err := json.Marshal(nonNilFiles(rec.Files))
 	if err != nil {
 		return fmt.Errorf("marshal changeset files: %w", err)

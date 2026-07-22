@@ -52,6 +52,8 @@ import (
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 	"github.com/palgroup/palai/tests/uat"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // detPushSecret is the throwaway token the deterministic tier's local push broker mints. It is asserted
@@ -178,7 +180,7 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 	// The push destination came from the binding + preparation receipt, not the model: the exact remote,
 	// the agent work branch, and the committed head.
 	var pushRemote, pushBranch, pushHead string
-	if err := h.spine.Pool().QueryRow(ctx,
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT remote, branch, head_sha FROM publications WHERE run_id=$1 AND operation='push_branch'`, runID).
 		Scan(&pushRemote, &pushBranch, &pushHead); err != nil {
 		t.Fatalf("read pending push publication: %v", err)
@@ -191,7 +193,7 @@ func TestCodingJourneyDeterministic(t *testing.T) {
 	// Approve both publications (approve->approved). The approve COMMAND boundary is proven by T8's
 	// ApplyApprovalDecision; here the run has already terminated, so the journey flips the durable rows to
 	// approved directly and drives the pump, exactly as an approve arriving at a boundary would leave them.
-	if _, err := h.spine.Pool().Exec(ctx,
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx),
 		`UPDATE publications SET state='approved' WHERE run_id=$1 AND state='pending_approval'`, runID); err != nil {
 		t.Fatalf("approve publications: %v", err)
 	}
@@ -503,7 +505,7 @@ func (w *recordingArtifactWriter) WriteArtifact(ctx context.Context, org, projec
 	}
 	w.byType[logicalType] = string(content)
 	id := "art_" + newID(logicalType)
-	if _, err := w.h.spine.Pool().Exec(ctx,
+	if _, err := w.h.spine.Pool().Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes) VALUES ($1,$2,$3,$4,$5,$6)`,
 		id, org, project, runID, "obj/"+id, len(content)); err != nil {
 		return "", err

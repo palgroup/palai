@@ -14,6 +14,8 @@ import (
 	"github.com/palgroup/palai/adapters/integrations/webhook"
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/apps/control-plane/api"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit proves the signed half of TOL-017: a
@@ -65,7 +67,7 @@ func TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit(t *testing
 		t.Fatalf("late callback status = %d, want 200 (accepted as late)", status)
 	}
 	var opState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM remote_tool_operations WHERE id=$1`, operationID).Scan(&opState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM remote_tool_operations WHERE id=$1`, operationID).Scan(&opState); err != nil {
 		t.Fatalf("read operation error = %v", err)
 	}
 	if opState != "late_result" {
@@ -73,7 +75,7 @@ func TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit(t *testing
 	}
 	// The tool ledger was NOT touched by the callback — still uncertain, never silently committed.
 	var callState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM tool_calls WHERE id=$1`, callID).Scan(&callState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM tool_calls WHERE id=$1`, callID).Scan(&callState); err != nil {
 		t.Fatalf("read tool_call error = %v", err)
 	}
 	if callState != "uncertain" {
@@ -86,7 +88,7 @@ func TestLateCallbackAfterDeadlineEntersReconciliationNotSilentCommit(t *testing
 	if _, err := reconciler.Sweep(ctx); err != nil {
 		t.Fatalf("reconcile sweep error = %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT state FROM tool_calls WHERE id=$1`, callID).Scan(&callState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM tool_calls WHERE id=$1`, callID).Scan(&callState); err != nil {
 		t.Fatalf("re-read tool_call error = %v", err)
 	}
 	if callState != "reconciled_completed" {

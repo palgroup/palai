@@ -19,6 +19,8 @@ import (
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // memCheckpointStore is an in-memory CheckpointObjectStore (Put + Get) for the recovery-ladder e2e:
@@ -126,7 +128,7 @@ func (h *harness) recoveryEventLevels(sessionID string) []string {
 
 func (h *harness) eventLevels(sessionID, typ string) []string {
 	h.t.Helper()
-	rows, err := h.spine.Pool().Query(context.Background(),
+	rows, err := h.spine.Pool().Query(storage.WithSystemScope(context.Background()),
 		`SELECT payload FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type=$4 ORDER BY seq`,
 		sessionID, h.tenant.Organization, h.tenant.Project, typ)
 	if err != nil {
@@ -152,7 +154,7 @@ func (h *harness) eventLevels(sessionID, typ string) []string {
 func (h *harness) recoveryProof(sessionID string) (recovery.RecoveryProof, bool) {
 	h.t.Helper()
 	var payload []byte
-	err := h.spine.Pool().QueryRow(context.Background(),
+	err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT payload FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='recovery.proof.v1' ORDER BY seq DESC LIMIT 1`,
 		sessionID, h.tenant.Organization, h.tenant.Project).Scan(&payload)
 	if err != nil {
@@ -362,7 +364,7 @@ func engineModelRequestID(runID string, step int) string {
 func (h *harness) deliveredBoundary(runID, commandID string) string {
 	h.t.Helper()
 	var b string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT boundary_request_id FROM delivered_messages WHERE run_id=$1 AND command_id=$2 AND organization_id=$3 AND project_id=$4`,
 		runID, commandID, h.tenant.Organization, h.tenant.Project).Scan(&b); err != nil {
 		h.t.Fatalf("read delivered boundary for %s: %v", commandID, err)
@@ -537,7 +539,7 @@ func TestMutualExactStandDownRequeuesInsteadOfHanging(t *testing.T) {
 	// second job).
 	job1, job2 := newID("job"), newID("job")
 	for _, j := range []string{job1, job2} {
-		if _, err := h.spine.Pool().Exec(context.Background(),
+		if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
 			`INSERT INTO durable_jobs (id, organization_id, project_id, kind, status, lease_owner, lease_expires_at, fence, attempt_count, payload)
 			 VALUES ($1, $2, $3, 'response.run', 'running', 'owner', clock_timestamp() + interval '1 minute', 1, 1, $4)`,
 			j, h.tenant.Organization, h.tenant.Project, []byte(`{"run_id":"`+runID+`"}`)); err != nil {
@@ -566,7 +568,7 @@ func TestMutualExactStandDownRequeuesInsteadOfHanging(t *testing.T) {
 func runID2resp(t *testing.T, h *harness, runID string) string {
 	t.Helper()
 	var respID string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT response_id FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		runID, h.tenant.Organization, h.tenant.Project).Scan(&respID); err != nil {
 		t.Fatalf("resolve response for run: %v", err)

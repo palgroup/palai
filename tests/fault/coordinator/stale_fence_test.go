@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestStaleFenceCallbacksCannotMutateJob claims, reclaims after expiry, then proves
@@ -61,7 +63,7 @@ func TestStaleFenceCallbacksCannotMutateJob(t *testing.T) {
 	}
 	dedupe := "job:" + jobID + ":fence:" + strconv.FormatInt(live.Fence, 10) + ":completed"
 	var outbox int
-	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM outbox WHERE dedupe_key = $1`, dedupe).Scan(&outbox); err != nil {
+	if err := store.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM outbox WHERE dedupe_key = $1`, dedupe).Scan(&outbox); err != nil {
 		t.Fatalf("count completion outbox error = %v", err)
 	}
 	if outbox != 1 {

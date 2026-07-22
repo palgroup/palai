@@ -62,6 +62,7 @@ type MCPConnectionInput struct {
 // CreateMCPConnection registers a connection after validating its name, transport, and transport-specific
 // config. It is an admin action — never reachable from a tool the model can call.
 func (s *Store) CreateMCPConnection(ctx context.Context, org, project string, raw []byte) (Connection, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	in, err := decodeMCPConnectionInput(raw)
 	if err != nil {
 		return Connection{}, err
@@ -99,6 +100,7 @@ func (s *Store) CreateMCPConnection(ctx context.Context, org, project string, ra
 
 // GetMCPConnection reads a connection for a discover action (tenant-scoped, disabled or not).
 func (s *Store) GetMCPConnection(ctx context.Context, org, project, id string) (Connection, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	c := Connection{ID: id}
 	var configJSON []byte
 	var secretRef *string
@@ -120,6 +122,7 @@ func (s *Store) GetMCPConnection(ctx context.Context, org, project, id string) (
 // MCPConnectionExists reports whether a connection id is in scope — the AgentRevision-rider validation gate
 // (a revision may only name connections that really exist in the project).
 func (s *Store) MCPConnectionExists(ctx context.Context, org, project, id string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	switch err := s.pool.QueryRow(ctx, storage.Query("MCPConnectionExists"), id, org, project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
@@ -131,6 +134,7 @@ func (s *Store) MCPConnectionExists(ctx context.Context, org, project, id string
 
 // DisableMCPConnection flips the admin kill-switch once. Reports whether the connection existed in scope.
 func (s *Store) DisableMCPConnection(ctx context.Context, org, project, id string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	switch err := s.pool.QueryRow(ctx, storage.Query("DisableMCPConnection"), id, org, project).Scan(new(string)); {
 	case err == nil:
 		return true, nil

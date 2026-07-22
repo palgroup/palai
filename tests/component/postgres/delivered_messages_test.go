@@ -9,6 +9,8 @@ import (
 
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // decodeSeededMessage reads the {"message": "..."} text a command payload carries.
@@ -43,7 +45,7 @@ type deliveredRow struct {
 func readDeliveredMessage(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, commandID string) (deliveredRow, bool) {
 	t.Helper()
 	var r deliveredRow
-	err := cs.Pool().QueryRow(context.Background(),
+	err := cs.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT coalesce(boundary_request_id, ''), applied_sequence, fold_state
 		 FROM delivered_messages WHERE organization_id = $1 AND project_id = $2 AND command_id = $3`,
 		tenant.Organization, tenant.Project, commandID).Scan(&r.boundary, &r.seq, &r.fold)
@@ -91,7 +93,7 @@ func TestApplyCommandRecordsDurableDeliveredMessageAtomically(t *testing.T) {
 		t.Fatalf("re-ApplyCommand() error = %v, want ErrCommandNotPending", err)
 	}
 	var count int
-	if err := cs.Pool().QueryRow(ctx,
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT count(*) FROM delivered_messages WHERE command_id = $1`, cmdID).Scan(&count); err != nil {
 		t.Fatalf("count delivered rows error = %v", err)
 	}
@@ -217,10 +219,10 @@ func TestQueuedMessageOnTerminalStepNotLost(t *testing.T) {
 
 	// The send_message SURVIVES queued (not lost); the pause expired (ordinary lifecycle).
 	var msgState, pauseState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM commands WHERE id=$1`, msgID).Scan(&msgState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM commands WHERE id=$1`, msgID).Scan(&msgState); err != nil {
 		t.Fatalf("read send_message state error = %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT state FROM commands WHERE id=$1`, pauseID).Scan(&pauseState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM commands WHERE id=$1`, pauseID).Scan(&pauseState); err != nil {
 		t.Fatalf("read pause state error = %v", err)
 	}
 	if msgState != "queued" {
@@ -231,7 +233,7 @@ func TestQueuedMessageOnTerminalStepNotLost(t *testing.T) {
 	}
 	// A warning.raised.v1 tells the user it will carry (not a silent drop).
 	var warns int
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT count(*) FROM events WHERE session_id=$1 AND type='warning.raised.v1' AND payload->>'code'='message_carried_to_next_response'`,
 		sessionID).Scan(&warns); err != nil {
 		t.Fatalf("count carry warnings error = %v", err)
@@ -253,7 +255,7 @@ func TestQueuedMessageOnTerminalStepNotLost(t *testing.T) {
 		t.Fatalf("carried %d messages, want 1", carried)
 	}
 	var carriedRun, carriedState string
-	if err := pool.QueryRow(ctx, `SELECT run_id, state FROM commands WHERE id=$1`, msgID).Scan(&carriedRun, &carriedState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT run_id, state FROM commands WHERE id=$1`, msgID).Scan(&carriedRun, &carriedState); err != nil {
 		t.Fatalf("read carried message error = %v", err)
 	}
 	if carriedRun != run2 || carriedState != "queued" {
@@ -332,7 +334,7 @@ func TestInterruptDeliveryDurableAcrossReclaim(t *testing.T) {
 		t.Fatalf("re-InterruptModelStep() error = %v, want ErrCommandNotPending", err)
 	}
 	var count int
-	if err := cs.Pool().QueryRow(ctx, `SELECT count(*) FROM delivered_messages WHERE command_id = $1`, interruptID).Scan(&count); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM delivered_messages WHERE command_id = $1`, interruptID).Scan(&count); err != nil {
 		t.Fatalf("count interrupt delivered rows error = %v", err)
 	}
 	if count != 1 {

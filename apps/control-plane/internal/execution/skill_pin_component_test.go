@@ -10,6 +10,8 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // skillPin mirrors the frozen run-pin shape (extensions.SkillPin) for assertion without importing it.
@@ -40,7 +42,7 @@ func TestSkillDigestPinnedRunRecordsExactDigest(t *testing.T) {
 	pool := st.Spine().Pool()
 	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("exec %q: %v", sql, err)
 		}
 	}

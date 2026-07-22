@@ -14,6 +14,8 @@ import (
 
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // leaseHarness is a real spine + a seeded workspace with one allocation. It returns the store, tenant,
@@ -43,7 +45,9 @@ func openLeaseHarness(t *testing.T) (*coordinator.Store, coordinator.Tenant, str
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{WorkspaceID: wsID, SessionID: sessionID, State: "leased"}); err != nil {
 		t.Fatalf("CreateWorkspace() error = %v", err)
 	}
-	alloc, err := cs.AllocateWorkspace(ctx, redeliveryID("wal"), wsID, t.TempDir())
+	// AllocateWorkspace is keyed by the opaque workspace id, not by a tenant, so the CONTEXT carries
+	// the scope — the same way the run worker scopes a claimed job (migration 000029).
+	alloc, err := cs.AllocateWorkspace(storage.WithTenant(ctx, tenant.Organization, tenant.Project), redeliveryID("wal"), wsID, t.TempDir())
 	if err != nil {
 		t.Fatalf("AllocateWorkspace() error = %v", err)
 	}
@@ -54,7 +58,9 @@ func openLeaseHarness(t *testing.T) (*coordinator.Store, coordinator.Tenant, str
 // crashed attempt leaves behind (an active lease with no live process). Returns the run id.
 func seedRunHoldingLease(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, alloc coordinator.Allocation) string {
 	t.Helper()
-	ctx := context.Background()
+	// Workspace/lease reads are keyed by opaque ids rather than a tenant, so the CONTEXT carries
+	// the scope — the same way the run worker scopes a claimed job (migration 000029).
+	ctx := storage.WithTenant(context.Background(), tenant.Organization, tenant.Project)
 	runID := redeliveryID("run")
 	execSQL(t, cs.Pool(), `INSERT INTO runs (id, organization_id, project_id, session_id, state)
 		SELECT $1, $2, $3, w.session_id, 'running' FROM workspaces w WHERE w.id = (SELECT workspace_id FROM workspace_allocations WHERE id=$4)`,
@@ -70,7 +76,7 @@ func seedRunHoldingLease(t *testing.T, cs *coordinator.Store, tenant coordinator
 // LIVE (a claimed response.run job), the lease is NEVER stolen — the single-writer invariant holds.
 func TestStuckWriterLeaseReclaimedAfterCrash(t *testing.T) {
 	cs, tenant, _, alloc := openLeaseHarness(t)
-	ctx := context.Background()
+	ctx := storage.WithTenant(context.Background(), tenant.Organization, tenant.Project)
 	o := &Orchestrator{spine: cs}
 
 	seedRunHoldingLease(t, cs, tenant, alloc)
@@ -94,10 +100,15 @@ func TestStuckWriterLeaseReclaimedAfterCrash(t *testing.T) {
 
 	// NEGATIVE: a LIVE holder's lease is never stolen. Give a fresh holder a live claimed response.run
 	// job, then a competing acquire must fail with ErrWriterLeaseHeld (not reclaim).
-	_, _, _, alloc2 := openLeaseHarness(t)
-	seedRunWithLiveJob(t, cs, tenant, alloc2)
-	competitor := freshRun(t, cs, tenant)
-	if _, err := o.acquireWriterLease(ctx, tenant, alloc2.ID, competitor, ""); err != coordinator.ErrWriterLeaseHeld {
+	// The second harness mints its OWN tenant, and the allocation it returns belongs to that tenant —
+	// so the live holder, the competitor, and the acquire context must all be that tenant's. (Reusing
+	// the first tenant here read as harmless before migration 000029; the policies now reject it, which
+	// is the point.)
+	_, tenant2, _, alloc2 := openLeaseHarness(t)
+	ctx2 := storage.WithTenant(context.Background(), tenant2.Organization, tenant2.Project)
+	seedRunWithLiveJob(t, cs, tenant2, alloc2)
+	competitor := freshRun(t, cs, tenant2)
+	if _, err := o.acquireWriterLease(ctx2, tenant2, alloc2.ID, competitor, ""); err != coordinator.ErrWriterLeaseHeld {
 		t.Fatalf("acquireWriterLease against a LIVE holder = %v, want ErrWriterLeaseHeld (never steal)", err)
 	}
 }
@@ -147,7 +158,7 @@ func TestProvisioningInterruptedMidStateRecovers(t *testing.T) {
 			}
 		}
 		var state string
-		if err := cs.Pool().QueryRow(ctx, `SELECT state FROM workspaces WHERE id=$1`, wsID).Scan(&state); err != nil {
+		if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM workspaces WHERE id=$1`, wsID).Scan(&state); err != nil {
 			t.Fatalf("read state: %v", err)
 		}
 		if state != "ready" {

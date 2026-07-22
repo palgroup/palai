@@ -17,6 +17,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // buildSkillTGZ packs a single-entry gzip-tar (a real archive) for the quarantine pipeline.
@@ -60,7 +62,7 @@ func TestSkillBodyMaterializedAndReadableViaFileTool(t *testing.T) {
 	pool := st.Spine().Pool()
 	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("exec %q: %v", sql, err)
 		}
 	}
@@ -140,7 +142,7 @@ func TestSkillMaterializationRefusesEscapingName(t *testing.T) {
 	pool := st.Spine().Pool()
 	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("exec %q: %v", sql, err)
 		}
 	}

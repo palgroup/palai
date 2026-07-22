@@ -8,13 +8,17 @@ import (
 	"testing"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // seedWorkspace opens a logical workspace bound to the session/run and mints its first physical
 // allocation. It returns the stable logical workspace id and that allocation.
 func seedWorkspace(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenant, sessionID, runID string) (string, coordinator.Allocation) {
 	t.Helper()
-	ctx := context.Background()
+	// AllocateWorkspace is keyed by the opaque workspace id rather than a tenant, so the CONTEXT
+	// carries the scope — the same way the run worker scopes a claimed job (migration 000029).
+	ctx := storage.WithTenant(context.Background(), tenant.Organization, tenant.Project)
 	wsID := newID("wsp")
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{
 		WorkspaceID: wsID, SessionID: sessionID, RunID: runID, State: "ready",
@@ -83,6 +87,10 @@ func TestSingleWriterLeaseRejectsSecondWriter(t *testing.T) {
 	pool := cs.Pool()
 	ctx := context.Background()
 	tenant, sessionID, rootRun := seedRun(t, pool)
+	// AllocateWorkspace / GetPreparationReceipt are keyed by an opaque id, not by a tenant, so under
+	// migration 000029 the CONTEXT is what scopes them — the same way the run worker scopes a claimed
+	// job. Declaring it here is what a production caller already does.
+	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
 	wsID, alloc := seedWorkspace(t, cs, tenant, sessionID, rootRun)
 
 	// The root run normally owns the single writer lease (spec §29.8).
@@ -104,7 +112,7 @@ func TestSingleWriterLeaseRejectsSecondWriter(t *testing.T) {
 
 	// The reject is at the SQLSTATE level: a raw second active-lease insert is 23505, so the
 	// single-writer invariant is the partial unique index, not an app check-then-insert race.
-	_, rawErr := pool.Exec(ctx,
+	_, rawErr := pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO workspace_leases (id, workspace_id, allocation_id, organization_id, project_id, run_id, state, fence)
 		 VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)`,
 		newID("wls"), wsID, alloc.ID, tenant.Organization, tenant.Project, childRun, alloc.Fence)
@@ -129,6 +137,10 @@ func TestAllocationCarriesFencingTokenStableLogicalID(t *testing.T) {
 	pool := cs.Pool()
 	ctx := context.Background()
 	tenant, sessionID, runID := seedRun(t, pool)
+	// AllocateWorkspace / GetPreparationReceipt are keyed by an opaque id, not by a tenant, so under
+	// migration 000029 the CONTEXT is what scopes them — the same way the run worker scopes a claimed
+	// job. Declaring it here is what a production caller already does.
+	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
 
 	wsID := newID("wsp")
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{
@@ -165,7 +177,7 @@ func TestAllocationCarriesFencingTokenStableLogicalID(t *testing.T) {
 
 	// Both allocations belong to the one stable logical workspace.
 	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workspace_allocations WHERE workspace_id = $1`, wsID).Scan(&count); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM workspace_allocations WHERE workspace_id = $1`, wsID).Scan(&count); err != nil {
 		t.Fatalf("count allocations error = %v", err)
 	}
 	if count != 2 {
@@ -183,6 +195,10 @@ func TestFencedStaleWriterSnapshotRejected(t *testing.T) {
 	pool := cs.Pool()
 	ctx := context.Background()
 	tenant, sessionID, runID := seedRun(t, pool)
+	// AllocateWorkspace / GetPreparationReceipt are keyed by an opaque id, not by a tenant, so under
+	// migration 000029 the CONTEXT is what scopes them — the same way the run worker scopes a claimed
+	// job. Declaring it here is what a production caller already does.
+	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
 	wsID := newID("wsp")
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{
 		WorkspaceID: wsID, SessionID: sessionID, RunID: runID, State: "ready",
@@ -223,7 +239,7 @@ func TestFencedStaleWriterSnapshotRejected(t *testing.T) {
 
 	// No stale row landed: exactly the two authoritative snapshots persist.
 	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workspace_snapshots WHERE workspace_id = $1`, wsID).Scan(&count); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM workspace_snapshots WHERE workspace_id = $1`, wsID).Scan(&count); err != nil {
 		t.Fatalf("count snapshots error = %v", err)
 	}
 	if count != 2 {
@@ -241,6 +257,10 @@ func TestAcquireWriterLeaseRejectsNonCurrentAllocation(t *testing.T) {
 	pool := cs.Pool()
 	ctx := context.Background()
 	tenant, sessionID, runID := seedRun(t, pool)
+	// AllocateWorkspace / GetPreparationReceipt are keyed by an opaque id, not by a tenant, so under
+	// migration 000029 the CONTEXT is what scopes them — the same way the run worker scopes a claimed
+	// job. Declaring it here is what a production caller already does.
+	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
 	wsID := newID("wsp")
 	if err := cs.CreateWorkspace(ctx, tenant, coordinator.WorkspaceInput{
 		WorkspaceID: wsID, SessionID: sessionID, RunID: runID, State: "ready",

@@ -96,6 +96,7 @@ func (w *Writer) Write(ctx context.Context, req WriteRequest) (Artifact, error) 
 // artifact id. Keeping the params primitive lets execution depend on this without importing the
 // artifacts package (the same decoupling retention's ArtifactDeleter uses).
 func (w *Writer) WriteArtifact(ctx context.Context, org, project, runID string, content []byte, mediaType, logicalType string, provenance map[string]any) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	art, err := w.Write(ctx, WriteRequest{
 		Organization: org, Project: project, RunID: runID, Content: content,
 		MediaType: mediaType, LogicalType: logicalType, Provenance: provenance,
@@ -120,6 +121,7 @@ func provenanceOrEmpty(p map[string]any) map[string]any {
 // so a caller renders the same miss whether the artifact is absent or owned by another
 // tenant — no cross-tenant existence leaks (spec §22.6, the retrieval non-disclosure rule).
 func (w *Writer) Read(ctx context.Context, org, project, artifactID string) (Artifact, []byte, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	art := Artifact{ID: artifactID}
 	err := w.pool.QueryRow(ctx, storage.Query("GetArtifact"), artifactID, org, project).
 		Scan(&art.RunID, &art.ObjectKey, &art.SizeBytes, &art.Checksum)

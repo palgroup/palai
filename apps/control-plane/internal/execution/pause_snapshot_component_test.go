@@ -27,6 +27,8 @@ import (
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	"github.com/palgroup/palai/packages/runner"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // memObjectStore is an in-memory SnapshotObjectStore/CheckpointObjectStore: the snapshot + checkpoint
@@ -85,6 +87,9 @@ func TestPauseCheckpointCarriesBoundarySnapshot(t *testing.T) {
 
 	tenant := coordinator.Tenant{Organization: redeliveryID("org"), Project: redeliveryID("prj")}
 	sessionID, runID, attemptID := redeliveryID("ses"), redeliveryID("run"), redeliveryID("att")
+	// Workspace/lease reads are keyed by opaque ids rather than a tenant, so the CONTEXT carries
+	// the scope — the same way the run worker scopes a claimed job (migration 000029).
+	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
 	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Organization, tenant.Project)
@@ -118,7 +123,7 @@ func TestPauseCheckpointCarriesBoundarySnapshot(t *testing.T) {
 		t.Fatal("captureBoundarySnapshot returned no id — the pause boundary cut no snapshot")
 	}
 	var snapObjectKey string
-	if err := pool.QueryRow(ctx, `SELECT object_key FROM workspace_snapshots WHERE id=$1`, snapID).Scan(&snapObjectKey); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT object_key FROM workspace_snapshots WHERE id=$1`, snapID).Scan(&snapObjectKey); err != nil {
 		t.Fatalf("read cut snapshot: %v", err)
 	}
 	if snapObjectKey == "" {
@@ -133,7 +138,7 @@ func TestPauseCheckpointCarriesBoundarySnapshot(t *testing.T) {
 		t.Fatalf("persistCheckpoint() error = %v", err)
 	}
 	var linked *string
-	if err := pool.QueryRow(ctx, `SELECT workspace_snapshot_id FROM checkpoints WHERE run_id=$1`, runID).Scan(&linked); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT workspace_snapshot_id FROM checkpoints WHERE run_id=$1`, runID).Scan(&linked); err != nil {
 		t.Fatalf("read checkpoint link: %v", err)
 	}
 	if linked == nil || *linked != snapID {
@@ -201,7 +206,9 @@ func seedAllocationDir(t *testing.T, cs *coordinator.Store, tenant coordinator.T
 	}
 	git("add", "-A")
 	git("commit", "-q", "-m", "seed")
-	if _, err := cs.AllocateWorkspace(context.Background(), redeliveryID("wal"), workspaceID, dir); err != nil {
+	// AllocateWorkspace is keyed by the opaque workspace id, not by a tenant, so the CONTEXT carries
+	// the scope — the same way the run worker scopes a claimed job (migration 000029).
+	if _, err := cs.AllocateWorkspace(storage.WithTenant(context.Background(), tenant.Organization, tenant.Project), redeliveryID("wal"), workspaceID, dir); err != nil {
 		t.Fatalf("AllocateWorkspace() error = %v", err)
 	}
 	return dir
@@ -249,6 +256,9 @@ func TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator(t *testing.T) {
 
 	tenant := coordinator.Tenant{Organization: redeliveryID("org"), Project: redeliveryID("prj")}
 	sessionID, runID, attemptID := redeliveryID("ses"), redeliveryID("run"), redeliveryID("att")
+	// Workspace/lease reads are keyed by opaque ids rather than a tenant, so the CONTEXT carries
+	// the scope — the same way the run worker scopes a claimed job (migration 000029).
+	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
 	execSQL(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
 	execSQL(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
 	execSQL(t, pool, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, sessionID, tenant.Organization, tenant.Project)
@@ -284,14 +294,14 @@ func TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator(t *testing.T) {
 
 	// The persisted checkpoint carries a NON-NULL workspace_snapshot_id, and that snapshot has bytes.
 	var snapID *string
-	if err := pool.QueryRow(ctx, `SELECT workspace_snapshot_id FROM checkpoints WHERE run_id=$1`, runID).Scan(&snapID); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT workspace_snapshot_id FROM checkpoints WHERE run_id=$1`, runID).Scan(&snapID); err != nil {
 		t.Fatalf("read checkpoint link: %v", err)
 	}
 	if snapID == nil {
 		t.Fatal("a pause with the snapshot sink WIRED left workspace_snapshot_id NULL — the SES-009 cut/link is inert")
 	}
 	var objectKey string
-	if err := pool.QueryRow(ctx, `SELECT object_key FROM workspace_snapshots WHERE id=$1`, *snapID).Scan(&objectKey); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT object_key FROM workspace_snapshots WHERE id=$1`, *snapID).Scan(&objectKey); err != nil {
 		t.Fatalf("read linked snapshot: %v", err)
 	}
 	if objectKey == "" {

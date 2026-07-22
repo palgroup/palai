@@ -42,6 +42,8 @@ import (
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	"github.com/palgroup/palai/packages/runner"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func requireEnv(t *testing.T, name string) string {
@@ -121,7 +123,7 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinat
 	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
 	principalID := newID("prin")
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
@@ -195,7 +197,7 @@ func (h *harness) getResponse(responseID, token string) *http.Response {
 func (h *harness) purgedAt(responseID string) *time.Time {
 	h.t.Helper()
 	var purged *time.Time
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT purged_at FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		responseID, h.tenant.Organization, h.tenant.Project).Scan(&purged); err != nil {
 		h.t.Fatalf("read purged_at error = %v", err)
@@ -512,7 +514,7 @@ type event struct {
 
 func (h *harness) events(sessionID string) []event {
 	h.t.Helper()
-	rows, err := h.spine.Pool().Query(context.Background(),
+	rows, err := h.spine.Pool().Query(storage.WithSystemScope(context.Background()),
 		`SELECT seq, type FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 ORDER BY seq`,
 		sessionID, h.tenant.Organization, h.tenant.Project)
 	if err != nil {
@@ -539,7 +541,7 @@ type responseProjection struct {
 func (h *harness) response(responseID string) (state string, projection responseProjection) {
 	h.t.Helper()
 	var output []byte
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT state, output FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		responseID, h.tenant.Organization, h.tenant.Project).Scan(&state, &output); err != nil {
 		h.t.Fatalf("read response error = %v", err)
@@ -555,7 +557,7 @@ func (h *harness) response(responseID string) (state string, projection response
 func (h *harness) count(query string, args ...any) int {
 	h.t.Helper()
 	var n int
-	if err := h.spine.Pool().QueryRow(context.Background(), query, args...).Scan(&n); err != nil {
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()), query, args...).Scan(&n); err != nil {
 		h.t.Fatalf("count %q error = %v", query, err)
 	}
 	return n

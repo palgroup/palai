@@ -140,6 +140,7 @@ type TriggerRevision struct {
 // principal is stamped as created_by — the identity a non-interactive (inbound/scheduled) run admits AS
 // (§20.9 idempotency is principal-scoped), the schedules.created_by precedent for the source case.
 func (s *TriggerStore) CreateTrigger(ctx context.Context, org, project, principal, name, triggerType string) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if triggerType == "" {
 		triggerType = "manual_api"
 	}
@@ -155,6 +156,7 @@ func (s *TriggerStore) CreateTrigger(ctx context.Context, org, project, principa
 // — rotation is not a config edit). The refs are handles, never bytes; the resolver redeems them. An
 // unknown trigger in scope is ErrTriggerNotFound.
 func (s *TriggerStore) SetInboundSecretRefs(ctx context.Context, org, project, triggerID, ref, refNext string) error {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	tag, err := s.pool.Exec(ctx, storage.Query("SetInboundSecretRefs"), triggerID, org, project, ref, refNext)
 	if err != nil {
 		return fmt.Errorf("set inbound secret refs: %w", err)
@@ -170,6 +172,7 @@ func (s *TriggerStore) SetInboundSecretRefs(ctx context.Context, org, project, t
 // key exprs so a malformed/escape-carrying mapping is rejected before it is stored (fail-closed). The
 // active revision is simply the highest revision_number; there is no publish flag (AGT-002).
 func (s *TriggerStore) ReviseTrigger(ctx context.Context, org, project, triggerID string, in TriggerRevisionInput) (TriggerRevision, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if _, err := s.triggerEnabled(ctx, org, project, triggerID); err != nil {
 		return TriggerRevision{}, err
 	}
@@ -198,6 +201,7 @@ func (s *TriggerStore) ReviseTrigger(ctx context.Context, org, project, triggerI
 // GetActiveRevision resolves a trigger's ACTIVE revision (highest revision_number) — the revision a new
 // delivery pins at accept. found=false when the trigger has no revision yet.
 func (s *TriggerStore) GetActiveRevision(ctx context.Context, org, project, triggerID string) (TriggerRevision, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	var rev TriggerRevision
 	switch err := s.pool.QueryRow(ctx, storage.Query("ActiveTriggerRevision"), triggerID, org, project).
 		Scan(&rev.ID, &rev.RevisionNumber); {
@@ -225,6 +229,7 @@ type TriggerView struct {
 
 // GetTrigger reads a trigger's management projection, or found=false when it is absent from the scope.
 func (s *TriggerStore) GetTrigger(ctx context.Context, org, project, triggerID string) (TriggerView, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	v := TriggerView{ID: triggerID}
 	switch err := s.pool.QueryRow(ctx, storage.Query("GetTrigger"), triggerID, org, project).
 		Scan(&v.Name, &v.Type, &v.Enabled, &v.ActiveRevision, &v.CreatedBy, &v.InboundSecretRef, &v.InboundSecretRefNext); {
@@ -256,6 +261,7 @@ type TriggerDeliveryView struct {
 
 // GetDelivery reads a delivery's projection, or found=false when it is absent from the scope.
 func (s *TriggerStore) GetDelivery(ctx context.Context, org, project, deliveryID string) (TriggerDeliveryView, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	v := TriggerDeliveryView{ID: deliveryID}
 	switch err := s.pool.QueryRow(ctx, storage.Query("GetTriggerDelivery"), deliveryID, org, project).
 		Scan(&v.TriggerID, &v.RevisionID, &v.State, &v.ResponseID, &v.RunID, &v.SessionID, &v.DuplicateOf, &v.Reason, &v.CallbackState, &v.ReceivedAt, &v.UpdatedAt); {
@@ -270,6 +276,7 @@ func (s *TriggerStore) GetDelivery(ctx context.Context, org, project, deliveryID
 // triggerEnabled verifies a trigger is in scope and returns its enabled flag, mapping absence to
 // ErrTriggerNotFound (a foreign/unknown trigger discloses no existence).
 func (s *TriggerStore) triggerEnabled(ctx context.Context, org, project, triggerID string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	var enabled bool
 	switch err := s.pool.QueryRow(ctx, storage.Query("TriggerForDelivery"), triggerID, org, project).Scan(&enabled); {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -325,6 +332,7 @@ func validateRevisionInput(in TriggerRevisionInput) error {
 // (no callback configured) is a no-op; a foreign/unknown id is ErrCallbackEndpointNotFound (the FK is
 // global, so this is the only cross-tenant guard — a not-found discloses no existence).
 func (s *TriggerStore) verifyCallbackEndpointInScope(ctx context.Context, org, project, endpointID string) error {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if endpointID == "" {
 		return nil
 	}

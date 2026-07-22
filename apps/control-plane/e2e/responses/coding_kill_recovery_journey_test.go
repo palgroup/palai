@@ -33,6 +33,8 @@ import (
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	"github.com/palgroup/palai/tests/uat"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // codingKillProvider drives the same forced coding flow as codingProvider (file -> shell -> commit ->
@@ -170,7 +172,7 @@ func TestCodingJourneyWithKillRecoveryDeterministic(t *testing.T) {
 	if n := h.count(`SELECT count(*) FROM publications WHERE run_id=$1 AND state='pending_approval'`, runID); n != 2 {
 		t.Fatalf("pending publications = %d, want 2 (push + PR, once each despite the kill)", n)
 	}
-	if _, err := h.spine.Pool().Exec(ctx,
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(ctx),
 		`UPDATE publications SET state='approved' WHERE run_id=$1 AND state='pending_approval'`, runID); err != nil {
 		t.Fatalf("approve publications: %v", err)
 	}

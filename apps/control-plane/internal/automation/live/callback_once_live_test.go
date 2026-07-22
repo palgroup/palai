@@ -40,6 +40,8 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestLiveCallbackOnce drives a callback-configured trigger through a REAL provider-one completion and
@@ -67,7 +69,7 @@ func TestLiveCallbackOnce(t *testing.T) {
 	pool := spine.Pool()
 	org, project, principal := randID("org"), randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
@@ -173,7 +175,7 @@ func TestLiveCallbackOnce(t *testing.T) {
 
 	// The run reaches terminal: commit the real completion output onto the response (the canonical result).
 	output, _ := json.Marshal([]map[string]any{{"type": "output_text", "text": res.Output}})
-	if _, err := pool.Exec(ctx, `UPDATE responses SET state='completed', output=$2::jsonb WHERE id=$1`, del.ResponseID, output); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(ctx), `UPDATE responses SET state='completed', output=$2::jsonb WHERE id=$1`, del.ResponseID, output); err != nil {
 		t.Fatalf("commit response output error = %v", err)
 	}
 
@@ -218,7 +220,7 @@ func TestLiveCallbackOnce(t *testing.T) {
 	// (3) The run evidence is INTACT and INDEPENDENT of the callback story.
 	var respState string
 	var respOutput []byte
-	if err := pool.QueryRow(ctx, `SELECT state, output FROM responses WHERE id=$1`, del.ResponseID).Scan(&respState, &respOutput); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state, output FROM responses WHERE id=$1`, del.ResponseID).Scan(&respState, &respOutput); err != nil {
 		t.Fatalf("read response error = %v", err)
 	}
 	if respState != "completed" || len(respOutput) == 0 {
@@ -243,7 +245,7 @@ func TestLiveCallbackOnce(t *testing.T) {
 func callbackStateFor(t *testing.T, pool *pgxpool.Pool, id string) string {
 	t.Helper()
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT callback_state FROM trigger_deliveries WHERE id=$1`, id).Scan(&state); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT callback_state FROM trigger_deliveries WHERE id=$1`, id).Scan(&state); err != nil {
 		t.Fatalf("read callback_state error = %v", err)
 	}
 	return state
@@ -253,7 +255,7 @@ func callbackStateFor(t *testing.T, pool *pgxpool.Pool, id string) string {
 func deliveryStateFor(t *testing.T, pool *pgxpool.Pool, id string) string {
 	t.Helper()
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM trigger_deliveries WHERE id=$1`, id).Scan(&state); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT state FROM trigger_deliveries WHERE id=$1`, id).Scan(&state); err != nil {
 		t.Fatalf("read delivery state error = %v", err)
 	}
 	return state

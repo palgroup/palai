@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // wiredScheduleStore returns a schedule store wired to a real trigger store + coordinator admitter over the
@@ -65,7 +67,7 @@ type occRow struct {
 
 func occurrencesOf(t *testing.T, pool *pgxpool.Pool, scheduleID string) []occRow {
 	t.Helper()
-	rows, err := pool.Query(context.Background(),
+	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT occurrence_id, state, delivery_id, reason, admitted_at IS NOT NULL, planned_at
 		 FROM schedule_occurrences WHERE schedule_id=$1 ORDER BY planned_at`, scheduleID)
 	if err != nil {
@@ -86,7 +88,7 @@ func occurrencesOf(t *testing.T, pool *pgxpool.Pool, scheduleID string) []occRow
 func countRunCreated(t *testing.T, pool *pgxpool.Pool, triggerID string) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM trigger_deliveries WHERE trigger_id=$1 AND state='run_created'`, triggerID).Scan(&n); err != nil {
 		t.Fatalf("count run_created error = %v", err)
 	}
@@ -130,7 +132,7 @@ func TestOccurrenceDurableBeforeRunCreated(t *testing.T) {
 		t.Fatalf("after sweep, occurrence = %+v, want 'admitted' with a delivery + admitted_at", occs[0])
 	}
 	var dedupeKey string
-	if err := pool.QueryRow(ctx, `SELECT dedupe_key FROM trigger_deliveries WHERE id=$1`, occs[0].deliveryID).Scan(&dedupeKey); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT dedupe_key FROM trigger_deliveries WHERE id=$1`, occs[0].deliveryID).Scan(&dedupeKey); err != nil {
 		t.Fatalf("read delivery dedupe_key error = %v", err)
 	}
 	if dedupeKey != occID {
@@ -183,7 +185,7 @@ func TestOneTimeScheduleFiresAndExhausts(t *testing.T) {
 	}
 	// The schedule is exhausted: next_fire_at is NULL (it never fires again).
 	var nextFire *time.Time
-	if err := pool.QueryRow(ctx, `SELECT next_fire_at FROM schedules WHERE id=$1`, id).Scan(&nextFire); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT next_fire_at FROM schedules WHERE id=$1`, id).Scan(&nextFire); err != nil {
 		t.Fatalf("read next_fire_at error = %v", err)
 	}
 	if nextFire != nil {
@@ -223,7 +225,7 @@ func TestResumeAfterFailRecomputesNextFire(t *testing.T) {
 		t.Fatalf("fireDueSchedules error = %v", err)
 	}
 	var status string
-	if err := pool.QueryRow(ctx, `SELECT status FROM schedules WHERE id=$1`, schID).Scan(&status); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT status FROM schedules WHERE id=$1`, schID).Scan(&status); err != nil {
 		t.Fatalf("read status error = %v", err)
 	}
 	if status != "failed" {
@@ -235,7 +237,7 @@ func TestResumeAfterFailRecomputesNextFire(t *testing.T) {
 		t.Fatalf("resume SetPaused = (%v, %v), want (true, nil)", ok, err)
 	}
 	var next time.Time
-	if err := pool.QueryRow(ctx, `SELECT status, next_fire_at FROM schedules WHERE id=$1`, schID).Scan(&status, &next); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT status, next_fire_at FROM schedules WHERE id=$1`, schID).Scan(&status, &next); err != nil {
 		t.Fatalf("read after resume error = %v", err)
 	}
 	if status != "active" {
@@ -249,7 +251,7 @@ func TestResumeAfterFailRecomputesNextFire(t *testing.T) {
 	if err := ss.fireDueSchedules(ctx, now, 100, t.Logf); err != nil {
 		t.Fatalf("post-resume fireDueSchedules error = %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT status FROM schedules WHERE id=$1`, schID).Scan(&status); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT status FROM schedules WHERE id=$1`, schID).Scan(&status); err != nil {
 		t.Fatalf("read status error = %v", err)
 	}
 	if status != "active" {
@@ -291,7 +293,7 @@ func TestTwoSchedulerReplicasSingleCanonicalOccurrence(t *testing.T) {
 	}
 	// next_fire_at advanced exactly once (to the next minute), not twice.
 	var next time.Time
-	if err := pool.QueryRow(ctx, `SELECT next_fire_at FROM schedules WHERE id=$1`, schID).Scan(&next); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT next_fire_at FROM schedules WHERE id=$1`, schID).Scan(&next); err != nil {
 		t.Fatalf("read next_fire_at error = %v", err)
 	}
 	if !next.Equal(planned.Add(time.Minute)) {
@@ -349,7 +351,7 @@ func TestMisfirePoliciesMaterialized(t *testing.T) {
 			t.Fatalf("skip = %+v, want exactly one 'skipped' window row", occs)
 		}
 		var next time.Time
-		if err := pool.QueryRow(ctx, `SELECT next_fire_at FROM schedules WHERE id=$1`, schID).Scan(&next); err != nil {
+		if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT next_fire_at FROM schedules WHERE id=$1`, schID).Scan(&next); err != nil {
 			t.Fatalf("read next_fire_at error = %v", err)
 		}
 		if !next.After(now) {
@@ -368,7 +370,7 @@ func TestMisfirePoliciesMaterialized(t *testing.T) {
 			t.Fatalf("fail materialized %d occurrences, want 0", len(occs))
 		}
 		var status, reason string
-		if err := pool.QueryRow(ctx, `SELECT status, status_reason FROM schedules WHERE id=$1`, schID).Scan(&status, &reason); err != nil {
+		if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT status, status_reason FROM schedules WHERE id=$1`, schID).Scan(&status, &reason); err != nil {
 			t.Fatalf("read schedule status error = %v", err)
 		}
 		if status != "failed" || reason == "" {
@@ -463,7 +465,7 @@ func TestJitterGatesAdmission(t *testing.T) {
 	}
 	var state string
 	var admittedAt time.Time
-	if err := pool.QueryRow(ctx, `SELECT state, admitted_at FROM schedule_occurrences WHERE occurrence_id=$1`, occID).Scan(&state, &admittedAt); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state, admitted_at FROM schedule_occurrences WHERE occurrence_id=$1`, occID).Scan(&state, &admittedAt); err != nil {
 		t.Fatalf("read occurrence error = %v", err)
 	}
 	if state != "admitted" || !admittedAt.After(planned) {

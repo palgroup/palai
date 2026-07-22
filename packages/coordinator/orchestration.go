@@ -16,6 +16,7 @@ import (
 // for an unknown or foreign response, so the caller renders the same 404 as retrieval and
 // never leaks a cross-tenant resource's existence (spec §39.2). LP's response:run is 1:1.
 func (s *Store) RunIDForResponse(ctx context.Context, tenant Tenant, responseID string) (string, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var runID string
 	err := s.pool.QueryRow(ctx, storage.Query("RunIDForResponse"), responseID, tenant.Organization, tenant.Project).Scan(&runID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -63,6 +64,12 @@ func (s *Store) RunContext(ctx context.Context, runID string) (Tenant, string, s
 		state      string
 		input      []byte
 	)
+	// Like the job claim and VerifyAPIKey, this read ESTABLISHES the tenant it returns — the by-primary-
+	// key lookup cannot itself be tenant-scoped. In the production worker path the context is already
+	// narrowed to the claimed job's tenant, so this resolves within it; the system scope keeps the read
+	// working when the orchestrator is driven directly (recovery, tests). The caller (ExecuteAttempt)
+	// re-scopes to the returned tenant before any write.
+	ctx = storage.WithSystemScope(ctx)
 	err := s.pool.QueryRow(ctx, storage.Query("RunContext"), runID).
 		Scan(&tenant.Organization, &tenant.Project, &sessionID, &responseID, &state, &input)
 	if err != nil {
@@ -108,6 +115,7 @@ type ChildRunInput struct {
 // one transaction: the row and its birth event are atomic. eventType/payload are the caller's
 // child.requested.v1.
 func (s *Store) CreateChildRun(ctx context.Context, tenant Tenant, in ChildRunInput, eventType string, payload []byte) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin child run: %w", err)
@@ -150,6 +158,7 @@ func (s *Store) CreateChildRun(ctx context.Context, tenant Tenant, in ChildRunIn
 // parent appends nothing after its terminal (monotonic terminality, §22.3). child.requested.v1 is
 // journaled by CreateChildRun instead — atomically with the child row.
 func (s *Store) JournalChildEvent(ctx context.Context, tenant Tenant, sessionID, parentResponseID, parentRunID, eventType string, payload []byte) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin child event: %w", err)
@@ -174,6 +183,7 @@ func (s *Store) JournalChildEvent(ctx context.Context, tenant Tenant, sessionID,
 // deny is not child-specific — and returns ErrRunTerminal on a raced cancel, which the orchestrator maps to
 // a clean attempt end.
 func (s *Store) JournalRunEvent(ctx context.Context, tenant Tenant, sessionID, responseID, runID, eventType string, payload []byte) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin run event: %w", err)
@@ -195,6 +205,7 @@ func (s *Store) JournalRunEvent(ctx context.Context, tenant Tenant, sessionID, r
 // ChildRunOutcome reads a finished ChildRun's terminal run state and response projection so the
 // parent folds its typed result (spec §25.19). Tenant-scoped by primary key.
 func (s *Store) ChildRunOutcome(ctx context.Context, tenant Tenant, childRunID string) (string, []byte, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var state string
 	var output []byte
 	err := s.pool.QueryRow(ctx, storage.Query("ChildRunOutcome"), childRunID, tenant.Organization, tenant.Project).Scan(&state, &output)
@@ -214,6 +225,7 @@ type ChildRunRef struct {
 // cancel propagates to all its children (SUB-005). Tenant-scoped; a run with no live children
 // yields no rows.
 func (s *Store) NonTerminalChildRuns(ctx context.Context, tenant Tenant, parentRunID string) ([]ChildRunRef, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("NonTerminalDescendantRuns"), parentRunID, tenant.Organization, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read non-terminal child runs: %w", err)
@@ -238,6 +250,7 @@ func (s *Store) NonTerminalChildRuns(ctx context.Context, tenant Tenant, parentR
 // A child's own in-flight attempt then loses its next commit to the run-terminal guard, and its
 // response UPDATE is conditional, so a late child terminal cannot overwrite the canceled row.
 func (s *Store) CancelChildren(ctx context.Context, tenant Tenant, parentRunID string, canceledProjection []byte) (int, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	children, err := s.NonTerminalChildRuns(ctx, tenant, parentRunID)
 	if err != nil {
 		return 0, err
@@ -269,6 +282,7 @@ func (s *Store) CancelChildren(ctx context.Context, tenant Tenant, parentRunID s
 // ACTUAL terminal, so a racing completion is reflected honestly. It is the single production cancel path
 // (CancelResponse routes here).
 func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, responseID, runID string, canceledProjection, uncertainProjection []byte) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	uncertain, err := s.hasUncertainSideEffect(ctx, tenant, runID)
 	if err != nil {
 		return "", err
@@ -318,6 +332,7 @@ func (s *Store) CancelRunReconciled(ctx context.Context, tenant Tenant, response
 // hasUncertainSideEffect reports whether a run has an unresolved uncertain irreversible/interactive
 // tool_call — the SES-010 terminal discriminator (spec §26.10).
 func (s *Store) hasUncertainSideEffect(ctx context.Context, tenant Tenant, runID string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var exists bool
 	if err := s.pool.QueryRow(ctx, storage.Query("HasUncertainSideEffect"), runID, tenant.Organization, tenant.Project).Scan(&exists); err != nil {
 		return false, fmt.Errorf("check uncertain side effect: %w", err)
@@ -337,6 +352,7 @@ type PriorResponse struct {
 // order, so run.start can carry them as conversation history (spec §9, §22.2). It is
 // tenant-scoped; a foreign session or response yields no rows.
 func (s *Store) SessionHistory(ctx context.Context, tenant Tenant, sessionID, responseID string) ([]PriorResponse, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("SessionHistory"), sessionID, tenant.Organization, tenant.Project, responseID)
 	if err != nil {
 		return nil, fmt.Errorf("read session history: %w", err)
@@ -378,6 +394,7 @@ func appendEvent(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, respo
 // against a committed result (spec §24.7 order, §53.4). The row is idempotent; the
 // event is journaled only on the fresh insert, so a re-derived request adds nothing.
 func (s *Store) CommitModelRequest(ctx context.Context, tenant Tenant, sessionID, responseID, runID, requestID, eventType string, payload []byte) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin model request: %w", err)
@@ -408,6 +425,7 @@ func (s *Store) CommitModelRequest(ctx context.Context, tenant Tenant, sessionID
 // reclaimed attempt re-derives the same stable model_request_id and finds the result
 // here, so the provider is never dispatched twice for one logical request (spec §53.4).
 func (s *Store) LookupModelResult(ctx context.Context, tenant Tenant, requestID string) ([]byte, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var state string
 	var result []byte
 	err := s.pool.QueryRow(ctx, storage.Query("GetModelResult"), requestID, tenant.Organization, tenant.Project).
@@ -429,6 +447,7 @@ func (s *Store) LookupModelResult(ctx context.Context, tenant Tenant, requestID 
 // model.result to the engine, so no provider result reaches the engine until its state
 // is durable (spec §24.7).
 func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID, requestID string, result []byte, eventType string, payload []byte) (int64, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin model commit: %w", err)
@@ -473,6 +492,7 @@ var ErrStaleToolCommit = errors.New("stale_tool_commit")
 // rows and returns ErrStaleToolCommit; a benign re-commit of an already-resolved row is an idempotent
 // no-op (0 rows, nil, no second event). Only a real completion journals its event.
 func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, fence uint64, callID, name string, arguments, result []byte, replayClass, requestHash, eventType string, payload []byte) (int64, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin tool commit: %w", err)
@@ -524,6 +544,7 @@ func (s *Store) CommitToolResult(ctx context.Context, tenant Tenant, sessionID, 
 // (name, args) digest, so the replay path can reject a same-id call whose content diverged (TOL-016).
 // found is false for a fresh call.
 func (s *Store) LookupToolCall(ctx context.Context, tenant Tenant, callID string) (state, result, replayClass string, fence int64, requestHash string, found bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	switch e := s.pool.QueryRow(ctx, storage.Query("LookupToolCall"), callID, tenant.Organization, tenant.Project).
 		Scan(&state, &result, &replayClass, &fence, &requestHash); {
 	case errors.Is(e, pgx.ErrNoRows):
@@ -539,6 +560,7 @@ func (s *Store) LookupToolCall(ctx context.Context, tenant Tenant, callID string
 // detectable as uncertain. It journals tool_call.executing.v1 on a fresh pre-write. Runs under
 // guardRunActive. Idempotent: a redelivered pre-write advances the fence but does not reopen a resolved row.
 func (s *Store) BeginToolCall(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, fence uint64, callID, name string, arguments []byte, replayClass, requestHash, externalKey, boundary string) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin tool pre-write: %w", err)
@@ -570,6 +592,7 @@ func (s *Store) BeginToolCall(ctx context.Context, tenant Tenant, sessionID, res
 // returns whether it transitioned a row (false when a racing path already resolved it). Runs under
 // guardRunActive.
 func (s *Store) MarkToolCallUncertain(ctx context.Context, tenant Tenant, sessionID, responseID, runID, callID string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("begin mark uncertain: %w", err)
@@ -601,6 +624,7 @@ func (s *Store) MarkToolCallUncertain(ctx context.Context, tenant Tenant, sessio
 // reconstruction these are the calls whose committed result is REUSED from the ledger (replayed, never
 // re-executed). Empty (a run with no tool calls, or a compatible restore) is honest evidence too.
 func (s *Store) RunResolvedToolCalls(ctx context.Context, tenant Tenant, runID string) ([]string, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("RunResolvedToolCalls"), runID, tenant.Organization, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read resolved tool calls: %w", err)
@@ -623,6 +647,7 @@ func (s *Store) RunResolvedToolCalls(ctx context.Context, tenant Tenant, runID s
 // resolved row now replays or re-executes). Idempotent-safe: a duplicate job exact-stands-down against
 // any live one (RunHasLiveResponseJob), so an over-enqueue never double-drives.
 func (s *Store) ReenqueueResponseRun(ctx context.Context, tenant Tenant, runID string) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	jobID, err := newJobID()
 	if err != nil {
 		return err
@@ -651,6 +676,9 @@ type UncertainToolCall struct {
 // UncertainToolCalls reads up to limit uncertain tool_calls awaiting reconciliation across all tenants —
 // the reconcile loop's sweep read (spec §26.7). Ordered oldest-first so resolution is deterministic.
 func (s *Store) UncertainToolCalls(ctx context.Context, limit int) ([]UncertainToolCall, error) {
+	// The reconcile sweep spans every tenant by construction (each row carries its own tenant, which
+	// scopes the ReconcileToolCall/ReenqueueResponseRun that follow). System-scoped like the job claim.
+	ctx = storage.WithSystemScope(ctx)
 	rows, err := s.pool.Query(ctx, storage.Query("SelectUncertainToolCalls"), limit)
 	if err != nil {
 		return nil, fmt.Errorf("select uncertain tool calls: %w", err)
@@ -674,6 +702,7 @@ func (s *Store) UncertainToolCalls(ctx context.Context, limit int) ([]UncertainT
 // settles once (RowsAffected 0 → a no-op). result is optional. It does NOT run under guardRunActive: a
 // reconcile settles a durable ledger row even for a run paused/waiting on it.
 func (s *Store) ReconcileToolCall(ctx context.Context, tenant Tenant, sessionID, responseID, runID, callID, resolution string, result []byte) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var newState, event string
 	switch resolution {
 	case "reconciled_completed":
@@ -720,6 +749,7 @@ func (s *Store) ReconcileToolCall(ctx context.Context, tenant Tenant, sessionID,
 // well-formed array and a RESTORE that reads it back can honestly report zero in-flight effects. This is
 // CP-resolved at persist time — the engine never sees the ledger (§24).
 func (s *Store) PendingToolOperations(ctx context.Context, tenant Tenant, runID string) ([]byte, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("PendingToolOperationsForRun"), runID, tenant.Organization, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read pending tool operations: %w", err)
@@ -746,6 +776,7 @@ func (s *Store) PendingToolOperations(ctx context.Context, tenant Tenant, runID 
 // output, and usage. It is the last durable write of a run, so a restart reads the
 // same terminal status and body (spec §24.7, LP-008).
 func (s *Store) FinalizeResponse(ctx context.Context, tenant Tenant, responseID, state string, projection []byte) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	if _, err := s.pool.Exec(ctx, storage.Query("UpdateResponse"),
 		responseID, tenant.Organization, tenant.Project, state, projection); err != nil {
 		return fmt.Errorf("finalize response %s: %w", responseID, err)

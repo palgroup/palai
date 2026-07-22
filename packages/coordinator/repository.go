@@ -32,6 +32,7 @@ type RepositoryBindingInput struct {
 
 // CreateRepositoryBinding stores a binding within the tenant scope (spec §30.1).
 func (s *Store) CreateRepositoryBinding(ctx context.Context, tenant Tenant, in RepositoryBindingInput) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	allowed, err := json.Marshal(nonNilSlice(in.AllowedOperations))
 	if err != nil {
 		return fmt.Errorf("marshal allowed operations: %w", err)
@@ -58,6 +59,7 @@ func (s *Store) CreateRepositoryBinding(ctx context.Context, tenant Tenant, in R
 // GetRepositoryBinding resolves a binding within tenant scope (spec §30.3 step 1). found is false
 // for an unknown OR foreign id — existence is not disclosed across tenants.
 func (s *Store) GetRepositoryBinding(ctx context.Context, tenant Tenant, id string) (contracts.RepositoryBinding, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var (
 		binding    contracts.RepositoryBinding
 		allowedRaw []byte
@@ -96,6 +98,7 @@ type PreparationReceiptInput struct {
 
 // RecordPreparationReceipt persists a preparation receipt (append-only per attempt, spec §30.3).
 func (s *Store) RecordPreparationReceipt(ctx context.Context, tenant Tenant, in PreparationReceiptInput) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	_, err := s.pool.Exec(ctx, storage.Query("RecordPreparationReceipt"),
 		in.ReceiptID, in.BindingID, tenant.Organization, tenant.Project, nullableText(in.RunID),
 		in.RequestedRef, in.BaseCommit, in.TreeHash, in.Branch)

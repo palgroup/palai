@@ -25,6 +25,8 @@ import (
 
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func faultURL(t *testing.T) string {
@@ -57,7 +59,7 @@ func newID(prefix string) string {
 
 func exec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q error = %v", sql, err)
 	}
 }
@@ -65,7 +67,7 @@ func exec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 func count(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), sql, args...).Scan(&n); err != nil {
 		t.Fatalf("count %q error = %v", sql, err)
 	}
 	return n
@@ -74,7 +76,7 @@ func count(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 func runState(t *testing.T, pool *pgxpool.Pool, runID string) string {
 	t.Helper()
 	var state string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM runs WHERE id=$1`, runID).Scan(&state); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT state FROM runs WHERE id=$1`, runID).Scan(&state); err != nil {
 		t.Fatalf("read run state %s error = %v", runID, err)
 	}
 	return state
@@ -118,7 +120,7 @@ func seedParent(t *testing.T, pool *pgxpool.Pool, parentState, childState string
 func sessionOf(t *testing.T, pool *pgxpool.Pool, runID string) string {
 	t.Helper()
 	var s string
-	if err := pool.QueryRow(context.Background(), `SELECT session_id FROM runs WHERE id=$1`, runID).Scan(&s); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT session_id FROM runs WHERE id=$1`, runID).Scan(&s); err != nil {
 		t.Fatalf("read session of %s error = %v", runID, err)
 	}
 	return s

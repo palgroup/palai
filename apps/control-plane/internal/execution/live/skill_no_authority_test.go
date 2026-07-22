@@ -45,6 +45,8 @@ import (
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func TestLiveSkillNoAuthority(t *testing.T) {
@@ -123,7 +125,7 @@ func seedSkillRun(t *testing.T, repo *store.Store, pool *pgxpool.Pool) (coordina
 	profileID, revID := newID("aprof"), newID("arev")
 	skillID, skillRevID := newID("skill"), newID("skillrev")
 	do := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}

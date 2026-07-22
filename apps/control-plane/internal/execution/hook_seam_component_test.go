@@ -11,6 +11,8 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // denyingFirer is a fake HookFirer that DENIES at one point and passes every other through — enough to drive
@@ -93,7 +95,7 @@ func TestBeforeToolTransformKeepsOriginalLedgerIdentity(t *testing.T) {
 
 	// The committed IDENTITY is the model's ORIGINAL, never the patched args.
 	var storedHash string
-	if err := pool.QueryRow(ctx, `SELECT request_hash FROM tool_calls WHERE id=$1`, callID).Scan(&storedHash); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT request_hash FROM tool_calls WHERE id=$1`, callID).Scan(&storedHash); err != nil {
 		t.Fatalf("read stored request_hash: %v", err)
 	}
 	wantHash := toolbroker.RequestHash("note.pure", originalArgs)
@@ -154,7 +156,7 @@ func TestAfterToolReDeliveryReappliesDeny(t *testing.T) {
 func assertEventJournaled(t *testing.T, cs *coordinator.Store, sessionID, eventType string, want int) {
 	t.Helper()
 	var got int
-	if err := cs.Pool().QueryRow(context.Background(),
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT count(*) FROM events WHERE session_id = $1 AND type = $2`, sessionID, eventType).Scan(&got); err != nil {
 		t.Fatalf("count %s events: %v", eventType, err)
 	}

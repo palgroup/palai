@@ -18,6 +18,8 @@ import (
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // The whole-host kill fault half of E10 Task 6 (spec §26.8, §29.7-29.8, ENG-006/SAN-006). It proves the
@@ -158,7 +160,7 @@ func seedWorkspaceWithAllocation(t *testing.T, cs *coordinator.Store, hostPath s
 
 func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := pool.Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
 		t.Fatalf("exec %q: %v", sql, err)
 	}
 }

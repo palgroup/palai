@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // assertCount runs a scalar count query and fails unless it equals want.
@@ -22,7 +24,7 @@ func assertCount(t *testing.T, pool interface {
 }, query string, want int, args ...any) {
 	t.Helper()
 	var got int
-	if err := pool.QueryRow(context.Background(), query, args...).Scan(&got); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), query, args...).Scan(&got); err != nil {
 		t.Fatalf("count query %q error = %v", query, err)
 	}
 	if got != want {

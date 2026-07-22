@@ -20,6 +20,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // Store is a Postgres-backed repository that serves every tenant from one pool;
@@ -411,22 +413,26 @@ func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (
 // SessionExists reports whether the session is visible in the given tenant scope;
 // the event stream uses it as the 404 gate for a foreign or unknown session.
 func (s *Store) SessionExists(ctx context.Context, org, project, sessionID string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.journal.SessionExists(ctx, org, project, sessionID)
 }
 
 // ResolveCursor maps a Last-Event-ID to its per-session sequence within scope.
 func (s *Store) ResolveCursor(ctx context.Context, org, project, sessionID, eventID string) (int64, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.journal.ResolveCursor(ctx, org, project, sessionID, eventID)
 }
 
 // After returns up to limit tenant-scoped events with sequence greater than
 // afterSeq, in ascending order, as CloudEvents envelopes.
 func (s *Store) After(ctx context.Context, org, project, sessionID string, afterSeq int64, limit int) ([]contracts.Event, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.journal.After(ctx, org, project, sessionID, afterSeq, limit)
 }
 
 // RecordAttachDenied records a content-free audit denial for an out-of-scope attach.
 func (s *Store) RecordAttachDenied(ctx context.Context, org, project, principal, sessionID string) error {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.journal.RecordAttachDenied(ctx, org, project, principal, sessionID)
 }
 

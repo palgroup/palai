@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 .PHONY: \
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
-	test-fault test-security test-live-provider test-live-hook-deny test-spikes evidence-spikes \
+	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility evidence-verify
 
@@ -78,6 +78,12 @@ test-live-provider:
 # alias for the CASE=hook-deny-visible live-provider case (PROVIDER=provider-one).
 test-live-hook-deny:
 	@PROVIDER=provider-one CASE=hook-deny-visible scripts/test/live-provider
+
+# E13 Task 1 live smoke: a two-org stack proves cross-tenant isolation at both layers — org-B's key gets
+# a 404 on org-A's REAL provider run, and an org-B-scoped DB read is denied org-A's rows by RLS (000029).
+# A convenience alias for the CASE=tenancy-isolation live-provider case (PROVIDER=provider-one).
+test-live-tenancy:
+	@PROVIDER=provider-one CASE=tenancy-isolation scripts/test/live-provider
 
 verify: lint check-generated test-unit test-spikes check-spike-reports
 	@bash scripts/verify/repository-boundary.sh

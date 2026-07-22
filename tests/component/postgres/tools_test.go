@@ -5,6 +5,8 @@ package postgres
 import (
 	"context"
 	"testing"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestToolsMigration proves 000024 adds the extensibility registry — the tools lineage table, the
@@ -45,23 +47,23 @@ func TestToolsMigration(t *testing.T) {
 	               VALUES ($1,$2,$3,$4,1,'control_plane','{"type":"object"}','sha256:abc')`,
 		revID, tenant.Organization, tenant.Project, toolID)
 
-	tag, err := pool.Exec(ctx, `UPDATE tool_revisions SET published_at = clock_timestamp() WHERE id=$1 AND published_at IS NULL`, revID)
+	tag, err := pool.Exec(storage.WithSystemScope(ctx), `UPDATE tool_revisions SET published_at = clock_timestamp() WHERE id=$1 AND published_at IS NULL`, revID)
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("first publish rows = %d err = %v, want exactly 1", tag.RowsAffected(), err)
 	}
-	tag2, err := pool.Exec(ctx, `UPDATE tool_revisions SET published_at = clock_timestamp() WHERE id=$1 AND published_at IS NULL`, revID)
+	tag2, err := pool.Exec(storage.WithSystemScope(ctx), `UPDATE tool_revisions SET published_at = clock_timestamp() WHERE id=$1 AND published_at IS NULL`, revID)
 	if err != nil || tag2.RowsAffected() != 0 {
 		t.Fatalf("second publish rows = %d err = %v, want 0 (already published)", tag2.RowsAffected(), err)
 	}
 
 	// A duplicate canonical name in the same project is rejected (the UNIQUE lineage key).
-	if got := pgCode(mustFail(pool.Exec(ctx,
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name) VALUES ($1,$2,$3,'acme.search.fetch','fetch2')`,
 		newID("tool"), tenant.Organization, tenant.Project))); got != "23505" {
 		t.Fatalf("duplicate canonical_name code = %q, want 23505 unique_violation", got)
 	}
 	// A duplicate model_visible_name in the same project is rejected (the deterministic short-name guard).
-	if got := pgCode(mustFail(pool.Exec(ctx,
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name) VALUES ($1,$2,$3,'acme.other.fetch','fetch')`,
 		newID("tool"), tenant.Organization, tenant.Project))); got != "23505" {
 		t.Fatalf("duplicate model_visible_name code = %q, want 23505 unique_violation", got)
@@ -72,7 +74,7 @@ func TestToolsMigration(t *testing.T) {
 	exec(t, pool, `INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name, revision_number, tool_pins, digest)
 	               VALUES ($1,$2,$3,'reviewers',1,'[{"tool_revision_id":"trev_x"}]','sha256:def')`,
 		setRevID, tenant.Organization, tenant.Project)
-	if got := pgCode(mustFail(pool.Exec(ctx,
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
 		`INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name, revision_number, tool_pins, digest)
 		 VALUES ($1,$2,$3,'reviewers',1,'[]','sha256:ghi')`,
 		newID("tsrev"), tenant.Organization, tenant.Project))); got != "23505" {

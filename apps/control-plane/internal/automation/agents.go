@@ -101,6 +101,7 @@ func DecodeRevisionInput(raw []byte) (RevisionInput, error) {
 
 // CreateProfile inserts a named agent-profile lineage and returns its id.
 func (s *Store) CreateProfile(ctx context.Context, org, project, name string) (string, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	id := newID("aprof")
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertAgentProfile"), id, org, project, name); err != nil {
 		return "", fmt.Errorf("insert agent profile: %w", err)
@@ -112,6 +113,7 @@ func (s *Store) CreateProfile(ctx context.Context, org, project, name string) (s
 // the profile is in scope first, so a revision never attaches to a foreign/unknown profile. A revise is
 // just another CreateRevision — the config columns of earlier revisions are never touched.
 func (s *Store) CreateRevision(ctx context.Context, org, project, profileID string, raw []byte) (Revision, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	in, err := DecodeRevisionInput(raw)
 	if err != nil {
 		return Revision{}, err
@@ -140,11 +142,13 @@ func (s *Store) CreateRevision(ctx context.Context, org, project, profileID stri
 // call did the flip; exists distinguishes an unknown revision (false) from one already published
 // (true) — so the caller can 404 an unknown id while treating a re-publish as an idempotent success.
 func (s *Store) PublishRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.publish(ctx, "PublishAgentRevision", "AgentRevisionPublished", revisionID, org, project)
 }
 
 // GetRevision reads a revision's committed shape, or found=false when it is absent from the scope.
 func (s *Store) GetRevision(ctx context.Context, org, project, revisionID string) (Revision, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	var (
 		rev       Revision
 		toolsJSON []byte
@@ -167,6 +171,7 @@ func (s *Store) GetRevision(ctx context.Context, org, project, revisionID string
 // CreateTemplateRevision inserts a DRAFT run-template revision (profile-free, identity/delegation
 // rejected by the strict decode) under a template name and returns it.
 func (s *Store) CreateTemplateRevision(ctx context.Context, org, project, templateName string, raw []byte) (Revision, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	in, err := DecodeRevisionInput(raw)
 	if err != nil {
 		return Revision{}, err
@@ -183,6 +188,7 @@ func (s *Store) CreateTemplateRevision(ctx context.Context, org, project, templa
 
 // PublishTemplateRevision flips a draft template revision to published exactly once (see PublishRevision).
 func (s *Store) PublishTemplateRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.publish(ctx, "PublishRunTemplateRevision", "RunTemplateRevisionPublished", revisionID, org, project)
 }
 

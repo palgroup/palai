@@ -40,6 +40,8 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // investigationReport is the strict schema the investigation run's final content must satisfy. It lives in
@@ -207,7 +209,7 @@ func TestScheduledInvestigationJourneyDeterministic(t *testing.T) {
 		t.Fatalf("canonical inbound delivery bore no run: %v", firstView)
 	}
 	var canonical, withRun int
-	if err := h.spine.Pool().QueryRow(ctx,
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
 		`SELECT count(*) FILTER (WHERE duplicate_of IS NULL), count(*) FILTER (WHERE run_id <> '')
 		 FROM trigger_deliveries WHERE trigger_id=$1 AND source_event_id=$2`, whTrigger, eventID).Scan(&canonical, &withRun); err != nil {
 		t.Fatalf("count canonical deliveries: %v", err)
@@ -216,7 +218,7 @@ func TestScheduledInvestigationJourneyDeterministic(t *testing.T) {
 		t.Fatalf("duplicated event fanned out: canonical=%d withRun=%d, want 1/1 (one action, original linkage)", canonical, withRun)
 	}
 	var sessionID string
-	if err := h.spine.Pool().QueryRow(ctx, `SELECT session_id FROM runs WHERE id=$1`, runID).Scan(&sessionID); err != nil {
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT session_id FROM runs WHERE id=$1`, runID).Scan(&sessionID); err != nil {
 		t.Fatalf("read run session: %v", err)
 	}
 

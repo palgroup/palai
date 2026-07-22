@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestTasksMigration proves 000012 applies, rolls back, and reapplies idempotently (the durable
@@ -107,7 +109,7 @@ func TestDurableTasksTwoReadersSeeSameOrderedJournal(t *testing.T) {
 	upsertTask(t, cs, tenant, sessionID, runID, "task", "a", "do A", "done") // task.updated
 
 	read := func() []string {
-		rows, err := pool.Query(ctx,
+		rows, err := pool.Query(storage.WithSystemScope(ctx),
 			`SELECT type, payload::text FROM events WHERE session_id=$1 AND type LIKE 'task.%' ORDER BY seq`, sessionID)
 		if err != nil {
 			t.Fatalf("read journal: %v", err)

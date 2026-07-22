@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // Scope is the verified tenant an API key resolves to. It comes from identity,
@@ -43,7 +45,13 @@ func Auth(v Verifier) func(http.Handler) http.Handler {
 				WriteProblem(w, r, http.StatusUnauthorized, "invalid_token", "the API key is not valid")
 				return
 			}
-			ctx := context.WithValue(r.Context(), scopeKey{}, scope)
+			// The verified scope is also published to the database layer, so every query this
+			// request issues runs under palai.org_id / palai.project_id and migration 000029's
+			// policies enforce the same boundary the handlers' WHERE clauses claim. This is the
+			// ONLY place a request's tenant enters the DB scope — it comes from the credential,
+			// never from a body field (spec §39.2).
+			ctx := storage.WithTenant(r.Context(), scope.Organization, scope.Project)
+			ctx = context.WithValue(ctx, scopeKey{}, scope)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

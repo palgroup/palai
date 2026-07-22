@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // canceledProj / uncertainProj are minimal terminal projections the store layer would build; the test
@@ -57,13 +59,13 @@ func TestCancelDuringKillReconcilesChildrenSingleTerminal(t *testing.T) {
 	}
 	// The run is canceled (single terminal) and the child was propagated to canceled.
 	var runState, childRunState, childRespState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM runs WHERE id=$1`, runID).Scan(&runState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM runs WHERE id=$1`, runID).Scan(&runState); err != nil {
 		t.Fatalf("read run state error = %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT state FROM runs WHERE id=$1`, childRun).Scan(&childRunState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM runs WHERE id=$1`, childRun).Scan(&childRunState); err != nil {
 		t.Fatalf("read child run state error = %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT state FROM responses WHERE id=$1`, childResp).Scan(&childRespState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM responses WHERE id=$1`, childResp).Scan(&childRespState); err != nil {
 		t.Fatalf("read child response state error = %v", err)
 	}
 	if runState != "canceled" {
@@ -88,7 +90,7 @@ func TestCancelDuringKillReconcilesChildrenSingleTerminal(t *testing.T) {
 		t.Fatalf("second cancel terminal = %q, want the same failed_with_uncertain_side_effect (monotonic)", again)
 	}
 	var finalState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM responses WHERE id=$1`, respID).Scan(&finalState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM responses WHERE id=$1`, respID).Scan(&finalState); err != nil {
 		t.Fatalf("read final response state error = %v", err)
 	}
 	if finalState != "failed_with_uncertain_side_effect" {
@@ -122,10 +124,10 @@ func TestCancelDuringCompletionGapDoesNotClobberOutput(t *testing.T) {
 		t.Fatalf("cancel-in-gap terminal = %q, want the response left open (not clobbered)", terminal)
 	}
 	var respState, runState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM responses WHERE id=$1`, respID).Scan(&respState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM responses WHERE id=$1`, respID).Scan(&respState); err != nil {
 		t.Fatalf("read response state error = %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT state FROM runs WHERE id=$1`, runID).Scan(&runState); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM runs WHERE id=$1`, runID).Scan(&runState); err != nil {
 		t.Fatalf("read run state error = %v", err)
 	}
 	if respState == "canceled" {
@@ -142,7 +144,7 @@ func TestCancelDuringCompletionGapDoesNotClobberOutput(t *testing.T) {
 	}
 	var finalState string
 	var output []byte
-	if err := pool.QueryRow(ctx, `SELECT state, output FROM responses WHERE id=$1`, respID).Scan(&finalState, &output); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state, output FROM responses WHERE id=$1`, respID).Scan(&finalState, &output); err != nil {
 		t.Fatalf("read final response error = %v", err)
 	}
 	if finalState != "completed" {

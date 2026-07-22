@@ -17,6 +17,8 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestAckedDeliveryCrashBeforeRunRecoversExactlyOnce seeds a durable inbound delivery in `received` (the
@@ -35,7 +37,7 @@ func TestAckedDeliveryCrashBeforeRunRecoversExactlyOnce(t *testing.T) {
 	pool := spine.Pool()
 	org, proj, principal := randID("org"), randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
@@ -101,7 +103,7 @@ func TestAckedDeliveryCrashBeforeRunRecoversExactlyOnce(t *testing.T) {
 		t.Fatalf("second Tick changed the outcome: state=%q run=%q (was %q)", state2, runID2, runID)
 	}
 	var runs int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM trigger_deliveries WHERE trigger_id=$1 AND run_id <> ''`, triggerID).Scan(&runs); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM trigger_deliveries WHERE trigger_id=$1 AND run_id <> ''`, triggerID).Scan(&runs); err != nil {
 		t.Fatalf("count runs error = %v", err)
 	}
 	if runs != 1 {
@@ -112,7 +114,7 @@ func TestAckedDeliveryCrashBeforeRunRecoversExactlyOnce(t *testing.T) {
 func deliveryStateRun(t *testing.T, pool *pgxpool.Pool, deliveryID string) (string, string) {
 	t.Helper()
 	var state, runID string
-	if err := pool.QueryRow(context.Background(), `SELECT state, run_id FROM trigger_deliveries WHERE id=$1`, deliveryID).Scan(&state, &runID); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT state, run_id FROM trigger_deliveries WHERE id=$1`, deliveryID).Scan(&state, &runID); err != nil {
 		t.Fatalf("read delivery error = %v", err)
 	}
 	return state, runID

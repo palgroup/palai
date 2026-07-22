@@ -12,6 +12,8 @@ import (
 
 	"github.com/palgroup/palai/packages/contracts"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // switchProvider echoes the requested model as the result model — the discipline a real
@@ -122,7 +124,7 @@ func (p *immediateSwitchProvider) sawAssistantContent(substr string) bool {
 // against it (spec §9.3). A NULL policy — the default — is unrestricted.
 func (h *harness) setProjectPolicy(policy string) {
 	h.t.Helper()
-	if _, err := h.spine.Pool().Exec(context.Background(),
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
 		`UPDATE projects SET config_policy = $1::jsonb WHERE id = $2 AND organization_id = $3`,
 		policy, h.tenant.Project, h.tenant.Organization); err != nil {
 		h.t.Fatalf("set project policy error = %v", err)
@@ -133,7 +135,7 @@ func (h *harness) setProjectPolicy(policy string) {
 // step order — the per-step effective-model evidence the config switch is proven by.
 func (h *harness) completedStepModels(runID string) []string {
 	h.t.Helper()
-	rows, err := h.spine.Pool().Query(context.Background(),
+	rows, err := h.spine.Pool().Query(storage.WithSystemScope(context.Background()),
 		`SELECT result->>'model' FROM model_requests
 		 WHERE run_id=$1 AND organization_id=$2 AND project_id=$3 AND state='completed'
 		 ORDER BY created_at`,
@@ -159,7 +161,7 @@ func (h *harness) completedStepModels(runID string) []string {
 func (h *harness) eventPayloadOf(sessionID, typ string) map[string]any {
 	h.t.Helper()
 	var payload []byte
-	err := h.spine.Pool().QueryRow(context.Background(),
+	err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT payload FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type=$4 ORDER BY seq LIMIT 1`,
 		sessionID, h.tenant.Organization, h.tenant.Project, typ).Scan(&payload)
 	if err != nil {

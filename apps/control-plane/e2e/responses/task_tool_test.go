@@ -11,6 +11,8 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/packages/contracts"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // taskWritingProvider drives one durable task write: the first step calls the palai.task tool, then
@@ -54,7 +56,7 @@ func TestDurableTaskToolWritesThroughModelCall(t *testing.T) {
 
 	// The durable task was written by the model's tool call, session-scoped.
 	var kind, title, status string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT kind, title, status FROM tasks WHERE session_id=$1 AND task_key='impl-x' AND organization_id=$2 AND project_id=$3`,
 		sessionID, h.tenant.Organization, h.tenant.Project).Scan(&kind, &title, &status); err != nil {
 		t.Fatalf("read durable task: %v", err)

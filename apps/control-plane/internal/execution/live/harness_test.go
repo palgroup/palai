@@ -23,6 +23,8 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func newID(prefix string) string {
@@ -41,7 +43,7 @@ func seedRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, string, stri
 	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
 	session, response, runID := newID("ses"), newID("resp"), newID("run")
 	do := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q: %v", sql, err)
 		}
 	}
@@ -63,7 +65,7 @@ func seedRun(t *testing.T, pool *pgxpool.Pool) (coordinator.Tenant, string, stri
 // chatcmpl-... for provider-one), the live round-trip receipt for the run.
 func lastProviderRequestID(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, runID string) string {
 	t.Helper()
-	rows, err := pool.Query(context.Background(),
+	rows, err := pool.Query(storage.WithSystemScope(context.Background()),
 		`SELECT result FROM model_requests WHERE run_id=$1 AND organization_id=$2 AND project_id=$3 AND state='completed' ORDER BY updated_at DESC`,
 		runID, tenant.Organization, tenant.Project)
 	if err != nil {
@@ -90,7 +92,7 @@ func lastProviderRequestID(t *testing.T, pool *pgxpool.Pool, tenant coordinator.
 func latestRecoveryLevel(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, sessionID string) string {
 	t.Helper()
 	var payload []byte
-	if err := pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT payload FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='attempt.recovering.v1' ORDER BY seq DESC LIMIT 1`,
 		sessionID, tenant.Organization, tenant.Project).Scan(&payload); err != nil {
 		t.Fatalf("read attempt.recovering.v1: %v", err)
@@ -106,7 +108,7 @@ func latestRecoveryLevel(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Te
 func recoveryProof(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenant, sessionID string) recovery.RecoveryProof {
 	t.Helper()
 	var payload []byte
-	if err := pool.QueryRow(context.Background(),
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT payload FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 AND type='recovery.proof.v1' ORDER BY seq DESC LIMIT 1`,
 		sessionID, tenant.Organization, tenant.Project).Scan(&payload); err != nil {
 		t.Fatalf("read recovery.proof.v1: %v", err)

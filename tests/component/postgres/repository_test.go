@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestRepositoryBindingResolveIsTenantScoped proves a binding resolves only within its own tenant
@@ -50,6 +52,10 @@ func TestPreparationReceiptRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	pool := cs.Pool()
 	tenant, _, runID := seedRun(t, pool)
+	// AllocateWorkspace / GetPreparationReceipt are keyed by an opaque id, not by a tenant, so under
+	// migration 000029 the CONTEXT is what scopes them — the same way the run worker scopes a claimed
+	// job. Declaring it here is what a production caller already does.
+	ctx = storage.WithTenant(ctx, tenant.Organization, tenant.Project)
 
 	bindingID := newID("repo")
 	if err := cs.CreateRepositoryBinding(ctx, tenant, coordinator.RepositoryBindingInput{

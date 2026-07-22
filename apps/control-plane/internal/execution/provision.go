@@ -12,6 +12,8 @@ import (
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // SetWorkspaceProvisioner wires the root run's workspace auto-provisioning (spec §29.7-30.3, E09 Task
@@ -80,7 +82,10 @@ func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordi
 	// bricks forever — blocker 1), because the caller's defer release is not armed until this returns a
 	// leaseID; release it here before surfacing the error.
 	if err := o.spine.AdvanceWorkspace(ctx, tenant, ws.WorkspaceID, statemachines.WorkspaceCmdLease); err != nil && !errors.Is(err, statemachines.ErrInvalidState) {
-		_ = o.spine.ReleaseWriterLease(context.Background(), leaseID)
+		// Release under the run's tenant scope, not a bare background context: migration 000029's
+		// policies gate this write too, so an unscoped release would affect zero rows and LEAK the
+		// lease it means to reclaim.
+		_ = o.spine.ReleaseWriterLease(storage.WithTenant(context.Background(), tenant.Organization, tenant.Project), leaseID)
 		return "", "", "", err
 	}
 	return alloc.HostPath, leaseID, ws.WorkspaceID, nil
@@ -216,7 +221,10 @@ func (o *Orchestrator) releaseWorkspace(tenant coordinator.Tenant, workspaceID, 
 	if leaseID == "" {
 		return
 	}
-	ctx := context.Background()
+	// A fresh context so a canceled/teardown ctx cannot skip the release, but still tenant-scoped: the
+	// release + workspace transition are gated by migration 000029's policies, so an unscoped write
+	// would silently no-op and leak the lease.
+	ctx := storage.WithTenant(context.Background(), tenant.Organization, tenant.Project)
 	if err := o.spine.ReleaseWriterLease(ctx, leaseID); err != nil {
 		log.Printf("release writer lease %s: %v", leaseID, err)
 	}

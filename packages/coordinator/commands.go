@@ -85,6 +85,7 @@ type PendingCommand struct {
 // a live run is left queued for the command pump. Everything commits in one transaction, so a
 // rejection leaves the command durably rejected and an unknown session leaves nothing behind.
 func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID string, in CommandInput) (Command, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Command{}, fmt.Errorf("begin accept command: %w", err)
@@ -454,6 +455,7 @@ func rejectCommandTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, r
 // pump branch. A command that has left 'queued' never reappears — the deliver-once guarantee
 // (spec §9.2, §9.3).
 func (s *Store) PendingBoundaryCommands(ctx context.Context, tenant Tenant, runID string) ([]PendingCommand, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("PendingBoundaryCommands"), runID, tenant.Organization, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read pending commands: %w", err)
@@ -480,6 +482,7 @@ func (s *Store) PendingBoundaryCommands(ctx context.Context, tenant Tenant, runI
 // the next run (spec §9.3). Single-winner apply skips any already settled at a boundary or by the
 // interrupt watcher, so re-draining on a reclaimed attempt is a no-op.
 func (s *Store) PendingSessionConfigCommands(ctx context.Context, tenant Tenant, sessionID string) ([]PendingCommand, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("PendingSessionConfigCommands"), sessionID, tenant.Organization, tenant.Project)
 	if err != nil {
 		return nil, fmt.Errorf("read pending session config commands: %w", err)
@@ -516,6 +519,7 @@ func (s *Store) PendingSessionConfigCommands(ctx context.Context, tenant Tenant,
 // The interrupt-path fold (InterruptModelStep) writes the SAME durable row keyed by the aborted step's
 // boundary (E10 Task 7, ENG-012), so both delivery paths redeliver at the input boundary.
 func (s *Store) ApplyCommand(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, boundaryRequestID string) (int64, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin apply command: %w", err)
@@ -557,6 +561,7 @@ type RedeliveredMessage struct {
 // original boundary either way. The read is tenant-scoped; a boundary with no recorded message
 // returns no rows.
 func (s *Store) RedeliverBoundaryMessages(ctx context.Context, tenant Tenant, runID, boundaryRequestID string) ([]RedeliveredMessage, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	rows, err := s.pool.Query(ctx, storage.Query("RedeliverBoundaryMessages"),
 		runID, tenant.Organization, tenant.Project, boundaryRequestID)
 	if err != nil {
@@ -619,6 +624,7 @@ func applyCommandInTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, 
 // driving the loop, so it is read before the boundary delivery set, not mixed into it. found is
 // false when none is pending.
 func (s *Store) PendingPauseCommand(ctx context.Context, tenant Tenant, runID string) (commandID string, found bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	switch err := s.pool.QueryRow(ctx, storage.Query("PendingPauseCommand"), runID, tenant.Organization, tenant.Project).
 		Scan(&commandID); {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -636,6 +642,7 @@ func (s *Store) PendingPauseCommand(ctx context.Context, tenant Tenant, runID st
 // Returns the pause's applied_sequence. A run already terminal (it finished on this step) rejects
 // with ErrRunTerminal, which the caller treats as "nothing to pause".
 func (s *Store) PauseRun(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID string) (int64, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin pause: %w", err)
@@ -668,6 +675,7 @@ type PendingInterrupt struct {
 // model step, for the in-flight-abort watcher (spec §9.2, §9.3, §25.11) — a send_message
 // interrupt or a change_config immediate switch. found is false when none is pending.
 func (s *Store) PendingInterruptCommand(ctx context.Context, tenant Tenant, runID string) (hit PendingInterrupt, found bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	switch err := s.pool.QueryRow(ctx, storage.Query("PendingInterruptCommand"), runID, tenant.Organization, tenant.Project).
 		Scan(&hit.CommandID, &hit.Kind, &hit.Payload); {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -694,6 +702,7 @@ func (s *Store) PendingInterruptCommand(ctx context.Context, tenant Tenant, runI
 // so interrupt-delivered and boundary-delivered messages at the same step interleave by applied_sequence
 // (§26.9). Empty boundaryRequestID (a change_config interrupt has no message) writes no row.
 func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, boundaryRequestID, partialEventType string, partialPayload []byte) (int64, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin interrupt: %w", err)
@@ -811,6 +820,7 @@ func warnSurvivingSendMessages(ctx context.Context, tx pgx.Tx, tenant Tenant, se
 // change_config carry (PendingSessionConfigCommands) and reuses the entire delivery path — no new frame.
 // Run at run.start (never on a restore, which resumes past the boundary). Returns how many carried.
 func (s *Store) CarrySessionSendMessages(ctx context.Context, tenant Tenant, sessionID, runID string) (int64, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tag, err := s.pool.Exec(ctx, storage.Query("CarrySessionSendMessages"), sessionID, tenant.Organization, tenant.Project, runID)
 	if err != nil {
 		return 0, fmt.Errorf("carry session send messages: %w", err)

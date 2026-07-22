@@ -31,6 +31,8 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestLiveCronFiresOnce seeds a due per-minute cron schedule against a real PG, ticks the REAL schedule
@@ -57,7 +59,7 @@ func TestLiveCronFiresOnce(t *testing.T) {
 	pool := spine.Pool()
 	org, project, principal := randID("org"), randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
@@ -114,7 +116,7 @@ func TestLiveCronFiresOnce(t *testing.T) {
 
 	// Exactly ONE occurrence, admitted, with a unique id and a delivery link.
 	var occurrenceCount, distinctIDs int
-	if err := pool.QueryRow(ctx, `SELECT count(*), count(DISTINCT occurrence_id) FROM schedule_occurrences WHERE schedule_id=$1`, scheduleID).
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*), count(DISTINCT occurrence_id) FROM schedule_occurrences WHERE schedule_id=$1`, scheduleID).
 		Scan(&occurrenceCount, &distinctIDs); err != nil {
 		t.Fatalf("count occurrences error = %v", err)
 	}
@@ -122,7 +124,7 @@ func TestLiveCronFiresOnce(t *testing.T) {
 		t.Fatalf("occurrences = %d (distinct ids %d), want exactly 1 (exactly-once across two ticks)", occurrenceCount, distinctIDs)
 	}
 	var occurrenceID, occState, occDelivery string
-	if err := pool.QueryRow(ctx, `SELECT occurrence_id, state, delivery_id FROM schedule_occurrences WHERE schedule_id=$1`, scheduleID).
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT occurrence_id, state, delivery_id FROM schedule_occurrences WHERE schedule_id=$1`, scheduleID).
 		Scan(&occurrenceID, &occState, &occDelivery); err != nil {
 		t.Fatalf("read occurrence error = %v", err)
 	}
@@ -132,7 +134,7 @@ func TestLiveCronFiresOnce(t *testing.T) {
 
 	// The linked delivery bore a real run, keyed by the occurrence_id dedupe (the third defense line).
 	var deliveryState, runID, responseID, dedupeKey string
-	if err := pool.QueryRow(ctx, `SELECT state, run_id, response_id, dedupe_key FROM trigger_deliveries WHERE id=$1`, occDelivery).
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT state, run_id, response_id, dedupe_key FROM trigger_deliveries WHERE id=$1`, occDelivery).
 		Scan(&deliveryState, &runID, &responseID, &dedupeKey); err != nil {
 		t.Fatalf("read delivery error = %v", err)
 	}

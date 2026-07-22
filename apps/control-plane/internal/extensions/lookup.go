@@ -44,6 +44,7 @@ func (s *Store) SetRemoteInvoker(inv RemoteInvoker, resolver SecretResolver) {
 // WHEN an invoker is wired; without one it stays binder-less (returns _, false). An mcp row resolves through
 // the mcp branch to a per-call sandboxed Exec closure gated on the run's connection rider (T5).
 func (s *Store) LookupTool(ctx context.Context, org, project, runID, name string) (toolbroker.Tool, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	var (
 		executor       string
 		description    string
@@ -145,6 +146,7 @@ func (s *Store) remoteExec(name, canonical string, revisionNumber int, configJSO
 // the injected MCP client, which sandboxes the untrusted server per call; the result is output-schema-
 // validated data. No MCP client wired ⇒ (_, false) (binder-less posture, never a nil-call).
 func (s *Store) mcpTool(ctx context.Context, org, project, runID, name, description string, inputJSON, outputJSON []byte, replayClass string, configJSON []byte, timeoutMS *int) (toolbroker.Tool, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if s.mcp == nil {
 		return toolbroker.Tool{}, false, nil
 	}
@@ -189,6 +191,7 @@ func (s *Store) mcpTool(ctx context.Context, org, project, runID, name, descript
 // mcpConnectionForRun loads an enabled connection ONLY when the run's rider names it (the capability-ceiling
 // join). A miss is (_, false, nil) — the tool is not resolvable.
 func (s *Store) mcpConnectionForRun(ctx context.Context, org, project, runID, connID string) (Connection, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	c := Connection{}
 	var configJSON []byte
 	var secretRef *string

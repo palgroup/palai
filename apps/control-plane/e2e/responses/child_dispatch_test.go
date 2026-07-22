@@ -12,6 +12,8 @@ import (
 
 	"github.com/palgroup/palai/packages/contracts"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // finalOnlyProvider is a single-step fake model: every call returns final output, no tools. It is
@@ -36,7 +38,7 @@ func (finalOnlyProvider) Execute(_ context.Context, req modelbroker.Request, _ s
 // childRunID reads the single ChildRun a parent dispatched, plus its response id.
 func (h *harness) childRunOf(parentRunID string) (runID, responseID string) {
 	h.t.Helper()
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT id, response_id FROM runs WHERE parent_run_id=$1 AND organization_id=$2 AND project_id=$3`,
 		parentRunID, h.tenant.Organization, h.tenant.Project).Scan(&runID, &responseID); err != nil {
 		h.t.Fatalf("read child run of %s error = %v", parentRunID, err)
@@ -48,7 +50,7 @@ func (h *harness) childRunOf(parentRunID string) (runID, responseID string) {
 func (h *harness) modelOfRun(responseID string) string {
 	h.t.Helper()
 	var model *string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT output->>'model' FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		responseID, h.tenant.Organization, h.tenant.Project).Scan(&model); err != nil {
 		h.t.Fatalf("read model of %s error = %v", responseID, err)
@@ -63,7 +65,7 @@ func (h *harness) modelOfRun(responseID string) string {
 func (h *harness) childRunsLink(responseID string) []string {
 	h.t.Helper()
 	var raw []byte
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT output->'child_runs' FROM responses WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		responseID, h.tenant.Organization, h.tenant.Project).Scan(&raw); err != nil {
 		h.t.Fatalf("read child_runs of %s error = %v", responseID, err)
@@ -82,7 +84,7 @@ func (h *harness) childRunsLink(responseID string) []string {
 func (h *harness) childEffectiveBudget(childRunID string) int {
 	h.t.Helper()
 	var budget *int
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT (delegation->'spec'->>'budget')::int FROM runs WHERE id=$1 AND organization_id=$2 AND project_id=$3`,
 		childRunID, h.tenant.Organization, h.tenant.Project).Scan(&budget); err != nil {
 		h.t.Fatalf("read child budget %s error = %v", childRunID, err)
@@ -98,7 +100,7 @@ func (h *harness) childEffectiveBudget(childRunID string) int {
 func (h *harness) setProjectAllowedModels(models ...string) {
 	h.t.Helper()
 	policy, _ := json.Marshal(map[string]any{"allowed_models": models})
-	if _, err := h.spine.Pool().Exec(context.Background(),
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
 		`UPDATE projects SET config_policy=$1 WHERE id=$2 AND organization_id=$3`,
 		policy, h.tenant.Project, h.tenant.Organization); err != nil {
 		h.t.Fatalf("set project allowed models error = %v", err)

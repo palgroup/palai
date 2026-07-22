@@ -57,6 +57,7 @@ type DeliveryResult struct {
 // (or a rejected/duplicate/failed/deferred/skipped branch). A disabled or unknown trigger is a typed
 // error; a trigger with no revision cannot accept a delivery.
 func (s *TriggerStore) CreateDelivery(ctx context.Context, org, project, principal, triggerID string, payload []byte) (DeliveryResult, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.createDelivery(ctx, org, project, principal, triggerID, payload, "")
 }
 
@@ -69,6 +70,7 @@ func (s *TriggerStore) CreateDelivery(ctx context.Context, org, project, princip
 // dedupe_key_expr is intentionally overridden: a scheduled firing dedupes on its occurrence identity, not
 // on payload content.
 func (s *TriggerStore) CreateScheduledDelivery(ctx context.Context, org, project, principal, triggerID, occurrenceID string, payload []byte) (DeliveryResult, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	return s.createDelivery(ctx, org, project, principal, triggerID, payload, occurrenceID)
 }
 
@@ -80,6 +82,7 @@ func (s *TriggerStore) CreateScheduledDelivery(ctx context.Context, org, project
 // route embeds the trigger id, so "same key + SAME trigger = same delivery" is the scope; the record stays
 // principal-scoped (§20.9). A key reused with a different body is ErrIdempotencyMismatch.
 func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, org, project, principal, triggerID, idempotencyKey string, payload []byte) (DeliveryResult, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	if idempotencyKey == "" {
 		return DeliveryResult{}, errors.New("automation: delivery idempotency key is required")
 	}
@@ -164,6 +167,7 @@ func (s *TriggerStore) CreateDeliveryIdempotent(ctx context.Context, org, projec
 // trigger-state preconditions (so a recorded delivery replays regardless of a later disable) and on a lost
 // claim race.
 func (s *TriggerStore) recordedDelivery(ctx context.Context, org, project, principal, route, key, reqHash string) (DeliveryResult, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	var (
 		storedHash string
 		respBody   []byte
@@ -205,6 +209,7 @@ func deliveryRoute(triggerID string) string { return "/v1/triggers/" + triggerID
 // non-empty, forces the canonical dedupe_key (the scheduled-firing occurrence_id); "" leaves the trigger's
 // configured dedupe_key_expr to decide (the manual/API path).
 func (s *TriggerStore) createDelivery(ctx context.Context, org, project, principal, triggerID string, payload []byte, dedupeOverride string) (DeliveryResult, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
 	enabled, err := s.triggerEnabled(ctx, org, project, triggerID)
 	if err != nil {
 		return DeliveryResult{}, err
@@ -270,7 +275,16 @@ type revisionConfig struct {
 // never re-decide it and it stays non-terminal forever. Closing this needs the durable raw_payload the
 // T5 signed-inbound receiver owns (the column is pre-provisioned in 000021); until then a manual/API
 // delivery that crashes in the first three states is an accepted, named ceiling — not a silent gap.
+// scoped narrows ctx to the delivery's own tenant. A delivery is always one tenant's work, whichever
+// path reached it: inline from an already-scoped HTTP request (same values, a no-op), or from a
+// background reconciler holding the cross-tenant system scope (narrowed to strictly less authority).
+// Under migration 000029 that scope is what makes the pipeline's rows visible at all.
+func scoped(ctx context.Context, sc deliveryScope) context.Context {
+	return storage.WithTenant(ctx, sc.org, sc.project)
+}
+
 func (s *TriggerStore) advance(ctx context.Context, sc deliveryScope, payload []byte) (DeliveryResult, error) {
+	ctx = scoped(ctx, sc)
 	cfg, err := s.loadRevisionConfig(ctx, sc)
 	if err != nil {
 		return DeliveryResult{}, err
@@ -482,6 +496,7 @@ func (s *TriggerStore) appendToNamedSession(ctx context.Context, sc deliveryScop
 // correlation mode; `queue` serializes per key (a busy key defers, the reconciler admits the FIFO head
 // when the gate opens). The remaining policies land in A9.
 func (s *TriggerStore) applyPolicy(ctx context.Context, sc deliveryScope, cfg revisionConfig, source map[string]any, mappedInput []byte, hash string) (DeliveryResult, error) {
+	ctx = scoped(ctx, sc)
 	// `allow` has no gate — the DB one-active-root constraint serializes any bounded_key_reuse chain — so
 	// it admits without the lock (over-locking allow would needlessly serialize independent runs). Every
 	// other policy takes the gate under a per-scope advisory lock (M3): the gate-check + admit run inside

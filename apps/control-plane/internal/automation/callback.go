@@ -38,6 +38,7 @@ type callbackDue struct {
 // state back onto callback_state. Both halves are set-based / ON CONFLICT idempotent, so a re-sweep is a
 // no-op. It is the reconciler's third Tick step. limit bounds the arm batch.
 func (s *TriggerStore) sweepCallbacks(ctx context.Context, limit int, log func(string, ...any)) error {
+	ctx = storage.WithSystemScope(ctx) // cross-tenant sweep: the catalogue query spans every tenant by construction
 	if log == nil {
 		log = func(string, ...any) {}
 	}
@@ -59,6 +60,7 @@ func (s *TriggerStore) sweepCallbacks(ctx context.Context, limit int, log func(s
 // failure) is dead-lettered in place and skipped, never returned — one bad callback must not wedge the
 // sweep behind a supervisor restart (the M2 remnant-sweep discipline).
 func (s *TriggerStore) armDueCallbacks(ctx context.Context, limit int, log func(string, ...any)) error {
+	ctx = storage.WithSystemScope(ctx) // cross-tenant sweep: the catalogue query spans every tenant by construction
 	rows, err := s.pool.Query(ctx, storage.Query("CallbackDueDeliveries"), limit)
 	if err != nil {
 		return fmt.Errorf("scan callback-due deliveries: %w", err)

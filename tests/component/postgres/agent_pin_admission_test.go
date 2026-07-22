@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // seedAgentRevision creates a profile + one revision (published if publish) and returns the revision id.
@@ -111,7 +113,7 @@ func TestRunTemplateRevisionStartsProfileFreeRun(t *testing.T) {
 		t.Fatalf("resolved template pin = %s/%s/%v, want %s/template-model/[shell]", revID, model, tools, templateRev)
 	}
 	var profiles int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_profiles WHERE organization_id=$1 AND project_id=$2`,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM agent_profiles WHERE organization_id=$1 AND project_id=$2`,
 		tenant.Organization, tenant.Project).Scan(&profiles); err != nil {
 		t.Fatalf("count agent_profiles: %v", err)
 	}
@@ -126,13 +128,13 @@ func assertNoResidue(t *testing.T, cs *coordinator.Store, runID, idemKey string)
 	t.Helper()
 	ctx := context.Background()
 	var runs, idem int
-	if err := cs.Pool().QueryRow(ctx, `SELECT count(*) FROM runs WHERE id=$1`, runID).Scan(&runs); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM runs WHERE id=$1`, runID).Scan(&runs); err != nil {
 		t.Fatalf("count run %s: %v", runID, err)
 	}
 	if runs != 0 {
 		t.Fatalf("run %s exists (n=%d), want none — a rejected pin must leave no run", runID, runs)
 	}
-	if err := cs.Pool().QueryRow(ctx, `SELECT count(*) FROM idempotency_records WHERE idempotency_key=$1`, idemKey).Scan(&idem); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM idempotency_records WHERE idempotency_key=$1`, idemKey).Scan(&idem); err != nil {
 		t.Fatalf("count idempotency %s: %v", idemKey, err)
 	}
 	if idem != 0 {

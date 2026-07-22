@@ -34,6 +34,8 @@ import (
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
+
+	"github.com/palgroup/palai/storage"
 )
 
 const credentialEnv = "OPENAI_API_KEY"
@@ -89,7 +91,7 @@ func TestLiveTriggerDedupeRun(t *testing.T) {
 	pool := spine.Pool()
 	org, project, principal := randID("org"), randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
 		}
 	}
@@ -200,7 +202,7 @@ func TestLiveTriggerDedupeRun(t *testing.T) {
 func mappedInputFor(t *testing.T, pool *pgxpool.Pool, deliveryID string) []byte {
 	t.Helper()
 	var mapped []byte
-	if err := pool.QueryRow(context.Background(), `SELECT mapped_input FROM trigger_deliveries WHERE id=$1`, deliveryID).Scan(&mapped); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), `SELECT mapped_input FROM trigger_deliveries WHERE id=$1`, deliveryID).Scan(&mapped); err != nil {
 		t.Fatalf("read mapped input error = %v", err)
 	}
 	return mapped

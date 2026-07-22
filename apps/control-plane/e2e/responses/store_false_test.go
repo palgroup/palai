@@ -12,6 +12,8 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/packages/contracts"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // reapUntilPurged sweeps with the reaper until the response is tombstoned or the
@@ -35,7 +37,7 @@ func reapUntilPurged(t *testing.T, h *harness, reaper *execution.Reaper, respons
 // eventPayloads reads the raw JSON payloads of a session's journal in sequence order.
 func (h *harness) eventPayloads(sessionID string) []string {
 	h.t.Helper()
-	rows, err := h.spine.Pool().Query(context.Background(),
+	rows, err := h.spine.Pool().Query(storage.WithSystemScope(context.Background()),
 		`SELECT payload::text FROM events WHERE session_id=$1 AND organization_id=$2 AND project_id=$3 ORDER BY seq`,
 		sessionID, h.tenant.Organization, h.tenant.Project)
 	if err != nil {
@@ -67,7 +69,7 @@ func TestStoreFalseContentIsGoneAfterConfiguredTTL(t *testing.T) {
 
 	// An artifact bound to the run stands in for produced bytes the purge must delete.
 	artifactID := newID("art")
-	if _, err := h.spine.Pool().Exec(context.Background(),
+	if _, err := h.spine.Pool().Exec(storage.WithSystemScope(context.Background()),
 		`INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes, checksum)
 		 VALUES ($1, $2, $3, $4, 'blob/output.bin', 4096, 'sha256:deadbeef')`,
 		artifactID, h.tenant.Organization, h.tenant.Project, runID); err != nil {
@@ -84,7 +86,7 @@ func TestStoreFalseContentIsGoneAfterConfiguredTTL(t *testing.T) {
 	}
 	// input is NOT NULL, so purge scrubs its content to an empty object.
 	var input string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT input::text FROM responses WHERE id=$1`, responseID).Scan(&input); err != nil {
 		t.Fatalf("read response input error = %v", err)
 	}
@@ -106,7 +108,7 @@ func TestStoreFalseContentIsGoneAfterConfiguredTTL(t *testing.T) {
 	// The artifact bytes are deleted.
 	var size int64
 	var key string
-	if err := h.spine.Pool().QueryRow(context.Background(),
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
 		`SELECT size_bytes, object_key FROM artifacts WHERE id=$1`, artifactID).Scan(&size, &key); err != nil {
 		t.Fatalf("read artifact error = %v", err)
 	}

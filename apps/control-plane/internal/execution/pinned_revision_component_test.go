@@ -13,6 +13,8 @@ import (
 
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // pinnedID is a local id minter for this test (the package's other helpers are keyed to their suites).
@@ -41,7 +43,7 @@ func openPinnedSpine(t *testing.T) (*coordinator.Store, coordinator.Tenant, func
 	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
 	pool := cs.Pool()
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("exec %q: %v", sql, err)
 		}
 	}
@@ -182,7 +184,7 @@ func TestPinnedRevisionConfigHashReflectsRevision(t *testing.T) {
 	tenant := coordinator.Tenant{Organization: pinnedID("org"), Project: pinnedID("prj")}
 	sessionID := pinnedID("ses")
 	exec := func(sql string, args ...any) {
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
 			t.Fatalf("exec %q: %v", sql, err)
 		}
 	}

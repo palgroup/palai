@@ -5,6 +5,8 @@ package postgres
 import (
 	"context"
 	"testing"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestCommitToolResultRecordsLedgerClassification proves the E10 T7 ledger write (spec §26.6-26.7):
@@ -26,7 +28,7 @@ func TestCommitToolResultRecordsLedgerClassification(t *testing.T) {
 	}
 
 	var state, replayClass, requestHash string
-	if err := pool.QueryRow(ctx,
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
 		`SELECT state, replay_class, request_hash FROM tool_calls WHERE id=$1`, callID).
 		Scan(&state, &replayClass, &requestHash); err != nil {
 		t.Fatalf("read tool_call ledger row error = %v", err)
@@ -48,7 +50,7 @@ func TestCommitToolResultRecordsLedgerClassification(t *testing.T) {
 		[]byte(`{"run_id":"`+runID+`","tool_call_id":"`+callID+`"}`)); err != nil {
 		t.Fatalf("re-CommitToolResult() error = %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT replay_class, request_hash FROM tool_calls WHERE id=$1`, callID).
+	if err := pool.QueryRow(storage.WithSystemScope(ctx), `SELECT replay_class, request_hash FROM tool_calls WHERE id=$1`, callID).
 		Scan(&replayClass, &requestHash); err != nil {
 		t.Fatalf("re-read tool_call ledger row error = %v", err)
 	}

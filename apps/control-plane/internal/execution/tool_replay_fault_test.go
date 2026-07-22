@@ -38,6 +38,8 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 func faultRecoveryURL(t *testing.T) string {
@@ -82,7 +84,7 @@ func seedFaultRun(t *testing.T, cs *coordinator.Store) (coordinator.Tenant, stri
 		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`, []any{sessionID, tenant.Organization, tenant.Project}},
 		{`INSERT INTO runs (id, organization_id, project_id, session_id, state) VALUES ($1, $2, $3, $4, 'running')`, []any{runID, tenant.Organization, tenant.Project, sessionID}},
 	} {
-		if _, err := cs.Pool().Exec(ctx, q.sql, q.args...); err != nil {
+		if _, err := cs.Pool().Exec(storage.WithSystemScope(ctx), q.sql, q.args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", q.sql, err)
 		}
 	}
@@ -187,7 +189,7 @@ func TestFaultReversibleReconcileNoDuplicateExternalEffect(t *testing.T) {
 		t.Fatalf("external effect fired %d times, want 1 (DUPLICATE EXTERNAL EFFECT = 0)", got)
 	}
 	var state, recon, result string
-	if err := cs.Pool().QueryRow(ctx, `SELECT state, reconciliation_state, coalesce(result::text,'') FROM tool_calls WHERE id=$1`, callID).
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT state, reconciliation_state, coalesce(result::text,'') FROM tool_calls WHERE id=$1`, callID).
 		Scan(&state, &recon, &result); err != nil {
 		t.Fatalf("read reconciled row error = %v", err)
 	}
@@ -227,7 +229,7 @@ func TestFaultIrreversibleReconcileStopsUncertain(t *testing.T) {
 		t.Fatalf("reconcile Sweep() error = %v", err)
 	}
 	var state string
-	if err := cs.Pool().QueryRow(ctx, `SELECT state FROM tool_calls WHERE id=$1`, callID).Scan(&state); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT state FROM tool_calls WHERE id=$1`, callID).Scan(&state); err != nil {
 		t.Fatalf("read row error = %v", err)
 	}
 	if state != "manual_resolution" {

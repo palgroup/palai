@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/packages/coordinator"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // seedTenantWithKey creates org -> project -> principal -> api_key and returns the
@@ -63,7 +65,7 @@ func TestVerifyAPIKeyResolvesScopeByHash(t *testing.T) {
 
 	// The raw key is never persisted; only its hash is.
 	var stored string
-	if err := cs.Pool().QueryRow(ctx, `SELECT key_hash FROM api_keys WHERE principal_id = $1`, principalID).Scan(&stored); err != nil {
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT key_hash FROM api_keys WHERE principal_id = $1`, principalID).Scan(&stored); err != nil {
 		t.Fatalf("read key_hash error = %v", err)
 	}
 	if stored == "s3cr3t-token" {
@@ -137,7 +139,7 @@ func decodeID(t *testing.T, body []byte) string {
 func assertCount(t *testing.T, pool *pgxpool.Pool, want int, sql string, args ...any) {
 	t.Helper()
 	var got int
-	if err := pool.QueryRow(context.Background(), sql, args...).Scan(&got); err != nil {
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()), sql, args...).Scan(&got); err != nil {
 		t.Fatalf("count query error = %v", err)
 	}
 	if got != want {
