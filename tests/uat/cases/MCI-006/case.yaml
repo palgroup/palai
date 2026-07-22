@@ -1,0 +1,9 @@
+id: MCI-006
+name: two-projects-resolve-distinct-model-routes-per-project-on-one-stack
+proof_class: component-real
+provider: fake
+input: "two projects on ONE stack resolve DISTINCT published model routes (a different model id + its own model_connection credential each) through the DB-backed per-project router, not the env default — the model-routing reader half (E06 §7.3 carve-out paid)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/execution/model_route_component_test.go:TestProjectModelRouteRoutesPerProject
+  - tests/component/postgres/model_route_test.go:TestProjectModelRouteResolvesPublishedRevisionOnly

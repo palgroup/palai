@@ -1,0 +1,9 @@
+id: MCI-004
+name: artifact-downloaded-content-digest-matches-wrong-tenant-is-miss
+proof_class: component-real
+provider: fake
+input: "a run-produced artifact is downloaded over the authenticated read-path with a Content-Digest that matches the stored bytes, and a wrong-tenant artifact id is a miss (404, existence non-disclosure) — the artifact retrieval + cross-tenant deny half of the journey"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/artifacts/reader_component_test.go:TestReaderMetadataAndContent
+  - apps/control-plane/internal/artifacts/reader_component_test.go:TestReaderCrossTenantIsMiss

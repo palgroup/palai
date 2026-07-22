@@ -1,0 +1,267 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-23T04:00:00Z",
+  "git_sha": "acfb5be",
+  "migration": "000032_usage_ledger",
+  "release": "managed-cloud-0.1.0",
+  "cases": [
+    {
+      "id": "MCI-001",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_managed_cloud_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "provisioning_claim": "provisioned",
+      "provisioning_proof": {
+        "org_id": "org_tenant_b",
+        "project_id": "proj_tenant_b",
+        "api_key_id": "key_tenant_b",
+        "config_policy_applied": true,
+        "step_ids": ["MCI-001", "MCI-002", "MCI-003", "MCI-004", "MCI-005", "MCI-006", "MCI-007", "MCI-008"],
+        "journey_digest": "sha256:00abad919375243c8f09a1c8d269c4b7bad24229c5d538bd59022b94b02bbf8d",
+        "restart_count": 0
+      },
+      "db_assertions": [
+        "a SECOND tenant (org+project+admin key) was created through POST /v1/organizations|projects|api-keys on the SAME running control-plane process; the key is plaintext only in the create response and hashed at rest (000030 scope/expires_at)",
+        "PATCH /v1/projects/{id} wrote a config_policy the §14 resolver observed (allowed_models/default_tools took on the project layer) — the config_policy write-path is API-reachable for the first time",
+        "restart-less spine: all eight MCI-00N steps resolved on one process boot with restart_count=0; journey_digest = hashParts(step_ids) is re-derivable (anti-fabrication)"
+      ],
+      "checksum": "sha256:c2e4e3d8a6f26ac8d352a3fd682811256e0b5a96cc56b5bdf7848682963ad9ba"
+    },
+    {
+      "id": "MCI-002",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_managed_cloud_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "secret_resolve_claim": "resolved",
+      "secret_resolve_proof": {
+        "ref": "mcp.fixture.token",
+        "version": "2",
+        "resolved_in_run": "run_managed_cloud_journey",
+        "restart_count": 0,
+        "value_surfaced": false
+      },
+      "db_assertions": [
+        "POST /v1/secret-refs wrote a write-only value, then a rotate inserted version 2 (append-only secret_refs, 000031) — no UPDATE/DELETE grant, so the append-only history holds across reboots",
+        "the run resolved the secret through the DB-backed resolver ahead of the env-file bridge with NO control-plane restart (restart_count=0); the plaintext value never appeared in a response, log, or event (value_surfaced=false)",
+        "honest ceiling: at-rest protection is a single master-key AES-GCM envelope; the KMS/lease ceremony is E13-H (SEC-001/003)"
+      ],
+      "checksum": "sha256:b84ab87192825ac8a43da9c4fd754c723359bd86b8c15c0e5103b2e4036fc548"
+    },
+    {
+      "id": "MCI-003",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_managed_cloud_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "isolation_claim": "isolated",
+      "isolation_proof": {
+        "owner_tenant": "org_tenant_a",
+        "requester_tenant": "org_tenant_b",
+        "resource": "response-run",
+        "observed_status": 404,
+        "leaked_rows": 0
+      },
+      "db_assertions": [
+        "GET /v1/responses returned tenant B's OWN run history through an opaque tenant-bound cursor; tenant B's page disclosed ZERO of tenant A's runs (leaked_rows=0)",
+        "cross-tenant negative: tenant B's GET of tenant A's run id returned 404 (existence non-disclosure) and a foreign cursor was rejected — the deny is a real status, not a log line",
+        "the isolation is DB-enforced: RLS FORCE + the per-transaction palai.org_id GUC (000029) means a WHERE-less query sees no tenant rows (TEN-001/002 corpus)"
+      ],
+      "checksum": "sha256:937f869614bd281f97b39eace1b23ceaab163d44df66190a9151403791b552fe"
+    },
+    {
+      "id": "MCI-004",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_managed_cloud_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "artifact_claim": "downloaded",
+      "artifact_proof": {
+        "artifact_id": "art_managed_cloud_journey",
+        "content_digest": "sha256:6996e305ebf516e8377e154650512e45089990c3d28177c227569655b05af770",
+        "byte_len": 23,
+        "digest_matches": true
+      },
+      "isolation_claim": "isolated",
+      "isolation_proof": {
+        "owner_tenant": "org_tenant_a",
+        "requester_tenant": "org_tenant_b",
+        "resource": "artifact",
+        "observed_status": 404,
+        "leaked_rows": 0
+      },
+      "db_assertions": [
+        "the run produced a workspace artifact; GET /v1/artifacts/{id}/content streamed it and the RFC 9530 Content-Digest matched sha256 of the downloaded bytes bit-for-bit (digest_matches=true, re-derivable from the artifact bytes)",
+        "cross-tenant negative: tenant B's GET of tenant A's artifact id returned 404 (existence non-disclosure), zero bytes leaked (leaked_rows=0)",
+        "honest ceiling: authenticated direct download; the pre-signed URL policy + expiry ceremony is E13-H (DAT-006 remainder)"
+      ],
+      "checksum": "sha256:75ecd1381285d5b72ffb82b5359b1f190ba25f333cd3be7cb35946d19e5c853f"
+    },
+    {
+      "id": "MCI-005",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_managed_cloud_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "refusal_claim": "refused",
+      "refusal_proof": {
+        "limit_kind": "rate",
+        "observed_status": 429,
+        "billable_compute_started": false
+      },
+      "db_assertions": [
+        "a burst past the per-API-key request-rate bucket got 429 + Retry-After + RFC9457; the refused request never reached admission, so no billable compute started (§20.12)",
+        "the durable-budget half (a low-budget project's second run refused with 402) is proven at BIL-001/QUO-001's tier; this case pins the edge rate refusal",
+        "honest ceiling: in-process token bucket — correct for the single-replica compose; a distributed limiter + weighted fairness (QUO-002) is SaaS scope"
+      ],
+      "checksum": "sha256:550969adc52a65395c6b594962c273d00ec6582758ad5df41b4a385877ce709e"
+    },
+    {
+      "id": "MCI-006",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_managed_cloud_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "route_claim": "routed",
+      "route_proof": {
+        "project_a_model": "gpt-4o-mini",
+        "project_b_model": "gpt-4o",
+        "distinct_connections": true
+      },
+      "db_assertions": [
+        "two projects on ONE stack resolved DISTINCT published model routes: project A -> gpt-4o-mini, project B -> gpt-4o, each with its own model_connection credential (secret-ref backed) — the DB-backed reader chose model+credential per project, not the env default",
+        "the env route (PALAI_MODEL_PROVIDER/MODEL) fell to the deployment-default lowest layer; it was not the source of either project's model id",
+        "honest ceiling: ONE provider family (provider-one) — a second independent adapter + capability probe is E16; this proves per-project model+credential selection only"
+      ],
+      "checksum": "sha256:ebc2d9751d57f5f94719bc43b5b8060d8661aa1fea8c9eb7a996dd8f022fd896"
+    },
+    {
+      "id": "MCI-007",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_managed_cloud_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "binding_claim": "bound",
+      "binding_proof": {
+        "binding_id": "bnd_managed_cloud_journey",
+        "connection_ref": "github.tenant-b",
+        "resolved_via_ref": true
+      },
+      "db_assertions": [
+        "a repository binding whose connection_ref was set resolved a BINDING-SCOPED Git credential through the secret-ref path (T3), not the global GitHub App fallback (resolved_via_ref=true)",
+        "a ref-less binding still resolves through the global App fallback (unchanged) — the seam is additive",
+        "honest ceiling: the connection_ref resolver SEAM only; a per-tenant GitHub App onboarding surface is out of scope (SaaS/product)"
+      ],
+      "checksum": "sha256:0000b0f24ac00661f3f8e8d8485b515f3e92672255f9ef0fdff1d0fede61880f"
+    },
+    {
+      "id": "MCI-008",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_managed_cloud_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "steer_claim": "steered",
+      "steer_proof": {
+        "session_id": "sess_managed_cloud_journey",
+        "command_id": "cmd_steer_1",
+        "command_kind": "send_message",
+        "applied": true
+      },
+      "db_assertions": [
+        "the @palai/sdk (server-only client) created a session, admitted a run, and posted a steer command (send_message) through POST /v1/sessions/{id}/commands — the E08 durable command spine is reached from the SDK for the first time; the command was accepted and observed on the run (applied=true)",
+        "the SDK's server-only credential guard held (no browser-direct token); the steer/interrupt + artifact-download parity is proven by the @palai/sdk vitest suite (sdks/typescript/test/resources.test.ts)",
+        "honest ceiling: Py/Go SDK parity is E16"
+      ],
+      "checksum": "sha256:f73a714ea5cbef369aaae936a0af6d34614068114162631e2206357d7ae22dd0"
+    }
+  ]
+}

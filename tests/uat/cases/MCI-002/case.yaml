@@ -1,0 +1,9 @@
+id: MCI-002
+name: secret-ref-written-and-resolved-without-restart-value-never-surfaces
+proof_class: component-real
+provider: fake
+input: "a secret-ref is written (write-only value) and rotated to a new version, then RESOLVED by a run through the DB-backed resolver ahead of the env-file bridge with NO control-plane restart; a cross-org resolve is denied and the plaintext value never surfaces — the restart-less secret half of the journey"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/identity/secrets_component_test.go:TestSecretRefWriteResolveRotate
+  - apps/control-plane/internal/identity/secrets_component_test.go:TestSecretRefCrossOrgResolveDenied

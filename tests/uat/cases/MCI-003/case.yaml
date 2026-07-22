@@ -1,0 +1,8 @@
+id: MCI-003
+name: run-history-listed-own-tenant-cross-tenant-cursor-rejected
+proof_class: e2e-deterministic
+provider: fake
+input: "a tenant lists its own run history through an opaque tenant-bound cursor and a foreign tenant's cursor is rejected end-to-end — the read/LIST surface with cross-tenant isolation on the list cursor (the run-GET 404 half rides the same RLS tenant scope, MCI-004/TEN-001)"
+expect_status: completed
+proof:
+  - apps/control-plane/e2e/responses/list_test.go:TestListResponsesRejectsCrossTenantCursor

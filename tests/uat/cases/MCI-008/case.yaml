@@ -1,0 +1,8 @@
+id: MCI-008
+name: sdk-driven-session-steer-command-applies-at-loop-boundary
+proof_class: e2e-deterministic
+provider: fake
+input: "a steer command posted to POST /v1/sessions/{id}/commands applies at the next loop boundary in sequence — the E08 durable command spine the @palai/sdk reaches for the first time; the server steer is proven here end-to-end and the SDK client parity (steer/interrupt + artifact download, server-only guard) by the @palai/sdk vitest suite (sdks/typescript/test/resources.test.ts)"
+expect_status: completed
+proof:
+  - apps/control-plane/e2e/responses/commands_test.go:TestSteerAppliesAtNextLoopBoundaryWithSequence
