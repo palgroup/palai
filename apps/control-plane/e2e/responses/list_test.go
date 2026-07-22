@@ -8,13 +8,41 @@ package responses
 // silently-empty page, and a second tenant's own list never sees the first tenant's runs (RLS).
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
 	"testing"
 
 	"github.com/palgroup/palai/packages/contracts"
+
+	"github.com/palgroup/palai/storage"
 )
+
+// seedCompletedResponses inserts n terminal (completed) responses under the harness tenant — genuine run
+// history that, unlike h.admit(), leaves NO claimable durable_jobs row. h.admit() enqueues a run job that
+// a sibling test's worker would drain through ITS provider (the shared-DB the package's harness assumes:
+// "if you admit, you drive" — see automation_journey_test.go); a LIST test needs history ROWS, not live
+// queued jobs. The list reads only the responses table, so no run/job is required. Mirrors the component
+// seedResponse idiom (WithSystemScope to plant the fixture past RLS).
+func (h *harness) seedCompletedResponses(n int) {
+	h.t.Helper()
+	ctx := storage.WithSystemScope(context.Background())
+	pool := h.spine.Pool()
+	sessionID := newID("ses")
+	if _, err := pool.Exec(ctx, `INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`,
+		sessionID, h.tenant.Organization, h.tenant.Project); err != nil {
+		h.t.Fatalf("seed session error = %v", err)
+	}
+	for i := 0; i < n; i++ {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO responses (id, organization_id, project_id, session_id, state, input, output) VALUES ($1,$2,$3,$4,'completed','{}'::jsonb,$5)`,
+			newID("resp"), h.tenant.Organization, h.tenant.Project, sessionID,
+			[]byte(`{"output":[],"usage":{},"model":"fake"}`)); err != nil {
+			h.t.Fatalf("seed completed response error = %v", err)
+		}
+	}
+}
 
 // listResponses issues GET /v1/responses with the given query string and bearer token.
 func (h *harness) listResponses(token, query string) *http.Response {
@@ -48,10 +76,8 @@ func decodeListPage(t *testing.T, resp *http.Response) contracts.Page {
 func TestListResponsesPagesRealRunHistory(t *testing.T) {
 	h := newHarness(t)
 
-	// Three admitted runs in this tenant's history.
-	for i := 0; i < 3; i++ {
-		h.admit()
-	}
+	// Three completed runs in this tenant's history (seeded terminal — no claimable job).
+	h.seedCompletedResponses(3)
 
 	first := h.listResponses(h.token, "limit=2")
 	if first.StatusCode != http.StatusOK {
@@ -86,9 +112,7 @@ func TestListResponsesPagesRealRunHistory(t *testing.T) {
 
 func TestListResponsesRejectsCrossTenantCursor(t *testing.T) {
 	h := newHarness(t)
-	for i := 0; i < 2; i++ {
-		h.admit()
-	}
+	h.seedCompletedResponses(2)
 	page := decodeListPage(t, h.listResponses(h.token, "limit=1"))
 	if page.NextCursor == nil {
 		t.Fatal("expected a next_cursor to replay across tenants")
