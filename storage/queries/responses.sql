@@ -28,6 +28,15 @@ UPDATE runs
 SET state = $4, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- RunQueueState locks a run and reports its state plus whether it has waited in the queue past the
+-- deadline ($4 seconds since created_at) — the §20.12 queue-deadline check. FOR UPDATE so the timeout
+-- transition that follows in the same transaction serialises against a worker's concurrent dispatch.
+-- name: RunQueueState
+SELECT state, (clock_timestamp() - created_at) > ($4 * interval '1 second') AS expired
+FROM runs
+WHERE id = $1 AND organization_id = $2 AND project_id = $3
+FOR UPDATE;
+
 -- GetResponse reads a response's terminal projection for retrieval. purged_at is
 -- non-null once the content has been reaped, which the handler renders as 410.
 -- name: GetResponse
