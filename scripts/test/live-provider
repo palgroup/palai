@@ -33,6 +33,7 @@ needs_engine=0
 needs_object_store=0
 needs_shell_image=0
 needs_postgres=0
+needs_mcp=0
 case "$provider/$case_name" in
   provider-one/text-stream-tool-schema)
     pkg="./tests/live/provider"
@@ -102,6 +103,19 @@ case "$provider/$case_name" in
     run="TestLiveRegistryToolRoundtripForcedPreT1"
     required_key="OPENAI_API_KEY"
     needs_postgres=1
+    ;;
+  provider-one/mcp-tool-roundtrip)
+    # E12 Task 5 (TOL-008/EXT-006): an MCP connection to a REAL stdio server (the fixture, in a hardened,
+    # network-less OCI container) is discovered → published → pinned into a set a run's AgentRevision names
+    # with the connection in its mcp_connections rider → advertised to a REAL provider run → the model
+    # SPONTANEOUSLY calls it → the call executes in an OCI-sandboxed server through the fenced path. Needs
+    # the credential + a throwaway Postgres + the cross-built fixture MCP image. Honest ceiling (named in the
+    # test): the "result → model CONTINUES" half needs T1b (engine-wire tool_call-id), not merged — proven
+    # here is spontaneous-call + sandboxed-execution + canonical completion; re-run for continuation post-T1b.
+    pkg="./apps/control-plane/internal/execution/tools/live"
+    run="TestLiveMCPToolRoundtripSpontaneous"
+    required_key="OPENAI_API_KEY"
+    needs_mcp=1
     ;;
   provider-one/agent-revision-run)
     # E11 Task 1 (AGT-001): a real provider run whose ExecutionSpec is resolved FROM a published
@@ -267,7 +281,7 @@ case "$provider/$case_name" in
     ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip" >&2
     exit 2
     ;;
 esac
@@ -484,11 +498,91 @@ run_live_with_postgres() {
   return "$status"
 }
 
+# run_live_with_mcp stands up a throwaway Postgres AND cross-builds the digest-pinned fixture MCP server
+# image (the runner-engine.sh idiom), exports both, and runs the tagged test — which inherits the provider
+# credential loaded above. The provider secret reaches only the go test process; the MCP server runs in a
+# hardened, network-less OCI container with no credential/mount. Verifies no pg/mcp container or volume leaks.
+run_live_with_mcp() {
+  local test_pkg="$1" test_run="$2"
+  local pg_image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  local label="io.palai.live=mcp"
+  local mcp_label="io.palai.sandbox=mcp"
+  local run_id="$$-${RANDOM}"
+  local pg_container="palai-live-mcp-pg-$run_id"
+  local volume="palai-live-mcp-pg-$run_id"
+  local password="palai-live-${RANDOM}${RANDOM}"
+  local image_tag="palai-mcp-fixture:live"
+  local build_dir="tests/sandboxes/mcp/.build"
+
+  count_pg() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_mcp() { docker ps -aq --filter "label=$mcp_label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$pg_container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+    local ids; ids="$(docker ps -aq --filter "label=$mcp_label")"
+    if test -n "$ids"; then docker rm -f $ids >/dev/null 2>&1 || true; fi
+    docker image rm -f "$image_tag" >/dev/null 2>&1 || true
+    rm -rf "$build_dir"
+  }
+  local pg_before mcp_before
+  pg_before="$(count_pg)"; mcp_before="$(count_mcp)"
+  trap cleanup EXIT
+
+  # Cross-build the fixture MCP server image for the daemon architecture.
+  local daemon_os daemon_arch go_arch
+  daemon_os="$(docker version --format '{{.Server.Os}}')"
+  daemon_arch="$(docker version --format '{{.Server.Arch}}')"
+  if test "$daemon_os" != linux; then echo "mcp live smoke requires a Linux Docker daemon, got $daemon_os" >&2; exit 1; fi
+  case "$daemon_arch" in
+    amd64 | x86_64) go_arch=amd64 ;;
+    arm64 | aarch64) go_arch=arm64 ;;
+    *) echo "unsupported Docker daemon architecture: $daemon_arch" >&2; exit 1 ;;
+  esac
+  rm -rf "$build_dir"; mkdir -p "$build_dir"
+  CGO_ENABLED=0 GOOS=linux GOARCH="$go_arch" \
+    go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/palai-mcp-fixture" ./tests/sandboxes/mcp
+  docker build --platform "linux/$go_arch" --tag "$image_tag" --file tests/sandboxes/mcp/Dockerfile "$build_dir" >/dev/null
+  local image_id; image_id="$(docker image inspect "$image_tag" --format '{{.Id}}')"
+  if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then echo "Docker returned a non-immutable fixture image ID" >&2; exit 1; fi
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never --name "$pg_container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 --volume "$volume:/var/lib/postgresql/data" "$pg_image" >/dev/null
+  local pg_ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$pg_container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then pg_ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$pg_ready" -ne 1; then docker logs "$pg_container" >&2 || true; echo "postgres live-mcp container did not become ready" >&2; exit 1; fi
+  local pg_binding pg_port url
+  pg_binding="$(docker port "$pg_container" 5432/tcp)"; pg_port="${pg_binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$pg_port/palai?sslmode=disable"
+
+  set +e
+  PALAI_COMPONENT_POSTGRES_URL="$url" PALAI_MCP_FIXTURE_IMAGE_ID="$image_id" \
+    go test -tags=live -count=1 -run "$test_run" -v "$test_pkg"
+  local status=$?
+  set -e
+  if test "$status" -ne 0; then docker logs "$pg_container" >&2 || true; fi
+
+  cleanup
+  trap - EXIT
+  local pg_after mcp_after
+  pg_after="$(count_pg)"; mcp_after="$(count_mcp)"
+  if test "$pg_after" -ne "$pg_before" || test "$mcp_after" -ne "$mcp_before"; then
+    echo "mcp live smoke leaked a container or volume" >&2; exit 1
+  fi
+  return "$status"
+}
+
 # The credential travels only in the environment — never in argv (ps-visible) and
 # never in a log. Leak protection is asserted inside the test process by an opaque
 # comparison that never prints the value.
 if test "$needs_object_store" = 1; then
   run_live_with_object_store "$pkg" "$run"
+elif test "$needs_mcp" = 1; then
+  run_live_with_mcp "$pkg" "$run"
 elif test "$needs_postgres" = 1; then
   run_live_with_postgres "$pkg" "$run"
 elif test "$needs_shell_image" = 1; then
