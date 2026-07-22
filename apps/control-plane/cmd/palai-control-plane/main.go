@@ -470,7 +470,9 @@ func dbSecret(org, ref string) ([]byte, bool, error) {
 		if errors.Is(err, identity.ErrSecretDecrypt) {
 			return nil, false, err // fail closed: never fall back to a superseded env secret
 		}
-		log.Printf("secret store: resolve ref %q under org %q: %v (falling back to env bridge)", ref, org, err)
+		// Not every consumer HAS an env bridge (the repository connection resolver is DB-only), so the log
+		// states what happened here rather than claiming a fallback the caller may not have.
+		log.Printf("secret store: resolve ref %q under org %q: %v (treated as a miss)", ref, org, err)
 		return nil, false, nil
 	}
 	return v, ok, nil
@@ -495,7 +497,10 @@ func repositoryConnectionSecret(org, ref string) ([]byte, error) {
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("no secret ref provisioned under org %q for repository connection %q", org, ref)
+		// dbSecret flattens a transient store failure into a miss (it is logged there), so this covers two
+		// causes and must not assert the wrong one: an operator reading "unprovisioned" during a Postgres
+		// blip would go hunting for a ref that is in fact present.
+		return nil, fmt.Errorf("repository connection %q did not resolve under org %q: no such secret ref, or the secret store was unreachable (see the secret-store log)", ref, org)
 	}
 	return v, nil
 }

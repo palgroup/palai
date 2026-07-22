@@ -39,8 +39,15 @@ type PrepareRepositoryInput struct {
 	AttemptFence uint64 // binds the minted read credential to this attempt (§28.11)
 	ToolCall     string
 	// ConnectionSecrets resolves a binding's connection_ref to its Git credential (E13 Task 9). It is a
-	// DEPLOYMENT capability, not run data: nil means this deployment wired no secret-ref store, and every
-	// binding — ref-bearing or not — clones under the global broker exactly as it did before this task.
+	// DEPLOYMENT capability, not run data, and the composition root ALWAYS wires it alongside the workspace
+	// provisioner — nil is a test/no-provisioning stack, and there a ref-bearing binding fails closed
+	// rather than borrowing the global credential (see bindingBroker). A ref-less binding never consults it.
+	//
+	// UPGRADING FROM PRE-T9: a ref-bearing binding used to clone with the deployment-global GitHub App
+	// credential, because connection_ref had no reader. It now needs its ref actually provisioned — over
+	// POST /v1/secret-refs, under the binding's own organization, on a deployment that configured
+	// PALAI_SECRET_MASTER_KEY_FILE. Without that the clone FAILS (fail-closed, deliberate); a binding that
+	// genuinely wants the deployment credential must carry an EMPTY connection_ref.
 	ConnectionSecrets SecretResolver
 }
 
@@ -110,8 +117,11 @@ func PrepareRepository(ctx context.Context, store RepositoryStore, broker reposi
 // never resolve another tenant's secret, however it was named. A ref-less binding (every binding written
 // before this task) keeps the deployment-global broker, unchanged.
 //
-// It fails CLOSED on an unresolvable ref: falling back to the global credential for a binding that
-// deliberately named its own would silently clone under an authority the tenant did not choose. The
+// Every other path fails CLOSED, a MISSING resolver included. Falling back to the global credential for a
+// binding that deliberately named its own would clone under an authority the tenant did not choose — and
+// silently, since nothing downstream can tell the two apart. A composition root that wires the workspace
+// provisioner but forgets SetConnectionSecrets is a live hazard (main.go already names a future split
+// control-plane/runner deploy), so it is an error here rather than a fallback no test would catch. The
 // error names the REF and never the value — the same discipline the secret store's resolver keeps.
 //
 // HONEST CEILING: this consumes the resolver seam only. There is NO per-tenant GitHub App onboarding
@@ -119,8 +129,11 @@ func PrepareRepository(ctx context.Context, store RepositoryStore, broker reposi
 // (explicitly out of scope for this phase). Whatever token the tenant provisioned under the ref is what
 // the clone authenticates with; nothing here mints or manages a per-tenant App.
 func bindingBroker(global repositories.Broker, tenant coordinator.Tenant, binding contracts.RepositoryBinding, secrets SecretResolver) (repositories.Broker, error) {
-	if binding.ConnectionRef == "" || secrets == nil {
+	if binding.ConnectionRef == "" {
 		return global, nil
+	}
+	if secrets == nil {
+		return nil, fmt.Errorf("prepare repository: binding names connection ref %q but no secret resolver is wired", binding.ConnectionRef)
 	}
 	token, err := secrets(tenant.Organization, binding.ConnectionRef)
 	if err != nil {

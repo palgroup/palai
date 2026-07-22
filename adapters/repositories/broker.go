@@ -219,6 +219,11 @@ func NewTokenBroker(token string) Broker {
 
 // Mint retains the supplied token under a fresh opaque handle, bound to the scope + audience. An empty
 // token fails closed rather than producing a credential-shaped nothing that would clone anonymously.
+//
+// The Scope is RECORDED but carries no authority boundary here: unlike the App broker, which mints a
+// token whose permissions match the scope, this hands back the one durable credential the tenant supplied
+// (a PAT's rights are whatever the tenant granted it). Only ScopeRead is minted today; a future push-scope
+// caller gets no narrowing from this broker and must not assume one.
 func (b *tokenBroker) Mint(_ context.Context, scope Scope, aud Audience) (Credential, error) {
 	if b.token == "" {
 		return Credential{}, fmt.Errorf("token broker: no credential supplied")

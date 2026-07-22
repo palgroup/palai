@@ -314,7 +314,7 @@ func (h *harness) assertSeparateCodingFork(t *testing.T, ctx context.Context) st
 	bindingID := newID("bnd-fork")
 	if err := h.spine.CreateRepositoryBinding(ctx, tenant2, coordinator.RepositoryBindingInput{
 		BindingID: bindingID, Provider: "local", RepositoryIdentity: "acme/fork",
-		CloneURL: remote.url, DefaultBranch: "main", ConnectionRef: "conn_local",
+		CloneURL: remote.url, DefaultBranch: "main",
 		AllowedOperations: []string{"push_branch"},
 	}); err != nil {
 		t.Fatalf("fork: create repository binding: %v", err)

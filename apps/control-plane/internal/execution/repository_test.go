@@ -133,6 +133,13 @@ func TestPrepareRepositoryResolvesBindingConnectionRef(t *testing.T) {
 		t.Fatalf("PrepareRepository(ref-less) error = %v", err)
 	}
 
+	// A ref-bearing binding with NO resolver wired fails CLOSED. This is the latent-trap guard: a
+	// composition root that wires the workspace provisioner but forgets the resolver must not silently
+	// clone every tenant's binding under the deployment-global credential.
+	if err := prepare(t, "git-conn", nil); err == nil {
+		t.Fatal("a ref-bearing binding with no resolver wired cloned under the global broker, want fail-closed")
+	}
+
 	// A resolver failure fails CLOSED — it must not silently fall back to the deployment-global
 	// credential — and the message names the ref, never the value.
 	err := prepare(t, "git-conn", func(string, string) ([]byte, error) {
