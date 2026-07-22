@@ -5,8 +5,8 @@
 -- config columns. Every statement is tenant-scoped by (organization_id, project_id).
 
 -- name: InsertTrigger
-INSERT INTO triggers (id, organization_id, project_id, name, type)
-VALUES ($1, $2, $3, $4, $5);
+INSERT INTO triggers (id, organization_id, project_id, name, type, created_by)
+VALUES ($1, $2, $3, $4, $5, $6);
 
 -- TriggerForDelivery verifies a trigger is in scope and returns whether it is enabled (a disabled
 -- trigger rejects new deliveries).
@@ -175,12 +175,90 @@ SELECT trigger_revision_id, state
 FROM trigger_deliveries
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
--- GetTrigger reads a trigger + its active revision number for the management GET.
+-- GetTrigger reads a trigger + its active revision number for the management GET, plus the inbound-auth
+-- surface (created_by + the two source-secret ref HANDLES — never bytes; the resolver redeems them).
 -- name: GetTrigger
 SELECT t.name, t.type, t.enabled,
-       COALESCE((SELECT MAX(revision_number) FROM trigger_revisions WHERE trigger_id = t.id), 0)
+       COALESCE((SELECT MAX(revision_number) FROM trigger_revisions WHERE trigger_id = t.id), 0),
+       t.created_by, t.inbound_secret_ref, t.inbound_secret_ref_next
 FROM triggers t
 WHERE t.id = $1 AND t.organization_id = $2 AND t.project_id = $3;
+
+-- ResolveInboundTrigger resolves a trigger GLOBALLY by its server-minted id (the unauthenticated inbound
+-- route carries no tenant scope — the source signature is the auth). Returns the tenant scope + the fields
+-- the receiver gates on: enabled, type (must be 'webhook'), created_by (the run principal), and the two
+-- source-secret refs. An unresolvable/non-webhook/disabled/secret-less trigger is a generic 404 upstream.
+-- name: ResolveInboundTrigger
+SELECT organization_id, project_id, enabled, type, created_by, inbound_secret_ref, inbound_secret_ref_next
+FROM triggers WHERE id = $1;
+
+-- SetInboundSecretRefs rotates a trigger's inbound source-secret HANDLES in place (ref + overlap ref),
+-- WITHOUT minting a pipeline revision (rotation is a mutable-endpoint-column write, not a config edit).
+-- name: SetInboundSecretRefs
+UPDATE triggers
+SET inbound_secret_ref = $4, inbound_secret_ref_next = $5
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- InsertInboundDelivery durably records a signed inbound event as the CANONICAL delivery: the source
+-- envelope (source/source_tenant/source_event_id) + the raw payload + the run principal (trigger.created_by)
+-- + the pinned revision, born 'received'. The pre-provisioned UNIQUE partial index
+-- (trigger_deliveries_source_dedupe_idx) makes a second live event for the same source key a 23505 — the
+-- caller falls through to InsertInboundDuplicate. This INSERT committing is the durable-ack point (2xx).
+-- name: InsertInboundDelivery
+INSERT INTO trigger_deliveries
+    (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id,
+     source, source_tenant, source_event_id, raw_payload)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+
+-- InsertInboundDuplicate records a redelivered/duplicate source event linked to its canonical original and
+-- terminalized 'duplicate'. duplicate_of is set, so this row is exempt from the source-dedupe index (WHERE
+-- duplicate_of IS NULL) and never self-conflicts. It stores raw_payload + source cols for the delivery view.
+-- name: InsertInboundDuplicate
+INSERT INTO trigger_deliveries
+    (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id,
+     source, source_tenant, source_event_id, raw_payload, state, duplicate_of, reason)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'duplicate', $11, $12);
+
+-- FindCanonicalInboundDelivery resolves the surviving canonical original a duplicate links to: the
+-- earliest live canonical row for the (trigger, source, source_tenant, source_event_id).
+-- name: FindCanonicalInboundDelivery
+SELECT id FROM trigger_deliveries
+WHERE trigger_id = $1 AND organization_id = $2 AND project_id = $3
+  AND source = $4 AND source_tenant = $5 AND source_event_id = $6 AND duplicate_of IS NULL
+ORDER BY received_at, id
+LIMIT 1;
+
+-- InboundBacklogDepth reports a trigger's durable non-terminal inbound backlog COUNT and its oldest row's
+-- age in seconds — the AUT-010 admission-report gauge (429 + Retry-After carries both). Per-trigger, so a
+-- flooded trigger sheds load while others keep flowing.
+-- ponytail: a per-request COUNT — a cached gauge is the upgrade if inbound rate ever matters.
+-- name: InboundBacklogDepth
+SELECT count(*), COALESCE(EXTRACT(EPOCH FROM (clock_timestamp() - MIN(received_at))), 0)::bigint
+FROM trigger_deliveries
+WHERE trigger_id = $1 AND source_event_id <> ''
+  AND state IN ('received', 'authenticated', 'deduplicated', 'mapped', 'admitted', 'deferred');
+
+-- StuckInboundDeliveries lists ack'ed inbound deliveries stranded pre-map (received/authenticated/
+-- deduplicated) past a grace window with a durable raw_payload — crash remnants the inbound sweep re-drives
+-- from the raw envelope (the T2 zombie ceiling closes for inbound: the payload IS durable here).
+-- name: StuckInboundDeliveries
+SELECT id, organization_id, project_id, principal_id, trigger_id, trigger_revision_id, source_tenant, raw_payload, state
+FROM trigger_deliveries
+WHERE state IN ('received', 'authenticated', 'deduplicated')
+  AND source_event_id <> '' AND raw_payload IS NOT NULL
+  AND updated_at < clock_timestamp() - make_interval(secs => $1)
+ORDER BY updated_at
+LIMIT $2;
+
+-- ScrubInboundRawPayload NULLs the raw_payload of TERMINAL inbound deliveries older than the retention TTL
+-- (short-retention is a behavior, not a caption — encryption-at-rest is E13). A scrubbed terminal row is
+-- never re-driven (the sweep needs a non-terminal state), so dropping its raw envelope is safe.
+-- name: ScrubInboundRawPayload
+UPDATE trigger_deliveries
+SET raw_payload = NULL
+WHERE source_event_id <> '' AND raw_payload IS NOT NULL
+  AND state IN ('run_created', 'rejected', 'duplicate', 'failed', 'skipped')
+  AND updated_at < clock_timestamp() - make_interval(secs => $1);
 
 -- GetTriggerDelivery reads a delivery's operator-facing projection (GET /v1/trigger-deliveries/{id}).
 -- name: GetTriggerDelivery

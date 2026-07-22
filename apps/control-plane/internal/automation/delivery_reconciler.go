@@ -20,16 +20,24 @@ type DeliveryReconciler struct {
 	interval time.Duration
 	grace    time.Duration
 	limit    int
+	rawTTL   time.Duration // inbound raw-payload short-retention TTL (0 ⇒ no scrub); WithInboundRawTTL
 	log      func(string, ...any)
 }
 
 // NewDeliveryReconciler builds the reconciler over a wired trigger store. grace bounds how long a delivery
-// may sit in `mapped` before it is treated as a crash remnant; limit caps the stuck-remnant batch.
+// may sit in `mapped`/pre-map before it is treated as a crash remnant; limit caps the stuck-remnant batch.
 func NewDeliveryReconciler(store *TriggerStore, interval, grace time.Duration, limit int, log func(string, ...any)) *DeliveryReconciler {
 	if log == nil {
 		log = func(string, ...any) {}
 	}
 	return &DeliveryReconciler{store: store, interval: interval, grace: grace, limit: limit, log: log}
+}
+
+// WithInboundRawTTL sets how long a TERMINAL inbound delivery's raw_payload is retained before the sweep
+// scrubs it (short-retention; 0 disables scrubbing). Returns the reconciler for chaining.
+func (r *DeliveryReconciler) WithInboundRawTTL(ttl time.Duration) *DeliveryReconciler {
+	r.rawTTL = ttl
+	return r
 }
 
 // Run drives the reconciler on its interval until ctx is cancelled (the webhook-pump loop shape). A
@@ -50,9 +58,14 @@ func (r *DeliveryReconciler) Run(ctx context.Context) error {
 	}
 }
 
-// Tick runs one sweep: recover stuck-mapped remnants, then admit gate-opened deferred FIFO heads.
+// Tick runs one sweep: recover stuck-mapped remnants, re-drive/scrub ack'ed inbound remnants (the T5
+// fold — one localized call so T6's callback sweep composes beside it), then admit gate-opened deferred
+// FIFO heads.
 func (r *DeliveryReconciler) Tick(ctx context.Context) error {
 	if err := r.store.recoverStuckMapped(ctx, r.grace, r.limit, r.log); err != nil {
+		return err
+	}
+	if err := r.store.recoverStuckInbound(ctx, r.grace, r.limit, r.rawTTL, r.log); err != nil {
 		return err
 	}
 	return r.store.reconcileDeferred(ctx, r.log)

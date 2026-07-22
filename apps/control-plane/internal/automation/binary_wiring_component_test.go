@@ -185,8 +185,15 @@ func (c *client) get(path string) *http.Response {
 // token, never token itself.
 func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) {
 	t.Helper()
+	seedTenantReturning(t, pool, token)
+}
+
+// seedTenantReturning is seedTenantWithKey that also returns the minted org/project/principal ids, for
+// tests that must assert principal-scoped state (e.g. inbound created_by).
+func seedTenantReturning(t *testing.T, pool *pgxpool.Pool, token string) (org, project, principal string) {
+	t.Helper()
 	ctx := context.Background()
-	org, project, principal := randID("org"), randID("prj"), randID("prin")
+	org, project, principal = randID("org"), randID("prj"), randID("prin")
 	exec := func(sql string, args ...any) {
 		if _, err := pool.Exec(ctx, sql, args...); err != nil {
 			t.Fatalf("seed exec %q error = %v", sql, err)
@@ -197,6 +204,7 @@ func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) {
 	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`, principal, org, project)
 	exec(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
 		randID("key"), org, project, principal, coordinator.HashAPIKey(token))
+	return org, project, principal
 }
 
 func mustExec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {

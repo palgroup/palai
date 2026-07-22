@@ -113,7 +113,7 @@ func TestLiveTriggerDedupeRun(t *testing.T) {
 
 	// A trigger pinned to the revision, deduping on the order id, mapping the order summary to the input.
 	store := automation.NewTriggerStore(pool).WithAdmitter(spine)
-	triggerID, err := store.CreateTrigger(ctx, org, project, randID("orders"), "manual_api")
+	triggerID, err := store.CreateTrigger(ctx, org, project, principal, randID("orders"), "manual_api")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}

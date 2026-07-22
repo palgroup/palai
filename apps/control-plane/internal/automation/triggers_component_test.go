@@ -59,7 +59,7 @@ func seedPrincipal(t *testing.T, pool *pgxpool.Pool, org, project string) string
 func seedTrigger(t *testing.T, s *TriggerStore, org, project, name string, in TriggerRevisionInput) (string, string) {
 	t.Helper()
 	ctx := context.Background()
-	triggerID, err := s.CreateTrigger(ctx, org, project, name, "manual_api")
+	triggerID, err := s.CreateTrigger(ctx, org, project, "", name, "manual_api")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
@@ -77,7 +77,7 @@ func TestRevisionValidationRejectsBadCombos(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
 	org, project, _ := seedSession(t, pool)
-	triggerID, err := store.CreateTrigger(ctx, org, project, "validate", "manual_api")
+	triggerID, err := store.CreateTrigger(ctx, org, project, "", "validate", "manual_api")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}

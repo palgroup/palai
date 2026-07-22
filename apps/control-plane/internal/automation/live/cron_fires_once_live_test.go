@@ -81,7 +81,7 @@ func TestLiveCronFiresOnce(t *testing.T) {
 
 	// A type='cron' trigger pinned to the revision, mapping a constant task into the run input.
 	triggers := automation.NewTriggerStore(pool).WithAdmitter(spine)
-	triggerID, err := triggers.CreateTrigger(ctx, org, project, randID("cron"), "cron")
+	triggerID, err := triggers.CreateTrigger(ctx, org, project, principal, randID("cron"), "cron")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}

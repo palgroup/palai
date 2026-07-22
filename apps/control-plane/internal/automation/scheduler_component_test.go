@@ -29,7 +29,7 @@ func wiredScheduleStore(t *testing.T) (*ScheduleStore, *TriggerStore, *pgxpool.P
 func seedCronTrigger(t *testing.T, ts *TriggerStore, pool *pgxpool.Pool, org, project string) string {
 	t.Helper()
 	ctx := context.Background()
-	triggerID, err := ts.CreateTrigger(ctx, org, project, randID("cron-trg"), "cron")
+	triggerID, err := ts.CreateTrigger(ctx, org, project, "", randID("cron-trg"), "cron")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
