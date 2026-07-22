@@ -241,8 +241,9 @@ var toolsSQL string
 // 000025 adds the remote-tool async-operation ledger (remote_tool_operations, E12 Task 4, spec
 // §28.24-28.25): the durable 202-invoke row a remote_http tool opens before its signed invoke, carrying
 // the one-use callback token hash + deadline + fence, so a signed callback commits under a live fence
-// and a late one reconciles instead of silently committing. It references tool_calls (000001/000018) +
-// projects (000001), so it opens from the tip of the E12 chain — the first link past 000024.
+// and a late one reconciles instead of silently committing. It references projects (000001) only
+// (tool_call_id is a soft correlation key, not an FK — the operation opens before the tool_calls row is
+// committed), so it opens from the tip of the E12 chain — the first link past 000024.
 //
 //go:embed migrations/000025_remote_tools.up.sql
 var migrationUp25 string

@@ -18,8 +18,11 @@ CREATE TABLE IF NOT EXISTS remote_tool_operations (
     id TEXT PRIMARY KEY,                              -- rop_<hex>; broker-minted, the callback URL path segment
     organization_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
-    -- The ledger tool_call the invoke belongs to; a resolved callback result commits to THIS call's row.
-    tool_call_id TEXT NOT NULL REFERENCES tool_calls (id),
+    -- The ledger tool_call the invoke belongs to (the correlation key the prober + reconcile read by). NOT
+    -- an FK: the executor opens this operation BEFORE the invoke — before the callback can race — but a
+    -- pure/idempotent tool's tool_calls row is not written until the broker COMMITS it (after the result),
+    -- so an FK to tool_calls would be a lifecycle mismatch. The id is app-controlled, tenant-scoped below.
+    tool_call_id TEXT NOT NULL,
     -- The tool_revision.secret_ref handle (000024) the callback endpoint re-resolves to verify the
     -- callback signature — a handle, never the raw credential bytes (spec §28.4 secret hygiene).
     secret_ref TEXT NOT NULL DEFAULT '',

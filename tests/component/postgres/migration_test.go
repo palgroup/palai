@@ -1288,7 +1288,9 @@ func TestAuditAppendOnlyToApplicationRole(t *testing.T) {
 // exactly once. It also pins the load-bearing invariants: an operation row keyed to a real tool_call
 // inserts while one keyed to a missing tool_call is FK-rejected (the tool_call_id ref), and the
 // partial-unique index rejects a SECOND pending row for the same tool_call (a duplicate live invoke can
-// never open two operations) while a resolved (completed) row lets a fresh pending one open.
+// never open two operations) while a resolved (completed) row lets a fresh pending one open. tool_call_id
+// is a soft correlation key (NOT an FK): the operation opens before the invoke, before a pure/idempotent
+// tool's tool_calls row is committed, so a row for a not-yet-committed call inserts fine.
 func TestMigration25RemoteTools(t *testing.T) {
 	cs := openHarness(t)
 	ctx := context.Background()
@@ -1312,13 +1314,8 @@ func TestMigration25RemoteTools(t *testing.T) {
 		t.Fatalf("schema_migrations records version 25 %d times, want 1", version25)
 	}
 
-	tenant, _, runID := seedRun(t, pool)
-	// A tool_call the operation references (the FK target). tool_calls is 000001 + the 000018 ledger rider.
-	callID := newID("tcall")
-	exec(t, pool,
-		`INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments)
-		 VALUES ($1, $2, $3, $4, 5, 'executing', 'remote_lookup', '{}')`,
-		callID, tenant.Organization, tenant.Project, runID)
+	tenant, _, _ := seedRun(t, pool)
+	callID := newID("tcall") // a correlation key; no tool_calls row need exist (no FK)
 
 	openOp := func(id, call, state string) error {
 		_, err := pool.Exec(ctx,
@@ -1338,9 +1335,10 @@ func TestMigration25RemoteTools(t *testing.T) {
 	if err := openOp(newID("rop"), callID, "completed"); err != nil {
 		t.Fatalf("completed operation alongside a resolved one error = %v", err)
 	}
-	// An operation keyed to a missing tool_call is FK-rejected (the tool_call_id ref, spec §28.24).
-	if got := pgCode(openOp(newID("rop"), "tcall_missing", "pending")); got != "23503" {
-		t.Fatalf("operation for a missing tool_call code = %q, want 23503 foreign_key_violation", got)
+	// tool_call_id is a soft correlation key (no FK): an operation for a not-yet-committed call inserts —
+	// the executor opens it BEFORE the invoke, before a pure/idempotent tool's tool_calls row is committed.
+	if err := openOp(newID("rop"), newID("tcall"), "pending"); err != nil {
+		t.Fatalf("operation for an uncommitted tool_call error = %v, want accepted (no FK)", err)
 	}
 
 	if err := cs.Rollback(ctx); err != nil {
