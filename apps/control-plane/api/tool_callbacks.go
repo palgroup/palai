@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -101,8 +100,11 @@ func (h *toolCallbackHandler) receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload, _ := remotehttp.Payload(cb)
-	blob, _ := json.Marshal(payload)
+	// Persist the payload in the discriminated {result|problem} envelope so the waiting executor + the
+	// prober can tell a successful result from an RFC 9457 problem (MF2 — a problem must NOT surface as a
+	// success). The hash is over the payload, so duplicate-callback idempotency is unaffected.
+	payload, isProblem := remotehttp.Payload(cb)
+	blob := remotehttp.EncodeStoredResult(payload, isProblem)
 	hash := remotehttp.ResultHash(payload)
 
 	newState, consumed, cerr := h.ops.Consume(r.Context(), operationID, blob, hash)

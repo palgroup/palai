@@ -2,7 +2,9 @@ package execution
 
 import (
 	"context"
+	"encoding/json"
 
+	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/packages/coordinator"
 )
 
@@ -41,7 +43,15 @@ func (p *RemoteToolProber) Probe(ctx context.Context, call coordinator.Uncertain
 	}
 	switch state {
 	case "completed", "late_result":
-		return true, res, true, nil
+		// Unwrap the discriminated {result|problem} envelope so the reconcile hands the model the BARE
+		// payload the callback delivered (MF2), not the storage wrapper. A problem-carrying late callback
+		// reconciles with its problem body — the tool answered, late, with a failure (a thin honest edge).
+		payload, _, derr := remotehttp.DecodeStoredResult(res)
+		if derr != nil {
+			return false, nil, false, nil // an unusable stored blob → manual_resolution rather than a guess
+		}
+		bare, _ := json.Marshal(payload)
+		return true, bare, true, nil
 	default:
 		return false, nil, false, nil
 	}

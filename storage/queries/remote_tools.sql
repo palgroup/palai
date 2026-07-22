@@ -4,14 +4,32 @@
 -- late_result here and the RemoteToolProber carries the uncertain tool_call to reconciled_completed —
 -- this table never commits to the ledger itself. Every statement is tenant-scoped by the caller.
 
+-- SweepExpiredRemoteOperation flips a stuck pending operation (deadline already passed — a prior invoke
+-- that failed transiently or a crashed process) to timed_out, so the next drive of the SAME tool_call can
+-- open a fresh operation and re-POST rather than block on a callback that will never come. Run before Open.
+-- name: SweepExpiredRemoteOperation
+UPDATE remote_tool_operations
+SET state = 'timed_out', completed_at = clock_timestamp()
+WHERE tool_call_id = $1 AND state = 'pending' AND deadline < clock_timestamp();
+
 -- OpenRemoteOperation opens the pending operation before the invoke POST. ON CONFLICT DO NOTHING makes
--- the partial-unique(tool_call_id WHERE pending) a 0-row no-op: a duplicate live invoke cannot open a
--- second pending row, and the executor polls the existing one instead of re-POSTing.
+-- the partial-unique(tool_call_id WHERE pending) a 0-row no-op: a duplicate LIVE (non-expired) invoke
+-- cannot open a second pending row, and the executor polls the existing one instead of re-POSTing.
 -- name: OpenRemoteOperation
 INSERT INTO remote_tool_operations
     (id, organization_id, project_id, tool_call_id, secret_ref, callback_token_hash, deadline, fence)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT DO NOTHING;
+
+-- FailRemoteOperation closes a pending operation the invoke got a DEFINITE negative answer for (a signed
+-- 401/403, a 409, an RFC 9457 problem body, an unexpected status, or a connect-time egress deny — the
+-- request did not land a side effect), so a fresh attempt's Open opens a NEW pending row and re-POSTs. A
+-- transient network error BEFORE the deadline does NOT fail the row (the POST may have landed) — the
+-- deadline sweep handles that.
+-- name: FailRemoteOperation
+UPDATE remote_tool_operations
+SET state = 'failed', completed_at = clock_timestamp()
+WHERE id = $1 AND state = 'pending';
 
 -- PollRemoteOperation reads an operation's state + result by its id (the executor polls the row it
 -- opened). completed carries the result to return; timed_out/late_result tells the executor its invoke

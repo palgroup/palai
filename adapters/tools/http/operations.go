@@ -42,15 +42,29 @@ type Operations struct {
 // NewOperations wraps a durable pool as the remote-tool operation ledger.
 func NewOperations(pool *pgxpool.Pool) *Operations { return &Operations{pool: pool} }
 
-// Open inserts the pending operation. The partial-unique(tool_call_id WHERE pending) makes a duplicate
-// live invoke a 0-row no-op (opened=false), so the executor polls the existing row instead of re-POSTing.
+// Open sweeps any EXPIRED pending operation for this tool_call to timed_out, then inserts the fresh
+// pending row. The partial-unique(tool_call_id WHERE pending) makes a duplicate LIVE (non-expired) invoke
+// a 0-row no-op (opened=false), so the executor polls the existing row instead of re-POSTing; a
+// deadline-passed pending is swept first, so a stuck operation never blocks the next drive forever.
 func (o *Operations) Open(ctx context.Context, in OpenOperation) (opened bool, err error) {
+	if _, err := o.pool.Exec(ctx, storage.Query("SweepExpiredRemoteOperation"), in.ToolCallID); err != nil {
+		return false, fmt.Errorf("sweep expired remote operation: %w", err)
+	}
 	tag, err := o.pool.Exec(ctx, storage.Query("OpenRemoteOperation"),
 		in.OperationID, in.Org, in.Project, in.ToolCallID, in.SecretRef, in.TokenHash, in.Deadline, int64(in.Fence))
 	if err != nil {
 		return false, fmt.Errorf("open remote operation: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// Fail closes a pending operation the invoke got a DEFINITE negative answer for, so a retry re-POSTs
+// (MF1). A transient network error before the deadline never calls this (the POST may have landed).
+func (o *Operations) Fail(ctx context.Context, operationID string) error {
+	if _, err := o.pool.Exec(ctx, storage.Query("FailRemoteOperation"), operationID); err != nil {
+		return fmt.Errorf("fail remote operation: %w", err)
+	}
+	return nil
 }
 
 // Poll reads an operation's state + result by id (the executor polls the row it opened). A NULL result

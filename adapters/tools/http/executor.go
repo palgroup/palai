@@ -30,6 +30,12 @@ const maxResultBytes = 1 << 20
 // defaultTimeout applies when a tool revision declares no timeout_ms.
 const defaultTimeout = 30 * time.Second
 
+// maxTimeout is the ceiling on a single invoke's wait (MF3): an async 202 operation cannot pin a broker
+// execution slot longer than this, however large a tool revision's timeout_ms is. The broker no longer
+// holds its mutex across the wait, but an unbounded wait would still stall the run and starve a shared
+// HTTP client. A revision wanting longer must split the work; a hard cap here is the honest ceiling.
+const maxTimeout = 5 * time.Minute
+
 // The typed executor outcomes the broker maps to a tool error (spec §28.24). Each is deliberately
 // coarse — a customer server must not become a config oracle through fine-grained error text.
 var (
@@ -55,6 +61,7 @@ type ledger interface {
 	Poll(ctx context.Context, operationID string) (state string, result []byte, err error)
 	CompleteSync(ctx context.Context, operationID string, result []byte, resultHash string) error
 	Timeout(ctx context.Context, operationID string) error
+	Fail(ctx context.Context, operationID string) error
 	ProberRead(ctx context.Context, toolCallID string) (state string, result []byte, found bool, err error)
 }
 
@@ -138,9 +145,17 @@ func (e *Executor) Invoke(ctx context.Context, in Invocation) (map[string]any, e
 	if len(in.Secret) == 0 {
 		return nil, fmt.Errorf("%w: no signing secret resolved", ErrRemoteRejected)
 	}
+	// Vet the destination BEFORE opening a durable row, so an SSRF-denied URL never leaves a pending
+	// operation behind (the connect-time PinnedDialer stays the authoritative rebind gate).
+	if err := egress.VetURL(in.URL, in.AllowPrivate); err != nil {
+		return nil, err
+	}
 	timeout := time.Duration(in.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
 		timeout = defaultTimeout
+	}
+	if timeout > maxTimeout {
+		timeout = maxTimeout // ceiling: an async operation cannot pin a slot indefinitely (MF3)
 	}
 	start := e.now()
 	deadline := start.Add(timeout)
@@ -192,28 +207,44 @@ func (e *Executor) Invoke(ctx context.Context, in Invocation) (map[string]any, e
 	headers := e.signHeaders(in, rawBody)
 	status, respBody, err := e.post(ctx, in.URL, in.AllowPrivate, headers, rawBody, timeout)
 	if err != nil {
+		// A connect-time egress deny means the POST never landed — a definite negative answer, so close the
+		// row for a re-drive. Any other transport error MIGHT have landed the request (the server could still
+		// callback), so leave the row pending; the deadline sweep re-opens it on the next drive (MF1).
+		if errors.Is(err, egress.ErrDenied) {
+			e.failOperation(ctx, operationID)
+		}
 		return nil, err
 	}
 	switch status {
 	case http.StatusOK:
 		result, perr := decodeResult(respBody)
 		if perr != nil {
+			e.failOperation(ctx, operationID) // a definite (if malformed/problem) server answer — close for re-drive
 			return nil, perr
 		}
-		hash := resultHash(result)
-		if cerr := e.ledger.CompleteSync(ctx, operationID, mustJSON(result), hash); cerr != nil {
+		hash := ResultHash(result)
+		if cerr := e.ledger.CompleteSync(ctx, operationID, EncodeStoredResult(result, false), hash); cerr != nil {
 			return nil, cerr
 		}
 		return result, nil
 	case http.StatusAccepted:
 		return e.await(ctx, operationID, deadline)
 	case http.StatusConflict:
+		e.failOperation(ctx, operationID)
 		return nil, fmt.Errorf("%w: server saw a diverged retry for %s", ErrRequestHashMismatch, in.ToolCallID)
 	case http.StatusUnauthorized, http.StatusForbidden:
+		e.failOperation(ctx, operationID)
 		return nil, fmt.Errorf("%w: server refused the signed invoke (status %d)", ErrRemoteRejected, status)
 	default:
+		e.failOperation(ctx, operationID)
 		return nil, fmt.Errorf("%w: unexpected status %d", ErrRemoteProtocol, status)
 	}
+}
+
+// failOperation closes a pending row on a DEFINITE negative answer so a retry re-POSTs (MF1). Best-effort:
+// a failed close leaves the row pending, and the deadline sweep in Open re-opens it on the next drive.
+func (e *Executor) failOperation(ctx context.Context, operationID string) {
+	_ = e.ledger.Fail(ctx, operationID)
 }
 
 // signHeaders builds the standard-webhooks signature (reusing the webhook signer — no new MAC) over the
@@ -237,8 +268,8 @@ func (e *Executor) await(ctx context.Context, operationID string, deadline time.
 		}
 		switch state {
 		case "completed":
-			return decodeResultBody(result)
-		case "late_result", "timed_out":
+			return resolveStored(result)
+		case "late_result", "timed_out", "failed":
 			return nil, fmt.Errorf("%w: operation %s resolved late", ErrRemoteTimeout, operationID)
 		}
 		if !e.sleep(ctx, deadline) {
@@ -252,7 +283,7 @@ func (e *Executor) await(ctx context.Context, operationID string, deadline time.
 				return nil, err
 			}
 			if state == "completed" {
-				return decodeResultBody(result)
+				return resolveStored(result)
 			}
 			return nil, fmt.Errorf("%w: operation %s deadline lapsed", ErrRemoteTimeout, operationID)
 		}
@@ -268,7 +299,7 @@ func (e *Executor) awaitExisting(ctx context.Context, toolCallID string, deadlin
 			return nil, err
 		}
 		if found && state == "completed" {
-			return decodeResultBody(result)
+			return resolveStored(result)
 		}
 		if found && state == "late_result" {
 			return nil, fmt.Errorf("%w: prior operation for %s resolved late", ErrRemoteTimeout, toolCallID)
@@ -354,17 +385,51 @@ func decodeResult(body []byte) (map[string]any, error) {
 	return env.Result, nil
 }
 
-// decodeResultBody decodes a result JSON blob persisted on the operation row (the callback stored the
-// bare result object). A NULL/empty blob is a protocol error.
-func decodeResultBody(body []byte) (map[string]any, error) {
-	if len(body) == 0 {
-		return nil, fmt.Errorf("%w: completed operation carried no result", ErrRemoteProtocol)
+// EncodeStoredResult wraps a callback payload in the discriminated {result|problem} envelope persisted on
+// the operation row, so the async executor + prober can tell a successful result from an RFC 9457 problem
+// (MF2) — the sync-200 path already distinguishes them; this keeps the async path symmetric.
+func EncodeStoredResult(payload map[string]any, isProblem bool) []byte {
+	key := "result"
+	if isProblem {
+		key = "problem"
 	}
-	var result map[string]any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("%w: undecodable stored result: %v", ErrRemoteProtocol, err)
+	return mustJSON(map[string]any{key: payload})
+}
+
+// DecodeStoredResult unwraps the persisted {result|problem} envelope. isProblem tells a problem apart from
+// a result: the executor turns a problem into ErrRemoteProblem (symmetric with the sync path), the prober
+// records whichever the callback delivered. An empty/undiscriminated blob is a protocol error.
+func DecodeStoredResult(blob []byte) (payload map[string]any, isProblem bool, err error) {
+	if len(blob) == 0 {
+		return nil, false, fmt.Errorf("%w: completed operation carried no result", ErrRemoteProtocol)
 	}
-	return result, nil
+	var env struct {
+		Result  map[string]any `json:"result"`
+		Problem map[string]any `json:"problem"`
+	}
+	if uerr := json.Unmarshal(blob, &env); uerr != nil {
+		return nil, false, fmt.Errorf("%w: undecodable stored result: %v", ErrRemoteProtocol, uerr)
+	}
+	if env.Problem != nil {
+		return env.Problem, true, nil
+	}
+	if env.Result == nil {
+		return nil, false, fmt.Errorf("%w: stored result carried neither result nor problem", ErrRemoteProtocol)
+	}
+	return env.Result, false, nil
+}
+
+// resolveStored decodes a stored envelope into the result to return, mapping a problem to ErrRemoteProblem
+// exactly as the sync path does (MF2).
+func resolveStored(blob []byte) (map[string]any, error) {
+	payload, isProblem, err := DecodeStoredResult(blob)
+	if err != nil {
+		return nil, err
+	}
+	if isProblem {
+		return nil, fmt.Errorf("%w: %v", ErrRemoteProblem, payload)
+	}
+	return payload, nil
 }
 
 // ResultHash is the canonical sha256 of a callback payload (json.Marshal sorts keys), so a duplicate
@@ -375,9 +440,6 @@ func ResultHash(payload map[string]any) string { return sha256Hex(mustJSON(paylo
 // HashToken is the ONE definition of the stored callback-token hash: sha256 of the raw token string. The
 // executor stores it at mint; the callback endpoint recomputes it for a constant-time compare (one-use).
 func HashToken(token string) string { return sha256Hex([]byte(token)) }
-
-// resultHash is the executor-internal alias for ResultHash (kept for readability at the call site).
-func resultHash(result map[string]any) string { return ResultHash(result) }
 
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)

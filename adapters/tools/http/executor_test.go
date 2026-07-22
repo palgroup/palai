@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,12 +106,27 @@ func (f *fakeLedger) Open(_ context.Context, in OpenOperation) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if ex, ok := f.byCall[in.ToolCallID]; ok && ex.state == "pending" {
-		return false, nil
+		// Sweep an EXPIRED pending row (a prior invoke that stalled) so this drive re-POSTs (MF1); a LIVE
+		// pending invoke still blocks a second open.
+		if !ex.deadln.IsZero() && time.Now().After(ex.deadln) {
+			ex.state = "timed_out"
+		} else {
+			return false, nil
+		}
 	}
 	op := &fakeOp{callID: in.ToolCallID, state: "pending", deadln: in.Deadline}
 	f.byOp[in.OperationID] = op
 	f.byCall[in.ToolCallID] = op
 	return true, nil
+}
+
+func (f *fakeLedger) Fail(_ context.Context, operationID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if op := f.byOp[operationID]; op != nil && op.state == "pending" {
+		op.state = "failed"
+	}
+	return nil
 }
 
 func (f *fakeLedger) Poll(_ context.Context, operationID string) (string, []byte, error) {
@@ -158,7 +174,17 @@ func (f *fakeLedger) completeByCall(toolCallID string, result map[string]any) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if op := f.byCall[toolCallID]; op != nil {
-		op.state, op.result = "completed", mustJSON(result)
+		op.state, op.result = "completed", EncodeStoredResult(result, false)
+	}
+}
+
+// completeByCallProblem completes a tool_call's operation with an RFC 9457 PROBLEM callback (MF2), so the
+// executor's poll must surface ErrRemoteProblem — not the problem body as a success result.
+func (f *fakeLedger) completeByCallProblem(toolCallID string, problem map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if op := f.byCall[toolCallID]; op != nil {
+		op.state, op.result = "completed", EncodeStoredResult(problem, true)
 	}
 }
 
@@ -304,6 +330,90 @@ func TestExecutorAsyncTimesOutWhenNoCallback(t *testing.T) {
 	in.TimeoutMS = 40 // no callback arrives before this
 	if _, err := exec.Invoke(context.Background(), in); !errors.Is(err, ErrRemoteTimeout) {
 		t.Fatalf("no-callback async invoke err = %v, want ErrRemoteTimeout", err)
+	}
+}
+
+// TestRemoteFailedInvokeAllowsRetry proves MF1: a DEFINITE negative answer (a signed 403) closes the
+// operation row so a fresh attempt with the SAME tool_call_id RE-POSTs — it does NOT block on a callback
+// that will never come. On the base code the failed invoke leaves the row pending, the partial-unique
+// forces opened=false, and the retry awaits the full deadline instead of re-signing.
+func TestRemoteFailedInvokeAllowsRetry(t *testing.T) {
+	h, srv := newHarness(t)
+	var posts int32
+	h.respond = func(_ *harness, w http.ResponseWriter, _ invokeSeen) {
+		if atomic.AddInt32(&posts, 1) == 1 {
+			w.WriteHeader(http.StatusForbidden) // first: a definite server rejection
+			return
+		}
+		writeResult(w, http.StatusOK, map[string]any{"ok": "yes"}) // retry: success
+	}
+	ledger := newFakeLedger()
+	exec := NewExecutor(ledger, WithPollInterval(5*time.Millisecond))
+	ctx := context.Background()
+	in := baseInvocation(h, srv.URL)
+	in.TimeoutMS = 5000 // large: proves the retry does NOT block until this on the base code
+
+	if _, err := exec.Invoke(ctx, in); !errors.Is(err, ErrRemoteRejected) {
+		t.Fatalf("first invoke err = %v, want ErrRemoteRejected", err)
+	}
+	// A retry with the SAME tool_call_id must re-POST and succeed (the row was closed, not left pending).
+	out, err := exec.Invoke(ctx, in)
+	if err != nil {
+		t.Fatalf("retry after a definite reject err = %v, want a re-POST + success", err)
+	}
+	if out["ok"] != "yes" {
+		t.Fatalf("retry result = %v, want ok:yes", out)
+	}
+	if got := atomic.LoadInt32(&posts); got != 2 {
+		t.Fatalf("server POSTs = %d, want 2 (the retry re-POSTed, not await-forever)", got)
+	}
+}
+
+// TestRemoteExpiredPendingSweptOnNextDrive proves MF1's sweep: a stuck pending operation whose deadline
+// has already passed (a crashed prior invoke) is swept to timed_out on the next Open, so the drive opens a
+// fresh row and POSTs rather than blocking on the dead operation.
+func TestRemoteExpiredPendingSweptOnNextDrive(t *testing.T) {
+	h, srv := newHarness(t)
+	ledger := newFakeLedger()
+	// A leftover pending row for the call, with a deadline already in the past.
+	if _, err := ledger.Open(context.Background(), OpenOperation{
+		OperationID: "rop_stale", ToolCallID: "tc_remote_1", Deadline: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("seed stale pending: %v", err)
+	}
+	exec := NewExecutor(ledger, WithPollInterval(5*time.Millisecond))
+	in := baseInvocation(h, srv.URL) // tc_remote_1, harness default returns 200
+	in.TimeoutMS = 5000
+
+	out, err := exec.Invoke(context.Background(), in)
+	if err != nil {
+		t.Fatalf("drive over an expired pending err = %v, want a fresh POST + success", err)
+	}
+	if out["ok"] != true {
+		t.Fatalf("result = %v, want the harness result (the expired pending was swept)", out)
+	}
+	if got := h.executions(); got != 1 {
+		t.Fatalf("executions = %d, want 1 (a fresh invoke POSTed past the swept pending)", got)
+	}
+}
+
+// TestAsyncProblemCallbackSurfacesProblem proves MF2: a 202 answered by a PROBLEM callback surfaces
+// ErrRemoteProblem — symmetric with the sync path — instead of handing the problem body back as a
+// successful result. On the base code the async path stored the bare payload and returned it as a result.
+func TestAsyncProblemCallbackSurfacesProblem(t *testing.T) {
+	h, srv := newHarness(t)
+	h.respond = func(_ *harness, w http.ResponseWriter, _ invokeSeen) { w.WriteHeader(http.StatusAccepted) }
+	ledger := newFakeLedger()
+	exec := NewExecutor(ledger, WithPollInterval(5*time.Millisecond))
+	in := baseInvocation(h, srv.URL)
+	in.ToolCallID = "tc_problem"
+	in.TimeoutMS = 2000
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		ledger.completeByCallProblem("tc_problem", map[string]any{"type": "about:blank", "title": "boom", "status": float64(500)})
+	}()
+	if _, err := exec.Invoke(context.Background(), in); !errors.Is(err, ErrRemoteProblem) {
+		t.Fatalf("async problem callback err = %v, want ErrRemoteProblem (not a success result)", err)
 	}
 }
 
