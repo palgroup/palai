@@ -87,6 +87,12 @@ func TestVetURLSchemeAndLiteralIP(t *testing.T) {
 			t.Errorf("VetURL(%s) = nil, want literal-IP denied", u)
 		}
 	}
+	// Embedded credentials are denied on any consumer (a redirect hop routes through here too).
+	if err := VetURL("https://user:pass@example.com/", false); err == nil {
+		t.Error("VetURL(userinfo) = nil, want credentials denied")
+	} else if !errors.Is(err, ErrDenied) {
+		t.Errorf("VetURL(userinfo) error %v is not ErrDenied", err)
+	}
 }
 
 // TestVetResolvedRejectsInternalResolutions is the fail-fast resolution gate: a hostname that resolves

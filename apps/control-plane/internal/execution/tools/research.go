@@ -116,16 +116,11 @@ func (o *researchOptions) exec(ctx context.Context, env toolbroker.ExecEnv, args
 	rawURL, _ := args["url"].(string)
 	fetchCap := researchFetchCap(args["max_bytes"])
 
-	// Static gate BEFORE any dial: https-only, and a literal-IP host vetted (research NEVER allows
-	// private — allowPrivate is hard-false here, stricter than the webhook self-host downgrade).
+	// Static gate BEFORE any dial: https-only, a literal-IP host vetted, and embedded credentials denied
+	// (research NEVER allows private — allowPrivate is hard-false here, stricter than the webhook
+	// self-host downgrade). The SAME gate runs on every redirect hop via CheckRedirect.
 	if err := egress.VetURL(rawURL, false); err != nil {
 		return nil, fmt.Errorf("research: %w", err)
-	}
-	// Reject an embedded-credential URL (https://user:pass@host): net/http would send an Authorization
-	// header built from the model's credentials to an arbitrary host — a probing primitive. VetURL
-	// proved it parses.
-	if u, _ := url.Parse(rawURL); u != nil && u.User != nil {
-		return nil, fmt.Errorf("research: %w: url must not embed credentials", egress.ErrDenied)
 	}
 
 	resolver := o.resolver

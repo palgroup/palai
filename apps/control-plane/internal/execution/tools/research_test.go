@@ -354,6 +354,40 @@ func TestResearchDeniesEmbeddedCredentials(t *testing.T) {
 	}
 }
 
+// TestResearchDeniesCredentialRedirect pins that a REDIRECT into a credentialed URL is denied on the
+// redirected hop — not just the initial URL. Without the userinfo check inside the shared egress gate,
+// CheckRedirect would follow https://user:pass@host and net/http would put Authorization: Basic on the
+// wire. The redirect is denied and the server never sees an Authorization header.
+func TestResearchDeniesCredentialRedirect(t *testing.T) {
+	var sawAuth bool
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			sawAuth = true
+		}
+		if r.URL.Path == "/" {
+			w.Header().Set("Location", "https://user:pass@example.com/authed")
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<title>authed</title>ok"))
+	}))
+	defer srv.Close()
+
+	pubResolver := researchResolver(func(_ context.Context, _ string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("93.184.216.34")}}, nil
+	})
+	dial, _ := dialRecorder(srv.Listener.Addr().String())
+	tool := ResearchFetchTool(WithResearchResolver(pubResolver), WithResearchDialContext(dial), WithResearchTLSConfig(trustServer(srv)))
+
+	if _, err := tool.Exec(context.Background(), toolbroker.ExecEnv{}, map[string]any{"url": "https://example.com/"}); err == nil {
+		t.Fatal("research fetch redirecting to a credentialed URL = nil, want denied")
+	}
+	if sawAuth {
+		t.Fatal("the redirect to https://user:pass@host put Authorization: Basic on the wire")
+	}
+}
+
 func trustServer(srv *httptest.Server) *tls.Config {
 	pool := x509.NewCertPool()
 	pool.AddCert(srv.Certificate())

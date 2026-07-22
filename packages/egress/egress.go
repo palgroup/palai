@@ -80,6 +80,12 @@ func VetURL(rawURL string, allowPrivate bool) error {
 	if err != nil {
 		return fmt.Errorf("parse destination: %w", err)
 	}
+	// Embedded credentials (https://user:pass@host) are denied: net/http would emit an Authorization:
+	// Basic header from the URL userinfo to the destination host. This is the single gate the initial URL
+	// AND every redirect hop route through, so a redirect into a credentialed URL is denied too.
+	if u.User != nil {
+		return fmt.Errorf("%w: url must not embed credentials", ErrDenied)
+	}
 	switch u.Scheme {
 	case "https":
 	case "http":
