@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/hook.json",
+  "title": "Hook",
+  "description": "An admin-registered extension point that fires INSIDE a run's single dispatch loop at one of five pinned points (spec §28.17, TOL-012). Never model-creatable — create + disable are admin API actions, and a hook output can never grant a capability. A remote_http hook reuses the T4 signed transport; a credential is a secret_ref handle only (the config carries non-secret wiring).",
+  "type": "object",
+  "required": ["id", "object", "name", "hook_point", "category", "executor"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/opaque_id"},
+    "object": {"type": "string", "const": "hook"},
+    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
+    "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
+    "name": {"type": "string", "description": "The admin management key; unique per project."},
+    "hook_point": {"type": "string", "enum": ["before_tool", "after_tool", "before_model", "on_terminal", "before_repository_publish"]},
+    "category": {"type": "string", "enum": ["policy", "transform", "observer"], "description": "policy = sync fail-closed (a deny blocks the guarded operation visibly); transform = a schema-validated patch to before_tool.arguments / after_tool.result, fail-closed; observer = async fail-open (a crash never affects the operation)."},
+    "executor": {"type": "string", "enum": ["platform_inline", "remote_http"], "description": "platform_inline names a code-defined deterministic, network-less handler; remote_http reuses the T4 signed remote-worker transport (tenant hook code never runs in-process)."},
+    "disabled": {"type": "boolean", "description": "The admin kill-switch: a disabled hook never fires."},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

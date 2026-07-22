@@ -47,7 +47,7 @@ func (f *fakeWebhookAPI) Redeliver(context.Context, string, string, string) (boo
 
 func webhookTestServer(t *testing.T, api *fakeWebhookAPI) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, api, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, api, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	return srv
 }

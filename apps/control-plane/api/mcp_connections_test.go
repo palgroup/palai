@@ -28,7 +28,7 @@ func (f *fakeMCPRegistry) DiscoverMCPConnection(_ context.Context, _ middleware.
 
 func mcpTestServer(t *testing.T, reg *fakeMCPRegistry) string {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, reg, nil, SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, reg, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
@@ -76,7 +76,7 @@ func TestMCPConnectionManagementSurface(t *testing.T) {
 // passes no MCP registry mounts no MCP route at all (a POST is 404). MCP add/discover is an admin API
 // surface only — there is no model-callable tool for it (the broker exposes no such name).
 func TestMCPRoutesUnmountedWhenNil(t *testing.T) {
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
 	t.Cleanup(srv.Close)
 	if resp := do(t, "POST", srv.URL+"/v1/mcp-connections", `{"name":"docs"}`, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("nil MCP registry POST status = %d, want 404 (route unmounted)", resp.StatusCode)
