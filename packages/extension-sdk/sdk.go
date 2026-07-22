@@ -174,7 +174,9 @@ func CallbackHeaders(deliveryID string, ts time.Time, body []byte, secrets ...[]
 // SyncResult builds the synchronous 200 body carrying a tool result; SyncProblem
 // builds the {problem} body for an RFC 9457 error. Exactly one of the two shapes
 // a remote_http server may answer 200 with (spec §28.24), as canonical bytes.
-func SyncResult(result map[string]any) ([]byte, error) { return canonical(map[string]any{"result": result}) }
+func SyncResult(result map[string]any) ([]byte, error) {
+	return canonical(map[string]any{"result": result})
+}
 func SyncProblem(problem map[string]any) ([]byte, error) {
 	return canonical(map[string]any{"problem": problem})
 }
