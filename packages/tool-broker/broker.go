@@ -156,6 +156,31 @@ func (b *Broker) ReplayClassOf(name string) ReplayClass {
 	return tool.replayClass()
 }
 
+// ReplayClassResolved reports a tool's declared kill-recovery class, falling back to the injected registry
+// lookup for a tool absent from the static set (E12) — so a registered tool's DECLARED class (e.g.
+// irreversible) drives the pre-write-marker decision at dispatch, NOT the ClassPure static-miss default.
+// A clean lookup miss or no lookup yields ClassPure (the caller rejects an unknown tool at Execute).
+func (b *Broker) ReplayClassResolved(ctx context.Context, env ExecEnv, name string) (ReplayClass, error) {
+	b.mu.Lock()
+	tool, ok := b.tools[name]
+	lookup := b.lookup
+	b.mu.Unlock()
+	if ok {
+		return tool.replayClass(), nil
+	}
+	if lookup == nil {
+		return ClassPure, nil
+	}
+	resolved, found, err := lookup(ctx, env, name)
+	if err != nil {
+		return ClassPure, fmt.Errorf("registry lookup %s: %w", name, err)
+	}
+	if !found {
+		return ClassPure, nil
+	}
+	return resolved.replayClass(), nil
+}
+
 // NeedsPreWrite reports whether a class must be durably marked 'executing' BEFORE it runs so a
 // kill-after-execute is detectable as uncertain (spec §26.7): every class whose re-execution is unsafe
 // or needs reconciliation — irreversible, reversible, interactive. Pure re-runs freely and idempotent

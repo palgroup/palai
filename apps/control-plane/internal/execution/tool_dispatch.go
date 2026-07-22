@@ -69,7 +69,13 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	// Pure/idempotent skip it (re-run/resend is safe). Skipped when a row already exists (a re-executing
 	// pure row, or a fence re-lease) — BeginToolCall is idempotent, but avoiding it keeps the fresh path lean.
 	arguments, _ := json.Marshal(args)
-	class := o.tools.ReplayClassOf(name)
+	// Resolve the class through the SAME lookup the executor uses, so a registered registry tool's DECLARED
+	// class (e.g. irreversible) drives the pre-write marker — not the ClassPure static-miss default (M2).
+	env := o.execEnv(st)
+	class, err := o.tools.ReplayClassResolved(ctx, env, name)
+	if err != nil {
+		return err
+	}
 	if toolbroker.NeedsPreWrite(class) && !found {
 		// external_idempotency_key + commit_boundary are left empty: TOL-017's fence half is real (the
 		// CommitToolResult fence guard), but the async-callback transport half that would key on
@@ -81,7 +87,7 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	}
 
 	// 3. Execute + commit + deliver.
-	outcome, err := o.tools.Execute(ctx, contracts.ToolCallID(callID), name, args, st.attempt.Fence, o.execEnv(st))
+	outcome, err := o.tools.Execute(ctx, contracts.ToolCallID(callID), name, args, st.attempt.Fence, env)
 	if err != nil {
 		return fmt.Errorf("execute tool %q (%s): %w", name, callID, err)
 	}

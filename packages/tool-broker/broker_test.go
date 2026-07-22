@@ -228,3 +228,39 @@ func TestRegistryLookupFallback(t *testing.T) {
 		t.Fatalf("no-lookup miss err = %v, want ErrUnknownTool", err)
 	}
 }
+
+// TestReplayClassResolvedFallback proves M2: a registry tool's DECLARED replay class is read through the
+// same lookup the executor uses, so the pre-write kill-recovery marker decision sees the true class — not
+// the ClassPure static-miss default. A static tool still reads its own class; a lookup miss is ClassPure.
+func TestReplayClassResolvedFallback(t *testing.T) {
+	static := Tool{Name: "static.pure", InputSchema: openObject, ReplayClass: ClassPure,
+		Invoke: func(a map[string]any) (map[string]any, error) { return a, nil }}
+	broker := New(static)
+	broker.SetLookup(func(_ context.Context, _ ExecEnv, name string) (Tool, bool, error) {
+		if name == "reg.irreversible" {
+			return Tool{Name: name, ReplayClass: ClassIrreversible}, true, nil
+		}
+		return Tool{}, false, nil
+	})
+	ctx := context.Background()
+
+	// The static ReplayClassOf can't see the registry tool — it defaults to pure (the latent hole).
+	if got := broker.ReplayClassOf("reg.irreversible"); got != ClassPure {
+		t.Fatalf("static ReplayClassOf(registry) = %q, want the ClassPure static-miss default", got)
+	}
+	// The resolved variant reads the DECLARED class through the lookup → needs a pre-write marker.
+	got, err := broker.ReplayClassResolved(ctx, ExecEnv{}, "reg.irreversible")
+	if err != nil {
+		t.Fatalf("ReplayClassResolved error = %v", err)
+	}
+	if got != ClassIrreversible || !NeedsPreWrite(got) {
+		t.Fatalf("resolved class = %q needsPreWrite=%v, want irreversible + pre-write", got, NeedsPreWrite(got))
+	}
+	// A static tool still resolves its own class; an unknown name is ClassPure.
+	if got, _ := broker.ReplayClassResolved(ctx, ExecEnv{}, "static.pure"); got != ClassPure {
+		t.Fatalf("resolved static class = %q, want pure", got)
+	}
+	if got, _ := broker.ReplayClassResolved(ctx, ExecEnv{}, "nope"); got != ClassPure {
+		t.Fatalf("resolved unknown class = %q, want pure", got)
+	}
+}
