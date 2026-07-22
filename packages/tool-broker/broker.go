@@ -274,6 +274,10 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 		return Outcome{}, err
 	}
 
+	// env is a value copy, so stamping the per-call identity here never touches the caller's template.
+	// A remote_http tool reads these for its invoke Idempotency-Key + durable operation row (E12 T4).
+	env.CallID = callID
+	env.Fence = fence
 	result, err := tool.invoke(ctx, env, args)
 	if err != nil {
 		r.state, _, _ = statemachines.Apply(state, statemachines.ToolCallCmdFail, statemachines.ToolCallTable)

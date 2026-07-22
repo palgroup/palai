@@ -181,6 +181,37 @@ func TestPureToolReplayLabeledNoDuplication(t *testing.T) {
 	}
 }
 
+// TestExecReceivesCallIDAndFence proves the broker hands a workspace/registry tool the per-call identity
+// its Exec surface needs (E12 T4): the remote_http binder keys the invoke Idempotency-Key on the
+// tool_call_id and stamps the operation row with the live attempt fence, so both must reach Exec through
+// ExecEnv. Execute sets them per-call on a copy, so a caller's shared ExecEnv template is never mutated.
+func TestExecReceivesCallIDAndFence(t *testing.T) {
+	var gotCall contracts.ToolCallID
+	var gotFence uint64
+	tool := Tool{
+		Name: "remote.echo", InputSchema: openObject, OutputSchema: openObject, ReplayClass: ClassIdempotent,
+		Exec: func(_ context.Context, env ExecEnv, args map[string]any) (map[string]any, error) {
+			gotCall, gotFence = env.CallID, env.Fence
+			return args, nil
+		},
+	}
+	broker := New(tool)
+	// A template ExecEnv the caller reuses across calls — Execute must not mutate it.
+	template := ExecEnv{}
+	if _, err := broker.Execute(context.Background(), contracts.ToolCallID("tc_remote_1"), "remote.echo", map[string]any{}, 7, template); err != nil {
+		t.Fatalf("execute error = %v", err)
+	}
+	if gotCall != contracts.ToolCallID("tc_remote_1") {
+		t.Fatalf("Exec saw CallID %q, want tc_remote_1", gotCall)
+	}
+	if gotFence != 7 {
+		t.Fatalf("Exec saw Fence %d, want 7", gotFence)
+	}
+	if template.CallID != "" || template.Fence != 0 {
+		t.Fatalf("Execute mutated the caller's ExecEnv template (CallID=%q Fence=%d)", template.CallID, template.Fence)
+	}
+}
+
 // TestRegistryLookupFallback proves the E12 SetLookup fallback: a tool absent from the static conformance
 // set is resolved by the injected per-tenant lookup and then runs through the SAME fence/ledger/replay
 // machinery — a completed row replays cached. A lookup miss (or no lookup) is ErrUnknownTool, and the
