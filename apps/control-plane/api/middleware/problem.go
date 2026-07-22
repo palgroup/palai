@@ -38,6 +38,7 @@ var problemTitles = map[string]string{
 	"invalid_token":              "Invalid token",
 	"missing_idempotency_key":    "Missing idempotency key",
 	"invalid_request":            "Invalid request",
+	"invalid_cursor":             "Invalid pagination cursor",
 	"idempotency_mismatch":       "Idempotency key reused with a different request",
 	"not_found":                  "Not found",
 	"idempotency_result_expired": "Idempotent result expired",
