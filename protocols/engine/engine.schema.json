@@ -41,6 +41,7 @@
       "type": "object",
       "required": ["name", "arguments"],
       "properties": {
+        "id": {"type": "string", "description": "The provider's tool_call id (E12 T1b); optional and additive — deterministic fakes and pre-T1b checkpoints may omit it. Recorded verbatim on the assistant turn so the engine can translate the synthetic tcall_ id to it when writing the tool result to the provider conversation. The synthetic tcall_ id still keys the tool.request/tool.result frames and the platform ledger."},
         "name": {"type": "string"},
         "arguments": {"type": "object"}
       }

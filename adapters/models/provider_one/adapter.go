@@ -324,9 +324,14 @@ func wireMessages(messages []modelbroker.Message) []map[string]any {
 			calls := make([]map[string]any, 0, len(m.ToolCalls))
 			for _, c := range m.ToolCalls {
 				calls = append(calls, map[string]any{
-					"id":       c.ID,
-					"type":     "function",
-					"function": map[string]any{"name": c.Name, "arguments": c.Arguments},
+					"id":   c.ID,
+					"type": "function",
+					// Wire-encode the history tool name to the provider charset [A-Za-z0-9_-], symmetric
+					// with buildBody's tools array — OpenAI 400s an assistant tool_call whose function
+					// name (the canonical dotted name) does not match ^[A-Za-z0-9_-]+$, which would
+					// break every multi-step continuation (E12 T1b sibling; the deferred symmetry the
+					// real provider forced once the id threaded).
+					"function": map[string]any{"name": wireToolName(c.Name), "arguments": c.Arguments},
 				})
 			}
 			wire["tool_calls"] = calls

@@ -249,7 +249,7 @@ func toEngineToolCalls(calls []modelbroker.ToolCall) ([]contracts.ToolCall, erro
 				return nil, fmt.Errorf("tool call %q arguments are not a JSON object", c.Name)
 			}
 		}
-		out = append(out, contracts.ToolCall{Name: c.Name, Arguments: args})
+		out = append(out, contracts.ToolCall{ID: c.ID, Name: c.Name, Arguments: args})
 	}
 	return out, nil
 }

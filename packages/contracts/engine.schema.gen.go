@@ -15,5 +15,6 @@ type EngineFrame struct {
 
 type ToolCall struct {
 	Arguments map[string]any `json:"arguments"`
+	ID        string         `json:"id,omitempty"`
 	Name      string         `json:"name"`
 }
