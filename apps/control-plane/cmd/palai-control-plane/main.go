@@ -38,10 +38,17 @@ import (
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
+	"github.com/palgroup/palai/storage"
 )
 
 func main() {
-	ctx := context.Background()
+	// The process-lifetime context is the control plane's SYSTEM scope: it drives migration, the
+	// bootstrap seed, and the background loops that are cross-tenant by construction (the job claim
+	// loop, the reconciler, the retention reaper, the outbox/webhook/schedule pumps). Nothing serving
+	// an HTTP request inherits it — a request's scope is published by the auth middleware from the
+	// verified API key, and a claimed job's work is re-scoped to that job's tenant by the worker
+	// (migration 000029).
+	ctx := storage.WithSystemScope(context.Background())
 
 	databaseURL := os.Getenv("PALAI_DATABASE_URL")
 	if databaseURL == "" {

@@ -23,6 +23,7 @@ const purgeBatch = 100
 // object keys of the artifacts it scrubbed, so the caller can delete those bytes from the
 // object store after this transaction has committed (LP §7.2).
 func (s *Store) PurgeExpiredStoreFalse(ctx context.Context, ttl time.Duration) (int, []string, error) {
+	ctx = storage.WithSystemScope(ctx) // retention sweep: spans every tenant by construction
 	if ttl < 0 {
 		return 0, nil, errors.New("retention TTL must not be negative")
 	}

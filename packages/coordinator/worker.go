@@ -52,6 +52,9 @@ func (s *Store) ClaimNext(ctx context.Context, owner string, lease time.Duration
 	if owner == "" || lease <= 0 {
 		return Claim{}, nil, errors.New("owner and positive lease are required")
 	}
+	// Deliberately cross-tenant: the claim SELECTS the tenant it will work for, so it cannot be
+	// scoped by one. The row it returns immediately narrows everything downstream (Worker.process).
+	ctx = storage.WithSystemScope(ctx)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Claim{}, nil, fmt.Errorf("begin claim: %w", err)
@@ -121,7 +124,11 @@ func (w *Worker) process(ctx context.Context, claim Claim, payload []byte) error
 	go func() { defer close(hbDone); w.heartbeat(hbCtx, claim) }()
 	defer func() { stopHeartbeat(); <-hbDone }()
 
-	resultHash, handlerErr := w.handle(ctx, claim, payload)
+	// The queue is cross-tenant infrastructure, but the WORK is not: the handler runs under the
+	// claimed job's own tenant, so everything a run touches from here down is scoped by migration
+	// 000029's policies exactly as an API request would be. Only the claim/complete/fail statements
+	// around it stay system-scoped (see ClaimNext).
+	resultHash, handlerErr := w.handle(storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project), claim, payload)
 	stopHeartbeat()
 	<-hbDone
 

@@ -87,7 +87,7 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
 // Migrate applies the forward core migration. It is safe to run repeatedly.
 func (s *Store) Migrate(ctx context.Context) error {
-	if _, err := s.pool.Exec(ctx, storage.MigrationUp()); err != nil {
+	if err := s.asOwner(ctx, storage.MigrationUp()); err != nil {
 		return fmt.Errorf("apply migration: %w", err)
 	}
 	return nil
@@ -95,10 +95,27 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 // Rollback reverses the core migration.
 func (s *Store) Rollback(ctx context.Context) error {
-	if _, err := s.pool.Exec(ctx, storage.MigrationDown()); err != nil {
+	if err := s.asOwner(ctx, storage.MigrationDown()); err != nil {
 		return fmt.Errorf("roll back migration: %w", err)
 	}
 	return nil
+}
+
+// asOwner runs DDL on a connection stepped back off the non-owner runtime role. Ordinary queries run
+// as storage.RuntimeRole so migration 000029's policies apply to them; schema changes cannot — that
+// role owns nothing and may not ALTER. RESET ROLE lasts only as long as this acquisition: the pool
+// re-applies the runtime role the next time the connection is handed out.
+func (s *Store) asOwner(ctx context.Context, statements string) error {
+	conn, err := s.pool.Acquire(storage.WithSystemScope(ctx))
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "RESET ROLE"); err != nil {
+		return fmt.Errorf("reset to owning role: %w", err)
+	}
+	_, err = conn.Exec(ctx, statements)
+	return err
 }
 
 // CurrentJournalSequence returns the highest event seq in the session's journal, or 0 for an empty
@@ -292,6 +309,9 @@ func (s *Store) LeaseExpired(ctx context.Context, tenant Tenant, jobID string) (
 // transaction. A completion whose fence no longer owns the job affects zero rows
 // and returns ErrStaleFence without writing result or outbox state.
 func (s *Store) Complete(ctx context.Context, claim Claim, resultHash string) error {
+	// Scoped by the CLAIM's own tenant: the claim is the verified job identity, so this lease
+	// operation is tenant-scoped even though the loop that issued it spans tenants.
+	ctx = storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
 	if claim.JobID == "" || claim.Fence < 1 || resultHash == "" {
 		return errors.New("valid claim and result hash are required")
 	}
@@ -473,6 +493,10 @@ func HashAPIKey(token string) string {
 func (s *Store) VerifyAPIKey(ctx context.Context, token string) (Identity, error) {
 	var id Identity
 	var project *string
+	// The one read that CANNOT be tenant-scoped: it is what establishes the tenant, so there is no
+	// palai.org_id to publish yet. It runs under the system scope, keyed by the credential hash — a
+	// caller can only reach the row whose secret they already hold.
+	ctx = storage.WithSystemScope(ctx)
 	err := s.pool.QueryRow(ctx, storage.Query("VerifyAPIKey"), HashAPIKey(token)).
 		Scan(&id.Organization, &project, &id.Principal)
 	if errors.Is(err, pgx.ErrNoRows) {

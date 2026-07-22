@@ -13,11 +13,13 @@ cd "$root"
 
 # shellcheck source=scripts/test/runner-engine.sh
 source "$root/scripts/test/runner-engine.sh"
+# shellcheck source=scripts/test/postgres-container.sh
+source "$root/scripts/test/postgres-container.sh"
 
 # Default runs the engine-isolation suite, the E09 Task 4 workspace shell-tool suite, the E12 Task 6 MCP
-# confused-deputy corpus, and the E12 Task 7 skill security corpus; select one with
-# TEST=runner|sandbox|extensions|skills.
-suites="${TEST:-runner sandbox extensions skills}"
+# confused-deputy corpus, the E12 Task 7 skill security corpus, and the E13 Task 1 cross-tenant corpus;
+# select one with TEST=runner|sandbox|extensions|skills|tenancy.
+suites="${TEST:-runner sandbox extensions skills tenancy}"
 
 run_runner() {
   run_runner_suite security ./tests/security/runner
@@ -56,14 +58,33 @@ run_extensions() {
   echo "security_extensions_hooks=PASS"
 }
 
+# The tenancy suite is the E13 Task 1 cross-tenant negative corpus (TEN-001/TEN-002): a WHERE-less
+# query on the non-owner runtime role is denied BY POSTGRES, a connection with no palai.org_id sees
+# zero tenant rows, and a foreign write trips the policy's WITH CHECK. It needs a real database, so it
+# boots the same pinned throwaway Postgres the component tier uses.
+run_tenancy() {
+  local url status
+  url="$(start_postgres 'io.palai.security=tenancy')"
+  trap stop_postgres EXIT
+  set +e
+  PALAI_SECURITY_POSTGRES_URL="$url" go test -tags=security -count=1 -v ./tests/security/tenancy
+  status=$?
+  set -e
+  test "$status" -eq 0 || postgres_logs
+  stop_postgres
+  trap - EXIT
+  return "$status"
+}
+
 for suite in $suites; do
   case "$suite" in
     runner) run_runner ;;
     sandbox) run_sandbox ;;
     extensions) run_extensions ;;
     skills) run_skills ;;
+    tenancy) run_tenancy ;;
     *)
-      echo "unknown security suite: $suite (known: runner, sandbox, extensions, skills)" >&2
+      echo "unknown security suite: $suite (known: runner, sandbox, extensions, skills, tenancy)" >&2
       exit 2
       ;;
   esac

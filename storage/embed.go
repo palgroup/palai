@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -298,6 +299,20 @@ var migrationDown28 string
 //go:embed queries/hooks.sql
 var hooksSQL string
 
+// 000029 turns tenant isolation into a database guarantee (E13 Task 1, TEN-001/TEN-002): ENABLE + FORCE
+// ROW LEVEL SECURITY with one identical org (and, where the table has it, project) policy per
+// tenant-scoped table, enforced against 000001's already-declared non-owner `palai_app` role that
+// OpenPool now switches every application connection onto. It creates no table and alters no column —
+// it re-asserts policies over whatever the chain has defined by then, so it must stay LAST in the
+// chain's semantics even as 000030+ append after it (each new tenant table carries its own policy via
+// the catalogue-driven loop on the next boot; tests/security/tenancy fails if one does not).
+//
+//go:embed migrations/000029_row_level_security.up.sql
+var migrationUp29 string
+
+//go:embed migrations/000029_row_level_security.down.sql
+var migrationDown29 string
+
 //go:embed queries/jobs.sql
 var jobsSQL string
 
@@ -351,13 +366,13 @@ var recoverySQL string
 // (E11 Task 4 webhooks + events cursor rider) land in parallel and interleave here at merge; 000021 (E11
 // Task 2 triggers) opens from the tip of both; 000022 (E11 Task 3 schedules) opens from the tip of 000021.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp17 + "\n" + migrationUp18 + "\n" + migrationUp19 + "\n" + migrationUp20 + "\n" + migrationUp21 + "\n" + migrationUp22 + "\n" + migrationUp23 + "\n" + migrationUp24 + "\n" + migrationUp25 + "\n" + migrationUp26 + "\n" + migrationUp27 + "\n" + migrationUp28
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp17 + "\n" + migrationUp18 + "\n" + migrationUp19 + "\n" + migrationUp20 + "\n" + migrationUp21 + "\n" + migrationUp22 + "\n" + migrationUp23 + "\n" + migrationUp24 + "\n" + migrationUp25 + "\n" + migrationUp26 + "\n" + migrationUp27 + "\n" + migrationUp28 + "\n" + migrationUp29
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: each migration drops its added
 // objects before the earlier one drops the tables that carried them.
 func MigrationDown() string {
-	return migrationDown28 + "\n" + migrationDown27 + "\n" + migrationDown26 + "\n" + migrationDown25 + "\n" + migrationDown24 + "\n" + migrationDown23 + "\n" + migrationDown22 + "\n" + migrationDown21 + "\n" + migrationDown20 + "\n" + migrationDown19 + "\n" + migrationDown18 + "\n" + migrationDown17 + "\n" + migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown29 + "\n" + migrationDown28 + "\n" + migrationDown27 + "\n" + migrationDown26 + "\n" + migrationDown25 + "\n" + migrationDown24 + "\n" + migrationDown23 + "\n" + migrationDown22 + "\n" + migrationDown21 + "\n" + migrationDown20 + "\n" + migrationDown19 + "\n" + migrationDown18 + "\n" + migrationDown17 + "\n" + migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
 var namedQueries = parseNamedQueries(agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL, triggersSQL, schedulesSQL, toolsSQL, remoteToolsSQL, mcpSQL, skillsSQL, hooksSQL)
@@ -400,6 +415,22 @@ func parseNamedQueries(files ...string) map[string]string {
 	return out
 }
 
+// applyScope is the statement every acquisition runs before the caller's first query. It does two
+// things in one round trip:
+//
+//   - Switches the session onto the non-owner RuntimeRole, so migration 000029's row-level-security
+//     policies actually apply (they are inert for the owner or a superuser). The role is looked up
+//     rather than named literally so a pool opened against a database whose chain has not run yet —
+//     the very first boot, before 000001 creates it — still connects and can migrate.
+//   - Publishes the acquiring context's tenant into palai.org_id / palai.project_id / palai.system,
+//     which is what the policies read. An unmarked context publishes empty strings, and the policies
+//     then match nothing: a query that forgot to declare its tenant returns zero rows instead of
+//     the whole installation.
+const applyScope = `SELECT set_config('palai.org_id', $1, false),
+       set_config('palai.project_id', $2, false),
+       set_config('palai.system', $3, false),
+       set_config('role', coalesce((SELECT rolname FROM pg_roles WHERE rolname = $4), 'none'), false)`
+
 // OpenPool opens a verified connection pool. The URL carries a local throwaway
 // credential supplied by the caller; it is never embedded here.
 func OpenPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
@@ -411,6 +442,26 @@ func OpenPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("parse database URL: %w", err)
 	}
 	config.MaxConns = 8
+	// The scope is re-applied per ACQUISITION, not per connection: a pooled connection is handed to
+	// one caller at a time, so the tenant it published cannot outlive the acquisition that set it and
+	// cannot bleed into the next borrower.
+	//
+	// ponytail: one extra round trip per acquire. Correct and stateless; if it ever shows up in
+	// latency, cache the last-applied scope per *pgx.Conn (keyed off a map cleaned in BeforeClose) and
+	// skip the statement when it is unchanged.
+	config.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
+		s := scopeFrom(ctx)
+		system := ""
+		if s.system {
+			system = "on"
+		}
+		if _, err := conn.Exec(ctx, applyScope, s.organization, s.project, system, RuntimeRole); err != nil {
+			// Destroy the connection and fail the instigating query: a connection whose scope could
+			// not be published must never serve a query, because it would serve it unscoped.
+			return false, fmt.Errorf("apply tenant scope: %w", err)
+		}
+		return true, nil
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open database pool: %w", err)
