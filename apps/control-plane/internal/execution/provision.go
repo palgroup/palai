@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -56,6 +57,14 @@ func (o *Orchestrator) provisionRootWorkspace(ctx context.Context, tenant coordi
 	}
 	if err != nil {
 		return "", "", "", err
+	}
+
+	// Materialize the run's frozen skills into the allocation (spec §28.16, progressive loading half-2):
+	// each pinned skill's sanitized body lands at <alloc>/.palai/skills/<name>/, a sibling of the repo (so
+	// it never enters a changeset), readable on-demand via the FileTool. Both the fresh-clone and the
+	// reuse path run this, so every run refreshes its own skills; a skill-less run materializes nothing.
+	if err := o.store.MaterializeRunSkills(ctx, tenant, runID, alloc.HostPath); err != nil {
+		return "", "", "", fmt.Errorf("materialize run skills: %w", err)
 	}
 
 	// The single writer lease the root run holds for the whole run (spec §29.8), released at attempt end.

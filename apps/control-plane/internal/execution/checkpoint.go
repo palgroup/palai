@@ -196,7 +196,7 @@ func (o *Orchestrator) effectiveConfigHash(ctx context.Context, st *attemptState
 	// The run's pinned agent/template revision (spec §14, AGT-001) — read per boundary. The pin is
 	// immutable on the run row, so this resolves to the SAME config even after a later revision of the
 	// same profile is published, keeping a checkpointed run's config hash reproducible.
-	revID, revModel, revTools, revToolSetTools, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	revID, revModel, revTools, revToolSetTools, skillPins, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
 	if err != nil {
 		return "", err
 	}
@@ -208,6 +208,7 @@ func (o *Orchestrator) effectiveConfigHash(ctx context.Context, st *attemptState
 		AgentRevisionModel:        revModel,
 		AgentRevisionTools:        revTools,
 		AgentRevisionToolSetTools: revToolSetTools,
+		SkillPinsJSON:             skillPins,
 		SessionModel:              override.Model,
 		SessionTools:              override.Tools,
 	})

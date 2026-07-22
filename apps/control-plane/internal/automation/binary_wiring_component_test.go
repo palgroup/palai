@@ -59,7 +59,7 @@ func TestTriggerDeliveryWiredIntoRunningBinary(t *testing.T) {
 	// main.go's OWN wiring: the same NewRouter seam list + the same supervised "delivery-reconciler".
 	webhookStore := automation.NewWebhookStore(repo.Spine().Pool())
 	triggerStore := automation.NewTriggerStore(repo.Spine().Pool()).WithAdmitter(repo.Spine())
-	router := api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, nil, nil, nil, api.SSEConfig{}, nil, nil)
+	router := api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, nil, nil, nil, nil, api.SSEConfig{}, nil, nil)
 	srv := httptest.NewServer(router)
 	t.Cleanup(srv.Close)
 

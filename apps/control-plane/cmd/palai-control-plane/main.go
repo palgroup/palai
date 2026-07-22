@@ -98,7 +98,7 @@ func main() {
 		// The signed remote-tool result callback endpoint (spec §28.24, E12 T4): its auth IS the per-operation
 		// HMAC signature + one-use token, so it rides the top mux unauthenticated (like the inbound receiver).
 		// The SAME org-scoped secret bridge signs the outbound invoke and verifies the inbound callback.
-		Handler: withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, repo, sseConfigFromEnv(), nil,
+		Handler: withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, repo, repo, sseConfigFromEnv(), nil,
 			api.NewToolCallbackHandler(remotehttp.NewOperations(repo.Spine().Pool()), remoteToolSecretResolver)), supervisor),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

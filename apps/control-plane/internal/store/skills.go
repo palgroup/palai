@@ -1,0 +1,181 @@
+package store
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+
+	"github.com/palgroup/palai/apps/control-plane/api"
+	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
+	"github.com/palgroup/palai/packages/coordinator"
+	"github.com/palgroup/palai/packages/egress"
+)
+
+// PinRunSkills freezes a run's skill pins ONCE at run-start (spec §28.16, TOL-011): it resolves the
+// pinned revision's REQUESTED skill names to their ENABLED revisions' digest + metadata and writes the
+// frozen {name,description,digest,path} set to the run row. An unknown or not-enabled requested skill is
+// a VISIBLE error — the run fails at start rather than silently dropping a skill the revision named. A
+// run with no requested skills, or one already pinned (a resumed attempt), is a no-op. It spans both
+// stores (the spine reads the request + writes the pin; the extensions store resolves the digests), so
+// it lives here where both are in scope.
+func (s *Store) PinRunSkills(ctx context.Context, tenant coordinator.Tenant, runID string) error {
+	requested, alreadyPinned, err := s.spine.RunSkillPinInputs(ctx, tenant, runID)
+	if err != nil {
+		return err
+	}
+	if alreadyPinned || len(requested) == 0 {
+		return nil
+	}
+	pins, err := s.tools.ResolveEnabledSkills(ctx, tenant.Organization, tenant.Project, requested)
+	if err != nil {
+		return err // an unknown / not-enabled skill surfaces as a run-start failure (never a silent drop)
+	}
+	pinsJSON, err := json.Marshal(pins)
+	if err != nil {
+		return err
+	}
+	_, err = s.spine.PinRunSkills(ctx, tenant, runID, pinsJSON)
+	return err
+}
+
+// MaterializeRunSkills unpacks a run's FROZEN skills into its workspace allocation (spec §28.16,
+// progressive loading half-2): for each pinned skill, it loads the sanitized archive BY DIGEST (the pin's
+// exact digest — never "latest") and extracts it under <hostPath>/.palai/skills/<name>/, a sibling of the
+// repo so it never enters a changeset diff. The body is then readable on-demand via the FileTool; a run
+// with no workspace (or no skills) materializes nothing — the model still sees the metadata rider, but
+// the body is unreadable (the visible boundary). Idempotent: it overwrites with digest-equal content.
+func (s *Store) MaterializeRunSkills(ctx context.Context, tenant coordinator.Tenant, runID, hostPath string) error {
+	_, _, _, _, pinsJSON, err := s.spine.PinnedExecConfig(ctx, tenant, runID)
+	if err != nil {
+		return err
+	}
+	if len(pinsJSON) == 0 {
+		return nil
+	}
+	var pins []extensions.SkillPin
+	if err := json.Unmarshal(pinsJSON, &pins); err != nil {
+		return err
+	}
+	skillsRoot := filepath.Join(hostPath, ".palai", "skills")
+	for _, p := range pins {
+		// Belt-and-suspenders (SEC-1): the name is validated at create, but a pin must NEVER write outside
+		// the skills root — a `..` that slipped through cannot escape the run allocation on the shared host.
+		destDir := filepath.Join(skillsRoot, p.Name)
+		if rel, err := filepath.Rel(skillsRoot, destDir); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("skill %q resolves outside the skills root", p.Name)
+		}
+		archive, err := s.tools.LoadSkillArchive(ctx, tenant.Organization, tenant.Project, p.Digest)
+		if err != nil {
+			return err
+		}
+		if err := extensions.ExtractSanitizedArchive(archive, destDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// The E12 skills management surface (spec §20.2, §28.15-28.16, TOL-011). These methods adapt the
+// tenant-scoped api.SkillRegistryAPI contract to the extensions store: scope → (organization, project),
+// the typed rejects → api.SkillResult flags, and a committed row → its JSON projection. Install and
+// enable are admin actions — there is no model-facing install surface.
+
+// CreateSkill registers a named skill lineage. A name collision is a Conflict (409).
+func (s *Store) CreateSkill(ctx context.Context, scope middleware.Scope, body []byte) (api.SkillResult, error) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return api.SkillResult{BadField: true}, nil
+	}
+	skill, err := s.tools.CreateSkill(ctx, scope.Organization, scope.Project, req.Name)
+	if res, mapped := skillReject(err); mapped {
+		return res, nil
+	}
+	if err != nil {
+		return api.SkillResult{}, err
+	}
+	return api.SkillResult{Body: mustJSON(map[string]any{"id": skill.ID, "object": "skill", "name": skill.Name})}, nil
+}
+
+// InstallSkillRevision installs a revision by URL: fetch (hardened egress) → quarantine → digest →
+// metadata. An unsafe archive / denied source is a BadField (400); an unknown skill is a NotFound (404).
+func (s *Store) InstallSkillRevision(ctx context.Context, scope middleware.Scope, skillID string, body []byte) (api.SkillResult, error) {
+	var req struct {
+		SourceURL string `json:"source_url"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		return api.SkillResult{BadField: true}, nil
+	}
+	rev, err := s.tools.InstallSkillRevisionFromURL(ctx, scope.Organization, scope.Project, skillID, req.SourceURL)
+	if res, mapped := skillReject(err); mapped {
+		return res, nil
+	}
+	if err != nil {
+		return api.SkillResult{}, err
+	}
+	return api.SkillResult{Body: mustJSON(map[string]any{
+		"id": rev.ID, "object": "skill_revision", "skill_id": rev.SkillID,
+		"revision_number": rev.RevisionNumber, "digest": rev.Digest, "state": rev.State,
+		"scan_findings": rev.Findings,
+	})}, nil
+}
+
+// EnableSkillRevision enables an approved revision. Scan findings → Conflict (409); unknown → NotFound.
+func (s *Store) EnableSkillRevision(ctx context.Context, scope middleware.Scope, skillID, revisionID string) (api.SkillResult, error) {
+	exists, err := s.tools.EnableSkillRevision(ctx, scope.Organization, scope.Project, revisionID)
+	if res, mapped := skillReject(err); mapped {
+		return res, nil
+	}
+	if err != nil {
+		return api.SkillResult{}, err
+	}
+	if !exists {
+		return api.SkillResult{NotFound: true}, nil
+	}
+	return api.SkillResult{Body: mustJSON(map[string]any{"id": revisionID, "object": "skill_revision", "state": "enabled"})}, nil
+}
+
+// ListSkills lists a project's skill lineages.
+func (s *Store) ListSkills(ctx context.Context, scope middleware.Scope) (api.SkillResult, error) {
+	skills, err := s.tools.ListSkills(ctx, scope.Organization, scope.Project)
+	if err != nil {
+		return api.SkillResult{}, err
+	}
+	data := make([]any, 0, len(skills))
+	for _, sk := range skills {
+		data = append(data, map[string]any{"id": sk.ID, "object": "skill", "name": sk.Name})
+	}
+	return api.SkillResult{Body: mustJSON(map[string]any{"object": "list", "data": data})}, nil
+}
+
+// skillReject maps a typed domain error to its api.SkillResult reject flag: a bad source/archive → 400,
+// a name/state conflict → 409, an absent skill/revision → 404. A nil or unrecognised error is not mapped
+// (a transient/DB error surfaces as a 500 through the caller).
+func skillReject(err error) (api.SkillResult, bool) {
+	switch {
+	case err == nil:
+		return api.SkillResult{}, false
+	case errors.Is(err, extensions.ErrUnsafeArchive),
+		errors.Is(err, extensions.ErrSkillMetadataMissing),
+		errors.Is(err, extensions.ErrInvalidSkillName),
+		errors.Is(err, egress.ErrDenied):
+		return api.SkillResult{BadField: true}, true
+	case errors.Is(err, extensions.ErrSkillNameCollision),
+		errors.Is(err, extensions.ErrScanFindingsBlockEnable):
+		return api.SkillResult{Conflict: true}, true
+	case errors.Is(err, extensions.ErrSkillNotFound):
+		return api.SkillResult{NotFound: true}, true
+	default:
+		return api.SkillResult{}, false
+	}
+}

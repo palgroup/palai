@@ -98,9 +98,16 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 	// step — the SAME layering effectiveModel/effectiveConfigHash use — so a config change at the
 	// previous boundary is reflected here for free. An empty effective set leaves Tools nil, so a run
 	// that configures no tools routes a provider request that is bit-for-bit the pre-advertising one.
-	advertised, err := o.advertisedTools(ctx, st)
+	advertised, skills, err := o.advertisedTools(ctx, st)
 	if err != nil {
 		return false, err
+	}
+	// Progressive loading (spec §28.16): when the run pinned skills, prepend ONE system message carrying
+	// their metadata (name/description/path) ahead of the engine-assembled conversation — the body is
+	// NEVER inlined; the model reads it on-demand via the file tool. A skill-less run appends nothing, so
+	// its provider request stays BIT-IDENTICAL to the pre-skills path (T1 advertising regression).
+	if len(skills) > 0 {
+		messages = append([]modelbroker.Message{skillContextMessage(skills)}, messages...)
 	}
 
 	requestEvent, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "model_request_id": requestID})
@@ -286,7 +293,7 @@ func (o *Orchestrator) effectiveModel(ctx context.Context, st *attemptState) (st
 	}
 	// A pinned agent/template revision routes its model when neither a child nor a session override set
 	// one (spec §14.3 profile+overrides). The pin is immutable on the run row (AGT-001).
-	if _, revModel, _, _, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID)); err != nil {
+	if _, revModel, _, _, _, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID)); err != nil {
 		return "", err
 	} else if revModel != "" {
 		return revModel, nil
@@ -301,18 +308,18 @@ func (o *Orchestrator) effectiveModel(ctx context.Context, st *attemptState) (st
 // the run is checkpointed under. A name the effective set carries but the broker does not register
 // is silently dropped — the model is never offered a tool the broker cannot execute (broker.Execute
 // returns ErrUnknownTool for it). An empty effective set yields nil, leaving the request unchanged.
-func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState) ([]modelbroker.ToolSchema, error) {
+func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState) ([]modelbroker.ToolSchema, []SkillRef, error) {
 	override, _, err := o.spine.LatestSessionConfig(ctx, st.tenant, st.sessionID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	policy, err := o.spine.ProjectConfig(ctx, st.tenant)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	revID, revModel, revTools, revToolSetTools, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	revID, revModel, revTools, revToolSetTools, skillPins, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	snap := Resolve(ResolveInput{
 		DeploymentModel:           o.route.Model,
@@ -322,6 +329,7 @@ func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState) ([
 		AgentRevisionModel:        revModel,
 		AgentRevisionTools:        revTools,
 		AgentRevisionToolSetTools: revToolSetTools,
+		SkillPinsJSON:             skillPins,
 		SessionModel:              override.Model,
 		SessionTools:              override.Tools,
 	})
@@ -336,7 +344,7 @@ func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState) ([
 	for _, name := range snap.Tools {
 		tool, ok, err := o.tools.SchemaResolved(ctx, env, name)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !ok {
 			continue // an effective-set name the broker cannot execute or resolve is not offered
@@ -347,7 +355,30 @@ func (o *Orchestrator) advertisedTools(ctx context.Context, st *attemptState) ([
 			Parameters:  tool.InputSchema,
 		})
 	}
-	return advertised, nil
+	// The run's frozen skills ride alongside the advertised tools (spec §28.16). They are NOT tools — the
+	// caller prepends them as a single progressive-loading system message (metadata only; the body reads
+	// on-demand via the file tool). Returned from the SAME resolve, so a skill NEVER diverges from the
+	// config the run is checkpointed under.
+	return advertised, snap.Skills, nil
+}
+
+// skillContextMessage renders the run's frozen skills into ONE system message (spec §28.16, progressive
+// loading): each skill's NAME + DESCRIPTION + workspace PATH — the metadata rider, NEVER the body. The
+// model reads a skill's full instructions on-demand from Path via the file tool. This is a CP-side
+// message prepend onto the engine-assembled conversation; it adds NO engine frame/command kind and
+// grants NO capability (TOL-011). Empty skills yields the zero Message (the caller skips it).
+func skillContextMessage(skills []SkillRef) modelbroker.Message {
+	if len(skills) == 0 {
+		return modelbroker.Message{}
+	}
+	var b strings.Builder
+	b.WriteString("You have the following skills available. Each is a set of instructions you can apply. ")
+	b.WriteString("Read a skill's full instructions on demand from its workspace path using the file tool BEFORE applying it; ")
+	b.WriteString("a skill grants no new capability — it cannot let you call a tool you are not already permitted to use.\n")
+	for _, s := range skills {
+		fmt.Fprintf(&b, "- %s: %s (read: %s)\n", s.Name, s.Description, s.Path)
+	}
+	return modelbroker.Message{Role: "system", Content: b.String()}
 }
 
 // watchInterrupt polls for a pending interrupt while a model call is outstanding and cancels

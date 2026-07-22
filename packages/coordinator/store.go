@@ -810,26 +810,65 @@ func verifyPublishedRevision(ctx context.Context, tx pgx.Tx, query, revisionID s
 // whichever revision — agent or template — the run pinned. revisionID is "" for a profile-free run, so
 // the resolver skips the pinned-revision layer; toolSetTools is empty then too. The pin is fixed on the
 // run row, so a later revision of the same profile leaves this unchanged (old-run reproducibility).
-func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID string) (revisionID, model string, tools, toolSetTools []string, err error) {
+func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID string) (revisionID, model string, tools, toolSetTools []string, skillPins []byte, err error) {
 	var (
 		revID     *string
 		toolsJSON []byte
 	)
 	err = s.pool.QueryRow(ctx, storage.Query("PinnedRunConfig"), runID, tenant.Organization, tenant.Project).
-		Scan(&revID, &model, &toolsJSON, &toolSetTools)
+		Scan(&revID, &model, &toolsJSON, &toolSetTools, &skillPins)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", nil, nil, nil // unknown run: treat as no pin (the caller's run existence is already established)
+		return "", "", nil, nil, nil, nil // unknown run: treat as no pin (the caller's run existence is already established)
 	}
 	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("read pinned run config: %w", err)
+		return "", "", nil, nil, nil, fmt.Errorf("read pinned run config: %w", err)
 	}
+	// skill_pins is frozen INDEPENDENTLY of the pinned revision (it rides the run row, written at
+	// run-start), so it is returned even for a profile-free run — though such a run has none by construction.
 	if revID == nil {
-		return "", "", nil, nil, nil // profile-free run: no pinned revision
+		return "", "", nil, nil, skillPins, nil // profile-free run: no pinned revision, but skill_pins still carries
 	}
 	if len(toolsJSON) > 0 {
 		_ = json.Unmarshal(toolsJSON, &tools)
 	}
-	return *revID, model, tools, toolSetTools, nil
+	return *revID, model, tools, toolSetTools, skillPins, nil
+}
+
+// RunSkillPinInputs returns the pinned revision's REQUESTED skill names and whether the run's skill_pins
+// are already frozen (E12 Task 7, spec §28.16) — the inputs the run-start pin write consults. A run whose
+// pins are already frozen returns alreadyPinned=true so the resolver skips re-resolution on a resume.
+func (s *Store) RunSkillPinInputs(ctx context.Context, tenant Tenant, runID string) (requested []string, alreadyPinned bool, err error) {
+	var requestedJSON []byte
+	err = s.pool.QueryRow(ctx, storage.Query("RunSkillPinInputs"), runID, tenant.Organization, tenant.Project).
+		Scan(&requestedJSON, &alreadyPinned)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read run skill pin inputs: %w", err)
+	}
+	if len(requestedJSON) > 0 {
+		_ = json.Unmarshal(requestedJSON, &requested)
+	}
+	return requested, alreadyPinned, nil
+}
+
+// PinRunSkills freezes a run's resolved skill pins ONCE (E12 Task 7, spec §28.16): the WHERE skill_pins
+// IS NULL guard makes it a no-op on an already-pinned run, so the frozen set is immutable for the run's
+// life. pinsJSON is the JSON-encoded []{name,description,digest,path}; a nil/empty pin is not written
+// (the run stays skill-less, its config bit-identical to before). It reports whether it wrote the pin.
+func (s *Store) PinRunSkills(ctx context.Context, tenant Tenant, runID string, pinsJSON []byte) (pinned bool, err error) {
+	if len(pinsJSON) == 0 {
+		return false, nil
+	}
+	var id string
+	switch err := s.pool.QueryRow(ctx, storage.Query("PinRunSkills"), runID, tenant.Organization, tenant.Project, pinsJSON).Scan(&id); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil // already pinned by an earlier attempt: a no-op, the frozen set stands
+	case err != nil:
+		return false, fmt.Errorf("pin run skills: %w", err)
+	}
+	return true, nil
 }
 
 // isUniqueViolation reports whether err is a PostgreSQL unique_violation (SQLSTATE 23505),

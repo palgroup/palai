@@ -21,7 +21,7 @@ import (
 // correlation middleware, because it carries its own one-use-token and mTLS identity.
 // It is served over a separate mutually-authenticated listener; binding the CA and that
 // listener is Task 12, so production passes nil until then.
-func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, mcp MCPConnectionAPI, sse SSEConfig, runner http.Handler, toolCallbacks http.Handler) http.Handler {
+func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventReader, sessions SessionManager, bindings BindingRegistrar, agents AgentRegistry, webhooks WebhookAPI, triggers TriggerAPI, schedules ScheduleAPI, tools ToolRegistryAPI, mcp MCPConnectionAPI, skills SkillRegistryAPI, sse SSEConfig, runner http.Handler, toolCallbacks http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	responses := &responseHandler{admitter: admitter}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
@@ -102,6 +102,18 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mh := &mcpConnectionHandler{mcp: mcp}
 		mux.HandleFunc("POST /v1/mcp-connections", mh.createConnection)
 		mux.HandleFunc("POST /v1/mcp-connections/{id}/discover", mh.discoverConnection)
+	}
+
+	// The E12 Task 7 skills management surface (spec §20.2, §28.15-28.16, TOL-011): skill lineages +
+	// install-by-URL of an immutable quarantine-sanitized revision + the enable transition. Install and
+	// enable are ADMIN-ONLY — there is no model-facing skill-install tool (a skill is untrusted content,
+	// not a tool). nil in tiers that never touch skills.
+	if skills != nil {
+		sh := &skillHandler{skills: skills}
+		mux.HandleFunc("POST /v1/skills", sh.createSkill)
+		mux.HandleFunc("GET /v1/skills", sh.listSkills)
+		mux.HandleFunc("POST /v1/skills/{skill_id}/revisions", sh.installRevision)
+		mux.HandleFunc("POST /v1/skills/{skill_id}/revisions/{revision_id}/enable", sh.enableRevision)
 	}
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}

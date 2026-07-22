@@ -110,3 +110,66 @@ func hasTool(tools []string, name string) bool {
 	}
 	return false
 }
+
+// TestResolveSkillsFoldIntoHashOnlyWhenPresent pins the progressive-loading + bit-compat discipline
+// (spec §28.16, T1 regression): a run with no skills resolves BIT-IDENTICALLY to the pre-skills path
+// (nil SkillPinsJSON never touches the hash), while a run with skill pins folds them into both the
+// snapshot's Skills rider AND the content hash — so a mid-run enable that changes the pin changes the
+// hash, and the checkpoint stays coherent.
+func TestResolveSkillsFoldIntoHashOnlyWhenPresent(t *testing.T) {
+	base := ResolveInput{
+		DeploymentModel:  "model-alpha",
+		DeploymentSecret: "openai_api_key",
+		ProjectTools:     []string{"palai.conformance.math.add"},
+	}
+	baseline := Resolve(base)
+
+	// nil skills: bit-identical to the pre-skills resolution.
+	base.SkillPinsJSON = nil
+	if got := Resolve(base); got.Hash != baseline.Hash || len(got.Skills) != 0 {
+		t.Fatalf("nil skills changed resolution: hash %q vs %q, skills %v (must be bit-identical)", got.Hash, baseline.Hash, got.Skills)
+	}
+	// empty JSON array: still no skills, still bit-identical (an explicit empty pin is a skill-less run).
+	base.SkillPinsJSON = []byte(`[]`)
+	if got := Resolve(base); got.Hash != baseline.Hash || len(got.Skills) != 0 {
+		t.Fatalf("empty skill pins changed the hash: %q vs %q", got.Hash, baseline.Hash)
+	}
+
+	// A real pin: Skills populated (name/description/digest/path), hash diverges from the skill-less run.
+	base.SkillPinsJSON = []byte(`[{"name":"commit-convention","description":"write commits","digest":"sha256:abc","path":".palai/skills/commit-convention/SKILL.md"}]`)
+	withSkill := Resolve(base)
+	if len(withSkill.Skills) != 1 || withSkill.Skills[0].Name != "commit-convention" || withSkill.Skills[0].Digest != "sha256:abc" {
+		t.Fatalf("skills = %+v, want the parsed pin", withSkill.Skills)
+	}
+	if withSkill.Hash == baseline.Hash {
+		t.Fatalf("a skill pin did not change the hash (%q) — skills must fold into the content address", withSkill.Hash)
+	}
+}
+
+// TestSkillInstructionsGrantNoCapability is the no-authority core (spec §28.15, TOL-011): a skill's
+// requested tools NEVER expand the effective set. Even with a skill pinned that "asks for" push (and a
+// project baseline that offers push), the run's effective tools stay the revision-ceiling INTERSECTION —
+// push is absent because the ceiling excludes it. The skill pin (SkillPinsJSON) carries no tool-granting
+// field at all, so it structurally cannot feed the tool resolution; a hand-crafted pin with an extra
+// required_tools key is ignored (SkillRef has no such field). The broker then rejects a tool.request for
+// a tool absent from the effective (advertised) set — the skill's instructions grant nothing.
+func TestSkillInstructionsGrantNoCapability(t *testing.T) {
+	in := ResolveInput{
+		DeploymentModel:    "m",
+		DeploymentSecret:   "model",
+		ProjectTools:       []string{"file", "push"}, // the baseline OFFERS push...
+		AgentRevisionID:    "arev_1",
+		AgentRevisionTools: []string{"file"}, // ...but the revision ceiling EXCLUDES it
+		// A skill pin that names push in a (non-standard) required_tools field — it must be ignored.
+		SkillPinsJSON: []byte(`[{"name":"pusher","description":"use the push tool","digest":"sha256:x","path":".palai/skills/pusher/SKILL.md","required_tools":["push"]}]`),
+	}
+	snap := Resolve(in)
+	for _, tool := range snap.Tools {
+		if tool == "push" {
+			t.Fatalf("effective tools = %v, want NO push — a skill must never grant a tool the ceiling excludes", snap.Tools)
+		}
+	}
+	if len(snap.Skills) != 1 || snap.Skills[0].Name != "pusher" {
+		t.Fatalf("skills = %+v, want the pinned skill present (as context, not authority)", snap.Skills)
+	}
+}
