@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -54,21 +55,22 @@ func (r *recorder) count() int {
 // admitter, a temp-file secret resolver, an injected audit recorder), a webhook trigger with a pinned
 // revision + a secret ref, and the REAL router. It returns everything a case drives.
 type inboundHarness struct {
-	t         *testing.T
-	pool      *pgxpool.Pool
-	store     *automation.TriggerStore
-	srv       *httptest.Server
-	audit     *recorder
-	secret    []byte
-	org, proj string
-	principal string
-	token     string
-	triggerID string
+	t            *testing.T
+	pool         *pgxpool.Pool
+	store        *automation.TriggerStore
+	srv          *httptest.Server
+	audit        *recorder
+	secret       []byte
+	secretsByRef map[string][]byte // ref -> bytes; the resolver reads this (rotation seeds a second ref)
+	org, proj    string
+	principal    string
+	token        string
+	triggerID    string
 }
 
 const inboundSecretRef = "src-primary"
 
-func newInboundHarness(t *testing.T) *inboundHarness {
+func newInboundHarness(t *testing.T, maxInflight, backlogMax int) *inboundHarness {
 	t.Helper()
 	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
 	if url == "" {
@@ -88,9 +90,13 @@ func newInboundHarness(t *testing.T) *inboundHarness {
 	org, proj, principal := seedTenantReturning(t, pool, token)
 
 	secret := []byte("whsec_inbound_" + randID("s"))
+	secretsByRef := map[string][]byte{inboundSecretRef: secret}
 	resolver := func(o, ref string) ([]byte, error) {
-		if o == org && ref == inboundSecretRef {
-			return secret, nil
+		if o != org {
+			return nil, os.ErrNotExist
+		}
+		if b, ok := secretsByRef[ref]; ok {
+			return b, nil
 		}
 		return nil, os.ErrNotExist
 	}
@@ -98,7 +104,7 @@ func newInboundHarness(t *testing.T) *inboundHarness {
 	ts := automation.NewTriggerStore(pool).
 		WithAdmitter(repo.Spine()).
 		WithInboundSecrets(resolver).
-		WithInboundGate(audit.Log, 5*time.Minute, 0, 0)
+		WithInboundGate(audit.Log, 5*time.Minute, maxInflight, backlogMax)
 
 	// A webhook trigger created AS the principal (created_by), pinned to a revision, with a secret ref set.
 	triggerID, err := ts.CreateTrigger(ctx, org, proj, principal, randID("inbound"), "webhook")
@@ -121,7 +127,7 @@ func newInboundHarness(t *testing.T) *inboundHarness {
 	t.Cleanup(srv.Close)
 
 	return &inboundHarness{t: t, pool: pool, store: ts, srv: srv, audit: audit, secret: secret,
-		org: org, proj: proj, principal: principal, token: token, triggerID: triggerID}
+		secretsByRef: secretsByRef, org: org, proj: proj, principal: principal, token: token, triggerID: triggerID}
 }
 
 // post signs body under the given secret + event id and POSTs it to the UNAUTHENTICATED inbound route.
@@ -195,7 +201,7 @@ func decodeBody(t *testing.T, resp *http.Response) map[string]any {
 // ZERO trigger_deliveries rows and exactly ONE sanitized audit line (trigger id + reason, never the
 // payload/signature/secret bytes).
 func TestInvalidSignatureRejectedBeforePersistence(t *testing.T) {
-	h := newInboundHarness(t)
+	h := newInboundHarness(t, 0, 0)
 	ts := time.Now()
 	body := []byte(`{"source":"harness","data":{"order":{"id":"o1","summary":"do it"}}}`)
 
@@ -245,7 +251,7 @@ func TestInvalidSignatureRejectedBeforePersistence(t *testing.T) {
 // the source cols + raw_payload + principal_id=trigger.created_by (queried directly), and the inline
 // map→admit reached run_created before the response.
 func TestAckOnlyAfterDurableRecordAndDedupe(t *testing.T) {
-	h := newInboundHarness(t)
+	h := newInboundHarness(t, 0, 0)
 	body := []byte(`{"source":"harness","source_tenant":"acme","data":{"order":{"id":"o-ack","summary":"summarize"}}}`)
 	resp := h.post(h.triggerID, "evt-ack", time.Now(), body, h.secret)
 	if resp.StatusCode != http.StatusAccepted {
@@ -283,7 +289,7 @@ func TestAckOnlyAfterDurableRecordAndDedupe(t *testing.T) {
 // (source, source_tenant, source_event_id) yield ONE canonical delivery + ONE run; the second is a
 // duplicate linked to the original and bears no run.
 func TestDuplicateSourceEventSingleActionOriginalLinkage(t *testing.T) {
-	h := newInboundHarness(t)
+	h := newInboundHarness(t, 0, 0)
 	body := []byte(`{"source":"harness","data":{"order":{"id":"o-dup","summary":"once"}}}`)
 
 	first := decodeBody(t, h.post(h.triggerID, "evt-dup", time.Now(), body, h.secret))
@@ -313,7 +319,7 @@ func TestDuplicateSourceEventSingleActionOriginalLinkage(t *testing.T) {
 // TestRedeliveryAfterLostAckDoesNotDuplicate pins AUT-009: a fully-processed event re-POSTed as if the
 // 2xx was lost acks 2xx with duplicate linkage and adds no run.
 func TestRedeliveryAfterLostAckDoesNotDuplicate(t *testing.T) {
-	h := newInboundHarness(t)
+	h := newInboundHarness(t, 0, 0)
 	body := []byte(`{"source":"harness","data":{"order":{"id":"o-re","summary":"again"}}}`)
 	first := decodeBody(t, h.post(h.triggerID, "evt-re", time.Now(), body, h.secret))
 
@@ -333,5 +339,242 @@ func TestRedeliveryAfterLostAckDoesNotDuplicate(t *testing.T) {
 	}
 	if runs != 1 {
 		t.Fatalf("run count after redelivery = %d, want 1", runs)
+	}
+}
+
+// newTrigger creates a webhook trigger (as the harness principal) with the given revision config and the
+// harness's primary secret ref, so h.post(...) with h.secret signs for it too. Returns the trigger id.
+func (h *inboundHarness) newTrigger(in automation.TriggerRevisionInput) string {
+	h.t.Helper()
+	ctx := context.Background()
+	id, err := h.store.CreateTrigger(ctx, h.org, h.proj, h.principal, randID("t"), "webhook")
+	if err != nil {
+		h.t.Fatalf("newTrigger CreateTrigger error = %v", err)
+	}
+	if _, err := h.store.ReviseTrigger(ctx, h.org, h.proj, id, in); err != nil {
+		h.t.Fatalf("newTrigger ReviseTrigger error = %v", err)
+	}
+	if err := h.store.SetInboundSecretRefs(ctx, h.org, h.proj, id, inboundSecretRef, ""); err != nil {
+		h.t.Fatalf("newTrigger SetInboundSecretRefs error = %v", err)
+	}
+	return id
+}
+
+// activeRevision reads a trigger's active (highest) revision id, for directly seeding delivery rows.
+func (h *inboundHarness) activeRevision(triggerID string) string {
+	h.t.Helper()
+	var rev string
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT id FROM trigger_revisions WHERE trigger_id=$1 ORDER BY revision_number DESC LIMIT 1`, triggerID).Scan(&rev); err != nil {
+		h.t.Fatalf("read active revision error = %v", err)
+	}
+	return rev
+}
+
+// seedInboundRow durably inserts an inbound delivery in a non-terminal state with a past updated_at,
+// modelling a crash after the durable insert (the continuation never ran). raw is the whole envelope.
+func (h *inboundHarness) seedInboundRow(triggerID, eventID, envelope, state string, ageSeconds int) string {
+	h.t.Helper()
+	id := randID("tdel")
+	rev := h.activeRevision(triggerID)
+	if _, err := h.pool.Exec(context.Background(),
+		`INSERT INTO trigger_deliveries
+		   (id, organization_id, project_id, trigger_id, trigger_revision_id, principal_id,
+		    source, source_tenant, source_event_id, raw_payload, state, received_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,'harness','',$7,$8,$9,
+		         clock_timestamp() - make_interval(secs => $10), clock_timestamp() - make_interval(secs => $10))`,
+		id, h.org, h.proj, triggerID, rev, h.principal, eventID, []byte(envelope), state, ageSeconds); err != nil {
+		h.t.Fatalf("seed inbound row error = %v", err)
+	}
+	return id
+}
+
+// patchSecretRefs rotates the trigger's inbound secret handles over the AUTHENTICATED PATCH route.
+func (h *inboundHarness) patchSecretRefs(triggerID, ref, refNext string) {
+	h.t.Helper()
+	body, _ := json.Marshal(map[string]string{"inbound_secret_ref": ref, "inbound_secret_ref_next": refNext})
+	req, _ := http.NewRequest(http.MethodPatch, h.srv.URL+"/v1/triggers/"+triggerID, strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer "+h.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Fatalf("PATCH secret refs error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		h.t.Fatalf("PATCH secret refs status = %d body = %s", resp.StatusCode, raw)
+	}
+}
+
+// TestFloodBoundsMemoryReportsDepthApplies429 pins AUT-010 backpressure: an oversized body is 413; a
+// per-trigger durable backlog at its ceiling sheds 429 + Retry-After with depth + oldest-age while OTHER
+// triggers keep flowing; and the in-flight semaphore bounds concurrency (excess sheds rather than buffers).
+func TestFloodBoundsMemoryReportsDepthApplies429(t *testing.T) {
+	valid := []byte(`{"source":"harness","data":{"order":{"id":"o","summary":"s"}}}`)
+
+	// (a) Size cap → 413 (the first gate, before any signature work).
+	h := newInboundHarness(t, 0, 0)
+	huge := make([]byte, (1<<20)+64)
+	for i := range huge {
+		huge[i] = 'a'
+	}
+	resp := h.postRaw(h.triggerID, map[string]string{"Content-Type": "application/json"}, huge)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized POST status = %d, want 413", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// (b) Backlog at ceiling → 429 + Retry-After + depth/oldest-age; a different trigger keeps flowing.
+	hb := newInboundHarness(t, 0, 2)
+	for i := 0; i < 3; i++ {
+		hb.seedInboundRow(hb.triggerID, "backlog-"+strconv.Itoa(i), `{"source":"harness","data":{}}`, "received", 1)
+	}
+	resp = hb.post(hb.triggerID, "evt-flood", time.Now(), valid, hb.secret)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("flooded trigger status = %d, want 429", resp.StatusCode)
+	}
+	if resp.Header.Get("Retry-After") == "" {
+		t.Fatal("429 carried no Retry-After header")
+	}
+	shed := decodeBody(t, resp)
+	if shed["queue_depth"] == nil || shed["oldest_age_seconds"] == nil {
+		t.Fatalf("429 body missing depth/oldest-age: %v", shed)
+	}
+	if d, _ := shed["queue_depth"].(float64); int(d) < 2 {
+		t.Fatalf("reported queue_depth = %v, want >= 2 (the ceiling)", shed["queue_depth"])
+	}
+	other := hb.newTrigger(automation.TriggerRevisionInput{InputMapping: []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`)})
+	resp = hb.post(other, "evt-other", time.Now(), valid, hb.secret)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("other-trigger POST status = %d, want 202 (a flooded trigger must not block others)", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// (c) In-flight semaphore (maxInflight=1) bounds concurrency: a concurrent burst sheds some 429s
+	// (memory stays bounded — excess is rejected, not buffered), and no request errors.
+	hc := newInboundHarness(t, 1, 0)
+	var mu sync.Mutex
+	codes := map[int]int{}
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r := hc.post(hc.triggerID, "evt-c-"+strconv.Itoa(i), time.Now(), valid, hc.secret)
+			mu.Lock()
+			codes[r.StatusCode]++
+			mu.Unlock()
+			r.Body.Close()
+		}(i)
+	}
+	wg.Wait()
+	if codes[http.StatusTooManyRequests] == 0 {
+		t.Fatalf("maxInflight=1 burst produced no 429 — the in-flight cap did not engage: %v", codes)
+	}
+	if codes[http.StatusAccepted] == 0 {
+		t.Fatalf("maxInflight=1 burst admitted nothing: %v", codes)
+	}
+}
+
+// TestPoisonEventDeadLettersAndAdvancesOrderedKey pins §34.3: a signed but unmappable event terminalizes
+// `failed` (the dead-letter view IS the row), bears NO run, and does NOT hold the ordered correlation key —
+// a later good event with the same key admits. The sweep variant terminalizes a stranded poison remnant.
+func TestPoisonEventDeadLettersAndAdvancesOrderedKey(t *testing.T) {
+	h := newInboundHarness(t, 0, 0)
+	// A queue trigger keyed on data.key so events serialize per key; the mapping requires order.summary.
+	trg := h.newTrigger(automation.TriggerRevisionInput{
+		InputMapping:       []byte(`{"fields":{"input":{"select":"order.summary"}},"required":["input"]}`),
+		ConcurrencyPolicy:  "queue",
+		CorrelationKeyExpr: `{"select":"key"}`,
+	})
+
+	poison := decodeBody(t, h.post(trg, "evt-poison", time.Now(), []byte(`{"source":"harness","data":{"key":"k","nope":1}}`), h.secret))
+	if poison["state"] != "failed" {
+		t.Fatalf("poison state = %v, want failed", poison["state"])
+	}
+	if rid, _ := poison["run_id"].(string); rid != "" {
+		t.Fatal("poison event bore a run; it must bear none")
+	}
+	if view := h.getDelivery(poison["id"].(string)); view["state"] != "failed" {
+		t.Fatalf("dead-letter view state = %v, want failed", view["state"])
+	}
+
+	// The ordered key ADVANCES: a later good event with the SAME key admits (failed never held the gate).
+	good := decodeBody(t, h.post(trg, "evt-good", time.Now(), []byte(`{"source":"harness","data":{"key":"k","order":{"summary":"do"}}}`), h.secret))
+	if good["state"] != "run_created" {
+		t.Fatalf("good event after poison = %v, want run_created (the failed poison must not hold the key)", good["state"])
+	}
+
+	// Sweep variant: a stranded received remnant whose data is unmappable terminalizes `failed`, not a loop.
+	remnant := h.seedInboundRow(h.triggerID, "evt-remnant", `{"source":"harness","data":{"nope":1}}`, "received", 5)
+	if err := automation.NewDeliveryReconciler(h.store, time.Second, 0, 100, nil).Tick(context.Background()); err != nil {
+		t.Fatalf("Tick error = %v", err)
+	}
+	if view := h.getDelivery(remnant); view["state"] != "failed" {
+		t.Fatalf("swept poison remnant state = %v, want failed", view["state"])
+	}
+}
+
+// TestInboundSecretRotationBothRefsVerifyWindowBounded pins §21.4 rotation over the PATCH surface: with
+// both refs set, events signed under EITHER secret verify; after cutover (next promoted, old dropped) the
+// old signature fails while the new one still verifies. Rotation is a mutable-column PATCH, not a revise.
+func TestInboundSecretRotationBothRefsVerifyWindowBounded(t *testing.T) {
+	h := newInboundHarness(t, 0, 0)
+	newSecret := []byte("whsec_rotated_" + randID("n"))
+	h.secretsByRef["src-next"] = newSecret
+
+	// Overlap: both refs active.
+	h.patchSecretRefs(h.triggerID, inboundSecretRef, "src-next")
+	if got := h.post(h.triggerID, "evt-old", time.Now(), []byte(`{"source":"harness","data":{"order":{"id":"r1","summary":"a"}}}`), h.secret); got.StatusCode != http.StatusAccepted {
+		t.Fatalf("event under the OLD secret during overlap = %d, want 202", got.StatusCode)
+	} else {
+		got.Body.Close()
+	}
+	if got := h.post(h.triggerID, "evt-new", time.Now(), []byte(`{"source":"harness","data":{"order":{"id":"r2","summary":"b"}}}`), newSecret); got.StatusCode != http.StatusAccepted {
+		t.Fatalf("event under the NEW secret during overlap = %d, want 202", got.StatusCode)
+	} else {
+		got.Body.Close()
+	}
+
+	// Cutover: promote next, drop old.
+	h.patchSecretRefs(h.triggerID, "src-next", "")
+	if got := h.post(h.triggerID, "evt-old2", time.Now(), []byte(`{"source":"harness","data":{"order":{"id":"r3","summary":"c"}}}`), h.secret); got.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("OLD secret after cutover = %d, want 401 (bounded rotation window)", got.StatusCode)
+	} else {
+		got.Body.Close()
+	}
+	if got := h.post(h.triggerID, "evt-new2", time.Now(), []byte(`{"source":"harness","data":{"order":{"id":"r4","summary":"d"}}}`), newSecret); got.StatusCode != http.StatusAccepted {
+		t.Fatalf("NEW secret after cutover = %d, want 202", got.StatusCode)
+	} else {
+		got.Body.Close()
+	}
+}
+
+// TestRawPayloadScrubbedAfterTerminalTTL pins the short-retention behavior: a TERMINAL inbound row older
+// than the raw TTL has its raw_payload NULLed by the sweep, while a fresh terminal row keeps it. "Short
+// retention" is a behavior, not a caption (encryption-at-rest is E13 — no encrypted claim).
+func TestRawPayloadScrubbedAfterTerminalTTL(t *testing.T) {
+	h := newInboundHarness(t, 0, 0)
+	old := h.seedInboundRow(h.triggerID, "evt-old-terminal", `{"source":"harness","data":{"order":{"summary":"x"}}}`, "run_created", 3600)
+	fresh := h.seedInboundRow(h.triggerID, "evt-fresh-terminal", `{"source":"harness","data":{"order":{"summary":"y"}}}`, "run_created", 1)
+
+	rec := automation.NewDeliveryReconciler(h.store, time.Second, time.Hour, 100, nil).WithInboundRawTTL(10 * time.Minute)
+	if err := rec.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick error = %v", err)
+	}
+
+	raw := func(id string) []byte {
+		var b []byte
+		if err := h.pool.QueryRow(context.Background(), `SELECT raw_payload FROM trigger_deliveries WHERE id=$1`, id).Scan(&b); err != nil {
+			t.Fatalf("read raw_payload error = %v", err)
+		}
+		return b
+	}
+	if raw(old) != nil {
+		t.Fatalf("terminal row older than the TTL kept its raw_payload; want scrubbed")
+	}
+	if raw(fresh) == nil {
+		t.Fatalf("terminal row within the TTL was scrubbed; want retained")
 	}
 }
