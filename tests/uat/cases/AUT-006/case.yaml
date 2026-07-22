@@ -1,0 +1,9 @@
+id: AUT-006
+name: dst-duplicate-fires-once-gap-skips-deterministic
+proof_class: unit
+provider: fake
+input: "a DST duplicate hour fires the schedule ONCE at the earlier instant, and a DST gap skips to the next valid instant — deterministic against the real embedded tzdata (unit tier: real zoneinfo, no component DB; plan said unit+property, declared unit to match the tag)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/automation/cron_next_test.go:TestNextOccurrenceDSTDuplicateFiresOnceEarlierInstant
+  - apps/control-plane/internal/automation/cron_next_test.go:TestNextOccurrenceDSTGapSkipsToNextValid

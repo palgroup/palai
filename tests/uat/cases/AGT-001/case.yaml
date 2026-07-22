@@ -1,0 +1,9 @@
+id: AGT-001
+name: published-revision-immutable-pin-disciplined
+proof_class: component-real
+provider: fake
+input: "a published agent revision is immutable (a second publish/edit does not mutate it), and an unpublished (draft) revision cannot be pinned or run — the pin admission rejects it"
+expect_status: accepted
+proof:
+  - apps/control-plane/internal/automation/agents_component_test.go:TestAgentRevisionPublishIsImmutable
+  - tests/component/postgres/agent_pin_admission_test.go:TestUnpublishedRevisionCannotBePinnedOrRun

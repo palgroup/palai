@@ -1,0 +1,8 @@
+id: AUT-009
+name: redelivery-after-lost-ack-no-duplicate
+proof_class: component-real
+provider: fake
+input: "an upstream redelivery after a lost ack (the receiver committed but the ack never reached the sender) does NOT duplicate the action — the durable source-event dedupe absorbs the retry"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate

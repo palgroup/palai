@@ -1,0 +1,10 @@
+id: AUT-012
+name: egress-revalidation-denies-private-rebind-redirect
+proof_class: unit
+provider: fake
+input: "outbound-webhook egress re-validation denies private/loopback destinations by default, denies a DNS-rebind flip (re-resolve at connect time), and does not follow a redirect. Proven against a REAL local HTTP server + real resolver-injection INSIDE the unit tier — tag-less adapter tests that run in make verify; declared unit to match the actual build tag (plan prose said component-real — overclaiming the tier would be dishonest)"
+expect_status: rejected
+proof:
+  - adapters/integrations/webhook/sender_test.go:TestPrivateAndLoopbackDestinationsDeniedByDefault
+  - adapters/integrations/webhook/sender_test.go:TestDNSRebindingReResolveDeniesFlippedTarget
+  - adapters/integrations/webhook/sender_test.go:TestRedirectNotFollowed

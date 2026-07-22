@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Automation UAT — the E11 exit gate. One target, a deterministic/fault/evidence CORE (always) + a
+# PROVIDER-gated live tier. The core is provider-agnostic: the kill is real, the provider is fake.
+#
+#   deterministic core (always):
+#     1. TestScheduledInvestigationJourneyDeterministic — the §63.4 scheduled-investigation journey: the
+#        real router + trigger/schedule/inbound/callback stores + orchestrator + reference engine prove a
+#        duplicated inbound event -> ONE canonical action (AUT-001), a single canonical scheduler occurrence
+#        (AUT-007), a real-engine SIGKILL recovering via the ladder to a SINGLE report, and a single
+#        idempotent callback under a 5xx-then-2xx retry (AUT-011/013) — with the FAKE provider and NO
+#        credential. Routed through the responses e2e infra it already provisions (throwaway Postgres +
+#        reference-engine subprocess). The supervised loops (delivery-reconciler / webhook-pump /
+#        schedule-ticker) are hand-triggered via Tick in the journey; the SUPERVISED proof is the
+#        *WiredIntoRunningBinary component tests — the journey names that ceiling, it does not claim it.
+#     2. test-fault CASE=scheduler — the scheduler outage fault suite (AUT-008): a real stopped-then-
+#        restarted supervised ticker (the loop is context-cancelled and fully drains, then restarts) across
+#        a missed fire window modelled by an injected clock jump, against real Postgres, bounds the misfire
+#        policy (fire-once-now / catch-up oldest-first) — NOT a container/host kill.
+#     3. evidence-verify RELEASE=automation-0.1.0 — the committed automation bundle verifies clean with all
+#        FOUR rules active (dedupe/occurrence/callback/recovery); a claimed case with a missing/incomplete
+#        proof fails (marker-alone-is-never-proof).
+#
+#   live tier (PROVIDER=provider-one): FOUR live-provider CASEs are authored + wired
+#     (scripts/test/live-provider) and run INLINE — each opens its own throwaway Postgres and none touches
+#     the tool-advertising gate (no model->tool claim), so they do not serialize on a shared :local stack:
+#     trigger-dedupe-run, cron-fires-once, inbound-webhook-run, callback-once. HONEST CEILINGS: each is a
+#     SINGLE-STEP real run (the E08 single-step pin); the journey's kill+recovery is the DETERMINISTIC tier
+#     — a real live kill is E10's gated container-kill-recovery / host-kill-restore CASEs (addressed there,
+#     not re-run here). Credentials load ONLY from .env.local via `set -a` — never argv, never `set -x`.
+#
+# uat-coding / uat-local-live / uat-interactive / uat-recovery stay UNTOUCHED.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# Core 1 — the scheduled-investigation journey through the responses e2e infra.
+E2E_RUN='TestScheduledInvestigationJourneyDeterministic' TEST=responses scripts/test/e2e
+
+# Core 2 — the scheduler outage fault suite (real outage, provider-agnostic).
+CASE=scheduler scripts/test/fault
+
+# Core 3 — the automation-0.1.0 evidence bundle verifies clean.
+RELEASE=automation-0.1.0 scripts/evidence/verify
+
+# Live tier — PROVIDER=provider-one runs the four authored automation smokes inline. Each opens its own
+# throwaway Postgres; the credential is loaded from the git-ignored .env.local at runtime (set -a, never
+# set -x / argv / log).
+if [ "${PROVIDER:-fake}" = "provider-one" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  for case in trigger-dedupe-run cron-fires-once inbound-webhook-run callback-once; do
+    echo "uat-automation: live smoke CASE=$case (PROVIDER=provider-one, single-step real run)" >&2
+    PROVIDER=provider-one CASE="$case" scripts/test/live-provider
+  done
+fi

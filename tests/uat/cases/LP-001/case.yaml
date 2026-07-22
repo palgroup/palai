@@ -3,4 +3,7 @@ name: boot-admit-and-terminal
 proof_class: e2e-deterministic
 provider: fake
 input: "hello"
+# post-E11 (agent tables + automation loops present) this core-loop admit->terminal path is asserted
+# bit-unchanged by the responses e2e suite — the input value stays exactly "hello" (a comment, not a
+# model-input change: local_live_test.go sends c.Input verbatim, so the note must not alter it).
 expect_status: completed

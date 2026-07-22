@@ -1,0 +1,9 @@
+id: AUT-011
+name: signed-retries-run-terminal-unaffected
+proof_class: component-real
+provider: fake
+input: "a signed outbound delivery lands end-to-end over real HTTP (HMAC verified by the receiver), and a callback delivery FAILURE leaves the run's terminal result intact — a delivery never mutates or blocks the run (AUT-011)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/automation/webhook_component_test.go:TestSignedDeliveryEndToEndRealHTTP
+  - apps/control-plane/internal/automation/callback_component_test.go:TestCallbackFailureLeavesRunTerminalIntact

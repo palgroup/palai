@@ -1,0 +1,8 @@
+id: AUT-010
+name: flood-bounded-memory-429-depth-visible
+proof_class: component-real
+provider: fake
+input: "an inbound flood is bounded — in-flight memory stays capped, per-trigger backlog depth is visible, and excess is rejected with a 429 rather than admitted or OOM'd"
+expect_status: throttled
+proof:
+  - apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429

@@ -1,0 +1,8 @@
+id: AUT-003
+name: mapping-failure-failed-delivery-no-billable-run
+proof_class: component-real
+provider: fake
+input: "a payload→request mapping failure produces a FAILED delivery and NO billable run (real Postgres + real admission). The composed-binary half — the same failure through the running binary — lives in TestTriggerDeliveryWiredIntoRunningBinary and the automation journey; the in-tree proof here is the component tier (plan prose said e2e — declared component to match the actual tag, honest naming)"
+expect_status: failed
+proof:
+  - apps/control-plane/internal/automation/map_admit_component_test.go:TestMappingFailureFailedDeliveryNoRunEndToEnd
