@@ -94,12 +94,14 @@ func newSuite(t *testing.T) *suite {
 	return s
 }
 
-// seedTenant writes one organization -> project -> session -> run, as the owner. The run row is the
-// corpus's canary: it is the row a WHERE-less SELECT must not return across the tenant boundary.
+// seedTenant writes one organization -> project -> session -> run -> artifact, as the owner. The run and
+// artifact rows are the corpus's canaries: they are rows a WHERE-less SELECT must not return across the
+// tenant boundary. The artifact makes DAT-006's cross-tenant denial first-class at the DB layer (E13 T5) —
+// the retrieval API's 404 is only honest because the row is invisible one layer down.
 func (s *suite) seedTenant(t *testing.T, org string) {
 	t.Helper()
 	ctx := context.Background()
-	project, session, response, run := newID("prj"), newID("ses"), newID("resp"), newID("run")
+	project, session, response, run, artifact := newID("prj"), newID("ses"), newID("resp"), newID("run"), newID("art")
 	stmts := []struct {
 		sql  string
 		args []any
@@ -111,6 +113,8 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 			[]any{response, org, project, session}},
 		{`INSERT INTO runs (id, organization_id, project_id, session_id, response_id) VALUES ($1, $2, $3, $4, $5)`,
 			[]any{run, org, project, session, response}},
+		{`INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes, checksum) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			[]any{artifact, org, project, run, org + "/" + project + "/" + run + "/" + artifact, 12, "sha256:deadbeef"}},
 	}
 	for _, stmt := range stmts {
 		if _, err := s.owner.Exec(ctx, stmt.sql, stmt.args...); err != nil {
@@ -145,7 +149,7 @@ func (s *suite) asOrg(t *testing.T, org string, fn func(tx pgx.Tx)) {
 // produce — and the database still returns only the caller's tenant.
 func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 	s := newSuite(t)
-	for _, table := range []string{"runs", "responses", "sessions", "projects"} {
+	for _, table := range []string{"runs", "responses", "sessions", "projects", "artifacts"} {
 		s.asOrg(t, s.orgA, func(tx pgx.Tx) {
 			var foreign int
 			// The only predicate names the OTHER tenant: the query asks for exactly the rows the
