@@ -8,8 +8,9 @@
 //     key admits the first 2 and sheds the rest as 429 rate_limited + Retry-After — before any run is
 //     created.
 //  2. PER-PROJECT QUEUED-RUN BOUND: with MaxQueuedRuns=3 and no worker draining the queue, a burst of
-//     8 admits exactly 3 (each a real queued run) and rejects 5 as 429 queue_full — and NO run is lost
-//     or duplicated: the project holds exactly 3 runs and 3 responses, one per 202, none per 429.
+//     8 admits exactly 3 (each a real queued run) and rejects 5 as 429 concurrency_exceeded (the §20.10
+//     stable admission-capacity code) — and NO run is lost or duplicated: the project holds exactly 3
+//     runs and 3 responses, one per 202, none per 429.
 //  3. THE ACCEPTED QUEUE IS GENUINE: one accepted run DRAINS on the REAL provider (a completed
 //     model_request), and draining it creates no duplicate run — the caps shed load without corrupting
 //     the admitted work.
@@ -21,6 +22,9 @@
 //   - The queued-run bound is enforced at admission against a ReadCommitted count, which can overshoot
 //     by the number of admissions racing past it — a soft basic-tier cap, not an exact semaphore.
 //   - SINGLE PROVIDER: the real drain is provider-one only; the admission logic is provider-agnostic.
+//   - SURFACE: the request-rate limiter governs the PUBLIC API only. Automation-born runs (trigger/
+//     webhook/schedule/inbound deliveries) mount outside it and are bounded by their own AUT-010
+//     backpressure — but they consume the SAME per-project run caps, so those still bound them.
 //
 // GATED: serialized with every LIVE smoke on the shared :local Docker stack; NOT part of make verify.
 // Skips cleanly without creds. The credential is an opaque env-resolved secret, never printed.
@@ -102,7 +106,7 @@ func TestLiveEdgeAdmissionBurstRateLimited(t *testing.T) {
 			acceptedRuns[runIDFromBody(t, body)] = struct{}{}
 		case http.StatusTooManyRequests:
 			capLimited++
-			assertProblemCode(t, body, "queue_full")
+			assertProblemCode(t, body, "concurrency_exceeded")
 		default:
 			t.Fatalf("cap burst %d: status %d, body %s", i, code, body)
 		}

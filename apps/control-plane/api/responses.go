@@ -252,18 +252,19 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 		middleware.WriteProblem(w, r, http.StatusConflict, "revision_not_published", "the pinned revision is a draft; publish it before running it")
 		return
 	}
-	// The §20.12 per-project run caps: too many executing runs, or a full queued backlog. Both are
-	// 429 + Retry-After with a stable code — the admission created nothing, so a retry after the delay
-	// is safe. ponytail: a fixed 1s hint; a slot frees when a run terminates, which is not a clock the
-	// edge can predict, so a short constant beats a fabricated precise deadline.
+	// The §20.12 per-project run caps: too many executing runs, or a full queued backlog. Both are the
+	// §20.10 stable 429 concurrency_exceeded (the registered admission-capacity code — there is no
+	// separate public queued code; the detail distinguishes them) + Retry-After. The admission created
+	// nothing, so a retry after the delay is safe. ponytail: a fixed 1s hint; a slot frees when a run
+	// terminates, which is not a clock the edge can predict, so a short constant beats a fabricated deadline.
 	if out.ConcurrencyLimited {
 		w.Header().Set("Retry-After", admissionRetryAfterSeconds)
-		middleware.WriteProblem(w, r, http.StatusTooManyRequests, "concurrency_limit", "the project has too many concurrent runs; retry shortly")
+		middleware.WriteProblem(w, r, http.StatusTooManyRequests, "concurrency_exceeded", "the project has too many concurrent runs; retry shortly")
 		return
 	}
 	if out.QueueDepthExceeded {
 		w.Header().Set("Retry-After", admissionRetryAfterSeconds)
-		middleware.WriteProblem(w, r, http.StatusTooManyRequests, "queue_full", "the project's run queue is full; retry shortly")
+		middleware.WriteProblem(w, r, http.StatusTooManyRequests, "concurrency_exceeded", "the project's run queue is full; retry shortly")
 		return
 	}
 	if out.SessionConflict {

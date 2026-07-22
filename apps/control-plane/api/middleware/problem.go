@@ -44,6 +44,5 @@ var problemTitles = map[string]string{
 	"retention_expired":          "Retention expired",
 	"internal_error":             "Internal error",
 	"rate_limited":               "Rate limit exceeded",
-	"concurrency_limit":          "Concurrent run limit reached",
-	"queue_full":                 "Run queue is full",
+	"concurrency_exceeded":       "Concurrent run limit reached",
 }
