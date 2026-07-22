@@ -195,16 +195,20 @@ func (s *Store) SweepDeadLetteredRuns(ctx context.Context) (int, error) {
 	}
 
 	// The cursor is drained before any transition, so driving each run acquires its own
-	// pooled connection without contending with the open scan.
+	// pooled connection without contending with the open scan. Each run's WRITES are re-narrowed to
+	// its own tenant (defense-in-depth, M4): the sweep spans tenants to FIND the rows, but every
+	// transition/finalize/wake then runs under that row's tenant scope, so migration 000029's RLS
+	// applies to it exactly as it would to a request — the same idiom Worker.process / deliver.go use.
 	driven := 0
 	for _, d := range dead {
-		switch _, err := s.ApplyRunTransition(ctx, d.tenant, d.runID, statemachines.RunCmdFail); {
+		rowCtx := storage.WithTenant(ctx, d.tenant.Organization, d.tenant.Project)
+		switch _, err := s.ApplyRunTransition(rowCtx, d.tenant, d.runID, statemachines.RunCmdFail); {
 		case errors.Is(err, ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
 			continue // already terminal or past a failable state — idempotent
 		case err != nil:
 			return driven, fmt.Errorf("drive run %s to failed: %w", d.runID, err)
 		}
-		if err := s.FinalizeResponse(ctx, d.tenant, d.responseID, string(statemachines.RunFailed), deadLetterProjection); err != nil {
+		if err := s.FinalizeResponse(rowCtx, d.tenant, d.responseID, string(statemachines.RunFailed), deadLetterProjection); err != nil {
 			return driven, err
 		}
 		// A dead-lettered DETACHED child must still wake its released parent (E10 T8, MF-1): the child
@@ -213,7 +217,7 @@ func (s *Store) SweepDeadLetteredRuns(ctx context.Context) (int, error) {
 		// Idempotent (a no-op for a root or a non-waiting parent), so it is safe on every swept run.
 		// ponytail: a transient failure here returns and the run is now terminal (excluded from re-sweep);
 		// the general stuck-waiting-parent backstop is the E11 reconciliation loop, not this bridge.
-		if _, err := s.WakeParentOfChild(ctx, d.tenant, d.runID); err != nil {
+		if _, err := s.WakeParentOfChild(rowCtx, d.tenant, d.runID); err != nil {
 			return driven, err
 		}
 		driven++
