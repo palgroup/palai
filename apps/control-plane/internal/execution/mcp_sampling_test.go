@@ -127,3 +127,38 @@ func TestSamplingEnabledRoutesBrokeredBudgetedVisibleStep(t *testing.T) {
 		}
 	})
 }
+
+// TestSamplingProviderErrorIsNotACompletion is the sampling twin of the dispatch guard (E13 T8 review
+// SHOULD 1): a provider-side rejection rides on modelbroker.Result.Error, NOT on the Go error, so without a
+// guard RouteSampling journals model_step.completed as a SUCCESS and hands the MCP server an assistant
+// message with EMPTY text — a silent wrong answer. The call must fail, and the completed event must record
+// the denial rather than claim a completion.
+func TestSamplingProviderErrorIsNotACompletion(t *testing.T) {
+	ctx := context.Background()
+	scope := mcp.CallScope{Org: "org", Project: "proj", SessionID: "sess", ResponseID: "resp", RunID: "run", CallID: "call"}
+	broker := modelbroker.New(modelbroker.Config{
+		Adapters: map[string]modelbroker.ModelAdapter{"fake": fake.Adapter{Script: fake.Script{
+			Model: "fake-sampling-model",
+			Err:   &modelbroker.SanitizedError{Code: "provider_error", Message: "upstream declined", Status: 429},
+		}}},
+		Secrets: modelbroker.StaticResolver{modelbroker.SecretRef("fake"): "unused"},
+	})
+	j := &samplingJournal{}
+	r := NewMCPSamplingRouter(broker, ModelRoute{Provider: "fake", Model: "fake", Secret: "fake"}, j.emit)
+	conn := mcp.ConnConfig{ID: "mcpc_1", SamplingEnabled: true, SamplingMaxTokens: 100}
+
+	out, err := r.RouteSampling(ctx, scope, conn, json.RawMessage(samplingParams))
+	if err == nil {
+		t.Fatalf("RouteSampling returned a completion for a provider-rejected call: %s", out)
+	}
+	if !strings.Contains(err.Error(), "provider_error") {
+		t.Fatalf("sampling error = %v, want the sanitized provider rejection", err)
+	}
+	completed, ok := j.find(eventModelStepCompleted)
+	if !ok {
+		t.Fatal("no model_step.completed event was journalled — the rejected step must stay visible")
+	}
+	if denied, _ := completed.payload["denied"].(bool); !denied {
+		t.Fatalf("completed event = %+v, want denied:true for a provider rejection", completed.payload)
+	}
+}

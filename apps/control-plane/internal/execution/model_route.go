@@ -75,7 +75,11 @@ func (r RouteSecretResolver) Redeem(ref modelbroker.SecretRef) (string, error) {
 		return "", fmt.Errorf("redeem model connection credential %q: %w", name, err)
 	}
 	if !found {
-		return "", fmt.Errorf("%w: model connection credential %q is not provisioned for this tenant", modelbroker.ErrUnknownSecret, name)
+		// A store outage degrades to a clean miss (the resolver bounds and logs it), so a miss means EITHER
+		// no such ref OR an unreachable store — say both, or an operator spends an outage hunting for a
+		// credential that is actually there. Matches the repository-connection resolver's wording.
+		return "", fmt.Errorf("%w: model connection credential %q did not resolve under org %q: no such secret ref, or the secret store was unreachable (see the secret-store log)",
+			modelbroker.ErrUnknownSecret, name, org)
 	}
 	return string(value), nil
 }

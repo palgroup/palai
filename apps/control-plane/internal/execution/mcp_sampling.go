@@ -69,6 +69,13 @@ func (r *MCPSamplingRouter) RouteSampling(ctx context.Context, scope mcp.CallSco
 		Reservation:    modelbroker.Reservation{MaxTotalTokens: budget},
 		Secret:         r.route.Secret,
 	}, nil)
+	// A provider-side rejection rides on the RESULT, not the Go error (modelbroker.Result.Error, sanitized of
+	// any credential) — the same seam the run's own dispatchModel guards. Without this the step below is
+	// journaled as a SUCCESS and the MCP server is handed an assistant message with EMPTY text. Folding it
+	// into routeErr routes it through the denial path already proven for a budget cutoff.
+	if routeErr == nil && result.Error != nil {
+		routeErr = fmt.Errorf("provider_error: %s (code %s, status %d)", result.Error.Message, result.Error.Code, result.Error.Status)
+	}
 	if routeErr != nil {
 		// A budget cutoff still MADE the provider call (the tokens were spent, the result rejected at Admit):
 		// carry the provider request id + usage so the denial event is honest evidence that a REAL provider

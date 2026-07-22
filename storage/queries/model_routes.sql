@@ -63,13 +63,19 @@ SELECT 1 FROM model_route_revisions WHERE id = $1 AND route_id = $2;
 -- The join is LEFT so a revision naming a connection that no longer resolves in this tenant returns a row
 -- with a NULL provider rather than no row at all: the caller then FAILS the step instead of silently falling
 -- back to the deployment default credential (spec §27.7 — a route cannot silently select something else).
+-- The join carries the tenant predicate itself, so the fail-closed behaviour does NOT depend on RLS being in
+-- force: on a system-scoped connection (or a BYPASSRLS role) an unqualified join would silently hand back a
+-- FOREIGN connection's provider + secret_ref instead of failing.
 -- ORDER BY is fully determined (revision, then id) so selection is deterministic even if an alias were ever
 -- to name two lineages.
 -- name: ResolveProjectModelRoute
 SELECT rev.id, rev.revision, rev.config->>'model', conn.provider, conn.secret_ref
 FROM model_routes r
 JOIN model_route_revisions rev ON rev.route_id = r.id
-LEFT JOIN model_connections conn ON conn.id = rev.config->>'connection_id'
+LEFT JOIN model_connections conn
+       ON conn.id = rev.config->>'connection_id'
+      AND conn.organization_id = r.organization_id
+      AND conn.project_id = r.project_id
 WHERE r.organization_id = $1 AND r.project_id = $2 AND r.name = $3
   AND rev.config->>'published_at' IS NOT NULL
 ORDER BY rev.revision DESC, rev.id DESC

@@ -18,10 +18,24 @@ import (
 // A projection NEVER carries a credential: a connection is rendered with its secret REF name only, which is
 // a handle into the E13 T3 secret store.
 
+// requireProjectScope rejects a key that is org-granular (the T2 provisioning shape, Scope.Project == "").
+// Every model-routing row is keyed by the composite (organization, project) FK to projects, so such a key
+// has no project to write into. It is a legitimate key shape, so the answer is a 400 naming what is
+// missing — never a composite-FK violation surfacing as a 500.
+func requireProjectScope(scope middleware.Scope) (api.ProvisionResult, bool) {
+	if scope.Project == "" {
+		return api.ProvisionResult{MissingField: "a project-scoped API key (model routing is per project)"}, false
+	}
+	return api.ProvisionResult{}, true
+}
+
 // CreateModelConnection binds a provider family to a secret-ref handle for the caller's project. The body
 // is strictly decoded, so an attempt to inline a credential value (any unsupported field) is a 400 rather
 // than a silently-ignored field.
 func (s *Store) CreateModelConnection(ctx context.Context, scope middleware.Scope, body []byte) (api.ProvisionResult, error) {
+	if out, ok := requireProjectScope(scope); !ok {
+		return out, nil
+	}
 	var in struct {
 		Provider  string `json:"provider"`
 		SecretRef string `json:"secret_ref"`
@@ -47,6 +61,9 @@ func (s *Store) CreateModelConnection(ctx context.Context, scope middleware.Scop
 // CreateModelRoute opens the named route alias for the caller's project. Create is get-or-create: an alias
 // names one lineage, so re-creating it returns the same id rather than a second lineage.
 func (s *Store) CreateModelRoute(ctx context.Context, scope middleware.Scope, body []byte) (api.ProvisionResult, error) {
+	if out, ok := requireProjectScope(scope); !ok {
+		return out, nil
+	}
 	var in struct {
 		Name string `json:"name"`
 	}
@@ -66,6 +83,9 @@ func (s *Store) CreateModelRoute(ctx context.Context, scope middleware.Scope, bo
 // CreateModelRouteRevision adds a DRAFT revision to a route. A route or connection the caller cannot see is
 // a NotFound (404) — the same answer as one that never existed.
 func (s *Store) CreateModelRouteRevision(ctx context.Context, scope middleware.Scope, routeID string, body []byte) (api.ProvisionResult, error) {
+	if out, ok := requireProjectScope(scope); !ok {
+		return out, nil
+	}
 	var in struct {
 		Model        string `json:"model"`
 		ConnectionID string `json:"connection_id"`
@@ -92,6 +112,9 @@ func (s *Store) CreateModelRouteRevision(ctx context.Context, scope middleware.S
 // PublishModelRouteRevision makes a draft revision the project's routed target. Publishing an
 // already-published revision is an idempotent success.
 func (s *Store) PublishModelRouteRevision(ctx context.Context, scope middleware.Scope, routeID, revisionID string) (api.ProvisionResult, error) {
+	if out, ok := requireProjectScope(scope); !ok {
+		return out, nil
+	}
 	err := s.spine.PublishModelRouteRevision(ctx, tenantOf(scope), routeID, revisionID)
 	switch {
 	case errors.Is(err, coordinator.ErrModelRouteNotFound), errors.Is(err, coordinator.ErrModelRouteRevisionNotFound):
