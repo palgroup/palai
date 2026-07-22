@@ -639,10 +639,12 @@ run_hooks() {
       go test -tags=component -count=1 -v -run 'TestHookCRUDRoundtrip|TestHookOrderDeterministicRegistrationOrder' ./apps/control-plane/internal/extensions
     status=$?
   fi
-  # Real local HTTP hook worker before_tool deny/allow through the orchestrator (execution package).
+  # Real local HTTP hook worker before_tool deny/allow through the orchestrator, plus the seam-pin proofs:
+  # a before_tool transform keeps the model's ORIGINAL ledger identity (no false replay divergence), and
+  # after_tool re-fires on the committed-replay delivery path (a crash never un-denies a deny) — execution pkg.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
-      go test -tags=component -count=1 -v -run 'TestHookWorkerBeforeToolDenyAndAllow' ./apps/control-plane/internal/execution
+      go test -tags=component -count=1 -v -run 'TestHookWorkerBeforeToolDenyAndAllow|TestBeforeToolTransformKeepsOriginalLedgerIdentity|TestAfterToolReDeliveryReappliesDeny|TestBeforeModelPolicyDenyFailsStep|TestBeforeRepositoryPublishDenyRejects' ./apps/control-plane/internal/execution
     status=$?
   fi
   set -e
