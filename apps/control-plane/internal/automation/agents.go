@@ -27,9 +27,11 @@ import (
 	"github.com/palgroup/palai/storage"
 )
 
-// ErrUnknownField is returned when a revision body carries a field outside the enforced executable-config
-// subset — an E12 field (mcp/skills/hooks/knowledge) or, for a template, an identity/delegation field.
-// Dead or unsupported config is rejected, never silently stored (honest naming, spec §2 E11 include list).
+// ErrUnknownField is returned when a revision body carries a field outside the accepted config subset —
+// knowledge (E17, opened by that epic under the same pattern) or, for a template, an identity/delegation
+// field a template must never carry. As of E12 Task 2 the four extension fields (tool_sets/mcp_connections/
+// skills/hooks) are ACCEPTED (see RevisionInput). Dead or unsupported config is still rejected, never
+// silently stored (honest naming, spec §2).
 var ErrUnknownField = errors.New("automation: revision body carries an unsupported field")
 
 // ErrProfileNotFound is returned when a revision is created against a profile absent from the scope.
@@ -41,23 +43,38 @@ type Store struct{ pool *pgxpool.Pool }
 // New wraps a pgx pool as the automation store.
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
-// RevisionInput is the enforced executable-config subset a revision (agent or template) carries in this
-// slice (spec §10, §2). Model "" inherits the deployment default; Tools nil imposes no capability
-// ceiling (a non-nil set — even empty — is the ceiling the resolver intersects). Any field outside this
-// struct is rejected by DecodeRevisionInput.
+// RevisionInput is the enforced executable-config subset a revision (agent or template) carries (spec
+// §10, §2). Model "" inherits the deployment default; Tools nil imposes no capability ceiling (a non-nil
+// set — even empty — is the ceiling the resolver intersects). Any field outside this struct is rejected
+// by DecodeRevisionInput.
+//
+// The four E12 extension fields (ToolSets/MCPConnections/Skills/Hooks) are accepted here as of E12 Task 2
+// (the deliberate reversal of E11's unknown-field reject — phase-11 §7 devir 3). This package OPENS the
+// schema for all four so the wave-2 tasks (T5 mcp, T7 skills, T8 hooks) never touch agents.go again (the
+// conflict shield). T2 CONSUMES only ToolSets (a list of published ToolSetRevision ids the resolver
+// unions into the effective set); MCPConnections/Skills/Hooks ride OPAQUE — persisted but validated and
+// consumed by their owning task, never here.
 type RevisionInput struct {
-	Model        string   `json:"model"`
-	Tools        []string `json:"tools"`
-	Instructions string   `json:"instructions"`
+	Model          string   `json:"model"`
+	Tools          []string `json:"tools"`
+	Instructions   string   `json:"instructions"`
+	ToolSets       []string `json:"tool_sets"`
+	MCPConnections []string `json:"mcp_connections"`
+	Skills         []string `json:"skills"`
+	Hooks          []string `json:"hooks"`
 }
 
-// Revision is a stored revision's committed shape (management GET + the immutability check).
+// Revision is a stored revision's committed shape (management GET + the immutability check). ToolSets is
+// the E12 extension T2 consumes (the pinned published ToolSetRevision ids); it is populated at create
+// from the decoded input. The opaque MCPConnections/Skills/Hooks are persisted but not surfaced here —
+// their owning task reads its own field.
 type Revision struct {
 	ID             string
 	RevisionNumber int
 	Model          string
 	Tools          []string
 	Instructions   string
+	ToolSets       []string
 	Published      bool
 }
 
@@ -105,10 +122,11 @@ func (s *Store) CreateRevision(ctx context.Context, org, project, profileID stri
 	// Benign at the expected authoring cadence (a human editing a profile); add a retry-on-23505 loop
 	// if concurrent revise throughput ever matters.
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertAgentRevision"),
-		id, org, project, profileID, in.Model, marshalTools(in.Tools), in.Instructions).Scan(&number); err != nil {
+		id, org, project, profileID, in.Model, marshalTools(in.Tools), in.Instructions,
+		marshalTools(in.ToolSets), marshalTools(in.MCPConnections), marshalTools(in.Skills), marshalTools(in.Hooks)).Scan(&number); err != nil {
 		return Revision{}, fmt.Errorf("insert agent revision: %w", err)
 	}
-	return Revision{ID: id, RevisionNumber: number, Model: in.Model, Tools: in.Tools, Instructions: in.Instructions}, nil
+	return Revision{ID: id, RevisionNumber: number, Model: in.Model, Tools: in.Tools, Instructions: in.Instructions, ToolSets: in.ToolSets}, nil
 }
 
 // PublishRevision flips a draft revision to published exactly once. published is true only when THIS
@@ -149,10 +167,11 @@ func (s *Store) CreateTemplateRevision(ctx context.Context, org, project, templa
 	id := newID("rtr")
 	var number int
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertRunTemplateRevision"),
-		id, org, project, templateName, in.Model, marshalTools(in.Tools), in.Instructions).Scan(&number); err != nil {
+		id, org, project, templateName, in.Model, marshalTools(in.Tools), in.Instructions,
+		marshalTools(in.ToolSets), marshalTools(in.MCPConnections), marshalTools(in.Skills), marshalTools(in.Hooks)).Scan(&number); err != nil {
 		return Revision{}, fmt.Errorf("insert run template revision: %w", err)
 	}
-	return Revision{ID: id, RevisionNumber: number, Model: in.Model, Tools: in.Tools, Instructions: in.Instructions}, nil
+	return Revision{ID: id, RevisionNumber: number, Model: in.Model, Tools: in.Tools, Instructions: in.Instructions, ToolSets: in.ToolSets}, nil
 }
 
 // PublishTemplateRevision flips a draft template revision to published exactly once (see PublishRevision).

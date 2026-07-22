@@ -17,10 +17,11 @@ SELECT 1 FROM agent_profiles WHERE id = $1 AND organization_id = $2 AND project_
 -- ponytail: the MAX+1 subselect can race two concurrent inserts to the same number; the
 -- UNIQUE(profile_id, revision_number) constraint then rejects the loser (retry on 23505 if it matters).
 -- name: InsertAgentRevision
-INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, instructions)
+INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, instructions,
+        tool_sets, mcp_connections, skills, hooks)
 VALUES ($1, $2, $3, $4,
         (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM agent_revisions WHERE profile_id = $4),
-        $5, $6, $7)
+        $5, $6, $7, $8, $9, $10, $11)
 RETURNING revision_number;
 
 -- PublishAgentRevision is the ONE legitimate mutation: it flips published_at exactly once. The
@@ -50,11 +51,12 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- identity/delegation (a template must not impersonate an agent). revision_number is the template
 -- name's next monotonic number. Returns it.
 -- name: InsertRunTemplateRevision
-INSERT INTO run_template_revisions (id, organization_id, project_id, template_name, revision_number, model, tools, instructions)
+INSERT INTO run_template_revisions (id, organization_id, project_id, template_name, revision_number, model, tools, instructions,
+        tool_sets, mcp_connections, skills, hooks)
 VALUES ($1, $2, $3, $4,
         (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM run_template_revisions
          WHERE organization_id = $2 AND project_id = $3 AND template_name = $4),
-        $5, $6, $7)
+        $5, $6, $7, $8, $9, $10, $11)
 RETURNING revision_number;
 
 -- PublishRunTemplateRevision mirrors PublishAgentRevision: a once-only conditional flip.
