@@ -29,9 +29,12 @@
 //     spawn config-seeded so its assertion stays honest.
 //  3. PARENT↔CHILD CONVERSATION (send_message to the detached child at a tool boundary, DET-002): proven
 //     deterministically (TestDetachedChildIdleReceivesSpineMessage). Its live half — a detached child
-//     driven multi-step by real advertised tool calls, receiving a spine message at its tool boundary —
-//     is a named follow-up (a child project tool policy + a tool-calling child prompt); it is NOT gated
-//     on any env flag. This smoke proves the DETACH + DURABLE half with the real provider.
+//     driven multi-step by real advertised tool calls, receiving a spine message at its tool boundary — is
+//     bound to the SAME engine-wire tool_call-id follow-up (T1b) as checkpoint-restore: a multi-step child
+//     re-threads the assistant tool_call + tool result, which the engine wire (dropped tool_call id) makes
+//     malformed for the real chat API, so the child cannot be driven multi-step live until T1b lands. It is
+//     NOT gated on any env flag. This smoke proves the DETACH + DURABLE half with the real provider (its
+//     parent + child are single-step, so it is unaffected by T1b and PASSES live).
 //
 // GATED: serialized with every LIVE/fault smoke on the shared :local Docker stack; NOT part of make
 // verify / CI. Skips cleanly without creds. The credential is used only as an opaque env-resolved

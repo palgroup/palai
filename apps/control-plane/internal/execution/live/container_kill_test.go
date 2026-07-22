@@ -46,16 +46,17 @@ import (
 
 // TestLiveContainerKillRecoveryRealProvider is CASE=container-kill-recovery (see the file ceilings).
 func TestLiveContainerKillRecoveryRealProvider(t *testing.T) {
+	// Ceiling 4 (shared with checkpoint-restore): attempt 2's restored continuation re-threads the tool
+	// call + result, which the engine wire (dropped tool_call id) makes malformed for the real chat API.
+	// SKIP on that multi-step tool-continuation follow-up (T1b) — NOT an advertising gap. Skip BEFORE
+	// requireEnv so a creds-less env shows this honest reason, not a misleading "OPENAI_API_KEY required".
+	t.Skip("container-kill-recovery's attempt-2 completion re-threads the assistant tool_call + tool result to the real provider; the engine wire drops the tool_call id, so the threaded continuation is malformed for the real chat API. A multi-step tool-continuation follow-up (T1b engine-wire tool_call id) — not an advertising gap (proven by CASE=spontaneous-tool-roundtrip). The container-kill dimension + fencing are proven deterministically (tests/fault/recovery).")
+
 	secret := requireEnv(t, credentialEnv)
 	engineDir := requireEnv(t, "PALAI_ENGINE_DIR")
 	pgURL := requireEnv(t, "PALAI_COMPONENT_POSTGRES_URL")
 	s3Endpoint := requireEnv(t, "PALAI_S3_ENDPOINT")
 	_ = secret // resolved through the env secret resolver; never referenced directly
-
-	// Ceiling 4 (shared with checkpoint-restore): attempt 2's restored continuation re-threads the tool
-	// call + result, which the engine wire (dropped tool_call id) makes malformed for the real chat API.
-	// SKIP on that multi-step tool-continuation follow-up — NOT an advertising gap.
-	t.Skip("container-kill-recovery's attempt-2 completion re-threads the assistant tool_call + tool result to the real provider; the engine wire drops the tool_call id, so the threaded continuation is malformed for the real chat API. A multi-step tool-continuation follow-up (engine-wire tool_call id) — not an advertising gap (proven by CASE=spontaneous-tool-roundtrip). The container-kill dimension + fencing are proven deterministically (tests/fault/recovery).")
 
 	ctx := context.Background()
 	repo, err := store.Open(ctx, pgURL)

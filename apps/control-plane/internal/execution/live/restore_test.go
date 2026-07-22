@@ -76,17 +76,18 @@ func requireEnv(t *testing.T, name string) string {
 
 // TestLiveCheckpointRestoreRealProvider is CASE=checkpoint-restore (see the package ceilings).
 func TestLiveCheckpointRestoreRealProvider(t *testing.T) {
+	// Ceiling 4: attempt 2's restored continuation re-threads the tool call + result, which the engine
+	// wire (dropped tool_call id) makes malformed for the real chat API. SKIP on that multi-step
+	// tool-continuation follow-up (T1b) — NOT an advertising gap (advertising is proven by
+	// CASE=spontaneous-tool-roundtrip). Skip BEFORE requireEnv so a creds-less env shows this honest
+	// reason, not a misleading "OPENAI_API_KEY required"; no guaranteed-red case rides the known-list.
+	t.Skip("checkpoint-restore's attempt-2 completion re-threads the assistant tool_call + tool result to the real provider; the engine wire drops the tool_call id (contracts.ToolCall/engine.schema.json carry only name+arguments), so the threaded continuation is malformed for the real chat API. A multi-step tool-continuation follow-up (T1b engine-wire tool_call id) — not an advertising gap. The fencing + restore mechanism is proven deterministically (recovery_ladder + pause_checkpoint).")
+
 	secret := requireEnv(t, credentialEnv)
 	engineDir := requireEnv(t, "PALAI_ENGINE_DIR")
 	pgURL := requireEnv(t, "PALAI_COMPONENT_POSTGRES_URL")
 	s3Endpoint := requireEnv(t, "PALAI_S3_ENDPOINT")
 	_ = secret // resolved through the env secret resolver; never referenced directly
-
-	// Ceiling 4: attempt 2's restored continuation re-threads the tool call + result, which the engine
-	// wire (dropped tool_call id) makes malformed for the real chat API. SKIP on that multi-step
-	// tool-continuation follow-up — NOT an advertising gap (advertising is proven by
-	// CASE=spontaneous-tool-roundtrip). No guaranteed-red case rides the known-list.
-	t.Skip("checkpoint-restore's attempt-2 completion re-threads the assistant tool_call + tool result to the real provider; the engine wire drops the tool_call id (contracts.ToolCall/engine.schema.json carry only name+arguments), so the threaded continuation is malformed for the real chat API. A multi-step tool-continuation follow-up (engine-wire tool_call id) — not an advertising gap. The fencing + restore mechanism is proven deterministically (recovery_ladder + pause_checkpoint).")
 
 	ctx := context.Background()
 	repo, err := store.Open(ctx, pgURL)

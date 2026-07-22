@@ -100,7 +100,7 @@ func TestLiveAgentRevisionPinnedRun(t *testing.T) {
 	assertRealCompletion(t, res, "agent-revision pinned run")
 	call := requireToolCall(t, res, "agent-revision pinned run")
 	if call.Name != fileToolName {
-		t.Fatalf("forced call = %q, want the ceiling tool %q", call.Name, fileToolName)
+		t.Fatalf("spontaneous call = %q, want the ceiling tool %q", call.Name, fileToolName)
 	}
 }
 

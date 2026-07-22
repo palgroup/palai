@@ -103,16 +103,18 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     ;;
   provider-one/spontaneous-tool-roundtrip)
-    # E12 Task 1: the FIRST fully spontaneous real-provider tool round-trip through the production
-    # orchestrator. dispatchModel advertises the run's effective tool set (project default_tools =
-    # [palai.workspace.file]); the real provider is offered the file tool, SPONTANEOUSLY calls it (the
-    # prompt instructs but does NOT force — no tool_choice:required), the broker executes it from the
-    # fenced ledger against a real workspace, the model continues, and the run reaches terminal. Evidence:
-    # >=2 distinct real chatcmpl ids, a real tool_call id, a completed palai.workspace.file ledger row, and
-    # the file actually on disk. Needs the credential + a throwaway Postgres + the engine dir. Honest
+    # E12 Task 1: the FIRST spontaneous real-provider tool call through the production orchestrator.
+    # dispatchModel advertises the run's effective tool set (project default_tools = [palai.workspace.file]);
+    # the real provider is offered the file tool, SPONTANEOUSLY calls it (the prompt instructs but does NOT
+    # force — no tool_choice:required), and the broker executes it from the fenced ledger against a real
+    # workspace. Evidence (ceiling 4 — what the test asserts): a real chatcmpl id on the spontaneous tool
+    # step, the first committed result carries the tool call, a completed palai.workspace.file ledger row,
+    # and the file actually on disk. Needs the credential + a throwaway Postgres + the engine dir. Honest
     # ceilings (named in the test): single provider (second-provider parity is E16); spontaneity is
-    # probabilistic — a run where the model declines is red and re-runs, a green run IS the proof; the
-    # tool set is small by design (no "5-tool loop driven live" claim — the seam rationale holds at journey scale).
+    # probabilistic — a run where the model declines is red and re-runs, a green run IS the proof; the run
+    # does NOT reach terminal completion here — the multi-step continuation re-threads the tool call +
+    # result, which the engine wire (dropped tool_call id) makes malformed for the real chat API, a T1b
+    # engine-wire tool_call-id follow-up (NOT an advertising gap).
     pkg="./apps/control-plane/internal/execution/live"
     run="TestLiveSpontaneousToolRoundTripRealProvider"
     required_key="OPENAI_API_KEY"
