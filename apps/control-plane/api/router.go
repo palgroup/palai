@@ -29,6 +29,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	mux := http.NewServeMux()
 	responses := &responseHandler{admitter: admitter, limits: cfg.edge.admissionLimits()}
 	mux.Handle("POST /v1/responses", middleware.RequireIdempotencyKey(http.HandlerFunc(responses.create)))
+	mux.HandleFunc("GET /v1/responses", responses.list)
 	mux.HandleFunc("GET /v1/responses/{response_id}", responses.get)
 	// Cancel is naturally idempotent (a canceled terminal is monotonic), so it is not wrapped
 	// with RequireIdempotencyKey; the OpenAPI cancelResponse operation defines no key parameter.
@@ -41,6 +42,8 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if bindings != nil {
 		bh := &bindingHandler{bindings: bindings}
 		mux.HandleFunc("POST /v1/repository-bindings", bh.create)
+		mux.HandleFunc("GET /v1/repository-bindings", bh.list)
+		mux.HandleFunc("GET /v1/repository-bindings/{binding_id}", bh.get)
 	}
 
 	// The automation-agent management surface (spec §20.2.1, §10, E11 Task 1): AgentProfiles +
@@ -49,6 +52,9 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if agents != nil {
 		ah := &agentHandler{agents: agents}
 		mux.HandleFunc("POST /v1/agents", ah.createProfile)
+		mux.HandleFunc("GET /v1/agents", ah.listProfiles)
+		mux.HandleFunc("GET /v1/agents/{agent_id}", ah.getProfile)
+		mux.HandleFunc("GET /v1/agents/{agent_id}/revisions", ah.listRevisions)
 		mux.HandleFunc("POST /v1/agents/{agent_id}/revisions", ah.createRevision)
 		mux.HandleFunc("POST /v1/agents/{agent_id}/revisions/{revision_id}/publish", ah.publishRevision)
 		mux.HandleFunc("POST /v1/run-templates/{template}/revisions", ah.createTemplateRevision)
@@ -63,6 +69,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if triggers != nil {
 		th := &triggerHandler{triggers: triggers}
 		mux.HandleFunc("POST /v1/triggers", th.createTrigger)
+		mux.HandleFunc("GET /v1/triggers", th.listTriggers)
 		mux.HandleFunc("POST /v1/triggers/{trigger_id}/revisions", th.reviseTrigger)
 		// PATCH rotates the inbound source-secret handles in place (E11 Task 5) — NOT a revise (rotation must
 		// not mint a pipeline revision); it accepts ONLY the two secret refs.
@@ -93,6 +100,9 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if tools != nil {
 		th := &toolHandler{tools: tools}
 		mux.HandleFunc("POST /v1/tools", th.createTool)
+		mux.HandleFunc("GET /v1/tools", th.listTools)
+		mux.HandleFunc("GET /v1/tools/{tool_id}", th.getTool)
+		mux.HandleFunc("GET /v1/tool-sets", th.listToolSets)
 		mux.HandleFunc("POST /v1/tools/{tool_id}/revisions", th.createRevision)
 		mux.HandleFunc("POST /v1/tools/{tool_id}/revisions/{revision_id}/publish", th.publishRevision)
 		mux.HandleFunc("POST /v1/tool-sets/{set}/revisions", th.createSetRevision)
@@ -105,6 +115,8 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if mcp != nil {
 		mh := &mcpConnectionHandler{mcp: mcp}
 		mux.HandleFunc("POST /v1/mcp-connections", mh.createConnection)
+		mux.HandleFunc("GET /v1/mcp-connections", mh.listConnections)
+		mux.HandleFunc("GET /v1/mcp-connections/{id}", mh.getConnection)
 		mux.HandleFunc("POST /v1/mcp-connections/{id}/discover", mh.discoverConnection)
 	}
 
@@ -183,6 +195,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if sessions != nil {
 		sh := &sessionHandler{sessions: sessions}
 		mux.HandleFunc("POST /v1/sessions", sh.create)
+		mux.HandleFunc("GET /v1/sessions", sh.list)
 		mux.HandleFunc("GET /v1/sessions/{session_id}", sh.get)
 		mux.HandleFunc("POST /v1/sessions/{session_id}/commands", sh.command)
 	}

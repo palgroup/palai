@@ -25,6 +25,20 @@ SELECT id, state, created_at
 FROM sessions
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- ListSessions pages a project's sessions newest-first (spec §9.1, E13 T4). Tenant-scoped by RLS;
+-- the org/project predicate is defence-in-depth. Same keyset/filter shape as ListResponses: $3
+-- status, $4/$5 created_at bounds, ($6,$7) the keyset boundary, $8 the row cap.
+-- name: ListSessions
+SELECT id, state, created_at
+FROM sessions
+WHERE organization_id = $1 AND project_id = $2
+  AND ($3 = '' OR state = $3)
+  AND ($4::timestamptz IS NULL OR created_at >= $4)
+  AND ($5::timestamptz IS NULL OR created_at <= $5)
+  AND ($6::timestamptz IS NULL OR (created_at, id) < ($6, $7))
+ORDER BY created_at DESC, id DESC
+LIMIT $8;
+
 -- LockSession reads and locks a session so a lifecycle transition (close) sees a stable state
 -- and concurrent closes serialize (mirrors LockRun for runs).
 -- name: LockSession

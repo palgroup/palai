@@ -16,6 +16,36 @@ SELECT 1 FROM tools WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- monotonic number, computed in-statement so a revise never has to read-then-write. Returns it.
 -- ponytail: the MAX+1 subselect can race two concurrent inserts to the same number; the
 -- UNIQUE(tool_id, revision_number) constraint then rejects the loser (retry on 23505 if it ever matters).
+-- GetTool reads a tool lineage within scope (spec §28.2, E13 T4). A foreign/unknown id returns no row.
+-- name: GetTool
+SELECT id, canonical_name, model_visible_name, created_at
+FROM tools
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- ListTools pages a project's tool lineages newest-first (spec §28.2, E13 T4). Tenant-scoped by RLS;
+-- cursor + created_at bounds only.
+-- name: ListTools
+SELECT id, canonical_name, model_visible_name, created_at
+FROM tools
+WHERE organization_id = $1 AND project_id = $2
+  AND ($3::timestamptz IS NULL OR created_at >= $3)
+  AND ($4::timestamptz IS NULL OR created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+ORDER BY created_at DESC, id DESC
+LIMIT $7;
+
+-- ListToolSetRevisions pages a project's tool-set revisions newest-first (spec §28.4, E13 T4). A set has
+-- no lineage table (it is named directly), so the list is its revisions; published names the flip.
+-- name: ListToolSetRevisions
+SELECT id, set_name, revision_number, digest, published_at IS NOT NULL, created_at
+FROM tool_set_revisions
+WHERE organization_id = $1 AND project_id = $2
+  AND ($3::timestamptz IS NULL OR created_at >= $3)
+  AND ($4::timestamptz IS NULL OR created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+ORDER BY created_at DESC, id DESC
+LIMIT $7;
+
 -- name: InsertToolRevision
 INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number, executor,
         description, input_schema, output_schema, replay_class, timeout_ms, limits, executor_config, secret_ref, digest)

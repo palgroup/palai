@@ -16,6 +16,9 @@ import (
 type MCPConnectionAPI interface {
 	CreateMCPConnection(ctx context.Context, scope middleware.Scope, body []byte) (MCPConnectionResult, error)
 	DiscoverMCPConnection(ctx context.Context, scope middleware.Scope, id string) (MCPConnectionResult, error)
+	// GetMCPConnection + ListMCPConnections are the E13 T4 read side — non-secret metadata only, RLS-scoped.
+	GetMCPConnection(ctx context.Context, scope middleware.Scope, id string) (MCPConnectionResult, error)
+	ListMCPConnections(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
 }
 
 // MCPConnectionResult is a management projection. Exactly one outcome is set: Body carries the created
@@ -58,6 +61,36 @@ func (h *mcpConnectionHandler) discoverConnection(w http.ResponseWriter, r *http
 	}
 	out, err := h.mcp.DiscoverMCPConnection(r.Context(), scope, r.PathValue("id"))
 	h.write(w, r, out, err, http.StatusOK, "")
+}
+
+// getConnection reads one connection's non-secret metadata (GET /v1/mcp-connections/{id}).
+func (h *mcpConnectionHandler) getConnection(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	out, err := h.mcp.GetMCPConnection(r.Context(), scope, r.PathValue("id"))
+	h.write(w, r, out, err, http.StatusOK, "")
+}
+
+// listConnections returns a tenant-scoped page of connections (GET /v1/mcp-connections).
+func (h *mcpConnectionHandler) listConnections(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	q, ok := beginList(w, r, "mcp-connections", scope)
+	if !ok {
+		return
+	}
+	rows, err := h.mcp.ListMCPConnections(r.Context(), scope, q)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	renderPage(w, r, "mcp-connections", scope, rows, q.Limit)
 }
 
 // write renders a management outcome: the typed rejects first, then 2xx with the resource.

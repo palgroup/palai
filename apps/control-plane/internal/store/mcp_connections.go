@@ -52,6 +52,44 @@ func (s *Store) DiscoverMCPConnection(ctx context.Context, scope middleware.Scop
 	return api.MCPConnectionResult{Body: out}, nil
 }
 
+// GetMCPConnection reads a connection's non-secret metadata within scope (spec §28.13, E13 T4). A
+// missing/foreign id is NotFound (404).
+func (s *Store) GetMCPConnection(ctx context.Context, scope middleware.Scope, id string) (api.MCPConnectionResult, error) {
+	conn, err := s.tools.GetMCPConnection(ctx, scope.Organization, scope.Project, id)
+	if errors.Is(err, extensions.ErrConnectionNotFound) {
+		return api.MCPConnectionResult{NotFound: true}, nil
+	}
+	if err != nil {
+		return api.MCPConnectionResult{}, err
+	}
+	out, _ := json.Marshal(mcpConnectionProjection(conn.ID, conn.Name, conn.Transport, conn.TrustLevel, conn.Disabled))
+	return api.MCPConnectionResult{Body: out}, nil
+}
+
+// ListMCPConnections returns a tenant-scoped page of MCP connections (spec §28.13, E13 T4). The
+// secret_ref is never surfaced — a list carries only the non-secret metadata.
+func (s *Store) ListMCPConnections(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
+	items, err := s.tools.ListMCPConnections(ctx, scope.Organization, scope.Project, toExtensionsWindow(q))
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]api.ListRow, 0, len(items))
+	for _, it := range items {
+		body, _ := json.Marshal(mcpConnectionProjection(it.ID, it.Name, it.Transport, it.TrustLevel, it.Disabled))
+		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
+	}
+	return rows, nil
+}
+
+// mcpConnectionProjection is the connection's read shape — the same fields the create projection shows,
+// plus disabled. It never carries the secret_ref handle.
+func mcpConnectionProjection(id, name, transport, trustLevel string, disabled bool) map[string]any {
+	return map[string]any{
+		"id": id, "object": "mcp_connection", "name": name,
+		"transport": transport, "trust_level": trustLevel, "disabled": disabled,
+	}
+}
+
 // mcpReject maps a typed domain error to its api.MCPConnectionResult reject flag.
 func mcpReject(err error) (api.MCPConnectionResult, bool) {
 	switch {

@@ -86,6 +86,62 @@ func (s *Store) PublishToolSetRevision(ctx context.Context, scope middleware.Sco
 	return publishToolResult(revisionID, exists, err)
 }
 
+// GetTool reads a tool lineage within scope (spec §28.2, E13 T4). A missing/foreign id is NotFound (404).
+func (s *Store) GetTool(ctx context.Context, scope middleware.Scope, id string) (api.ToolResult, error) {
+	it, found, err := s.tools.GetTool(ctx, scope.Organization, scope.Project, id)
+	if err != nil {
+		return api.ToolResult{}, err
+	}
+	if !found {
+		return api.ToolResult{NotFound: true}, nil
+	}
+	return api.ToolResult{Body: mustJSON(toolLineageProjection(it.ID, it.CanonicalName, it.ModelVisibleName))}, nil
+}
+
+// ListTools returns a tenant-scoped page of tool lineages (spec §28.2, E13 T4).
+func (s *Store) ListTools(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
+	items, err := s.tools.ListTools(ctx, scope.Organization, scope.Project, toExtensionsWindow(q))
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]api.ListRow, 0, len(items))
+	for _, it := range items {
+		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: mustJSON(toolLineageProjection(it.ID, it.CanonicalName, it.ModelVisibleName))})
+	}
+	return rows, nil
+}
+
+// ListToolSets returns a tenant-scoped page of tool-set revisions (spec §28.4, E13 T4). A set is named
+// directly (no lineage table), so the list is its revisions.
+// ponytail: no single-resource GET /v1/tool-sets/{id} — a set is consumed by NAME in an agent revision,
+// never fetched by revision id, so there is no resolver to expose. Add one if a console needs it.
+func (s *Store) ListToolSets(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
+	items, err := s.tools.ListToolSetRevisions(ctx, scope.Organization, scope.Project, toExtensionsWindow(q))
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]api.ListRow, 0, len(items))
+	for _, it := range items {
+		status := "draft"
+		if it.Published {
+			status = "published"
+		}
+		body := mustJSON(map[string]any{
+			"id": it.ID, "object": "tool_set_revision", "set": it.Set,
+			"revision_number": it.RevisionNumber, "digest": it.Digest, "status": status,
+		})
+		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
+	}
+	return rows, nil
+}
+
+// toolLineageProjection is a tool lineage's read shape — the same fields the create projection shows.
+func toolLineageProjection(id, canonicalName, modelVisibleName string) map[string]any {
+	return map[string]any{
+		"id": id, "object": "tool", "canonical_name": canonicalName, "model_visible_name": modelVisibleName,
+	}
+}
+
 // toolReject maps a typed domain error to its api.ToolResult reject flag: bad input → 400, name/state
 // conflict → 409, absent tool/revision → 404. A nil or unrecognised error is not mapped here.
 func toolReject(err error) (api.ToolResult, bool) {

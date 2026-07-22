@@ -27,6 +27,10 @@ const (
 type Admitter interface {
 	AdmitResponse(ctx context.Context, req AdmitRequest) (AdmitResult, error)
 	GetResponse(ctx context.Context, scope middleware.Scope, id string) (RetrieveResult, error)
+	// ListResponses returns a tenant-scoped page of run history (spec §22.3, E13 T4). The store
+	// runs under RLS, so the request scope confines the rows; the ListQuery carries only the keyset
+	// position and the basic filters. It fetches Limit+1 rows so the handler detects a further page.
+	ListResponses(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
 	// CancelResponse cancels a response's run within scope and returns the terminal
 	// projection to render. It shares retrieval's result: Found=false is a 404 (unknown or
 	// foreign id), Purged is a 410, and a hit carries the canceled (or already-terminal)
@@ -295,6 +299,28 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write(out.Body)
+}
+
+// list returns a tenant-scoped page of run history (spec §22.3, E13 T4): GET /v1/responses. The
+// page is confined to the verified scope by RLS — there is no org/project query parameter (that
+// would be an IDOR) — and supports the two basic filters (?status=, ?created_after=/?created_before=)
+// plus opaque cursor paging (?after=, ?limit=). A foreign or malformed cursor is a 400 invalid_cursor.
+func (h *responseHandler) list(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	q, ok := beginList(w, r, "responses", scope)
+	if !ok {
+		return
+	}
+	rows, err := h.admitter.ListResponses(r.Context(), scope, q)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	renderPage(w, r, "responses", scope, rows, q.Limit)
 }
 
 // get retrieves a response's terminal projection within the verified scope. A hit is

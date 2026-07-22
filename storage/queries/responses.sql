@@ -44,6 +44,25 @@ SELECT state, output, purged_at, created_at
 FROM responses
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- ListResponses pages a project's run history newest-first (spec §22.3, E13 T4). It is tenant-scoped
+-- by RLS; the organization/project predicate is defence-in-depth (the same belt-and-braces every
+-- response query carries). The keyset ($6, $7) pages strictly before the last row of the previous
+-- page in (created_at DESC, id DESC) order, so paging is stable under concurrent inserts; $3 filters
+-- by state, $4/$5 bound created_at. The list carries the durable columns only — model/usage/output
+-- come from GetResponse, so a page never decodes N output blobs.
+-- ponytail: no (created_at, id) index exists (adding one is a migration; this task ships none), so a
+-- large history sorts in memory. Fine at basic-tier volumes; add an index if run history grows deep.
+-- name: ListResponses
+SELECT id, state, session_id, created_at
+FROM responses
+WHERE organization_id = $1 AND project_id = $2
+  AND ($3 = '' OR state = $3)
+  AND ($4::timestamptz IS NULL OR created_at >= $4)
+  AND ($5::timestamptz IS NULL OR created_at <= $5)
+  AND ($6::timestamptz IS NULL OR (created_at, id) < ($6, $7))
+ORDER BY created_at DESC, id DESC
+LIMIT $8;
+
 -- RunContext resolves a run's durable context (tenant, session, response, input) by
 -- its primary key. The run id is coordinator-supplied from the claimed job, so this
 -- by-PK read establishes the scope every later write is gated by — the same

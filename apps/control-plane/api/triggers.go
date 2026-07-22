@@ -19,6 +19,9 @@ type TriggerAPI interface {
 	CreateTrigger(ctx context.Context, org, project, principal, name, triggerType string) (string, error)
 	ReviseTrigger(ctx context.Context, org, project, triggerID string, in automation.TriggerRevisionInput) (automation.TriggerRevision, error)
 	GetTrigger(ctx context.Context, org, project, triggerID string) (automation.TriggerView, bool, error)
+	// ListTriggers is the E13 T4 read side: a tenant-scoped page of triggers (RLS-confined). It returns
+	// the automation store's own row type; the handler maps each to the shared list envelope.
+	ListTriggers(ctx context.Context, org, project string, w automation.ListWindow) ([]automation.TriggerListItem, error)
 	CreateDeliveryIdempotent(ctx context.Context, org, project, principal, triggerID, idempotencyKey string, payload []byte) (automation.DeliveryResult, error)
 	GetDelivery(ctx context.Context, org, project, deliveryID string) (automation.TriggerDeliveryView, bool, error)
 	// IngestInbound is the unauthenticated signed-webhook receiver (E11 Task 5): the source signature is
@@ -60,6 +63,39 @@ func (h *triggerHandler) createTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", "/v1/triggers/"+id)
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+// listTriggers returns a tenant-scoped page of triggers (GET /v1/triggers), confined by RLS. Cursor +
+// created_at bounds only. It maps each automation row into the shared list envelope.
+func (h *triggerHandler) listTriggers(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	q, ok := beginList(w, r, "triggers", scope)
+	if !ok {
+		return
+	}
+	window := automation.ListWindow{CreatedGTE: q.CreatedGTE, CreatedLTE: q.CreatedLTE, Limit: q.Limit + 1}
+	if q.After != nil {
+		window.AfterCreatedAt = &q.After.CreatedAt
+		window.AfterID = q.After.ID
+	}
+	items, err := h.triggers.ListTriggers(r.Context(), scope.Organization, scope.Project, window)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	rows := make([]ListRow, 0, len(items))
+	for _, it := range items {
+		body, _ := json.Marshal(map[string]any{
+			"id": it.ID, "object": "trigger", "name": it.Name, "type": it.Type,
+			"enabled": it.Enabled, "active_revision": it.ActiveRevision,
+		})
+		rows = append(rows, ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
+	}
+	renderPage(w, r, "triggers", scope, rows, q.Limit)
 }
 
 // reviseInboundSecret rotates a trigger's inbound source-secret handles (PATCH /v1/triggers/{trigger_id}).

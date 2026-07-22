@@ -69,6 +69,54 @@ func (s *Store) PublishRunTemplateRevision(ctx context.Context, scope middleware
 	return publishResult(revisionID, exists, err)
 }
 
+// GetAgentProfile reads a profile lineage within scope (spec §10, E13 T4). A missing/foreign id is
+// NotFound (404).
+func (s *Store) GetAgentProfile(ctx context.Context, scope middleware.Scope, id string) (api.AgentResult, error) {
+	it, found, err := s.agents.GetProfile(ctx, scope.Organization, scope.Project, id)
+	if err != nil {
+		return api.AgentResult{}, err
+	}
+	if !found {
+		return api.AgentResult{NotFound: true}, nil
+	}
+	return api.AgentResult{Body: mustJSON(map[string]any{"id": it.ID, "object": "agent", "name": it.Name})}, nil
+}
+
+// ListAgentProfiles returns a tenant-scoped page of agent-profile lineages (spec §10, E13 T4).
+func (s *Store) ListAgentProfiles(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
+	items, err := s.agents.ListProfiles(ctx, scope.Organization, scope.Project, toAutomationWindow(q))
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]api.ListRow, 0, len(items))
+	for _, it := range items {
+		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: mustJSON(map[string]any{"id": it.ID, "object": "agent", "name": it.Name})})
+	}
+	return rows, nil
+}
+
+// ListAgentRevisions returns a tenant-scoped page of one profile's revisions (spec §10, E13 T4). An
+// unknown or foreign profile yields an empty page (no existence oracle beyond emptiness).
+func (s *Store) ListAgentRevisions(ctx context.Context, scope middleware.Scope, profileID string, q api.ListQuery) ([]api.ListRow, error) {
+	items, err := s.agents.ListRevisions(ctx, scope.Organization, scope.Project, profileID, toAutomationWindow(q))
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]api.ListRow, 0, len(items))
+	for _, it := range items {
+		status := "draft"
+		if it.Published {
+			status = "published"
+		}
+		body := mustJSON(map[string]any{
+			"id": it.ID, "object": "agent_revision", "agent_id": profileID,
+			"revision_number": it.RevisionNumber, "model": it.Model, "instructions": it.Instructions, "status": status,
+		})
+		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
+	}
+	return rows, nil
+}
+
 // revisionBody renders a created draft revision projection. parentKey names the owning profile
 // (agent_id) or template (template) so a client can navigate back.
 func revisionBody(rev automation.Revision, object, parent string) []byte {

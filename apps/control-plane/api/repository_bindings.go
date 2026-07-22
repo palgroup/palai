@@ -18,6 +18,11 @@ import (
 // identity, never a request-body field (§39.2) — the raw credential is never carried, only ConnectionRef.
 type BindingRegistrar interface {
 	CreateRepositoryBinding(ctx context.Context, scope middleware.Scope, req RepositoryBindingCreate) (BindingResult, error)
+	// GetRepositoryBinding + ListRepositoryBindings are the E13 T4 read side. Both run under RLS, so
+	// the request scope confines them; a missing/foreign id is NotFound (404), and the list carries
+	// only the keyset position + created_at bounds (a binding has no lifecycle state to filter on).
+	GetRepositoryBinding(ctx context.Context, scope middleware.Scope, id string) (BindingResult, error)
+	ListRepositoryBindings(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
 }
 
 // RepositoryBindingCreate is the resolved create body (spec §30.1). Provider + RepositoryIdentity are
@@ -35,11 +40,13 @@ type RepositoryBindingCreate struct {
 	RegionConstraint   string
 }
 
-// BindingResult is a binding projection. Invalid is a create missing a required field (400); Body is
-// the created RepositoryBinding resource to return verbatim.
+// BindingResult is a binding projection. Invalid is a create missing a required field (400);
+// NotFound is a read of a missing/foreign id (404); Body is the RepositoryBinding resource to
+// return verbatim.
 type BindingResult struct {
-	Body    []byte
-	Invalid bool
+	Body     []byte
+	Invalid  bool
+	NotFound bool
 }
 
 type bindingHandler struct {
@@ -109,6 +116,48 @@ func (h *bindingHandler) create(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_, _ = w.Write(out.Body)
+}
+
+// get reads one binding within the verified scope (spec §30.1 GET /v1/repository-bindings/{id}). A
+// missing or foreign id is a tenant-scoped 404, leaking no cross-tenant existence.
+func (h *bindingHandler) get(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	out, err := h.bindings.GetRepositoryBinding(r.Context(), scope, r.PathValue("binding_id"))
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	if out.NotFound {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such repository binding in this project")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out.Body)
+}
+
+// list returns a tenant-scoped page of bindings (spec §30.1 GET /v1/repository-bindings), confined to
+// the verified scope by RLS. Cursor + created_at bounds only — a binding has no lifecycle state.
+func (h *bindingHandler) list(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	q, ok := beginList(w, r, "repository-bindings", scope)
+	if !ok {
+		return
+	}
+	rows, err := h.bindings.ListRepositoryBindings(r.Context(), scope, q)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	renderPage(w, r, "repository-bindings", scope, rows, q.Limit)
 }
 
 // allowedCloneScheme reports whether a clone_url may be registered over the HTTP endpoint (§24): only

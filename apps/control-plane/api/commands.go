@@ -18,6 +18,9 @@ import (
 type SessionManager interface {
 	CreateSession(ctx context.Context, scope middleware.Scope) (SessionResult, error)
 	GetSession(ctx context.Context, scope middleware.Scope, id string) (SessionResult, error)
+	// ListSessions is the E13 T4 read side: a tenant-scoped page of sessions, confined by RLS,
+	// with cursor + status/created_at filters.
+	ListSessions(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
 	AcceptCommand(ctx context.Context, scope middleware.Scope, sessionID string, req contracts.CommandCreateRequest) (CommandResult, error)
 }
 
@@ -78,6 +81,26 @@ func (h *sessionHandler) get(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out.Body)
+}
+
+// list returns a tenant-scoped page of sessions (spec §9.1 GET /v1/sessions), confined to the
+// verified scope by RLS. Supports the basic filters (?status=, created_at bounds) and cursor paging.
+func (h *sessionHandler) list(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	q, ok := beginList(w, r, "sessions", scope)
+	if !ok {
+		return
+	}
+	rows, err := h.sessions.ListSessions(r.Context(), scope, q)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	renderPage(w, r, "sessions", scope, rows, q.Limit)
 }
 
 // command accepts a durable command against a session (spec §22.4, §9.2). Acceptance means

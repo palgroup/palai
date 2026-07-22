@@ -14,6 +14,19 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- MCPConnectionExists verifies a connection id is in scope (an AgentRevision rider names only real
 -- connections — the revision-create validation gate).
+-- ListMCPConnections pages a project's MCP connections newest-first (spec §28.13, E13 T4). Tenant-scoped
+-- by RLS; the org/project predicate is defence-in-depth. Cursor + created_at bounds only — the secret_ref
+-- is deliberately NOT selected (a list never surfaces a credential handle beyond what GET already shows).
+-- name: ListMCPConnections
+SELECT id, name, transport, trust_level, disabled_at IS NOT NULL, created_at
+FROM mcp_connections
+WHERE organization_id = $1 AND project_id = $2
+  AND ($3::timestamptz IS NULL OR created_at >= $3)
+  AND ($4::timestamptz IS NULL OR created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+ORDER BY created_at DESC, id DESC
+LIMIT $7;
+
 -- name: MCPConnectionExists
 SELECT 1 FROM mcp_connections WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 

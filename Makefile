@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 .PHONY: \
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
-	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-spikes evidence-spikes \
+	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility evidence-verify
 
@@ -84,6 +84,13 @@ test-live-hook-deny:
 # A convenience alias for the CASE=tenancy-isolation live-provider case (PROVIDER=provider-one).
 test-live-tenancy:
 	@PROVIDER=provider-one CASE=tenancy-isolation scripts/test/live-provider
+
+# E13 Task 4 live smoke: over the REAL router a tenant lists its run history (a REAL provider-one run) with
+# a plain HTTP client, and a second tenant presenting the first tenant's cursor is rejected with 400
+# invalid_cursor while its own history is RLS-empty (MCI-003 + TEN-001 cursor-fuzz). A convenience alias for
+# the CASE=run-history-list live-provider case (PROVIDER=provider-one).
+test-live-run-history:
+	@PROVIDER=provider-one CASE=run-history-list scripts/test/live-provider
 
 # E13 Task 2 live smoke: a running store provisions a BRAND-NEW tenant via the API with no restart, its
 # config_policy is visible in the §14 resolver, and the fresh tenant runs a REAL provider completion

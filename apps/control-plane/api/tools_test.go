@@ -16,6 +16,9 @@ type fakeToolRegistry struct {
 	publishRev ToolResult
 	createSet  ToolResult
 	publishSet ToolResult
+	getTool    ToolResult
+	listTools  []ListRow
+	listSets   []ListRow
 	lastBody   []byte
 }
 
@@ -36,6 +39,15 @@ func (f *fakeToolRegistry) CreateToolSetRevision(_ context.Context, _ middleware
 }
 func (f *fakeToolRegistry) PublishToolSetRevision(context.Context, middleware.Scope, string) (ToolResult, error) {
 	return f.publishSet, nil
+}
+func (f *fakeToolRegistry) GetTool(_ context.Context, _ middleware.Scope, _ string) (ToolResult, error) {
+	return f.getTool, nil
+}
+func (f *fakeToolRegistry) ListTools(_ context.Context, _ middleware.Scope, _ ListQuery) ([]ListRow, error) {
+	return f.listTools, nil
+}
+func (f *fakeToolRegistry) ListToolSets(_ context.Context, _ middleware.Scope, _ ListQuery) ([]ListRow, error) {
+	return f.listSets, nil
 }
 
 func toolTestServer(t *testing.T, reg *fakeToolRegistry) string {
@@ -101,6 +113,28 @@ func TestToolManagementSurface(t *testing.T) {
 	reg.createRev = ToolResult{NotFound: true}
 	if resp := do(t, "POST", base+"/v1/tools/tool_missing/revisions", `{"executor":"control_plane","input_schema":{}}`, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown-tool status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestToolReadRoutes pins the E13 T4 read side: GET a tool lineage, LIST tools, and LIST tool-sets each
+// render over the shared Page envelope; a foreign tool id is a 404.
+func TestToolReadRoutes(t *testing.T) {
+	reg := &fakeToolRegistry{
+		getTool:   ToolResult{Body: []byte(`{"id":"tool_1","object":"tool"}`)},
+		listTools: []ListRow{{ID: "tool_1", Body: []byte(`{"id":"tool_1"}`)}},
+		listSets:  []ListRow{{ID: "tsrev_1", Body: []byte(`{"id":"tsrev_1"}`)}, {ID: "tsrev_2", Body: []byte(`{"id":"tsrev_2"}`)}},
+	}
+	base := toolTestServer(t, reg)
+
+	if resp := do(t, "GET", base+"/v1/tools/tool_1", ``, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("get tool status = %d, want 200", resp.StatusCode)
+	}
+	assertPageLen(t, do(t, "GET", base+"/v1/tools", ``, nil), 1)
+	assertPageLen(t, do(t, "GET", base+"/v1/tool-sets", ``, nil), 2)
+
+	reg.getTool = ToolResult{NotFound: true}
+	if resp := do(t, "GET", base+"/v1/tools/tool_missing", ``, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown tool get status = %d, want 404", resp.StatusCode)
 	}
 }
 

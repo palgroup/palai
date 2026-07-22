@@ -198,6 +198,20 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- GetTrigger reads a trigger + its active revision number for the management GET, plus the inbound-auth
 -- surface (created_by + the two source-secret ref HANDLES — never bytes; the resolver redeems them).
+-- ListTriggers pages a project's triggers newest-first (spec §20.2.2, E13 T4). Tenant-scoped by RLS;
+-- cursor + created_at bounds only. active_revision mirrors GetTrigger's MAX(revision_number) subquery.
+-- name: ListTriggers
+SELECT t.id, t.name, t.type, t.enabled,
+       COALESCE((SELECT MAX(revision_number) FROM trigger_revisions WHERE trigger_id = t.id), 0),
+       t.created_at
+FROM triggers t
+WHERE t.organization_id = $1 AND t.project_id = $2
+  AND ($3::timestamptz IS NULL OR t.created_at >= $3)
+  AND ($4::timestamptz IS NULL OR t.created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (t.created_at, t.id) < ($5, $6))
+ORDER BY t.created_at DESC, t.id DESC
+LIMIT $7;
+
 -- name: GetTrigger
 SELECT t.name, t.type, t.enabled,
        COALESCE((SELECT MAX(revision_number) FROM trigger_revisions WHERE trigger_id = t.id), 0),
