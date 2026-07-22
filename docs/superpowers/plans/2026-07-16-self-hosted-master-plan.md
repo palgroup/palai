@@ -468,9 +468,9 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 
 **Exit gate:** malicious skill/MCP metadata capability genişletemez; extension crash core process'i düşürmez.
 
-### E13 — Tenancy, policy, secrets, usage ve data lifecycle
+### E13 — Managed-Cloud Infrastructure Completeness (reshaped 2026-07-22: tenancy/secrets/usage + the managed-agent-over-cloud infra gaps)
 
-**Child plan:** `docs/superpowers/plans/phase-13-governance-data.md`
+**Child plan:** `docs/superpowers/plans/phase-13-managed-cloud-infra.md` — the reshape gathers all TRULY-NEEDED non-SaaS infra into one gate (RLS + tenant provisioning API, restart-less secret-refs, read/LIST API, artifact retrieval, edge admission/rate-limit, DB-backed model-routing reader, config_policy write, `@palai/sdk` core-parity). SaaS-layer items are explicitly OUT (child plan §5: browser-token/CORS, per-tenant GitHub onboarding, pooled-fairness/Stripe, managed-cell/microVM/DR-3, web-console, full-KMS/OIDC). The original envelope/KMS + OIDC + audit-integrity items below run as the gate-non-blocking **E13-H hardening tranche** (child plan §6). Design invariant: every exposed API + the usage-ledger is versioned + tenant-scoped + stable, so a commercial SaaS layers on top without coupling into the core.
 
 **Files:** `apps/control-plane/internal/identity/`, `packages/policy/`, `apps/control-plane/internal/operations/`, `storage/migrations/`, `tests/security/tenancy/`, `tests/security/secrets/`
 
@@ -481,9 +481,9 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 - [ ] Audit integrity linkage, retention, `store:false`, deletion/export ve signed artifact URL policy ekle.
 - [ ] Default content-free OpenTelemetry signals ve redaction/secret scanners ekle.
 
-**UAT ownership:** TEN-001..004; SEC-001..003; DAT-001..006; BIL-001..005; QUO-001. TEN-005 ve managed billing export SaaS scope'unda ayrıca ele alınır.
+**UAT ownership (gate):** TEN-001..003; SEC-002 (rotation subset); DAT-006 (basic deny); BIL-001, BIL-003; QUO-001; MOD-004 (routing yarısı); MCI-001..008. **(E13-H, gate-bloklamaz — SH-2 öncesi/E14-E15 penceresi):** TEN-004, SEC-001/003, DAT-001..005, BIL-002/004/005, OIDC/roles, audit-integrity linkage. TEN-005 ve managed billing export (Stripe) SaaS scope'unda ayrıca ele alınır.
 
-**Exit gate:** cross-project existence disclosure sıfır; secret yalnızca executor operation'da kullanılır; content-free usage/audit kanıtı bulunur.
+**Exit gate — "managed-agent-over-cloud infra-complete":** Bir web SDK (server-relay) — API ile provision edilmiş, restart'sız secret'lı, kendi model route'u ve config_policy'si olan bir tenant'ta — run yaratır, steer/interrupt eder, run/session/agent listeler ve artifact indirir; tamamı RLS ile tenant-izole (cross-project negative corpus DB-level yeşil), edge'de rate-limited, budget/quota-metered ve versioned `/v1` public API'den geçer; `managed-cloud-0.1.0` evidence verifier yeşildir. Bu gate geçmeden "managed cloud hazır" ifadesi kullanılmaz; hostile public multi-tenancy bu gate'te de İDDİA EDİLMEZ (E17+/SaaS).
 
 ### E14 — Single-node ve split-VM production self-host
 
