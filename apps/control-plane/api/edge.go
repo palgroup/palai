@@ -7,6 +7,12 @@ package api
 // The two halves are deliberately distinct (QUO-001 tests them apart): RequestRate* is an INSTANTANEOUS
 // per-key request-rate limit (an in-process token bucket, middleware.RateLimit); MaxConcurrentRuns /
 // MaxQueuedRuns are per-project admission caps read from durable DB counters at admission time.
+//
+// ponytail ceiling: the request-rate limiter governs the PUBLIC API surface only. Automation-born runs
+// (trigger/webhook/schedule deliveries, and the signed POST /v1/inbound receiver, which mounts outside
+// this middleware) are NOT request-rate-limited here — they carry their own AUT-010 ingestion
+// backpressure — but they DO admit through the same path and consume the same per-project MaxConcurrentRuns
+// / MaxQueuedRuns counters, so the project-level caps still bound them.
 type EdgeLimits struct {
 	// RequestRatePerSec is the sustained per-API-key request refill (tokens/second); RequestBurst is
 	// the bucket depth. RequestRatePerSec <= 0 disables the request-rate limiter.

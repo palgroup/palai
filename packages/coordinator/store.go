@@ -392,7 +392,8 @@ func (s *Store) ApplyRunTransition(ctx context.Context, tenant Tenant, runID str
 	return trans, nil
 }
 
-// TimeoutQueuedIfExpired times out a ROOT run still QUEUED past its queue deadline, BEFORE it is
+// TimeoutQueuedIfExpired times out ANY run (root or child — both flow through ExecuteAttempt) still
+// QUEUED past its queue deadline, BEFORE it is
 // provisioned, so a run that waited out the admission queue terminates as timed_out without starting
 // billable compute (spec §20.12). It is a no-op when the deadline is non-positive (disabled), the run
 // is no longer queued (already dispatched — the pre-compute window has closed), or it has not yet
