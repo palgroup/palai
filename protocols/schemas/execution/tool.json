@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/tool.json",
+  "title": "Tool",
+  "type": "object",
+  "required": ["id", "object", "canonical_name", "model_visible_name"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/opaque_id"},
+    "object": {"type": "string", "const": "tool"},
+    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
+    "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
+    "canonical_name": {"type": "string"},
+    "model_visible_name": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

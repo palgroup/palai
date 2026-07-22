@@ -119,6 +119,38 @@ func TestAgentRevisionPublishIsImmutable(t *testing.T) {
 	}
 }
 
+// TestAgentRevisionPersistsExtensionFields proves the E12 rider columns are actually written (the insert
+// column mapping lines up, spec §28.4): a revision carrying tool_sets + the opaque mcp_connections/skills/
+// hooks stores each as a JSONB array. This is the conflict-shield persistence half — wave-2 stores its
+// field through this same insert without touching the code again.
+func TestAgentRevisionPersistsExtensionFields(t *testing.T) {
+	s, org, project := openStore(t)
+	ctx := context.Background()
+
+	profileID, err := s.CreateProfile(ctx, org, project, "reviewer")
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	rev, err := s.CreateRevision(ctx, org, project, profileID,
+		[]byte(`{"model":"m","tool_sets":["tsrev_a"],"mcp_connections":["mcpc_a"],"skills":["skill_a"],"hooks":["hook_a"]}`))
+	if err != nil {
+		t.Fatalf("create revision with E12 fields: %v", err)
+	}
+	if len(rev.ToolSets) != 1 || rev.ToolSets[0] != "tsrev_a" {
+		t.Fatalf("returned tool_sets = %v, want [tsrev_a]", rev.ToolSets)
+	}
+	var toolSets, mcp, skills, hooks string
+	err = s.pool.QueryRow(ctx,
+		`SELECT tool_sets::text, mcp_connections::text, skills::text, hooks::text FROM agent_revisions WHERE id=$1`, rev.ID).
+		Scan(&toolSets, &mcp, &skills, &hooks)
+	if err != nil {
+		t.Fatalf("read E12 columns: %v", err)
+	}
+	if toolSets != `["tsrev_a"]` || mcp != `["mcpc_a"]` || skills != `["skill_a"]` || hooks != `["hook_a"]` {
+		t.Fatalf("persisted E12 columns = %s / %s / %s / %s, want the four JSONB arrays", toolSets, mcp, skills, hooks)
+	}
+}
+
 // TestRunTemplateRevisionRejectsIdentityAndDelegation proves the profile-free template surface (AGT-003):
 // a template revision publishes and resolves like an agent revision but rejects identity/delegation
 // fields — it must not impersonate an agent identity (spec §32.2).

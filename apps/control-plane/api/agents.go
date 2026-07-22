@@ -124,7 +124,7 @@ func (h *agentHandler) write(w http.ResponseWriter, r *http.Request, out AgentRe
 		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "name is required")
 		return
 	case out.BadField:
-		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the revision carries an unsupported field (only model, tools, instructions are accepted in this release)")
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the revision carries an unsupported field (accepted: model, tools, instructions, tool_sets, mcp_connections, skills, hooks)")
 		return
 	case out.NotFound:
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such agent, revision, or template in this project")

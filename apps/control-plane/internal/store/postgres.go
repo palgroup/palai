@@ -17,6 +17,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
+	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 )
@@ -28,7 +29,14 @@ type Store struct {
 	spine   *coordinator.Store
 	journal *Journal
 	agents  *automation.Store
+	tools   *extensions.Store
 }
+
+// reservedBuiltinToolNames is the model-visible short name of every code-defined built-in tool, so a
+// registered tool can never shadow one (spec §28.2). ponytail: these are the last segments of the built-in
+// canonical names registered in cmd/palai-control-plane/main.go (palai.workspace.file → "file", etc.) and
+// packages/tool-broker/conformance_math.go — kept here as a small literal; extend it if a built-in is added.
+var reservedBuiltinToolNames = []string{"file", "shell", "commit", "push", "pull_request", "add"}
 
 // Open connects the durable spine. databaseURL carries a local throwaway credential.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
@@ -36,7 +44,12 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Store{spine: spine, journal: NewJournal(spine.Pool()), agents: automation.New(spine.Pool())}, nil
+	return &Store{
+		spine:   spine,
+		journal: NewJournal(spine.Pool()),
+		agents:  automation.New(spine.Pool()),
+		tools:   extensions.New(spine.Pool(), reservedBuiltinToolNames...),
+	}, nil
 }
 
 // Close releases the underlying pool.

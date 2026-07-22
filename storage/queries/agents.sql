@@ -17,10 +17,11 @@ SELECT 1 FROM agent_profiles WHERE id = $1 AND organization_id = $2 AND project_
 -- ponytail: the MAX+1 subselect can race two concurrent inserts to the same number; the
 -- UNIQUE(profile_id, revision_number) constraint then rejects the loser (retry on 23505 if it matters).
 -- name: InsertAgentRevision
-INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, instructions)
+INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, instructions,
+        tool_sets, mcp_connections, skills, hooks)
 VALUES ($1, $2, $3, $4,
         (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM agent_revisions WHERE profile_id = $4),
-        $5, $6, $7)
+        $5, $6, $7, $8, $9, $10, $11)
 RETURNING revision_number;
 
 -- PublishAgentRevision is the ONE legitimate mutation: it flips published_at exactly once. The
@@ -50,11 +51,12 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- identity/delegation (a template must not impersonate an agent). revision_number is the template
 -- name's next monotonic number. Returns it.
 -- name: InsertRunTemplateRevision
-INSERT INTO run_template_revisions (id, organization_id, project_id, template_name, revision_number, model, tools, instructions)
+INSERT INTO run_template_revisions (id, organization_id, project_id, template_name, revision_number, model, tools, instructions,
+        tool_sets, mcp_connections, skills, hooks)
 VALUES ($1, $2, $3, $4,
         (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM run_template_revisions
          WHERE organization_id = $2 AND project_id = $3 AND template_name = $4),
-        $5, $6, $7)
+        $5, $6, $7, $8, $9, $10, $11)
 RETURNING revision_number;
 
 -- PublishRunTemplateRevision mirrors PublishAgentRevision: a once-only conditional flip.
@@ -75,10 +77,28 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- picks it; revision_id is NULL for a profile-free run (the resolver then skips the revision layer).
 -- The pin is fixed on the run row, so a later revision of the same profile leaves this read unchanged
 -- (AGT-001 old-run reproducibility).
+-- tool_set_tools resolves the E12 grant (spec §28.2-28.4): the model-visible short names of every tool
+-- pinned by a PUBLISHED tool_set_revision the pinned revision names in its tool_sets JSONB array. Walks
+-- tool_sets → tool_set_revisions → tool_pins → tool_revisions → tools, tenant-scoped, DISTINCT, and
+-- COALESCEd to an empty array so a profile-free / set-free run returns [] (the resolver then unions
+-- nothing). The array_agg is ORDER BY the short name so the list is deterministic — it flows into
+-- ConfigSnapshot.Hash (checkpoint reproducibility + config.revised), and an unordered DISTINCT aggregate
+-- may hash on PG16+ → undefined order → the SAME pinned config hashing differently across two reads.
 -- name: PinnedRunConfig
 SELECT COALESCE(ar.id, rtr.id)              AS revision_id,
        COALESCE(ar.model, rtr.model, '')    AS model,
-       COALESCE(ar.tools, rtr.tools)        AS tools
+       COALESCE(ar.tools, rtr.tools)        AS tools,
+       COALESCE((
+           SELECT array_agg(DISTINCT t.model_visible_name ORDER BY t.model_visible_name)
+           FROM tool_set_revisions tsr
+           CROSS JOIN LATERAL jsonb_array_elements(tsr.tool_pins) AS pin
+           JOIN tool_revisions trv ON trv.id = (pin->>'tool_revision_id')
+               AND trv.organization_id = r.organization_id AND trv.project_id = r.project_id
+           JOIN tools t ON t.id = trv.tool_id
+           WHERE tsr.organization_id = r.organization_id AND tsr.project_id = r.project_id
+               AND tsr.published_at IS NOT NULL
+               AND tsr.id IN (SELECT jsonb_array_elements_text(COALESCE(ar.tool_sets, rtr.tool_sets, '[]'::jsonb)))
+       ), ARRAY[]::text[])                   AS tool_set_tools
 FROM runs r
 LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
 LEFT JOIN run_template_revisions rtr ON rtr.id = r.run_template_revision_id

@@ -123,6 +123,8 @@ components:
         - model_step.interrupted.v1
         - config.revised.v1
         - agent.revision.published.v1
+        - tool.revision.published.v1
+        - tool_set.revision.published.v1
         - child.requested.v1
         - child.completed.v1
         - child.denied.v1

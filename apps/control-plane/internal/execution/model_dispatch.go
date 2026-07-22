@@ -269,7 +269,7 @@ func (o *Orchestrator) effectiveModel(ctx context.Context, st *attemptState) (st
 	}
 	// A pinned agent/template revision routes its model when neither a child nor a session override set
 	// one (spec §14.3 profile+overrides). The pin is immutable on the run row (AGT-001).
-	if _, revModel, _, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID)); err != nil {
+	if _, revModel, _, _, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID)); err != nil {
 		return "", err
 	} else if revModel != "" {
 		return revModel, nil

@@ -2,6 +2,7 @@ package toolbroker
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -177,5 +178,89 @@ func TestPureToolReplayLabeledNoDuplication(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&runs); got != 1 {
 		t.Fatalf("pure tool ran %d times, want 1 (the replay is served cached, semantically single)", got)
+	}
+}
+
+// TestRegistryLookupFallback proves the E12 SetLookup fallback: a tool absent from the static conformance
+// set is resolved by the injected per-tenant lookup and then runs through the SAME fence/ledger/replay
+// machinery — a completed row replays cached. A lookup miss (or no lookup) is ErrUnknownTool, and the
+// resolved tool never enters the static set (Discoverable stays false, tenant isolation).
+func TestRegistryLookupFallback(t *testing.T) {
+	echo := Tool{
+		Name: "fetch", InputSchema: openObject,
+		Invoke: func(args map[string]any) (map[string]any, error) { return args, nil },
+	}
+	var calls int32
+	broker := New() // empty static set
+	broker.SetLookup(func(_ context.Context, _ ExecEnv, name string) (Tool, bool, error) {
+		atomic.AddInt32(&calls, 1)
+		if name == "fetch" {
+			return echo, true, nil
+		}
+		return Tool{}, false, nil
+	})
+	ctx := context.Background()
+
+	// A static-set miss resolves through the lookup and executes.
+	out, err := broker.Execute(ctx, contracts.ToolCallID("tc_r1"), "fetch", map[string]any{"q": "x"}, 1, ExecEnv{})
+	if err != nil {
+		t.Fatalf("registry tool execute error = %v, want a resolved run", err)
+	}
+	if out.Result["q"] != "x" {
+		t.Fatalf("echo result = %v, want the input args back", out.Result)
+	}
+	// The resolved tool never entered the static set.
+	if broker.Discoverable("fetch") {
+		t.Fatal("a lookup-resolved tool must not enter the static conformance set")
+	}
+	// A completed row replays cached without re-invoking the lookup's tool.
+	replay, err := broker.Execute(ctx, contracts.ToolCallID("tc_r1"), "fetch", map[string]any{"q": "x"}, 2, ExecEnv{})
+	if err != nil || !replay.Cached {
+		t.Fatalf("replay cached = %v err = %v, want a cached replay", replay.Cached, err)
+	}
+
+	// An unknown name is ErrUnknownTool even with a lookup wired.
+	if _, err := broker.Execute(ctx, contracts.ToolCallID("tc_r2"), "nope", map[string]any{}, 3, ExecEnv{}); !errors.Is(err, ErrUnknownTool) {
+		t.Fatalf("unknown registry tool err = %v, want ErrUnknownTool", err)
+	}
+	// With no lookup wired at all, a miss is still ErrUnknownTool (static-only behaviour unchanged).
+	if _, err := New().Execute(ctx, contracts.ToolCallID("tc_r3"), "fetch", map[string]any{}, 1, ExecEnv{}); !errors.Is(err, ErrUnknownTool) {
+		t.Fatalf("no-lookup miss err = %v, want ErrUnknownTool", err)
+	}
+}
+
+// TestReplayClassResolvedFallback proves M2: a registry tool's DECLARED replay class is read through the
+// same lookup the executor uses, so the pre-write kill-recovery marker decision sees the true class — not
+// the ClassPure static-miss default. A static tool still reads its own class; a lookup miss is ClassPure.
+func TestReplayClassResolvedFallback(t *testing.T) {
+	static := Tool{Name: "static.pure", InputSchema: openObject, ReplayClass: ClassPure,
+		Invoke: func(a map[string]any) (map[string]any, error) { return a, nil }}
+	broker := New(static)
+	broker.SetLookup(func(_ context.Context, _ ExecEnv, name string) (Tool, bool, error) {
+		if name == "reg.irreversible" {
+			return Tool{Name: name, ReplayClass: ClassIrreversible}, true, nil
+		}
+		return Tool{}, false, nil
+	})
+	ctx := context.Background()
+
+	// The static ReplayClassOf can't see the registry tool — it defaults to pure (the latent hole).
+	if got := broker.ReplayClassOf("reg.irreversible"); got != ClassPure {
+		t.Fatalf("static ReplayClassOf(registry) = %q, want the ClassPure static-miss default", got)
+	}
+	// The resolved variant reads the DECLARED class through the lookup → needs a pre-write marker.
+	got, err := broker.ReplayClassResolved(ctx, ExecEnv{}, "reg.irreversible")
+	if err != nil {
+		t.Fatalf("ReplayClassResolved error = %v", err)
+	}
+	if got != ClassIrreversible || !NeedsPreWrite(got) {
+		t.Fatalf("resolved class = %q needsPreWrite=%v, want irreversible + pre-write", got, NeedsPreWrite(got))
+	}
+	// A static tool still resolves its own class; an unknown name is ClassPure.
+	if got, _ := broker.ReplayClassResolved(ctx, ExecEnv{}, "static.pure"); got != ClassPure {
+		t.Fatalf("resolved static class = %q, want pure", got)
+	}
+	if got, _ := broker.ReplayClassResolved(ctx, ExecEnv{}, "nope"); got != ClassPure {
+		t.Fatalf("resolved unknown class = %q, want pure", got)
 	}
 }

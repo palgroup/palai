@@ -49,7 +49,7 @@ func (f *fakeScheduleAPI) ListOccurrences(context.Context, string, string, strin
 
 func scheduleTestServer(t *testing.T, api *fakeScheduleAPI) string {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, api, SSEConfig{}, nil))
+	srv := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, api, nil, SSEConfig{}, nil))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }

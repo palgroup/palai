@@ -44,8 +44,13 @@ type ResolveInput struct {
 	AgentRevisionID    string
 	AgentRevisionModel string
 	AgentRevisionTools []string
-	SessionModel       string   // cumulative session model override ("" = never set)
-	SessionTools       []string // cumulative session tools override (nil = never set)
+	// AgentRevisionToolSetTools is the model-visible short names contributed by the pinned revision's
+	// tool_sets (E12 Task 2, EXT-003). They UNION into the resolved baseline (provenance agent_revision)
+	// BEFORE the AgentRevisionTools ceiling intersects — so a revision can both grant a registered tool
+	// via a set AND narrow the whole set with a ceiling. Empty leaves resolution bit-identical to before.
+	AgentRevisionToolSetTools []string
+	SessionModel              string   // cumulative session model override ("" = never set)
+	SessionTools              []string // cumulative session tools override (nil = never set)
 }
 
 // ConfigSnapshot is the resolved, redacted, content-addressed effective configuration with
@@ -80,9 +85,15 @@ func Resolve(in ResolveInput) ConfigSnapshot {
 	if in.SessionTools != nil {
 		tools, toolsProv = in.SessionTools, layerSession
 	}
+	// The pinned revision's tool_sets GRANT registered tools: union their short names onto the baseline
+	// (E12 Task 2). The union carries the agent_revision provenance, so a set-granted tool is attributed
+	// to the revision that pinned it.
+	if len(in.AgentRevisionToolSetTools) > 0 {
+		tools, toolsProv = unionTools(tools, in.AgentRevisionToolSetTools), layerAgentRevision
+	}
 	// The pinned revision's tool set is a capability CEILING: intersect it LAST, so neither the
-	// project baseline nor a session override can select a tool the revision does not declare
-	// (spec §10 capability restriction, 63.4). The revision then owns the effective set's provenance.
+	// project baseline, a session override, nor a set grant can select a tool the revision does not
+	// declare (spec §10 capability restriction, 63.4). The revision then owns the effective set's provenance.
 	if in.AgentRevisionID != "" && in.AgentRevisionTools != nil {
 		tools, toolsProv = intersectTools(tools, in.AgentRevisionTools), layerAgentRevision
 	}
@@ -100,6 +111,23 @@ func Resolve(in ResolveInput) ConfigSnapshot {
 		SecretRef:  in.DeploymentSecret,
 		Provenance: provenance,
 	}
+}
+
+// unionTools appends the grant's tools not already present, preserving order (baseline first, then the
+// new grants in their given order). A tool already in the baseline is not duplicated.
+func unionTools(baseline, grants []string) []string {
+	seen := make(map[string]struct{}, len(baseline))
+	for _, t := range baseline {
+		seen[t] = struct{}{}
+	}
+	out := append([]string(nil), baseline...)
+	for _, t := range grants {
+		if _, ok := seen[t]; !ok {
+			seen[t] = struct{}{}
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // intersectTools returns the resolved tools that the ceiling also permits, preserving the resolved
@@ -158,20 +186,21 @@ func (o *Orchestrator) planConfigChange(ctx context.Context, st *attemptState, c
 	// and effectiveModel resolve through, so a config.revised snapshot and a checkpoint never record
 	// divergent config for the same state (the checkpoint.go:185-186 promise). Without this a pinned
 	// run's config.revised would drop the ceiling and the provenance and diverge from the checkpoint hash.
-	revID, revModel, revTools, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
+	revID, revModel, revTools, revToolSetTools, err := o.spine.PinnedExecConfig(ctx, st.tenant, string(st.attempt.RunID))
 	if err != nil {
 		return coordinator.ConfigChangePlan{}, err
 	}
 
 	snap := Resolve(ResolveInput{
-		DeploymentModel:    o.route.Model,
-		DeploymentSecret:   string(o.route.Secret),
-		ProjectTools:       policy.DefaultTools,
-		AgentRevisionID:    revID,
-		AgentRevisionModel: revModel,
-		AgentRevisionTools: revTools,
-		SessionModel:       sessionModel,
-		SessionTools:       sessionTools,
+		DeploymentModel:           o.route.Model,
+		DeploymentSecret:          string(o.route.Secret),
+		ProjectTools:              policy.DefaultTools,
+		AgentRevisionID:           revID,
+		AgentRevisionModel:        revModel,
+		AgentRevisionTools:        revTools,
+		AgentRevisionToolSetTools: revToolSetTools,
+		SessionModel:              sessionModel,
+		SessionTools:              sessionTools,
 	})
 
 	// The row stores the session-level override; nil tools stay NULL (untouched), not [].

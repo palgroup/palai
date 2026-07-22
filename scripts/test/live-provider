@@ -90,6 +90,19 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_shell_image=1
     ;;
+  provider-one/registry-tool-roundtrip)
+    # E12 Task 2 (EXT-002/EXT-003): a control_plane echo tool REGISTERED in the durable extensibility
+    # registry, pinned into a published set a run's agent revision names, is resolved through the broker's
+    # per-tenant lookup and executed through the fenced ledger — driven by a REAL forced provider tool call.
+    # Needs the credential + a throwaway Postgres for the registry rows. Honest ceiling (named in the test):
+    # T1 advertising is NOT merged, so the call is FORCED (pre-T1 forced-seam); the spontaneous + advertising
+    # half is proven deterministically and this case must be re-run once T1 merges. echo is pure — no
+    # remote/MCP execution is claimed.
+    pkg="./apps/control-plane/internal/execution/tools/live"
+    run="TestLiveRegistryToolRoundtripForcedPreT1"
+    required_key="OPENAI_API_KEY"
+    needs_postgres=1
+    ;;
   provider-one/agent-revision-run)
     # E11 Task 1 (AGT-001): a real provider run whose ExecutionSpec is resolved FROM a published
     # AgentRevision — the revision pins the model and its tool set is a capability CEILING. The real
@@ -229,7 +242,7 @@ case "$provider/$case_name" in
     ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip" >&2
     exit 2
     ;;
 esac
