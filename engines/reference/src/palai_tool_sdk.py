@@ -74,11 +74,14 @@ def verify(
     skew = now - ts
     if skew > tolerance or skew < -tolerance:
         return False
-    want = sign(secret, delivery_id, ts, body)
+    want = sign(secret, delivery_id, ts, body).encode()
     for field in header.split():
         if not field.startswith(SIGNATURE_VERSION + "="):
             continue
-        value = field[len(SIGNATURE_VERSION) + 1:]
+        # Compare on BYTES, not str: a hostile non-ASCII v1= field must return false, never
+        # raise (hmac.compare_digest on str rejects non-ASCII). Symmetric with Go hmac.Equal
+        # and TS crypto.timingSafeEqual, both of which compare byte slices.
+        value = field[len(SIGNATURE_VERSION) + 1:].encode()
         if hmac.compare_digest(value, want):
             return True
     return False
