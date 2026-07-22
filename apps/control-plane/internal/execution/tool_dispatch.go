@@ -140,7 +140,31 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 		st.attempt.Fence, callID, name, arguments, result, string(outcome.ReplayClass), outcome.Hash, toolCallCompletedEvent, payload); err != nil {
 		return err
 	}
-	return o.deliverToolResult(ctx, st, frame, callID, string(result), false)
+
+	// after_tool hooks fire AFTER the durable commit, before the result reaches the model (spec §28.17). The
+	// committed ledger row is the raw tool output (the source of truth); a transform here patches only what
+	// the MODEL is delivered (a policy view), an observer just watches, and a fail-closed outcome delivers a
+	// structured deny instead of the result. The commit already happened, so a deny does NOT un-run the effect
+	// — it withholds the result from the model, visibly. No-op when no firer is wired.
+	delivered := string(result)
+	after, err := o.fireHook(ctx, st, extensions.HookPointAfterTool, map[string]any{"tool_name": name, "result": outcome.Result})
+	if err != nil {
+		return err
+	}
+	if after.Denied {
+		if err := o.journalPolicyDenied(ctx, st, extensions.HookPointAfterTool, after.HookID, after.Reason,
+			map[string]any{"tool_call_id": callID, "tool_name": name}); err != nil {
+			return err
+		}
+		denial, _ := json.Marshal(map[string]any{"status": "denied", "reason": after.Reason, "hook_id": after.HookID})
+		return o.deliverToolResult(ctx, st, frame, callID, string(denial), false)
+	}
+	if patched, ok := after.Payload["result"]; ok {
+		if patchedBytes, mErr := json.Marshal(patched); mErr == nil {
+			delivered = string(patchedBytes)
+		}
+	}
+	return o.deliverToolResult(ctx, st, frame, callID, delivered, false)
 }
 
 // deliverToolResult sends the tool.result frame to the engine (spec §25.9): the structured result is

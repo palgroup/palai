@@ -64,6 +64,32 @@ func TestPolicyHookDenyBlocks(t *testing.T) {
 	}
 }
 
+// TestObserverHookCrashFailsOpenRunUnaffected proves an OBSERVER hook that PANICS never affects the operation
+// (TOL-012, spec §28.17): it runs async on its own goroutine with a recover, so its crash is contained — Fire
+// returns not-denied, the process does not crash, and (proven by the ran signal) the observer actually ran
+// rather than being skipped. There is no result channel back into Fire, so an observer can never deny.
+func TestObserverHookCrashFailsOpenRunUnaffected(t *testing.T) {
+	ran := make(chan struct{}, 1)
+	s := &Store{hookHandlers: map[string]HookHandler{
+		"boom": func(ctx context.Context, ev HookEvent) (HookDecision, error) {
+			ran <- struct{}{}
+			panic("observer blew up mid-run")
+		},
+	}}
+	hooks := []loadedHook{{ID: "hook_o", Point: HookPointOnTerminal, Category: HookCategoryObserver, Executor: HookExecutorInline, Handler: "boom"}}
+
+	out, err := s.fireLoaded(context.Background(), HookEvent{Point: HookPointOnTerminal, Payload: map[string]any{"outcome": "completed"}}, hooks)
+	if err != nil || out.Denied {
+		t.Fatalf("a crashing observer affected the operation: (%+v, %v), want not-denied", out, err)
+	}
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("observer never ran (was it skipped rather than contained?)")
+	}
+	time.Sleep(20 * time.Millisecond) // let the recover run; the test process must not crash
+}
+
 // TestUnknownHookPointRejected proves the hook create body accepts ONLY one of the five pinned points and
 // rejects anything else (spec §28.17): a point outside the closed set is a typed reject BEFORE any write, so
 // dead config (a hook wired to a point nothing fires) can never be stored.

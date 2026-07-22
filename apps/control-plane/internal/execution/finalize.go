@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
@@ -127,6 +128,15 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 	}
 	if err := o.spine.FinalizeResponse(ctx, st.tenant, st.responseID, terminal.status, projection); err != nil {
 		return err
+	}
+
+	// on_terminal hooks fire once the run has finalized (spec §28.17, E12 T8). This point is observer-only
+	// (the matrix forbids a policy/transform here — there is nothing left to deny or patch at terminal), so
+	// the verdict cannot deny; a firer error is LOGGED, not fatal — the run is already terminal and its
+	// projection committed, so a hook hiccup must not un-finalize it. Fire-and-forget observers return here at
+	// once. No-op when no firer is wired.
+	if _, err := o.fireHook(ctx, st, extensions.HookPointOnTerminal, map[string]any{"outcome": terminal.status}); err != nil {
+		log.Printf("fire on_terminal hooks for run %s: %v", st.attempt.RunID, err)
 	}
 
 	// A terminal CHILD wakes its detached parent (spec §25.18-19, E10 T8 DET-001): if this run has a
