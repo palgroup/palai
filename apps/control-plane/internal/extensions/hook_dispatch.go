@@ -182,13 +182,6 @@ func (s *Store) runHook(ctx context.Context, h loadedHook, ev HookEvent) (HookDe
 	}
 }
 
-// runRemoteHook invokes a remote_http hook over the T4 signed transport (implemented in the remote step,
-// hook_remote.go). Until the transport is wired a remote hook is fail-closed — a remote policy/transform hook
-// whose transport is unavailable must NEVER be treated as an allow.
-func (s *Store) runRemoteHook(ctx context.Context, h loadedHook, ev HookEvent) (HookDecision, error) {
-	return HookDecision{}, fmt.Errorf("remote hook transport not wired")
-}
-
 // applyTransformPatch applies a transform hook's patch to the ONLY surface its point allows: before_tool may
 // replace arguments, after_tool may replace result. A patch touching any other surface is an error (fail-
 // closed). The patch schema (contracts.HookPatch) carries NO capability field, so a hook can never grant one.
