@@ -28,6 +28,7 @@ func TestOutputMappingBoundedSameLanguageAsInput(t *testing.T) {
 	store, pool := wiredTriggerStore(t)
 	ctx := context.Background()
 	org, project, _ := seedSession(t, pool)
+	principal := seedPrincipal(t, pool, org, project)
 
 	webhooks := NewWebhookStore(pool)
 	endpointID, err := webhooks.CreateEndpoint(ctx, org, project, defaultEndpoint("https://cb.example/hook", "cbref"))
@@ -35,7 +36,7 @@ func TestOutputMappingBoundedSameLanguageAsInput(t *testing.T) {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 
-	triggerID, err := store.CreateTrigger(ctx, org, project, "with-callback", "manual_api")
+	triggerID, err := store.CreateTrigger(ctx, org, project, principal, "with-callback", "manual_api")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}

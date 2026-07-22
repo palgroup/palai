@@ -130,7 +130,7 @@ func TestLiveCallbackOnce(t *testing.T) {
 		t.Fatalf("CreateEndpoint error = %v", err)
 	}
 	store := automation.NewTriggerStore(pool).WithAdmitter(spine)
-	triggerID, err := store.CreateTrigger(ctx, org, project, randID("orders"), "manual_api")
+	triggerID, err := store.CreateTrigger(ctx, org, project, principal, randID("orders"), "manual_api")
 	if err != nil {
 		t.Fatalf("CreateTrigger error = %v", err)
 	}
