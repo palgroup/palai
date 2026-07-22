@@ -102,6 +102,20 @@ case "$provider/$case_name" in
     run="TestLiveAgentRevisionPinnedRun"
     required_key="OPENAI_API_KEY"
     ;;
+  provider-one/web-research-citations)
+    # E12 Task 3 (EXT-004, TOL-015): a real provider-one run resolves a research-only AgentRevision
+    # ceiling (the publish tool excluded), FORCE-calls the research tool, and the tool executes a REAL
+    # internet fetch of a public URL through the production broker seam — returning citations (final URL,
+    # title, retrieved_at, content_hash over the raw bytes). Needs only the credential. Honest ceilings
+    # (named in the test): there is NO search — the URL is given (search backend is E17); dispatchModel
+    # does NOT advertise tool schemas, so the SPONTANEOUS-call half is proven by REQUEST CONSTRUCTION + a
+    # FORCED call (E09 T4 seam) with "forced (T1 pending)" evidence, upgrading to spontaneous once E12 T1
+    # lands; egress hits the real internet live (component-tier uses an injected resolver/dial + local
+    # server). The publish tool never reaches the request — capability never expands (journey 63.4).
+    pkg="./apps/control-plane/internal/execution/tools/live"
+    run="TestLiveWebResearchCitations"
+    required_key="OPENAI_API_KEY"
+    ;;
   provider-one/checkpoint-restore)
     # E10 Task 4: a real provider forced-tool run persists a tool-boundary checkpoint to REAL S3, the
     # engine uv-subprocess is SIGKILLed post-persist, and a fresh attempt RESTORES it (ladder rung 2,
@@ -215,7 +229,7 @@ case "$provider/$case_name" in
     ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run" >&2
     exit 2
     ;;
 esac
