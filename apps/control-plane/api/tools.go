@@ -18,6 +18,11 @@ type ToolRegistryAPI interface {
 	PublishToolRevision(ctx context.Context, scope middleware.Scope, revisionID string) (ToolResult, error)
 	CreateToolSetRevision(ctx context.Context, scope middleware.Scope, setName string, body []byte) (ToolResult, error)
 	PublishToolSetRevision(ctx context.Context, scope middleware.Scope, revisionID string) (ToolResult, error)
+	// GetTool + ListTools + ListToolSets are the E13 T4 read side, RLS-scoped. A tool-set has no
+	// single-resource GET (a set is consumed by name, not fetched by revision id) — LIST only.
+	GetTool(ctx context.Context, scope middleware.Scope, id string) (ToolResult, error)
+	ListTools(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
+	ListToolSets(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
 }
 
 // ToolResult is a management projection. Exactly one outcome is set: Body carries the created/published
@@ -87,6 +92,46 @@ func (h *toolHandler) publishSetRevision(w http.ResponseWriter, r *http.Request)
 	}
 	out, err := h.tools.PublishToolSetRevision(r.Context(), scope, r.PathValue("revision_id"))
 	h.write(w, r, out, err, http.StatusOK, "")
+}
+
+// getTool reads one tool lineage (GET /v1/tools/{tool_id}).
+func (h *toolHandler) getTool(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	out, err := h.tools.GetTool(r.Context(), scope, r.PathValue("tool_id"))
+	h.write(w, r, out, err, http.StatusOK, "")
+}
+
+// listTools returns a tenant-scoped page of tool lineages (GET /v1/tools).
+func (h *toolHandler) listTools(w http.ResponseWriter, r *http.Request) {
+	h.listWith(w, r, "tools", h.tools.ListTools)
+}
+
+// listToolSets returns a tenant-scoped page of tool-set revisions (GET /v1/tool-sets).
+func (h *toolHandler) listToolSets(w http.ResponseWriter, r *http.Request) {
+	h.listWith(w, r, "tool-sets", h.tools.ListToolSets)
+}
+
+// listWith is the shared list flow for the registry's two list routes (tools, tool-sets).
+func (h *toolHandler) listWith(w http.ResponseWriter, r *http.Request, kind string, fetch func(context.Context, middleware.Scope, ListQuery) ([]ListRow, error)) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	q, ok := beginList(w, r, kind, scope)
+	if !ok {
+		return
+	}
+	rows, err := fetch(r.Context(), scope, q)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	renderPage(w, r, kind, scope, rows, q.Limit)
 }
 
 // begin authenticates and reads the bounded body, shared by the create handlers (the agentHandler twin).

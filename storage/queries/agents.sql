@@ -16,6 +16,35 @@ SELECT 1 FROM agent_profiles WHERE id = $1 AND organization_id = $2 AND project_
 -- next monotonic number, computed in-statement so a revise never has to read-then-write. Returns it.
 -- ponytail: the MAX+1 subselect can race two concurrent inserts to the same number; the
 -- UNIQUE(profile_id, revision_number) constraint then rejects the loser (retry on 23505 if it matters).
+-- GetAgentProfile reads a profile lineage within scope (spec §10, E13 T4). Foreign/unknown -> no row.
+-- name: GetAgentProfile
+SELECT id, name, created_at
+FROM agent_profiles
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- ListAgentProfiles pages a project's agent-profile lineages newest-first (spec §10, E13 T4).
+-- name: ListAgentProfiles
+SELECT id, name, created_at
+FROM agent_profiles
+WHERE organization_id = $1 AND project_id = $2
+  AND ($3::timestamptz IS NULL OR created_at >= $3)
+  AND ($4::timestamptz IS NULL OR created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+ORDER BY created_at DESC, id DESC
+LIMIT $7;
+
+-- ListAgentRevisions pages one profile's revisions newest-first (spec §10, E13 T4). Scoped by profile_id
+-- ($3) on top of the tenant scope, so an unknown/foreign profile simply yields an empty page.
+-- name: ListAgentRevisions
+SELECT id, revision_number, model, instructions, published_at IS NOT NULL, created_at
+FROM agent_revisions
+WHERE organization_id = $1 AND project_id = $2 AND profile_id = $3
+  AND ($4::timestamptz IS NULL OR created_at >= $4)
+  AND ($5::timestamptz IS NULL OR created_at <= $5)
+  AND ($6::timestamptz IS NULL OR (created_at, id) < ($6, $7))
+ORDER BY created_at DESC, id DESC
+LIMIT $8;
+
 -- name: InsertAgentRevision
 INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, instructions,
         tool_sets, mcp_connections, skills, hooks)

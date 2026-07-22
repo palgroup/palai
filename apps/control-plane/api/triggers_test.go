@@ -18,6 +18,7 @@ type fakeTriggerAPI struct {
 	delivery    automation.DeliveryResult
 	deliveryErr error
 	deliveryHit bool
+	triggers    []automation.TriggerListItem
 }
 
 func (f *fakeTriggerAPI) CreateTrigger(context.Context, string, string, string, string, string) (string, error) {
@@ -38,6 +39,9 @@ func (f *fakeTriggerAPI) ReviseTrigger(_ context.Context, _, _, _ string, in aut
 }
 func (f *fakeTriggerAPI) GetTrigger(context.Context, string, string, string) (automation.TriggerView, bool, error) {
 	return automation.TriggerView{ID: "trg_1", Name: "nightly"}, f.triggerHit, nil
+}
+func (f *fakeTriggerAPI) ListTriggers(context.Context, string, string, automation.ListWindow) ([]automation.TriggerListItem, error) {
+	return f.triggers, nil
 }
 func (f *fakeTriggerAPI) CreateDeliveryIdempotent(context.Context, string, string, string, string, string, []byte) (automation.DeliveryResult, error) {
 	return f.delivery, f.deliveryErr
@@ -65,6 +69,17 @@ func do(t *testing.T, method, url, body string, headers map[string]string) *http
 		t.Fatalf("%s %s error = %v", method, url, err)
 	}
 	return resp
+}
+
+// TestTriggerListRoute pins the E13 T4 read side: GET /v1/triggers renders the automation rows over the
+// shared Page envelope.
+func TestTriggerListRoute(t *testing.T) {
+	fake := &fakeTriggerAPI{triggers: []automation.TriggerListItem{
+		{ID: "trg_1", Name: "nightly", Type: "schedule", Enabled: true},
+		{ID: "trg_2", Name: "on-push", Type: "webhook"},
+	}}
+	srv := triggerTestServer(t, fake)
+	assertPageLen(t, do(t, "GET", srv.URL+"/v1/triggers", ``, nil), 2)
 }
 
 // TestTriggerManagementSurface pins the create/revise/get routes: a create needs a name (400 else, 201

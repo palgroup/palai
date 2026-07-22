@@ -232,6 +232,27 @@ func toListParams(q api.ListQuery) coordinator.ListParams {
 	return p
 }
 
+// toExtensionsWindow maps the API's ListQuery onto the extensions store's keyset window (no status
+// filter — extension resources have no single lifecycle-state column), adding the +1 over-fetch.
+func toExtensionsWindow(q api.ListQuery) extensions.ListWindow {
+	w := extensions.ListWindow{CreatedGTE: q.CreatedGTE, CreatedLTE: q.CreatedLTE, Limit: q.Limit + 1}
+	if q.After != nil {
+		w.AfterCreatedAt = &q.After.CreatedAt
+		w.AfterID = q.After.ID
+	}
+	return w
+}
+
+// toAutomationWindow maps the API's ListQuery onto the automation store's keyset window.
+func toAutomationWindow(q api.ListQuery) automation.ListWindow {
+	w := automation.ListWindow{CreatedGTE: q.CreatedGTE, CreatedLTE: q.CreatedLTE, Limit: q.Limit + 1}
+	if q.After != nil {
+		w.AfterCreatedAt = &q.After.CreatedAt
+		w.AfterID = q.After.ID
+	}
+	return w
+}
+
 // CancelResponse cancels a response's run within the request's verified scope and returns
 // the canceled terminal projection to render (spec §22.3). An unknown or foreign id is a
 // miss (Found=false → 404, same contract as retrieval, leaking no cross-tenant existence).
@@ -308,6 +329,59 @@ func (s *Store) CreateSession(ctx context.Context, scope middleware.Scope) (api.
 		return api.SessionResult{}, err
 	}
 	return api.SessionResult{Body: body, Found: true}, nil
+}
+
+// ListSessions returns a tenant-scoped page of sessions within the request's verified scope (spec
+// §9.1, E13 T4). Each row is the same projection GetSession renders.
+func (s *Store) ListSessions(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
+	views, err := s.spine.ListSessions(ctx, tenantOf(scope), toListParams(q))
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]api.ListRow, 0, len(views))
+	for _, v := range views {
+		body, err := marshalSession(scope, v)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, api.ListRow{ID: v.ID, CreatedAt: v.CreatedAt, Body: body})
+	}
+	return rows, nil
+}
+
+// GetRepositoryBinding reads a binding within the request's verified scope (spec §30.1, E13 T4). A
+// missing or foreign id is NotFound (404), leaking no cross-tenant existence.
+func (s *Store) GetRepositoryBinding(ctx context.Context, scope middleware.Scope, id string) (api.BindingResult, error) {
+	binding, found, err := s.spine.GetRepositoryBinding(ctx, tenantOf(scope), id)
+	if err != nil {
+		return api.BindingResult{}, err
+	}
+	if !found {
+		return api.BindingResult{NotFound: true}, nil
+	}
+	body, err := json.Marshal(binding)
+	if err != nil {
+		return api.BindingResult{}, fmt.Errorf("marshal repository binding: %w", err)
+	}
+	return api.BindingResult{Body: body}, nil
+}
+
+// ListRepositoryBindings returns a tenant-scoped page of bindings within the request's verified scope
+// (spec §30.1, E13 T4). Each row is the same projection GetRepositoryBinding renders.
+func (s *Store) ListRepositoryBindings(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
+	items, err := s.spine.ListRepositoryBindings(ctx, tenantOf(scope), toListParams(q))
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]api.ListRow, 0, len(items))
+	for _, it := range items {
+		body, err := json.Marshal(it.Binding)
+		if err != nil {
+			return nil, fmt.Errorf("marshal repository binding list row: %w", err)
+		}
+		rows = append(rows, api.ListRow{ID: string(it.Binding.ID), CreatedAt: it.CreatedAt, Body: body})
+	}
+	return rows, nil
 }
 
 // GetSession reads a session projection within the request's verified scope (spec §9.1). A

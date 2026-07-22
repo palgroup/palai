@@ -19,6 +19,10 @@ type AgentRegistry interface {
 	PublishAgentRevision(ctx context.Context, scope middleware.Scope, revisionID string) (AgentResult, error)
 	CreateRunTemplateRevision(ctx context.Context, scope middleware.Scope, templateName string, body []byte) (AgentResult, error)
 	PublishRunTemplateRevision(ctx context.Context, scope middleware.Scope, revisionID string) (AgentResult, error)
+	// GetAgentProfile + ListAgentProfiles + ListAgentRevisions are the E13 T4 read side, RLS-scoped.
+	GetAgentProfile(ctx context.Context, scope middleware.Scope, id string) (AgentResult, error)
+	ListAgentProfiles(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
+	ListAgentRevisions(ctx context.Context, scope middleware.Scope, profileID string, q ListQuery) ([]ListRow, error)
 }
 
 // AgentResult is a management projection. Exactly one outcome is set: Body carries the created/published
@@ -95,6 +99,55 @@ func (h *agentHandler) publishTemplateRevision(w http.ResponseWriter, r *http.Re
 	}
 	out, err := h.agents.PublishRunTemplateRevision(r.Context(), scope, r.PathValue("revision_id"))
 	h.write(w, r, out, err, http.StatusOK, "")
+}
+
+// getProfile reads one agent-profile lineage (GET /v1/agents/{agent_id}).
+func (h *agentHandler) getProfile(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	out, err := h.agents.GetAgentProfile(r.Context(), scope, r.PathValue("agent_id"))
+	h.write(w, r, out, err, http.StatusOK, "")
+}
+
+// listProfiles returns a tenant-scoped page of agent-profile lineages (GET /v1/agents).
+func (h *agentHandler) listProfiles(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	q, ok := beginList(w, r, "agents", scope)
+	if !ok {
+		return
+	}
+	rows, err := h.agents.ListAgentProfiles(r.Context(), scope, q)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	renderPage(w, r, "agents", scope, rows, q.Limit)
+}
+
+// listRevisions returns a tenant-scoped page of one profile's revisions (GET /v1/agents/{id}/revisions).
+func (h *agentHandler) listRevisions(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	q, ok := beginList(w, r, "agent-revisions", scope)
+	if !ok {
+		return
+	}
+	rows, err := h.agents.ListAgentRevisions(r.Context(), scope, r.PathValue("agent_id"), q)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	renderPage(w, r, "agent-revisions", scope, rows, q.Limit)
 }
 
 // begin authenticates and reads the bounded body, shared by the create handlers.

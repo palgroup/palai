@@ -18,6 +18,20 @@ SELECT id, provider, repository_identity, clone_url, default_branch, connection_
 FROM repository_bindings
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- ListRepositoryBindings pages a project's bindings newest-first (spec §30.1, E13 T4). Tenant-scoped
+-- by RLS; the org/project predicate is defence-in-depth. Bindings carry no lifecycle state, so there
+-- is no status filter — only the created_at bounds ($3/$4) and the ($5,$6) keyset, $7 the row cap.
+-- name: ListRepositoryBindings
+SELECT id, provider, repository_identity, clone_url, default_branch, connection_ref,
+       allowed_operations, policy, data_classification, region_constraint, created_at
+FROM repository_bindings
+WHERE organization_id = $1 AND project_id = $2
+  AND ($3::timestamptz IS NULL OR created_at >= $3)
+  AND ($4::timestamptz IS NULL OR created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+ORDER BY created_at DESC, id DESC
+LIMIT $7;
+
 -- name: RecordPreparationReceipt
 -- Record the model-independent preparation provenance (spec §30.3 step 10, REP-001): base commit,
 -- tree hash, and work branch of the exact tree the engine was handed. Append-only per attempt.

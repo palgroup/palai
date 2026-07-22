@@ -11,10 +11,13 @@ import (
 
 // fakeMCPRegistry scripts each seam outcome so the handler contract is exercised without a database.
 type fakeMCPRegistry struct {
-	create   MCPConnectionResult
-	discover MCPConnectionResult
-	lastBody []byte
-	lastID   string
+	create    MCPConnectionResult
+	discover  MCPConnectionResult
+	get       MCPConnectionResult
+	list      []ListRow
+	lastBody  []byte
+	lastID    string
+	lastQuery ListQuery
 }
 
 func (f *fakeMCPRegistry) CreateMCPConnection(_ context.Context, _ middleware.Scope, body []byte) (MCPConnectionResult, error) {
@@ -24,6 +27,14 @@ func (f *fakeMCPRegistry) CreateMCPConnection(_ context.Context, _ middleware.Sc
 func (f *fakeMCPRegistry) DiscoverMCPConnection(_ context.Context, _ middleware.Scope, id string) (MCPConnectionResult, error) {
 	f.lastID = id
 	return f.discover, nil
+}
+func (f *fakeMCPRegistry) GetMCPConnection(_ context.Context, _ middleware.Scope, id string) (MCPConnectionResult, error) {
+	f.lastID = id
+	return f.get, nil
+}
+func (f *fakeMCPRegistry) ListMCPConnections(_ context.Context, _ middleware.Scope, q ListQuery) ([]ListRow, error) {
+	f.lastQuery = q
+	return f.list, nil
 }
 
 func mcpTestServer(t *testing.T, reg *fakeMCPRegistry) string {
@@ -69,6 +80,30 @@ func TestMCPConnectionManagementSurface(t *testing.T) {
 	reg.discover = MCPConnectionResult{NotFound: true}
 	if resp := do(t, "POST", base+"/v1/mcp-connections/mcpc_missing/discover", ``, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown-connection discover status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestMCPConnectionReadRoutes pins the E13 T4 read side: GET by id renders the metadata, a foreign id is a
+// 404, and the list route returns the Page envelope over the scripted rows.
+func TestMCPConnectionReadRoutes(t *testing.T) {
+	reg := &fakeMCPRegistry{
+		get:  MCPConnectionResult{Body: []byte(`{"id":"mcpc_1","object":"mcp_connection","name":"docs"}`)},
+		list: []ListRow{{ID: "mcpc_1", Body: []byte(`{"id":"mcpc_1"}`)}, {ID: "mcpc_2", Body: []byte(`{"id":"mcpc_2"}`)}},
+	}
+	base := mcpTestServer(t, reg)
+
+	if resp := do(t, "GET", base+"/v1/mcp-connections/mcpc_1", ``, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("get connection status = %d, want 200", resp.StatusCode)
+	}
+	resp := do(t, "GET", base+"/v1/mcp-connections", ``, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", resp.StatusCode)
+	}
+	assertPageLen(t, resp, 2)
+
+	reg.get = MCPConnectionResult{NotFound: true}
+	if resp := do(t, "GET", base+"/v1/mcp-connections/mcpc_missing", ``, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown connection get status = %d, want 404", resp.StatusCode)
 	}
 }
 

@@ -2,12 +2,35 @@ package api
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/packages/contracts"
 )
+
+// assertPageLen decodes a list response as a contracts.Page and asserts its data length. Shared by the
+// per-resource list-route handler tests.
+func assertPageLen(t *testing.T, resp *http.Response, want int) contracts.Page {
+	t.Helper()
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read page body: %v", err)
+	}
+	var p contracts.Page
+	if err := json.Unmarshal(body, &p); err != nil {
+		t.Fatalf("decode page: %v (body=%s)", err, body)
+	}
+	if len(p.Data) != want {
+		t.Fatalf("page data len = %d, want %d (body=%s)", len(p.Data), want, body)
+	}
+	return p
+}
 
 // TestCursorRoundTrips is the happy path: a cursor minted for a scope decodes back to the
 // same keyset position under that same scope and resource kind.
