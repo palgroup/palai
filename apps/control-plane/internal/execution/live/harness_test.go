@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -147,7 +148,29 @@ func (d *subprocessDialer) Dial(_ context.Context, attempt execution.AttemptDesc
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &subprocessChannel{cmd: cmd, stdin: stdin, scanner: bufio.NewScanner(stdout), stderr: &stderr, killAfterCheckpoint: d.killAfterCheckpoint}, nil
+	ch := &subprocessChannel{cmd: cmd, stdin: stdin, scanner: bufio.NewScanner(stdout), stderr: &stderr, killAfterCheckpoint: d.killAfterCheckpoint}
+	// The engine handshakes supervisor.hello -> engine.ready before it reads any run input
+	// (engine __main__.require_hello). The controller sends the hello, exactly as the e2e channel
+	// does; without it the engine blocks on its first read and the orchestrator times out on
+	// engine.ready.
+	if err := ch.Send(context.Background(), helloFrame(attempt)); err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+
+// helloFrame is the supervisor.hello the controller sends to open the engine handshake.
+func helloFrame(attempt execution.AttemptDescriptor) contracts.EngineFrame {
+	return contracts.EngineFrame{
+		Protocol:  "engine.v1",
+		ID:        contracts.FrameID(newID("frm")),
+		Type:      "supervisor.hello",
+		Sequence:  1,
+		Time:      time.Now().UTC().Format(time.RFC3339),
+		RunID:     attempt.RunID,
+		AttemptID: attempt.AttemptID,
+		Data:      map[string]any{},
+	}
 }
 
 type subprocessChannel struct {
