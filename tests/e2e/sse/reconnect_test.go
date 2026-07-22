@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	statemachines "github.com/palgroup/palai/packages/state-machines"
+
+	"github.com/palgroup/palai/storage"
 )
 
 // TestReconnectResumesAfterLastEventID reads three events, drops the connection,
@@ -71,10 +73,13 @@ func TestReconnectResumesAfterLastEventID(t *testing.T) {
 func TestForeignSessionIsNotFound(t *testing.T) {
 	h := newHarness(t)
 
-	// A session that exists for a *different* tenant.
+	// A session that exists for a *different* tenant. It is planted under that
+	// tenant's OWN scope (000029's WITH CHECK rejects an undeclared writer), so the
+	// row is genuinely foreign; the assertion below still reads over HTTP with the
+	// harness credential, i.e. under the harness tenant's scope.
 	other := seedTenantWithKey(t, h.spine.Pool(), newID("other-tok"))
 	otherSession := newID("ses")
-	if _, err := h.spine.Pool().Exec(t.Context(),
+	if _, err := h.spine.Pool().Exec(storage.WithTenant(t.Context(), other.Organization, other.Project),
 		`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1, $2, $3)`,
 		otherSession, other.Organization, other.Project); err != nil {
 		t.Fatalf("seed foreign session error = %v", err)
