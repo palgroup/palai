@@ -24,6 +24,7 @@
     "model_step.created.v1", "model_step.delta.v1", "model_step.completed.v1", "model_step.failed.v1", "model_step.interrupted.v1",
     "config.revised.v1",
     "agent.revision.published.v1",
+    "tool.revision.published.v1", "tool_set.revision.published.v1",
     "child.requested.v1", "child.completed.v1", "child.denied.v1",
     "task.created.v1", "task.updated.v1",
     "artifact.created.v1", "changeset.compiled.v1", "usage.updated.v1", "warning.raised.v1", "policy.denied.v1",

@@ -216,6 +216,27 @@ export interface Session {
   status: string;
 }
 
+export interface Tool {
+  canonical_name: string;
+  created_at?: string;
+  id: OpaqueId;
+  model_visible_name: string;
+  object: string;
+  organization_id?: OrganizationId;
+  project_id?: ProjectId;
+}
+
+export interface ToolSet {
+  created_at?: string;
+  digest?: string;
+  id: OpaqueId;
+  object: string;
+  organization_id?: OrganizationId;
+  project_id?: ProjectId;
+  revision_number: number;
+  set: string;
+}
+
 export interface Usage {
   cost?: Record<string, unknown>;
   input_tokens: number;
