@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
 
@@ -123,7 +124,7 @@ func TestCommitModelResultFoldsDeliveredMessages(t *testing.T) {
 	if err := cs.CommitModelRequest(ctx, tenant, sessionID, "", runID, "mr_step2", "model_step.created.v1", []byte(`{}`)); err != nil {
 		t.Fatalf("CommitModelRequest() error = %v", err)
 	}
-	if _, err := cs.CommitModelResult(ctx, tenant, sessionID, "", runID, "mr_step2", []byte(`{"output":"ok"}`), "model_step.completed.v1", []byte(`{}`)); err != nil {
+	if _, err := cs.CommitModelResult(ctx, tenant, sessionID, "", runID, "mr_step2", []byte(`{"output":"ok"}`), "model_step.completed.v1", []byte(`{}`), contracts.Usage{}); err != nil {
 		t.Fatalf("CommitModelResult() error = %v", err)
 	}
 

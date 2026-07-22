@@ -715,6 +715,12 @@ func (s *Store) InterruptModelStep(ctx context.Context, tenant Tenant, sessionID
 	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, partialEventType, partialPayload); err != nil {
 		return 0, err
 	}
+	// The aborted step burned real provider spend that CommitModelResult will never settle, so record it
+	// here in the same transaction (E13 T6). Not tokens — those never arrive on a canceled stream — but
+	// the step itself, so an interrupt cannot spend invisibly past a budget (see meterInterruptedStep).
+	if err := settleUsage(ctx, tx, tenant, interruptedStepEntry(sessionID, runID, boundaryRequestID)); err != nil {
+		return 0, err
+	}
 	seq, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
 	if err != nil {
 		return 0, err

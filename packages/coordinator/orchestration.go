@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/palgroup/palai/packages/contracts"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
 	"github.com/palgroup/palai/storage"
 )
@@ -134,6 +135,22 @@ func (s *Store) CreateChildRun(ctx context.Context, tenant Tenant, in ChildRunIn
 		return fmt.Errorf("insert child run: %w", err)
 	}
 	if _, err := appendEvent(ctx, tx, tenant, in.SessionID, in.ParentResponseID, eventType, payload); err != nil {
+		return err
+	}
+	// A child run is metered like any other run (E13 T6): it dispatches its own model steps and spends
+	// its own tokens, so leaving it off the run meter would make delegation fan-out invisible — a `run.`
+	// quota would count only roots while a parent spawned children beneath it. Same meter, same
+	// deterministic key discipline, same transaction as the row it counts.
+	//
+	// It is METERED but not GATED: the budget/quota check lives in AdmitResponse, and a child is born
+	// here, mid-run, where there is no admission to refuse. A parent already past the gate can therefore
+	// spawn children that spend beyond an exhausted limit until the parent itself terminates; the spend
+	// is fully recorded, so the NEXT admission sees it. Gating a child needs a refusal path the child
+	// lifecycle does not have yet (§25.18 intersected budgets are the existing in-run bound) — E13-H.
+	if err := settleUsage(ctx, tx, tenant, usageEntry{
+		sessionID: in.SessionID, runID: in.ChildRunID, meter: meterRunAdmitted, unit: unitRun,
+		dedupeKey: "run:" + in.ChildRunID + ":admitted", quantity: 1,
+	}); err != nil {
 		return err
 	}
 	// A detached child's job commits WITH its row (MF-3): no window where the row exists jobless.
@@ -446,7 +463,7 @@ func (s *Store) LookupModelResult(ctx context.Context, tenant Tenant, requestID 
 // result event in one transaction. The orchestrator calls it before delivering
 // model.result to the engine, so no provider result reaches the engine until its state
 // is durable (spec §24.7).
-func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID, requestID string, result []byte, eventType string, payload []byte) (int64, error) {
+func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID, responseID, runID, requestID string, result []byte, eventType string, payload []byte, usage contracts.Usage) (int64, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -469,6 +486,13 @@ func (s *Store) CommitModelResult(ctx context.Context, tenant Tenant, sessionID,
 	if _, err := tx.Exec(ctx, storage.Query("MarkDeliveredMessagesFolded"),
 		runID, tenant.Organization, tenant.Project); err != nil {
 		return 0, fmt.Errorf("mark delivered messages folded: %w", err)
+	}
+	// Settle the step's provider usage into the append-only ledger in THIS transaction (spec §43.1, E13
+	// T6): metering that is not atomic with the fact it meters loses usage on a crash between the two.
+	// The ledger identity is derived from the model request id, so a redelivered commit of the same step
+	// re-derives the same rows and settles nothing new (BIL-001, replay without double settlement).
+	if err := settleUsage(ctx, tx, tenant, modelUsageEntries(sessionID, runID, requestID, usage)...); err != nil {
+		return 0, err
 	}
 	seq, err := appendEvent(ctx, tx, tenant, sessionID, responseID, eventType, payload)
 	if err != nil {

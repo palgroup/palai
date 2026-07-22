@@ -187,6 +187,22 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/secret-refs/{secret_name}/rotate", sh.rotate)
 	}
 
+	// The metering surface (spec §43, E13 Task 6, BIL-001/BIL-003/QUO-001): the durable budget/quota
+	// limits admission enforces, and the tenant's own view of what has been settled. Setting a limit is an
+	// administrative act gated on the `provision` capability; reading usage is not (a tenant must be able
+	// to see what it has spent). Mounted via WithUsage, so a tier that wires no metering store leaves the
+	// routes unmounted — while any limit already stored still binds, because enforcement lives in the
+	// admission transaction rather than here.
+	if cfg.usage != nil {
+		uh := &usageHandler{usage: cfg.usage}
+		mux.HandleFunc("POST /v1/budgets", uh.setBudget)
+		mux.HandleFunc("GET /v1/budgets", uh.listBudgets)
+		mux.HandleFunc("POST /v1/quotas", uh.setQuota)
+		mux.HandleFunc("GET /v1/quotas", uh.listQuotas)
+		mux.HandleFunc("GET /v1/usage", uh.summary)
+		mux.HandleFunc("GET /v1/usage/ledger", uh.ledger)
+	}
+
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}
 	mux.HandleFunc("GET /v1/sessions/{session_id}/events", stream.stream)
 

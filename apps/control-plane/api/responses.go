@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -117,6 +119,47 @@ type AdmitResult struct {
 	// request created no run and no idempotency record, so a retry after the delay is safe.
 	ConcurrencyLimited bool
 	QueueDepthExceeded bool
+	// LimitExceeded, when non-nil, names the DURABLE budget or quota that refused the admission (E13 T6,
+	// BIL-003/QUO-001). It renders as the §20.10 429 quota_exceeded with a stable remediation detail:
+	// which limit, what it allows, what has been used, and when a quota window next releases capacity.
+	LimitExceeded *LimitExceeded
+}
+
+// LimitExceeded is the durable limit that refused an admission, in the terms a caller needs to
+// remediate. It mirrors the store's own shape so the handler renders a stable body without reaching into
+// the coordinator package. ResetAt is set only for a quota — a budget does not reset on its own.
+type LimitExceeded struct {
+	// Kind is "budget" (cumulative since a period start) or "quota" (a rolling window).
+	Kind        string
+	MeterPrefix string
+	Limit       float64
+	Used        float64
+	ResetAt     *time.Time
+}
+
+// detail renders the stable remediation line the 429 carries. It names the limit in the caller's own
+// terms and says what makes the request admit again — a raised budget, or a window that releases.
+func (l LimitExceeded) detail() string {
+	quantity := func(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+	base := fmt.Sprintf("the %s for meters starting with %q is exhausted (%s of %s used)",
+		l.Kind, l.MeterPrefix, quantity(l.Used), quantity(l.Limit))
+	if l.ResetAt != nil {
+		return base + "; capacity returns at " + l.ResetAt.UTC().Format(time.RFC3339)
+	}
+	return base + "; raise the budget to admit further runs"
+}
+
+// retryAfterSeconds is the honest Retry-After for this limit: the whole seconds until a quota window
+// releases capacity, and nothing at all for a budget (which no amount of waiting lifts).
+func (l LimitExceeded) retryAfterSeconds() (string, bool) {
+	if l.ResetAt == nil {
+		return "", false
+	}
+	seconds := int(time.Until(*l.ResetAt).Seconds())
+	if seconds < 1 {
+		seconds = 1
+	}
+	return strconv.Itoa(seconds), true
 }
 
 type responseHandler struct {
@@ -254,6 +297,18 @@ func (h *responseHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if out.PinnedRevisionNotPublished {
 		middleware.WriteProblem(w, r, http.StatusConflict, "revision_not_published", "the pinned revision is a draft; publish it before running it")
+		return
+	}
+	// The durable budget/quota gate (E13 T6). It shares the §20.10 registered 429 quota_exceeded with
+	// nothing else on this surface, and its detail is the STABLE remediation body: which limit, how it is
+	// denominated, what it allows, what has been used, and what the caller can do about it. A quota also
+	// carries Retry-After, because a window releases capacity on its own; a budget does not, so it
+	// deliberately carries none — a fabricated retry hint on a limit that will never lift is a lie.
+	if out.LimitExceeded != nil {
+		if seconds, ok := out.LimitExceeded.retryAfterSeconds(); ok {
+			w.Header().Set("Retry-After", seconds)
+		}
+		middleware.WriteProblem(w, r, http.StatusTooManyRequests, "quota_exceeded", out.LimitExceeded.detail())
 		return
 	}
 	// The §20.12 per-project run caps: too many executing runs, or a full queued backlog. Both are the

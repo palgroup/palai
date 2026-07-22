@@ -42,9 +42,11 @@ var errBadCursor = errors.New("api: invalid pagination cursor")
 // agent-revisions kind is profile-suffixed at the call site, so it is correctly absent here too.
 var statusFilterKinds = map[string]bool{"responses": true, "sessions": true}
 
-// listCursor is a keyset position: the (created_at, id) of the last row a page returned. A list
-// orders by (created_at DESC, id DESC), so the next page is every row strictly before this point.
-type listCursor struct {
+// ListCursor is a keyset position: the (created_at, id) of the last row a page returned. A list
+// orders by (created_at DESC, id DESC), so the next page is every row strictly before this point. It is
+// exported because it is reachable through ListQuery, which every store implementing a list seam
+// consumes — and constructs, in its own tests.
+type ListCursor struct {
 	CreatedAt time.Time
 	ID        string
 }
@@ -54,7 +56,7 @@ type listCursor struct {
 // the query only needs the keyset position, the page size, and the two basic filters. The store
 // fetches Limit+1 rows so the handler detects a further page without a second round trip.
 type ListQuery struct {
-	After      *listCursor
+	After      *ListCursor
 	Limit      int
 	Status     string
 	CreatedGTE *time.Time
@@ -95,7 +97,7 @@ func cursorKey() []byte {
 // the resource kind (so a cursor cannot be replayed on another list), are bound in by the HMAC,
 // which decodeCursor recomputes from the REQUEST's scope. A cursor minted for tenant A therefore
 // fails the MAC check when presented by tenant B, which is the explicit foreign-cursor reject.
-func encodeCursor(key []byte, kind string, scope middleware.Scope, c listCursor) string {
+func encodeCursor(key []byte, kind string, scope middleware.Scope, c ListCursor) string {
 	payload := cursorPayload(c)
 	mac := cursorMAC(key, kind, scope, payload)
 	return base64.RawURLEncoding.EncodeToString(append(mac, payload...))
@@ -104,31 +106,31 @@ func encodeCursor(key []byte, kind string, scope middleware.Scope, c listCursor)
 // decodeCursor validates token against the request's scope and kind and returns its keyset
 // position. Any mismatch — a foreign tenant, a foreign resource kind, a flipped byte, a truncated
 // or non-base64 token — is errBadCursor: the cursor fails CLOSED, never yielding a wrong page.
-func decodeCursor(key []byte, kind string, scope middleware.Scope, token string) (listCursor, error) {
+func decodeCursor(key []byte, kind string, scope middleware.Scope, token string) (ListCursor, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil || len(raw) < macLen {
-		return listCursor{}, errBadCursor
+		return ListCursor{}, errBadCursor
 	}
 	mac, payload := raw[:macLen], raw[macLen:]
 	if subtle.ConstantTimeCompare(mac, cursorMAC(key, kind, scope, payload)) != 1 {
-		return listCursor{}, errBadCursor
+		return ListCursor{}, errBadCursor
 	}
 	return parseCursorPayload(payload)
 }
 
 // cursorPayload serializes the position as 8 big-endian nanosecond bytes followed by the id.
-func cursorPayload(c listCursor) []byte {
+func cursorPayload(c ListCursor) []byte {
 	buf := make([]byte, 8, 8+len(c.ID))
 	binary.BigEndian.PutUint64(buf, uint64(c.CreatedAt.UnixNano()))
 	return append(buf, c.ID...)
 }
 
-func parseCursorPayload(payload []byte) (listCursor, error) {
+func parseCursorPayload(payload []byte) (ListCursor, error) {
 	if len(payload) < 8 {
-		return listCursor{}, errBadCursor
+		return ListCursor{}, errBadCursor
 	}
 	nanos := int64(binary.BigEndian.Uint64(payload[:8]))
-	return listCursor{CreatedAt: time.Unix(0, nanos).UTC(), ID: string(payload[8:])}, nil
+	return ListCursor{CreatedAt: time.Unix(0, nanos).UTC(), ID: string(payload[8:])}, nil
 }
 
 // cursorMAC binds the position to the tenant and resource kind. The kind, organization, and
@@ -220,7 +222,7 @@ func renderPage(w http.ResponseWriter, r *http.Request, kind string, scope middl
 	if len(rows) > limit {
 		rows = rows[:limit]
 		last := rows[len(rows)-1]
-		cursor := encodeCursor(cursorKey(), kind, scope, listCursor{CreatedAt: last.CreatedAt, ID: last.ID})
+		cursor := encodeCursor(cursorKey(), kind, scope, ListCursor{CreatedAt: last.CreatedAt, ID: last.ID})
 		page.HasMore = true
 		page.NextCursor = &cursor
 	}

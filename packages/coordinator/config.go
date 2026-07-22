@@ -164,7 +164,8 @@ func (s *Store) ApplyConfigChange(ctx context.Context, tenant Tenant, sessionID,
 // shared applyConfigChangeInTx: command.applied.v1 + config revision + config.revised.v1), and
 // raises a warning (warningEventType) that the in-flight attempt was interrupted for the switch.
 // It runs under guardRunActive; a command a boundary already applied returns ErrCommandNotPending.
-func (s *Store) InterruptForConfigChange(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, plan ConfigChangePlan, commandID, partialEventType string, partialPayload []byte, warningEventType string, warningPayload []byte) (int64, error) {
+// boundaryRequestID is the aborted step's model_request_id: it keys the interrupted-step meter (E13 T6).
+func (s *Store) InterruptForConfigChange(ctx context.Context, tenant Tenant, sessionID, responseID, runID string, plan ConfigChangePlan, commandID, boundaryRequestID, partialEventType string, partialPayload []byte, warningEventType string, warningPayload []byte) (int64, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -176,6 +177,12 @@ func (s *Store) InterruptForConfigChange(ctx context.Context, tenant Tenant, ses
 		return 0, err
 	}
 	if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, partialEventType, partialPayload); err != nil {
+		return 0, err
+	}
+	// The aborted step burned real provider spend no CommitModelResult will settle — identical to the
+	// send_message interrupt path, so it is metered identically (E13 T6). boundaryRequestID is the
+	// aborted step's model_request_id, which keys the row deterministically.
+	if err := settleUsage(ctx, tx, tenant, interruptedStepEntry(sessionID, runID, boundaryRequestID)); err != nil {
 		return 0, err
 	}
 	seq, err := applyConfigChangeInTx(ctx, tx, tenant, sessionID, responseID, commandID, plan)

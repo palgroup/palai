@@ -665,6 +665,13 @@ type Admission struct {
 	// rejected request leaves no run and no idempotency record, and a retry re-evaluates once capacity frees.
 	ConcurrencyLimited bool
 	QueueDepthExceeded bool
+	// LimitExceeded, when non-nil, names the DURABLE budget or quota that refused this admission (E13 T6,
+	// BIL-003/QUO-001). Unlike the caps above it survives a restart — it is read from the tenant's own
+	// budgets/quotas rows against the settled ledger. Like them it is decided on a FRESH key only, after
+	// the reserve and before commit, so the rolled-back reserve leaves no run and no idempotency record —
+	// and, decisively, a REPLAY of an already-accepted request is never refused by it (§20.9: a limit
+	// gates new work, never the client's right to learn what it was already given).
+	LimitExceeded *LimitExceeded
 }
 
 // AdmitResponse atomically reserves the idempotency key and, on a fresh key,
@@ -790,6 +797,23 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 		return Admission{}, fmt.Errorf("reserve idempotency key: %w", err)
 	}
 
+	// Fresh key: enforce the DURABLE budget/quota gate (E13 T6, BIL-003/QUO-001) before creating any
+	// resource. It sits INSIDE the fresh-key branch, beside the §20.12 caps, and deliberately NOT before
+	// the reserve: the reserve is the only thing that distinguishes new work from a retry of work already
+	// accepted, and a limit gates NEW work only. Checked earlier it would refuse every REPLAY too — the
+	// tenant's own accepted run would answer 429 to its own retry, so the client could never learn the
+	// response id of a run that is executing and spending anyway (§20.9).
+	//
+	// A rejection returns without committing, and the deferred rollback undoes the reserve, so the refused
+	// request leaves no run, no response, and no idempotency record. It needs no configuration argument:
+	// the limits are the tenant's own durable rows, so a tenant with none configured is unaffected (both
+	// queries return no row against empty tables).
+	if limit, err := checkDurableLimits(ctx, tx, tenant); err != nil {
+		return Admission{}, err
+	} else if limit != nil {
+		return Admission{LimitExceeded: limit}, nil
+	}
+
 	// Fresh key: enforce the §20.12 per-project run caps against live counters BEFORE creating any
 	// resource. The reserve above committed no run, so the count reflects only OTHER admissions; a
 	// rejection returns here without committing, and the deferred rollback undoes the reserve so the
@@ -832,6 +856,17 @@ func (s *Store) AdmitResponse(ctx context.Context, tenant Tenant, in AdmissionIn
 			return Admission{ActiveRunConflict: true}, nil
 		}
 		return Admission{}, fmt.Errorf("insert run: %w", err)
+	}
+
+	// The run's reservation in the ledger (E13 T6): recorded in the SAME transaction as the run, so the
+	// run-count meter a quota reads counts exactly the runs that were admitted — no more (a rolled-back
+	// admission takes its reservation with it) and no less (a run cannot exist unmetered). It rides after
+	// InsertRun so a one-active-root rejection never leaves a reservation for a run that was refused.
+	if err := settleUsage(ctx, tx, tenant, usageEntry{
+		sessionID: sessionID, runID: in.RunID, meter: meterRunAdmitted, unit: unitRun,
+		dedupeKey: "run:" + in.RunID + ":admitted", quantity: 1,
+	}); err != nil {
+		return Admission{}, err
 	}
 
 	// Attach the session's coding workspace when the request carried a repository binding (spec §30.1,

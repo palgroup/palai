@@ -129,6 +129,17 @@ func (s *Store) AdmitResponse(ctx context.Context, req api.AdmitRequest) (api.Ad
 		ConcurrencyLimited:         adm.ConcurrencyLimited,
 		QueueDepthExceeded:         adm.QueueDepthExceeded,
 	}
+	// The durable budget/quota rejection (E13 T6) crosses the seam as data, not as a coordinator type,
+	// so the HTTP surface renders its remediation body without depending on the store package.
+	if adm.LimitExceeded != nil {
+		result.LimitExceeded = &api.LimitExceeded{
+			Kind:        adm.LimitExceeded.Kind,
+			MeterPrefix: adm.LimitExceeded.MeterPrefix,
+			Limit:       adm.LimitExceeded.Limit,
+			Used:        adm.LimitExceeded.Used,
+			ResetAt:     adm.LimitExceeded.ResetAt,
+		}
+	}
 	// On a purged replay the body is gone; the tombstone identity is the resource id.
 	if adm.Purged {
 		result.ResponseID = adm.ResourceTombstone
