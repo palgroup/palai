@@ -478,11 +478,14 @@ func newWorkspaceID() (string, error) {
 	return "ws_" + hex.EncodeToString(raw[:]), nil
 }
 
-// Identity is the tenant an API key resolves to (spec §39.2).
+// Identity is the tenant an API key resolves to (spec §39.2). Scopes is the key's coarse capability set
+// (E13 T2); empty means unrestricted (the ConfigPolicy §9.3 idiom), and the provisioning surface reads it
+// to gate tenancy administration.
 type Identity struct {
 	Organization string
 	Project      string
 	Principal    string
+	Scopes       []string
 }
 
 // ErrInvalidToken is returned when a bearer key matches no live api_keys row. Its
@@ -509,7 +512,7 @@ func (s *Store) VerifyAPIKey(ctx context.Context, token string) (Identity, error
 	// caller can only reach the row whose secret they already hold.
 	ctx = storage.WithSystemScope(ctx)
 	err := s.pool.QueryRow(ctx, storage.Query("VerifyAPIKey"), HashAPIKey(token)).
-		Scan(&id.Organization, &project, &id.Principal)
+		Scan(&id.Organization, &project, &id.Principal, &id.Scopes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Identity{}, ErrInvalidToken
 	}

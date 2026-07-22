@@ -79,6 +79,7 @@ func (s *Store) VerifyAPIKey(ctx context.Context, token string) (middleware.Scop
 		Organization: id.Organization,
 		Project:      id.Project,
 		Principal:    id.Principal,
+		Scopes:       id.Scopes,
 	}, nil
 }
 
