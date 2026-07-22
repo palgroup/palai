@@ -591,6 +591,76 @@ run_skills() {
   echo "component_skills=PASS containers=$containers_after volumes=$volumes_after"
 }
 
+# run_hooks is the E12 Task 8 hooks component suite (spec §28.17, TOL-012): the registry CRUD + deterministic
+# firing order (extensions package) and a REAL local HTTP hook worker giving a before_tool deny/allow over the
+# REAL signed transport, driven through dispatchTool against the same real spine (execution package) — the
+# deny leaves NO tool-ledger row and delivers a structured deny; the allow executes + commits.
+run_hooks() {
+  local image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  local label="io.palai.component=hooks"
+  local run_id="$$-${RANDOM}"
+  local container="palai-component-hooks-$run_id"
+  local volume="palai-component-hooks-$run_id"
+  local password="palai-component-${RANDOM}${RANDOM}"
+
+  count_containers() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  count_volumes() { docker volume ls -q --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  cleanup() {
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    docker volume rm -f "$volume" >/dev/null 2>&1 || true
+  }
+  local containers_before volumes_before
+  containers_before="$(count_containers)"
+  volumes_before="$(count_volumes)"
+  trap cleanup EXIT
+
+  docker volume create --label "$label" "$volume" >/dev/null
+  docker run --detach --pull=never --name "$container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 --volume "$volume:/var/lib/postgresql/data" "$image" >/dev/null
+  local ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then docker logs "$container" >&2 || true; echo "postgres hooks container did not become ready" >&2; exit 1; fi
+  local binding port url
+  binding="$(docker port "$container" 5432/tcp)"
+  port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+
+  set +e
+  # Migration + registry CRUD + deterministic firing order (extensions package, component-tagged).
+  PALAI_COMPONENT_POSTGRES_URL="$url" \
+    go test -tags=component -count=1 -v -run 'TestMigration28Hooks' ./tests/component/postgres
+  local status=$?
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v -run 'TestHookCRUDRoundtrip|TestHookOrderDeterministicRegistrationOrder' ./apps/control-plane/internal/extensions
+    status=$?
+  fi
+  # Real local HTTP hook worker before_tool deny/allow through the orchestrator (execution package).
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v -run 'TestHookWorkerBeforeToolDenyAndAllow' ./apps/control-plane/internal/execution
+    status=$?
+  fi
+  set -e
+  if test "$status" -ne 0; then docker logs "$container" >&2 || true; fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers)"
+  volumes_after="$(count_volumes)"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "hooks component suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+  echo "component_hooks=PASS containers=$containers_after volumes=$volumes_after"
+}
+
 case "$suite" in
   postgres) run_postgres ;;
   runner) run_runner ;;
@@ -600,8 +670,9 @@ case "$suite" in
   tool-sdk) run_tool_sdk ;;
   mcp) run_mcp ;;
   skills) run_skills ;;
+  hooks) run_hooks ;;
   *)
-    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository, remote-tools, tool-sdk, mcp, skills)" >&2
+    echo "unknown component suite: $suite (known: postgres, runner, artifacts, repository, remote-tools, tool-sdk, mcp, skills, hooks)" >&2
     exit 2
     ;;
 esac
