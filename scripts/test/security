@@ -48,6 +48,12 @@ run_sandbox() {
 # `go test`, not the fixture-engine harness.
 run_extensions() {
   go test -count=1 ./tests/security/extensions
+  # The E12 Task 8 hook capability-escalation corpus (spec §28.17, TOL-012): a transform patch grants no
+  # capability, an unknown point cannot smuggle a hook, a credential cannot ride inline, and a remote hook
+  # worker receives only the hook's own signing secret (the confused-deputy invariant). Store + strict
+  # decoders are internal, so the corpus runs in-package (the internal-import constraint, the T7 precedent).
+  go test -count=1 -v -run 'TestHookSecurity' ./apps/control-plane/internal/extensions
+  echo "security_extensions_hooks=PASS"
 }
 
 for suite in $suites; do
