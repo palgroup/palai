@@ -1356,3 +1356,80 @@ func TestMigration25RemoteTools(t *testing.T) {
 }
 
 func mustFail(_ pgconn.CommandTag, err error) error { return err }
+
+// TestMigration27Skills proves 000027 adds the skills registry (E12 Task 7, spec §28.15-28.16, TOL-011)
+// idempotently and reverses cleanly: the skills + skill_revisions tables and the runs.skill_pins rider
+// are present after apply (a re-apply is a clean no-op — every object IF NOT EXISTS), gone after rollback,
+// returning after reapply. Version 27 is recorded exactly once. It pins the load-bearing invariants: a
+// duplicate skill name in one project is rejected, a duplicate (skill_id, revision_number) is rejected,
+// and the state CHECK rejects a value outside quarantined|approved|enabled.
+func TestMigration27Skills(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "skills") || !tableExists(t, pool, "skill_revisions") {
+		t.Fatal("after apply, a 000027 table is missing")
+	}
+	if !columnExists(t, pool, "runs", "skill_pins") {
+		t.Fatal("after apply, runs.skill_pins is missing")
+	}
+	var version27 int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 27`).Scan(&version27); err != nil {
+		t.Fatalf("count version 27 error = %v", err)
+	}
+	if version27 != 1 {
+		t.Fatalf("schema_migrations records version 27 %d times, want 1", version27)
+	}
+
+	tenant, _, _ := seedRun(t, pool)
+	skillID := newID("skill")
+	if _, err := pool.Exec(ctx, `INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'commit')`,
+		skillID, tenant.Organization, tenant.Project); err != nil {
+		t.Fatalf("insert skill error = %v", err)
+	}
+	// A duplicate skill name in the same project is rejected (tenant-scoped unique).
+	if got := pgCode(mustFail(pool.Exec(ctx, `INSERT INTO skills (id, organization_id, project_id, name) VALUES ($1,$2,$3,'commit')`,
+		newID("skill"), tenant.Organization, tenant.Project))); got != "23505" {
+		t.Fatalf("duplicate skill name code = %q, want 23505 unique_violation", got)
+	}
+
+	insertRev := func(id string, revNo int, state string) error {
+		_, err := pool.Exec(ctx,
+			`INSERT INTO skill_revisions (id, organization_id, project_id, skill_id, revision_number, digest, state, archive)
+			 VALUES ($1,$2,$3,$4,$5,'sha256:x',$6,'\x00')`,
+			id, tenant.Organization, tenant.Project, skillID, revNo, state)
+		return err
+	}
+	if err := insertRev(newID("skillrev"), 1, "quarantined"); err != nil {
+		t.Fatalf("insert revision error = %v", err)
+	}
+	// A duplicate (skill_id, revision_number) is rejected.
+	if got := pgCode(insertRev(newID("skillrev"), 1, "approved")); got != "23505" {
+		t.Fatalf("duplicate revision number code = %q, want 23505 unique_violation", got)
+	}
+	// The state CHECK rejects a value outside the closed set.
+	if got := pgCode(insertRev(newID("skillrev"), 2, "bogus")); got != "23514" {
+		t.Fatalf("invalid state code = %q, want 23514 check_violation", got)
+	}
+
+	if err := cs.Rollback(ctx); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if tableExists(t, pool, "skills") || tableExists(t, pool, "skill_revisions") {
+		t.Fatal("after rollback, a 000027 table still exists")
+	}
+	if columnExists(t, pool, "runs", "skill_pins") {
+		t.Fatal("after rollback, runs.skill_pins still exists")
+	}
+
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "skills") || !tableExists(t, pool, "skill_revisions") || !columnExists(t, pool, "runs", "skill_pins") {
+		t.Fatal("after reapply, a 000027 object is missing")
+	}
+}

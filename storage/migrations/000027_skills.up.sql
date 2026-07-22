@@ -41,3 +41,5 @@ CREATE TABLE IF NOT EXISTS skill_revisions (
 -- no skills and the run's config hash + provider request stay bit-identical to a skill-less run. The pin
 -- is written ONCE (WHERE skill_pins IS NULL) so a mid-run enable of a new revision never changes it.
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS skill_pins JSONB;
+
+INSERT INTO schema_migrations (version) VALUES (27) ON CONFLICT DO NOTHING;
