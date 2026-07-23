@@ -1,0 +1,30 @@
+# Test-only overlay for the E14 T7 self-host journey (tests/uat). NOT a shipped deploy artifact — it is
+# layered ON TOP of compose.yaml + production.yml only by the journey harness. Two journey-scoped changes:
+#
+#   1. Swap the edge TLS cert for a journey-minted cert whose SANs include 127.0.0.1 + localhost, so the
+#      shipped admin CLI (--ca) and a CA-pinned HTTPS client reach the LOOPBACK edge with FULL verification.
+#      The runner-pinned server.crt keeps its single control-plane SAN untouched (packages/runner requires
+#      len(DNSNames)==1), so this cannot affect runner enrollment — it only re-certs the edge listener.
+#
+#   2. Re-publish the internal service ports on loopback so the shipped `palai doctor` (which probes host
+#      ports) runs unchanged. config-validate's edge_only_surface check reads production.yml ALONE, so the
+#      edge-only posture assertion is UNAFFECTED — this overlay is a doctor-tooling seam, not a posture
+#      change. An edge-only production deployment reaches the same operability signals via docker-exec
+#      (support-bundle, backup), and the admin CLI + the real run in the journey still go THROUGH the edge.
+#      The control-plane runner-gateway port (PALAI_RUNNER_PORT -> :8443) is the CONTROLLER's gateway, not
+#      the outbound-only runner service (which stays portless — the T5 invariant holds).
+services:
+  postgres:
+    ports: !override
+      - "127.0.0.1:${PALAI_PG_PORT}:5432"
+  object-store:
+    ports: !override
+      - "127.0.0.1:${PALAI_S3_PORT}:8333"
+  control-plane:
+    ports: !override
+      - "127.0.0.1:${PALAI_API_PORT}:8080"
+      - "127.0.0.1:${PALAI_RUNNER_PORT}:8443"
+  edge:
+    volumes: !override
+      - "${PALAI_HOME}/ca/edge.crt:/etc/palai/edge/edge.crt:ro"
+      - "${PALAI_HOME}/ca/edge.key:/etc/palai/edge/edge.key:ro"

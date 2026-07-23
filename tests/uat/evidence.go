@@ -129,6 +129,19 @@ type evidenceCase struct {
 	BindingProof       *BindingProof       `json:"binding_proof"`
 	SteerClaim         string              `json:"steer_claim"`
 	SteerProof         *SteerProof         `json:"steer_proof"`
+	// The E14 self-host claims (plan §T7, OPS-002 + DR-002 + DR-004..006 — the E14 EXIT gate) extend the same
+	// marker-alone-is-NEVER-proof discipline to the self-host single-node install journey: a clean production
+	// install came up hardened and resolved the restart-less install SPINE ending in a REAL provider run
+	// (InstallClaim, OPS-002 — also the journey's restart-less spine); an installation backup restored into a
+	// SEPARATE clean stack (BackupClaim, DR-002); and `restore verify` matched the manifest across all six
+	// checks — checksum, migration, tenant-ids, run-retrieval, RLS isolation, secret canary (RestoreVerifyClaim,
+	// DR-004..006). Each requires its proof — an "installed"/"restored"/"verified" marker alone is never evidence.
+	InstallClaim       string              `json:"install_claim"`
+	InstallProof       *InstallProof       `json:"install_proof"`
+	BackupClaim        string              `json:"backup_claim"`
+	BackupProof        *BackupProof        `json:"backup_proof"`
+	RestoreVerifyClaim string              `json:"restore_verify_claim"`
+	RestoreVerifyProof *RestoreVerifyProof `json:"restore_verify_proof"`
 }
 
 type evidenceTerm struct {
@@ -448,6 +461,106 @@ func (p SteerProof) Complete() bool {
 	return p.SessionID != "" && p.CommandID != "" && p.CommandKind != "" && p.Applied
 }
 
+// SelfHostStepIDs is the ordered restart-less install SPINE the self-host EXIT journey resolves on ONE
+// production-compose stack (plan §T7, the E14 EXIT gate): a clean install, the production bring-up, the
+// CA-verified TLS edge, config-validate + doctor v2 green, a tenant provisioned through the admin CLI over
+// the edge, a REAL provider run through the edge, the metrics probe, an installation backup, and a
+// support-bundle. These are the steps ONE stack actually resolves with NO restart — NOT the full OPS-002 +
+// DR-002 + DR-004..006 catalog: the restore into a SEPARATE clean stack is a SECOND stack (BackupProof /
+// RestoreVerifyProof), the same way ManagedCloudStepIDs excluded the finer MCI smokes. JourneyDigest in an
+// InstallProof is hashParts of exactly this canonical list; the anti-fabrication gate (tests/uat/self-host)
+// recomputes hashParts(SelfHostStepIDs...), asserts the committed step_ids EQUAL this canonical list, and
+// fails if either the digest or the list does not reproduce — a fabricated spine is caught the way the E13
+// journey_digest was.
+var SelfHostStepIDs = []string{
+	"clean-install", "production-bring-up", "tls-edge-verified", "config-validate", "doctor-v2",
+	"provision-tenant", "real-run", "metrics-probe", "backup", "support-bundle",
+}
+
+// InstallProof is the evidence an install_claim requires (plan §T7, OPS-002 — and the journey's restart-less
+// spine): a clean production-profile install came up HARDENED and resolved the restart-less install SPINE
+// ending in a REAL provider run. MasterKeyNonDev records the fail-closed boot guard admitted a real (not
+// dev-default) master key; RegistrationClosed that there is no public self-registration surface (provisioning
+// is bootstrap-key + the admin CLI only); EdgeVerified that the admin CLI + the run reached the control-plane
+// through the self-signed TLS edge with CA verification (not the loopback API); ConfigValid / DoctorGreen that
+// `palai config validate` and doctor v2 were green; StepIDs is the ordered spine the stack resolved
+// (SelfHostStepIDs) and JourneyDigest is hashParts(StepIDs...) — re-derivable, so a fabricated digest is
+// caught. RestartCount is the number of control-plane restarts across the spine (must be 0 — the live journey
+// proves it via pg_postmaster_start_time identical start-to-end, the E13 measure). A "installed" marker with
+// an unhardened posture, an unverified edge, a red doctor, a fabricated digest, or any restart is not proof.
+type InstallProof struct {
+	MasterKeyNonDev    bool     `json:"master_key_non_dev"`
+	RegistrationClosed bool     `json:"registration_closed"`
+	EdgeVerified       bool     `json:"edge_verified"`
+	ConfigValid        bool     `json:"config_valid"`
+	DoctorGreen        bool     `json:"doctor_green"`
+	StepIDs            []string `json:"step_ids"`
+	JourneyDigest      string   `json:"journey_digest"`
+	RestartCount       int      `json:"restart_count"`
+}
+
+// Complete reports a hardened posture (real master key, closed registration, CA-verified edge), a green
+// config-validate + doctor, a full ordered spine, a well-formed journey digest, and zero restarts. It does
+// NOT recompute the digest (that is the anti-fabrication gate's job, mirroring ProvisioningProof) — but an
+// empty/malformed digest, a short spine, an unverified edge, or a restart fails here so the restart-less
+// install spine can never be marker-passed.
+func (p InstallProof) Complete() bool {
+	return p.MasterKeyNonDev && p.RegistrationClosed && p.EdgeVerified && p.ConfigValid && p.DoctorGreen &&
+		len(p.StepIDs) >= len(SelfHostStepIDs) && checksumPattern.MatchString(p.JourneyDigest) && p.RestartCount == 0
+}
+
+// BackupProof is the evidence a backup_claim requires (plan §T7 T4, DR-002): an installation backup captured
+// from a running stack restored into a SEPARATE, empty clean stack — the "restore into a separate clean
+// install" invariant. SourceProject / TargetProject are the two distinct compose projects (a restore into the
+// same stack proves nothing); ManifestDigest is a re-derivable hash over the backup manifest's identity +
+// checksums (the anti-fabrication gate recomputes it from the fixture manifest, mirroring the artifact digest);
+// MigrationVersion is the schema version the backup captured (> 0); TargetWasEmpty records the no-clobber gate
+// refused nothing because the target held no tenant data; Restored records the load completed. Honest ceiling
+// (plan §6): the two stacks are two isolated production-compose stacks on one host — a separate PHYSICAL host
+// is the operator leg. A same-stack restore, a fabricated digest, or a non-empty target is not proof.
+type BackupProof struct {
+	SourceProject    string `json:"source_project"`
+	TargetProject    string `json:"target_project"`
+	ManifestDigest   string `json:"manifest_digest"`
+	MigrationVersion int    `json:"migration_version"`
+	TargetWasEmpty   bool   `json:"target_was_empty"`
+	Restored         bool   `json:"restored"`
+}
+
+// Complete reports two DISTINCT non-empty projects, a well-formed manifest digest, a captured migration
+// version, an empty restore target, and a completed restore. Equal projects, a malformed digest, or a
+// non-empty target means the separate-clean-install restore was not proven.
+func (p BackupProof) Complete() bool {
+	return p.SourceProject != "" && p.TargetProject != "" && p.SourceProject != p.TargetProject &&
+		checksumPattern.MatchString(p.ManifestDigest) && p.MigrationVersion > 0 && p.TargetWasEmpty && p.Restored
+}
+
+// RestoreVerifyProof is the evidence a restore_verify_claim requires (plan §T7 T4, DR-004..006): `palai
+// restore verify` matched the restored target against its backup manifest across ALL SIX checks the shipped
+// command runs (install_backup.go InstallRestoreVerify). ArchiveChecksum: the db + object-store members
+// re-hashed to the manifest; MigrationVersion / TenantIDs: the live schema version and org ids match;
+// RunRetrieval: the sample response is queryable from the restored data; RLSIsolation: FORCE row-level
+// security + the tenant_isolation policies survived the restore (DR-005 — a silent cross-tenant breach a
+// superuser read would never notice); SecretDecrypt: a stored secret still decrypts under the target master
+// key (DR-006 — the canary against a restore that did not carry the source key). A "verified" marker with ANY
+// check false is not proof — a restore that landed with RLS off or with dead secrets is exactly what this
+// gate must catch.
+type RestoreVerifyProof struct {
+	ArchiveChecksum  bool `json:"archive_checksum"`
+	MigrationVersion bool `json:"migration_version"`
+	TenantIDs        bool `json:"tenant_ids"`
+	RunRetrieval     bool `json:"run_retrieval"`
+	RLSIsolation     bool `json:"rls_isolation"`
+	SecretDecrypt    bool `json:"secret_decrypt"`
+}
+
+// Complete reports all six restore-verify checks green. A false on ANY of them — a checksum mismatch, a
+// migration/tenant-id drift, an unretrievable run, RLS disabled on the restored data, or a secret that no
+// longer decrypts — is not a verified restore, so DR-004..006 cannot be marker-passed.
+func (p RestoreVerifyProof) Complete() bool {
+	return p.ArchiveChecksum && p.MigrationVersion && p.TenantIDs && p.RunRetrieval && p.RLSIsolation && p.SecretDecrypt
+}
+
 // secretPattern matches a credential-shaped token (an OpenAI-style sk- key), so a plaintext
 // credential fails the redaction scan even when the exact value is not supplied as a needle.
 var secretPattern = regexp.MustCompile(`sk-[A-Za-z0-9_-]{12,}`)
@@ -669,6 +782,33 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "steer_proof (a steer claim requires the session + durable command id + kind + applied; a marker is not proof)"})
 			case !c.SteerProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "steer_proof is incomplete: the session, the durable command id, its kind, or the applied invariant is missing (MCI-008)"})
+			}
+		}
+
+		// The E14 self-host claims mirror the rule exactly: a non-empty marker with no proof is "missing";
+		// a proof that fails its Complete() invariant is "invalid" (plan §T7, OPS-002 + DR-002 + DR-004..006).
+		if c.InstallClaim != "" {
+			switch {
+			case c.InstallProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "install_proof (an install claim requires the hardened posture + CA-verified edge + green config-validate/doctor + the restart-less install spine; an 'installed' marker is not proof)"})
+			case !c.InstallProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "install_proof is incomplete: the non-dev master key, closed registration, CA-verified edge, green config-validate/doctor, the ordered install spine + digest, or the zero-restart invariant is missing (OPS-002)"})
+			}
+		}
+		if c.BackupClaim != "" {
+			switch {
+			case c.BackupProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "backup_proof (a backup claim requires two distinct stacks + a re-derivable manifest digest + an empty restore target; a 'restored' marker is not proof)"})
+			case !c.BackupProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "backup_proof is incomplete: the source/target projects are not distinct, the manifest digest is malformed, the target was not empty, or the restore did not complete (DR-002)"})
+			}
+		}
+		if c.RestoreVerifyClaim != "" {
+			switch {
+			case c.RestoreVerifyProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "restore_verify_proof (a restore-verify claim requires all six checks — checksum, migration, tenant-ids, run-retrieval, RLS isolation, secret canary; a 'verified' marker is not proof)"})
+			case !c.RestoreVerifyProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "restore_verify_proof is incomplete: a checksum/migration/tenant-id/run-retrieval mismatch, RLS disabled on the restored data, or a secret that no longer decrypts under the target key (DR-004..006)"})
 			}
 		}
 

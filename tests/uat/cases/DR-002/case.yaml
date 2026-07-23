@@ -1,0 +1,8 @@
+id: DR-002
+name: installation-backup-restored-into-a-separate-clean-stack
+proof_class: unit
+provider: fake
+input: "an installation backup (consistent pg_dump -Fc + object-store volume + a manifest of ids and per-object checksums) captured from one running stack restores into a SEPARATE, empty clean stack whose no-clobber empty-target gate refuses a non-empty target — the backup-round-trip half; the live two-production-compose-stack restore is the journey tier (make uat-self-host PROVIDER=provider-one). Proof seam: two isolated production-compose stacks on one host (plan §6); the separate physical host / cloud VM is the operator leg"
+expect_status: completed
+proof:
+  - cmd/cli/internal/stack/install_backup_test.go:TestBackupArchiveRoundTrip

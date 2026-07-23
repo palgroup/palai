@@ -1,0 +1,11 @@
+id: OPS-002
+name: clean-production-install-hardened-restart-less-through-the-edge
+proof_class: unit
+provider: fake
+input: "a fresh PALAI_HOME clean install comes up on the production profile (compose.yaml + production.yml): the fail-closed production-entrypoint.sh admits a REAL non-dev master key, there is no public self-registration surface (bootstrap key + admin CLI only), `palai config validate` and doctor v2 are green, and the admin CLI provisions a tenant THROUGH the CA-verified TLS edge — the restart-less install-posture half; the live production-compose install + a real provider run through the edge is the journey tier (make uat-self-host PROVIDER=provider-one). Proof seam: local-production-compose (plan §6); the cloud-VM clean install is the operator leg"
+expect_status: completed
+proof:
+  - deploy/compose/production_guard_test.go:TestProductionGuardAdmitsRealKeys
+  - deploy/compose/production_guard_test.go:TestProductionGuardRefusesDevMasterKey
+  - cmd/cli/internal/stack/configvalidate_test.go:TestConfigValidatePassesOnGoodConfig
+  - cmd/cli/internal/stack/doctor_v2_test.go:TestDoctorReusesMetricsQueries

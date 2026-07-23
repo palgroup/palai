@@ -5,7 +5,7 @@ SHELL := /bin/bash
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
 	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
-	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud evidence-verify
+	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host evidence-verify
 
 bootstrap:
 	go mod download
@@ -162,6 +162,17 @@ uat-extensibility:
 uat-managed-cloud:
 	@test -x scripts/uat/managed-cloud || { echo "managed-cloud UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' scripts/uat/managed-cloud
+
+# E14 EXIT gate (SH-0 single-node alpha): the self-host catalog + committed-bundle evidence-verify core
+# (always, no Docker) + the live tier (PROVIDER=provider-one) — the whole production-compose journey on two
+# isolated stacks (clean install -> production bring-up -> CA-verified TLS edge -> config validate + doctor v2
+# -> admin CLI provisioning through the edge -> a REAL provider run through the edge -> metrics/alert probe ->
+# backup -> restore into a SEPARATE clean stack + restore verify -> support-bundle, restart_count=0). Ends in a
+# REAL provider run. uat-local-live / uat-interactive / uat-coding / uat-recovery / uat-automation /
+# uat-extensibility / uat-managed-cloud above stay untouched.
+uat-self-host:
+	@test -x scripts/uat/self-host || { echo "self-host UAT not implemented" >&2; exit 2; }
+	@PROVIDER='$(PROVIDER)' scripts/uat/self-host
 
 evidence-verify:
 	@test -x scripts/evidence/verify || { echo "evidence verifier not implemented" >&2; exit 2; }

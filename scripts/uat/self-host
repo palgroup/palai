@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Self-host UAT — the E14 EXIT gate (SH-0 single-node alpha). One target, a deterministic/evidence CORE
+# (always) + a PROVIDER-gated live journey. The core is provider-agnostic and Docker-free: the catalog gate +
+# the committed self-host-0.1.0 bundle verify with every self-host rule active.
+#
+#   deterministic core (always):
+#     1. tests/uat/self-host — the catalog gate (OPS-002 + DR-002 + DR-004..006 materialized, proof_class ==
+#        the build tier of the referenced T1-T6 proof) + the evidence gate (the committed self-host-0.1.0
+#        bundle verifies clean through the shared verifier: 0 failed, 0 missing, 0 secret findings, all three
+#        rules exercised, journey_digest + backup manifest_digest re-derivable / anti-fabrication).
+#     2. evidence-verify RELEASE=self-host-0.1.0 — the same committed bundle through the shipped CLI verifier
+#        (the operator path).
+#
+#   live tier (PROVIDER=provider-one): TestSelfHostJourney brings up the REAL production profile
+#     (compose.yaml + production.yml + a test-only journey overlay) on Docker Desktop and drives the whole
+#     host-agnostic journey, ALL restart-less: clean install -> production bring-up -> CA-verified TLS edge ->
+#     config validate + doctor v2 -> admin CLI provisioning THROUGH the edge (--ca) -> a REAL provider-one run
+#     through the edge -> metrics/alert probe -> `palai backup` -> a SEPARATE clean stack `restore` + `restore
+#     verify` (all six checks) -> `support-bundle` -> restart_count=0 (pg boot identical start-to-end). It ends
+#     in a REAL provider-one completion. It does NOT write the committed bundle (that is authored deterministic
+#     data verified by the core). Credentials load ONLY from .env.local via `set -a` — never argv, never
+#     `set -x`, never the bundle or a commit. Honest ceiling (plan §6): the local proof is two isolated
+#     production-compose stacks; the cloud-VM clean install + separate-physical-host restore is the operator leg.
+#
+# uat-managed-cloud / uat-coding / uat-local-live / uat-interactive / uat-recovery / uat-automation /
+# uat-extensibility stay UNTOUCHED.
+#
+# set -x must NEVER be enabled in this script: it would echo the sourced secret.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# Core 1 — the self-host catalog + committed-bundle evidence gates (no Docker, no credential).
+go test -count=1 ./tests/uat/self-host/...
+
+# Core 2 — the committed self-host-0.1.0 bundle verifies clean through the shipped CLI verifier.
+RELEASE=self-host-0.1.0 scripts/evidence/verify
+
+# Live tier — PROVIDER=provider-one runs the whole production-compose journey ending in a REAL provider run.
+# The credential loads from the git-ignored .env.local into the environment the go test child inherits (set -a,
+# never set -x / argv / log). Without PROVIDER the journey skip-guards itself, so this target is green in CI
+# without a key.
+if [ "${PROVIDER:-fake}" = "provider-one" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "OPENAI_API_KEY is unset; the self-host journey's live run needs it in .env.local" >&2
+    exit 1
+  fi
+  export PALAI_UAT_PROVIDER=provider-one
+  echo "uat-self-host: live journey TestSelfHostJourney (two production stacks, ends in a real provider run)" >&2
+  exec go test -tags uat -count=1 -timeout 45m -run TestSelfHostJourney ./tests/uat -v
+fi

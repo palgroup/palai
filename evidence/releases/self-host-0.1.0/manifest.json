@@ -1,0 +1,190 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-23T05:00:00Z",
+  "git_sha": "40de8f5",
+  "migration": "000032_usage_ledger",
+  "release": "self-host-0.1.0",
+  "cases": [
+    {
+      "id": "OPS-002",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_self_host_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "install_claim": "installed",
+      "install_proof": {
+        "master_key_non_dev": true,
+        "registration_closed": true,
+        "edge_verified": true,
+        "config_valid": true,
+        "doctor_green": true,
+        "step_ids": [
+          "clean-install",
+          "production-bring-up",
+          "tls-edge-verified",
+          "config-validate",
+          "doctor-v2",
+          "provision-tenant",
+          "real-run",
+          "metrics-probe",
+          "backup",
+          "support-bundle"
+        ],
+        "journey_digest": "sha256:10244657744a0ab1d558ef0f010a3d924a8d0336a708b636b00bc2793179eff4",
+        "restart_count": 0
+      },
+      "db_assertions": [
+        "a fresh PALAI_HOME clean install came up on the production profile (compose.yaml + production.yml): the fail-closed production-entrypoint.sh admitted a REAL (non-dev, 32-byte-hex) secret master key, and the stack has no public self-registration surface — provisioning is bootstrap-key + the `palai` admin CLI only (master_key_non_dev + registration_closed)",
+        "the admin CLI + the run reached the control-plane THROUGH the self-signed TLS edge with CA verification (edge_verified) — not the loopback API; `palai config validate` (static production posture) and doctor v2 were green (config_valid + doctor_green)",
+        "restart-less install spine: the ten SPINE steps (clean-install, production-bring-up, tls-edge-verified, config-validate, doctor-v2, provision-tenant, real-run, metrics-probe, backup, support-bundle) resolved on ONE stack boot with restart_count=0 (proven live by pg_postmaster_start_time identical start-to-end); the restore into a SEPARATE stack is DR-002 (a second stack), not this spine. journey_digest = hashParts(canonical step_ids) is re-derivable + anchored (anti-fabrication)",
+        "PROOF SEAM (plan §6): the local-production-compose seam on Docker Desktop with a self-minted local-CA edge cert. The dedicated cloud-VM clean install with a real domain/cert is the operator leg — named, NOT claimed"
+      ],
+      "checksum": "sha256:c6282b7c87d1c61b36da7353c7f708337924f12c0d84b938601145f48e06a298"
+    },
+    {
+      "id": "DR-002",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_self_host_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "backup_claim": "restored",
+      "backup_proof": {
+        "source_project": "palai-selfhost-a",
+        "target_project": "palai-selfhost-b",
+        "manifest_digest": "sha256:d2c2ea15f684c4da7a6c2eaf3babf8c36eeeef2a8ee26388f660faa93089a2b4",
+        "migration_version": 32,
+        "target_was_empty": true,
+        "restored": true
+      },
+      "db_assertions": [
+        "`palai backup` captured stack A (source_project palai-selfhost-a) into one archive — a consistent pg_dump -Fc + the object-store volume + a manifest of ids + per-object checksums (migration_version 32); the manifest holds NO secret",
+        "`palai restore` loaded that archive into a SEPARATE clean stack B (target_project palai-selfhost-b, distinct PALAI_HOME/ports/volumes) whose no-clobber empty-target gate refused nothing because B held no tenant data (target_was_empty) — restore into a non-empty target is fail-closed",
+        "manifest_digest = hashParts(kind, migration, org ids, sample response) is re-derivable from the declared canonical backup identity (tests/uat/self-host selfHostBackupManifestParts) — a fabricated digest is caught by tests/uat/self-host (the managed-cloud artifact-digest precedent)",
+        "PROOF SEAM (plan §6): two isolated production-compose stacks on ONE Docker Desktop host (the T4 pattern). Restore to a separate PHYSICAL host / cloud VM is the operator leg — named, NOT claimed"
+      ],
+      "checksum": "sha256:5cd2277ec9682a7b1a5a951350ce35185721e0cc8e87c8fba1ab5c7a67635c55"
+    },
+    {
+      "id": "DR-004",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_self_host_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "restore_verify_claim": "verified",
+      "restore_verify_proof": {
+        "archive_checksum": true,
+        "migration_version": true,
+        "tenant_ids": true,
+        "run_retrieval": true,
+        "rls_isolation": true,
+        "secret_decrypt": true
+      },
+      "db_assertions": [
+        "`palai restore verify` (integrity focus, DR-004): the archive's db + object-store members re-hashed to the manifest (archive_checksum), the restored live schema version matched the manifest (migration_version), every backed-up org id was present in the restored data (tenant_ids), and the manifest's sample response was queryable from the restored database (run_retrieval)",
+        "all six checks are reported together (the shipped InstallRestoreVerify runs them as one); this case pins the integrity + retrievability quarter",
+        "PROOF SEAM (plan §6): restore verify against the restored stack B on the local-production-compose seam; the cloud-VM restore is the operator leg — named, NOT claimed"
+      ],
+      "checksum": "sha256:ae4d30e7842f797b9f9841d101fb2ae7469d4f1078e821e06b2986bda005e12a"
+    },
+    {
+      "id": "DR-005",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_self_host_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "restore_verify_claim": "verified",
+      "restore_verify_proof": {
+        "archive_checksum": true,
+        "migration_version": true,
+        "tenant_ids": true,
+        "run_retrieval": true,
+        "rls_isolation": true,
+        "secret_decrypt": true
+      },
+      "db_assertions": [
+        "`palai restore verify` (isolation focus, DR-005): tenant isolation SURVIVED the restore — every org-bearing table on the restored data still FORCE'd row-level security and carried its tenant_isolation policy (rls_isolation). pg_dump carries FORCE RLS + policies mechanically; this catches a restore that silently landed with RLS off, a cross-tenant breach the RLS-bypassing superuser reads would never notice",
+        "the no-clobber empty-target gate (buildExcessQuery over EVERY FORCE-RLS table, boot-seed rows excluded) is the fail-closed guard that a restore never overwrites provisioned tenant data (TestBuildExcessQuery, DR-005 in-tree proof)",
+        "PROOF SEAM (plan §6): the restored stack B on the local-production-compose seam; the cloud-VM leg is the operator leg — named, NOT claimed"
+      ],
+      "checksum": "sha256:17b5d3e79c66d5ef315d3f6284abd1873191e76f185cacc58beafd77598aea3b"
+    },
+    {
+      "id": "DR-006",
+      "status": "PASS",
+      "proof_class": "e2e-deterministic",
+      "run_id": "run_self_host_journey",
+      "image_digest": "sha256:cf5992afb97226f08605915cc1bdaba59d2c9391419c3055ad9f410b68e30674",
+      "provider_request_id": "prov_final",
+      "mtls_enroll": "runner-local cn=controller",
+      "terminal": {
+        "type": "response.completed",
+        "count": 1
+      },
+      "usage": {
+        "input_tokens": 5,
+        "output_tokens": 3,
+        "total_tokens": 8
+      },
+      "restore_verify_claim": "verified",
+      "restore_verify_proof": {
+        "archive_checksum": true,
+        "migration_version": true,
+        "tenant_ids": true,
+        "run_retrieval": true,
+        "rls_isolation": true,
+        "secret_decrypt": true
+      },
+      "db_assertions": [
+        "`palai restore verify` (secret canary focus, DR-006): a stored secret still DECRYPTED under the TARGET stack's master key (secret_decrypt) — the M3 canary against a restore that did not carry the source master key, which would leave every secret row intact but undecryptable (a silently-dead install)",
+        "the CLI's openSealed AES-256-GCM open is byte-compatible with the control-plane secret store's seal (nonce||ciphertext); the interop is pinned at the component tier against a real stored ciphertext under two master keys (TestInstallRestoreSecretCanaryTwoMasterKeys, DR-006 in-tree proof)",
+        "honest ceiling: at-rest protection is a single master-key AES-256-GCM envelope; the KMS/lease ceremony is E13-H (SEC-001/003)",
+        "PROOF SEAM (plan §6): the restored stack B on the local-production-compose seam; the cloud-VM leg is the operator leg — named, NOT claimed"
+      ],
+      "checksum": "sha256:0a4fbfaae4c3649bf001a8cbab495a3a079ddc60d414a191e1e8f22ce76a0487"
+    }
+  ]
+}

@@ -12,6 +12,8 @@ package admin
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -49,10 +51,14 @@ func Run(resource string, args []string, out io.Writer, in io.Reader) error {
 	if err != nil {
 		return err
 	}
+	httpClient, err := newHTTPClient(f.ca)
+	if err != nil {
+		return err
+	}
 	c := &Client{
 		BaseURL: baseURL,
 		APIKey:  apiKey,
-		HTTP:    &http.Client{Timeout: 30 * time.Second},
+		HTTP:    httpClient,
 		Out:     out,
 		In:      in,
 		JSON:    f.json,
@@ -65,6 +71,7 @@ func Run(resource string, args []string, out io.Writer, in io.Reader) error {
 type flags struct {
 	baseURL       string
 	apiKeyFile    string
+	ca            string
 	json          bool
 	displayName   string
 	project       string
@@ -87,6 +94,7 @@ func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 func (f *flags) register(fs *flag.FlagSet, resource string) {
 	fs.StringVar(&f.baseURL, "base-url", "", "control-plane base URL (else $PALAI_BASE_URL, then .palai)")
 	fs.StringVar(&f.apiKeyFile, "api-key-file", "", "file holding the admin API key (else $PALAI_API_KEY, then .palai)")
+	fs.StringVar(&f.ca, "ca", "", "PEM CA file to trust for an https base URL (else $PALAI_CA_FILE) — e.g. the self-signed edge's ${PALAI_HOME}/ca/ca.crt")
 	fs.BoolVar(&f.json, "json", false, "emit the raw JSON response instead of a human render")
 	switch resource {
 	case "org":
@@ -351,6 +359,33 @@ func resolve(baseURLFlag, apiKeyFileFlag string) (baseURL, apiKey string, err er
 		return "", "", errors.New("no API key: pass --api-key-file, set $PALAI_API_KEY, or run `palai init`")
 	}
 	return baseURL, apiKey, nil
+}
+
+// newHTTPClient builds the admin client's HTTP client, adding a CA trust anchor when one is named (the --ca
+// flag → $PALAI_CA_FILE). This is the edge-trust enabling change (E14 T7): the E14 production profile fronts
+// the control-plane with a TLS edge that serves a self-signed local-CA certificate, so a plain client cannot
+// reach it over https. Pointing --ca at ${PALAI_HOME}/ca/ca.crt adds that CA to the client's RootCAs so the
+// admin CLI provisions THROUGH the edge with full verification (the cert's SAN is the controller DNS, so the
+// base URL uses that name and resolves it to the edge). An operator with a real-domain certificate needs no
+// --ca — the system trust store covers it. A named-but-unreadable/empty CA file is a hard error, never a
+// silent fall-through to the system store.
+func newHTTPClient(caFile string) (*http.Client, error) {
+	caFile = firstNonEmpty(caFile, os.Getenv("PALAI_CA_FILE"))
+	if caFile == "" {
+		return &http.Client{Timeout: 30 * time.Second}, nil
+	}
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read --ca file: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("--ca file %s held no PEM certificates", caFile)
+	}
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool}},
+	}, nil
 }
 
 // maxSecretBytes bounds a secret value so an oversized read is a loud error, not a silent truncation.
