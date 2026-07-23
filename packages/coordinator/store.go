@@ -85,12 +85,11 @@ func (s *Store) Close() { s.pool.Close() }
 // Pool exposes the underlying pool for sibling stores that share a connection.
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 
-// Migrate applies the forward core migration. It is safe to run repeatedly.
+// Migrate applies the forward chain. It is safe to run repeatedly: since E15 T1 it applies each
+// migration in its own bounded, journaled transaction after a boot preflight (see migrate.go), so an
+// interrupted upgrade resumes from the last committed migration on restart.
 func (s *Store) Migrate(ctx context.Context) error {
-	if err := s.asOwner(ctx, storage.MigrationUp()); err != nil {
-		return fmt.Errorf("apply migration: %w", err)
-	}
-	return nil
+	return s.migrate(ctx)
 }
 
 // Rollback reverses the core migration.
