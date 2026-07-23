@@ -40,7 +40,10 @@ cleanup() {
     "$CLI" local down >/dev/null 2>&1 || \
       docker compose -p "$PROJECT" -f "$COMPOSE" down --volumes --remove-orphans >/dev/null 2>&1
   fi
-  docker rm -f "$(docker ps -aq --filter "label=io.palai.project=$PROJECT" 2>/dev/null)" >/dev/null 2>&1
+  # Unquoted so multiple ids word-split into separate args (a quoted "$(...)" folds N ids into ONE arg,
+  # a no-op when there is >1 leak — the exact case cleanup must handle).
+  local stray; stray="$(docker ps -aq --filter "label=io.palai.project=$PROJECT" 2>/dev/null)"
+  [ -n "$stray" ] && docker rm -f $stray >/dev/null 2>&1
   docker rm -f palai-e15t2-oldrunner-"$short" >/dev/null 2>&1
   git worktree remove --force "$N_SRC" >/dev/null 2>&1
   docker image rm -f palai/control-plane:n-"$short" palai/runner:n-"$short" palai/reference-engine:n-"$short" \
@@ -86,10 +89,22 @@ wait_terminal() { # id timeout_s
   done
 }
 
-# The engine image the runner most recently launched for this stack (the pinned digest of the live run).
+# The RESOLVED image id (sha256 digest) the runner most recently launched for this stack — the pinned
+# engine of the live run. Inspects the newest engine container's .Image so the id compares digest-to-digest
+# against d_engine_n / d_engine_n1 (a bare `docker ps {{.Image}}` may print a tag instead).
 engine_container_image() {
-  docker ps -a --filter "label=io.palai.sandbox=engine" --filter "label=io.palai.project=$PROJECT" \
-    --format '{{.CreatedAt}}\t{{.Image}}' | sort | tail -1 | cut -f2
+  local cid
+  cid="$(docker ps -a --filter "label=io.palai.sandbox=engine" --filter "label=io.palai.project=$PROJECT" \
+    --format '{{.CreatedAt}}\t{{.ID}}' | sort | tail -1 | cut -f2)"
+  [ -n "$cid" ] && docker inspect "$cid" --format '{{.Image}}' 2>/dev/null || true
+}
+
+# capture_engine polls for the ephemeral engine container (a fake run's engine exits fast) for a few
+# seconds, returning its digest or "" if the window was missed.
+capture_engine() {
+  local e=""
+  for _ in $(seq 1 12); do e="$(engine_container_image)"; [ -n "$e" ] && break; sleep 0.5; done
+  printf '%s' "$e"
 }
 
 compose_up() { # engine_digest cp_image runner_image [extra env KEY=VAL ...]
@@ -165,10 +180,15 @@ log "start a fake run, then palai upgrade -> the run survives on its pinned engi
 run_id="$(admit_run 'drill active run over the upgrade')"
 [ -n "$run_id" ] || fail "could not admit the active run"
 echo "active run: $run_id" >&2
-# Best-effort: give the runner a beat to launch the engine on digest_n, then capture it.
-sleep 3
-active_engine="$(engine_container_image || true)"
+# Capture the engine the active run pinned (best-effort — the fake engine is short-lived).
+active_engine="$(capture_engine)"
 echo "engine container while active: ${active_engine:-<none captured>}" >&2
+# HARD ASSERT the pin when the window was caught: the active run's engine MUST be engine_n, so the
+# "survives on its PINNED engine" claim is enforced, not just echoed. Skipped only if the capture was blank.
+if [ -n "$active_engine" ]; then
+  [ "$active_engine" = "$d_engine_n" ] || fail "active run engine $active_engine != pinned engine_n $d_engine_n"
+  echo "pin verified: active run engine == engine_n" >&2
+fi
 
 "$CLI" upgrade --manifest "$N1_MANIFEST" --from 0.15.0 --drain-run "$run_id" --drain-wait 120s >&2
 
@@ -181,9 +201,13 @@ echo "engine alias rolled: $d_engine_n -> $d_engine_n1 (new runs only)" >&2
 # ---- phase 4: a new run uses the rolled engine -----------------------------
 log "a NEW run after the roll uses the new engine"
 new_id="$(admit_run 'drill post-roll run')"
-sleep 3
-new_engine="$(engine_container_image || true)"
+new_engine="$(capture_engine)"
 new_st="$(wait_terminal "$new_id" 90)" || fail "post-roll run $new_id did not complete (status=$new_st)"
+# When caught, the NEW run's engine MUST be the rolled engine_n1 (the contrast that proves the pin held).
+if [ -n "$new_engine" ]; then
+  [ "$new_engine" = "$d_engine_n1" ] || fail "post-roll run engine $new_engine != rolled engine_n1 $d_engine_n1"
+  echo "roll verified: post-roll run engine == engine_n1" >&2
+fi
 echo "post-roll run: $new_id status=$new_st engine_container=${new_engine:-<none>}" >&2
 
 # ---- phase 5: application rollback -----------------------------------------

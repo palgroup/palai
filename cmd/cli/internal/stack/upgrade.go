@@ -77,16 +77,20 @@ func verifyUpgradeCompat(target, current string) error {
 }
 
 // currentVersionOrFile returns the operator-supplied current version, or the repo VERSION file, or "dev".
-func currentVersionOrFile(from string) string {
+// currentVersionOrFile resolves the current version for the compat check: the operator's --from, else the
+// repo VERSION file. It ERRORS when neither is present rather than defaulting to "dev" — a "dev" current
+// makes version.Supported skip the window (dev is unstamped), silently disabling the compat gate for the
+// normal distributed-CLI case (run from a dir with no ./VERSION). Better to demand --from than fail open.
+func currentVersionOrFile(from string) (string, error) {
 	if from != "" {
-		return from
+		return from, nil
 	}
 	if raw, err := os.ReadFile("VERSION"); err == nil {
 		if v := strings.TrimSpace(string(raw)); v != "" {
-			return v
+			return v, nil
 		}
 	}
-	return "dev"
+	return "", fmt.Errorf("cannot determine the current version for the compat check: pass --from <version> (no ./VERSION file here)")
 }
 
 // Upgrade runs the §48.4 N->N+1 compose sequence: backup + restore-status -> compat verify -> expand +
@@ -105,7 +109,10 @@ func Upgrade(opts UpgradeOptions) error {
 	if err != nil {
 		return err
 	}
-	current := currentVersionOrFile(opts.From)
+	current, err := currentVersionOrFile(opts.From)
+	if err != nil {
+		return err
+	}
 	if err := verifyUpgradeCompat(m.Version, current); err != nil {
 		return err
 	}
@@ -191,8 +198,11 @@ type RollbackOptions struct {
 // to N and rolls the engine alias back to N's engine for NEW runs, while the SCHEMA stays expanded (a
 // contract's dropped shape is not re-created — a real downgrade past a contract restores from the
 // pre-upgrade backup, spec §48.5). The N binary boots on the expanded schema because a contract only
-// drops shapes no in-rollback-window binary reads, so the schema head equals N's chain head. An active
-// run stays on its pinned engine — the alias rollback, like the roll, affects only new runs.
+// drops shapes no in-rollback-window binary reads, so the schema head equals N's chain head. It DRAINS
+// first: the runner recreate SIGTERMs the active run, and without a drain E10 recovery would reopen that
+// attempt on the N control-plane's N engine — silently MIGRATING a run pinned to the N+1 engine. So an
+// active run is drained (warn-on-timeout) before the recreate; a run still active past the window then
+// completes on N's engine, and the operator is warned (never silent).
 func UpgradeRollback(opts RollbackOptions) error {
 	cfg, p, err := loadConfig()
 	if err != nil {
@@ -204,11 +214,15 @@ func UpgradeRollback(opts RollbackOptions) error {
 	}
 	fmt.Fprintf(os.Stderr, "rollback: control-plane -> %s (schema stays expanded)\n", m.Images.ControlPlane.Ref)
 
-	// Swap the control-plane + runner image back to N and roll the engine alias back to N's engine in one
-	// recreate: a rollback has no active-run-drain ordering to preserve (the alias rollback is for new
-	// runs; any active run keeps the engine it already pinned). Preserve the running runtime config so the
-	// rollback does not reset dispatch/provider to a compose default.
-	env := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Ref, m.Images.Runner.Ref, preservedRuntimeEnv(cfg))
+	// Read the runtime config to preserve BEFORE any recreate resets it, then drain the active run so it is
+	// not silently migrated onto N's engine by the recreate's SIGTERM + E10 recovery.
+	preserved := preservedRuntimeEnv(cfg)
+	if err := drainActiveRun(cfg, p, UpgradeOptions{}); err != nil {
+		return err
+	}
+
+	// Swap the control-plane + runner image back to N and roll the engine alias back to N's engine.
+	env := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Ref, m.Images.Runner.Ref, preserved)
 	if err := runVisible(env, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
 		"up", "-d", "--wait", "control-plane", "runner"); err != nil {
 		return fmt.Errorf("rollback swap: %w", err)
@@ -238,21 +252,33 @@ func upgradeComposeEnv(cfg Config, home, engine, cpImage, runnerImage string, pr
 	return append(env, preserved...)
 }
 
-// preservedRuntimeVars are the runtime-behaviour env vars the compose file defaults (dispatch off, fake
-// provider) — so a swap/roll/rollback that does NOT carry them forward would silently disable the
-// exec-path or flip a provider-one stack back to fake. Read from the RUNNING control-plane and re-applied.
-var preservedRuntimeVars = []string{"PALAI_DISPATCH_WORKERS", "PALAI_MODEL_PROVIDER", "PALAI_MODEL", "PALAI_RUNNER_CONCURRENCY"}
+// cpRuntimeVars / runnerRuntimeVars are the runtime-behaviour env vars the compose file DEFAULTS — so a
+// swap/roll/rollback that does NOT carry them forward silently resets them: dispatch off (exec-path dead),
+// provider back to fake, retention reaper disabled, or runner concurrency back to 1 (a delegation stack's
+// inline-child runs then DEADLOCK, §25.18/E08 T5). They are split PER SERVICE because each var lives only
+// in its own service's compose env: PALAI_RUNNER_CONCURRENCY is on the RUNNER, the rest on the
+// control-plane — reading a runner-scoped var off the control-plane container always misses it.
+var cpRuntimeVars = []string{
+	"PALAI_DISPATCH_WORKERS", "PALAI_MODEL_PROVIDER", "PALAI_MODEL",
+	"PALAI_RETENTION_STORE_FALSE_TTL", "PALAI_RUNNER_CERT_TTL",
+}
+var runnerRuntimeVars = []string{"PALAI_RUNNER_CONCURRENCY"}
 
-// preservedRuntimeEnv reads the running control-plane's runtime config so an upgrade preserves it instead
-// of resetting to the compose defaults. A var absent from the container is skipped (its default applies).
-// Read ONCE at the start of an upgrade — the first recreate would otherwise overwrite it with the default.
+// preservedRuntimeEnv reads the running stack's runtime config so an upgrade preserves it instead of
+// resetting to the compose defaults. Each var is read from the CONTAINER THAT CARRIES IT (control-plane vs
+// runner); one absent from its container is skipped (its default applies). Read ONCE at the start of an
+// upgrade — the first recreate would otherwise overwrite it with the default.
 func preservedRuntimeEnv(cfg Config) []string {
 	var out []string
-	for _, key := range preservedRuntimeVars {
-		if v, err := inspectContainerEnv(cfg.containerName("control-plane"), key); err == nil {
-			out = append(out, key+"="+v)
+	read := func(container string, keys []string) {
+		for _, key := range keys {
+			if v, err := inspectContainerEnv(container, key); err == nil {
+				out = append(out, key+"="+v)
+			}
 		}
 	}
+	read(cfg.containerName("control-plane"), cpRuntimeVars)
+	read(cfg.containerName("runner"), runnerRuntimeVars)
 	return out
 }
 
@@ -336,9 +362,14 @@ func runIsTerminal(client *http.Client, baseURL, key, id string) bool {
 	return ok && terminalResponseStatus[status]
 }
 
-// anyRunActive reports whether the response list holds a non-terminal run.
+// anyRunActive reports whether a PINNED (dispatched, in_progress) run is still executing — the runs a roll
+// would silently migrate. It filters SERVER-SIDE by status=in_progress rather than scanning a newest-first
+// page: an unfiltered ?limit=100 would read an active run beyond the newest 100 (a page full of completed
+// runs) as "quiesced" and cut the roll under it. A queued run is deliberately NOT counted — it holds no
+// lease and pins no engine, so it dispatches fresh on whatever engine is current when it runs.
 func anyRunActive(client *http.Client, baseURL, key string) bool {
-	req, _ := http.NewRequest(http.MethodGet, baseURL+"/v1/responses?limit=100", nil)
+	const limit = 100
+	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/v1/responses?status=in_progress&limit=%d", baseURL, limit), nil)
 	req.Header.Set("Authorization", "Bearer "+key)
 	resp, err := client.Do(req)
 	if err != nil {
@@ -346,19 +377,14 @@ func anyRunActive(client *http.Client, baseURL, key string) bool {
 	}
 	defer resp.Body.Close()
 	var page struct {
-		Data []struct {
-			Status string `json:"status"`
-		} `json:"data"`
+		Data []json.RawMessage `json:"data"`
 	}
 	if json.NewDecoder(resp.Body).Decode(&page) != nil {
 		return false
 	}
-	for _, r := range page.Data {
-		if r.Status != "" && !terminalResponseStatus[r.Status] {
-			return true
-		}
-	}
-	return false
+	// Every returned row is in_progress by the filter; a full page means there may be even more, so either
+	// way a non-empty result is an active run.
+	return len(page.Data) > 0
 }
 
 // upgradeSmoke admits one fake response and waits for it to reach a terminal status — the post-swap /

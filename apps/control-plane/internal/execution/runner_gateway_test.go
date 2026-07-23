@@ -701,6 +701,42 @@ func TestGatewayDialRefusesWhenCordoned(t *testing.T) {
 	}
 }
 
+// TestGatewayDialRefusesRunnerParkedAfterCordon closes the SF-5 TOCTOU: a Dial already blocked in its
+// select when Cordon fires must NOT slip a lease through when a runner then parks — the post-receive
+// re-check refuses it, so a drain that read active==0 cannot be raced by a post-cordon lease.
+func TestGatewayDialRefusesRunnerParkedAfterCordon(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	identity, err := runner.Enroll(ctx, f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+
+	// Dial FIRST, with no runner available yet, so it parks in the select having already passed the
+	// pre-check (gateway not cordoned at that instant).
+	dialErr := make(chan error, 1)
+	go func() {
+		_, err := f.gateway.Dial(ctx, f.attempt("run_toctou", "att_toctou", 1))
+		dialErr <- err
+	}()
+	time.Sleep(150 * time.Millisecond) // let Dial reach <-g.available
+
+	// Cordon AFTER Dial is blocked, THEN a runner parks: Dial receives it and must refuse on the re-check.
+	f.gateway.Cordon()
+	go func() { _, _ = f.session(identity).OpenLease(ctx) }()
+
+	select {
+	case err := <-dialErr:
+		if !errors.Is(err, execution.ErrRunnerCordoned) {
+			t.Fatalf("Dial after a post-block cordon = %v, want ErrRunnerCordoned (post-receive re-check)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Dial neither offered a lease nor refused after a post-block cordon")
+	}
+}
+
 // TestGatewayDrainWaitsForInFlightLease proves Drain cordons and blocks while a lease is IN FLIGHT, then
 // returns once it closes — and that a parked-and-idle runner (no active lease) does NOT block a drain.
 // This is the §48.4 drain: stop new work, wait for the current work to finish.

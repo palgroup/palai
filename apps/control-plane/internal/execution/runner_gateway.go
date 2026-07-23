@@ -117,7 +117,7 @@ func (g *RunnerGateway) Revoke() {
 func (g *RunnerGateway) Cordoned() bool { return g.cordoned.Load() }
 func (g *RunnerGateway) Revoked() bool  { return g.revoked.Load() }
 
-// Drain cordons the gateway and blocks until every runner session has quiesced (Connected == 0) or ctx is
+// Drain cordons the gateway and blocks until every in-flight lease has quiesced (active == 0) or ctx is
 // done. It stops new leases and waits for the in-flight lease to finish; if it cannot finish within ctx,
 // the caller (a control-plane shutting down for a swap) exits anyway and the interrupted run is reclaimed
 // and completed by the EXISTING E10 recovery layer (coordinator reconcile + WorkspaceRecovery, §26.3) —
@@ -329,6 +329,16 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 	}
 	select {
 	case pr := <-g.available:
+		// Re-check AFTER receiving the runner: a Dial already blocked in this select when Cordon/Revoke
+		// fired would otherwise slip a lease past the pre-check and increment active after a Drain read
+		// active==0 (a post-cordon lease). Refuse and hand the runner back (close release) instead.
+		if g.revoked.Load() || g.cordoned.Load() {
+			close(pr.release)
+			if g.revoked.Load() {
+				return nil, ErrRunnerRevoked
+			}
+			return nil, ErrRunnerCordoned
+		}
 		// A relayed engine frame can be as large as the lease's per-frame bound; raise the read limit
 		// off the handshake cap before the runner's post-offer frames reach readLoop's blocked Read.
 		pr.conn.SetReadLimit(attempt.Limits.MaxFrameBytes + 64*1024)
