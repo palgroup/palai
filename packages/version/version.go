@@ -11,6 +11,7 @@ package version
 
 import (
 	"fmt"
+	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -20,11 +21,16 @@ import (
 // `go build`, so Resolve falls back to the embedded VCS revision.
 var Stamp = ""
 
-// Resolve returns this binary's version stamp: an explicit ldflags override, else the build's embedded
-// VCS revision (short, +"-dirty" for a modified tree), else "dev" for a `go test`/`go run` binary that
-// carries no VCS stamp. It is the applied_by journal stamp, the runner's advertised version, and the
-// control-plane's own version for the support-window check.
+// Resolve returns this binary's version stamp, in precedence order: the PALAI_VERSION env override, the
+// -ldflags Stamp, the build's embedded VCS revision (short, +"-dirty" for a modified tree), else "dev".
+// It is the applied_by journal stamp, the runner's advertised version, and the control-plane's own
+// version for the support-window check. PALAI_VERSION lets an operator pin the reported version — or a
+// drill advertise a deliberately-old runner for the OPS-008 skew proof — without rebuilding the binary;
+// it is a compatibility/build identifier (the runner is already mTLS-authenticated), never a secret.
 func Resolve() string {
+	if env := os.Getenv("PALAI_VERSION"); env != "" {
+		return env
+	}
 	if Stamp != "" {
 		return Stamp
 	}

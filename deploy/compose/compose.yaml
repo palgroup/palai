@@ -45,7 +45,12 @@ services:
     build:
       context: ../..
       dockerfile: deploy/compose/control-plane.Dockerfile
-    image: palai/control-plane:local
+      args:
+        # E15 T2: the release version stamp baked into the image binary. Unset = unstamped (VCS/"dev").
+        PALAI_VERSION_STAMP: ${PALAI_VERSION_STAMP:-}
+    # E15 T2: `palai upgrade` swaps the control-plane image tag N -> N+1 by setting this; the default is
+    # the locally-built tag, so a plain `local up` is unchanged.
+    image: ${PALAI_CONTROL_PLANE_IMAGE:-palai/control-plane:local}
     environment:
       # The provider secret and the DB password are NOT here — the entrypoint bridges
       # them from /run/secrets at start (Option B, LP fork 1). Only non-secret config.
@@ -97,7 +102,9 @@ services:
     build:
       context: ../..
       dockerfile: deploy/compose/runner.Dockerfile
-    image: palai/runner:local
+      args:
+        PALAI_VERSION_STAMP: ${PALAI_VERSION_STAMP:-}
+    image: ${PALAI_RUNNER_IMAGE:-palai/runner:local}
     environment:
       PALAI_CONTROLLER_URL: https://control-plane:8443
       PALAI_CONTROLLER_DNS: control-plane

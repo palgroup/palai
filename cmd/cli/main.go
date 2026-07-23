@@ -12,6 +12,7 @@ import (
 
 	"github.com/palgroup/palai/cmd/cli/internal/admin"
 	"github.com/palgroup/palai/cmd/cli/internal/stack"
+	"github.com/palgroup/palai/packages/version"
 )
 
 func main() {
@@ -45,6 +46,11 @@ func dispatch(args []string) error {
 		return backup(args[1:])
 	case "restore":
 		return restore(args[1:])
+	case "upgrade":
+		return upgrade(args[1:])
+	case "version":
+		fmt.Println(version.Resolve())
+		return nil
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -163,6 +169,38 @@ func restore(args []string) error {
 	return stack.InstallRestore(*archive)
 }
 
+// upgrade drives the N->N+1 control-plane swap + runner drain + engine-alias roll (§48.4), and
+// `upgrade rollback` returns the app image to N on the expanded schema (§48.5). Both read a
+// scripts/release/build.sh manifest for the target images.
+func upgrade(args []string) error {
+	if len(args) > 0 && args[0] == "rollback" {
+		fs := flag.NewFlagSet("upgrade rollback", flag.ContinueOnError)
+		to := fs.String("to", "", "release manifest of the N (previous) build to roll back to")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *to == "" {
+			return errors.New("usage: palai upgrade rollback --to <n-release-manifest.json>")
+		}
+		return stack.UpgradeRollback(stack.RollbackOptions{To: *to})
+	}
+	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
+	manifest := fs.String("manifest", "", "release manifest of the N+1 target build (scripts/release/build.sh)")
+	from := fs.String("from", "", "current running version for the compat check (default: VERSION file)")
+	drainRun := fs.String("drain-run", "", "response id to wait terminal before the engine-alias roll")
+	drainWait := fs.Duration("drain-wait", 0, "cap on the drain wait (default 90s)")
+	skipBackup := fs.Bool("skip-backup", false, "skip the pre-upgrade backup (drill only; never the operator default)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *manifest == "" {
+		return errors.New("usage: palai upgrade --manifest <n+1-release-manifest.json> [--from <ver>] [--drain-run <id>] [--skip-backup]")
+	}
+	return stack.Upgrade(stack.UpgradeOptions{
+		Manifest: *manifest, From: *from, DrainRun: *drainRun, DrainWait: *drainWait, SkipBackup: *skipBackup,
+	})
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `palai — local stack lifecycle
 
@@ -184,6 +222,11 @@ installation backup/restore (whole-stack; distinct from run-level checkpoints):
   palai backup [--out <path>]              dump Postgres + object store + manifest to one archive
   palai restore --archive <path>           restore into an EMPTY target stack (refuses non-empty)
   palai restore verify --archive <path>    checksum + tenant-id + migration + run-retrieval checks
+
+upgrade (E15 T2; N->N+1 control-plane swap + runner drain + engine-alias roll):
+  palai version                            print this binary's build version stamp
+  palai upgrade --manifest <n1.json>       backup -> compat verify -> swap -> drain -> engine roll -> smoke
+  palai upgrade rollback --to <n.json>     app image back to N (schema stays expanded)
 
 admin (thin client over the E13 APIs; base URL + key from flags, env, or .palai):
   palai org create --display-name <n> | list | get <org_id>
