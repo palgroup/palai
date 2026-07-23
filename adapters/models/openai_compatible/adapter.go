@@ -32,6 +32,12 @@ const defaultProbeTTL = 5 * time.Minute
 // probeTimeout bounds a single capability probe so a dead endpoint can't hang admission.
 const probeTimeout = 10 * time.Second
 
+// probeMaxTokens is the output ceiling on a probe request. It is not 1: a real endpoint
+// rejects a request whose ceiling is too low to emit any content ("max_tokens too low"),
+// which would misreport a supported feature as unsupported. A small ceiling keeps the
+// probe cheap while leaving room for the endpoint to accept and answer.
+const probeMaxTokens = 16
+
 // CapabilityRecord is what an OpenAI-compatible endpoint was observed to support.
 // LastValidated stamps when the probe ran; a stale record is re-probed (never used
 // unlabelled, spec §27.5).
@@ -192,13 +198,13 @@ func (p *Prober) Probe(ctx context.Context, baseURL, secret, model string) (Capa
 func (p *Prober) observe(ctx context.Context, baseURL, secret, model string) (CapabilityRecord, error) {
 	base := []map[string]any{{"role": "user", "content": "ping"}}
 	streaming, err := p.accepts(ctx, baseURL, secret, map[string]any{
-		"model": model, "messages": base, "max_tokens": 1, "stream": true,
+		"model": model, "messages": base, "max_tokens": probeMaxTokens, "stream": true,
 	})
 	if err != nil {
 		return CapabilityRecord{}, err
 	}
 	tools, err := p.accepts(ctx, baseURL, secret, map[string]any{
-		"model": model, "messages": base, "max_tokens": 1,
+		"model": model, "messages": base, "max_tokens": probeMaxTokens,
 		"tools": []map[string]any{{"type": "function", "function": map[string]any{
 			"name": "__probe__", "parameters": map[string]any{"type": "object"},
 		}}},
@@ -207,12 +213,14 @@ func (p *Prober) observe(ctx context.Context, baseURL, secret, model string) (Ca
 		return CapabilityRecord{}, err
 	}
 	structured, err := p.accepts(ctx, baseURL, secret, map[string]any{
-		"model": model, "messages": base, "max_tokens": 1,
-		// additionalProperties:false keeps the schema valid for a strict endpoint
-		// (OpenAI 400s a strict json_schema without it), so a real strict-capable
-		// endpoint is not misreported as unsupported.
+		"model": model, "messages": base, "max_tokens": probeMaxTokens,
+		// A strict endpoint requires a well-formed schema: an object with a properties
+		// map and additionalProperties:false (OpenAI 400s a strict json_schema missing
+		// either), so a real strict-capable endpoint is not misreported as unsupported.
 		"response_format": map[string]any{"type": "json_schema", "json_schema": map[string]any{
-			"name": "__probe__", "schema": map[string]any{"type": "object", "additionalProperties": false}, "strict": true,
+			"name": "__probe__", "strict": true, "schema": map[string]any{
+				"type": "object", "properties": map[string]any{}, "additionalProperties": false,
+			},
 		}},
 	})
 	if err != nil {
