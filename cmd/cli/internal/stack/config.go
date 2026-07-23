@@ -99,6 +99,21 @@ func resolvePaths() (paths, error) {
 // secretPath returns the .palai/secrets/<ref> file for a provider ref.
 func (p paths) secretPath(ref string) string { return filepath.Join(p.secretsDir, ref) }
 
+// AdminDefaults returns the base URL and the bootstrap API key of the initialised .palai stack — the last
+// rung of the admin CLI's flag → env → .palai fallback chain. It errors only when .palai is absent, which
+// the caller treats as fatal only when a flag/env did not already supply the value.
+func AdminDefaults() (baseURL, apiKey string, err error) {
+	cfg, p, err := loadConfig()
+	if err != nil {
+		return "", "", err
+	}
+	key, err := readTrimmed(p.apiKey)
+	if err != nil {
+		return cfg.BaseURL, "", fmt.Errorf("read api key: %w", err)
+	}
+	return cfg.BaseURL, key, nil
+}
+
 // loadConfig reads .palai/config.json. A missing file means the stack was never
 // initialised, which the callers surface as an actionable error.
 func loadConfig() (Config, paths, error) {

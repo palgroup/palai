@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/palgroup/palai/cmd/cli/internal/admin"
 	"github.com/palgroup/palai/cmd/cli/internal/stack"
 )
 
@@ -34,6 +35,8 @@ func dispatch(args []string) error {
 		return provider(args[1:])
 	case "response":
 		return response(args[1:])
+	case "org", "project", "apikey", "secret":
+		return admin.Run(args[0], args[1:], os.Stdout, os.Stdin)
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -103,5 +106,11 @@ func usage() {
   palai local doctor [--json]     run the health checks
   palai provider add <ref>        store a provider secret (value on stdin)
   palai response create --input <text>
+
+admin (thin client over the E13 APIs; base URL + key from flags, env, or .palai):
+  palai org create --display-name <n> | list | get <org_id>
+  palai project create --display-name <n> | list | get <prj_id> | set-policy <prj_id> --allowed-models <a,b>
+  palai apikey create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>
+  palai secret create --name <n> | list | get <name> | rotate <name>   (secret VALUE on stdin)
 `)
 }
