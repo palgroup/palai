@@ -242,7 +242,11 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 		// sends only after receiving the offer — always finds a relay target in readLoop.
 		pr.gc.Store(gc)
 		if err := pr.conn.Write(ctx, websocket.MessageText, offer); err != nil {
-			gc.closeFrames()
+			// Do NOT close frames here: Write can flush the offer and still return a ctx-cancel error, so
+			// the runner may already be sending a frame that readLoop is mid-emit on. close(release) alone
+			// unblocks that emit (it returns false); the handler then returns → CloseNow → readLoop's Read
+			// errors → readLoop closes frames itself. readLoop is the SOLE frames-closer, so there is no
+			// send-on-closed-channel panic (which would crash the whole control plane).
 			close(pr.release)
 			return nil, fmt.Errorf("offer lease: %w", err)
 		}

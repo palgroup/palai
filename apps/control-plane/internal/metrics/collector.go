@@ -1,6 +1,7 @@
 // Package metrics exposes the control plane's operational signals in Prometheus text-exposition
 // format on an unauthenticated, internal-network GET /metrics (mounted beside /healthz — the
-// production TLS edge proxies /v1 only, never this). Every series is INSTALLATION-AGGREGATE:
+// production edge path-matches `reverse_proxy /v1/*` in deploy/compose/production.yml, so it never
+// proxies this; Prometheus reaches it on the internal Compose network). Every series is INSTALLATION-AGGREGATE:
 // grouped by lifecycle enum or background-loop name, NEVER by organization/project/secret, so an
 // unauthenticated scrape leaks no tenant identity (asserted in collector_test.go). The bundle in
 // deploy/observability/ (§52.9 dashboards, §52.10 alerts) is the sole consumer.
@@ -187,7 +188,10 @@ func (c *Collector) gatherDB(ctx context.Context, s *snapshot) bool {
 	if err := c.pool.QueryRow(ctx, storage.Query("MetricDBClock")).Scan(&dbNow); err != nil {
 		return false
 	}
-	s.clockSkewSec = dbNow.Sub(before).Seconds()
+	// Compare the DB clock against the ROUND-TRIP MIDPOINT, not the pre-query instant: the query's
+	// network+exec latency would otherwise bias the skew positive and could false-trip PalaiClockSkew.
+	midpoint := before.Add(c.now().Sub(before) / 2)
+	s.clockSkewSec = dbNow.Sub(midpoint).Seconds()
 	return true
 }
 
@@ -247,7 +251,7 @@ func render(w io.Writer, s snapshot) {
 	}
 
 	writeScalar(w, "palai_provider_calls_total", "counter", "Provider model calls attempted since boot.", float64(s.providerCalls))
-	writeScalar(w, "palai_provider_errors_total", "counter", "Provider model calls that returned an error since boot (the provider-error alert reads its rate).", float64(s.providerErrors))
+	writeScalar(w, "palai_provider_errors_total", "counter", "Provider model calls that failed UPSTREAM since boot — a transport error or a provider-side rejection; config errors and the platform budget cutoff are excluded (the provider-error alert reads its rate).", float64(s.providerErrors))
 }
 
 func writeHeader(w io.Writer, name, typ, help string) {

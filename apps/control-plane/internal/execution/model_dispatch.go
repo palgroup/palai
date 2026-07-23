@@ -26,6 +26,29 @@ const interruptPollInterval = 25 * time.Millisecond
 // failure is built from result.Error's sanitized fields below.
 var errProviderRejected = errors.New("provider rejected the request")
 
+// providerCallOutcome classifies a broker.Route outcome for palai_provider_errors_total: it returns a
+// non-nil error ONLY for an UPSTREAM failure — an adapter/transport error, or a provider-side rejection
+// carried on the result. The provider call still HAPPENED (counts toward calls_total) but did not fail
+// upstream when the error is a config problem (unknown provider/secret), the platform's own budget
+// cutoff (ErrBudgetExceeded), or a user interrupt cancellation — so those return nil here and never
+// trip the provider-error alert with the upstream healthy.
+func providerCallOutcome(routeErr error, result modelbroker.Result) error {
+	switch {
+	case routeErr == nil:
+		if result.Error != nil {
+			return errProviderRejected
+		}
+		return nil
+	case errors.Is(routeErr, context.Canceled),
+		errors.Is(routeErr, modelbroker.ErrUnknownProvider),
+		errors.Is(routeErr, modelbroker.ErrUnknownSecret),
+		errors.Is(routeErr, modelbroker.ErrBudgetExceeded):
+		return nil
+	default:
+		return routeErr // an adapter.Execute transport/upstream error
+	}
+}
+
 // interruptHit is the watcher's verdict for one model call: found reports whether a pending
 // interrupt was seen (and canceled the call). kind branches the handler — a send_message folds
 // its message, a change_config applies its revision + warns (spec §9.2, §9.3). payload carries
@@ -192,17 +215,9 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		RouteRevision: route.Revision,
 	}, onDelta)
 	cancelModel()
-	// Provider call/error counters (E14 Task 6). A failure is a transport error OR a provider-side
-	// rejection carried on the result (Result.Error, the same seam checked at line 205); a bare
-	// interrupt cancellation is a user action, not a provider fault, so it counts as a call, not an error.
-	providerErr := err
-	if errors.Is(providerErr, context.Canceled) {
-		providerErr = nil
-	}
-	if providerErr == nil && result.Error != nil {
-		providerErr = errProviderRejected
-	}
-	metrics.RecordProviderCall(providerErr)
+	// Provider call/error counters (E14 Task 6): count the call, count an error only for an UPSTREAM
+	// failure (see providerCallOutcome — config/budget/interrupt do not count).
+	metrics.RecordProviderCall(providerCallOutcome(err, result))
 	hit := <-hitCh
 	// An interrupt that actually aborted the in-flight call (canceled ctx) ends this step
 	// partial and resumes in a new one, folding a message or applying the new config (spec §9.2,

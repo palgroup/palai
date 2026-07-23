@@ -70,17 +70,11 @@ func (r *MCPSamplingRouter) RouteSampling(ctx context.Context, scope mcp.CallSco
 		Reservation:    modelbroker.Reservation{MaxTotalTokens: budget},
 		Secret:         r.route.Secret,
 	}, nil)
-	// Provider call/error counters (E14 Task 6): count the call; an error is a transport failure or a
-	// provider-side rejection on the result, the same accounting as the run's own dispatchModel. Recorded
-	// before the fold below so it reflects the provider call, not the downstream denial reason.
-	samplingErr := routeErr
-	if errors.Is(samplingErr, context.Canceled) {
-		samplingErr = nil
-	}
-	if samplingErr == nil && result.Error != nil {
-		samplingErr = errProviderRejected
-	}
-	metrics.RecordProviderCall(samplingErr)
+	// Provider call/error counters (E14 Task 6): count the call, count an error only for an UPSTREAM
+	// failure — the same providerCallOutcome classification the run's own dispatchModel uses, so a budget
+	// cutoff on a small sampling reservation does not trip the provider-error alert. Recorded before the
+	// fold below so it reflects the provider call, not the downstream denial reason.
+	metrics.RecordProviderCall(providerCallOutcome(routeErr, result))
 	// A provider-side rejection rides on the RESULT, not the Go error (modelbroker.Result.Error, sanitized of
 	// any credential) — the same seam the run's own dispatchModel guards. Without this the step below is
 	// journaled as a SUCCESS and the MCP server is handed an assistant message with EMPTY text. Folding it
