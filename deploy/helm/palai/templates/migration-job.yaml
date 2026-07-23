@@ -1,0 +1,65 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "palai.fullname" . }}-migrate
+  labels:
+    {{- include "palai.labels" . | nindent 4 }}
+  annotations:
+    # Run the schema migration BEFORE the control-plane rolls, on both fresh installs and upgrades,
+    # so the Deployment's pods never race each other applying migrations. The binary's boot-time
+    # migrate is idempotent, but this hook is the single ordered migrator (the expand/contract
+    # discipline E15 T1/T2 build on). Weighted ahead of the workload; cleaned up on success and
+    # before the next hook run so a re-upgrade does not collide with a leftover Job.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  # The external DB may take a moment to accept connections on a fresh install; a bounded active
+  # deadline fails the hook loudly rather than hanging the release forever.
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "palai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "palai.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Bypass the compose file-secret bridge entrypoint: on Kubernetes the DB URL is injected
+          # directly from a Secret, so the binary runs directly in its migrate-and-exit mode.
+          command: ["/usr/local/bin/palai-control-plane", "--migrate-and-exit"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            {{- include "palai.databaseEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

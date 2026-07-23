@@ -1,0 +1,34 @@
+{{- if .Values.rbac.create -}}
+# NAMESPACE-SCOPED RBAC ONLY. There is deliberately NO ClusterRole/ClusterRoleBinding in this chart:
+# the control-plane never needs cluster-wide permissions, so it is granted none (plan §45.3 — no
+# ongoing cluster-admin). The Role below ships with ZERO rules by default; it grants nothing. An
+# operator whose environment requires in-namespace permissions adds them via .Values.rbac.rules, and
+# they stay namespace-scoped by construction (a Role cannot grant cluster scope).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "palai.fullname" . }}
+  labels:
+    {{- include "palai.labels" . | nindent 4 }}
+rules:
+  {{- with .Values.rbac.rules }}
+  {{- toYaml . | nindent 2 }}
+  {{- else }}
+  []
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "palai.fullname" . }}
+  labels:
+    {{- include "palai.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "palai.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "palai.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end -}}

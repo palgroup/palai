@@ -1,0 +1,37 @@
+{{- if .Values.ingress.enabled -}}
+# TLS-terminating Ingress fronting the API. Path-matched to /v1 ONLY: the control-plane's
+# unauthenticated internal probes /healthz and /metrics live OUTSIDE /v1 and must NEVER be publicly
+# reachable (the production Caddy edge path-matcher precedent). Real cert issuance (cert-manager/ACME)
+# and a real LB are the operator leg (§6).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "palai.fullname" . }}
+  labels:
+    {{- include "palai.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.path }}
+            pathType: {{ .Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "palai.fullname" . }}
+                port:
+                  name: api
+{{- end -}}

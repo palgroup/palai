@@ -1,0 +1,22 @@
+# Render/policy-assert values (tests/uat/kubernetes). Satisfies the chart's required external refs
+# with placeholder Secret names so `helm template` + kubeconform + the Go policy asserts run without
+# any live cluster. These Secret names are NOT created here — rendering never dereferences them.
+engineImage: "palai/reference-engine@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+postgres:
+  existingSecret: palai-db
+s3:
+  endpoint: "http://palai-s3-fixture:8333"
+  existingSecret: palai-s3
+runnerGateway:
+  existingSecret: palai-runner-gw
+bootstrap:
+  existingSecret: palai-bootstrap
+secretStore:
+  existingSecret: palai-secret-store
+ingress:
+  enabled: true
+  className: nginx
+  host: palai.example.com
+  tls:
+    enabled: true
+    secretName: palai-tls

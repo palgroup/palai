@@ -1,0 +1,75 @@
+{{- if .Values.networkPolicy.enabled -}}
+# Default-deny for the whole namespace: no pod sends or receives traffic unless an allow policy
+# below (or another policy) permits it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "palai.fullname" . }}-default-deny
+  labels:
+    {{- include "palai.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Scoped allow for the control-plane pods: DNS egress, egress to the external PG/S3 ports, API
+# ingress from the ingress-controller namespace, and runner-gateway ingress.
+#
+# HONEST CEILING (plan §T3): kind's default CNI (kindnet) does NOT enforce NetworkPolicy — this
+# proves policy CORRECTNESS at render/schema level only. Real enforcement (default-deny actually
+# dropping, these allows actually scoping) needs a policy-enforcing CNI on a real cluster (operator
+# leg §6). External managed PG/S3 are reached by IP/CIDR, not DNS name, so egress is expressed as
+# CIDRs on the PG/S3 ports; tighten externalEgressCIDRs to the real endpoints in production.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "palai.fullname" . }}-allow
+  labels:
+    {{- include "palai.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "palai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: control-plane
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # API from the ingress controller only.
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.ingressControllerNamespaceSelector | nindent 12 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- if .Values.runnerGateway.enabled }}
+    # Runner gateway: the runner enrolls from OUTSIDE the cluster over mTLS. External source IPs are
+    # not expressible as a pod/namespace selector, so this admits :8443 broadly — every connection is
+    # mutually-authenticated by the gateway (a cert-less/unknown client is rejected at the TLS layer).
+    - ports:
+        - protocol: TCP
+          port: 8443
+    {{- end }}
+  egress:
+    # DNS to the cluster resolver.
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.dnsNamespaceSelector | nindent 12 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # External PostgreSQL + S3 on their configured ports.
+    - to:
+        {{- range .Values.networkPolicy.externalEgressCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.port }}
+        - protocol: TCP
+          port: {{ .Values.s3.port }}
+{{- end -}}
