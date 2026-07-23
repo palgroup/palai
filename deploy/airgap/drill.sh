@@ -36,6 +36,10 @@ git_ctr="$proj-gitfixture"
 git_client="$proj-gitclient"
 git_vol="$proj-gitrepos"
 tool_image="palai-e15t4-$short-tool:latest"
+# Fixture ceiling: the git CLIENT image is pulled during setup on the CONNECTED side (like an
+# operator staging tooling before going air-gapped). A truly disconnected lab pre-loads it, or pins
+# it by digest via PALAI_AIRGAP_GIT_IMAGE=alpine/git@sha256:...  — it is a test fixture, not shipped
+# in the bundle. The repo images (control-plane/runner/engine/pg/s3) ARE digest-pinned in the bundle.
 GIT_IMAGE="${PALAI_AIRGAP_GIT_IMAGE:-alpine/git}"
 
 step() { echo; echo "==> $*" >&2; }

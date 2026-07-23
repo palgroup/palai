@@ -38,6 +38,21 @@ IMAGES="${PALAI_AIRGAP_IMAGES:-build}"
 
 step() { echo "airgap-build: $*" >&2; }
 
+# We stage deploy/compose, deploy/helm, storage/migrations by copying the WORKING TREE, then SIGN
+# it. A stray untracked/modified file under those dirs — a local production.env (that filename
+# pattern lives in deploy/compose/), a dev cert, a .DS_Store — would be silently signed and shipped.
+# Refuse to build a release bundle from a dirty tree in those dirs. Override for a scratch build with
+# PALAI_AIRGAP_ALLOW_DIRTY=1 (never for a release). `git archive HEAD` is the alternative if you want
+# to sign HEAD regardless of the tree.
+if [ "${PALAI_AIRGAP_ALLOW_DIRTY:-}" != "1" ]; then
+	dirty="$(cd "$root" && git status --porcelain -- deploy/compose deploy/helm storage/migrations)"
+	if [ -n "$dirty" ]; then
+		echo "airgap-build: refusing to sign a DIRTY working tree — commit or clean these first (or set PALAI_AIRGAP_ALLOW_DIRTY=1 for a scratch build):" >&2
+		printf '%s\n' "$dirty" >&2
+		exit 1
+	fi
+fi
+
 rm -rf "$OUT"
 mkdir -p "$OUT/images" "$OUT/runner" "$OUT/bin"
 

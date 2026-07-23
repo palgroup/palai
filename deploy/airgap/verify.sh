@@ -13,6 +13,14 @@
 # the bundle directory — a channel attacker can swap the artifacts, their signature, AND a
 # sibling key all at once. Pass the key as arg 2 or PALAI_AIRGAP_PUBKEY.
 #
+# ...and so must the VERIFYING CODE. This script execs runner-verify.sh (the E14 T5 openssl check);
+# if that were taken from the bundle, the same channel attacker could replace it with `exit 0`,
+# re-sign garbage with their own key, and pass — the out-of-band public key would never be
+# consulted. So obtain BOTH verify.sh AND runner-verify.sh out of band together with the key (all
+# three live in the repo, ~80 lines each): run THIS out-of-band verify.sh and it PREFERS a
+# runner-verify.sh sitting next to it over the bundle's copy. It falls back to the bundle's only
+# for the same-session local proof (no channel attacker); a real operator supplies both.
+#
 # To PROVE no network is needed, run `verify.sh --network-none <bundle> <pubkey> <tool-image>`:
 # it re-execs this same script inside `docker run --network none <tool-image>` (an openssl-capable
 # image, e.g. the bundle's postgres). If verification passes with the container's network fully
@@ -53,16 +61,24 @@ case "$pub" in
 	*) pub="$(cd "$(dirname "$pub")" && pwd)/$(basename "$pub")" ;;
 esac
 
+# Prefer an out-of-band runner-verify.sh sitting next to THIS script (obtained with the key) over
+# the bundle's — so a channel that swapped the bundle's verifier for `exit 0` can't defeat the check.
+self_dir="$(cd "$(dirname "$0")" && pwd)"
+verifier="$self_dir/runner-verify.sh"
+
 cd "$bundle"
 
 for f in sha256sums sha256sums.sig sha256sums.sha256 runner-verify.sh manifest.json; do
 	[ -f "$f" ] || { echo "verify: bundle missing $f" >&2; exit 2; }
 done
+# Fall back to the bundle's copy only when no out-of-band verifier sits beside $0 (local proof).
+[ -f "$verifier" ] || verifier="$(pwd)/runner-verify.sh"
+echo "verify: using verifier $verifier" >&2
 
 # (1) SIGNATURE over the signed root — E14 T5 verifier VERBATIM. `sha256sums` plays the role of
 # "the tarball"; sha256sums.sha256 is its digest manifest; sha256sums.sig is the detached sig.
 echo "verify: (1) signature over sha256sums (E14 T5 openssl verifier) ..." >&2
-sh ./runner-verify.sh sha256sums "$pub" sha256sums.sig sha256sums.sha256
+sh "$verifier" sha256sums "$pub" sha256sums.sig sha256sums.sha256
 
 # (2) DIGEST CHAIN — every file listed in the (now signature-proven) sha256sums matches.
 echo "verify: (2) digest chain (sha256sum -c sha256sums) ..." >&2

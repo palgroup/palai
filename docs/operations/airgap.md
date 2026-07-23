@@ -41,22 +41,33 @@ faked.
 
 ## 1. Verify — offline, before you trust anything
 
-Obtain the signing **public key out of band** (the release page / your config management), never
-from the bundle directory — a channel attacker can swap the artifacts, the signature, and a sibling
-key all at once. Then verify in a container with **no network at all**:
+Obtain **out of band** (the release page / your config management), never from the bundle directory:
+the signing **public key** AND the verifying **code** — both `verify.sh` and `runner-verify.sh` (all
+three live in the repo, ~80 lines each). A channel attacker can swap the artifacts, the signature,
+a sibling key, AND the bundle's verifier (replacing it with `exit 0`) all at once; the out-of-band
+key is worthless if the code checking it came from the same channel. Run the out-of-band `verify.sh`
+— it PREFERS a `runner-verify.sh` sitting next to it over the bundle's copy.
+
+**Verify on the host first — no Docker, no daemon, and BEFORE any `docker load`** (a `docker load`
+hands an untrusted tar to the daemon's parser, so never load until the bundle is verified):
 
 ```sh
-# Load one openssl-capable image to power the sandbox (the bundle's postgres works),
-# then verify with the container network fully removed:
-docker load -i dist/airgap-bundle/images/postgres.tar
-docker tag <loaded-id> airgap-verify:tool
-PALAI_AIRGAP_TOOL_IMAGE=airgap-verify:tool \
-  ./dist/airgap-bundle/verify.sh --network-none dist/airgap-bundle /path/to/trusted.pub
+./verify.sh dist/airgap-bundle /path/to/trusted.pub     # host: openssl + sha256sum only
 ```
 
 `verify.sh` checks **(1)** the signature over `sha256sums` (E14 T5 verifier verbatim) and **(2)** the
-digest chain (`sha256sum -c sha256sums`) — every file matches its signed digest. Both run with
-egress physically impossible. Any tampered byte (or a wrong key) fails it **closed**.
+digest chain (`sha256sum -c sha256sums`) — every file matches its signed digest. Any tampered byte
+(or a wrong key) fails it **closed**.
+
+To additionally PROVE the check needs no network, re-run it in a container with **no network at all**
+(this does `docker load` a tool image, so run it only AFTER the host verify above has passed):
+
+```sh
+docker load -i dist/airgap-bundle/images/postgres.tar   # only after the host verify passed
+docker tag <loaded-id> airgap-verify:tool
+PALAI_AIRGAP_TOOL_IMAGE=airgap-verify:tool \
+  ./verify.sh --network-none dist/airgap-bundle /path/to/trusted.pub
+```
 
 ## 2. Install — mirror + bring up from the mirror
 

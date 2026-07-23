@@ -39,13 +39,16 @@ for img in m["images"]:
 PY
 }
 
-# --- 1. load every image; verify each loaded ID matches the (signed) manifest --------------
-step "docker load images from the bundle"
-for f in "$bundle"/images/*.tar; do docker load -q -i "$f" >/dev/null; done
-
+# --- 1. load ONLY the manifest's images; verify each loaded ID matches the (signed) manifest ----
+# Load by the manifest's file list, NOT an images/*.tar glob — a channel-added tar would otherwise
+# be fed to the daemon's tar parser even though it isn't in the signed manifest.
+step "docker load the manifest's images from the bundle"
 for name in control-plane runner reference-engine postgres object-store registry; do
 	id="$(manifest_field "$name" id)"
-	[ -n "$id" ] || { echo "install: manifest has no image $name" >&2; exit 1; }
+	file="$(manifest_field "$name" file)"
+	[ -n "$id" ] && [ -n "$file" ] || { echo "install: manifest has no image $name" >&2; exit 1; }
+	[ -f "$bundle/$file" ] || { echo "install: manifest image $name missing its tar $file" >&2; exit 1; }
+	docker load -q -i "$bundle/$file" >/dev/null
 	docker image inspect "$id" >/dev/null 2>&1 || { echo "install: loaded image $name ($id) not present — bundle/manifest mismatch" >&2; exit 1; }
 	# Retag the loaded content (by its signed config ID) into the mirror namespace.
 	docker tag "$id" "$mirror/palai/$name:$VERSION"

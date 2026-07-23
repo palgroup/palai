@@ -216,3 +216,80 @@ func TestVerifyRequiresExplicitOutOfBandKey(t *testing.T) {
 		t.Fatalf("verify.sh PASSED with no explicit key — it must require an out-of-band key:\n%s", out)
 	}
 }
+
+func copyFile(t *testing.T, src, dst string) {
+	t.Helper()
+	b, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// regenSums re-generates sha256sums (+ its re-sha) over the bundle's CURRENT files, exactly as
+// airgap-build.sh does — the attacker's move: after swapping payloads + the verifier, they
+// regenerate the digest chain so it passes for THEIR files. Only the openssl signature (over the
+// original sha256sums) can then catch the change.
+func regenSums(t *testing.T, bundle string) {
+	t.Helper()
+	const script = `cd "$1" && find . -type f ! -name 'sha256sums' ! -name 'sha256sums.sha256' ` +
+		`! -name 'sha256sums.sig' ! -name 'palai-airgap-signing.pub' | LC_ALL=C sort ` +
+		`| while IFS= read -r f; do sha256sum "$f"; done > sha256sums && sha256sum sha256sums > sha256sums.sha256`
+	if out, err := exec.Command("/bin/sh", "-c", script, "sh", bundle).CombinedOutput(); err != nil {
+		t.Fatalf("regen sums: %v\n%s", err, out)
+	}
+}
+
+// TestBuildFailsOnDirtyTree (SF2): a stray untracked file under a staged dir (deploy/compose,
+// deploy/helm, storage/migrations) would be silently signed + shipped — the build must refuse.
+func TestBuildFailsOnDirtyTree(t *testing.T) {
+	root := repoRoot(t)
+	stray, err := os.CreateTemp(filepath.Join(root, "deploy/compose"), ".airgap-dirtytest-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stray.Close()
+	t.Cleanup(func() { os.Remove(stray.Name()) })
+
+	out := t.TempDir()
+	cmd := exec.Command("/usr/bin/env", "bash", filepath.Join(root, "scripts/release/airgap-build.sh"))
+	cmd.Env = append(os.Environ(), "OUT="+out, "ARCH=amd64", "PALAI_AIRGAP_IMAGES=skip")
+	combined, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("airgap-build.sh built a DIRTY tree — it must refuse:\n%s", combined)
+	}
+	if !strings.Contains(string(combined), "DIRTY") {
+		t.Fatalf("expected a dirty-tree refusal, got:\n%s", combined)
+	}
+}
+
+// TestVerifyPrefersOutOfBandVerifier (SF1): if the bundle's runner-verify.sh is swapped for a no-op
+// and the sums are re-generated, a bundle-relative verify would pass — but an out-of-band verify.sh
+// with the REAL runner-verify.sh beside it must still FAIL closed on the bad signature.
+func TestVerifyPrefersOutOfBandVerifier(t *testing.T) {
+	bundle := buildBundle(t)
+	pub := filepath.Join(bundle, "palai-airgap-signing.pub")
+
+	// The channel attacker: swap a payload, neuter the bundle's verifier, and REGENERATE the chain.
+	if err := os.WriteFile(filepath.Join(bundle, "install.sh"), []byte("#!/bin/sh\n# malicious payload\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundle, "runner-verify.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	regenSums(t, bundle) // the .sig is NOT regenerated (attacker lacks the key) — only it can catch this
+	// Sanity: with the neutered bundle-relative verifier, verify PASSES — the attack is real.
+	if ok, o := verify(t, bundle, pub); !ok {
+		t.Skipf("digest chain already caught the tamper; attack not isolated to the signature:\n%s", o)
+	}
+	// An out-of-band verify.sh + REAL runner-verify.sh sitting together must FAIL closed.
+	oob := t.TempDir()
+	copyFile(t, filepath.Join(repoRoot(t), "deploy/airgap/verify.sh"), filepath.Join(oob, "verify.sh"))
+	copyFile(t, filepath.Join(repoRoot(t), "scripts/package/runner/verify.sh"), filepath.Join(oob, "runner-verify.sh"))
+	out, err := exec.Command("/bin/sh", filepath.Join(oob, "verify.sh"), bundle, pub).CombinedOutput()
+	if err == nil {
+		t.Fatalf("out-of-band verify.sh PASSED a bundle whose verifier was neutered — the OOB verifier must be preferred:\n%s", out)
+	}
+}
