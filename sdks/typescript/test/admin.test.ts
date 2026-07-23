@@ -121,6 +121,58 @@ test("modelRoutes drives connection + route + revision + publish with reference-
   assert.ok(calls[3]!.url.endsWith("/v1/model-routes/mroute_1/revisions/mrev_1/publish"));
 });
 
+test("modelRoutes read-back: list/get for connections, routes, and revisions (E16 T1)", async () => {
+  const { fetch: f, calls } = recordingFetch((call) => {
+    if (call.url.endsWith("/v1/model-connections")) {
+      return json(200, { object: "list", data: [{ id: "mconn_1", object: "model_connection", provider: "provider-one", secret_ref: "openai-a" }] });
+    }
+    if (call.url.endsWith("/v1/model-connections/mconn_1")) {
+      return json(200, { id: "mconn_1", object: "model_connection", provider: "provider-one", secret_ref: "openai-a" });
+    }
+    if (call.url.endsWith("/v1/model-routes")) {
+      return json(200, { object: "list", data: [{ id: "mroute_1", object: "model_route", name: "default" }] });
+    }
+    if (call.url.endsWith("/v1/model-routes/mroute_1/revisions")) {
+      return json(200, { object: "list", data: [{ id: "mrev_1", object: "model_route_revision", route_id: "mroute_1", revision: 1, model: "gpt-4o-mini", connection_id: "mconn_1", published: true }] });
+    }
+    if (call.url.endsWith("/v1/model-routes/mroute_1/revisions/mrev_1")) {
+      return json(200, { id: "mrev_1", object: "model_route_revision", route_id: "mroute_1", revision: 1, model: "gpt-4o-mini", connection_id: "mconn_1", published: true });
+    }
+    return json(200, { id: "mroute_1", object: "model_route", name: "default" });
+  });
+  const client = newClient(f);
+
+  const conns = await client.modelRoutes.listConnections();
+  assert.equal(conns.object, "list");
+  assert.equal(conns.data[0]!.secret_ref, "openai-a"); // the REF name comes back, never a value
+  const conn = await client.modelRoutes.getConnection("mconn_1");
+  assert.equal(conn.provider, "provider-one");
+
+  const routes = await client.modelRoutes.listRoutes();
+  assert.equal(routes.data[0]!.name, "default");
+  const route = await client.modelRoutes.getRoute("mroute_1");
+  assert.equal(route.id, "mroute_1");
+
+  const revs = await client.modelRoutes.listRevisions("mroute_1");
+  assert.equal(revs.data[0]!.published, true);
+  const rev = await client.modelRoutes.getRevision("mroute_1", "mrev_1");
+  assert.equal(rev.model, "gpt-4o-mini");
+  assert.equal(rev.connection_id, "mconn_1");
+
+  // Every read is a GET on the right path.
+  assert.deepEqual(
+    calls.map((c) => `${c.method} ${new URL(c.url).pathname}`),
+    [
+      "GET /v1/model-connections",
+      "GET /v1/model-connections/mconn_1",
+      "GET /v1/model-routes",
+      "GET /v1/model-routes/mroute_1",
+      "GET /v1/model-routes/mroute_1/revisions",
+      "GET /v1/model-routes/mroute_1/revisions/mrev_1",
+    ],
+  );
+});
+
 // --- tenancy provisioning (T2) ------------------------------------------------------
 
 test("organizations.create provisions a second tenant and returns its one-time admin key", async () => {
