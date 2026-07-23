@@ -1,0 +1,186 @@
+# Default values for the Palai control-plane chart.
+#
+# Chart reflects reality, not spec (plan §2): today Palai is ONE control-plane binary. This chart
+# templates the control-plane Deployment, a pre-install/pre-upgrade migration Job, and the
+# namespace-scoped policies around them. It does NOT template a runner (§45.4 — the runner enrolls
+# outbound-only from OUTSIDE the cluster; see README) and it does NOT run an in-cluster database
+# (external PostgreSQL/S3 are config-only, referenced through an existing Secret).
+
+image:
+  repository: palai/control-plane
+  # Prefer loading a pre-built palai/control-plane:local image (kind smoke uses `kind load`) over
+  # an in-cluster build. A release pins by digest (E18); the local default is a tag.
+  tag: local
+  # IfNotPresent so a `kind load`-ed local image is used and never re-pulled from a registry.
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Single replica by default. NO HA is claimed (plan §45.2): real HA needs replicas>1 +
+# topologySpreadConstraints + a real load balancer, which is the operator leg (§6).
+replicaCount: 1
+
+# The engine image the control-plane pins into every runner lease (PALAI_ENGINE_IMAGE). A run
+# cannot execute without it; set it to the reference-engine image (digest preferred). Empty leaves
+# dispatch unable to launch an engine — acceptable only for an API-only / render-assert deployment.
+engineImage: ""
+
+# Dispatch workers (PALAI_DISPATCH_WORKERS). 1 = the production exec-path is on (matches production.yml).
+dispatchWorkers: 1
+# Model provider the exec-path routes to: "fake" (deterministic, no network/credential) or
+# "provider-one" (live). The provider credential, when needed, rides externalSecrets below.
+modelProvider: fake
+model: ""
+
+# External PostgreSQL — CONFIG ONLY, never an in-cluster DB (plan §2). The connection URL is read
+# from an existing Secret so it never appears in values, ConfigMaps, or `helm get values`.
+postgres:
+  existingSecret: ""      # name of a Secret holding the DB URL
+  urlKey: database-url    # key in that Secret whose value is postgres://user:pass@host:5432/db?...
+  # Egress target for the NetworkPolicy (managed PG is reached by IP/CIDR, not DNS name).
+  port: 5432
+
+# External S3-compatible object store — CONFIG ONLY. Endpoint/bucket/region are non-secret; the
+# access/secret keys ride an existing Secret. Leave endpoint empty to run without an object store
+# (retention scrubs only the DB row; no artifact retrieval).
+s3:
+  endpoint: ""            # e.g. https://s3.amazonaws.com or http://minio.storage.svc:9000
+  bucket: palai-artifacts
+  region: ""
+  existingSecret: ""      # name of a Secret holding the S3 credentials
+  accessKeyKey: access-key
+  secretKeyKey: secret-key
+  # Egress target port for the NetworkPolicy. This MUST match the port in `endpoint` above — otherwise
+  # the policy opens a port the store does not listen on and S3 egress is silently blocked on an
+  # enforcing CNI (e.g. endpoint http://...:8333 needs port: 8333, not the 443 default).
+  port: 443
+
+# The runner gateway (mutually-authenticated mTLS listener on :8443) the OUTSIDE-cluster runner
+# enrolls against. Its CA cert+key (used to sign enrolling runner certs), the gateway server
+# cert+key, and the one-use enrollment token all ride an existing Secret, mounted read-only. The
+# server certificate carries exactly one SAN — the controllerDNS the runner pins ("control-plane").
+runnerGateway:
+  enabled: true
+  existingSecret: ""      # Secret with caCertKey/caKeyKey/serverCertKey/serverKeyKey/enrollmentTokenKey
+  caCertKey: ca.crt
+  caKeyKey: ca.key
+  serverCertKey: server.crt
+  serverKeyKey: server.key
+  enrollmentTokenKey: runner-token
+  # Issued runner-cert lifetime (PALAI_RUNNER_CERT_TTL). Empty = production default (5m).
+  certTTL: ""
+  service:
+    # ClusterIP by default; the kind smoke overrides to NodePort so a host-side runner can dial in.
+    # A real cluster fronts it with a LoadBalancer/Ingress (operator leg).
+    type: ClusterIP
+    port: 8443
+    nodePort: ""          # only honoured when type is NodePort
+
+# The bootstrap admin API key the control-plane seeds on first boot (PALAI_BOOTSTRAP_API_KEY_FILE).
+# Rides an existing Secret, mounted read-only. Empty leaves the seed a no-op (provision out of band).
+bootstrap:
+  existingSecret: ""
+  apiKeyKey: bootstrap-api-key
+
+# The DB-backed secret store master key (PALAI_SECRET_MASTER_KEY_FILE, 32-byte hex). Optional —
+# absent leaves the four secret resolvers env-file-only. Rides an existing Secret, mounted read-only.
+secretStore:
+  existingSecret: ""
+  masterKeyKey: master-key
+
+# The public API Service (:8080). ClusterIP; the Ingress (or the smoke's NodePort override) fronts it.
+service:
+  type: ClusterIP
+  port: 8080
+  nodePort: ""
+
+# Ingress fronting the API. TLS-terminating. Path-matched to /v1 ONLY (the internal /healthz and
+# /metrics probes must NOT be publicly reachable — see the production Caddy edge precedent).
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: palai.example.com
+  path: /v1
+  pathType: Prefix
+  tls:
+    enabled: true
+    secretName: palai-tls   # cert-manager or an operator-provisioned TLS Secret
+
+# Pod Security "restricted"-compliant securityContext (plan §45.3). runAsNonRoot + a non-zero uid,
+# no privilege escalation, all capabilities dropped, the RuntimeDefault seccomp profile, and a
+# read-only root filesystem (a /tmp emptyDir is mounted for scratch). fsGroup lets the non-root
+# user read the mounted read-only Secret files.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Resource requests/limits. Requests are set so the pod is schedulable and QoS is Burstable.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# RuntimeClass passthrough (gVisor/Kata for a hardened runtime). Empty = the cluster default.
+runtimeClassName: ""
+
+# Namespace-scoped RBAC ONLY. The control-plane needs NO Kubernetes API access, so the ServiceAccount
+# disables token automounting and the Role ships with ZERO rules (it grants nothing). There is NO
+# ClusterRole/ClusterRoleBinding anywhere in this chart — no ongoing cluster-admin (plan §45.3).
+serviceAccount:
+  create: true
+  name: ""
+  automountToken: false
+rbac:
+  create: true
+  # Empty by default: the control-plane requires no in-namespace API permissions. An operator whose
+  # environment needs some may add namespace-scoped rules here — they stay namespace-scoped.
+  rules: []
+
+# NetworkPolicy: a default-deny (ingress+egress) plus a scoped allow for the control-plane pods —
+# DNS egress, egress to the external PG/S3 ports, ingress to the API from the ingress-controller
+# namespace, and ingress to the runner gateway. HONEST CEILING (plan §T3): kind's default CNI
+# (kindnet) does NOT enforce NetworkPolicy — correctness is proven at render/schema level; real
+# enforcement needs a policy-enforcing CNI on a real cluster (operator leg §6).
+networkPolicy:
+  enabled: true
+  # Namespace label selector matching the ingress-controller's namespace (API ingress source).
+  ingressControllerNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: ingress-nginx
+  # CIDRs the control-plane may reach for external PG/S3. Default 0.0.0.0/0 on the PG/S3 ports only
+  # (managed PG/S3 IPs are operator-specific); tighten to the real endpoint CIDRs in production.
+  externalEgressCIDRs:
+    - 0.0.0.0/0
+  # DNS resolver egress (kube-dns). Matched by namespace so it works regardless of the DNS pod labels.
+  dnsNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: kube-system
+
+# PodDisruptionBudget. With replicaCount=1 this intentionally guards the sole replica against
+# voluntary disruption; real HA (replicas>1 + topology spread) that makes minAvailable meaningful
+# is the operator leg (§6).
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Extra non-secret environment for the control-plane (e.g. PALAI_SSE_HEARTBEAT). Never put secrets here.
+extraEnv: []

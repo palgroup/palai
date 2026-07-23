@@ -65,6 +65,16 @@ func main() {
 	if err := repo.Migrate(ctx); err != nil {
 		log.Fatalf("apply migration: %v", err)
 	}
+	// --migrate-and-exit is the Kubernetes migration-Job mode (deploy/helm): apply the schema and
+	// exit 0, without binding the runner gateway or serving. The Helm chart runs this as a
+	// pre-install/pre-upgrade hook so migrations complete BEFORE the control-plane Deployment rolls,
+	// rather than N racing pods each migrating at boot. The boot-time Migrate above is idempotent, so
+	// a stack that does NOT run the Job (compose) is unchanged. Bootstrap/seed is left to the serving
+	// process — the Job's job is migrations only.
+	if migrateAndExit() {
+		log.Printf("palai control-plane: migrations applied, exiting (--migrate-and-exit)")
+		return
+	}
 	if err := repo.Bootstrap(ctx, readFileEnv("PALAI_BOOTSTRAP_API_KEY_FILE")); err != nil {
 		log.Fatalf("seed bootstrap identity: %v", err)
 	}
@@ -204,6 +214,18 @@ func main() {
 
 	log.Printf("palai control-plane listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
+}
+
+// migrateAndExit reports whether the binary was invoked with --migrate-and-exit (the Kubernetes
+// migration-Job mode). It is a bare arg scan rather than a flag.FlagSet so the serving path — which
+// takes no flags — is untouched and no other invocation form changes.
+func migrateAndExit() bool {
+	for _, a := range os.Args[1:] {
+		if a == "--migrate-and-exit" {
+			return true
+		}
+	}
+	return false
 }
 
 // startDispatch launches the durable dispatch workers and the reconciler that drive

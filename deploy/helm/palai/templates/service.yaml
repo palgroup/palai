@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "palai.fullname" . }}
+  labels:
+    {{- include "palai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "palai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+  ports:
+    - name: api
+      port: {{ .Values.service.port }}
+      targetPort: api
+      protocol: TCP
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}
+{{- if .Values.runnerGateway.enabled }}
+---
+# The runner gateway (:8443) the OUTSIDE-cluster runner enrolls against (plan §45.4). ClusterIP by
+# default; the kind smoke overrides to NodePort so a host-side runner can dial in, and a real cluster
+# fronts it with a LoadBalancer (operator leg §6). mTLS authenticates every runner on this listener.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "palai.fullname" . }}-runner-gateway
+  labels:
+    {{- include "palai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: runner-gateway
+spec:
+  type: {{ .Values.runnerGateway.service.type }}
+  selector:
+    {{- include "palai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+  ports:
+    - name: runner-gw
+      port: {{ .Values.runnerGateway.service.port }}
+      targetPort: runner-gw
+      protocol: TCP
+      {{- if and (eq .Values.runnerGateway.service.type "NodePort") .Values.runnerGateway.service.nodePort }}
+      nodePort: {{ .Values.runnerGateway.service.nodePort }}
+      {{- end }}
+{{- end }}

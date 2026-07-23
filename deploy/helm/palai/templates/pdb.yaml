@@ -1,0 +1,17 @@
+{{- if .Values.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "palai.fullname" . }}
+  labels:
+    {{- include "palai.labels" . | nindent 4 }}
+spec:
+  # With replicaCount=1 this guards the sole replica against VOLUNTARY disruption (a node drain must
+  # be acknowledged). It is NOT an HA claim — real HA (replicas>1 + topologySpreadConstraints) that
+  # makes minAvailable meaningful across failure domains is the operator leg (§6).
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "palai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: control-plane
+{{- end -}}

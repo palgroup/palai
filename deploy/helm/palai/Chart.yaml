@@ -1,0 +1,22 @@
+apiVersion: v2
+name: palai
+description: >-
+  Palai self-host control-plane on Kubernetes (E15 T3). Templates ONLY what exists today —
+  ONE control-plane binary as a Deployment plus a pre-install/pre-upgrade migration Job and
+  namespace-scoped policies. It invents no coordinator/worker/console component. External
+  PostgreSQL and S3 are config-only (existingSecret refs); the runner is deliberately NOT in
+  the chart (it enrolls outbound-only from OUTSIDE the cluster — see README + docs/operations/kubernetes.md).
+type: application
+# Chart version is the packaging version; appVersion tracks the self-host RC line (E15 → self-host-0.2.0).
+version: 0.1.0
+appVersion: "0.2.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/palgroup/palai
+sources:
+  - https://github.com/palgroup/palai
+maintainers:
+  - name: Palai
+keywords:
+  - palai
+  - self-host
+  - control-plane

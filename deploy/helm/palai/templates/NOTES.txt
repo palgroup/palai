@@ -1,0 +1,31 @@
+Palai control-plane installed as {{ include "palai.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+WHAT THIS CHART DEPLOYS (and what it does NOT):
+  - The control-plane Deployment (replicas={{ .Values.replicaCount }}) + a pre-install/pre-upgrade
+    migration Job. That is ALL Palai is today: ONE binary. No coordinator/worker/console component
+    is invented.
+  - External PostgreSQL and S3 are CONFIG ONLY — this chart runs no in-cluster database.
+  - The RUNNER is NOT in this chart. It enrolls outbound-only from OUTSIDE the cluster, holding the
+    host Docker socket. Install it from the signed host package (E14) and point PALAI_CONTROLLER_URL
+    at this control-plane's runner gateway. See the chart README and docs/operations/kubernetes.md.
+
+RUNNER GATEWAY:
+{{- if .Values.runnerGateway.enabled }}
+  Exposed as Service {{ include "palai.fullname" . }}-runner-gateway (type {{ .Values.runnerGateway.service.type }}, port {{ .Values.runnerGateway.service.port }}).
+  The server certificate pins the SAN "control-plane" — the runner MUST dial with PALAI_CONTROLLER_DNS=control-plane.
+{{- else }}
+  Disabled (runnerGateway.enabled=false) — no runner can enroll.
+{{- end }}
+
+API:
+{{- if .Values.ingress.enabled }}
+  Reachable through the Ingress at https://{{ .Values.ingress.host }}{{ .Values.ingress.path }} (TLS-terminated, /v1 only).
+{{- else }}
+  Service {{ include "palai.fullname" . }} (type {{ .Values.service.type }}, port {{ .Values.service.port }}); no Ingress configured.
+{{- end }}
+
+SECURITY POSTURE:
+  - Pod Security "restricted": runAsNonRoot, no privilege escalation, all capabilities dropped, RuntimeDefault seccomp.
+  - Namespace-scoped RBAC ONLY — ZERO ClusterRole. The control-plane holds no cluster-wide permission.
+  - NetworkPolicy default-deny + scoped allow. HONEST CEILING: kindnet does NOT enforce NetworkPolicy;
+    real enforcement needs a policy-enforcing CNI (operator leg).

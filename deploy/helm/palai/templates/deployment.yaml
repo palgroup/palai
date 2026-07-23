@@ -1,0 +1,196 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "palai.fullname" . }}
+  labels:
+    {{- include "palai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: control-plane
+spec:
+  # replicas is 1 by default. NO HA is claimed (plan §45.2) — real HA needs replicas>1 +
+  # topologySpreadConstraints + a real load balancer, which is the operator leg (§6).
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "palai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: control-plane
+  template:
+    metadata:
+      labels:
+        {{- include "palai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: control-plane
+    spec:
+      serviceAccountName: {{ include "palai.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: control-plane
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Bypass the compose file-secret bridge entrypoint (it assembles the DB URL from
+          # /run/secrets and would fail on Kubernetes). The DB URL and every credential are injected
+          # directly from Secrets here, so the binary runs unwrapped.
+          command: ["/usr/local/bin/palai-control-plane"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: api
+              containerPort: 8080
+              protocol: TCP
+            {{- if .Values.runnerGateway.enabled }}
+            - name: runner-gw
+              containerPort: 8443
+              protocol: TCP
+            {{- end }}
+          env:
+            - name: PALAI_LISTEN_ADDR
+              value: ":8080"
+            {{- include "palai.databaseEnv" . | nindent 12 }}
+            - name: PALAI_DISPATCH_WORKERS
+              value: {{ .Values.dispatchWorkers | quote }}
+            - name: PALAI_MODEL_PROVIDER
+              value: {{ .Values.modelProvider | quote }}
+            {{- with .Values.model }}
+            - name: PALAI_MODEL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.engineImage }}
+            - name: PALAI_ENGINE_IMAGE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.s3.endpoint }}
+            - name: PALAI_S3_ENDPOINT
+              value: {{ .Values.s3.endpoint | quote }}
+            - name: PALAI_S3_BUCKET
+              value: {{ .Values.s3.bucket | quote }}
+            {{- with .Values.s3.region }}
+            - name: PALAI_S3_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.s3.existingSecret }}
+            - name: PALAI_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3.existingSecret | quote }}
+                  key: {{ .Values.s3.accessKeyKey | quote }}
+            - name: PALAI_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3.existingSecret | quote }}
+                  key: {{ .Values.s3.secretKeyKey | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.runnerGateway.enabled }}
+            - name: PALAI_RUNNER_LISTEN_ADDR
+              value: ":8443"
+            - name: PALAI_RUNNER_CA_CERT
+              value: /palai/ca/{{ .Values.runnerGateway.caCertKey }}
+            - name: PALAI_RUNNER_CA_KEY
+              value: /palai/ca/{{ .Values.runnerGateway.caKeyKey }}
+            - name: PALAI_RUNNER_SERVER_CERT
+              value: /palai/ca/{{ .Values.runnerGateway.serverCertKey }}
+            - name: PALAI_RUNNER_SERVER_KEY
+              value: /palai/ca/{{ .Values.runnerGateway.serverKeyKey }}
+            - name: PALAI_ENROLLMENT_TOKEN_FILE
+              value: /palai/ca/{{ .Values.runnerGateway.enrollmentTokenKey }}
+            {{- with .Values.runnerGateway.certTTL }}
+            - name: PALAI_RUNNER_CERT_TTL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.bootstrap.existingSecret }}
+            - name: PALAI_BOOTSTRAP_API_KEY_FILE
+              value: /palai/bootstrap/{{ .Values.bootstrap.apiKeyKey }}
+            {{- end }}
+            {{- if .Values.secretStore.existingSecret }}
+            - name: PALAI_SECRET_MASTER_KEY_FILE
+              value: /palai/secret-store/{{ .Values.secretStore.masterKeyKey }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # A startupProbe gates liveness/readiness until the control-plane has actually bound :8080 and its
+          # first /healthz succeeds — up to failureThreshold*periodSeconds (150s). Without it, a slow first
+          # start (postgres dial + schema wait + bootstrap + bind, worse on a loaded node or a large DB)
+          # would trip the liveness probe and CrashLoop the pod before it could ever become healthy.
+          # timeoutSeconds:3 (not the 1s default): on a loaded node a healthy /healthz can take >1s, and three
+          # consecutive 1s timeouts would kill an actually-healthy pod.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.runnerGateway.enabled }}
+            - name: runner-ca
+              mountPath: /palai/ca
+              readOnly: true
+            {{- end }}
+            {{- if .Values.bootstrap.existingSecret }}
+            - name: bootstrap
+              mountPath: /palai/bootstrap
+              readOnly: true
+            {{- end }}
+            {{- if .Values.secretStore.existingSecret }}
+            - name: secret-store
+              mountPath: /palai/secret-store
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.runnerGateway.enabled }}
+        - name: runner-ca
+          secret:
+            secretName: {{ required "runnerGateway.existingSecret is required when runnerGateway.enabled" .Values.runnerGateway.existingSecret }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if .Values.bootstrap.existingSecret }}
+        - name: bootstrap
+          secret:
+            secretName: {{ .Values.bootstrap.existingSecret }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if .Values.secretStore.existingSecret }}
+        - name: secret-store
+          secret:
+            secretName: {{ .Values.secretStore.existingSecret }}
+            defaultMode: 0440
+        {{- end }}

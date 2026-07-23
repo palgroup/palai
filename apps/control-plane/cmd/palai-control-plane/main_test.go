@@ -116,3 +116,24 @@ func TestRepositoryConnectionSecretFailsClosed(t *testing.T) {
 		t.Fatal("resolved an empty org/ref; want an error")
 	}
 }
+
+// TestMigrateAndExitFlag pins the Kubernetes migration-Job mode selector: the binary enters
+// migrate-and-exit ONLY when invoked with --migrate-and-exit, and the flag-less serving path (compose,
+// every existing stack) is never mistaken for it. The arg scan ignores unrelated args.
+func TestMigrateAndExitFlag(t *testing.T) {
+	saved := os.Args
+	t.Cleanup(func() { os.Args = saved })
+
+	os.Args = []string{"palai-control-plane"}
+	if migrateAndExit() {
+		t.Fatal("serving invocation (no args) must NOT select migrate-and-exit")
+	}
+	os.Args = []string{"palai-control-plane", "--other-flag"}
+	if migrateAndExit() {
+		t.Fatal("an unrelated arg must NOT select migrate-and-exit")
+	}
+	os.Args = []string{"palai-control-plane", "--migrate-and-exit"}
+	if !migrateAndExit() {
+		t.Fatal("--migrate-and-exit must select migrate-and-exit mode")
+	}
+}
