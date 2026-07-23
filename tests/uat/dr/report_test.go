@@ -1,6 +1,9 @@
 package dr
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -89,5 +92,32 @@ func TestRenderReportCarriesMeasuredValues(t *testing.T) {
 	ev.Drills[1].Passed = false
 	if !strings.Contains(RenderReport(ev), "FAIL") {
 		t.Fatal("a failed drill must be rendered as FAIL")
+	}
+}
+
+// TestCommittedReportMatchesEvidence catches a hand-edit to EITHER committed artifact on plain
+// `go test ./...` — BEFORE E15 T6's DrillProof lands: the committed evidence must recompute clean
+// (dr.Verify == 0), and the committed dr-report.md must be EXACTLY RenderReport(committed evidence).
+// Regenerate both with PALAI_DR_WRITE_REPORT=1 (a live drill run) — never hand-edit.
+func TestCommittedReportMatchesEvidence(t *testing.T) {
+	evPath := filepath.Join("..", "..", "..", "evidence", "dr", "drill-evidence.json")
+	repPath := filepath.Join("..", "..", "..", "docs", "operations", "dr-report.md")
+	raw, err := os.ReadFile(evPath)
+	if err != nil {
+		t.Fatalf("read committed evidence: %v", err)
+	}
+	var ev DrillEvidence
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		t.Fatalf("decode committed evidence: %v", err)
+	}
+	if errs := Verify(ev); len(errs) != 0 {
+		t.Fatalf("committed evidence does not recompute (a fabricated/edited RPO or RTO): %v", errs)
+	}
+	report, err := os.ReadFile(repPath)
+	if err != nil {
+		t.Fatalf("read committed report: %v", err)
+	}
+	if got := RenderReport(ev); got != string(report) {
+		t.Fatalf("committed dr-report.md is NOT RenderReport(committed evidence) — a hand-edit to one of them was made; regenerate both with PALAI_DR_WRITE_REPORT=1")
 	}
 }

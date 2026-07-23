@@ -4,8 +4,8 @@
 > RPO/RTO below is recomputed from the raw timestamps in the evidence artifact by `dr.Verify`
 > and again by the E15 T6 `DrillProof` verifier — a hand-written value fails the gate.
 
-- Generated: `2026-07-23T14:02:48Z`
-- Commit: `c70cfce`
+- Generated: `2026-07-23T14:29:05Z`
+- Commit: `d3daddb-dirty`
 - Proof seam: **local same-host two-stack (Docker Desktop) — production compose profile, fake provider**
 
 ## Measured RPO / RTO (from raw timestamps)
@@ -13,29 +13,29 @@
 | Drill | Scenario | Result | Measured RPO | Measured RTO |
 |---|---|---|---|---|
 | DR-004 | object corruption | PASS | — | — |
-| DR-001 | primary (database) loss | PASS | 29.428s | 44.888s |
+| DR-001 | primary (database) loss | PASS | 17.028s | 41.953s |
 | DR-002/006 | restore into a separate clean stack + verify | PASS | — | — |
 | DR-005 | master-key recovery (file seam) | PASS | — | — |
 
 ### DR-001 raw timestamps
 
-- last marker committed before disaster: `2026-07-23T14:01:22.542175054Z`
-- last marker present in the restored backup: `2026-07-23T14:00:53.114301919Z`
-- RPO = committed - in-backup = **29.428s**
-- disaster (destruction complete): `2026-07-23T14:01:23.702018Z`
-- recovered (healthy + run-capable): `2026-07-23T14:02:08.589672Z`
-- RTO = recovered - disaster = **44.888s**
+- last marker committed before disaster: `2026-07-23T14:27:54.327429056Z`
+- last marker present in the restored backup: `2026-07-23T14:27:37.299096107Z`
+- RPO = committed - in-backup = **17.028s**
+- disaster (destruction complete): `2026-07-23T14:27:54.948814Z`
+- recovered (healthy + run-capable): `2026-07-23T14:28:36.901729Z`
+- RTO = recovered - disaster = **41.953s**
 
 ## Per-drill detail
 
 - **DR-004 (object corruption)** — a byte-flip in object ./filerldb2/01/LOG (360 bytes) was DETECTED exactly by the backup manifest's per-file sha256 (live sha != manifest sha for that path, and only that path among the manifest set); the object was RESTORED from the backup's intact bytes (per-file sha256 matched the manifest again); and a byte-tampered COPY of the archive was fail-closed at `restore verify` (the integrity chain refuses damaged bytes).
-- **DR-001 (primary (database) loss)** — destroyed the pg container + its data volume, recovered with a fresh pg + `palai restore` from the last backup, and completed a fake run (run-capable). Measured RPO 29.428s (the 54-marker window written after the backup and lost) and RTO 44.888s (scripted recovery wall-clock) — both from raw DB/host timestamps.
+- **DR-001 (primary (database) loss)** — destroyed the pg container + its data volume, recovered with a fresh pg + `palai restore` from the last backup, and completed a fake run (run-capable). Measured RPO 17.028s (the 39-marker window written after the backup and lost) and RTO 41.953s (scripted recovery wall-clock) — both from raw DB/host timestamps.
 - **DR-002/006 (restore into a separate clean stack + verify)** — `palai restore` loaded the backup into a SEPARATE clean stack (palai-e15t5-a -> palai-e15t5-b); `restore verify` was green on all six checks (archive_checksum, migration_version, tenant_ids, run_retrieval, rls_isolation, secret_decrypt); post-restore response/run counts matched the source (responses=1, runs=1); tenant isolation (FORCE RLS + tenant_isolation policies) survived the restore.
-- **DR-005 (master-key recovery (file seam))** — with the WRONG master-key file, `restore verify` secret_decrypt failed CLOSED (a stored secret does not decrypt under the target key — the restored secrets are dead without the source key); swapping in the ESCROW copy of the source master key made secret_decrypt green again. This is the FILE-key seam; a KMS-backed key + lease ceremony (SEC-001/003) is E13-H, out of scope.
+- **DR-005 (master-key recovery (file seam))** — with a WRONG master-key file AND with the file ABSENT, `restore verify` secret_decrypt failed CLOSED (a stored secret does not decrypt under the target key / the key file is unreadable — the restored secrets are dead without the source key); swapping in the ESCROW copy of the source master key made secret_decrypt green again. This is the FILE-key seam; a KMS-backed key + lease ceremony (SEC-001/003) is E13-H, out of scope.
 
 ## Published self-host targets (§55.5 — NOT inherited from SaaS)
 
-- **RPO target:** <= one backup interval (with the shipped hourly `deploy/systemd` backup timer, <= 1h; the drill floor below shows the data-loss window is only the writes since the last backup)
+- **RPO target:** <= one backup interval. The shipped `deploy/systemd/palai-backup.timer` is an EXAMPLE DAILY schedule (`OnCalendar=*-*-* 02:30`, RandomizedDelaySec=300), so its DEFAULT worst-case window is ~24h; set `OnCalendar` hourly for <= 1h. The drill floor below shows the data-loss window is only the writes since the last backup ran.
 - **RTO target:** <= 15 min for a single-node restore-to-fresh-target on comparable hardware (the drill floor below is the scripted-recovery wall-clock; add human detection/paging for the operator SLO)
 - **Basis:** self-host is a single Postgres + a single object store on one node: there is no synchronous replica, so recovery is restore-from-backup and the achievable RPO is bounded by how often `palai backup` runs, not by a SaaS replication SLA. These targets are PUBLISHED for the self-host tier and are NOT inherited from the managed SaaS product.
 
@@ -43,7 +43,7 @@
 
 ### [expected] RPO is bounded by backup cadence, not by replication
 
-- **Finding:** the primary-loss drill lost only the 29.428s of markers written between the last backup and the disaster, because the backup was taken immediately before the failure; in production the real window is everything written since the last scheduled backup ran.
+- **Finding:** the primary-loss drill lost only the 17.028s of markers written between the last backup and the disaster, because the backup was taken immediately before the failure; in production the real window is everything written since the last scheduled backup ran.
 - **Remediation:** shorten the `deploy/systemd/palai-backup.timer` interval to cap the window; to drive RPO toward zero, add Postgres WAL archiving or a streaming replica — both are the operator/E18 leg (out of scope for this single-node drill).
 
 ### [expected] RTO includes no human detection/decision time

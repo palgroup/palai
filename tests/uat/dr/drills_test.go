@@ -96,6 +96,23 @@ func (w *markerWriter) loop() {
 	}
 }
 
+// waitFor blocks until at least n markers have committed, so the backup taken next is guaranteed to
+// capture a non-empty dr_markers (else the restored max(written_at) is NULL and RPO has no lower edge).
+func (w *markerWriter) waitFor(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		w.mu.Lock()
+		c := w.count
+		w.mu.Unlock()
+		if c >= n {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("marker writer did not commit %d markers within 30s", n)
+}
+
 // quiesce stops the writer and returns the last committed marker (the RPO upper edge).
 func (w *markerWriter) quiesce() markerRow {
 	close(w.stop)
@@ -355,6 +372,7 @@ func TestDRDrills(t *testing.T) {
 		t.Fatalf("baseline run on A = %q, want completed", st)
 	}
 	markers := a.startMarkers()
+	markers.waitFor(t, 3) // ensure the backup captures a non-empty dr_markers (RPO needs a lower edge)
 
 	archive := filepath.Join(t.TempDir(), "dr-a.tar.gz")
 	a.backup(archive)
@@ -459,11 +477,18 @@ func drKeyRecovery(t *testing.T, b *drStack, archive, escrowKey, wrongKey string
 	if checks, out, _ := b.restoreVerify(archive); !checks["secret_decrypt"] {
 		return DrillResult{ID: "DR-005", Name: "master-key recovery (file seam)", Detail: "baseline secret_decrypt not green:\n" + out}
 	}
-	// A WRONG/lost key must fail CLOSED at secret_decrypt (the restored secrets are undecryptable).
+	// A WRONG key must fail CLOSED at secret_decrypt (the restored secrets are undecryptable).
 	writeFile(t, keyFile, wrongKey)
-	checks, out, green := b.restoreVerify(archive)
-	if green || checks["secret_decrypt"] {
+	if checks, out, green := b.restoreVerify(archive); green || checks["secret_decrypt"] {
 		return DrillResult{ID: "DR-005", Name: "master-key recovery (file seam)", Detail: "a WRONG master key must fail secret_decrypt CLOSED, but verify passed:\n" + out}
+	}
+	// An ABSENT key must also fail CLOSED — the shipped canary reports the master-key file unreadable
+	// (install_backup.go verifySecretCanary), not a false green.
+	if err := os.Remove(keyFile); err != nil {
+		return DrillResult{ID: "DR-005", Name: "master-key recovery (file seam)", Detail: fmt.Sprintf("could not remove the master-key file for the absent-key leg: %v", err)}
+	}
+	if checks, out, green := b.restoreVerify(archive); green || checks["secret_decrypt"] {
+		return DrillResult{ID: "DR-005", Name: "master-key recovery (file seam)", Detail: "an ABSENT master key must fail secret_decrypt CLOSED, but verify passed:\n" + out}
 	}
 	// The ESCROW copy of the source key restores usability.
 	writeFile(t, keyFile, escrowKey)
@@ -472,7 +497,7 @@ func drKeyRecovery(t *testing.T, b *drStack, archive, escrowKey, wrongKey string
 	}
 	return DrillResult{
 		ID: "DR-005", Name: "master-key recovery (file seam)", Passed: true,
-		Detail: "with the WRONG master-key file, `restore verify` secret_decrypt failed CLOSED (a stored secret does not decrypt under the target key — the restored secrets are dead without the source key); swapping in the ESCROW copy of the source master key made secret_decrypt green again. This is the FILE-key seam; a KMS-backed key + lease ceremony (SEC-001/003) is E13-H, out of scope.",
+		Detail: "with a WRONG master-key file AND with the file ABSENT, `restore verify` secret_decrypt failed CLOSED (a stored secret does not decrypt under the target key / the key file is unreadable — the restored secrets are dead without the source key); swapping in the ESCROW copy of the source master key made secret_decrypt green again. This is the FILE-key seam; a KMS-backed key + lease ceremony (SEC-001/003) is E13-H, out of scope.",
 	}
 }
 
@@ -595,18 +620,23 @@ func drPrimaryLoss(t *testing.T, a *drStack, archive string, markers *markerWrit
 	}
 }
 
-// tamperArchive copies src to dst with one byte flipped near the end (in the compressed stream), so
-// the archive's integrity chain must refuse it.
+// tamperArchive copies src to dst with a run of bytes flipped a QUARTER of the way in — deep in the
+// deflate data that decodes to member content (manifest/db.dump), NOT the trailing zero-block +
+// gzip-trailer tail that tar.Reader stops before reading (a flip there is absorbed: the members still
+// decompress and their checksums still match). Corrupting member-content deflate guarantees
+// readBackupArchive fails — a gzip/deflate error or a member-checksum mismatch.
 func tamperArchive(t *testing.T, src, dst string) {
 	t.Helper()
 	raw, err := os.ReadFile(src)
 	if err != nil {
 		t.Fatalf("read archive: %v", err)
 	}
-	if len(raw) < 32 {
-		t.Fatalf("archive too small to tamper")
+	if len(raw) < 256 {
+		t.Fatalf("archive too small to tamper reliably (%d bytes)", len(raw))
 	}
-	raw[len(raw)-16] ^= 0xff
+	for i := len(raw) / 4; i < len(raw)/4+64; i++ {
+		raw[i] ^= 0xff
+	}
 	if err := os.WriteFile(dst, raw, 0o600); err != nil {
 		t.Fatalf("write tampered archive: %v", err)
 	}
@@ -617,7 +647,13 @@ func gitSHA(t *testing.T) string {
 	if err != nil {
 		return "unknown"
 	}
-	return strings.TrimSpace(string(out))
+	sha := strings.TrimSpace(string(out))
+	// Honest provenance: if the tree had uncommitted changes when the drill ran (e.g. regenerating
+	// the report from new-but-uncommitted harness code), stamp -dirty so the SHA is not overclaimed.
+	if dirty, _ := exec.Command("git", "status", "--porcelain").Output(); len(strings.TrimSpace(string(dirty))) > 0 {
+		sha += "-dirty"
+	}
+	return sha
 }
 
 // writeArtifacts (re)generates the committed machine-generated report + evidence artifact from a live

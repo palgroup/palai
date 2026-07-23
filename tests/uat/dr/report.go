@@ -167,7 +167,7 @@ func Verify(ev DrillEvidence) []error {
 // bound, explicitly NOT the SaaS targets.
 func DefaultTargets() PublishedTargets {
 	return PublishedTargets{
-		RPO:   "<= one backup interval (with the shipped hourly `deploy/systemd` backup timer, <= 1h; the drill floor below shows the data-loss window is only the writes since the last backup)",
+		RPO:   "<= one backup interval. The shipped `deploy/systemd/palai-backup.timer` is an EXAMPLE DAILY schedule (`OnCalendar=*-*-* 02:30`, RandomizedDelaySec=300), so its DEFAULT worst-case window is ~24h; set `OnCalendar` hourly for <= 1h. The drill floor below shows the data-loss window is only the writes since the last backup ran.",
 		RTO:   "<= 15 min for a single-node restore-to-fresh-target on comparable hardware (the drill floor below is the scripted-recovery wall-clock; add human detection/paging for the operator SLO)",
 		Basis: "self-host is a single Postgres + a single object store on one node: there is no synchronous replica, so recovery is restore-from-backup and the achievable RPO is bounded by how often `palai backup` runs, not by a SaaS replication SLA. These targets are PUBLISHED for the self-host tier and are NOT inherited from the managed SaaS product.",
 	}

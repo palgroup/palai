@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-07-23T14:02:48Z",
-  "git_sha": "c70cfce",
+  "generated_at": "2026-07-23T14:29:05Z",
+  "git_sha": "d3daddb-dirty",
   "seam": "local same-host two-stack (Docker Desktop) — production compose profile, fake provider",
   "drills": [
     {
@@ -13,14 +13,14 @@
       "id": "DR-001",
       "name": "primary (database) loss",
       "passed": true,
-      "detail": "destroyed the pg container + its data volume, recovered with a fresh pg + `palai restore` from the last backup, and completed a fake run (run-capable). Measured RPO 29.428s (the 54-marker window written after the backup and lost) and RTO 44.888s (scripted recovery wall-clock) — both from raw DB/host timestamps.",
+      "detail": "destroyed the pg container + its data volume, recovered with a fresh pg + `palai restore` from the last backup, and completed a fake run (run-capable). Measured RPO 17.028s (the 39-marker window written after the backup and lost) and RTO 41.953s (scripted recovery wall-clock) — both from raw DB/host timestamps.",
       "measure": {
-        "last_marker_written_at": "2026-07-23T14:01:22.542175054Z",
-        "last_marker_in_backup_at": "2026-07-23T14:00:53.114301919Z",
-        "rpo_seconds": 29.428,
-        "disaster_at": "2026-07-23T14:01:23.702018Z",
-        "recovered_at": "2026-07-23T14:02:08.589672Z",
-        "rto_seconds": 44.888
+        "last_marker_written_at": "2026-07-23T14:27:54.327429056Z",
+        "last_marker_in_backup_at": "2026-07-23T14:27:37.299096107Z",
+        "rpo_seconds": 17.028,
+        "disaster_at": "2026-07-23T14:27:54.948814Z",
+        "recovered_at": "2026-07-23T14:28:36.901729Z",
+        "rto_seconds": 41.953
       }
     },
     {
@@ -33,11 +33,11 @@
       "id": "DR-005",
       "name": "master-key recovery (file seam)",
       "passed": true,
-      "detail": "with the WRONG master-key file, `restore verify` secret_decrypt failed CLOSED (a stored secret does not decrypt under the target key — the restored secrets are dead without the source key); swapping in the ESCROW copy of the source master key made secret_decrypt green again. This is the FILE-key seam; a KMS-backed key + lease ceremony (SEC-001/003) is E13-H, out of scope."
+      "detail": "with a WRONG master-key file AND with the file ABSENT, `restore verify` secret_decrypt failed CLOSED (a stored secret does not decrypt under the target key / the key file is unreadable — the restored secrets are dead without the source key); swapping in the ESCROW copy of the source master key made secret_decrypt green again. This is the FILE-key seam; a KMS-backed key + lease ceremony (SEC-001/003) is E13-H, out of scope."
     }
   ],
   "published_targets": {
-    "rpo": "\u003c= one backup interval (with the shipped hourly `deploy/systemd` backup timer, \u003c= 1h; the drill floor below shows the data-loss window is only the writes since the last backup)",
+    "rpo": "\u003c= one backup interval. The shipped `deploy/systemd/palai-backup.timer` is an EXAMPLE DAILY schedule (`OnCalendar=*-*-* 02:30`, RandomizedDelaySec=300), so its DEFAULT worst-case window is ~24h; set `OnCalendar` hourly for \u003c= 1h. The drill floor below shows the data-loss window is only the writes since the last backup ran.",
     "rto": "\u003c= 15 min for a single-node restore-to-fresh-target on comparable hardware (the drill floor below is the scripted-recovery wall-clock; add human detection/paging for the operator SLO)",
     "basis": "self-host is a single Postgres + a single object store on one node: there is no synchronous replica, so recovery is restore-from-backup and the achievable RPO is bounded by how often `palai backup` runs, not by a SaaS replication SLA. These targets are PUBLISHED for the self-host tier and are NOT inherited from the managed SaaS product."
   },
@@ -45,7 +45,7 @@
     {
       "severity": "expected",
       "title": "RPO is bounded by backup cadence, not by replication",
-      "detail": "the primary-loss drill lost only the 29.428s of markers written between the last backup and the disaster, because the backup was taken immediately before the failure; in production the real window is everything written since the last scheduled backup ran.",
+      "detail": "the primary-loss drill lost only the 17.028s of markers written between the last backup and the disaster, because the backup was taken immediately before the failure; in production the real window is everything written since the last scheduled backup ran.",
       "remediation": "shorten the `deploy/systemd/palai-backup.timer` interval to cap the window; to drive RPO toward zero, add Postgres WAL archiving or a streaming replica — both are the operator/E18 leg (out of scope for this single-node drill)."
     },
     {
