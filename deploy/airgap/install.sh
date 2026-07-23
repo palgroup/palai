@@ -97,6 +97,7 @@ PY
 export PALAI_HOME
 export PALAI_API_PORT="$API_PORT" PALAI_RUNNER_PORT="$RUNNER_PORT" PALAI_PG_PORT="$PG_PORT" PALAI_S3_PORT="$S3_PORT"
 export PALAI_COMPOSE_PROJECT="$PALAI_AIRGAP_PROJECT"
+# shellcheck disable=SC2154  # digest_* are assigned dynamically above via `eval "digest_$name=..."`
 export PALAI_CP_IMAGE="$digest_control_plane"
 export PALAI_RUNNER_IMAGE="$digest_runner"
 export PALAI_PG_IMAGE="$digest_postgres"

@@ -45,8 +45,12 @@ cleanup() {
 	set +e
 	echo "--- cleanup ---" >&2
 	docker rm -f "$git_ctr" "$git_client" "$proj-registry" >/dev/null 2>&1
-	docker compose -p "$proj" -f "$work/bundle/compose/compose.yaml" -f "$work/bundle/airgap.yml" down -v --remove-orphans >/dev/null 2>&1
+	# Label-based teardown (NOT `docker compose down`): env-independent, so it works even though
+	# the PALAI_*_IMAGE interpolation vars live only inside install.sh's process.
+	docker ps -aq --filter "label=com.docker.compose.project=$proj" | xargs -r docker rm -f >/dev/null 2>&1
 	docker ps -aq --filter "label=io.palai.project=$proj" | xargs -r docker rm -f >/dev/null 2>&1
+	docker network rm "${proj}_airgap" >/dev/null 2>&1
+	docker volume ls -q --filter "label=com.docker.compose.project=$proj" | xargs -r docker volume rm >/dev/null 2>&1
 	docker volume rm -f "$git_vol" >/dev/null 2>&1
 	# Rebuildable tags only (upstream bases stay cached).
 	docker rmi -f "$tool_image" >/dev/null 2>&1
@@ -95,8 +99,10 @@ go build -o "$work/palai" "$root/cmd/cli"
 PALAI_AIRGAP_PROJECT="$proj" PALAI_AIRGAP_REGISTRY_PORT="$reg_port" \
 	bash "$bundle/install.sh" "$bundle"
 
-cp_ctr="$(docker compose -p "$proj" -f "$bundle/compose/compose.yaml" -f "$bundle/airgap.yml" ps -q control-plane)"
-runner_ctr="$(docker compose -p "$proj" -f "$bundle/compose/compose.yaml" -f "$bundle/airgap.yml" ps -q runner)"
+# Resolve containers by compose label (env-independent — the PALAI_*_IMAGE interpolation vars
+# live only inside install.sh's process, so a `compose ps` here would see blank images).
+cp_ctr="$(docker ps -q --filter "label=com.docker.compose.project=$proj" --filter "label=com.docker.compose.service=control-plane")"
+runner_ctr="$(docker ps -q --filter "label=com.docker.compose.project=$proj" --filter "label=com.docker.compose.service=runner")"
 [ -n "$cp_ctr" ] && [ -n "$runner_ctr" ] || fail "control-plane/runner container not found after install"
 netname="$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$cp_ctr" | awk '{print $1}')"
 
