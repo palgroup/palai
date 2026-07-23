@@ -111,18 +111,33 @@ const redactedMarker = "[REDACTED]"
 
 // wholeMatchPatterns redact their ENTIRE match — the match itself is the secret:
 //   - provider API keys (OpenAI-style sk-...),
-//   - HTTP bearer tokens.
+//   - HTTP bearer tokens,
+//   - a PEM private-key block (multi-line).
 var wholeMatchPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`),
 	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._-]+`),
+	regexp.MustCompile(`(?s)-----BEGIN[A-Z ]*PRIVATE KEY-----.*?-----END[A-Z ]*PRIVATE KEY-----`),
 }
 
-// envAssignRe matches an UPPER_SNAKE env/config assignment whose name ends in KEY/PASSWORD/TOKEN/
-// SECRET (OPENAI_API_KEY, PALAI_..._TOKEN, POSTGRES_PASSWORD). Only the VALUE is redacted — the name
-// stays as a diagnostic — and a filesystem-PATH value is kept, because the stack's secrets are
-// file-based: a `PALAI_RUNNER_CA_KEY: /palai/ca/ca.key` line names a path, not a secret. Requiring
-// an uppercase name avoids nuking ordinary words that merely end in "key".
-var envAssignRe = regexp.MustCompile(`([A-Z][A-Z0-9_]*(?:KEY|PASSWORD|TOKEN|SECRET))(\s*[:=]\s*)("?[^"\s]+"?)`)
+// dbURLCredRe redacts the password in a database URL (postgres://user:PASS@host), keeping the
+// scheme/user/host so the connection target stays a diagnostic.
+var dbURLCredRe = regexp.MustCompile(`(postgres(?:ql)?://[^:@\s/]+:)[^@\s]+(@)`)
+
+// assignmentPatterns match a `NAME<sep>VALUE` secret assignment; only the VALUE (group 3) is
+// redacted, the NAME stays as a diagnostic, and a filesystem-PATH value is kept (the stack's secrets
+// are file-based: `PALAI_RUNNER_CA_KEY: /palai/ca/ca.key` names a path, not a secret).
+var assignmentPatterns = []*regexp.Regexp{
+	// UPPER_SNAKE env vars ending KEY/PASSWORD/TOKEN/SECRET (OPENAI_API_KEY, POSTGRES_PASSWORD).
+	// An uppercase name avoids nuking ordinary words that merely end in "key".
+	regexp.MustCompile(`([A-Z][A-Z0-9_]*(?:KEY|PASSWORD|TOKEN|SECRET))(\s*[:=]\s*)("[^"]*"|\S+)`),
+	// lowercase / quoted secret field names in logs or JSON (password=, "token": "...", api_key: ...).
+	regexp.MustCompile(`(?i)("?(?:password|passwd|secret|token|api[_-]?key|access[_-]?token)"?)(\s*[:=]\s*)("[^"]*"|\S+)`),
+}
+
+// pathValueRe matches a value that is a filesystem path (a file-based secret REFERENCE, not the
+// secret). Anchored and restricted to path chars so a base64 secret whose first char is `/` (e.g.
+// `/9j/...==`) is NOT mistaken for a path.
+var pathValueRe = regexp.MustCompile(`^(/[\w.-]+)+/?$`)
 
 // newRedactor builds a redactor from a set of exact secret values (empty ones are ignored).
 func newRedactor(literals []string) *redactor {
@@ -136,20 +151,30 @@ func newRedactor(literals []string) *redactor {
 }
 
 // newRedactorFromPaths seeds the redactor with the stack's actual secret values so a log line that
-// echoed one is scrubbed by exact match, not just by shape. Every .palai secret file is covered —
-// the bootstrap key, the Postgres password, the provider credential, the master key, and the runner
-// enrollment token. Missing/empty files are skipped.
+// echoed one is scrubbed by exact match, not just by shape. It covers the bootstrap key and runner
+// enrollment token (home root) plus EVERY file under secrets/ — pg-password, provider-*, master-key,
+// and any `palai provider add <ref>` credential — so a future ref is never silently un-redacted. An
+// unreadable secret (e.g. a root-owned master key) is WARNED about, so the degraded exact-match
+// layer is visible rather than silently dropped.
 func newRedactorFromPaths(p paths) *redactor {
 	var lits []string
-	for _, path := range []string{
-		p.apiKey,
-		p.pgPassword,
-		p.secretPath("provider-one"),
-		filepath.Join(p.secretsDir, "master-key"),
-		p.runnerToken,
-	} {
-		if v, err := readTrimmed(path); err == nil {
-			lits = append(lits, v)
+	seed := func(path string) {
+		v, err := readTrimmed(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "support-bundle: WARNING: secret %s unreadable (%v) — not in the redactor's exact-match set\n", path, err)
+			}
+			return
+		}
+		lits = append(lits, v)
+	}
+	seed(p.apiKey)
+	seed(p.runnerToken)
+	if entries, err := os.ReadDir(p.secretsDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				seed(filepath.Join(p.secretsDir, e.Name()))
+			}
 		}
 	}
 	return newRedactor(lits)
@@ -165,14 +190,16 @@ func (r *redactor) redact(b []byte) []byte {
 	for _, re := range wholeMatchPatterns {
 		s = re.ReplaceAllString(s, redactedMarker)
 	}
-	s = envAssignRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := envAssignRe.FindStringSubmatch(m)
-		name, sep, val := sub[1], sub[2], sub[3]
-		if unquoted := strings.Trim(val, `"`); unquoted == "" || strings.HasPrefix(unquoted, "/") {
-			return m // a path or empty value is a config reference, not a secret
-		}
-		return name + sep + redactedMarker
-	})
+	s = dbURLCredRe.ReplaceAllString(s, "${1}"+redactedMarker+"${2}")
+	for _, re := range assignmentPatterns {
+		s = re.ReplaceAllStringFunc(s, func(m string) string {
+			sub := re.FindStringSubmatch(m)
+			if val := strings.Trim(sub[3], `"`); val == "" || pathValueRe.MatchString(val) {
+				return m // a path or empty value is a config reference, not a secret
+			}
+			return sub[1] + sub[2] + redactedMarker
+		})
+	}
 	return []byte(s)
 }
 

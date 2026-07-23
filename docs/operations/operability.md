@@ -91,3 +91,10 @@ shape. A test reads the produced tar back and asserts **zero** secrets survive
 
 A compose command that fails (e.g. the stack is down) records its error text instead of aborting the
 bundle, so an operator diagnosing a broken stack still gets the doctor report and the config.
+
+> Like `doctor`, `support-bundle` targets the project and base compose file from `.palai`
+> (`cfg.Project` + `deploy/compose/compose.yaml`), not a hand-run `-p <name> -f compose.yaml -f
+> production.yml` production overlay. Point it at a production stack by exporting
+> `PALAI_COMPOSE_FILE` and bringing the stack up under the project `.palai` recorded — otherwise the
+> `compose ps/config/logs` parts will describe the base-profile project. Watching a production stack
+> whose ports aren't host-published is the operator leg (plan §6).

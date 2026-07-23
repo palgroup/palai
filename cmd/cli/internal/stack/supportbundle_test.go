@@ -21,7 +21,9 @@ func TestSupportBundleRedactsAllSecrets(t *testing.T) {
 
 	red := newRedactor([]string{masterKey, apiKey, pgPassword, providerKey})
 
-	// Parts that a real `compose logs` / `compose config` could plausibly leak.
+	// Parts that a real `compose logs` / `compose config` could plausibly leak — including the leak
+	// SHAPES (quoted-spaces value, slash-leading base64, PEM, JSON, lowercase, db-URL cred) so the
+	// whole writeBundle → tar pipeline (not just red.redact) is asserted to carry zero needles.
 	parts := []bundlePart{
 		{"doctor.json", []byte(`{"ok":true}`)},
 		{"compose-logs.txt", []byte(
@@ -29,7 +31,12 @@ func TestSupportBundleRedactsAllSecrets(t *testing.T) {
 				"master=" + masterKey + "\n" +
 				"Authorization: Bearer sometokenvalue123abc\n" +
 				"OPENAI_API_KEY=sk-anothersecretkey1111111111111111\n" +
-				"pg dsn: postgres://palai:" + pgPassword + "@db/palai\n")},
+				`GRAFANA_ADMIN_PASSWORD: "two words secret"` + "\n" +
+				"RUNNER_TOKEN=/9j/base64slashleadingSECRET==\n" +
+				`{"password":"jsonsecret999"}` + "\n" +
+				"token=lowercasesecret777\n" +
+				"pg dsn: postgres://palai:" + pgPassword + "@db/palai\n" +
+				"-----BEGIN RSA PRIVATE KEY-----\npemsecretmaterial999\n-----END RSA PRIVATE KEY-----\n")},
 		{"compose-config.yaml", []byte("bootstrap_api_key: " + apiKey + "\nprovider: " + providerKey + "\n")},
 	}
 
@@ -45,6 +52,8 @@ func TestSupportBundleRedactsAllSecrets(t *testing.T) {
 		"sk-anothersecretkey1111111111111111",
 		"Bearer sometokenvalue123abc",
 		"sometokenvalue123abc",
+		"words secret", "base64slashleadingSECRET", "jsonsecret999", "lowercasesecret777",
+		"pemsecretmaterial999",
 	}
 	for _, n := range needles {
 		if strings.Contains(all, n) {
@@ -86,6 +95,49 @@ func readTarGz(t *testing.T, r io.Reader) string {
 		out.Write(b)
 	}
 	return out.String()
+}
+
+// Leak shapes the first redactor pass missed — each is a real secret surface a log or compose
+// config can carry. The redactor must scrub every one; the assertions name the exact tail that
+// leaked before the fix.
+func TestRedactorLeakShapes(t *testing.T) {
+	red := newRedactor(nil)
+	cases := []struct {
+		name   string
+		in     string
+		leaked string // the substring that must NOT survive
+	}{
+		// S-1: a quoted value with spaces — only the first word was redacted before.
+		{"quoted-value-spaces", `GRAFANA_ADMIN_PASSWORD: "two words secret"`, "words secret"},
+		// S-2: a base64 secret whose first char is `/` was kept as if it were a path.
+		{"slash-leading-secret", `RUNNER_TOKEN=/9j/base64slashleading==`, "base64slashleading"},
+		// S-3: a PEM private-key block.
+		{"pem-block", "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgetc/secretkeymaterial\n-----END RSA PRIVATE KEY-----", "secretkeymaterial"},
+		// S-3: a JSON secret field.
+		{"json-password", `{"host":"db","password":"jsonsecret123"}`, "jsonsecret123"},
+		// S-3: a lowercase assignment.
+		{"lowercase-token", `token=lowercasesecretvalue`, "lowercasesecretvalue"},
+		// S-3: a database URL credential.
+		{"pg-url-cred", `dsn: postgres://palai:urlpasswordsecret@db:5432/palai`, "urlpasswordsecret"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(red.redact([]byte(tc.in)))
+			if strings.Contains(got, tc.leaked) {
+				t.Fatalf("secret leaked: %q survived in %q", tc.leaked, got)
+			}
+		})
+	}
+}
+
+// A non-secret filesystem path in a *_KEY/_PASSWORD/_TOKEN assignment must stay (the stack's
+// secrets are file-based — a `*_KEY: /path` names a path, and dropping it costs a diagnostic).
+func TestRedactorKeepsPaths(t *testing.T) {
+	red := newRedactor(nil)
+	got := string(red.redact([]byte("PALAI_RUNNER_CA_KEY: /palai/ca/ca.key")))
+	if !strings.Contains(got, "/palai/ca/ca.key") {
+		t.Fatalf("a non-secret key PATH was over-redacted: %q", got)
+	}
 }
 
 func TestRedactorGenericPatterns(t *testing.T) {
