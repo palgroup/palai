@@ -9,7 +9,7 @@ import (
 
 // TestModelRouteWritesRejectAnOrgGranularKey pins the E13 T8 review NIT 2: an ORG-granular provision key
 // (the T2 shape — Scope.Project == "") is a LEGITIMATE key, but every model-routing row is keyed by
-// (organization, project). Without a guard such a key inserts project_id='' and the composite FK to
+// (organization, project). Without a guard such a key inserts project_id=” and the composite FK to
 // projects rejects it, surfacing as a 500 for a well-formed request. It must be a 400 naming what is
 // missing. The guard short-circuits before any query, so this needs no database.
 func TestModelRouteWritesRejectAnOrgGranularKey(t *testing.T) {
