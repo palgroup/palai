@@ -5,7 +5,8 @@ SHELL := /bin/bash
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
 	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
-	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host evidence-verify
+	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
+	uat-kubernetes uat-kind evidence-verify
 
 bootstrap:
 	go mod download
@@ -173,6 +174,21 @@ uat-managed-cloud:
 uat-self-host:
 	@test -x scripts/uat/self-host || { echo "self-host UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' scripts/uat/self-host
+
+# E15 T3 — restricted Helm chart render/policy asserts: helm lint + Go asserts over `helm template`
+# (ZERO ClusterRole, restricted securityContext, NetworkPolicy default-deny, PDB, migration Job hook,
+# external-PG/S3-only) + kubeconform schema validation. Deterministic, needs no cluster; skips a
+# check whose binary (helm/kubeconform) is absent.
+uat-kubernetes:
+	go test ./tests/uat/kubernetes/ -count=1
+
+# E15 T3 — kind install smoke: `kind load` the images, `helm install`, the migration Job hook
+# completes, /healthz green, provision via the admin CLI, enroll the E14 runner package from the host,
+# a fake-provider run completes. NOT gated in `make verify` (Docker + kind bound). HONEST CEILING:
+# kindnet does NOT enforce NetworkPolicy — enforcement is the operator leg (§6).
+uat-kind:
+	@command -v kind >/dev/null 2>&1 || { echo "kind not installed (brew install kind)" >&2; exit 2; }
+	bash tests/uat/kubernetes/kind-smoke.sh
 
 evidence-verify:
 	@test -x scripts/evidence/verify || { echo "evidence verifier not implemented" >&2; exit 2; }

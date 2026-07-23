@@ -167,17 +167,17 @@ spec:
         - name: runner-ca
           secret:
             secretName: {{ required "runnerGateway.existingSecret is required when runnerGateway.enabled" .Values.runnerGateway.existingSecret }}
-            defaultMode: 0400
+            defaultMode: 0440
         {{- end }}
         {{- if .Values.bootstrap.existingSecret }}
         - name: bootstrap
           secret:
             secretName: {{ .Values.bootstrap.existingSecret }}
-            defaultMode: 0400
+            defaultMode: 0440
         {{- end }}
         {{- if .Values.secretStore.existingSecret }}
         - name: secret-store
           secret:
             secretName: {{ .Values.secretStore.existingSecret }}
-            defaultMode: 0400
+            defaultMode: 0440
         {{- end }}
