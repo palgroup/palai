@@ -67,7 +67,10 @@ curl -fsS "http://$mirror/v2/" >/dev/null || { echo "install: registry mirror di
 for name in control-plane runner reference-engine postgres object-store; do
 	step "push $name to the mirror, re-pull by digest"
 	docker push "$mirror/palai/$name:$VERSION" >/dev/null
-	rd="$(docker inspect --format '{{index .RepoDigests 0}}' "$mirror/palai/$name:$VERSION")"
+	# Pick the RepoDigest for THIS mirror, not `index 0` — a reused image accumulates repo
+	# digests from earlier mirror ports, and index 0 can be a stale one pointing at a dead port.
+	rd="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$mirror/palai/$name:$VERSION" | grep "^$mirror/palai/$name@" | head -1)"
+	[ -n "$rd" ] || { echo "install: no $mirror digest for $name after push" >&2; exit 1; }
 	# Drop the local tag so the ref is carried by the mirror digest, then pull it back.
 	docker rmi "$mirror/palai/$name:$VERSION" >/dev/null 2>&1 || true
 	docker pull -q "$rd" >/dev/null
