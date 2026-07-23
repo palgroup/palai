@@ -41,39 +41,53 @@ This writes, under `dist/runner-package/`:
 | `palai-runner-host-<ver>-linux-<arch>.tar.gz` | the deterministic tarball (binary + unit + launcher + env template + this doc) |
 | `…​.tar.gz.sha256` | the sha256 manifest |
 | `…​.tar.gz.sig` | the detached `openssl dgst -sha256` signature |
-| `palai-runner-signing.pub` | the public key to verify with (pin/trust it out of band) |
+| `palai-runner-signing.pub` | a COPY of the signing public key (convenience only — see the trust model below; do NOT trust this copy) |
 | `verify.sh` | the verify script (below) |
 
 The tarball is deterministic: the linux binary is built `-trimpath`, every member is stamped to a
 fixed mtime with uid/gid 0, and `gzip -n` drops the header timestamp — two builds of the same
-source are byte-identical (`package_test.go`). The signing tool is `openssl dgst -sha256` over an
-ECDSA P-256 key: openssl is already a build dependency (T1 mints the edge/CA certs with it), so no
-new tool enters the toolchain.
+source on the same tar toolchain are byte-identical (`package_test.go`; cross-toolchain identity is
+not claimed). The signing tool is `openssl dgst -sha256` over an ECDSA P-256 key: openssl is
+already a build dependency (T1 mints the edge/CA certs with it), so no new tool enters the toolchain.
 
-## Verify the package (and why tamper fails)
+## Verify the package (and the trust model)
+
+The signature is only as good as the public key you check it against. A channel attacker can swap
+the tarball, its `.sig`, AND its `.sha256` in one move and re-sign with their own key — so the
+`palai-runner-signing.pub` sitting BESIDE the tarball proves nothing. Obtain the real public key
+(or its sha256 fingerprint) from a SEPARATE trusted channel — the project's release page, your
+config-management, a keyserver — and pass it explicitly. `verify.sh` has no sibling-key default and
+fails closed without one.
 
 ```sh
-cd dist/runner-package
-./verify.sh palai-runner-host-*.tar.gz
-# verify: OK — sha256 and signature verified for palai-runner-host-…tar.gz
+# Get the trusted key out of band, then:
+./verify.sh palai-runner-host-*.tar.gz /path/to/trusted-signing.pub
+# verify: OK — sha256 and signature verified for palai-runner-host-…tar.gz against …
+
+# Optional belt-and-suspenders: pin the key's fingerprint (distribute the 64-hex value out of band).
+PALAI_RUNNER_PUBKEY_FINGERPRINT=$(sha256sum trusted-signing.pub | cut -d' ' -f1) \
+  ./verify.sh palai-runner-host-*.tar.gz /path/to/trusted-signing.pub
 ```
 
 `verify.sh` recomputes the tarball sha256 against the manifest AND checks the detached signature
-against the public key. A single flipped byte in the tarball breaks BOTH — `package_test.go` flips
-one byte and asserts `verify.sh` exits non-zero. Always run `verify.sh` before extracting onto a
-host.
+against the supplied key; it fails on ANY mismatch. `package_test.go` proves it: a flipped byte
+fails, a flipped byte with a regenerated `.sha256` still fails on the signature, a package re-signed
+with a different key fails, and a run with no explicit key fails closed. Always verify before
+extracting onto a host.
 
 ## Install on the runner host (operator leg)
 
 On a real Linux runner VM (the ceiling — not run in-repo):
 
 ```sh
-# 0. Create the service user and give it Docker access (see palai-runner.service).
+# 0. Create the service user and give it Docker access. NOTE: docker-group membership is
+#    root-equivalent on the host — this user is defense-in-depth, not the trust boundary. The real
+#    boundary is the OCI engine sandbox the runner supervises (no socket/credential reaches it).
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin palai-runner
 sudo usermod -aG docker palai-runner
 
-# 1. Verify, then extract the tarball to /opt/palai-runner.
-./verify.sh palai-runner-host-*.tar.gz
+# 1. Verify against the OUT-OF-BAND key (not the .pub in the package), then extract to /opt/palai-runner.
+./verify.sh palai-runner-host-*.tar.gz /path/to/trusted-signing.pub
 sudo mkdir -p /opt/palai-runner /etc/palai/runner
 sudo tar -xzf palai-runner-host-*.tar.gz -C /opt/palai-runner
 

@@ -1,18 +1,30 @@
 #!/bin/sh
 # E14 T5 — verify a Palai runner host package BEFORE extracting it onto a runner host. It (1)
 # recomputes the tarball sha256 and compares it to the manifest, and (2) checks the detached
-# openssl ECDSA signature against the pinned public key. It FAILS (non-zero exit) on ANY
-# mismatch: a single flipped byte in the tarball breaks both the digest and the signature
-# (proven by package_test.go's tamper case). Pin/trust palai-runner-signing.pub out of band —
-# the signature only proves the tarball was signed by whoever holds the matching private key.
+# openssl ECDSA signature against a trusted public key. It FAILS (non-zero exit) on ANY mismatch.
 #
-# Usage: verify.sh <tarball> [pubkey] [sig] [sha256-manifest]
+# TRUST MODEL — the public key MUST come from OUT OF BAND, never from the package directory. A
+# channel attacker can swap the tarball, its .sig, AND its .sha256 all at once and re-sign with
+# their OWN key; if you also trusted the .pub sitting beside them, the signature would be nothing
+# but a second checksum. So this script REQUIRES an explicit pubkey (arg 2 or PALAI_RUNNER_PUBKEY)
+# and has NO sibling default — obtain the key (or pin its fingerprint) from a separate trusted
+# channel (the project's release page / your config management), then pass it here. Optionally set
+# PALAI_RUNNER_PUBKEY_FINGERPRINT to the key's sha256 and this refuses a key that does not match.
+#
+# Usage: verify.sh <tarball> <pubkey> [sig] [manifest]
 set -eu
 
-tarball="${1:?usage: verify.sh <tarball> [pubkey] [sig] [sha256-manifest]}"
-pubkey="${2:-$(dirname "$tarball")/palai-runner-signing.pub}"
+tarball="${1:?usage: verify.sh <tarball> <pubkey> [sig] [manifest]}"
+pubkey="${2:-${PALAI_RUNNER_PUBKEY:-}}"
+if [ -z "$pubkey" ]; then
+	echo "verify: a trusted public key is REQUIRED (arg 2 or PALAI_RUNNER_PUBKEY)." >&2
+	echo "verify: obtain it OUT OF BAND — never from the package dir — then re-run." >&2
+	exit 2
+fi
 sig="${3:-${tarball}.sig}"
 manifest="${4:-${tarball}.sha256}"
+
+command -v openssl >/dev/null 2>&1 || { echo "verify: openssl not found — cannot check the signature" >&2; exit 3; }
 
 for f in "$tarball" "$pubkey" "$sig" "$manifest"; do
 	[ -f "$f" ] || { echo "verify: missing $f" >&2; exit 2; }
@@ -28,6 +40,15 @@ sha256_of() {
 	fi
 }
 
+# Optional fingerprint pin: refuse a public key whose sha256 does not match the out-of-band value.
+if [ -n "${PALAI_RUNNER_PUBKEY_FINGERPRINT:-}" ]; then
+	fp="$(sha256_of "$pubkey")"
+	if [ "$fp" != "$PALAI_RUNNER_PUBKEY_FINGERPRINT" ]; then
+		echo "verify: FAIL — public key fingerprint $fp does not match the pinned $PALAI_RUNNER_PUBKEY_FINGERPRINT" >&2
+		exit 1
+	fi
+fi
+
 want="$(awk '{print $1; exit}' "$manifest")"
 got="$(sha256_of "$tarball")"
 if [ "$want" != "$got" ]; then
@@ -35,9 +56,11 @@ if [ "$want" != "$got" ]; then
 	exit 1
 fi
 
-if ! openssl dgst -sha256 -verify "$pubkey" -signature "$sig" "$tarball" >/dev/null 2>&1; then
-	echo "verify: FAIL — signature does not verify against $pubkey" >&2
+# Capture openssl's own message so a real error (e.g. an unreadable key) is surfaced, not swallowed
+# into a generic "signature does not verify".
+if ! msg="$(openssl dgst -sha256 -verify "$pubkey" -signature "$sig" "$tarball" 2>&1)"; then
+	echo "verify: FAIL — signature check failed against $pubkey: $msg" >&2
 	exit 1
 fi
 
-echo "verify: OK — sha256 and signature verified for $tarball"
+echo "verify: OK — sha256 and signature verified for $tarball against $pubkey"

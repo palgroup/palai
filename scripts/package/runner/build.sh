@@ -5,8 +5,11 @@
 # runs verify.sh, extracts the tarball, and enables palai-runner.service. See runner-host.md.
 #
 # Determinism: the linux binary is built with -trimpath (path-independent) and every staged file
-# is stamped to a fixed mtime with uid/gid 0, so two builds of the same source yield a
-# byte-identical tarball (asserted by package_test.go). The ECDSA signature is NOT reproducible
+# is stamped to a fixed mtime with uid/gid 0, so two builds of the same source on the SAME tar
+# toolchain yield a byte-identical tarball (asserted by package_test.go). bsdtar and GNU tar spell
+# owner-zeroing differently and emit different archive formats, so cross-toolchain byte-identity is
+# NOT claimed — a release rebuild reproduces on the machine/toolchain it was cut on. The ECDSA
+# signature is NOT reproducible
 # (random k) — that is fine, the SIGNED artifact (the tarball) is what must be deterministic.
 #
 # Signing tool: `openssl dgst -sha256 -sign/-verify` over an ECDSA P-256 key. Rationale (per the
@@ -47,12 +50,18 @@ chmod 0755 "$stage/palai-runner" "$stage/palai-runner.sh"
 chmod 0644 "$stage/palai-runner.service" "$stage/runner.env.example" "$stage/runner-host.md"
 find "$stage" -exec touch -t "$MTIME" {} +
 
-# Deterministic tar: sorted members, uid/gid 0, numeric owner, no mac metadata; gzip -n drops the
-# name+timestamp from the gzip header. bsdtar (macOS) and GNU tar both honor these flags.
+# Deterministic tar: sorted members, uid/gid 0, numeric owner; gzip -n drops the name+timestamp
+# from the gzip header. bsdtar and GNU tar zero the owner with DIFFERENT flags (and --no-mac-metadata
+# is bsdtar-only — GNU tar errors on it, which pipefail would turn into a failed release build), so
+# pick the flag set by tar flavor.
+if tar --version 2>/dev/null | grep -qiE 'bsdtar|libarchive'; then
+	tar_flags="--uid 0 --gid 0 --numeric-owner --no-mac-metadata --no-xattrs"
+else
+	tar_flags="--owner=0 --group=0 --numeric-owner"
+fi
 members="$(cd "$stage" && find . -type f | sed 's|^\./||' | LC_ALL=C sort)"
-# shellcheck disable=SC2086  # $members is our own newline/space-free sorted file list, intended to split
-( cd "$stage" && tar --uid 0 --gid 0 --numeric-owner --no-mac-metadata --no-xattrs -cf - $members ) \
-	| gzip -n -9 > "$out/$tarball"
+# shellcheck disable=SC2086  # $tar_flags and $members are our own space-safe lists, intended to split
+( cd "$stage" && tar $tar_flags -cf - $members ) | gzip -n -9 > "$out/$tarball"
 
 # sha256 manifest + detached signature.
 ( cd "$out" && sha256sum "$tarball" > "${tarball}.sha256" )

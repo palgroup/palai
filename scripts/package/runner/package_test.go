@@ -1,6 +1,8 @@
-// E14 T5 — the package gate: build the signed runner host package, prove it verifies, prove it
-// is deterministic (byte-identical rebuild), and prove verify FAILS on a single flipped byte.
-// It execs the same build.sh/verify.sh an operator runs, so the gate covers the real scripts.
+// E14 T5 — the package gate: build the signed runner host package, prove it verifies, prove it is
+// deterministic (byte-identical rebuild, SAME toolchain), and prove verify FAILS closed on a
+// flipped byte, a re-signed manifest, a WRONG signing key, and a missing out-of-band key. It execs
+// the same build.sh/verify.sh an operator runs, so the gate covers the real scripts — deleting
+// verify.sh's signature check would turn the wrong-key and re-sha cases RED.
 package runner
 
 import (
@@ -62,6 +64,11 @@ func build(t *testing.T, out string) string {
 	return name
 }
 
+// pubkeyOf is the public key build.sh emitted beside the tarball. In these tests it stands in for
+// the operator's OUT-OF-BAND trusted key (same trusted session, no channel attacker); verify.sh
+// itself refuses to default to it (TestVerifyRequiresExplicitOutOfBandKey).
+func pubkeyOf(out string) string { return filepath.Join(out, "palai-runner-signing.pub") }
+
 func sha256File(t *testing.T, p string) string {
 	t.Helper()
 	b, err := os.ReadFile(p)
@@ -72,12 +79,29 @@ func sha256File(t *testing.T, p string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// verify runs verify.sh against tarball; ok reports whether it exited zero.
-func verify(t *testing.T, tarball string) (ok bool, output string) {
+// verify runs verify.sh <tarball> <pubkey>; ok reports whether it exited zero.
+func verify(t *testing.T, tarball, pubkey string) (ok bool, output string) {
 	t.Helper()
-	cmd := exec.Command("/bin/sh", "verify.sh", tarball)
+	cmd := exec.Command("/bin/sh", "verify.sh", tarball, pubkey)
 	out, err := cmd.CombinedOutput()
 	return err == nil, string(out)
+}
+
+// genP256Pubkey mints a throwaway ECDSA P-256 keypair (a DIFFERENT signer than build.sh's) and
+// returns its public key path — the attacker's key in the wrong-key case.
+func genP256Pubkey(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	key := filepath.Join(dir, "other.key")
+	pub := filepath.Join(dir, "other.pub")
+	run := func(args ...string) {
+		if out, err := exec.Command("openssl", args...).CombinedOutput(); err != nil {
+			t.Fatalf("openssl %v: %v\n%s", args, err, out)
+		}
+	}
+	run("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", key)
+	run("pkey", "-in", key, "-pubout", "-out", pub)
+	return pub
 }
 
 func TestPackageBuildsVerifiesAndIsDeterministic(t *testing.T) {
@@ -93,12 +117,12 @@ func TestPackageBuildsVerifiesAndIsDeterministic(t *testing.T) {
 		}
 	}
 
-	// verify.sh accepts the freshly signed package.
-	if ok, out := verify(t, tarball1); !ok {
+	// verify.sh accepts the freshly signed package against its (out-of-band) key.
+	if ok, out := verify(t, tarball1, pubkeyOf(out1)); !ok {
 		t.Fatalf("verify.sh rejected a freshly built package:\n%s", out)
 	}
 
-	// Deterministic: a second build of the same source is byte-identical.
+	// Deterministic (same toolchain): a second build of the same source is byte-identical.
 	out2 := t.TempDir()
 	name2 := build(t, out2)
 	if name2 != name {
@@ -114,23 +138,75 @@ func TestVerifyFailsOnTamperedTarball(t *testing.T) {
 	name := build(t, out)
 	tarball := filepath.Join(out, name)
 
-	// Sanity: the untampered package verifies.
-	if ok, o := verify(t, tarball); !ok {
+	if ok, o := verify(t, tarball, pubkeyOf(out)); !ok {
 		t.Fatalf("baseline verify failed:\n%s", o)
 	}
 
-	// Flip a single byte in the tarball body, leaving the manifest, signature, and public key
-	// untouched — exactly the download-corruption / tamper case verify.sh must catch.
-	b, err := os.ReadFile(tarball)
+	// Flip a single byte, leaving manifest+sig+key untouched — download-corruption / tamper.
+	flipByte(t, tarball)
+
+	if ok, o := verify(t, tarball, pubkeyOf(out)); ok {
+		t.Fatalf("verify.sh PASSED a tampered tarball — it must fail closed:\n%s", o)
+	}
+}
+
+// TestVerifyRejectsReshaTamper (S5a): flip a byte AND regenerate the .sha256 to match the tampered
+// tarball. The digest now agrees, so ONLY the signature can catch it — this is the case that turns
+// RED if verify.sh's openssl block is removed.
+func TestVerifyRejectsReshaTamper(t *testing.T) {
+	out := t.TempDir()
+	name := build(t, out)
+	tarball := filepath.Join(out, name)
+
+	flipByte(t, tarball)
+	// Rewrite the manifest to the tampered tarball's digest ("<hash>  <name>", verify reads field 1).
+	manifest := tarball + ".sha256"
+	if err := os.WriteFile(manifest, []byte(sha256File(t, tarball)+"  "+name+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if ok, o := verify(t, tarball, pubkeyOf(out)); ok {
+		t.Fatalf("verify.sh PASSED a re-sha'd tampered tarball — the signature must catch it:\n%s", o)
+	}
+}
+
+// TestVerifyRejectsWrongKey (MF1 / S5b): the signature must bind to a SPECIFIC key. An operator
+// holding the real out-of-band key rejects a package signed by anyone else — verify against a
+// different key's public half must FAIL, or the signature is just a checksum.
+func TestVerifyRejectsWrongKey(t *testing.T) {
+	out := t.TempDir()
+	name := build(t, out)
+	tarball := filepath.Join(out, name)
+
+	if ok, o := verify(t, tarball, genP256Pubkey(t)); ok {
+		t.Fatalf("verify.sh PASSED against a wrong public key — the signature does not bind to the signer:\n%s", o)
+	}
+}
+
+// TestVerifyRequiresExplicitOutOfBandKey (MF1): verify.sh must NOT default the pubkey to the sibling
+// in the package dir — that made the signature a no-op against a fully re-signed channel. With no
+// key argument it must fail closed even though the sibling .pub is right there.
+func TestVerifyRequiresExplicitOutOfBandKey(t *testing.T) {
+	out := t.TempDir()
+	name := build(t, out)
+	tarball := filepath.Join(out, name)
+
+	cmd := exec.Command("/bin/sh", "verify.sh", tarball)   // no pubkey arg
+	cmd.Env = append(os.Environ(), "PALAI_RUNNER_PUBKEY=") // and none in the env
+	out2, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("verify.sh PASSED with no explicit key — it must require an out-of-band key:\n%s", out2)
+	}
+}
+
+func flipByte(t *testing.T, path string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b[len(b)/2] ^= 0xff
-	if err := os.WriteFile(tarball, b, 0o600); err != nil {
+	if err := os.WriteFile(path, b, 0o600); err != nil {
 		t.Fatal(err)
-	}
-
-	if ok, o := verify(t, tarball); ok {
-		t.Fatalf("verify.sh PASSED a tampered tarball — it must fail closed:\n%s", o)
 	}
 }
