@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# SH-2 RC UAT — the E15 EXIT gate (plan §T6). One target, a deterministic/evidence CORE (always) + a
+# PROVIDER-gated live journey. The core is provider-agnostic and Docker-free.
+#
+#   deterministic core (always):
+#     1. tests/uat/upgrade — the SH-2 evidence ANCHOR (the committed self-host-0.2.0 RC bundle verifies clean
+#        through the shared verifier with every E15 rule active; the upgrade spine, event-continuity digest,
+#        helm policy-assert digest, and the DR RPO/RTO are all RE-DERIVED from raw sources — a fabricated value
+#        fails) + the anti-fabrication rejection tests.
+#     2. tests/uat/self-host — the catalog gate (OPS-003..008 + DR-001..002/004..006 + SAN-011 materialized, each
+#        pointing at an in-tree proof at its real build tier).
+#     3. tests/uat (the shared verifier + PromoteGate units, incl. the promote-refusal RED test).
+#     4. evidence-verify RELEASE=self-host-0.2.0 — the committed bundle through the shipped CLI verifier (0/0/0/0).
+#     5. promote.sh self-host-0.2.0 — the mechanical promote gate: rc PASSES (rollback + restore proof present);
+#        stable is REFUSED (the E14 §6 operator legs have not run — never auto-claimed).
+#
+#   live tier (PROVIDER=provider-one): TestSH2Journey (tests/uat/upgrade, //go:build uat) brings up the REAL
+#     production profile on Docker Desktop and drives the whole host-agnostic SH-2 journey ONE STACK AT A TIME:
+#     clean N install -> provisioning + a REAL provider run -> backup -> an ACTIVE run alive across an N->N+1
+#     `palai upgrade` (survives on its pinned engine + completes) -> app rollback + engine-alias rollback
+#     (drain-before-recreate, T2 MF-3) -> a DR-001 drill + restore verify (measured) -> air-gap bundle build +
+#     offline `--network none` verify -> helm render/policy assert (+ the kind smoke reference). It ends in a
+#     REAL provider run. It does NOT write the committed bundle (that is authored deterministic data verified by
+#     the core). Credentials load ONLY from .env.local via `set -a` — never argv, never `set -x`, never the
+#     bundle or a commit. Honest ceiling (plan §6): the local seam is two-local-build upgrade, a kind cluster, an
+#     internal-network air-gap, and a same-host DR — the real cluster / air-gap / second-site legs are §6.
+#
+# set -x must NEVER be enabled in this script: it would echo the sourced secret.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# Core 1-3 — the SH-2 anchor + catalog + verifier/promote units (no Docker, no credential).
+go test -count=1 ./tests/uat/upgrade/... ./tests/uat/self-host/... ./tests/uat
+
+# Core 4 — the committed self-host-0.2.0 RC bundle verifies clean through the shipped CLI verifier.
+RELEASE=self-host-0.2.0 scripts/evidence/verify
+
+# Core 5 — the mechanical promote gate: rc passes, stable is refused (the operator legs have not run).
+RELEASE=self-host-0.2.0 scripts/release/promote.sh rc
+if RELEASE=self-host-0.2.0 scripts/release/promote.sh stable >/dev/null 2>&1; then
+  echo "promote gate FAILED to refuse a stable promote without the operator attestation" >&2
+  exit 1
+fi
+echo "promote gate: rc PASS, stable correctly REFUSED (E14 §6 operator legs pending — not claimed)" >&2
+
+# Live tier — PROVIDER=provider-one runs the whole SH-2 journey ending in a REAL provider run. The credential
+# loads from the git-ignored .env.local into the go test child's environment (set -a, never set -x / argv /
+# log). Without PROVIDER the journey skip-guards itself, so this target is green in CI without a key.
+if [ "${PROVIDER:-fake}" = "provider-one" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "OPENAI_API_KEY is unset; the SH-2 journey's live run needs it in .env.local" >&2
+    exit 1
+  fi
+  export PALAI_UAT_PROVIDER=provider-one
+  echo "uat-sh2: live journey TestSH2Journey (upgrade + DR + air-gap + helm, ends in a real provider run)" >&2
+  exec go test -tags uat -count=1 -timeout 60m -run TestSH2Journey ./tests/uat/upgrade -v
+fi

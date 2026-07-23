@@ -9,11 +9,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 
 	"github.com/palgroup/palai/packages/coordinator/recovery"
+	"github.com/palgroup/palai/tests/uat/dr"
 )
 
 // Finding is one reason an evidence bundle fails verification. Case is "" for a
@@ -52,12 +55,16 @@ func (s Summary) String() string {
 // evidenceManifest mirrors protocols/schemas/evidence/manifest.json. Missing required
 // fields decode to the zero value, which the verifier reports rather than tolerating.
 type evidenceManifest struct {
-	Release    string         `json:"release"`
-	GitSHA     string         `json:"git_sha"`
-	APIVersion string         `json:"api_version"`
-	Migration  string         `json:"migration"`
-	CapturedAt string         `json:"captured_at"`
-	Cases      []evidenceCase `json:"cases"`
+	Release    string `json:"release"`
+	GitSHA     string `json:"git_sha"`
+	APIVersion string `json:"api_version"`
+	Migration  string `json:"migration"`
+	CapturedAt string `json:"captured_at"`
+	// Maturity is the release stage (e.g. "rc"); OperatorAttestation is the E14 §6 operator-leg note a
+	// beyond-rc promote requires. Both are optional metadata VerifyManifest ignores; PromoteGate reads them.
+	Maturity            string          `json:"maturity"`
+	OperatorAttestation json.RawMessage `json:"operator_attestation"`
+	Cases               []evidenceCase  `json:"cases"`
 }
 
 type evidenceCase struct {
@@ -142,6 +149,26 @@ type evidenceCase struct {
 	BackupProof        *BackupProof        `json:"backup_proof"`
 	RestoreVerifyClaim string              `json:"restore_verify_claim"`
 	RestoreVerifyProof *RestoreVerifyProof `json:"restore_verify_proof"`
+	// The E15 SH-2 RC claims (plan §T6, OPS-003..008 + DR-001 + SAN-011 — the E15 EXIT gate) extend the same
+	// marker-alone-is-NEVER-proof discipline to the five upgrade/DR/air-gap/helm invariants: an active run
+	// SURVIVED an N->N+1 upgrade on its pinned engine and both rollbacks (app + engine-alias) DRAINED it, not
+	// silently migrated it (UpgradeClaim, OPS-005/007 + SAN-011 — the journey's spine); the migration chain
+	// RESUMED after an interruption to the right journal head with no data corruption (MigrationJournalClaim,
+	// OPS-006); a DR drill produced a MEASURED RPO/RTO the verifier recomputes from raw timestamps
+	// (DrillClaim, DR-001 + DR-002/004..006 — the measurement anti-fabrication anchor); a signed air-gap
+	// bundle re-verified OFFLINE and rejected a tamper (AirgapClaim, OPS-004); and the restricted Helm chart
+	// RENDERED with zero ClusterRole + the restricted policy asserts (HelmRenderClaim, OPS-003). Each requires
+	// its proof — an "upgraded"/"resumed"/"drilled"/"verified"/"rendered" marker alone is never evidence.
+	UpgradeClaim          string                 `json:"upgrade_claim"`
+	UpgradeProof          *UpgradeProof          `json:"upgrade_proof"`
+	MigrationJournalClaim string                 `json:"migration_journal_claim"`
+	MigrationJournalProof *MigrationJournalProof `json:"migration_journal_proof"`
+	DrillClaim            string                 `json:"drill_claim"`
+	DrillProof            *DrillProof            `json:"drill_proof"`
+	AirgapClaim           string                 `json:"airgap_claim"`
+	AirgapProof           *AirgapProof           `json:"airgap_proof"`
+	HelmRenderClaim       string                 `json:"helm_render_claim"`
+	HelmRenderProof       *HelmRenderProof       `json:"helm_render_proof"`
 }
 
 type evidenceTerm struct {
@@ -561,6 +588,166 @@ func (p RestoreVerifyProof) Complete() bool {
 	return p.ArchiveChecksum && p.MigrationVersion && p.TenantIDs && p.RunRetrieval && p.RLSIsolation && p.SecretDecrypt
 }
 
+// UpgradeStepIDs is the ordered upgrade-journey spine the SH-2 EXIT journey resolves (plan §T6). Unlike the
+// install/managed-cloud spines this is NOT restart-less — an N->N+1 upgrade RECREATES the control-plane by
+// design; the load-bearing invariant is that the ACTIVE run SURVIVES that recreate on its pinned engine and
+// the event stream stays continuous. JourneyDigest in an UpgradeProof is hashParts of exactly this list; the
+// anti-fabrication gate (tests/uat/upgrade) recomputes hashParts(UpgradeStepIDs...), asserts the committed
+// step_ids EQUAL this canonical list, and fails if either does not reproduce — the E14 spine-anchor discipline.
+var UpgradeStepIDs = []string{
+	"clean-install-n", "provision", "real-run-n", "active-run-start", "backup",
+	"upgrade-n-to-n1", "active-run-survived", "real-run-n1",
+	"app-rollback", "engine-alias-rollback", "dr-drill", "airgap-offline-verify", "helm-render",
+}
+
+// HelmPolicyAsserts is the canonical restricted-chart policy-assert set a HelmRenderProof carries (plan §T3/§T6).
+// AssertsDigest is hashParts of exactly this list, so the anti-fabrication gate recomputes it — a bundle that
+// quietly drops an assert (e.g. no-cluster-role) cannot keep a matching digest. Keep in lockstep with the
+// render-assert suite (tests/uat/kubernetes/render_assert_test.go).
+var HelmPolicyAsserts = []string{
+	"no-cluster-role", "run-as-non-root", "no-privileged", "network-policy-default-deny",
+	"pod-disruption-budget", "migration-job-pre-install-hook", "external-pg-s3-only",
+}
+
+// UpgradeProof is the evidence an upgrade_claim requires (plan §T6, OPS-005/007 + SAN-011): an active run was
+// alive across an N->N+1 `palai upgrade` and SURVIVED on its pinned engine (SurvivingRunCompleted), the event
+// stream it emitted stayed continuous across the control-plane recreate (EventContinuityDigest = hashParts of
+// the ordered ContinuityEventIDs — re-derivable, so a fabricated digest is caught), and BOTH rollbacks took
+// effect: the app image rolled back to N with the schema still expanded (AppRollback) and the new-run engine
+// alias pointer rolled back (EngineAliasRollback), each DRAINING the active run before recreate rather than
+// silently migrating it (RollbackDrained — the T2 MF-3 invariant). FromVersion/ToVersion are the two build
+// stamps (must differ — same binaries, different -ldflags stamp). StepIDs is the ordered journey spine
+// (UpgradeStepIDs) and JourneyDigest is hashParts(StepIDs...). An "upgraded" marker with a run that did not
+// survive, a fabricated continuity digest, a rollback that did not drain, or equal version stamps is not proof.
+type UpgradeProof struct {
+	FromVersion           string   `json:"from_version"`
+	ToVersion             string   `json:"to_version"`
+	SurvivingRunID        string   `json:"surviving_run_id"`
+	SurvivingRunCompleted bool     `json:"surviving_run_completed"`
+	ContinuityEventIDs    []string `json:"continuity_event_ids"`
+	EventContinuityDigest string   `json:"event_continuity_digest"`
+	AppRollback           bool     `json:"app_rollback"`
+	EngineAliasRollback   bool     `json:"engine_alias_rollback"`
+	RollbackDrained       bool     `json:"rollback_drained"`
+	StepIDs               []string `json:"step_ids"`
+	JourneyDigest         string   `json:"journey_digest"`
+}
+
+// Complete reports two DISTINCT version stamps, a surviving+completed run, a re-derivable continuity digest
+// over a real event list, both rollbacks with the drain-before-recreate invariant, a full ordered spine, and a
+// well-formed journey digest. It does NOT recompute the digests (that is the anti-fabrication gate's job,
+// mirroring InstallProof) — but a run that did not complete, equal stamps, a rollback that did not drain, a
+// short spine, or a malformed digest fails here so the surviving-run spine can never be marker-passed.
+func (p UpgradeProof) Complete() bool {
+	return p.FromVersion != "" && p.ToVersion != "" && p.FromVersion != p.ToVersion &&
+		p.SurvivingRunID != "" && p.SurvivingRunCompleted && len(p.ContinuityEventIDs) >= 2 &&
+		checksumPattern.MatchString(p.EventContinuityDigest) &&
+		p.AppRollback && p.EngineAliasRollback && p.RollbackDrained &&
+		len(p.StepIDs) >= len(UpgradeStepIDs) && checksumPattern.MatchString(p.JourneyDigest)
+}
+
+// MigrationJournalProof is the evidence a migration_journal_claim requires (plan §T6, OPS-006): the boot
+// migration chain was INTERRUPTED mid-run (a test-only fault killed the control-plane) and RESUMED on restart
+// to the correct journal head with NO data corruption. JournalHead is the head migration the schema_revisions
+// journal reports after resume; InterruptedAt is the migration the fault hit; Resumed records the chain
+// completed; RowChecksumMatch records the pre/post row-checksum was identical (no corruption). A "resumed"
+// marker with no head, an unfinished chain, or a checksum drift is not proof.
+type MigrationJournalProof struct {
+	JournalHead      string `json:"journal_head"`
+	InterruptedAt    string `json:"interrupted_at"`
+	Resumed          bool   `json:"resumed"`
+	RowChecksumMatch bool   `json:"row_checksum_match"`
+}
+
+// Complete reports a journal head, the interruption point, a resumed+completed chain, and a matching pre/post
+// row checksum. A missing head/interruption, an unfinished chain, or a checksum mismatch is not proof.
+func (p MigrationJournalProof) Complete() bool {
+	return p.JournalHead != "" && p.InterruptedAt != "" && p.Resumed && p.RowChecksumMatch
+}
+
+// DrillProof is the evidence a drill_claim requires (plan §T6, DR-001 + DR-002/004..006 — the measurement
+// anti-fabrication anchor): a DR drill ran on the two-stack seam and produced a MEASURED RPO/RTO the verifier
+// recomputes from the RAW timestamps. It REUSES the T5 dr.Measure format verbatim (the same raw timestamps +
+// computed seconds T5's dr.Verify writes), and Complete() recomputes with the SAME dr.ComputeRPO/RTO T5 uses —
+// so a hand-edited rpo_seconds/rto_seconds fails HERE (the shape verifier), not only in the dedicated anchor
+// test. Measure is nil for detection-only drills (DR-004 object corruption, DR-005 key recovery) that prove
+// fail-closed detection, not a timed recovery. A "drilled" marker with no id/scenario, a failed drill, or a
+// measurement the raw timestamps do not support is not proof.
+type DrillProof struct {
+	DrillID  string      `json:"drill_id"`
+	Scenario string      `json:"scenario"`
+	Passed   bool        `json:"passed"`
+	Measure  *dr.Measure `json:"measure,omitempty"`
+}
+
+// Complete reports a named drill that passed and, when it carries a Measure, an RPO/RTO DERIVABLE from its raw
+// timestamps (recomputed with dr.ComputeRPO/RTO, the exact primitives T5's dr.Verify uses) and non-negative. A
+// detection-only drill (Measure nil) passes on the id/scenario/passed triple. A fabricated measurement — a
+// hand-edited seconds value the timestamps do not reproduce, or an unparseable/negative window — fails.
+func (p DrillProof) Complete() bool {
+	if p.DrillID == "" || p.Scenario == "" || !p.Passed {
+		return false
+	}
+	if p.Measure == nil {
+		return true // detection-only drill: fail-closed detection, no timed recovery to measure
+	}
+	lw, err1 := time.Parse(time.RFC3339Nano, p.Measure.LastMarkerWrittenAt)
+	lb, err2 := time.Parse(time.RFC3339Nano, p.Measure.LastMarkerInBackupAt)
+	da, err3 := time.Parse(time.RFC3339Nano, p.Measure.DisasterAt)
+	ra, err4 := time.Parse(time.RFC3339Nano, p.Measure.RecoveredAt)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return false
+	}
+	const eps = 1e-6
+	if math.Abs(dr.ComputeRPO(lw, lb)-p.Measure.RPOSeconds) > eps ||
+		math.Abs(dr.ComputeRTO(da, ra)-p.Measure.RTOSeconds) > eps {
+		return false
+	}
+	return p.Measure.RPOSeconds >= 0 && p.Measure.RTOSeconds >= 0
+}
+
+// AirgapProof is the evidence an airgap_claim requires (plan §T6, OPS-004): a signed offline air-gap bundle
+// re-verified with NO network and rejected a tamper. ManifestDigest is the bundle's signed-root sha256sums
+// digest; SignatureVerified records the openssl P-256 detached signature (the E14 T5 tool, verbatim) verified;
+// OfflineNetworkNone records the verify ran inside `docker run --network none` (egress topologically
+// impossible, not a log line); TamperRejected records a 1-byte flip made verify FAIL (the negative half). A
+// "verified" marker without the offline-network-none proof, or without the tamper rejection, is not proof.
+type AirgapProof struct {
+	ManifestDigest     string `json:"manifest_digest"`
+	SignatureVerified  bool   `json:"signature_verified"`
+	OfflineNetworkNone bool   `json:"offline_network_none"`
+	TamperRejected     bool   `json:"tamper_rejected"`
+}
+
+// Complete reports a well-formed manifest digest, a verified signature, an offline (--network none)
+// verification, and a rejected tamper. A malformed digest or any false is not proof.
+func (p AirgapProof) Complete() bool {
+	return checksumPattern.MatchString(p.ManifestDigest) && p.SignatureVerified &&
+		p.OfflineNetworkNone && p.TamperRejected
+}
+
+// HelmRenderProof is the evidence a helm_render_claim requires (plan §T6, OPS-003): the restricted Helm chart
+// rendered and passed the policy asserts. RenderHash is sha256 of the `helm template` output (environment-
+// captured, not re-derivable across hosts, so only well-formedness is gated here). PolicyAsserts is the set of
+// restricted asserts that passed; AssertsDigest is hashParts(PolicyAsserts...) — RE-DERIVABLE, so the anti-
+// fabrication gate recomputes it against HelmPolicyAsserts and a bundle that drops an assert cannot keep a
+// matching digest. NoClusterRole is the load-bearing restricted invariant (no ongoing cluster-admin). A render
+// with a fabricated asserts digest, fewer than the canonical asserts, or a ClusterRole present is not proof.
+type HelmRenderProof struct {
+	RenderHash    string   `json:"render_hash"`
+	PolicyAsserts []string `json:"policy_asserts"`
+	AssertsDigest string   `json:"asserts_digest"`
+	NoClusterRole bool     `json:"no_cluster_role"`
+}
+
+// Complete reports a well-formed render hash, at least the canonical policy asserts, a well-formed asserts
+// digest, and the no-ClusterRole invariant. A malformed hash/digest, a short assert list, or a ClusterRole
+// present fails.
+func (p HelmRenderProof) Complete() bool {
+	return checksumPattern.MatchString(p.RenderHash) && len(p.PolicyAsserts) >= len(HelmPolicyAsserts) &&
+		checksumPattern.MatchString(p.AssertsDigest) && p.NoClusterRole
+}
+
 // secretPattern matches a credential-shaped token (an OpenAI-style sk- key), so a plaintext
 // credential fails the redaction scan even when the exact value is not supplied as a needle.
 var secretPattern = regexp.MustCompile(`sk-[A-Za-z0-9_-]{12,}`)
@@ -809,6 +996,49 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "restore_verify_proof (a restore-verify claim requires all six checks — checksum, migration, tenant-ids, run-retrieval, RLS isolation, secret canary; a 'verified' marker is not proof)"})
 			case !c.RestoreVerifyProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "restore_verify_proof is incomplete: a checksum/migration/tenant-id/run-retrieval mismatch, RLS disabled on the restored data, or a secret that no longer decrypts under the target key (DR-004..006)"})
+			}
+		}
+
+		// The E15 SH-2 RC claims mirror the rule exactly: a non-empty marker with no proof is "missing"; a
+		// proof that fails its Complete() invariant is "invalid" (plan §T6, OPS-003..008 + DR-001 + SAN-011).
+		if c.UpgradeClaim != "" {
+			switch {
+			case c.UpgradeProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "upgrade_proof (an upgrade claim requires the two version stamps + a surviving-and-completed run + a re-derivable continuity digest + both rollbacks draining the run; an 'upgraded' marker is not proof)"})
+			case !c.UpgradeProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "upgrade_proof is incomplete: equal/missing version stamps, a run that did not survive-and-complete, a malformed continuity/journey digest, or a rollback that did not drain the active run (OPS-005/007, SAN-011, MF-3)"})
+			}
+		}
+		if c.MigrationJournalClaim != "" {
+			switch {
+			case c.MigrationJournalProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "migration_journal_proof (a migration-journal claim requires the journal head + the interruption point + a resumed chain with a matching row checksum; a 'resumed' marker is not proof)"})
+			case !c.MigrationJournalProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "migration_journal_proof is incomplete: a missing journal head/interruption point, an unfinished chain, or a pre/post row-checksum drift (OPS-006)"})
+			}
+		}
+		if c.DrillClaim != "" {
+			switch {
+			case c.DrillProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "drill_proof (a drill claim requires the drill id + scenario + pass, and for a timed drill a RPO/RTO derivable from raw timestamps; a 'drilled' marker is not proof)"})
+			case !c.DrillProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "drill_proof is incomplete: a missing id/scenario, a failed drill, or a MEASURED rpo/rto the raw timestamps do not reproduce — a fabricated measurement (DR-001, DR-002/004..006)"})
+			}
+		}
+		if c.AirgapClaim != "" {
+			switch {
+			case c.AirgapProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "airgap_proof (an airgap claim requires the manifest digest + an offline (--network none) signature re-verify + a rejected tamper; a 'verified' marker is not proof)"})
+			case !c.AirgapProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "airgap_proof is incomplete: a malformed manifest digest, a signature that did not verify, a verify that was not offline, or a tamper that was not rejected (OPS-004)"})
+			}
+		}
+		if c.HelmRenderClaim != "" {
+			switch {
+			case c.HelmRenderProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "helm_render_proof (a helm-render claim requires the render hash + the restricted policy asserts + a re-derivable asserts digest + no-ClusterRole; a 'rendered' marker is not proof)"})
+			case !c.HelmRenderProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "helm_render_proof is incomplete: a malformed render/asserts digest, fewer than the canonical policy asserts, or a ClusterRole present in the render (OPS-003)"})
 			}
 		}
 

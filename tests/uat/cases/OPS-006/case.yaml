@@ -1,0 +1,11 @@
+id: OPS-006
+name: interrupted-migration-chain-resumes-to-correct-journal-head-without-corruption
+proof_class: component-real
+provider: fake
+input: "the boot migration chain is INTERRUPTED mid-run (the control-plane dies while applying a tranche) and RESUMES on restart to the correct append-only schema_revisions journal head with NO data corruption; the preflight (version/disk/backup-status) rejects a newer database and the journal records each first-apply idempotently. Against a REAL Postgres. The live REAL-binary kill/resume drill is make migration-resume-drill / make uat-sh2. Proof seam: the fault-injection interruption on a real Postgres; a large-data background backfill is not exercised (no live case needs it yet — the first one MUST use this pattern, T1 honest ceiling)"
+expect_status: completed
+proof:
+  - tests/component/postgres/migration_journal_test.go:TestMigrationInterruptionResumes
+  - tests/component/postgres/migration_journal_test.go:TestMigrationJournalRecordsChainHead
+  - tests/component/postgres/migration_journal_test.go:TestMigrationPreflightRejectsNewerDatabase
+# ceiling: resumable background data-migration proven with a fixture; the first real large-data backfill must use this pattern (plan §T1)

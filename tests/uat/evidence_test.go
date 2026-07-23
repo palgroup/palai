@@ -820,6 +820,243 @@ func TestRestoreVerifyClaimRequiresAllSixChecks(t *testing.T) {
 	}
 }
 
+// --- E15 SH-2 RC claim tests (plan §T6) ---
+
+// TestUpgradeClaimRequiresSurvivingRunAndDrainedRollback pins OPS-005/007 + SAN-011: an upgrade case must carry
+// two DISTINCT version stamps, a surviving-and-completed run, a well-formed continuity + journey digest, and
+// both rollbacks with the drain-before-recreate invariant (T2 MF-3). A marker is missing; equal stamps, a run
+// that did not survive, a malformed digest, or a rollback that did not drain is invalid.
+func TestUpgradeClaimRequiresSurvivingRunAndDrainedRollback(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{
+			"from_version": "v0.1.0-1-gaaaaaaa", "to_version": "v0.2.0-rc1-gbbbbbbb",
+			"surviving_run_id": "run_survivor", "surviving_run_completed": true,
+			"continuity_event_ids":    []any{"response.created", "response.in_progress", "response.completed"},
+			"event_continuity_digest": "sha256:" + strings.Repeat("c", 64),
+			"app_rollback":            true, "engine_alias_rollback": true, "rollback_drained": true,
+			"step_ids": UpgradeStepIDs, "journey_digest": "sha256:" + strings.Repeat("d", 64),
+		}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["upgrade_claim"] = "upgraded"
+	c["upgrade_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete upgrade proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["upgrade_claim"] = "upgraded"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("an upgrade claim with no proof must be a Finding (an 'upgraded' marker is not surviving-run proof)")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { p["to_version"] = "v0.1.0-1-gaaaaaaa" },       // same binary stamp
+		func(p map[string]any) { p["surviving_run_completed"] = false },        // the run did not survive
+		func(p map[string]any) { p["surviving_run_id"] = "" },                  // no surviving run
+		func(p map[string]any) { p["continuity_event_ids"] = []any{"only-1"} }, // too few events for a continuity digest
+		func(p map[string]any) { p["event_continuity_digest"] = "not-a-sha" },  // malformed continuity digest
+		func(p map[string]any) { p["app_rollback"] = false },                   // app rollback not proven
+		func(p map[string]any) { p["engine_alias_rollback"] = false },          // engine-alias rollback not proven
+		func(p map[string]any) { p["rollback_drained"] = false },               // MF-3: silently migrated, not drained
+		func(p map[string]any) { p["journey_digest"] = "nope" },                // malformed journey digest
+		func(p map[string]any) { p["step_ids"] = []string{"clean-install-n"} }, // short spine
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["upgrade_claim"] = "upgraded"
+		proof := full()
+		mutate(proof)
+		c["upgrade_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid upgrade proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestMigrationJournalClaimRequiresResumeWithoutCorruption pins OPS-006: a migration-journal case must carry
+// the journal head, the interruption point, a resumed chain, and a matching pre/post row checksum. A marker is
+// missing; an unfinished chain or a checksum drift is invalid.
+func TestMigrationJournalClaimRequiresResumeWithoutCorruption(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{"journal_head": "000034", "interrupted_at": "000033", "resumed": true, "row_checksum_match": true}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["migration_journal_claim"] = "resumed"
+	c["migration_journal_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete migration-journal proof should pass, got %v", f)
+	}
+	m = baseManifest()
+	caseOf(m)["migration_journal_claim"] = "resumed"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a migration-journal claim with no proof must be a Finding")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { p["journal_head"] = "" },
+		func(p map[string]any) { p["interrupted_at"] = "" },
+		func(p map[string]any) { p["resumed"] = false },
+		func(p map[string]any) { p["row_checksum_match"] = false }, // data corrupted across the interruption
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["migration_journal_claim"] = "resumed"
+		proof := full()
+		mutate(proof)
+		c["migration_journal_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid migration-journal proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestDrillClaimRecomputesMeasurement pins DR-001 + DR-002/004..006 — the measurement anti-fabrication anchor
+// in the SHAPE verifier: a timed drill's rpo/rto must be DERIVABLE from its raw timestamps (recomputed with the
+// SAME dr.ComputeRPO/RTO T5 uses), so a hand-edited seconds value fails Complete(). A detection-only drill
+// (no measure) passes on id/scenario/passed.
+func TestDrillClaimRecomputesMeasurement(t *testing.T) {
+	// RPO = 02:00:05.000 - 02:00:03.500 = 1.5s; RTO = 02:00:47.250 - 02:00:10.000 = 37.25s.
+	measure := func() map[string]any {
+		return map[string]any{
+			"last_marker_written_at":   "2026-07-24T02:00:05Z",
+			"last_marker_in_backup_at": "2026-07-24T02:00:03.5Z",
+			"rpo_seconds":              1.5,
+			"disaster_at":              "2026-07-24T02:00:10Z",
+			"recovered_at":             "2026-07-24T02:00:47.25Z",
+			"rto_seconds":              37.25,
+		}
+	}
+	// A measured drill with derivable seconds passes.
+	m := baseManifest()
+	c := caseOf(m)
+	c["drill_claim"] = "drilled"
+	c["drill_proof"] = map[string]any{"drill_id": "DR-001", "scenario": "primary-loss", "passed": true, "measure": measure()}
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a derivable measured drill should pass, got %v", f)
+	}
+	// A detection-only drill (no measure) passes.
+	m = baseManifest()
+	c = caseOf(m)
+	c["drill_claim"] = "detected"
+	c["drill_proof"] = map[string]any{"drill_id": "DR-004", "scenario": "object-corruption", "passed": true}
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a detection-only drill should pass, got %v", f)
+	}
+	// A marker with no proof is missing.
+	m = baseManifest()
+	caseOf(m)["drill_claim"] = "drilled"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a drill claim with no proof must be a Finding")
+	}
+	// THE ANTI-FABRICATION ANCHOR: a hand-edited rpo_seconds the raw timestamps do NOT support must fail.
+	m = baseManifest()
+	c = caseOf(m)
+	c["drill_claim"] = "drilled"
+	badMeasure := measure()
+	badMeasure["rpo_seconds"] = 0.1 // fabricated: the timestamps recompute to 1.5s
+	c["drill_proof"] = map[string]any{"drill_id": "DR-001", "scenario": "primary-loss", "passed": true, "measure": badMeasure}
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+		t.Fatal("a fabricated rpo_seconds the raw timestamps do not reproduce must be an invalid Finding (the measurement anti-fabrication anchor)")
+	}
+	// A fabricated rto_seconds also fails.
+	m = baseManifest()
+	c = caseOf(m)
+	c["drill_claim"] = "drilled"
+	badRTO := measure()
+	badRTO["rto_seconds"] = 5.0 // fabricated: the timestamps recompute to 37.25s
+	c["drill_proof"] = map[string]any{"drill_id": "DR-001", "scenario": "primary-loss", "passed": true, "measure": badRTO}
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+		t.Fatal("a fabricated rto_seconds must be an invalid Finding")
+	}
+	// A failed drill fails.
+	m = baseManifest()
+	c = caseOf(m)
+	c["drill_claim"] = "drilled"
+	c["drill_proof"] = map[string]any{"drill_id": "DR-001", "scenario": "primary-loss", "passed": false, "measure": measure()}
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+		t.Fatal("a failed drill must be an invalid Finding")
+	}
+}
+
+// TestAirgapClaimRequiresOfflineVerifyAndTamper pins OPS-004: an airgap case must carry a well-formed manifest
+// digest, a verified signature, an offline (--network none) verification, and a rejected tamper.
+func TestAirgapClaimRequiresOfflineVerifyAndTamper(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{
+			"manifest_digest":    "sha256:" + strings.Repeat("e", 64),
+			"signature_verified": true, "offline_network_none": true, "tamper_rejected": true,
+		}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["airgap_claim"] = "offline-verified"
+	c["airgap_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete airgap proof should pass, got %v", f)
+	}
+	m = baseManifest()
+	caseOf(m)["airgap_claim"] = "offline-verified"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("an airgap claim with no proof must be a Finding")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { p["manifest_digest"] = "not-a-sha256" },
+		func(p map[string]any) { p["signature_verified"] = false },
+		func(p map[string]any) { p["offline_network_none"] = false }, // verify was not network-isolated
+		func(p map[string]any) { p["tamper_rejected"] = false },      // a byte-flip was NOT rejected
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["airgap_claim"] = "offline-verified"
+		proof := full()
+		mutate(proof)
+		c["airgap_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid airgap proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestHelmRenderClaimRequiresRestrictedAsserts pins OPS-003: a helm-render case must carry a well-formed render
+// hash, at least the canonical restricted policy asserts, a well-formed asserts digest, and no-ClusterRole.
+func TestHelmRenderClaimRequiresRestrictedAsserts(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{
+			"render_hash": "sha256:" + strings.Repeat("f", 64), "policy_asserts": HelmPolicyAsserts,
+			"asserts_digest": "sha256:" + strings.Repeat("9", 64), "no_cluster_role": true,
+		}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["helm_render_claim"] = "rendered"
+	c["helm_render_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete helm-render proof should pass, got %v", f)
+	}
+	m = baseManifest()
+	caseOf(m)["helm_render_claim"] = "rendered"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a helm-render claim with no proof must be a Finding")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { p["render_hash"] = "not-a-sha256" },
+		func(p map[string]any) { p["policy_asserts"] = []string{"no-cluster-role"} }, // dropped most asserts
+		func(p map[string]any) { p["asserts_digest"] = "nope" },
+		func(p map[string]any) { p["no_cluster_role"] = false }, // a ClusterRole is present (cluster-admin)
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["helm_render_claim"] = "rendered"
+		proof := full()
+		mutate(proof)
+		c["helm_render_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid helm-render proof %v must be a Finding", proof)
+		}
+	}
+}
+
 // TestRemoteSigningSecretRedacted pins the E12 T10 credential-marker extension: a leaked whsec_ webhook/
 // remote-tool signing secret (the E11 callback + E12 remote-tool/hook signed transports share the same
 // webhook signer) is caught by the redaction pattern scan, so a plaintext signing secret fails the bundle

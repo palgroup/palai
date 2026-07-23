@@ -100,6 +100,40 @@ var expectedSelfHostCatalog = map[string]struct {
 		"packages/version/version_test.go:TestSupportedWindow",
 		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayRejectsUnsupportedRunnerSkew",
 	}},
+	// E15 T6 (the SH-2 RC EXIT gate, plan §T6) extends this OPS-/DR- catalog with the remaining
+	// upgrade/DR/air-gap/helm halves. Each rides an in-tree proof at its real build tier: OPS-003 the
+	// render/policy asserts, OPS-004 the signed OFFLINE air-gap verify + tamper rejection, and DR-001 the DR
+	// measurement recompute (all unit — they ride make verify); OPS-006 the migration-journal interruption/
+	// resume + preflight against a REAL Postgres (component-real); SAN-011 the gateway cordon/drain/revoke wire
+	// tests (unit). The live two-build upgrade + measured DR + offline air-gap + kind smoke is the make uat-sh2
+	// journey tier the case inputs name — this gate reads the deterministic half only (the E11-E14 split).
+	"OPS-003": {"unit", []string{
+		"tests/uat/kubernetes/render_assert_test.go:TestNoClusterRole",
+		"tests/uat/kubernetes/render_assert_test.go:TestControlPlaneSecurityContextRestricted",
+		"tests/uat/kubernetes/render_assert_test.go:TestNetworkPolicyDefaultDeny",
+		"tests/uat/kubernetes/render_assert_test.go:TestMigrationJobIsPreInstallHook",
+		"tests/uat/kubernetes/render_assert_test.go:TestPodDisruptionBudgetPresent",
+		"tests/uat/kubernetes/render_assert_test.go:TestNoInClusterDatabase",
+	}},
+	"OPS-004": {"unit", []string{
+		"deploy/airgap/airgap_test.go:TestBundleBuildsAndVerifies",
+		"deploy/airgap/airgap_test.go:TestVerifyFailsOnTamperedComponent",
+		"deploy/airgap/airgap_test.go:TestVerifyRejectsWrongKey",
+	}},
+	"OPS-006": {"component-real", []string{
+		"tests/component/postgres/migration_journal_test.go:TestMigrationInterruptionResumes",
+		"tests/component/postgres/migration_journal_test.go:TestMigrationJournalRecordsChainHead",
+		"tests/component/postgres/migration_journal_test.go:TestMigrationPreflightRejectsNewerDatabase",
+	}},
+	"DR-001": {"unit", []string{
+		"tests/uat/dr/report_test.go:TestVerifyRecomputesAndCatchesFabrication",
+	}},
+	"SAN-011": {"unit", []string{
+		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayDialRefusesWhenCordoned",
+		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayDrainWaitsForInFlightLease",
+		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayRevokeRefusesConnectAndDial",
+		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayRevokeDropsInFlightSessionFrames",
+	}},
 }
 
 // TestSelfHostCatalogMaterialized is the E14 self-host-catalog gate: every proven half from T1-T6 has a
