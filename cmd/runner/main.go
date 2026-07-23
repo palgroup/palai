@@ -18,6 +18,7 @@ import (
 
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
 	"github.com/palgroup/palai/packages/runner"
+	"github.com/palgroup/palai/packages/version"
 )
 
 func main() {
@@ -41,6 +42,9 @@ func main() {
 		ControllerCAs: controllerCAs,
 		ControllerDNS: controllerDNS,
 		Now:           time.Now,
+		// Advertise this runner build's stamp so the control-plane enforces the §48.2 support window
+		// (OPS-008): a runner more than two minors behind is rejected at connect with the hop message.
+		Version: version.Resolve(),
 	}
 
 	driver, err := oci.NewDockerInteractiveDriver()

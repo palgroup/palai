@@ -64,6 +64,11 @@ type Session struct {
 	// DialHandshakeTimeout bounds the outbound dial + runner.v1 handshake. Zero uses
 	// dialHandshakeDeadline. It never bounds the lease-offer park or a held lease.
 	DialHandshakeTimeout time.Duration
+	// Version is this runner build's version stamp, advertised in the runner.hello so the control-plane
+	// can enforce the §48.2 support window (OPS-008). Empty leaves the hello version-less (a pre-E15-T2
+	// runner), which the control-plane treats as unstamped and does not window-check. cmd/runner sets it
+	// from packages/version.Resolve.
+	Version string
 }
 
 // ReceiveLease opens the outbound session, completes the runner.v1 handshake, and
@@ -133,6 +138,9 @@ func (s Session) openConnection(ctx context.Context) (*websocket.Conn, *http.Tra
 		Protocol: RunnerProtocolV1,
 		Type:     "runner.hello",
 		Time:     s.Now().UTC().Format(time.RFC3339),
+		// Advertise the runner build stamp so the control-plane can enforce the §48.2 support window
+		// (OPS-008). Carried in the generic data map so the runner.v1 schema is untouched (no regen).
+		Data: helloData(s.Version),
 	})
 	if err != nil {
 		closeConnection(connection, transport)
@@ -163,6 +171,16 @@ func (s Session) openConnection(ctx context.Context) (*websocket.Conn, *http.Tra
 		return nil, nil, Lease{}, err
 	}
 	return connection, transport, lease, nil
+}
+
+// helloData carries the runner's advertised version in the hello's data map, or nil when the runner is
+// version-less (the pre-E15-T2 shape, byte-identical to the old hello) so an unstamped build sends the
+// exact frame it always did.
+func helloData(v string) map[string]any {
+	if v == "" {
+		return nil
+	}
+	return map[string]any{"version": v}
 }
 
 func closeConnection(connection *websocket.Conn, transport *http.Transport) {

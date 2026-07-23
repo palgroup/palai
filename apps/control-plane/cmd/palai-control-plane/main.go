@@ -11,8 +11,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	// time/tzdata embeds the IANA zoneinfo database in the binary so schedule timezones resolve even in a
@@ -213,7 +215,48 @@ func main() {
 	startOrphanGC(ctx, repo, supervisor, artStore)
 
 	log.Printf("palai control-plane listening on %s", addr)
-	log.Fatal(srv.ListenAndServe())
+	serveWithGracefulDrain(srv, gateway)
+}
+
+// serveWithGracefulDrain serves until SIGTERM/Interrupt, then DRAINS the runner gateway before exit:
+// it stops offering NEW leases and waits (bounded by PALAI_DRAIN_TIMEOUT, default 20s) for the in-flight
+// lease to finish, so a control-plane swap — compose sends SIGTERM to the OLD container during
+// `up -d control-plane` — is the §48.4 "runner drain" step rather than a hard kill of an active run.
+// Whatever does not finish inside the window is reclaimed and completed by the E10 recovery layer on the
+// new control-plane, so a run always survives the swap on its pinned engine. A stack with no gateway
+// (assignment-only tiers) or no in-flight lease drains instantly, so ordinary shutdowns are unchanged.
+func serveWithGracefulDrain(srv *http.Server, gateway *execution.RunnerGateway) {
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.ListenAndServe() }()
+
+	select {
+	case err := <-serveErr:
+		log.Fatalf("serve: %v", err) // the listener died on its own — fatal, as before
+	case <-sigCtx.Done():
+	}
+
+	if gateway != nil {
+		drainTimeout := envDuration("PALAI_DRAIN_TIMEOUT")
+		if drainTimeout <= 0 {
+			drainTimeout = 20 * time.Second
+		}
+		drainCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+		if err := gateway.Drain(drainCtx); err != nil {
+			log.Printf("runner drain did not fully quiesce (%v); interrupted work recovers on the next control-plane", err)
+		} else {
+			log.Printf("runner drain complete: no leases in flight")
+		}
+		cancel()
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("http shutdown: %v", err)
+	}
 }
 
 // migrateAndExit reports whether the binary was invoked with --migrate-and-exit (the Kubernetes

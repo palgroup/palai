@@ -71,20 +71,22 @@ func Supported(controlPlaneStamp, runnerStamp string) (ok bool, message string) 
 	}
 	switch {
 	case rMajor != cpMajor:
+		// Front-load the actionable fact: the messages become a WebSocket close reason (<=123 bytes),
+		// so the operator sees the incompatibility and the two versions before any truncation.
 		return false, fmt.Sprintf(
-			"runner major version %d is incompatible with control-plane major %d (%s vs %s); a major upgrade must go through the documented migration path, not a direct connect",
-			rMajor, cpMajor, runnerStamp, controlPlaneStamp)
+			"runner %s major-incompatible with control-plane %s; a major upgrade needs the documented migration path",
+			runnerStamp, controlPlaneStamp)
 	case rMinor > cpMinor:
 		return false, fmt.Sprintf(
-			"runner %s is newer than control-plane %s; upgrade the control-plane before enrolling a newer runner",
+			"runner %s newer than control-plane %s; upgrade the control-plane first",
 			runnerStamp, controlPlaneStamp)
 	case cpMinor-rMinor > supportedMinorLookback:
 		// The oldest minor this control-plane still serves is the required intermediate hop: bring the
 		// runner up to it before it may connect (it is then within the window of a newer control-plane).
 		hop := cpMinor - supportedMinorLookback
 		return false, fmt.Sprintf(
-			"runner %s is more than %d minors behind control-plane %s and is unsupported; upgrade the runner to at least %d.%d.0 (the oldest release this control-plane serves) before connecting",
-			runnerStamp, supportedMinorLookback, controlPlaneStamp, cpMajor, hop)
+			"runner %s unsupported: hop to %d.%d.0 first, then to control-plane %s (window: current+prev %d minors)",
+			runnerStamp, cpMajor, hop, controlPlaneStamp, supportedMinorLookback)
 	default:
 		return true, ""
 	}
