@@ -121,8 +121,11 @@ created="$(docker exec "$cp_ctr" wget -q -O- \
 	--header="Content-Type: application/json" \
 	--header="Idempotency-Key: airgap-$short" \
 	--post-data='{"input":"hello from the air-gap"}' \
-	http://127.0.0.1:8080/v1/responses)" || fail "response create failed"
-id="$(printf '%s' "$created" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+	http://127.0.0.1:8080/v1/responses)" || fail "response create failed (wget non-zero)"
+id="$(printf '%s' "$created" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("id",""))
+except Exception: pass')"
+[ -n "$id" ] || { echo "raw create response: $created" >&2; fail "response create returned no id"; }
 echo "response id=$id" >&2
 
 status=""
@@ -154,9 +157,13 @@ docker run --rm -v "$git_vol:/repos" --entrypoint /bin/sh "$GIT_IMAGE" -c '
 	|| fail "seeding the git fixture failed"
 docker run -d --name "$git_ctr" --network "$netname" -v "$git_vol:/repos" \
 	--entrypoint git "$GIT_IMAGE" daemon --reuseaddr --export-all --base-path=/repos /repos >/dev/null
-# Clone from ANOTHER in-network container (egress still impossible for both).
+# Clone from ANOTHER in-network container (egress still impossible for both). Retry a few
+# times to absorb the daemon's startup race (it was just backgrounded).
 docker run --rm --name "$git_client" --network "$netname" --entrypoint /bin/sh "$GIT_IMAGE" -c "
-	git clone -q git://$git_ctr/demo /tmp/clone && grep -q 'air-gapped repository' /tmp/clone/README.md" \
+	for i in 1 2 3 4 5 6 7 8; do
+		git clone -q git://$git_ctr/demo /tmp/clone 2>/dev/null && break || sleep 1
+	done
+	grep -q 'air-gapped repository' /tmp/clone/README.md" \
 	|| fail "in-network git clone failed"
 echo "IN-NETWORK GIT: clone over git:// succeeded on the internal network" >&2
 
