@@ -250,6 +250,11 @@ func buildBody(req modelbroker.Request) ([]byte, map[string]string, error) {
 		tools := make([]map[string]any, 0, len(req.Tools))
 		for _, t := range req.Tools {
 			wire := wireToolName(t.Name)
+			if existing, dup := names[wire]; dup {
+				// Two canonical names encoding to one wire name would silently overwrite the
+				// restore map (e.g. "a.b" and "a_b", or a 64-char truncation) — fail loudly.
+				return nil, nil, fmt.Errorf("tool name %q collides with %q on the wire (both encode to %q)", t.Name, existing, wire)
+			}
 			names[wire] = t.Name
 			fn := map[string]any{"name": wire, "parameters": t.Parameters}
 			if t.Description != "" {

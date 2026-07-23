@@ -40,6 +40,28 @@ case "$provider/$case_name" in
     run="TestLiveProviderOneTextStreamToolSchema"
     required_key="OPENAI_API_KEY"
     ;;
+  provider-two/text-stream-tool-schema)
+    # E16 Task 5 (MOD-001): the SECOND, independent direct provider family (Anthropic Messages).
+    # A REAL streamed message forces a schema-constrained tool call — streaming + tool request +
+    # strict-schema args + derived usage in one real Anthropic run (a real msg_ id). The credential
+    # is loaded from .env.local as ANTROPHIC_API_KEY (the file's spelling); the leak scan asserts its
+    # absence in process. Honest ceiling (named in the test): single real run (E08 — no tools opened to
+    # the engine); Anthropic cache/reasoning richness is out of scope (capability record marks it later).
+    pkg="./tests/live/provider"
+    run="TestLiveProviderTwoTextStreamToolSchema"
+    required_key="ANTROPHIC_API_KEY"
+    ;;
+  openai-compatible/capability-probe)
+    # E16 Task 5 (MOD-002): the ACTIVE capability probe end to end. Leg 1 LIVE — the probe against the
+    # REAL OpenAI endpoint (OpenAI-compatible by definition) observes streaming + tool-calling +
+    # strict-JSON. Leg 2 LOCAL — a fake "private" endpoint lacking tool-calling makes a tool-requiring
+    # run REJECT PRE-run (the real completion never sent). Uses OPENAI_API_KEY for the live leg. Honest
+    # ceiling (named in the test): a real private/self-hosted server (vLLM/Ollama) probe+run is a §6
+    # operator leg; the local fake models the reject-on-unsupported-feature contract.
+    pkg="./tests/live/provider"
+    run="TestLiveOpenAICompatibleCapabilityProbe"
+    required_key="OPENAI_API_KEY"
+    ;;
   provider-one/workspace-mount)
     # E09 Task 1: a real provider run bound to a real workspace allocation; the engine container
     # sees the real /workspace mount and the seeded file persists (proves the mount, not model
@@ -466,7 +488,7 @@ case "$provider/$case_name" in
     ;;
   *)
     echo "unknown live-provider selector: PROVIDER=$provider CASE=$case_name" >&2
-    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=artifact-retrieval, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation, PROVIDER=provider-one CASE=second-tenant-provisioning, PROVIDER=provider-one CASE=secret-rotation-restartless, PROVIDER=provider-one CASE=run-history-list, PROVIDER=provider-one CASE=edge-admission, PROVIDER=provider-one CASE=budget-admission, PROVIDER=provider-one CASE=model-route-per-project" >&2
+    echo "known: PROVIDER=provider-one CASE=text-stream-tool-schema, PROVIDER=provider-one CASE=workspace-mount, PROVIDER=provider-one CASE=artifact-write, PROVIDER=provider-one CASE=artifact-retrieval, PROVIDER=provider-one CASE=repository-clone, PROVIDER=provider-one CASE=subagents-isolated, PROVIDER=provider-one CASE=coding-tools, PROVIDER=provider-one CASE=agent-revision-run, PROVIDER=provider-one CASE=web-research-citations, PROVIDER=provider-one CASE=spontaneous-tool-roundtrip, PROVIDER=provider-one CASE=hook-deny-visible, PROVIDER=provider-one CASE=checkpoint-restore, PROVIDER=provider-one CASE=container-kill-recovery, PROVIDER=provider-one CASE=detached-child-conversation, PROVIDER=provider-one CASE=host-kill-restore, PROVIDER=provider-one CASE=trigger-dedupe-run, PROVIDER=provider-one CASE=cron-fires-once, PROVIDER=provider-one CASE=callback-once, PROVIDER=provider-one CASE=inbound-webhook-run, PROVIDER=provider-one CASE=registry-tool-roundtrip, PROVIDER=provider-one CASE=remote-tool-async-roundtrip, PROVIDER=provider-one CASE=mcp-tool-roundtrip, PROVIDER=provider-one CASE=mcp-sampling-budgeted, PROVIDER=provider-one CASE=skill-no-authority, PROVIDER=provider-one CASE=tenancy-isolation, PROVIDER=provider-one CASE=second-tenant-provisioning, PROVIDER=provider-one CASE=secret-rotation-restartless, PROVIDER=provider-one CASE=run-history-list, PROVIDER=provider-one CASE=edge-admission, PROVIDER=provider-one CASE=budget-admission, PROVIDER=provider-one CASE=model-route-per-project, PROVIDER=provider-two CASE=text-stream-tool-schema, PROVIDER=openai-compatible CASE=capability-probe" >&2
     exit 2
     ;;
 esac
