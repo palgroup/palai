@@ -5,24 +5,27 @@
 # only the TLS edge is published. See docs/operations/backup-restore.md.
 #
 # It reads .palai/config.json (via PALAI_HOME) for the project name and pg password, so it
-# needs PALAI_HOME and Docker socket access — NOT the compose file. WorkingDirectory is the
-# backup output dir: with no --out, `palai backup` writes palai-backup-<project>-<UTC>.tar.gz
-# there. After a successful backup, ExecStartPost prunes old archives (retention example).
+# needs PALAI_HOME and Docker socket access — NOT the compose file. The backup dir is created
+# and entered INSIDE ExecStart (a chdir-via-WorkingDirectory would 200/CHDIR on a clean host,
+# before an ExecStartPre could create it); with no --out, `palai backup` writes
+# palai-backup-<project>-<UTC>.tar.gz into the cwd. After a successful backup, ExecStartPost
+# prunes old archives (retention example).
 
 [Unit]
 Description=Palai installation-level backup
 Documentation=file:///opt/palai/docs/operations/backup-restore.md
 Requires=docker.service
 After=docker.service palai-stack.service
-# Do not run the backup if the stack is not up — there would be nothing to dump.
-Wants=palai-stack.service
+# Requisite (NOT Wants): the backup FAILS if the stack is not already active, rather than
+# BRINGING IT UP. An operator who `systemctl stop palai-stack` for maintenance must not have the
+# 02:30 timer silently start production.
+Requisite=palai-stack.service
 
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/palai/production.env
-WorkingDirectory=/var/backups/palai
-ExecStartPre=/bin/mkdir -p /var/backups/palai
-ExecStart=/usr/local/bin/palai backup
+# Create + enter the backup dir, then exec `palai backup` (exec so its exit code is the unit's).
+ExecStart=/bin/sh -c 'mkdir -p /var/backups/palai && cd /var/backups/palai && exec /usr/local/bin/palai backup'
 # Retention: keep 14 days of archives, always keeping the newest (a real check, not a comment
 # — proven by deploy/systemd/prune_test.go). Tune the day count to your RPO/retention policy.
 ExecStartPost=/opt/palai/deploy/systemd/palai-backup-prune.sh /var/backups/palai 14

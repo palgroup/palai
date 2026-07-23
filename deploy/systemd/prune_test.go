@@ -52,6 +52,9 @@ func TestPruneRemovesOldKeepsRecent(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Chtimes(other, time.Now().Add(-99*24*time.Hour), time.Now().Add(-99*24*time.Hour))
+	// A leaked .partial (a crashed backup, before install_backup.go's atomic rename) is OUTSIDE the
+	// prune glob, so it is never counted as an archive nor deleted (S8 — the two layers cooperate).
+	partial := mkArchive(t, dir, "palai-backup-p-20250103T000000Z.tar.gz.partial", 35)
 
 	runPrune(t, dir, "14")
 
@@ -63,6 +66,9 @@ func TestPruneRemovesOldKeepsRecent(t *testing.T) {
 	}
 	if !exists(other) {
 		t.Fatal("prune removed a non-backup file — it must only touch palai-backup-*.tar.gz")
+	}
+	if !exists(partial) {
+		t.Fatal("prune deleted a .partial — it sits outside the palai-backup-*.tar.gz glob and must be ignored")
 	}
 }
 
@@ -83,25 +89,30 @@ func TestPruneAlwaysKeepsNewest(t *testing.T) {
 	}
 }
 
-// TestRunnerUnitIsOutboundOnly: the runner unit reflects the outbound-only contract — it never
-// activates a socket. (The binary + compose invariant prove the property; this pins that the
-// unit does not silently re-introduce a listener via socket activation.)
-func TestRunnerUnitIsOutboundOnly(t *testing.T) {
-	raw, err := os.ReadFile("palai-runner.service")
+// directives returns a unit file's directive lines (comments and blanks stripped), joined — so a
+// comment that MENTIONS a directive name is not mistaken for the directive itself.
+func directives(t *testing.T, unit string) string {
+	t.Helper()
+	raw, err := os.ReadFile(unit)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Inspect DIRECTIVE lines only — a comment that mentions ListenStream (this unit's own
-	// explanation of why it has none) is fine; an actual directive is not.
-	var directives []string
+	var out []string
 	for _, line := range strings.Split(string(raw), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
 			continue
 		}
-		directives = append(directives, trimmed)
+		out = append(out, trimmed)
 	}
-	body := strings.Join(directives, "\n")
+	return strings.Join(out, "\n")
+}
+
+// TestRunnerUnitIsOutboundOnly: the runner unit reflects the outbound-only contract — it never
+// activates a socket. (The binary + compose invariant prove the property; this pins that the
+// unit does not silently re-introduce a listener via socket activation.)
+func TestRunnerUnitIsOutboundOnly(t *testing.T) {
+	body := directives(t, "palai-runner.service")
 	for _, forbidden := range []string{"ListenStream", "ListenDatagram", "[Socket]"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("palai-runner.service has directive %q — the runner is outbound-only, it must not be socket-activated", forbidden)
@@ -109,5 +120,21 @@ func TestRunnerUnitIsOutboundOnly(t *testing.T) {
 	}
 	if !strings.Contains(body, "Restart=always") {
 		t.Fatal("palai-runner.service lost Restart=always")
+	}
+}
+
+// TestBackupServiceRequisiteAndNoEarlyChdir pins MF3 + MF4: the backup unit must NOT pull a stopped
+// stack up (Requisite, not Wants) and must NOT chdir via WorkingDirectory (which 200/CHDIRs on a
+// clean host before any ExecStartPre could create the dir — the unit mkdirs inside ExecStart).
+func TestBackupServiceRequisiteAndNoEarlyChdir(t *testing.T) {
+	body := directives(t, "palai-backup.service")
+	if strings.Contains(body, "Wants=palai-stack.service") {
+		t.Fatal("palai-backup.service Wants=palai-stack.service — a stopped stack would be STARTED by the timer; use Requisite=")
+	}
+	if !strings.Contains(body, "Requisite=palai-stack.service") {
+		t.Fatal("palai-backup.service must Requisite=palai-stack.service (fail if the stack is not already up)")
+	}
+	if strings.Contains(body, "WorkingDirectory=") {
+		t.Fatal("palai-backup.service has WorkingDirectory= — chdir happens before ExecStartPre and 200/CHDIRs on a clean host; mkdir+cd inside ExecStart instead")
 	}
 }

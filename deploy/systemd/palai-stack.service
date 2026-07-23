@@ -35,9 +35,9 @@ ExecStart=/usr/bin/docker compose --env-file /etc/palai/production.env -p ${PALA
 ExecStop=/usr/bin/docker compose --env-file /etc/palai/production.env -p ${PALAI_COMPOSE_PROJECT} -f deploy/compose/compose.yaml -f deploy/compose/production.yml down
 Restart=always
 RestartSec=5
-# A stack bring-up (image pulls, healthcheck --wait inside compose) can outlast the default;
-# 0 disables the start timeout so a slow first boot is not killed mid-pull.
-TimeoutStartSec=0
+# No TimeoutStartSec: under Type=exec the unit is "started" the moment compose is exec'd (image
+# pulls then happen under the already-active unit), so a start timeout would not gate the pull
+# anyway — the container healthchecks in compose.yaml own readiness.
 
 [Install]
 WantedBy=multi-user.target

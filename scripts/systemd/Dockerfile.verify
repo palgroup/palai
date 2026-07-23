@@ -14,9 +14,11 @@ RUN useradd --system --no-create-home --shell /usr/sbin/nologin palai-runner \
  && groupadd -f docker
 
 # Stub the ExecStart targets so verify finds them executable. The real host installs the actual
-# binaries; here we only need the paths to resolve for the static unit check.
+# binaries; here we only need the paths to resolve for the static unit check. We deliberately do
+# NOT pre-create /var/backups/palai: the backup unit must create it itself at runtime, and not
+# masking it here means a re-introduced WorkingDirectory=/var/backups/palai would fail verify.
 RUN set -eux; \
-    mkdir -p /opt/palai/deploy/systemd /opt/palai-runner /etc/palai /var/backups/palai; \
+    mkdir -p /opt/palai/deploy/systemd /opt/palai-runner /etc/palai; \
     printf '#!/bin/sh\nexit 0\n' > /usr/bin/docker; \
     printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/palai; \
     chmod +x /usr/bin/docker /usr/local/bin/palai

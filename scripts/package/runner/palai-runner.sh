@@ -10,6 +10,13 @@ set -eu
 : "${PALAI_ENROLLMENT_TOKEN_FILE:?PALAI_ENROLLMENT_TOKEN_FILE is required (one-use token file)}"
 : "${PALAI_RUNNER_CA_CERT:?PALAI_RUNNER_CA_CERT is required (the controller CA the runner pins)}"
 
+# PALAI_SESSION_URL below strips the https:// prefix to build wss://…; a non-https URL would
+# yield a broken "wss://http://…", so require https up front rather than fail obscurely later.
+case "$PALAI_CONTROLLER_URL" in
+	https://*) : ;;
+	*) echo "palai-runner: PALAI_CONTROLLER_URL must start with https:// (got: $PALAI_CONTROLLER_URL)" >&2; exit 1 ;;
+esac
+
 # The one-use token is handed to the process in memory only; the runner clears it after
 # enrolling (cmd/runner unsets it) and never writes it back to disk.
 PALAI_ENROLLMENT_TOKEN="$(cat "$PALAI_ENROLLMENT_TOKEN_FILE")"

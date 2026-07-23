@@ -32,9 +32,11 @@ EnvironmentFile=/etc/palai/runner.env
 ExecStart=/opt/palai-runner/palai-runner.sh
 Restart=always
 RestartSec=5
-# The runner needs group access to /var/run/docker.sock; run it as a dedicated non-root user
-# in the docker group (operator creates it — see runner-host.md). Verify may warn the user is
-# unknown on a host that has not created it yet; that is a host-provisioning step, not a unit error.
+# The runner needs group access to /var/run/docker.sock; run it as a dedicated non-root user in
+# the docker group (operator creates it — see runner-host.md). HONEST NOTE: docker-group membership
+# is ROOT-EQUIVALENT on the host (it can launch a privileged container), so "non-root user" here is
+# defense-in-depth, NOT the trust boundary. The real boundary is the OCI engine SANDBOX the runner
+# supervises (no socket, no credential — tests/security/runner), not this unit's user.
 User=palai-runner
 SupplementaryGroups=docker
 # Modest hardening that does not touch the supervisor's Docker access or the outbound session.

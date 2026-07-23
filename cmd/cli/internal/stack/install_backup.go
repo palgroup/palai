@@ -174,13 +174,28 @@ func InstallBackup(outPath string) error {
 	if outPath == "" {
 		outPath = fmt.Sprintf("palai-backup-%s-%s.tar.gz", cfg.Project, m.CreatedAt.Format("20060102T150405Z"))
 	}
-	f, err := os.Create(outPath)
+	// Write to a .partial and atomically rename on success, so a failed backup never leaves a
+	// fresh-mtime PARTIAL under the final name — which the retention prune (deploy/systemd/
+	// palai-backup-prune.sh) would keep as "newest" while deleting the last GOOD archive. The
+	// .partial suffix also sits OUTSIDE the prune glob (palai-backup-*.tar.gz), so a leaked temp
+	// is invisible to prune.
+	tmpPath := outPath + ".partial"
+	f, err := os.Create(tmpPath)
 	if err != nil {
-		return fmt.Errorf("create archive %s: %w", outPath, err)
+		return fmt.Errorf("create archive %s: %w", tmpPath, err)
 	}
-	defer f.Close()
 	if err := writeBackupArchive(f, m, dbDump, objTar); err != nil {
+		f.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write archive: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close archive %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("finalize archive %s: %w", outPath, err)
 	}
 	fmt.Fprintf(os.Stderr, "backup written: migration v%d, %d org(s), %d object-file(s)\n",
 		m.MigrationVersion, len(m.OrganizationIDs), len(m.Objects))
