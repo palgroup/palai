@@ -56,6 +56,11 @@ const (
 	// A one-off container of it copies the object-store VOLUME with a tool set (tar, sh) the
 	// scratch-based seaweedfs image does not carry — and it is already pulled by the stack.
 	postgresImageRef = "postgres@" + postgresDigest
+
+	// seedOrgID is the control-plane's fixed boot-seeded first organization
+	// (apps/control-plane/internal/identity/store.go firstOrg). A fresh install carries exactly
+	// this tenant, so the empty-target gate excludes it when deciding a target is unused.
+	seedOrgID = "org_local"
 )
 
 // BackupManifest is the machine-readable index inside a backup archive. It records what the
@@ -173,7 +178,7 @@ func InstallBackup(outPath string) error {
 // member checksums, then replaces Postgres (pg_restore --clean) and the object-store volume with
 // the writers stopped for the swap.
 func InstallRestore(archivePath string) error {
-	cfg, p, err := loadConfig()
+	cfg, _, err := loadConfig()
 	if err != nil {
 		return err
 	}
@@ -192,9 +197,13 @@ func InstallRestore(archivePath string) error {
 
 	pg := cfg.containerName("postgres")
 
-	// Fail-closed empty-target gate: one query over the core tenant tables. Any row refuses.
+	// Fail-closed empty-target gate: any provisioned tenant (an organization beyond the fixed
+	// boot seed) OR any workload (a response/run) refuses the restore. A fresh install carries
+	// only the seeded org_local tenant and no runs, so it passes; a stack that has been
+	// provisioned or used does not — no live data is ever overwritten.
 	count, err := pgQueryInt(ctx, pg,
-		"SELECT (SELECT count(*) FROM organizations) + (SELECT count(*) FROM responses) + (SELECT count(*) FROM runs)")
+		"SELECT (SELECT count(*) FROM organizations WHERE id <> '"+seedOrgID+"') "+
+			"+ (SELECT count(*) FROM responses) + (SELECT count(*) FROM runs)")
 	if err != nil {
 		return fmt.Errorf("check target is empty: %w", err)
 	}
@@ -231,8 +240,12 @@ func InstallRestore(archivePath string) error {
 	if err := dockerRun(ctx, "start", cp, runner); err != nil {
 		return fmt.Errorf("start writers: %w", err)
 	}
-	if err := waitForAPI(cfg, p); err != nil {
-		return fmt.Errorf("target API did not come back after restore: %w", err)
+	// Wait on the container's healthcheck, NOT the bootstrap-key API: the restore just replaced
+	// the target's key_local row with the backup's, so the target's own bootstrap key no longer
+	// authenticates (the backup's does). The healthcheck (compose's /healthz probe) is
+	// unauthenticated and profile-agnostic — it needs no host-published port.
+	if err := waitForHealthy(ctx, cp); err != nil {
+		return fmt.Errorf("target did not come back after restore: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "restore complete: migration v%d, %d org(s) loaded into %s\n",
 		m.MigrationVersion, len(m.OrganizationIDs), cfg.Project)
@@ -565,6 +578,26 @@ func dockerCapture(ctx context.Context, stdin []byte, args ...string) ([]byte, e
 		return nil, fmt.Errorf("docker %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errBuf.String()))
 	}
 	return out.Bytes(), nil
+}
+
+// waitForHealthy polls a container's Docker healthcheck (compose's /healthz probe) until it is
+// healthy — profile-agnostic readiness that needs no host-published port and no API credential.
+func waitForHealthy(ctx context.Context, container string) error {
+	deadline := time.Now().Add(90 * time.Second)
+	var last string
+	for {
+		out, err := dockerCapture(ctx, nil, "inspect", "--format", "{{.State.Health.Status}}", container)
+		if err == nil {
+			last = strings.TrimSpace(string(out))
+			if last == "healthy" {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s did not become healthy (last status %q)", container, last)
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 // dockerRun runs `docker <args...>` (stop/start) with progress on stderr, under ctx's deadline.

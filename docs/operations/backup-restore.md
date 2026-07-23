@@ -53,9 +53,10 @@ It:
 palai restore --archive palai-backup-<project>-<UTC>.tar.gz
 ```
 
-**Fail-closed:** restore refuses any target that already holds tenant rows (organizations,
-responses, or runs) — it never overwrites live data. Restore only into a **freshly `init`ed,
-brought-up** stack (schema migrated, no tenant data).
+**Fail-closed:** restore refuses any target that holds a **provisioned tenant** (an organization
+beyond the fixed boot seed `org_local`) or **any workload** (a response/run) — it never
+overwrites live data. A **freshly `init`ed, brought-up** stack carries only the seeded
+`org_local` tenant and no runs, so it passes; a stack that has been provisioned or used does not.
 
 It verifies the archive's member checksums, then, with the writers stopped for the swap:
 
