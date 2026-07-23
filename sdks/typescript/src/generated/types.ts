@@ -93,6 +93,11 @@ export interface HookPatch {
   result?: Record<string, unknown>;
 }
 
+export interface ListView {
+  data: unknown[];
+  object: string;
+}
+
 export interface LocalLiveEvidenceManifest {
   api_version: string;
   captured_at: string;
@@ -123,6 +128,36 @@ export interface Message {
   role: string;
   source_ref?: OpaqueId;
   visibility?: string;
+}
+
+export interface ModelConnection {
+  created_at?: string;
+  id: OpaqueId;
+  object: string;
+  organization_id?: OrganizationId;
+  project_id?: ProjectId;
+  provider: string;
+  secret_ref: string;
+}
+
+export interface ModelRoute {
+  created_at?: string;
+  id: OpaqueId;
+  name: string;
+  object: string;
+  organization_id?: OrganizationId;
+  project_id?: ProjectId;
+}
+
+export interface ModelRouteRevision {
+  connection_id?: OpaqueId;
+  created_at?: string;
+  id: OpaqueId;
+  model?: string;
+  object: string;
+  published: boolean;
+  revision?: number;
+  route_id: OpaqueId;
 }
 
 export interface Page {

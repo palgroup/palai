@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/model-route.json",
+  "title": "ModelRoute",
+  "description": "A per-project named route alias (spec §27.6, E13 T8) that carries immutable, publishable revisions. Admin-only (the `provision` capability); never model-creatable. One lineage per project per name.",
+  "type": "object",
+  "required": ["id", "object", "name"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/opaque_id"},
+    "object": {"type": "string", "const": "model_route"},
+    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
+    "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
+    "name": {"type": "string", "description": "The alias a run resolves through (e.g. default)."},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

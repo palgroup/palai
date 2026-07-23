@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/model-route-revision.json",
+  "title": "ModelRouteRevision",
+  "description": "An immutable, publishable revision of a model route (spec §27.6, E13 T8): the model id and the connection that redeems it. A draft never steers a run; publishing makes it the project's routed target. The routing fields are never rewritten — a revise INSERTs a new revision. A thin projection (e.g. a publish acknowledgement) may omit the fields it did not read back.",
+  "type": "object",
+  "required": ["id", "object", "route_id", "published"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/opaque_id"},
+    "object": {"type": "string", "const": "model_route_revision"},
+    "route_id": {"$ref": "../common/id.json#/$defs/opaque_id"},
+    "revision": {"type": "integer", "minimum": 1},
+    "model": {"type": "string", "description": "The model id placed on the provider wire."},
+    "connection_id": {"$ref": "../common/id.json#/$defs/opaque_id"},
+    "published": {"type": "boolean", "description": "Whether this revision is the project's routed target."},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}

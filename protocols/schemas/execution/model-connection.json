@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.palai.dev/execution/model-connection.json",
+  "title": "ModelConnection",
+  "description": "A per-project binding of a provider family to a secret REFERENCE (spec §27.2, E13 T8). Admin-only (the `provision` capability); never model-creatable. The credential itself is never persisted or returned — only the secret_ref handle into the E13 T3 secret store travels here.",
+  "type": "object",
+  "required": ["id", "object", "provider", "secret_ref"],
+  "properties": {
+    "id": {"$ref": "../common/id.json#/$defs/opaque_id"},
+    "object": {"type": "string", "const": "model_connection"},
+    "organization_id": {"$ref": "../common/id.json#/$defs/organization_id"},
+    "project_id": {"$ref": "../common/id.json#/$defs/project_id"},
+    "provider": {"type": "string", "description": "The adapter family the broker dials at call time (e.g. provider-one)."},
+    "secret_ref": {"type": "string", "description": "A handle into the E13 T3 secret store; the credential value is redeemed at call time and never appears in any response."},
+    "created_at": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": true
+}
