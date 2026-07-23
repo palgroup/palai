@@ -5,7 +5,7 @@ SHELL := /bin/bash
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
 	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
-	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility evidence-verify
+	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud evidence-verify
 
 bootstrap:
 	go mod download
@@ -152,6 +152,16 @@ uat-automation:
 uat-extensibility:
 	@test -x scripts/uat/extensibility || { echo "extensibility UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' scripts/uat/extensibility
+
+# E13 EXIT gate: the managed-cloud catalog + committed-bundle evidence-verify core (always, no Docker) + the
+# live tier (PROVIDER=provider-one) — the restart-less SPINE journey on ONE in-proc process (provision a
+# tenant over the public API -> real provider run -> steer -> list -> cross-tenant deny, restart_count=0) plus
+# the per-task MCI-00N smokes (secret/artifact/budget/route) each proven live in their own process. Ends in a
+# REAL provider run. uat-local-live / uat-interactive / uat-coding / uat-recovery / uat-automation /
+# uat-extensibility above stay untouched.
+uat-managed-cloud:
+	@test -x scripts/uat/managed-cloud || { echo "managed-cloud UAT not implemented" >&2; exit 2; }
+	@PROVIDER='$(PROVIDER)' scripts/uat/managed-cloud
 
 evidence-verify:
 	@test -x scripts/evidence/verify || { echo "evidence verifier not implemented" >&2; exit 2; }

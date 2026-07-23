@@ -433,6 +433,21 @@ case "$provider/$case_name" in
     required_key="OPENAI_API_KEY"
     needs_postgres=1
     ;;
+  provider-one/managed-cloud-journey)
+    # E13 Task 11 (EXIT gate, MCI-001..008 spine): the WHOLE managed-cloud spine on ONE running process with
+    # NO restart, ending in a REAL provider-one run. On a single store + single router: two tenants are
+    # provisioned, tenant A's run completes on the real provider, an SDK-surface steer is durably accepted
+    # (202), tenant A lists its run history, and tenant B is denied A's run at every surface (404 / 400
+    # invalid_cursor / empty) — then the database boot time is proven identical start-to-end (restart_count=0).
+    # Needs the credential + a throwaway Postgres + the reference engine (PALAI_ENGINE_DIR, exported by
+    # run_live_with_postgres). Honest ceilings (named in the test): the steer is proven durably ACCEPTED (its
+    # loop-boundary application is the e2e proof); the finer steps (secret/artifact/budget/route/binding) are
+    # proven live by their own CASE smokes, run inline by scripts/uat/managed-cloud.
+    pkg="./apps/control-plane/internal/execution/live"
+    run="TestManagedCloudJourney"
+    required_key="OPENAI_API_KEY"
+    needs_postgres=1
+    ;;
   provider-one/budget-admission)
     # E13 Task 6 (BIL-001/BIL-003/QUO-001): durable metering on a REAL router over a throwaway Postgres.
     # A project carrying a LOW budget admits its first run, that run completes on the REAL provider-one and

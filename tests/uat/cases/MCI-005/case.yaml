@@ -1,0 +1,9 @@
+id: MCI-005
+name: edge-rate-and-admission-limits-refuse-with-429-before-compute
+proof_class: unit
+provider: fake
+input: "a burst past the per-API-key request-rate bucket and a concurrency/queue cap are refused with 429 + Retry-After + RFC9457 before any billable compute starts (§20.12) — the API-edge admission/rate refusal half; the durable-budget 402 refusal is BIL-001/QUO-001's tier"
+expect_status: completed
+proof:
+  - apps/control-plane/api/middleware/ratelimit_test.go:TestRateLimitMiddlewareEmitsProblem
+  - apps/control-plane/api/responses_admission_test.go:TestAdmitConcurrencyLimitedRenders429

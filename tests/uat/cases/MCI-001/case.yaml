@@ -1,0 +1,9 @@
+id: MCI-001
+name: second-tenant-provisioned-via-api-restart-less-config-policy-applied
+proof_class: component-real
+provider: fake
+input: "a SECOND tenant (org+project+admin key) is provisioned entirely through the public API on the same running process, and a PATCH /v1/projects config_policy is written and observed by the §14 resolver — the restart-less provisioning + config_policy write-path half of the managed-cloud journey; the live restart-less spine is the journey tier (make uat-managed-cloud PROVIDER=provider-one)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/identity/provisioning_component_test.go:TestProvisionSecondTenantViaAPI
+  - apps/control-plane/internal/identity/provisioning_component_test.go:TestConfigPolicyResolverReachable

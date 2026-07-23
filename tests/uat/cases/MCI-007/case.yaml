@@ -1,0 +1,8 @@
+id: MCI-007
+name: repository-binding-connection-ref-resolves-tenant-scoped-credential
+proof_class: component-real
+provider: fake
+input: "a repository binding whose connection_ref is set resolves a BINDING-SCOPED Git credential through the secret-ref path and clones under it, while a ref-less binding still falls through to the global GitHub App — the connection_ref resolver seam half"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/execution/repository_binding_component_test.go:TestBindingConnectionRefClonesUnderTenantCredential

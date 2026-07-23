@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Managed-cloud UAT — the E13 EXIT gate. One target, a deterministic/evidence CORE (always) + a
+# PROVIDER-gated live journey. The core is provider-agnostic and Docker-free: the catalog gate + the
+# committed managed-cloud-0.1.0 bundle verify with every managed-cloud rule active.
+#
+#   deterministic core (always):
+#     1. tests/uat/managed-cloud — the catalog gate (MCI-001..008 materialized, proof_class == the build
+#        tier of the referenced T1-T10 proof) + the evidence gate (the committed managed-cloud-0.1.0 bundle
+#        verifies clean through the shared verifier: 0 failed, 0 missing, 0 secret findings, all eight rules
+#        exercised, journey_digest + artifact content_digest re-derivable / anti-fabrication).
+#     2. evidence-verify RELEASE=managed-cloud-0.1.0 — the same committed bundle through the shipped CLI
+#        verifier (the operator path).
+#
+#   live tier (PROVIDER=provider-one): TWO parts.
+#     A. TestManagedCloudJourney — the restart-less SPINE on ONE process (an in-proc httptest.NewServer over
+#        the shipped api.NewRouter, NOT the packaged compose stack): PROVISION a tenant over the public API
+#        (POST /v1/organizations, /v1/projects, PATCH config_policy, POST /v1/api-keys) -> a REAL provider run
+#        -> an API steer (202 accepted) -> list run history -> a cross-tenant negative (tenant B gets a real
+#        404 / 400 invalid_cursor / empty for tenant A's run). It ends in a REAL provider-one run (chatcmpl)
+#        and proves restart_count=0 (pg_postmaster_start_time identical start-to-end). It does NOT write the
+#        bundle — the committed managed-cloud-0.1.0 is authored deterministic data (verified by the core).
+#     B. the per-task MCI-00N smokes inline (below) — secret-resolve, artifact, budget/rate, model-route, each
+#        proven live in its own process. Together A+B prove every step live; A alone proves restart-less.
+#     Credentials load ONLY from .env.local via `set -a` (scripts/test/live-provider) — never argv, never
+#     `set -x`, never the bundle or a commit. Honest ceilings are named per-step in the journey + the manifest.
+#
+# uat-coding / uat-local-live / uat-interactive / uat-recovery / uat-automation / uat-extensibility stay
+# UNTOUCHED.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# Core 1 — the managed-cloud catalog + committed-bundle evidence gates (no Docker, no credential).
+go test -count=1 ./tests/uat/managed-cloud/...
+
+# Core 2 — the committed managed-cloud-0.1.0 bundle verifies clean through the shipped CLI verifier.
+RELEASE=managed-cloud-0.1.0 scripts/evidence/verify
+
+# Live tier — PROVIDER=provider-one runs the restart-less SPINE journey (managed-cloud-journey) that ends in a
+# REAL provider run, THEN the per-task MCI-00N smokes inline so every managed-cloud step is proven live. Each
+# smoke opens its own throwaway Postgres (scripts/test/live-provider), so they do not serialize on a shared
+# stack; the spine's restart-less property is proven on ONE process by managed-cloud-journey. The credential is
+# loaded from the git-ignored .env.local by scripts/test/live-provider (set -a, never set -x / argv / log).
+if [ "${PROVIDER:-fake}" = "provider-one" ]; then
+  # The EXIT-gate spine first: ONE process, provision -> real provider run -> steer -> list -> cross-tenant
+  # deny, proven restart-less (pg boot identical start-to-end).
+  echo "uat-managed-cloud: live spine CASE=managed-cloud-journey (restart-less, ends in a real provider run)" >&2
+  PROVIDER=provider-one CASE=managed-cloud-journey scripts/test/live-provider
+
+  # Then each MCI-00N step live in its own process (the per-task smokes T2/T3/T4/T5/T6/T7/T8 landed):
+  #   second-tenant-provisioning=MCI-001  secret-rotation-restartless=MCI-002  run-history-list=MCI-003
+  #   artifact-retrieval=MCI-004  edge-admission + budget-admission=MCI-005  model-route-per-project=MCI-006
+  #   tenancy-isolation=cross-tenant (TEN-001/002).
+  for case in second-tenant-provisioning secret-rotation-restartless run-history-list artifact-retrieval \
+    edge-admission budget-admission model-route-per-project tenancy-isolation; do
+    echo "uat-managed-cloud: live smoke CASE=$case (PROVIDER=provider-one)" >&2
+    PROVIDER=provider-one CASE="$case" scripts/test/live-provider
+  done
+fi

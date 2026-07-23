@@ -5,6 +5,8 @@ package uat
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -98,6 +100,35 @@ type evidenceCase struct {
 	SkillProof          *SkillProof          `json:"skill_proof"`
 	CrashIsolationClaim string               `json:"crash_isolation_claim"`
 	CrashIsolationProof *CrashIsolationProof `json:"crash_isolation_proof"`
+	// The E13 managed-cloud claims (plan §T11, MCI-001..008) extend the same marker-alone-is-NEVER-proof
+	// discipline to the eight invariants the managed-cloud EXIT journey owns, ONE per MCI case: a second
+	// tenant was PROVISIONED via the API on the same restart-less process with its config_policy applied
+	// (ProvisioningClaim, MCI-001 — also the journey's restart-less spine); a secret-ref was written and
+	// RESOLVED by a run with no restart and the value never surfaced (SecretResolveClaim, MCI-002); a
+	// cross-tenant read was DENIED — tenant B got a real 404/403 with zero rows for tenant A's resource
+	// (IsolationClaim, MCI-003/004); an artifact DOWNLOADED with a re-derivable content digest that matched
+	// the run's bytes (ArtifactClaim, MCI-004); an admission was REFUSED by a budget/rate limit before any
+	// billable compute (RefusalClaim, MCI-005); two projects RESOLVED distinct model routes on one stack
+	// (RouteClaim, MCI-006); a repository binding's connection_ref RESOLVED a binding-scoped credential
+	// (BindingClaim, MCI-007); and a steer command DROVE the run through the SDK session surface
+	// (SteerClaim, MCI-008). Each requires its proof — a "provisioned"/"isolated"/"refused" marker alone is
+	// never evidence.
+	ProvisioningClaim  string              `json:"provisioning_claim"`
+	ProvisioningProof  *ProvisioningProof  `json:"provisioning_proof"`
+	SecretResolveClaim string              `json:"secret_resolve_claim"`
+	SecretResolveProof *SecretResolveProof `json:"secret_resolve_proof"`
+	IsolationClaim     string              `json:"isolation_claim"`
+	IsolationProof     *IsolationProof     `json:"isolation_proof"`
+	ArtifactClaim      string              `json:"artifact_claim"`
+	ArtifactProof      *ArtifactProof      `json:"artifact_proof"`
+	RefusalClaim       string              `json:"refusal_claim"`
+	RefusalProof       *RefusalProof       `json:"refusal_proof"`
+	RouteClaim         string              `json:"route_claim"`
+	RouteProof         *RouteProof         `json:"route_proof"`
+	BindingClaim       string              `json:"binding_claim"`
+	BindingProof       *BindingProof       `json:"binding_proof"`
+	SteerClaim         string              `json:"steer_claim"`
+	SteerProof         *SteerProof         `json:"steer_proof"`
 }
 
 type evidenceTerm struct {
@@ -209,6 +240,212 @@ type CrashIsolationProof struct {
 // so the EXT-005 release gate cannot be marker-passed.
 func (p CrashIsolationProof) Complete() bool {
 	return p.BreakerTripped && p.ToolUnavailableVisible && p.ControlPlaneStable && p.OtherRunFlowed
+}
+
+// ManagedCloudStepIDs is the ordered restart-less SPINE the managed-cloud EXIT journey resolves on ONE
+// process (plan §T11): provision a tenant over the public API (org, project, api-key), write its config_policy,
+// run a REAL provider completion, steer it, list the run history, and deny the cross-tenant read. These are
+// the steps ONE process actually resolves — NOT the full MCI-001..008 catalog (MCI-002/004/005/006/007 are
+// separate live smokes in their own processes; see scripts/uat/managed-cloud). JourneyDigest in a
+// ProvisioningProof is the hash of exactly this canonical list; the anti-fabrication gate
+// (tests/uat/managed-cloud) recomputes hashParts(ManagedCloudStepIDs...), asserts the committed step_ids
+// EQUAL this canonical list, and fails if either the digest or the list does not reproduce — a fabricated
+// spine is caught the way the E11 advertised_schema_hash was.
+var ManagedCloudStepIDs = []string{
+	"provision-org", "provision-project", "provision-api-key", "config-policy",
+	"real-run", "steer", "list-history", "cross-tenant-deny",
+}
+
+// hashParts is the shared checksum primitive (sha256 of each part followed by a NUL, hex-encoded, sha256:
+// prefixed) — the same construction as tests/uat hashBundle and the extensibility gate's hashOf. The
+// managed-cloud JourneyDigest is hashParts over the ordered step ids, so it is re-derivable from the
+// manifest's own step list and cannot be fabricated independently.
+func hashParts(parts ...string) string {
+	h := sha256.New()
+	for _, p := range parts {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// ProvisioningProof is the evidence a provisioning_claim requires (plan §T11 T2, MCI-001 — and the journey's
+// restart-less spine): a SECOND tenant was created through the public API (POST /v1/organizations, /v1/projects,
+// /v1/api-keys) on the SAME running process, its config_policy was written and observed by the resolver, and
+// the restart-less SPINE steps resolved on that one process with NO restart. OrgID/ProjectID/APIKeyID are the
+// created tenant's ids; ConfigPolicyApplied records the PATCH /v1/projects config_policy took on the resolver;
+// StepIDs is the ordered spine the process resolved (ManagedCloudStepIDs — the API-provision + run + steer +
+// list + cross-tenant-deny spine, NOT the finer MCI smokes) and JourneyDigest is hashParts(StepIDs...) —
+// re-derivable, so a fabricated digest is caught. RestartCount is the number of restarts across the spine
+// (must be 0 — the live journey proves it via pg_postmaster_start_time identical start-to-end; the
+// in-process control-plane cannot restart mid-journey, so the database boot time is the concrete measure). A
+// "provisioned" marker with no ids, an unapplied policy, a fabricated digest, or any restart is not proof.
+type ProvisioningProof struct {
+	OrgID               string   `json:"org_id"`
+	ProjectID           string   `json:"project_id"`
+	APIKeyID            string   `json:"api_key_id"`
+	ConfigPolicyApplied bool     `json:"config_policy_applied"`
+	StepIDs             []string `json:"step_ids"`
+	JourneyDigest       string   `json:"journey_digest"`
+	RestartCount        int      `json:"restart_count"`
+}
+
+// Complete reports the created tenant's three ids, an applied config_policy, a full ordered spine, a well-
+// formed journey digest, and zero restarts. It does NOT recompute the digest (that is the anti-fabrication
+// gate's job, mirroring AdvertisingProof) — but an empty or malformed digest, a short spine, or a restart
+// fails here so the restart-less spine can never be marker-passed.
+func (p ProvisioningProof) Complete() bool {
+	return p.OrgID != "" && p.ProjectID != "" && p.APIKeyID != "" && p.ConfigPolicyApplied &&
+		len(p.StepIDs) >= len(ManagedCloudStepIDs) && checksumPattern.MatchString(p.JourneyDigest) &&
+		p.RestartCount == 0
+}
+
+// SecretResolveProof is the evidence a secret_resolve_claim requires (plan §T11 T3, MCI-002): a secret-ref
+// was written through the API and RESOLVED by a real run without a restart, and its plaintext value NEVER
+// surfaced in a response, log, or event. Ref/Version identify the written secret; ResolvedInRun is the run
+// that consumed it; RestartCount must be 0 (rotation/resolution without restart is the whole point);
+// ValueSurfaced must be false. A "rotated" marker, a resolution that needed a restart, or a value that
+// leaked is not proof.
+type SecretResolveProof struct {
+	Ref           string `json:"ref"`
+	Version       string `json:"version"`
+	ResolvedInRun string `json:"resolved_in_run"`
+	RestartCount  int    `json:"restart_count"`
+	ValueSurfaced bool   `json:"value_surfaced"`
+}
+
+// Complete reports the ref, its version, the run that resolved it, zero restarts, and a value that never
+// surfaced. A missing ref/version/run, any restart, or a surfaced value is not proof.
+func (p SecretResolveProof) Complete() bool {
+	return p.Ref != "" && p.Version != "" && p.ResolvedInRun != "" && p.RestartCount == 0 && !p.ValueSurfaced
+}
+
+// IsolationProof is the evidence an isolation_claim requires (plan §T11 T1/T4/T5, MCI-003/004, TEN-001/002 —
+// the brief's load-bearing cross-tenant invariant): tenant B's request for tenant A's resource returned a
+// REAL deny (a 404 not-found or a 403 RLS-deny), disclosing ZERO of tenant A's rows — not a log line saying
+// "isolated". OwnerTenant/RequesterTenant are distinct; Resource names what was reached for (a run, an
+// artifact, a secret, a list cursor); ObservedStatus is the deny code; LeakedRows is how many of the owner's
+// rows the requester saw (must be 0). Same tenant on both sides, a 2xx, or any leaked row is the opposite of
+// isolation and is not proof.
+type IsolationProof struct {
+	OwnerTenant     string `json:"owner_tenant"`
+	RequesterTenant string `json:"requester_tenant"`
+	Resource        string `json:"resource"`
+	ObservedStatus  int    `json:"observed_status"`
+	LeakedRows      int    `json:"leaked_rows"`
+}
+
+// Complete reports two DISTINCT tenants, a named resource, a deny status (404 or 403), and zero leaked rows.
+// A self-isolation (same tenant), an allow status, or any leaked row fails — cross-tenant isolation cannot
+// be marker-passed.
+func (p IsolationProof) Complete() bool {
+	return p.OwnerTenant != "" && p.RequesterTenant != "" && p.OwnerTenant != p.RequesterTenant &&
+		p.Resource != "" && (p.ObservedStatus == 404 || p.ObservedStatus == 403) && p.LeakedRows == 0
+}
+
+// ArtifactProof is the evidence an artifact_claim requires (plan §T11 T5, MCI-004): a run-produced artifact
+// was DOWNLOADED over the authenticated read-path and its bytes matched the run's output. ContentDigest is
+// the sha256 the API's Content-Digest header carried; ByteLen is the downloaded length; DigestMatches records
+// that the digest equalled sha256 of the ACTUAL downloaded bytes (and, in the live tier, the workspace file
+// bit-for-bit). The digest is re-derivable from the artifact bytes, so the anti-fabrication gate recomputes
+// it — a made-up digest, a zero-length body, or a digest that did not match the bytes is not proof.
+type ArtifactProof struct {
+	ArtifactID    string `json:"artifact_id"`
+	ContentDigest string `json:"content_digest"`
+	ByteLen       int    `json:"byte_len"`
+	DigestMatches bool   `json:"digest_matches"`
+}
+
+// Complete reports the artifact id, a well-formed sha256 content digest, a non-empty body, and a digest that
+// matched the downloaded bytes. A missing id, a malformed digest, an empty body, or an unmatched digest fails.
+func (p ArtifactProof) Complete() bool {
+	return p.ArtifactID != "" && checksumPattern.MatchString(p.ContentDigest) && p.ByteLen > 0 && p.DigestMatches
+}
+
+// RefusalProof is the evidence a refusal_claim requires (plan §T11 T6/T7, MCI-005, BIL-001/QUO-001): an
+// admission was REFUSED by a durable budget or an edge rate limit, and the refused run NEVER started billable
+// compute (§20.12 — the run is rejected before compute, so it is not charged). LimitKind is "budget" or
+// "rate"; ObservedStatus is the deny code (402 for a budget/quota exhaustion, 429 for a rate/concurrency
+// cap); BillableComputeStarted must be false. A "refused" marker, an unknown limit kind, a non-deny status,
+// or a refusal that still burned compute is not proof.
+type RefusalProof struct {
+	LimitKind              string `json:"limit_kind"`
+	ObservedStatus         int    `json:"observed_status"`
+	BillableComputeStarted bool   `json:"billable_compute_started"`
+}
+
+// Complete reports a known limit kind, a deny status matching that kind (429 for rate, 402 for budget), and
+// no billable compute. Any other combination — a rate limit that returned 402, a budget that burned compute —
+// is not proof.
+func (p RefusalProof) Complete() bool {
+	if p.BillableComputeStarted {
+		return false
+	}
+	switch p.LimitKind {
+	case "rate":
+		return p.ObservedStatus == 429
+	case "budget":
+		return p.ObservedStatus == 402
+	default:
+		return false
+	}
+}
+
+// RouteProof is the evidence a route_claim requires (plan §T11 T8, MCI-006): two projects on ONE stack
+// resolved DISTINCT model routes — a different model id AND a distinct model connection each — so the
+// DB-backed per-project router (not a global env default) chose the model+credential. ProjectAModel and
+// ProjectBModel are the resolved model ids (must differ); DistinctConnections records that the two routes
+// pointed at different model_connections (distinct credentials). Honest ceiling: one provider FAMILY
+// (provider-one) — this proves per-project model+credential selection, not a second adapter. Identical
+// models or a shared connection is not proof that per-project routing took effect.
+type RouteProof struct {
+	ProjectAModel       string `json:"project_a_model"`
+	ProjectBModel       string `json:"project_b_model"`
+	DistinctConnections bool   `json:"distinct_connections"`
+}
+
+// Complete reports two non-empty, DISTINCT resolved model ids and distinct connections. Equal models or a
+// shared connection means per-project routing was not proven.
+func (p RouteProof) Complete() bool {
+	return p.ProjectAModel != "" && p.ProjectBModel != "" && p.ProjectAModel != p.ProjectBModel &&
+		p.DistinctConnections
+}
+
+// BindingProof is the evidence a binding_claim requires (plan §T11 T9, MCI-007): a repository binding whose
+// connection_ref was set resolved a BINDING-SCOPED credential through the secret-ref path, not the global
+// GitHub App fallback. BindingID identifies the binding; ConnectionRef is the non-empty ref it carried;
+// ResolvedViaRef records that the credential resolver took the ref path. Honest ceiling: this proves the
+// connection_ref resolver SEAM (plan §T9) — a per-tenant GitHub App onboarding surface is out of scope. An
+// empty ref or a resolution that fell through to the global App is not proof of the seam.
+type BindingProof struct {
+	BindingID      string `json:"binding_id"`
+	ConnectionRef  string `json:"connection_ref"`
+	ResolvedViaRef bool   `json:"resolved_via_ref"`
+}
+
+// Complete reports a binding id, a non-empty connection ref, and a resolution that took the ref path. A
+// missing ref or a global-App fallback is not proof.
+func (p BindingProof) Complete() bool {
+	return p.BindingID != "" && p.ConnectionRef != "" && p.ResolvedViaRef
+}
+
+// SteerProof is the evidence a steer_claim requires (plan §T11 T10, MCI-008): a steer command driven through
+// the @palai/sdk session surface took effect on the run — the E08 command spine reached from the SDK for the
+// first time. SessionID/CommandID identify the durable command; CommandKind is what was steered (e.g.
+// send_message, change_config, interrupt); Applied records that the command was accepted and observed on the
+// run (queued/applied, not rejected). A steer that was never accepted, or a marker with no command id, is not
+// proof.
+type SteerProof struct {
+	SessionID   string `json:"session_id"`
+	CommandID   string `json:"command_id"`
+	CommandKind string `json:"command_kind"`
+	Applied     bool   `json:"applied"`
+}
+
+// Complete reports the session, the durable command id, its kind, and that it was applied. A missing id/kind
+// or an unapplied command is not proof.
+func (p SteerProof) Complete() bool {
+	return p.SessionID != "" && p.CommandID != "" && p.CommandKind != "" && p.Applied
 }
 
 // secretPattern matches a credential-shaped token (an OpenAI-style sk- key), so a plaintext
@@ -365,6 +602,73 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "crash_isolation_proof (a crash-isolation claim requires breaker + tool_unavailable + control-plane-stable + other-run-flowed; a marker is not proof)"})
 			case !c.CrashIsolationProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "crash_isolation_proof is incomplete: the breaker did not trip, tool_unavailable was not visible, the control-plane was not stable, or no other run flowed (EXT-005)"})
+			}
+		}
+
+		// The E13 managed-cloud claims mirror the rule exactly: a non-empty marker with no proof is "missing";
+		// a proof that fails its Complete() invariant is "invalid" (plan §T11, MCI-001..008).
+		if c.ProvisioningClaim != "" {
+			switch {
+			case c.ProvisioningProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "provisioning_proof (a provisioning claim requires the created tenant's org/project/key ids + an applied config_policy + the restart-less journey spine; a 'provisioned' marker is not proof)"})
+			case !c.ProvisioningProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "provisioning_proof is incomplete: an org/project/key id, the applied config_policy, the ordered journey spine + digest, or the zero-restart invariant is missing (MCI-001)"})
+			}
+		}
+		if c.SecretResolveClaim != "" {
+			switch {
+			case c.SecretResolveProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "secret_resolve_proof (a secret-resolve claim requires the ref+version resolved by a run with no restart and the value never surfaced; a marker is not proof)"})
+			case !c.SecretResolveProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "secret_resolve_proof is incomplete: the ref/version, the resolving run, the zero-restart invariant, or value-never-surfaced is missing (MCI-002)"})
+			}
+		}
+		if c.IsolationClaim != "" {
+			switch {
+			case c.IsolationProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "isolation_proof (an isolation claim requires two distinct tenants + a real 404/403 deny + zero leaked rows; a 'isolated' marker is not proof)"})
+			case !c.IsolationProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "isolation_proof is incomplete: the tenants are not distinct, the status was not a 404/403 deny, or a tenant-A row leaked to tenant B (MCI-003/004, TEN-001/002)"})
+			}
+		}
+		if c.ArtifactClaim != "" {
+			switch {
+			case c.ArtifactProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "artifact_proof (an artifact claim requires the artifact id + a re-derivable content digest that matched the run's bytes; a marker is not proof)"})
+			case !c.ArtifactProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "artifact_proof is incomplete: the artifact id, a well-formed sha256 content digest, a non-empty body, or the digest-matched-bytes invariant is missing (MCI-004)"})
+			}
+		}
+		if c.RefusalClaim != "" {
+			switch {
+			case c.RefusalProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "refusal_proof (a refusal claim requires the limit kind + a deny status + no billable compute; a 'refused' marker is not proof)"})
+			case !c.RefusalProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "refusal_proof is incomplete: an unknown limit kind, a status that does not match the kind (429 for rate, 402 for budget), or compute that started anyway (MCI-005)"})
+			}
+		}
+		if c.RouteClaim != "" {
+			switch {
+			case c.RouteProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "route_proof (a route claim requires two projects' DISTINCT resolved model ids + distinct connections; a marker is not proof)"})
+			case !c.RouteProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "route_proof is incomplete: the two model ids are not both present-and-distinct, or the connections were not distinct — per-project routing was not proven (MCI-006)"})
+			}
+		}
+		if c.BindingClaim != "" {
+			switch {
+			case c.BindingProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "binding_proof (a binding claim requires the binding id + a non-empty connection_ref resolved via the ref path; a marker is not proof)"})
+			case !c.BindingProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "binding_proof is incomplete: the binding id, the connection_ref, or the resolved-via-ref invariant is missing (MCI-007)"})
+			}
+		}
+		if c.SteerClaim != "" {
+			switch {
+			case c.SteerProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "steer_proof (a steer claim requires the session + durable command id + kind + applied; a marker is not proof)"})
+			case !c.SteerProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "steer_proof is incomplete: the session, the durable command id, its kind, or the applied invariant is missing (MCI-008)"})
 			}
 		}
 
