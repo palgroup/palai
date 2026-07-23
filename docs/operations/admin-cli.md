@@ -86,6 +86,7 @@ Every non-2xx is an RFC 9457 problem. Common cases:
 | Code | Meaning | Fix |
 |---|---|---|
 | `authentication_required` | no/blank bearer | set `--api-key-file` / `PALAI_API_KEY` |
+| `invalid_token` | the bearer is present but not recognized (wrong/revoked/stale key) | use the key for THIS stack (`.palai/api-key` or one from `apikey create`) |
 | `insufficient_scope` | the key lacks `provision` | use an admin key or a key with the capability |
 | `invalid_request` | missing/unknown body field | check the flags for that subcommand |
 | `not_found` | absent or foreign id/name | the resource is outside this key's organization |

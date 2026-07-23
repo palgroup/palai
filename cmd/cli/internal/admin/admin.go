@@ -22,6 +22,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/palgroup/palai/cmd/cli/internal/stack"
 )
@@ -112,6 +113,8 @@ func parse(resource string, args []string) (sub string, f *flags, pos []string, 
 	sub = args[0]
 	f = &flags{}
 	fs := flag.NewFlagSet("palai "+resource+" "+sub, flag.ContinueOnError)
+	// The FlagSet must not print a parse error itself; main prints the returned error once (NIT 10).
+	fs.SetOutput(io.Discard)
 	f.register(fs, resource)
 	pos, err = parseInterleaved(fs, args[1:])
 	return sub, f, pos, err
@@ -134,8 +137,29 @@ func parseInterleaved(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
-// execute maps (resource, subcommand) to the one E13 endpoint it fronts and dispatches it.
+// positionalArity is the exact number of positional arguments each subcommand takes. An unexpected extra
+// positional is an error, not silently ignored — that catches a second id (`revoke key_1 key_2` would
+// otherwise drop key_2) and, critically, a secret fat-fingered onto argv (`secret create --name x SECRET`),
+// which must fail loudly since the value may now be in shell history.
+var positionalArity = map[string]int{
+	"org/create": 0, "org/list": 0, "org/get": 1,
+	"project/create": 0, "project/list": 0, "project/get": 1, "project/set-policy": 1,
+	"apikey/create": 0, "apikey/list": 0, "apikey/get": 1, "apikey/revoke": 1,
+	"secret/create": 0, "secret/list": 0, "secret/get": 1, "secret/rotate": 1,
+}
+
+// execute maps (resource, subcommand) to the one E13 endpoint it fronts and dispatches it. It first enforces
+// the positional arity, so every case below can index pos without a bounds or "extra argument" check.
 func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
+	want, known := positionalArity[resource+"/"+sub]
+	if !known {
+		return usageErr(resource)
+	}
+	if len(pos) != want {
+		// Never echo the positionals: an extra one may be a secret fat-fingered onto argv, and this error
+		// could land in a log. The count is enough for the operator to see what they typed.
+		return fmt.Errorf("palai %s %s takes %d positional argument(s), got %d", resource, sub, want, len(pos))
+	}
 	switch resource {
 	case "org":
 		switch sub {
@@ -144,11 +168,7 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 		case "list":
 			return c.do(http.MethodGet, "/v1/organizations", nil)
 		case "get":
-			id, err := arg(pos, "organization id")
-			if err != nil {
-				return err
-			}
-			return c.do(http.MethodGet, "/v1/organizations/"+esc(id), nil)
+			return c.do(http.MethodGet, "/v1/organizations/"+esc(pos[0]), nil)
 		}
 	case "project":
 		switch sub {
@@ -157,16 +177,8 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 		case "list":
 			return c.do(http.MethodGet, "/v1/projects", nil)
 		case "get":
-			id, err := arg(pos, "project id")
-			if err != nil {
-				return err
-			}
-			return c.do(http.MethodGet, "/v1/projects/"+esc(id), nil)
+			return c.do(http.MethodGet, "/v1/projects/"+esc(pos[0]), nil)
 		case "set-policy":
-			id, err := arg(pos, "project id")
-			if err != nil {
-				return err
-			}
 			policy := map[string]any{}
 			if f.allowedModels != "" {
 				policy["allowed_models"] = csv(f.allowedModels)
@@ -180,7 +192,7 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 			if len(policy) == 0 {
 				return errors.New("set-policy requires at least one of --allowed-models/--allowed-tools/--default-tools")
 			}
-			return c.do(http.MethodPatch, "/v1/projects/"+esc(id), body(map[string]any{"config_policy": policy}))
+			return c.do(http.MethodPatch, "/v1/projects/"+esc(pos[0]), body(map[string]any{"config_policy": policy}))
 		}
 	case "apikey":
 		switch sub {
@@ -196,17 +208,9 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 		case "list":
 			return c.do(http.MethodGet, "/v1/api-keys", nil)
 		case "get":
-			id, err := arg(pos, "key id")
-			if err != nil {
-				return err
-			}
-			return c.do(http.MethodGet, "/v1/api-keys/"+esc(id), nil)
+			return c.do(http.MethodGet, "/v1/api-keys/"+esc(pos[0]), nil)
 		case "revoke":
-			id, err := arg(pos, "key id")
-			if err != nil {
-				return err
-			}
-			return c.do(http.MethodPost, "/v1/api-keys/"+esc(id)+"/revoke", nil)
+			return c.do(http.MethodPost, "/v1/api-keys/"+esc(pos[0])+"/revoke", nil)
 		}
 	case "secret":
 		switch sub {
@@ -222,21 +226,13 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 		case "list":
 			return c.do(http.MethodGet, "/v1/secret-refs", nil)
 		case "get":
-			name, err := arg(pos, "secret name")
-			if err != nil {
-				return err
-			}
-			return c.do(http.MethodGet, "/v1/secret-refs/"+esc(name), nil)
+			return c.do(http.MethodGet, "/v1/secret-refs/"+esc(pos[0]), nil)
 		case "rotate":
-			name, err := arg(pos, "secret name")
-			if err != nil {
-				return err
-			}
 			value, err := readSecret(c.In)
 			if err != nil {
 				return err
 			}
-			return c.do(http.MethodPost, "/v1/secret-refs/"+esc(name)+"/rotate", body(map[string]any{"value": value}))
+			return c.do(http.MethodPost, "/v1/secret-refs/"+esc(pos[0])+"/rotate", body(map[string]any{"value": value}))
 		}
 	}
 	return usageErr(resource)
@@ -299,7 +295,8 @@ func (c *Client) renderProblem(status int, raw []byte) error {
 		RequestID string `json:"request_id"`
 	}
 	if err := json.Unmarshal(raw, &p); err != nil || p.Code == "" {
-		return fmt.Errorf("request failed (HTTP %d): %s", status, strings.TrimSpace(string(raw)))
+		// Not a problem document (e.g. a proxy's HTML error page) — trim and cap it so it can't flood the line.
+		return fmt.Errorf("request failed (HTTP %d): %s", status, cap200(strings.TrimSpace(string(raw))))
 	}
 	msg := p.Title
 	if msg == "" {
@@ -318,6 +315,10 @@ func (c *Client) renderProblem(status int, raw []byte) error {
 
 // resolve applies the flag → env → .palai chain for the base URL and the API key. The key comes from a file
 // (the --api-key-file path or the .palai file) or the env — never a flag value.
+//
+// SECURITY: an EXPLICIT --api-key-file that is empty after trim is a hard error — it never falls back to the
+// .palai bootstrap admin key. A failed `vault read > /tmp/k` must not silently upgrade the command to full
+// admin; a named source is honored or the command fails.
 func resolve(baseURLFlag, apiKeyFileFlag string) (baseURL, apiKey string, err error) {
 	baseURL = firstNonEmpty(baseURLFlag, os.Getenv("PALAI_BASE_URL"))
 	if apiKeyFileFlag != "" {
@@ -326,16 +327,22 @@ func resolve(baseURLFlag, apiKeyFileFlag string) (baseURL, apiKey string, err er
 			return "", "", fmt.Errorf("read --api-key-file: %w", err)
 		}
 		apiKey = strings.TrimSpace(string(raw))
+		if apiKey == "" {
+			return "", "", fmt.Errorf("--api-key-file %s is empty; refusing to fall back to the .palai bootstrap key", apiKeyFileFlag)
+		}
 	} else {
 		apiKey = os.Getenv("PALAI_API_KEY")
 	}
+	// Fall back to the initialised .palai for whatever a flag/env did not supply. A .palai read error is only
+	// fatal when it leaves a gap — if the key came from env and only the base URL is missing, .palai returning
+	// its base URL (even alongside an api-key read error) is enough.
 	if baseURL == "" || apiKey == "" {
 		dURL, dKey, derr := stack.AdminDefaults()
-		if derr != nil {
-			return "", "", fmt.Errorf("no base URL / API key from flags or env, and no initialised .palai: %w", derr)
-		}
 		baseURL = firstNonEmpty(baseURL, dURL)
 		apiKey = firstNonEmpty(apiKey, dKey)
+		if derr != nil && (baseURL == "" || apiKey == "") {
+			return "", "", fmt.Errorf("no base URL / API key from flags or env, and .palai unavailable: %w", derr)
+		}
 	}
 	if baseURL == "" {
 		return "", "", errors.New("no base URL: pass --base-url, set $PALAI_BASE_URL, or run `palai init`")
@@ -346,16 +353,32 @@ func resolve(baseURLFlag, apiKeyFileFlag string) (baseURL, apiKey string, err er
 	return baseURL, apiKey, nil
 }
 
-// readSecret reads a secret value from stdin (never argv). The trailing newline a shell pipe adds is
-// trimmed; an empty stdin is an actionable error.
+// maxSecretBytes bounds a secret value so an oversized read is a loud error, not a silent truncation.
+const maxSecretBytes = 64 * 1024
+
+// readSecret reads a secret value from stdin (never argv). It refuses a terminal (so a typed secret never
+// echoes to the screen), errors on a value over 64KiB rather than truncating it, and errors on non-UTF-8
+// bytes rather than letting JSON corrupt them to U+FFFD. The trailing newline a shell pipe adds is trimmed.
 func readSecret(in io.Reader) (string, error) {
-	raw, err := io.ReadAll(io.LimitReader(in, 64*1024))
+	if f, ok := in.(*os.File); ok {
+		if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+			return "", errors.New("refusing to read a secret from a terminal; pipe the value on stdin (e.g. `printf %s \"$VALUE\" | palai secret create --name db-url`)")
+		}
+	}
+	// Read one extra byte beyond the max value + a possible CRLF so an over-limit value is detectable.
+	raw, err := io.ReadAll(io.LimitReader(in, maxSecretBytes+2))
 	if err != nil {
 		return "", fmt.Errorf("read secret value from stdin: %w", err)
 	}
 	v := strings.TrimRight(string(raw), "\r\n")
+	if len(v) > maxSecretBytes {
+		return "", fmt.Errorf("secret value exceeds %d bytes; store an oversized value by reference, not inline", maxSecretBytes)
+	}
 	if v == "" {
 		return "", errors.New("no secret value on stdin (pipe it, e.g. `printf %s \"$VALUE\" | palai secret create --name db-url`)")
+	}
+	if !utf8.ValidString(v) {
+		return "", errors.New("secret value is not valid UTF-8; base64-encode binary values before storing them")
 	}
 	return v, nil
 }
@@ -382,12 +405,13 @@ func csv(s string) []string {
 	return out
 }
 
-// arg returns the first positional or an actionable "missing X" error.
-func arg(pos []string, what string) (string, error) {
-	if len(pos) == 0 {
-		return "", fmt.Errorf("missing %s", what)
+// cap200 bounds an untrusted response body embedded in an error line.
+func cap200(s string) string {
+	const max = 200
+	if len(s) > max {
+		return s[:max] + "…"
 	}
-	return pos[0], nil
+	return s
 }
 
 func firstNonEmpty(vals ...string) string {
