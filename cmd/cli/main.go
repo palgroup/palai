@@ -37,6 +37,10 @@ func dispatch(args []string) error {
 		return response(args[1:])
 	case "org", "project", "apikey", "secret":
 		return admin.Run(args[0], args[1:], os.Stdout, os.Stdin)
+	case "backup":
+		return backup(args[1:])
+	case "restore":
+		return restore(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -96,6 +100,39 @@ func response(args []string) error {
 	return stack.CreateResponse(*input)
 }
 
+// backup drives the installation-level backup: a consistent Postgres dump + object-store copy +
+// manifest, written to one archive. Distinct from the RUN-level checkpoint restore (execution/).
+func backup(args []string) error {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	out := fs.String("out", "", "archive path (default palai-backup-<project>-<UTC>.tar.gz in cwd)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return stack.InstallBackup(*out)
+}
+
+// restore loads an install backup into an EMPTY target stack; `restore verify` checks a restored
+// target against its manifest. Both refuse to run without --archive.
+func restore(args []string) error {
+	verify := false
+	if len(args) > 0 && args[0] == "verify" {
+		verify = true
+		args = args[1:]
+	}
+	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+	archive := fs.String("archive", "", "backup archive produced by `palai backup`")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *archive == "" {
+		return errors.New("usage: palai restore [verify] --archive <path>")
+	}
+	if verify {
+		return stack.InstallRestoreVerify(*archive)
+	}
+	return stack.InstallRestore(*archive)
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `palai — local stack lifecycle
 
@@ -106,6 +143,11 @@ func usage() {
   palai local doctor [--json]     run the health checks
   palai provider add <ref>        store a provider secret (value on stdin)
   palai response create --input <text>
+
+installation backup/restore (whole-stack; distinct from run-level checkpoints):
+  palai backup [--out <path>]              dump Postgres + object store + manifest to one archive
+  palai restore --archive <path>           restore into an EMPTY target stack (refuses non-empty)
+  palai restore verify --archive <path>    checksum + tenant-id + migration + run-retrieval checks
 
 admin (thin client over the E13 APIs; base URL + key from flags, env, or .palai):
   palai org create --display-name <n> | list | get <org_id>
