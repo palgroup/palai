@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/palgroup/palai/adapters/integrations/mcp"
+	"github.com/palgroup/palai/apps/control-plane/internal/metrics"
 	"github.com/palgroup/palai/packages/contracts"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
 )
@@ -69,6 +70,17 @@ func (r *MCPSamplingRouter) RouteSampling(ctx context.Context, scope mcp.CallSco
 		Reservation:    modelbroker.Reservation{MaxTotalTokens: budget},
 		Secret:         r.route.Secret,
 	}, nil)
+	// Provider call/error counters (E14 Task 6): count the call; an error is a transport failure or a
+	// provider-side rejection on the result, the same accounting as the run's own dispatchModel. Recorded
+	// before the fold below so it reflects the provider call, not the downstream denial reason.
+	samplingErr := routeErr
+	if errors.Is(samplingErr, context.Canceled) {
+		samplingErr = nil
+	}
+	if samplingErr == nil && result.Error != nil {
+		samplingErr = errProviderRejected
+	}
+	metrics.RecordProviderCall(samplingErr)
 	// A provider-side rejection rides on the RESULT, not the Go error (modelbroker.Result.Error, sanitized of
 	// any credential) — the same seam the run's own dispatchModel guards. Without this the step below is
 	// journaled as a SUCCESS and the MCP server is handed an assistant message with EMPTY text. Folding it

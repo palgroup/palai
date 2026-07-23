@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
+	"github.com/palgroup/palai/apps/control-plane/internal/metrics"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
@@ -19,6 +20,11 @@ import (
 // model call; a LISTEN/NOTIFY signal would drop the poll if model-call latency ever makes it
 // matter. The watcher only runs for the duration of one provider call.
 const interruptPollInterval = 25 * time.Millisecond
+
+// errProviderRejected marks a provider-side rejection (a non-nil Result.Error) for the metrics
+// counter, when the transport returned no Go error. It is never surfaced to a caller — the run
+// failure is built from result.Error's sanitized fields below.
+var errProviderRejected = errors.New("provider rejected the request")
 
 // interruptHit is the watcher's verdict for one model call: found reports whether a pending
 // interrupt was seen (and canceled the call). kind branches the handler — a send_message folds
@@ -186,6 +192,17 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		RouteRevision: route.Revision,
 	}, onDelta)
 	cancelModel()
+	// Provider call/error counters (E14 Task 6). A failure is a transport error OR a provider-side
+	// rejection carried on the result (Result.Error, the same seam checked at line 205); a bare
+	// interrupt cancellation is a user action, not a provider fault, so it counts as a call, not an error.
+	providerErr := err
+	if errors.Is(providerErr, context.Canceled) {
+		providerErr = nil
+	}
+	if providerErr == nil && result.Error != nil {
+		providerErr = errProviderRejected
+	}
+	metrics.RecordProviderCall(providerErr)
 	hit := <-hitCh
 	// An interrupt that actually aborted the in-flight call (canceled ctx) ends this step
 	// partial and resumes in a new one, folding a message or applying the new config (spec §9.2,

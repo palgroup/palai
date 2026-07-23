@@ -259,6 +259,14 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	})
+	// /metrics is the Prometheus text-exposition surface (E14 Task 6). It rides the SAME
+	// unauthenticated top mux as /healthz — internal-network only, never proxied by the TLS edge —
+	// and carries installation-aggregate series with no per-tenant labels, so an unauthenticated
+	// scrape leaks no tenant identity. Wired via WithMetrics; unset in every tier that passes no
+	// collector, so the route simply stays unmounted there.
+	if cfg.metrics != nil {
+		top.Handle("GET /metrics", cfg.metrics)
+	}
 	// The signed inbound-webhook receiver (spec §20.2.2/§21.7, E11 Task 5): its auth IS the per-source HMAC
 	// signature, so it mounts on the UNAUTHENTICATED top mux beside /healthz — the sole such precedent —
 	// bypassing middleware.Auth. Only Auth is bypassed: it is still wrapped in RequestContext so its problem

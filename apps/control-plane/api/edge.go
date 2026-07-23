@@ -1,5 +1,7 @@
 package api
 
+import "net/http"
+
 // EdgeLimits is the §20.12 basic-tier admission-control configuration the composition root resolves
 // from the environment and hands NewRouter. Every field defaults to zero = disabled, so a stack that
 // sets nothing keeps the pre-E13-T7 behaviour (no limiter, no caps).
@@ -45,6 +47,7 @@ type routerConfig struct {
 	secrets     SecretRefAPI
 	usage       UsageAPI
 	modelRoutes ModelRouteAPI
+	metrics     http.Handler
 }
 
 // WithEdgeLimits supplies the §20.12 request-rate limiter and per-project admission caps.
@@ -76,4 +79,15 @@ func WithUsage(usage UsageAPI) RouterOption {
 // every existing caller compiles unchanged, and a stack that never routes leaves it unset.
 func WithModelRoutes(routes ModelRouteAPI) RouterOption {
 	return func(c *routerConfig) { c.modelRoutes = routes }
+}
+
+// WithMetrics mounts the Prometheus text-exposition surface (E14 Task 6) at GET /metrics on the
+// UNAUTHENTICATED top mux beside /healthz — the same internal-network posture: the production TLS
+// edge proxies /v1 only, so /metrics is reachable to a Prometheus on the internal network but never
+// published externally. A trailing option because only production (and its dedicated tests) wire the
+// collector; every other caller compiles unchanged and mounts no /metrics. The handler exposes
+// installation-aggregate series only — no per-tenant labels — so an unauthenticated scrape leaks no
+// tenant identity.
+func WithMetrics(h http.Handler) RouterOption {
+	return func(c *routerConfig) { c.metrics = h }
 }

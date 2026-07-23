@@ -35,6 +35,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/apps/control-plane/internal/identity"
 	"github.com/palgroup/palai/apps/control-plane/internal/metering"
+	"github.com/palgroup/palai/apps/control-plane/internal/metrics"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
@@ -160,6 +161,22 @@ func main() {
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))
 	}
+	// The Prometheus /metrics exposition (E14 T6): installation-aggregate operational series over the
+	// same spine pool, mounted unauthenticated on the internal top mux beside /healthz. The runner-session
+	// gauge reads the gateway (nil in assignment-only tiers, reported as 0); the object-store up-probe reads
+	// artStore (a typed-nil *artifacts.Store must NOT wrap a non-nil interface, so the pinger is built
+	// conditionally — the same nil-interface guard WithSecretRefs uses). PALAI_METRICS_DISK_PATH names the
+	// data volume to statfs; unset defaults to "/".
+	var runnerSessions func() int64
+	if gateway != nil {
+		runnerSessions = gateway.Connected
+	}
+	var objStorePinger metrics.ObjectStorePinger
+	if artStore != nil {
+		objStorePinger = artStore
+	}
+	collector := metrics.New(repo.Spine().Pool(), runnerSessions, supervisor.Restarts, objStorePinger, os.Getenv("PALAI_METRICS_DISK_PATH"))
+	routerOpts = append(routerOpts, api.WithMetrics(collector))
 	srv := &http.Server{
 		Addr: addr,
 		// The runner gateway is served over a separate mutually-authenticated listener
