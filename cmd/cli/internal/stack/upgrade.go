@@ -118,6 +118,8 @@ func Upgrade(opts UpgradeOptions) error {
 	if err != nil {
 		return fmt.Errorf("resolve current engine digest: %w", err)
 	}
+	// Read the running stack's runtime config ONCE, before any recreate resets it to a compose default.
+	preserved := preservedRuntimeEnv(cfg)
 
 	// 1. backup + restore-status: the pre-upgrade restore point (§48.4). It is taken BEFORE the swap so a
 	// failed migration can be rolled back to it. Skipped only by an explicit drill flag. The boot-time
@@ -135,7 +137,7 @@ func Upgrade(opts UpgradeOptions) error {
 	// 2. control-plane swap (expand folded in). The old control-plane gets SIGTERM and drains its gateway;
 	// the new one boots, applies the idempotent migration chain, and serves. Keep the OLD engine so an
 	// interrupted run re-pins it.
-	swapEnv := upgradeComposeEnv(cfg, p.home, oldEngine, m.Images.ControlPlane.Ref, currentRunnerImage(cfg))
+	swapEnv := upgradeComposeEnv(cfg, p.home, oldEngine, m.Images.ControlPlane.Ref, currentRunnerImage(cfg), preserved)
 	if err := runVisible(swapEnv, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
 		"up", "-d", "--wait", "control-plane"); err != nil {
 		return fmt.Errorf("control-plane swap: %w", err)
@@ -147,7 +149,7 @@ func Upgrade(opts UpgradeOptions) error {
 
 	// 3. runner drain: swap the runner to N+1. Recreating it drains the old runner; any run interrupted by
 	// the swap is reclaimed and completed by the E10 recovery layer on the new control-plane.
-	drainEnv := upgradeComposeEnv(cfg, p.home, oldEngine, m.Images.ControlPlane.Ref, m.Images.Runner.Ref)
+	drainEnv := upgradeComposeEnv(cfg, p.home, oldEngine, m.Images.ControlPlane.Ref, m.Images.Runner.Ref, preserved)
 	if err := runVisible(drainEnv, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
 		"up", "-d", "--wait", "runner"); err != nil {
 		return fmt.Errorf("runner drain/swap: %w", err)
@@ -161,7 +163,7 @@ func Upgrade(opts UpgradeOptions) error {
 
 	// 5. new-run engine-alias roll: recreate the control-plane pointing PALAI_ENGINE_IMAGE at the new
 	// engine digest, so runs started FROM NOW pin the new engine. Active runs already drained on the old.
-	rollEnv := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Ref, m.Images.Runner.Ref)
+	rollEnv := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Ref, m.Images.Runner.Ref, preserved)
 	if err := runVisible(rollEnv, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
 		"up", "-d", "--wait", "control-plane"); err != nil {
 		return fmt.Errorf("engine-alias roll: %w", err)
@@ -204,8 +206,9 @@ func UpgradeRollback(opts RollbackOptions) error {
 
 	// Swap the control-plane + runner image back to N and roll the engine alias back to N's engine in one
 	// recreate: a rollback has no active-run-drain ordering to preserve (the alias rollback is for new
-	// runs; any active run keeps the engine it already pinned).
-	env := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Ref, m.Images.Runner.Ref)
+	// runs; any active run keeps the engine it already pinned). Preserve the running runtime config so the
+	// rollback does not reset dispatch/provider to a compose default.
+	env := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Ref, m.Images.Runner.Ref, preservedRuntimeEnv(cfg))
 	if err := runVisible(env, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
 		"up", "-d", "--wait", "control-plane", "runner"); err != nil {
 		return fmt.Errorf("rollback swap: %w", err)
@@ -220,16 +223,37 @@ func UpgradeRollback(opts RollbackOptions) error {
 	return nil
 }
 
-// upgradeComposeEnv is composeEnv plus the E15 T2 image overrides the swap/roll set. cpImage and
-// runnerImage pin the control-plane/runner service to a specific image TAG (compose resolves a tag, not a
-// bare image id); engine is the PALAI_ENGINE_IMAGE alias new leases carry (an immutable sha256 digest —
-// the runner rejects a mutable tag). The require-backup preflight gate is intentionally not set here (see
-// Upgrade's step 1 comment).
-func upgradeComposeEnv(cfg Config, home, engine, cpImage, runnerImage string) []string {
-	return append(cfg.composeEnv(home, engine),
+// upgradeComposeEnv is composeEnv plus the E15 T2 image overrides the swap/roll set, plus the preserved
+// runtime env. cpImage and runnerImage pin the control-plane/runner service to a specific image TAG
+// (compose resolves a tag, not a bare image id); engine is the PALAI_ENGINE_IMAGE alias new leases carry
+// (an immutable sha256 digest — the runner rejects a mutable tag). preserved carries the running stack's
+// runtime config forward so a recreate does not silently reset it to a compose default (see
+// preservedRuntimeEnv). The require-backup preflight gate is intentionally not set here (see Upgrade's
+// step 1 comment).
+func upgradeComposeEnv(cfg Config, home, engine, cpImage, runnerImage string, preserved []string) []string {
+	env := append(cfg.composeEnv(home, engine),
 		"PALAI_CONTROL_PLANE_IMAGE="+cpImage,
 		"PALAI_RUNNER_IMAGE="+runnerImage,
 	)
+	return append(env, preserved...)
+}
+
+// preservedRuntimeVars are the runtime-behaviour env vars the compose file defaults (dispatch off, fake
+// provider) — so a swap/roll/rollback that does NOT carry them forward would silently disable the
+// exec-path or flip a provider-one stack back to fake. Read from the RUNNING control-plane and re-applied.
+var preservedRuntimeVars = []string{"PALAI_DISPATCH_WORKERS", "PALAI_MODEL_PROVIDER", "PALAI_MODEL", "PALAI_RUNNER_CONCURRENCY"}
+
+// preservedRuntimeEnv reads the running control-plane's runtime config so an upgrade preserves it instead
+// of resetting to the compose defaults. A var absent from the container is skipped (its default applies).
+// Read ONCE at the start of an upgrade — the first recreate would otherwise overwrite it with the default.
+func preservedRuntimeEnv(cfg Config) []string {
+	var out []string
+	for _, key := range preservedRuntimeVars {
+		if v, err := inspectContainerEnv(cfg.containerName("control-plane"), key); err == nil {
+			out = append(out, key+"="+v)
+		}
+	}
+	return out
 }
 
 // currentEngineDigest reads PALAI_ENGINE_IMAGE from the running control-plane container's environment —

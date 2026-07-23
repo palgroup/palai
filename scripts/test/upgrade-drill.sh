@@ -186,30 +186,7 @@ new_engine="$(engine_container_image || true)"
 new_st="$(wait_terminal "$new_id" 90)" || fail "post-roll run $new_id did not complete (status=$new_st)"
 echo "post-roll run: $new_id status=$new_st engine_container=${new_engine:-<none>}" >&2
 
-# ---- phase 5: ONE real-provider smoke on N+1 -------------------------------
-log "real-provider smoke on N+1 (credential from .env.local; never argv/log)"
-chatcmpl=""
-if [ -f "$repo_root/.env.local" ]; then
-  set -a; . "$repo_root/.env.local"; set +a
-fi
-if [ -n "${OPENAI_API_KEY:-}" ]; then
-  printf '%s' "$OPENAI_API_KEY" | "$CLI" provider add provider-one >&2
-  # Recreate the control-plane with the real provider wired (engine stays n1).
-  compose_up "$d_engine_n1" "$cp_n1" "$runner_n1" \
-    PALAI_MODEL_PROVIDER=provider-one PALAI_MODEL="${PALAI_MODEL:-gpt-4o-mini}"
-  for _ in $(seq 1 30); do curl_api GET /v1/capabilities >/dev/null 2>&1 && break; sleep 1; done
-  smoke_id="$(admit_run 'reply with the single word ok')"
-  smoke_st="$(wait_terminal "$smoke_id" 90)" || echo "real smoke status=$smoke_st (non-terminal)" >&2
-  # The provider's own request id (chatcmpl-...) is journalled in the events.payload as provider_request_id
-  # — safe, non-secret correlation evidence.
-  chatcmpl="$(docker exec "$PROJECT-postgres-1" psql -U palai -d palai -tA -c \
-    "SELECT payload->>'provider_request_id' FROM events WHERE payload ? 'provider_request_id' ORDER BY created_at DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
-  echo "real-provider smoke: $smoke_id status=$smoke_st chatcmpl=${chatcmpl:-<none>}" >&2
-else
-  echo "SKIP real-provider smoke: OPENAI_API_KEY not in .env.local" >&2
-fi
-
-# ---- phase 6: application rollback -----------------------------------------
+# ---- phase 5: application rollback -----------------------------------------
 log "palai upgrade rollback -> the N binary runs on the expanded schema"
 "$CLI" upgrade rollback --to "$N_MANIFEST" >&2
 [ "$(docker inspect "$PROJECT-control-plane-1" --format '{{.Config.Image}}')" = "$cp_n" ] || fail "rollback did not restore the N control-plane image"
@@ -219,7 +196,7 @@ rb_st="$(wait_terminal "$rb_id" 90)" || fail "post-rollback run did not complete
 db_head="$(docker exec "$PROJECT-postgres-1" psql -U palai -d palai -tA -c 'SELECT max(version) FROM schema_migrations' | tr -d '[:space:]')"
 echo "rollback: N control-plane serving on expanded schema head=$db_head, post-rollback run=$rb_st" >&2
 
-# ---- phase 7: OPS-008 old-stamp runner rejected ----------------------------
+# ---- phase 6: OPS-008 old-stamp runner rejected ----------------------------
 log "OPS-008: an old-stamp runner (0.12.0) is rejected with the intermediate-hop message"
 # Roll forward to N+1 (0.15.0 control-plane, version handshake active), then recreate ONLY the runner with
 # PALAI_VERSION=0.12.0 so it advertises a three-minors-behind stamp. The control-plane keeps its baked
@@ -242,6 +219,29 @@ if echo "$old_logs" | grep -qiE 'hop to 0.13.0|unsupported'; then
 else
   echo "OPS-008 NOTE: hop message not found in runner logs (below); component TestGatewayRejectsUnsupportedRunnerSkew is authoritative" >&2
   echo "$old_logs" | tail -8 >&2
+fi
+
+# ---- phase 7: ONE real-provider smoke on N+1 (LAST) ------------------------
+# Run last so exactly ONE real-provider call happens: earlier phases stay on the fake provider, and the
+# real credential is loaded only here. It also restores a HEALTHY N+1 runner (OPS-008 left it on 0.12.0).
+log "real-provider smoke on N+1 (credential from .env.local; never argv/log)"
+chatcmpl=""
+if [ -f "$repo_root/.env.local" ]; then
+  set -a; . "$repo_root/.env.local"; set +a
+fi
+if [ -n "${OPENAI_API_KEY:-}" ]; then
+  printf '%s' "$OPENAI_API_KEY" | "$CLI" provider add provider-one >&2
+  compose_up "$d_engine_n1" "$cp_n1" "$runner_n1" \
+    PALAI_MODEL_PROVIDER=provider-one PALAI_MODEL="${PALAI_MODEL:-gpt-4o-mini}"
+  for _ in $(seq 1 30); do curl_api GET /v1/capabilities >/dev/null 2>&1 && break; sleep 1; done
+  smoke_id="$(admit_run 'reply with the single word ok')"
+  smoke_st="$(wait_terminal "$smoke_id" 120)" || echo "real smoke status=$smoke_st (non-terminal)" >&2
+  # The provider's own request id (chatcmpl-...) is journalled in events.payload — non-secret correlation.
+  chatcmpl="$(docker exec "$PROJECT-postgres-1" psql -U palai -d palai -tA -c \
+    "SELECT payload->>'provider_request_id' FROM events WHERE payload ? 'provider_request_id' ORDER BY created_at DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
+  echo "real-provider smoke: $smoke_id status=$smoke_st chatcmpl=${chatcmpl:-<none>}" >&2
+else
+  echo "SKIP real-provider smoke: OPENAI_API_KEY not in .env.local" >&2
 fi
 
 log "DRILL COMPLETE"
