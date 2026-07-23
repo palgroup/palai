@@ -90,7 +90,7 @@ func validateConfig(envFile, overlay string) Report {
 		checks["cert_pair"] = certPair(home)
 	} else {
 		checks["master_key"] = masterKey(home, dd.masterKeys)
-		checks["bootstrap_key"] = bootstrapKey(home, dd.bootstrapKey)
+		checks["bootstrap_key"] = bootstrapKey(home, dd.bootstrapKeys)
 		checks["cert_pair"] = certPair(home)
 	}
 
@@ -175,13 +175,32 @@ func masterKey(home string, devDefaults []string) Check {
 			return fail("master key is a dev-default — generate a real one with 'openssl rand -hex 32'")
 		}
 	}
-	return ok("master key present and not a dev-default")
+	// It must be a 32-byte hex key (identity.ParseMasterKey's AES-256 contract) or the stack would
+	// pass validate and then FAIL at boot; catch that will-it-boot gap here.
+	if !isHex64(val) {
+		return fail("master key is not a 32-byte hex key (openssl rand -hex 32) — would fail at boot")
+	}
+	return ok("master key present, 32-byte hex, not a dev-default")
 }
 
-// bootstrapKey checks the bootstrap admin key (${PALAI_HOME}/api-key) is not the shipped
-// placeholder — the "provisioning requires a REAL bootstrap key" half of the closed registration
-// posture (there is no public self-registration surface by construction).
-func bootstrapKey(home, devDefault string) Check {
+// isHex64 reports whether s is exactly 64 lowercase-or-uppercase hex characters.
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// bootstrapKey checks the bootstrap admin key (${PALAI_HOME}/api-key) is not a shipped placeholder
+// — the "provisioning requires a REAL bootstrap key" half of the closed registration posture (there
+// is no public self-registration surface by construction). It rejects EVERY dev-default the guard
+// lists, not just one.
+func bootstrapKey(home string, devDefaults []string) Check {
 	path := filepath.Join(home, "api-key")
 	val, err := readTrimmed(path)
 	if err != nil {
@@ -190,10 +209,12 @@ func bootstrapKey(home, devDefault string) Check {
 	if val == "" {
 		return fail("bootstrap api-key file is empty: " + path)
 	}
-	if val == devDefault {
-		return fail("bootstrap api-key is the shipped placeholder — mint a real one")
+	for _, dev := range devDefaults {
+		if val == dev {
+			return fail("bootstrap api-key is a shipped placeholder — mint a real one")
+		}
 	}
-	return ok("bootstrap api-key present and not the placeholder")
+	return ok("bootstrap api-key present and not a placeholder")
 }
 
 // certPair checks the TLS edge cert/key pair the overlay mounts is present and readable. It does
@@ -231,10 +252,11 @@ func dispatchWorkers(env map[string]string) Check {
 }
 
 // devDefaults holds the placeholder/zero literals the boot guard rejects, read from the guard
-// script so config-validate never forks the set.
+// script so config-validate never forks the set. Both are SLICES: a second dev-default of either
+// kind added to the guard must widen the rejected set, never last-wins-overwrite an earlier one.
 type devDefaults struct {
-	masterKeys   []string
-	bootstrapKey string
+	masterKeys    []string
+	bootstrapKeys []string
 }
 
 // loadDevDefaults reads the guard script that sits beside the overlay and extracts its literals.
@@ -260,10 +282,10 @@ func parseDevDefaults(script string) (devDefaults, error) {
 		case strings.Contains(name, "MASTER"):
 			dd.masterKeys = append(dd.masterKeys, val)
 		case strings.Contains(name, "BOOTSTRAP"):
-			dd.bootstrapKey = val
+			dd.bootstrapKeys = append(dd.bootstrapKeys, val)
 		}
 	}
-	if len(dd.masterKeys) == 0 || dd.bootstrapKey == "" {
+	if len(dd.masterKeys) == 0 || len(dd.bootstrapKeys) == 0 {
 		return dd, fmt.Errorf("no DEV_MASTER/DEV_BOOTSTRAP literals found in the guard script")
 	}
 	return dd, nil
@@ -279,9 +301,17 @@ func edgeSurfaceFile(overlay string) Check {
 	return edgeSurfaceCheck(string(raw))
 }
 
-// internalServices are the base services that MUST reset their host ports under the production
-// overlay — none may be reachable from the host, only the edge.
-var internalServices = []string{"postgres", "object-store", "control-plane", "runner"}
+// basePublishedServices publish host ports in the BASE compose.yaml. Under the overlay they MUST
+// reset those ports — and only a !reset/!override tag does that. The runner is deliberately absent:
+// it publishes NO base port, so presence-only correctness holds for it via the catch-all loop.
+var basePublishedServices = []string{"postgres", "object-store", "control-plane"}
+
+// portsReset reports whether an overlay `ports` node actually removes the base host ports. Compose
+// merges port LISTS by APPENDING, so a plain `ports: []` (Tag "!!seq") or an omitted key (Kind 0)
+// leaves the base ports published — only `!reset []` / `!override []` (empty content) removes them.
+func portsReset(n yaml.Node) bool {
+	return n.Kind != 0 && (n.Tag == "!reset" || n.Tag == "!override") && len(n.Content) == 0
+}
 
 // edgeSurfaceCheck asserts, statically, that the production overlay publishes ONLY the edge to the
 // host and that its Caddyfile reverse_proxy is path-matched to /v1/* (so /metrics and /healthz —
@@ -299,24 +329,30 @@ func edgeSurfaceCheck(overlayContent string) Check {
 		return fail("parse overlay YAML: " + err.Error())
 	}
 
-	// Every service other than the edge must publish NO host port; the edge must publish one.
-	for name, svc := range doc.Services {
-		published := len(svc.Ports.Content) > 0
-		if name == "edge" {
-			if !published {
-				return fail("edge service publishes no host port — nothing would be reachable")
-			}
-			continue
+	// The edge must publish a host port; nothing is reachable otherwise.
+	if edge, ok := doc.Services["edge"]; !ok || len(edge.Ports.Content) == 0 {
+		return fail("edge service publishes no host port — nothing would be reachable")
+	}
+	// Every base-published service must RESET its host ports — a plain []/missing key silently keeps
+	// them, leaving /metrics + /healthz host-reachable (the exact posture this check disproves).
+	base := map[string]bool{}
+	for _, name := range basePublishedServices {
+		base[name] = true
+		svc, present := doc.Services[name]
+		if !present {
+			return fail(fmt.Sprintf("overlay does not reset host ports for %q — its base ports stay published", name))
 		}
-		if published {
-			return fail(fmt.Sprintf("service %q publishes a host port — only the edge may (re-exposed surface)", name))
+		if !portsReset(svc.Ports) {
+			return fail(fmt.Sprintf("service %q does not reset base host ports (need `ports: !reset []`) — base ports stay host-published, exposing /metrics + /healthz", name))
 		}
 	}
-	// Each internal service must be present in the overlay with its base ports reset — an omitted
-	// service would keep the base compose's published ports.
-	for _, name := range internalServices {
-		if _, present := doc.Services[name]; !present {
-			return fail(fmt.Sprintf("overlay does not reset host ports for %q — its base ports would stay published", name))
+	// Any OTHER non-edge service that publishes a host port is a re-exposed surface.
+	for name, svc := range doc.Services {
+		if name == "edge" || base[name] {
+			continue
+		}
+		if len(svc.Ports.Content) > 0 {
+			return fail(fmt.Sprintf("service %q publishes a host port — only the edge may (re-exposed surface)", name))
 		}
 	}
 

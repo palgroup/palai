@@ -155,8 +155,69 @@ func TestParseDevDefaultsMatchesGuardLiterals(t *testing.T) {
 			t.Fatalf("parseDevDefaults did not extract master default %q from the guard", k)
 		}
 	}
-	if dd.bootstrapKey != "REPLACE_WITH_A_REAL_BOOTSTRAP_KEY" {
-		t.Fatalf("bootstrap default = %q, want the guard's placeholder", dd.bootstrapKey)
+	if !containsStr(dd.bootstrapKeys, "REPLACE_WITH_A_REAL_BOOTSTRAP_KEY") {
+		t.Fatalf("bootstrap defaults %v miss the guard's placeholder", dd.bootstrapKeys)
+	}
+}
+
+func TestParseDevDefaultsKeepsAllBootstrapLiterals(t *testing.T) {
+	// A second DEV_BOOTSTRAP_* added to the guard must NOT overwrite the first (last-wins would
+	// green-light every bootstrap key but the last). Both must be collected, like the master set.
+	script := `DEV_BOOTSTRAP_KEY_PLACEHOLDER="FIRST_BOOT"
+DEV_BOOTSTRAP_KEY_LEGACY="SECOND_BOOT"
+DEV_MASTER_KEY_PLACEHOLDER="M"`
+	dd, err := parseDevDefaults(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsStr(dd.bootstrapKeys, "FIRST_BOOT") || !containsStr(dd.bootstrapKeys, "SECOND_BOOT") {
+		t.Fatalf("both bootstrap literals must be kept, got %v", dd.bootstrapKeys)
+	}
+}
+
+func TestConfigValidateRejectsNonHexMasterKey(t *testing.T) {
+	envFile, overlay, home := prodLayout(t)
+	// Not a dev-default, but not a 32-byte hex key either — it passes validate today then fails at
+	// boot (identity.ParseMasterKey). Close the will-it-boot gap.
+	if err := os.WriteFile(filepath.Join(home, "secrets", "master-key"),
+		[]byte("this-is-not-hex-and-not-64-chars"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ConfigValidate(envFile, overlay, true); err == nil {
+		t.Fatal("a non-hex master key must fail config validate")
+	}
+}
+
+func containsStr(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestEdgeSurfaceRejectsUnresetPorts(t *testing.T) {
+	// Compose merges port LISTS by appending, so a plain `ports: []` (no !reset tag) and an omitted
+	// ports key BOTH leave base compose.yaml's published control-plane port in the merged config —
+	// /metrics + /healthz stay host-reachable. Only `!reset []`/`!override []` removes them. The
+	// machine-truth check must FAIL both, not green-light a posture that is false.
+	plainEmpty := strings.Replace(goodOverlay,
+		"  postgres:\n    restart: always\n    ports: !reset []",
+		"  postgres:\n    restart: always\n    ports: []", 1)
+	if c := edgeSurfaceCheck(plainEmpty); c.Status == "ok" {
+		t.Fatalf("plain `ports: []` (append-merge keeps base ports) must FAIL, got ok: %s", c.Detail)
+	}
+	noKey := strings.Replace(goodOverlay,
+		"  control-plane:\n    restart: always\n    ports: !reset []",
+		"  control-plane:\n    restart: always", 1)
+	if c := edgeSurfaceCheck(noKey); c.Status == "ok" {
+		t.Fatalf("a base-published service with no ports key (base ports stay) must FAIL, got ok: %s", c.Detail)
+	}
+	// An explicit !override [] also removes base ports → still OK.
+	override := strings.Replace(goodOverlay, "ports: !reset []", "ports: !override []", 3)
+	if c := edgeSurfaceCheck(override); c.Status != "ok" {
+		t.Fatalf("!override [] should reset ports and pass, got %q: %s", c.Status, c.Detail)
 	}
 }
 
