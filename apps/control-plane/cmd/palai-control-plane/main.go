@@ -24,7 +24,9 @@ import (
 	mcpclient "github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/adapters/integrations/webhook"
 	fake "github.com/palgroup/palai/adapters/models/fake"
+	openaicompatible "github.com/palgroup/palai/adapters/models/openai_compatible"
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
+	providertwo "github.com/palgroup/palai/adapters/models/provider_two"
 	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
@@ -436,11 +438,23 @@ func modelBrokerFromEnv() (*modelbroker.Broker, execution.ModelRoute) {
 		if model == "" {
 			model = "gpt-4o-mini"
 		}
+		// The second family (E16 T5) rides the same registry so a DB-published route can
+		// dispatch to provider-two (Anthropic) or the OpenAI-compatible adapter with its own
+		// connection credential; the env deployment DEFAULT below stays provider-one. The
+		// OpenAI-compatible base URL comes from env (empty → OpenAI's endpoint).
 		broker := modelbroker.New(modelbroker.Config{
-			Adapters: map[string]modelbroker.ModelAdapter{"provider-one": providerone.Adapter{}},
+			Adapters: map[string]modelbroker.ModelAdapter{
+				"provider-one":      providerone.Adapter{},
+				"provider-two":      providertwo.Adapter{},
+				"openai-compatible": openaicompatible.Adapter{Adapter: providerone.Adapter{BaseURL: os.Getenv("PALAI_OPENAI_COMPATIBLE_BASE_URL")}},
+			},
 			Secrets: execution.RouteSecretResolver{
-				Lookup:   dbSecret,
-				Fallback: modelbroker.EnvResolver{modelbroker.SecretRef("provider-one"): "PALAI_SECRET_PROVIDER_ONE"},
+				Lookup: dbSecret,
+				Fallback: modelbroker.EnvResolver{
+					modelbroker.SecretRef("provider-one"):      "PALAI_SECRET_PROVIDER_ONE",
+					modelbroker.SecretRef("provider-two"):      "PALAI_SECRET_PROVIDER_TWO",
+					modelbroker.SecretRef("openai-compatible"): "PALAI_SECRET_OPENAI_COMPATIBLE",
+				},
 			},
 		})
 		return broker, execution.ModelRoute{Provider: "provider-one", Model: model, Secret: modelbroker.SecretRef("provider-one")}
