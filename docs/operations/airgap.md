@@ -84,8 +84,8 @@ bash deploy/airgap/drill.sh    # build -> offline verify -> tamper FAIL -> mirro
 
 The drill asserts the network is `internal: true` (topology) **and** that an egress attempt from a
 stack container **fails** — the claim is the topology, not a log line. It also stands up an
-in-network `git daemon` fixture and clones it from another in-network container, showing a
-git-dependent workflow works air-gapped with egress still impossible.
+in-network git remote (a bare repo served over git's dumb-HTTP protocol) and clones it from another
+in-network container, showing a git-dependent workflow works air-gapped with egress still impossible.
 
 ## Honest ceiling (plan §6, operator leg)
 

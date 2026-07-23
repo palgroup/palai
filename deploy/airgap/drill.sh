@@ -147,25 +147,32 @@ if docker exec "$cp_ctr" wget -q -T 4 -O- http://1.1.1.1/ >/dev/null 2>&1; then
 fi
 echo "ZERO-EGRESS: network is internal:true and an egress attempt from the stack FAILED" >&2
 
-step "7. IN-NETWORK GIT — a git daemon fixture is clone-able from an in-network container"
+step "7. IN-NETWORK GIT — an in-network git remote is clone-able from an in-network container"
+# ponytail: serve the repo over git's dumb-HTTP protocol (bare repo + update-server-info) with the
+# reference-engine's python http.server — alpine/git ships neither git-daemon nor busybox httpd, and
+# python http.server is already in the toolchain (the engine image). Both containers live on the
+# internal:true network, so the clone happens with egress impossible.
+engine_ref="$(python3 -c 'import json,sys; print(next(i["id"] for i in json.load(open(sys.argv[1]))["images"] if i["name"]=="reference-engine"))' "$bundle/manifest.json")"
 docker pull -q "$GIT_IMAGE" >/dev/null
 docker volume create "$git_vol" >/dev/null
 docker run --rm -v "$git_vol:/repos" --entrypoint /bin/sh "$GIT_IMAGE" -c '
-	cd /repos && git init -q demo && cd demo &&
+	cd /tmp && git init -q src && cd src &&
 	git config user.email air@gap.local && git config user.name airgap &&
-	echo "air-gapped repository" > README.md && git add -A && git commit -q -m init' \
+	echo "air-gapped repository" > README.md && git add -A && git commit -q -m init &&
+	git clone -q --bare /tmp/src /repos/demo.git &&
+	git -C /repos/demo.git update-server-info' \
 	|| fail "seeding the git fixture failed"
-docker run -d --name "$git_ctr" --network "$netname" -v "$git_vol:/repos" \
-	--entrypoint git "$GIT_IMAGE" daemon --reuseaddr --export-all --base-path=/repos /repos >/dev/null
-# Clone from ANOTHER in-network container (egress still impossible for both). Retry a few
-# times to absorb the daemon's startup race (it was just backgrounded).
+docker run -d --name "$git_ctr" --network "$netname" -v "$git_vol:/repos:ro" \
+	--workdir /repos --entrypoint /usr/local/bin/python "$engine_ref" -m http.server 8000 >/dev/null
+# Clone from ANOTHER in-network container (egress still impossible for both). Retry to absorb the
+# server's startup race (it was just backgrounded).
 docker run --rm --name "$git_client" --network "$netname" --entrypoint /bin/sh "$GIT_IMAGE" -c "
 	for i in 1 2 3 4 5 6 7 8; do
-		git clone -q git://$git_ctr/demo /tmp/clone 2>/dev/null && break || sleep 1
+		git clone -q http://$git_ctr:8000/demo.git /tmp/clone 2>/dev/null && break || sleep 1
 	done
 	grep -q 'air-gapped repository' /tmp/clone/README.md" \
 	|| fail "in-network git clone failed"
-echo "IN-NETWORK GIT: clone over git:// succeeded on the internal network" >&2
+echo "IN-NETWORK GIT: clone over http:// succeeded on the internal network" >&2
 
 echo
 echo "AIR-GAP DRILL PASSED (project $proj):"
@@ -173,4 +180,4 @@ echo "  - offline verify green in --network none; tamper -> FAIL"
 echo "  - digest-pinned registry mirror install; stack up on internal:true network $netname"
 echo "  - real run $id completed (fake provider in-process, engine NetworkMode:none)"
 echo "  - zero egress: internal:true topology + active egress attempt FAILED"
-echo "  - in-network git daemon clone succeeded"
+echo "  - in-network git clone (dumb-HTTP) succeeded"
