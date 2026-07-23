@@ -154,10 +154,11 @@ uat-extensibility:
 	@PROVIDER='$(PROVIDER)' scripts/uat/extensibility
 
 # E13 EXIT gate: the managed-cloud catalog + committed-bundle evidence-verify core (always, no Docker) + the
-# live managed-cloud journey (PROVIDER=provider-one) — one restart-less stack, provision -> secret -> route +
-# config_policy -> SDK session/run -> steer -> list -> artifact -> budget/rate refusal -> cross-tenant
-# negative, ending in a REAL provider run. uat-local-live / uat-interactive / uat-coding / uat-recovery /
-# uat-automation / uat-extensibility above stay untouched.
+# live tier (PROVIDER=provider-one) — the restart-less SPINE journey on ONE in-proc process (provision a
+# tenant over the public API -> real provider run -> steer -> list -> cross-tenant deny, restart_count=0) plus
+# the per-task MCI-00N smokes (secret/artifact/budget/route) each proven live in their own process. Ends in a
+# REAL provider run. uat-local-live / uat-interactive / uat-coding / uat-recovery / uat-automation /
+# uat-extensibility above stay untouched.
 uat-managed-cloud:
 	@test -x scripts/uat/managed-cloud || { echo "managed-cloud UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' scripts/uat/managed-cloud

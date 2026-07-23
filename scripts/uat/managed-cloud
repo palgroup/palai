@@ -11,16 +11,18 @@
 #     2. evidence-verify RELEASE=managed-cloud-0.1.0 — the same committed bundle through the shipped CLI
 #        verifier (the operator path).
 #
-#   live tier (PROVIDER=provider-one): TestManagedCloudJourney boots ONE packaged stack and drives the WHOLE
-#     managed-cloud journey over the shipped HTTP surface + the @palai/sdk, RESTART-LESS on that one process:
-#     API tenant provision -> secret-ref write+resolve -> model route + config_policy -> SDK session+run
-#     (real provider) -> steer -> list run history -> download an artifact -> a budget/rate refusal -> a
-#     cross-tenant negative (tenant B gets a real 404/deny for tenant A's session/run/artifact/secret). It
-#     ends in a REAL provider-one run (chatcmpl) and OVERWRITES managed-cloud-0.1.0 with the real receipts,
-#     then re-verifies the bundle clean with the credential proven absent (0 secret findings). Credentials
-#     load ONLY from .env.local via `set -a` — never argv, never `set -x`, never the bundle or a commit.
-#     Honest ceilings (named per-step in the journey + the manifest db_assertions): where a step is proven at
-#     a seam rather than fully end-to-end in the live tier, the case says so.
+#   live tier (PROVIDER=provider-one): TWO parts.
+#     A. TestManagedCloudJourney — the restart-less SPINE on ONE process (an in-proc httptest.NewServer over
+#        the shipped api.NewRouter, NOT the packaged compose stack): PROVISION a tenant over the public API
+#        (POST /v1/organizations, /v1/projects, PATCH config_policy, POST /v1/api-keys) -> a REAL provider run
+#        -> an API steer (202 accepted) -> list run history -> a cross-tenant negative (tenant B gets a real
+#        404 / 400 invalid_cursor / empty for tenant A's run). It ends in a REAL provider-one run (chatcmpl)
+#        and proves restart_count=0 (pg_postmaster_start_time identical start-to-end). It does NOT write the
+#        bundle — the committed managed-cloud-0.1.0 is authored deterministic data (verified by the core).
+#     B. the per-task MCI-00N smokes inline (below) — secret-resolve, artifact, budget/rate, model-route, each
+#        proven live in its own process. Together A+B prove every step live; A alone proves restart-less.
+#     Credentials load ONLY from .env.local via `set -a` (scripts/test/live-provider) — never argv, never
+#     `set -x`, never the bundle or a commit. Honest ceilings are named per-step in the journey + the manifest.
 #
 # uat-coding / uat-local-live / uat-interactive / uat-recovery / uat-automation / uat-extensibility stay
 # UNTOUCHED.

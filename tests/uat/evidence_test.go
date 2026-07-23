@@ -354,13 +354,16 @@ func TestCrashIsolationClaimCannotBeMarkerPassed(t *testing.T) {
 }
 
 // completeProvisioningProof returns a fresh MCI-001 ProvisioningProof map: the created tenant's ids, an
-// applied config_policy, the full ordered journey spine, its re-derivable digest, and zero restarts.
+// applied config_policy, the canonical restart-less spine, its re-derivable digest, and zero restarts.
 func completeProvisioningProof() map[string]any {
-	steps := []any{"MCI-001", "MCI-002", "MCI-003", "MCI-004", "MCI-005", "MCI-006", "MCI-007", "MCI-008"}
+	steps := make([]any, len(ManagedCloudStepIDs))
+	for i, s := range ManagedCloudStepIDs {
+		steps[i] = s
+	}
 	return map[string]any{
 		"org_id": "org_b", "project_id": "proj_b", "api_key_id": "key_b",
 		"config_policy_applied": true, "step_ids": steps,
-		"journey_digest": hashParts("MCI-001", "MCI-002", "MCI-003", "MCI-004", "MCI-005", "MCI-006", "MCI-007", "MCI-008"),
+		"journey_digest": hashParts(ManagedCloudStepIDs...),
 		"restart_count":  0,
 	}
 }
@@ -678,22 +681,6 @@ func TestSteerClaimRequiresAppliedCommand(t *testing.T) {
 		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
 			t.Fatalf("an invalid steer proof %v must be a Finding", proof)
 		}
-	}
-}
-
-// TestManagedCloudJourneyDigestReproduces is the anti-fabrication gate for the managed-cloud spine digest: a
-// committed ProvisioningProof.journey_digest MUST be hashParts(step_ids...) — the same construction the
-// journey uses — so a fabricated digest is caught the way the E11 automation-0.1.0 advertised_schema_hash was
-// caught by shasum. It recomputes the digest from the proof's OWN step_ids and asserts equality.
-func TestManagedCloudJourneyDigestReproduces(t *testing.T) {
-	proof := completeProvisioningProof()
-	steps := proof["step_ids"].([]any)
-	parts := make([]string, len(steps))
-	for i, s := range steps {
-		parts[i] = s.(string)
-	}
-	if got, want := hashParts(parts...), proof["journey_digest"].(string); got != want {
-		t.Fatalf("journey_digest %q is not hashParts(step_ids) %q — a spine digest must be re-derivable from its own step list", want, got)
 	}
 }
 

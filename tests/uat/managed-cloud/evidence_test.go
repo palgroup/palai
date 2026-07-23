@@ -6,23 +6,23 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/palgroup/palai/tests/uat"
 )
 
-// managedCloudArtifactContent is the exact byte string the deterministic journey writes as its artifact, so
-// this gate can recompute the committed artifact content_digest from it — a committed digest that does not
-// reproduce from these bytes is fabricated. The live tier overwrites the case with the real run's artifact
-// bytes + digest (verified against the workspace file inside the journey). Keep this in lockstep with the
-// content the journey writes.
+// managedCloudArtifactContent is the fixture artifact content the committed bundle records its content_digest
+// over, so this gate can recompute that digest and fail if it does not reproduce — a committed digest that
+// does not equal sha256 of these bytes is fabricated. The committed bundle is authored deterministic data (no
+// live journey writes this file); the separate live journey (TestManagedCloudJourney) proves the real
+// restart-less spine independently. Keep this in lockstep with the byte_len/content_digest the bundle records.
 const managedCloudArtifactContent = "MANAGED-CLOUD-ARTIFACT\n"
 
-// hashParts reproduces the journey's hashParts (sha256 of each part followed by a NUL, hex, sha256:-prefixed
-// — the tests/uat.hashParts / hashBundle construction) so this gate can recompute a journey_digest from the
-// manifest's own step_ids. A committed digest that does not reproduce is a fabricated hash, the exact defect
-// the shape-checked verifier cannot see. ponytail: a 4-line copy, not a shared export (the journey helper is
-// uat-tagged).
+// hashParts reproduces the tests/uat hashParts / hashBundle construction (sha256 of each part followed by a
+// NUL, hex, sha256:-prefixed) so this gate can recompute the committed journey_digest and per-case checksums.
+// A committed value that does not reproduce is a fabricated hash, the exact defect the shape-checked verifier
+// cannot see. ponytail: a 4-line copy, not a shared export (the journey helper is uat-tagged).
 func hashParts(parts ...string) string {
 	h := sha256.New()
 	for _, p := range parts {
@@ -32,16 +32,25 @@ func hashParts(parts ...string) string {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
+// spineAnchored reports whether a ProvisioningProof's step_ids + journey_digest are the CANONICAL restart-less
+// spine: the step list must equal uat.ManagedCloudStepIDs exactly AND the digest must be hashParts of that
+// canonical list. Anchoring to the canonical set (not the manifest's own step_ids) is what closes the
+// fabrication hole — a bundle carrying 8 invented step ids + a self-consistent digest is NOT the real spine.
+func spineAnchored(stepIDs []string, digest string) bool {
+	return slices.Equal(stepIDs, uat.ManagedCloudStepIDs) && digest == hashParts(uat.ManagedCloudStepIDs...)
+}
+
 // TestManagedCloudReleaseVerifiesClean wires the managed-cloud-0.1.0 bundle into the shared evidence
 // verifier: the committed release must verify clean (0 failed, 0 missing, 0 secret findings) with the E13
 // managed-cloud rules ACTIVE on real data — a second tenant provisioned restart-less with its config_policy
 // applied (provisioning + the restart-less spine), a secret-ref resolved without restart and never surfaced
 // (secret-resolve), a cross-tenant read denied with zero leaked rows (isolation), an artifact downloaded with
 // a re-derivable content digest (artifact), an admission refused before compute (refusal), two projects'
-// distinct per-project routes (route), a binding connection_ref resolved (binding), and an SDK-driven steer
-// applied (steer). This is the deterministic mirror of `make evidence-verify RELEASE=managed-cloud-0.1.0`; the
-// gated live tier overwrites the same bundle with real chatcmpl ids. It fails (bundle absent) until the
-// bundle is committed.
+// distinct per-project routes (route), a binding connection_ref resolved (binding), and a steer driven over
+// the public API (steer). The committed bundle is authored deterministic data; the separate live journey
+// (make uat-managed-cloud PROVIDER=provider-one) proves the restart-less spine + a real provider run
+// independently. This is the deterministic mirror of `make evidence-verify RELEASE=managed-cloud-0.1.0`. It
+// fails (bundle absent) until the bundle is committed.
 func TestManagedCloudReleaseVerifiesClean(t *testing.T) {
 	root := repoRoot(t)
 	dir := filepath.Join(root, "evidence", "releases", "managed-cloud-0.1.0")
@@ -70,6 +79,9 @@ func TestManagedCloudReleaseVerifiesClean(t *testing.T) {
 	}
 	var parsed struct {
 		Cases []struct {
+			ID                string `json:"id"`
+			RunID             string `json:"run_id"`
+			Checksum          string `json:"checksum"`
 			ProvisioningClaim string `json:"provisioning_claim"`
 			ProvisioningProof *struct {
 				StepIDs       []string `json:"step_ids"`
@@ -97,16 +109,26 @@ func TestManagedCloudReleaseVerifiesClean(t *testing.T) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		t.Fatalf("decode managed-cloud-0.1.0 manifest: %v", err)
 	}
+
+	// canonicalDigest anchors both the spine and the per-case checksums: an authored bundle cannot invent a
+	// digest or a checksum, because both are re-derived from the CANONICAL spine + the case's own id/run.
+	canonicalDigest := hashParts(uat.ManagedCloudStepIDs...)
+
 	var provisioning, secret, isolation, artifact, refusal, route, binding, steer int
 	for _, c := range parsed.Cases {
+		// Per-case checksum is re-derivable: hashParts(id, run_id, canonical journey_digest). A checksum that
+		// does not reproduce from the case's own id + run + the canonical spine digest is fabricated (SHOULD 5:
+		// the field is a real re-derived value, not just a sha256-shaped string).
+		if want := hashParts(c.ID, c.RunID, canonicalDigest); c.Checksum != want {
+			t.Fatalf("%s checksum %q is not hashParts(id, run_id, journey_digest) %q — an authored checksum must be re-derivable", c.ID, c.Checksum, want)
+		}
 		if c.ProvisioningClaim != "" && c.ProvisioningProof != nil {
 			provisioning++
-			// Anti-fabrication (mirrors the E12 advertised_schema_hash gate): the journey_digest MUST be the
-			// real hash of the manifest's OWN step_ids — a value that does not reproduce is a fabricated spine
-			// digest, the exact defect a reviewer caught with shasum on a prior release.
-			if got := hashParts(c.ProvisioningProof.StepIDs...); got != c.ProvisioningProof.JourneyDigest {
-				t.Fatalf("journey_digest %q is not hashParts(step_ids) %q — a committed spine digest must be the real value the journey produces",
-					c.ProvisioningProof.JourneyDigest, got)
+			// Anti-fabrication, ANCHORED: the step_ids must be the CANONICAL restart-less spine and the
+			// journey_digest hashParts of it — not merely self-consistent with a fabricated step list.
+			if !spineAnchored(c.ProvisioningProof.StepIDs, c.ProvisioningProof.JourneyDigest) {
+				t.Fatalf("%s provisioning_proof is not anchored to the canonical spine: step_ids=%v digest=%q, want %v / %q",
+					c.ID, c.ProvisioningProof.StepIDs, c.ProvisioningProof.JourneyDigest, uat.ManagedCloudStepIDs, canonicalDigest)
 			}
 		}
 		if c.SecretResolveClaim != "" && len(c.SecretResolveProof) > 0 {
@@ -117,16 +139,16 @@ func TestManagedCloudReleaseVerifiesClean(t *testing.T) {
 		}
 		if c.ArtifactClaim != "" && c.ArtifactProof != nil {
 			artifact++
-			// Anti-fabrication: the artifact content_digest MUST be sha256 of the exact bytes the journey
-			// wrote, and its byte length must match — a committed digest that does not reproduce from the known
-			// content is fabricated.
+			// Anti-fabrication: the artifact content_digest MUST be sha256 of the exact fixture bytes, and its
+			// byte length must match — a committed digest that does not reproduce from the known content is
+			// fabricated.
 			wantDigest := "sha256:" + hex.EncodeToString(sha256Sum(managedCloudArtifactContent))
 			if c.ArtifactProof.ContentDigest != wantDigest {
-				t.Fatalf("artifact content_digest %q is not sha256 of the journey's artifact bytes %q — a committed content digest must be the real value",
+				t.Fatalf("artifact content_digest %q is not sha256 of the fixture artifact bytes %q — a committed content digest must be the real value",
 					c.ArtifactProof.ContentDigest, wantDigest)
 			}
 			if c.ArtifactProof.ByteLen != len(managedCloudArtifactContent) {
-				t.Fatalf("artifact byte_len %d does not match the journey's artifact length %d", c.ArtifactProof.ByteLen, len(managedCloudArtifactContent))
+				t.Fatalf("artifact byte_len %d does not match the fixture artifact length %d", c.ArtifactProof.ByteLen, len(managedCloudArtifactContent))
 			}
 		}
 		if c.RefusalClaim != "" && len(c.RefusalProof) > 0 {
@@ -145,6 +167,26 @@ func TestManagedCloudReleaseVerifiesClean(t *testing.T) {
 	if provisioning == 0 || secret == 0 || isolation == 0 || artifact == 0 || refusal == 0 || route == 0 || binding == 0 || steer == 0 {
 		t.Fatalf("managed-cloud-0.1.0 does not exercise all E13 managed-cloud rules: provisioning=%d secret=%d isolation=%d artifact=%d refusal=%d route=%d binding=%d steer=%d",
 			provisioning, secret, isolation, artifact, refusal, route, binding, steer)
+	}
+}
+
+// TestManagedCloudSpineAnchorRejectsFabricatedSteps pins MUST-FIX 1: the anchor rejects a bundle whose
+// step_ids differ from the canonical spine even when the digest is self-consistent with those (fabricated)
+// steps. Without this, 8 invented step ids + a matching digest would pass green while claiming a bogus spine.
+func TestManagedCloudSpineAnchorRejectsFabricatedSteps(t *testing.T) {
+	// The canonical spine + its real digest passes.
+	if !spineAnchored(uat.ManagedCloudStepIDs, hashParts(uat.ManagedCloudStepIDs...)) {
+		t.Fatal("the canonical spine must anchor")
+	}
+	// A fabricated step list with a SELF-CONSISTENT digest (digest = hashParts(fabricated)) must FAIL — the
+	// old gate that recomputed from the manifest's own step_ids would have passed this.
+	fabricated := []string{"step-1", "step-2", "step-3", "step-4", "step-5", "step-6", "step-7", "step-8"}
+	if spineAnchored(fabricated, hashParts(fabricated...)) {
+		t.Fatal("a fabricated step list with a self-consistent digest must NOT anchor (that is the fabrication hole)")
+	}
+	// A canonical list with a wrong digest also fails.
+	if spineAnchored(uat.ManagedCloudStepIDs, "sha256:"+string(make([]byte, 0))) {
+		t.Fatal("the canonical list with an empty/wrong digest must NOT anchor")
 	}
 }
 

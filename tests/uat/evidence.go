@@ -242,12 +242,18 @@ func (p CrashIsolationProof) Complete() bool {
 	return p.BreakerTripped && p.ToolUnavailableVisible && p.ControlPlaneStable && p.OtherRunFlowed
 }
 
-// ManagedCloudStepIDs is the ordered MCI-00N spine the managed-cloud EXIT journey resolves on ONE
-// restart-less process (plan §T11). JourneyDigest in a ProvisioningProof is the hash of exactly this list;
-// the anti-fabrication gate recomputes hashParts(ManagedCloudStepIDs...) and fails if the committed digest
-// does not reproduce — a fabricated spine digest is caught the way the E11 advertised_schema_hash was.
+// ManagedCloudStepIDs is the ordered restart-less SPINE the managed-cloud EXIT journey resolves on ONE
+// process (plan §T11): provision a tenant over the public API (org, project, api-key), write its config_policy,
+// run a REAL provider completion, steer it, list the run history, and deny the cross-tenant read. These are
+// the steps ONE process actually resolves — NOT the full MCI-001..008 catalog (MCI-002/004/005/006/007 are
+// separate live smokes in their own processes; see scripts/uat/managed-cloud). JourneyDigest in a
+// ProvisioningProof is the hash of exactly this canonical list; the anti-fabrication gate
+// (tests/uat/managed-cloud) recomputes hashParts(ManagedCloudStepIDs...), asserts the committed step_ids
+// EQUAL this canonical list, and fails if either the digest or the list does not reproduce — a fabricated
+// spine is caught the way the E11 advertised_schema_hash was.
 var ManagedCloudStepIDs = []string{
-	"MCI-001", "MCI-002", "MCI-003", "MCI-004", "MCI-005", "MCI-006", "MCI-007", "MCI-008",
+	"provision-org", "provision-project", "provision-api-key", "config-policy",
+	"real-run", "steer", "list-history", "cross-tenant-deny",
 }
 
 // hashParts is the shared checksum primitive (sha256 of each part followed by a NUL, hex-encoded, sha256:
@@ -264,14 +270,16 @@ func hashParts(parts ...string) string {
 }
 
 // ProvisioningProof is the evidence a provisioning_claim requires (plan §T11 T2, MCI-001 — and the journey's
-// restart-less spine): a SECOND tenant was created through the public API on the SAME running process, its
-// config_policy was written and observed by the resolver, and the whole managed-cloud journey resolved every
-// step on that one process with NO restart. OrgID/ProjectID/APIKeyID are the created tenant's ids;
-// ConfigPolicyApplied records the PATCH /v1/projects config_policy took on the resolver; StepIDs is the
-// ordered spine the process resolved and JourneyDigest is hashParts(StepIDs...) — re-derivable, so a
-// fabricated digest is caught. RestartCount is the number of control-plane restarts across the journey
-// (must be 0). A "provisioned" marker with no ids, an unapplied policy, a fabricated digest, or any restart
-// is not proof.
+// restart-less spine): a SECOND tenant was created through the public API (POST /v1/organizations, /v1/projects,
+// /v1/api-keys) on the SAME running process, its config_policy was written and observed by the resolver, and
+// the restart-less SPINE steps resolved on that one process with NO restart. OrgID/ProjectID/APIKeyID are the
+// created tenant's ids; ConfigPolicyApplied records the PATCH /v1/projects config_policy took on the resolver;
+// StepIDs is the ordered spine the process resolved (ManagedCloudStepIDs — the API-provision + run + steer +
+// list + cross-tenant-deny spine, NOT the finer MCI smokes) and JourneyDigest is hashParts(StepIDs...) —
+// re-derivable, so a fabricated digest is caught. RestartCount is the number of restarts across the spine
+// (must be 0 — the live journey proves it via pg_postmaster_start_time identical start-to-end; the
+// in-process control-plane cannot restart mid-journey, so the database boot time is the concrete measure). A
+// "provisioned" marker with no ids, an unapplied policy, a fabricated digest, or any restart is not proof.
 type ProvisioningProof struct {
 	OrgID               string   `json:"org_id"`
 	ProjectID           string   `json:"project_id"`
