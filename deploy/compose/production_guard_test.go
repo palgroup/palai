@@ -20,8 +20,10 @@ const (
 	devMasterPlaceholder    = "REPLACE_WITH_OPENSSL_RAND_HEX_32"
 	devMasterZero           = "0000000000000000000000000000000000000000000000000000000000000000"
 	devBootstrapPlaceholder = "REPLACE_WITH_A_REAL_BOOTSTRAP_KEY"
-	realKey                 = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f900"
-	realBootstrap           = "palai-deadbeefcafef00d"
+	// A genuinely bootable key: exactly 64 hex chars (identity.ParseMasterKey's 32-byte AES-256
+	// contract), so "admits real keys" admits a key the binary would actually accept.
+	realKey       = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	realBootstrap = "palai-deadbeefcafef00d"
 )
 
 // writeKey writes v to a temp file and returns its path (empty v => an empty file, the
@@ -71,6 +73,7 @@ func TestProductionGuardRefusesDevMasterKey(t *testing.T) {
 	}{
 		{"unset", "", "PALAI_SECRET_MASTER_KEY_FILE is required"},
 		{"empty-file", "\x00file", "missing or empty"},
+		{"whitespace-only", "  \n\t ", "contains only whitespace"},
 		{"placeholder", devMasterPlaceholder, "refusing to boot on the dev-default master key"},
 		{"all-zeros", devMasterZero, "refusing to boot on the dev-default master key"},
 	}

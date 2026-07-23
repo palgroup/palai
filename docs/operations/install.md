@@ -51,12 +51,24 @@ chmod 600 "${PALAI_HOME}/secrets/master-key"
 The boot guard refuses an unset/empty file, an all-zero key, and the placeholder
 `REPLACE_WITH_OPENSSL_RAND_HEX_32`.
 
+Mint the one-use runner enrollment token as well — a hand-run compose (unlike
+`palai local up`) does NOT create it, and its bind-mount source must exist as a file:
+
+```sh
+openssl rand -hex 24 > "${PALAI_HOME}/runner-token"
+chmod 600 "${PALAI_HOME}/runner-token"
+```
+
 ## 3. Configure the environment
 
 ```sh
 cp deploy/compose/production.env.example production.env
 # edit production.env: set PALAI_HOME (absolute), PALAI_EDGE_PORT (e.g. 443),
 # PALAI_ENGINE_IMAGE, PALAI_COMPOSE_PROJECT.
+
+# Load it into THIS shell so the steps below (which reference $PALAI_EDGE_PORT,
+# $PALAI_COMPOSE_PROJECT) run copy-paste:
+set -a; . ./production.env; set +a
 ```
 
 ## 4. Validate the compose overlay

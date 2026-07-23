@@ -54,6 +54,8 @@ services:
   edge:
     # Digest-pinned TLS-terminating reverse proxy — the ONLY host-published surface. Caddy
     # serves :443 with the mounted cert/key and proxies to the internal control-plane API.
+    # Pin origin: caddy:2.8-alpine (resolved 2026-07 via `crane digest caddy:2.8-alpine`).
+    # Upgrade: re-resolve the tag with crane/`docker buildx imagetools inspect` and replace.
     image: caddy@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
     restart: always
     depends_on:
@@ -68,7 +70,8 @@ services:
       - "${PALAI_HOME}/ca/server.crt:/etc/palai/edge/edge.crt:ro"
       - "${PALAI_HOME}/ca/server.key:/etc/palai/edge/edge.key:ro"
     ports:
-      - "${PALAI_EDGE_PORT}:443"
+      # Fail closed: an unset PALAI_EDGE_PORT must error, not publish 443 from a random port.
+      - "${PALAI_EDGE_PORT:?PALAI_EDGE_PORT must be set}:443"
 
 configs:
   # Inline Caddyfile (no separate file, no bind-mount path ambiguity). auto_https off disables
