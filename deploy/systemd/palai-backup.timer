@@ -1,0 +1,18 @@
+# E14 T5 — schedules palai-backup.service. OnCalendar is an EXAMPLE (daily 02:30 host time);
+# tune it to your RPO. Persistent=true runs a missed backup at the next boot (a host that was
+# off at 02:30 still gets its backup), and RandomizedDelaySec spreads load off the exact minute.
+#
+#   systemctl enable --now palai-backup.timer   # then: systemctl list-timers palai-backup
+
+[Unit]
+Description=Schedule the Palai installation-level backup
+Documentation=file:///opt/palai/docs/operations/backup-restore.md
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=palai-backup.service
+
+[Install]
+WantedBy=timers.target

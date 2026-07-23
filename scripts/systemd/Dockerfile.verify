@@ -1,0 +1,49 @@
+# E14 T5 — a Linux image carrying `systemd-analyze` so the units can be statically verified on
+# macOS + Docker Desktop (no systemd host here — the operator ceiling, plan §6). It installs
+# systemd, then stages the units alongside stubs for everything they REFERENCE (the ExecStart
+# binaries, the service user, a docker.service, env files) so `systemd-analyze verify` resolves
+# them and checks the units themselves, not the absence of a real host. Build context = repo root.
+FROM ubuntu:24.04
+
+RUN apt-get update -qq \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends systemd \
+ && rm -rf /var/lib/apt/lists/*
+
+# The service user the runner unit runs as (else verify warns "Unknown user").
+RUN useradd --system --no-create-home --shell /usr/sbin/nologin palai-runner \
+ && groupadd -f docker
+
+# Stub the ExecStart targets so verify finds them executable. The real host installs the actual
+# binaries; here we only need the paths to resolve for the static unit check. We deliberately do
+# NOT pre-create /var/backups/palai: the backup unit must create it itself at runtime, and not
+# masking it here means a re-introduced WorkingDirectory=/var/backups/palai would fail verify.
+RUN set -eux; \
+    mkdir -p /opt/palai/deploy/systemd /opt/palai-runner /etc/palai; \
+    printf '#!/bin/sh\nexit 0\n' > /usr/bin/docker; \
+    printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/palai; \
+    chmod +x /usr/bin/docker /usr/local/bin/palai
+
+# The real scripts at their referenced install paths (honest — not stubs).
+COPY scripts/package/runner/palai-runner.sh /opt/palai-runner/palai-runner.sh
+COPY deploy/systemd/palai-backup-prune.sh   /opt/palai/deploy/systemd/palai-backup-prune.sh
+RUN chmod +x /opt/palai-runner/palai-runner.sh /opt/palai/deploy/systemd/palai-backup-prune.sh
+
+# Env files the units reference (EnvironmentFile=), so verify does not warn them missing.
+RUN : > /etc/palai/production.env; : > /etc/palai/runner.env
+
+# A stub docker.service so the Requires=/After=docker.service references resolve.
+RUN printf '[Unit]\nDescription=stub docker\n[Service]\nType=oneshot\nExecStart=/bin/true\n' \
+      > /etc/systemd/system/docker.service
+
+# The units under test, in the system unit dir so cross-references (palai-stack.service) resolve.
+COPY deploy/systemd/palai-stack.service   /etc/systemd/system/palai-stack.service
+COPY deploy/systemd/palai-runner.service  /etc/systemd/system/palai-runner.service
+COPY deploy/systemd/palai-backup.service  /etc/systemd/system/palai-backup.service
+COPY deploy/systemd/palai-backup.timer    /etc/systemd/system/palai-backup.timer
+
+# Verify every unit; -q keeps stdout to warnings/errors, non-zero exit fails the gate.
+CMD ["sh", "-c", "systemd-analyze verify \
+  /etc/systemd/system/palai-stack.service \
+  /etc/systemd/system/palai-runner.service \
+  /etc/systemd/system/palai-backup.service \
+  /etc/systemd/system/palai-backup.timer && echo 'systemd-analyze verify: all units OK'"]

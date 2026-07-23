@@ -1,0 +1,43 @@
+# E14 T5 — the production Palai stack as a boot-persistent systemd service. It is a THIN
+# wrapper over the T1 production compose profile: same two -f files, same --env-file, the
+# `-p` project the operator brings the stack up under. No new posture — the hardening lives
+# in deploy/compose/production.yml (TLS edge, !reset ports, fail-closed master key).
+#
+# Restart=always is honored by running compose ATTACHED (no -d): the ExecStart process lives
+# for the stack's lifetime, so a crashed compose client is restarted by systemd. That is a
+# DIFFERENT layer from the per-service `restart: always` the overlay sets on each container —
+# both hold. (Type=oneshot cannot carry Restart=always: systemd refuses that combination, so
+# the attached-compose form is the honest way to satisfy the plan's Restart=always.)
+#
+# Install (operator, on a real Linux host — the ceiling: not run here, plan §6):
+#   cp deploy/systemd/palai-*.service deploy/systemd/palai-*.timer /etc/systemd/system/
+#   install -D deploy/compose/production.env /etc/palai/production.env   # then edit it
+#   systemctl daemon-reload && systemctl enable --now palai-stack.service
+# WorkingDirectory is the checkout so the relative compose paths resolve; adjust both to taste.
+
+[Unit]
+Description=Palai self-hosted stack (production compose profile)
+Documentation=file:///opt/palai/docs/operations/install.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=/opt/palai
+# The production interpolation contract (PALAI_HOME, PALAI_EDGE_PORT, PALAI_COMPOSE_PROJECT,
+# …). Secrets are NOT here — they are files under ${PALAI_HOME} bridged by compose `secrets:`.
+EnvironmentFile=/etc/palai/production.env
+# Attached bring-up (no -d) so the unit process is the stack's lifetime and Restart=always
+# means something. `-p ${PALAI_COMPOSE_PROJECT}` MUST equal .palai/config.json's project so
+# `palai backup` finds the containers by name (palai-backup.service depends on this).
+ExecStart=/usr/bin/docker compose --env-file /etc/palai/production.env -p ${PALAI_COMPOSE_PROJECT} -f deploy/compose/compose.yaml -f deploy/compose/production.yml up --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file /etc/palai/production.env -p ${PALAI_COMPOSE_PROJECT} -f deploy/compose/compose.yaml -f deploy/compose/production.yml down
+Restart=always
+RestartSec=5
+# No TimeoutStartSec: under Type=exec the unit is "started" the moment compose is exec'd (image
+# pulls then happen under the already-active unit), so a start timeout would not gate the pull
+# anyway — the container healthchecks in compose.yaml own readiness.
+
+[Install]
+WantedBy=multi-user.target

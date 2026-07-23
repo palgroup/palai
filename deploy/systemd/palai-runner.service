@@ -1,0 +1,51 @@
+# E14 T5 — the Palai runner as a boot-persistent systemd service on a SEPARATE host from the
+# control-plane (the split-VM topology). This is the host-package unit: it ships inside the
+# signed runner tarball (scripts/package/runner) and is installed by the operator on the
+# runner VM. See docs/operations/runner-host.md.
+#
+# OUTBOUND-ONLY by construction: cmd/runner opens NO inbound port and activates no socket —
+# it dials PALAI_CONTROLLER_URL out to enroll and then holds one outbound mTLS session for
+# leases. This unit therefore has NO [Socket]/ListenStream and publishes nothing. The
+# no-listen-port property is proven by the binary (packages/runner has no net.Listen) and the
+# compose-config invariant test (deploy/compose/runner_no_listen_test.go), not by a comment.
+#
+# The runner needs the host Docker socket because it is the TRUSTED supervisor that launches
+# the hardened engine sandbox (OCI driver). The untrusted engine workload receives NO socket
+# and no credential — that isolation is the OCI driver's, proven by tests/security/runner. So
+# "no runtime socket to any workload" holds: the socket reaches the supervisor, never the
+# workload it supervises.
+
+[Unit]
+Description=Palai runner host (outbound-only execution host)
+Documentation=file:///opt/palai-runner/runner-host.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+# The operator's runner inputs: PALAI_CONTROLLER_URL, PALAI_CONTROLLER_DNS, PALAI_RUNNER_ID,
+# PALAI_RUNNER_DNS, PALAI_RUNNER_CA_CERT, PALAI_ENROLLMENT_TOKEN_FILE, PALAI_ENGINE_IMAGE.
+# The launcher derives the enroll/session/renew URLs from PALAI_CONTROLLER_URL, exactly like
+# the compose runner-entrypoint. Secrets (the one-use token) are FILES, never env values.
+EnvironmentFile=/etc/palai/runner.env
+ExecStart=/opt/palai-runner/palai-runner.sh
+Restart=always
+RestartSec=5
+# The runner needs group access to /var/run/docker.sock; run it as a dedicated non-root user in
+# the docker group (operator creates it — see runner-host.md). HONEST NOTE: docker-group membership
+# is ROOT-EQUIVALENT on the host (it can launch a privileged container), so "non-root user" here is
+# defense-in-depth, NOT the trust boundary. The real boundary is the OCI engine SANDBOX the runner
+# supervises (no socket, no credential — tests/security/runner), not this unit's user.
+User=palai-runner
+SupplementaryGroups=docker
+# Modest hardening that does not touch the supervisor's Docker access or the outbound session.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
