@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -117,6 +118,14 @@ func TestMigrationJournalIsAppendOnlyToApplicationRole(t *testing.T) {
 	cs := openHarness(t)
 	pool := cs.Pool()
 	ctx := storage.WithSystemScope(context.Background())
+
+	// An explicit re-Migrate makes the precondition self-contained (independent of in-file test order):
+	// 000029's blanket GRANT re-runs with schema_revisions already present and re-hands palai_app
+	// UPDATE/DELETE, then 000033's REVOKE takes them back — so this proves the REVOKE RE-ASSERTS, not just
+	// that boot #1 never granted the privileges.
+	if err := cs.Migrate(context.Background()); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
 
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -279,6 +288,61 @@ func TestMigrationPreflightRejectsNewerDatabase(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "newer than this binary") {
 		t.Fatalf("Migrate() error = %v, want a version-window rejection", err)
+	}
+}
+
+// TestMigrationConcurrentBootsSerialize proves the advisory lock serializes concurrent migrators: three
+// control-planes migrating the SAME fresh database at once all succeed and land the head, instead of
+// racing on usage_events' create(000001)/drop(000034) into a 23505/42P01 boot failure (SF1).
+func TestMigrationConcurrentBootsSerialize(t *testing.T) {
+	dbURL := freshDatabase(t)
+	ctx := context.Background()
+	cs, err := coordinator.Open(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("open fresh store: %v", err)
+	}
+	t.Cleanup(cs.Close)
+
+	const boots = 3
+	errs := make(chan error, boots)
+	var wg sync.WaitGroup
+	for i := 0; i < boots; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); errs <- cs.Migrate(ctx) }()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Migrate() error = %v, want serialized success", err)
+		}
+	}
+	migrations := storage.OrderedMigrations()
+	var head int
+	if err := cs.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT coalesce(max(version), 0) FROM schema_revisions`).Scan(&head); err != nil {
+		t.Fatalf("read journal head: %v", err)
+	}
+	if head != migrations[len(migrations)-1].Version {
+		t.Fatalf("journal head after concurrent boots = %d, want %d", head, migrations[len(migrations)-1].Version)
+	}
+}
+
+// TestMigrationPreflightFailsClosedOnBadGateVars proves the disk and backup gates FAIL the boot when
+// their var is SET but unparseable (SF2) — an operator's typo must not silently drop the protection.
+// Preflight rejects before the chain runs, so the shared database is left untouched.
+func TestMigrationPreflightFailsClosedOnBadGateVars(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+
+	t.Setenv("PALAI_MIGRATE_MIN_DISK_BYTES", "2G") // a suffix where plain bytes are expected
+	if err := cs.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "MIN_DISK_BYTES") {
+		t.Fatalf("Migrate() with an unparseable disk floor error = %v, want a fail-closed rejection", err)
+	}
+	t.Setenv("PALAI_MIGRATE_MIN_DISK_BYTES", "")
+
+	t.Setenv("PALAI_MIGRATE_REQUIRE_BACKUP", "required") // not a boolean
+	if err := cs.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "REQUIRE_BACKUP") {
+		t.Fatalf("Migrate() with a non-boolean backup flag error = %v, want a fail-closed rejection", err)
 	}
 }
 

@@ -22,6 +22,12 @@ is what makes an interrupted upgrade **resumable**: if the process dies mid-chai
 migrations stay committed and a restart re-runs the chain from the top, skipping what is already applied
 and continuing to the head.
 
+The whole chain is **advisory-locked** (`pg_advisory_lock`, a single fixed key), so only **one migrator
+runs at a time**. Two control-planes booting simultaneously (a multi-replica Kubernetes rollout)
+serialize: the second waits for the first to finish, then re-runs the idempotent chain as a no-op. The
+lock is session-scoped, so it releases automatically if a migrator crashes — a dead migrator never wedges
+the next boot.
+
 ### Preflight
 
 The preflight is a boot gate, before the first migration:
@@ -118,9 +124,14 @@ After an **interrupted** upgrade that resumed, the head equals the binary's chai
 from `000033` on carries a row. A head *below* the binary's chain head means the chain has not finished —
 restart the control-plane and it resumes.
 
+The interruption/resume behaviour has a live drill against the **shipped binary** (a real crash + restart,
+not an in-process fault): `make migration-resume-drill` (`scripts/test/migration-resume-drill.sh`). It
+spins a throwaway Postgres, kills the control-plane right after `000033`, restarts it, and asserts the
+journal resumed to the head with seeded rows intact.
+
 ## Honest ceiling
 
 The **background data-migration** pattern (a long backfill that runs resumably behind the schema change)
-is proven here only with a *fixture* migration in the component tests — the live chain has no big-data
-backfill case yet. The **first real** backfill migration must adopt this resumable, journaled,
-bounded-lock path rather than a one-shot `UPDATE`.
+is **not yet proven** — the live chain has no big-data backfill case, and the component tests exercise
+only a bounded-lock probe, not a real resumable backfill. The **first real** backfill migration must adopt
+this resumable, journaled, bounded-lock, advisory-locked path rather than a one-shot `UPDATE`.

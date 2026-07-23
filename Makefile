@@ -5,7 +5,8 @@ SHELL := /bin/bash
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
 	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
-	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host evidence-verify
+	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host evidence-verify \
+	migration-resume-drill
 
 bootstrap:
 	go mod download
@@ -53,6 +54,12 @@ check-spike-reports:
 test-component:
 	@test -x scripts/test/component || { echo "component suite not implemented" >&2; exit 2; }
 	@scripts/test/component
+
+# E15 T1 live interruption/resume drill (OPS-006): kills a REAL control-plane binary mid migration chain
+# and proves the restart resumes the journal to the head with data intact. Throwaway Postgres, no
+# credentials. Not part of verify (Docker-bound).
+migration-resume-drill:
+	@bash scripts/test/migration-resume-drill.sh
 
 test-e2e:
 	@test -x scripts/test/e2e || { echo "end-to-end suite not implemented" >&2; exit 2; }

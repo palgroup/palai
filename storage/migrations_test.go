@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,13 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 		if len(m.Checksum) != 64 {
 			t.Fatalf("migration %d checksum = %q, want a 64-char sha256 hex", m.Version, m.Checksum)
+		}
+		// Every migration must stamp ITS OWN version into schema_migrations. This is the invariant the
+		// runner's "journal head can never exceed the schema head" rests on — gate it here instead of
+		// trusting each author to include the marker.
+		marker := fmt.Sprintf("INSERT INTO schema_migrations (version) VALUES (%d)", m.Version)
+		if !strings.Contains(m.Up, marker) {
+			t.Fatalf("migration %06d_%s does not stamp its version: missing %q", m.Version, m.Name, marker)
 		}
 	}
 

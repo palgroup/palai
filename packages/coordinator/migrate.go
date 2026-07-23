@@ -17,6 +17,11 @@ import (
 // stay recorded in schema_migrations alone.
 const journalIntroVersion = 33
 
+// migrationLockKey is the fixed 64-bit key the boot chain holds a pg_advisory_lock on so only one
+// migrator runs at a time (the bytes spell "PALAI_MG"). Any stable arbitrary constant works; it only has
+// to be the same across every control-plane replica.
+const migrationLockKey int64 = 0x50414c41495f4d47
+
 // MigratorVersion is the version stamp written to schema_revisions.applied_by. It is empty by default and
 // resolved from the build's embedded VCS revision at run time; a release build overrides it with
 // -ldflags "-X github.com/palgroup/palai/packages/coordinator.MigratorVersion=<v>" (E15 T2 wires the real
@@ -32,6 +37,22 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.preflight(ctx); err != nil {
 		return err
 	}
+	// Single active migrator: hold a session advisory lock across the WHOLE chain on a dedicated
+	// connection, so two control-planes booting at once (E15's multi-replica K8s) serialize — the second
+	// waits, then re-runs the idempotent chain as a no-op. Without it, because usage_events is
+	// create(000001)/drop(000034) every boot, two concurrent chains race on a CREATE/DROP (23505 or a
+	// catalog 42P01) and one boot fails. The lock is session-scoped, so it auto-releases if this migrator
+	// crashes — a dead migrator never wedges the next boot.
+	lockConn, err := s.pool.Acquire(storage.WithSystemScope(ctx))
+	if err != nil {
+		return fmt.Errorf("acquire migration lock connection: %w", err)
+	}
+	defer lockConn.Release()
+	if _, err := lockConn.Exec(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+		return fmt.Errorf("acquire migration advisory lock: %w", err)
+	}
+	defer func() { _, _ = lockConn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockKey) }()
+
 	// The interruption hook (OPS-006): PALAI_MIGRATE_FAULT_AFTER=<version> aborts the chain right after
 	// that migration commits, standing in for a control-plane crash mid-chain. Nothing in production sets
 	// it, so the chain runs to completion; the component test and the live drill set it to prove resume.
@@ -120,28 +141,46 @@ func (s *Store) preflight(ctx context.Context) error {
 	// the configured floor, so a migration does not start on a disk that fills mid-DDL. Off by default
 	// because the honest ceiling is that this measures the CONTROL-PLANE host's own path, not necessarily
 	// the (possibly external/managed) database volume — an operator enables it for a risky upgrade.
-	if floor := envInt64Or("PALAI_MIGRATE_MIN_DISK_BYTES", 0); floor > 0 {
-		path := envStrOr("PALAI_MIGRATE_DISK_PATH", ".")
-		free, err := freeDiskBytes(path)
-		if err != nil {
-			return fmt.Errorf("migration preflight: disk check on %s: %w", path, err)
+	//
+	// FAIL-CLOSED: this floor is a protection, so a SET-but-unparseable value (a "2G" typo where a byte
+	// count is expected) FAILS the boot rather than silently disabling the gate.
+	if raw := os.Getenv("PALAI_MIGRATE_MIN_DISK_BYTES"); raw != "" {
+		floor, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || floor < 0 {
+			return fmt.Errorf("migration preflight: PALAI_MIGRATE_MIN_DISK_BYTES=%q is not a non-negative byte count — fix it (plain bytes, e.g. 2147483648) or unset it", raw)
 		}
-		if free < uint64(floor) {
-			return fmt.Errorf("migration preflight: %s has %d bytes free, below the %d floor — free space before migrating", path, free, floor)
+		if floor > 0 {
+			path := envStrOr("PALAI_MIGRATE_DISK_PATH", ".")
+			free, err := freeDiskBytes(path)
+			if err != nil {
+				return fmt.Errorf("migration preflight: disk check on %s: %w", path, err)
+			}
+			if free < uint64(floor) {
+				return fmt.Errorf("migration preflight: %s has %d bytes free, below the %d floor — free space before migrating", path, free, floor)
+			}
 		}
 	}
 
 	// Backup status (opt-in gate, default off): a destructive (contract) upgrade wants a restore point
-	// first. When PALAI_MIGRATE_REQUIRE_BACKUP is truthy, the marker the backup tool writes
+	// first. When PALAI_MIGRATE_REQUIRE_BACKUP is true, the marker the backup tool writes
 	// (PALAI_MIGRATE_BACKUP_MARKER) must exist, or the migration is refused. Ceiling: the runner trusts
 	// the marker's presence; it does not itself verify backup integrity — that is `palai backup verify`.
-	if truthy(os.Getenv("PALAI_MIGRATE_REQUIRE_BACKUP")) {
-		marker := os.Getenv("PALAI_MIGRATE_BACKUP_MARKER")
-		if marker == "" {
-			return fmt.Errorf("migration preflight: PALAI_MIGRATE_REQUIRE_BACKUP is set but PALAI_MIGRATE_BACKUP_MARKER names no marker")
+	//
+	// FAIL-CLOSED: a SET-but-unrecognized value (REQUIRE_BACKUP=required) FAILS the boot rather than
+	// silently reading as false and dropping the protection.
+	if raw := os.Getenv("PALAI_MIGRATE_REQUIRE_BACKUP"); raw != "" {
+		require, ok := parseBool(raw)
+		if !ok {
+			return fmt.Errorf("migration preflight: PALAI_MIGRATE_REQUIRE_BACKUP=%q is not a boolean — use 1/true or 0/false", raw)
 		}
-		if _, err := os.Stat(marker); err != nil {
-			return fmt.Errorf("migration preflight: required backup marker %s is absent (%v) — take a backup before this upgrade", marker, err)
+		if require {
+			marker := os.Getenv("PALAI_MIGRATE_BACKUP_MARKER")
+			if marker == "" {
+				return fmt.Errorf("migration preflight: PALAI_MIGRATE_REQUIRE_BACKUP is set but PALAI_MIGRATE_BACKUP_MARKER names no marker")
+			}
+			if _, err := os.Stat(marker); err != nil {
+				return fmt.Errorf("migration preflight: required backup marker %s is absent (%v) — take a backup before this upgrade", marker, err)
+			}
 		}
 	}
 	return nil
@@ -221,18 +260,6 @@ func envIntOr(name string, def int) int {
 	return n
 }
 
-func envInt64Or(name string, def int64) int64 {
-	v := os.Getenv(name)
-	if v == "" {
-		return def
-	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
-		return def
-	}
-	return n
-}
-
 func envStrOr(name, def string) string {
 	if v := os.Getenv(name); v != "" {
 		return v
@@ -240,10 +267,14 @@ func envStrOr(name, def string) string {
 	return def
 }
 
-func truthy(v string) bool {
+// parseBool recognizes the usual boolean spellings and reports ok=false for anything else, so a
+// fail-closed caller can reject a typo instead of silently reading it as false.
+func parseBool(v string) (value, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "1", "true", "yes", "on":
-		return true
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
 	}
-	return false
+	return false, false
 }
