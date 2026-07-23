@@ -203,6 +203,10 @@ log "OPS-008: an old-stamp runner (0.12.0) is rejected with the intermediate-hop
 # 0.15.0 stamp (it is not recreated), so the connect handshake rejects the runner with the hop message.
 compose_up "$d_engine_n1" "$cp_n1" "$runner_n1"
 for _ in $(seq 1 30); do curl_api GET /v1/capabilities >/dev/null 2>&1 && break; sleep 1; done
+# Mint a FRESH one-use enrollment token: the healthy runner above already spent the current token on this
+# (not-recreated) control-plane, so the 0.12.0 runner must enroll with a new one before it can reach the
+# version handshake. The control-plane re-reads the token file at Consume.
+head -c48 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$PALAI_HOME/runner-token"
 env PALAI_HOME="$PALAI_HOME" \
     PALAI_API_PORT="$(api_port)" \
     PALAI_RUNNER_PORT="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["runner_port"])' "$PALAI_HOME/config.json")" \
@@ -236,9 +240,10 @@ if [ -n "${OPENAI_API_KEY:-}" ]; then
   for _ in $(seq 1 30); do curl_api GET /v1/capabilities >/dev/null 2>&1 && break; sleep 1; done
   smoke_id="$(admit_run 'reply with the single word ok')"
   smoke_st="$(wait_terminal "$smoke_id" 120)" || echo "real smoke status=$smoke_st (non-terminal)" >&2
-  # The provider's own request id (chatcmpl-...) is journalled in events.payload — non-secret correlation.
+  # The provider's own request id (chatcmpl-...) is committed to model_requests.result — non-secret
+  # correlation evidence the UAT reads back from the committed result.
   chatcmpl="$(docker exec "$PROJECT-postgres-1" psql -U palai -d palai -tA -c \
-    "SELECT payload->>'provider_request_id' FROM events WHERE payload ? 'provider_request_id' ORDER BY created_at DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
+    "SELECT result->>'provider_request_id' FROM model_requests WHERE result ? 'provider_request_id' ORDER BY updated_at DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
   echo "real-provider smoke: $smoke_id status=$smoke_st chatcmpl=${chatcmpl:-<none>}" >&2
 else
   echo "SKIP real-provider smoke: OPENAI_API_KEY not in .env.local" >&2
