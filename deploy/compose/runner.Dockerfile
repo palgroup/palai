@@ -6,8 +6,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
+# The release version stamp (E15 T2): build.sh passes it so the runner advertises its git-describe stamp
+# in the enroll handshake for the §48.2 window (OPS-008). Empty leaves it unstamped (VCS/"dev") — a plain
+# `local up` build is unchanged. PALAI_VERSION env at run time still overrides this (drills/ops pinning).
+ARG PALAI_VERSION_STAMP=""
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux go build -o /out/palai-runner ./cmd/runner
+    CGO_ENABLED=0 GOOS=linux go build -ldflags "-X github.com/palgroup/palai/packages/version.Stamp=${PALAI_VERSION_STAMP}" -o /out/palai-runner ./cmd/runner
 
 FROM alpine:3.21
 # No USER: the runner reads its 0600 CA cert and one-use token from host bind-mounts, and

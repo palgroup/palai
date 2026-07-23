@@ -6,9 +6,13 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
+# The release version stamp (E15 T2): scripts/release/build.sh passes it as a build arg so the image's
+# binary reports the git-describe stamp for the §48.2 support window + schema_revisions.applied_by. Empty
+# (a plain `local up` build) leaves it unstamped, so version.Resolve falls back to VCS/"dev" — unchanged.
+ARG PALAI_VERSION_STAMP=""
 # CGO off => a fully static binary that runs on the musl-based alpine runtime.
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux go build -o /out/palai-control-plane ./apps/control-plane/cmd/palai-control-plane
+    CGO_ENABLED=0 GOOS=linux go build -ldflags "-X github.com/palgroup/palai/packages/version.Stamp=${PALAI_VERSION_STAMP}" -o /out/palai-control-plane ./apps/control-plane/cmd/palai-control-plane
 
 FROM alpine:3.21
 # No USER: compose bind-mounts file-secrets with the host's 0600 perms and ignores the

@@ -615,6 +615,267 @@ func TestGatewayRelaysFramesBothWays(t *testing.T) {
 	}
 }
 
+// versionedSession is f.session with the runner's advertised build stamp set, so the connect handshake
+// carries a version the gateway checks against its own for the §48.2 window (OPS-008).
+func (f *gatewayFixture) versionedSession(identity runner.Identity, runnerVersion string) runner.Session {
+	s := f.session(identity)
+	s.Version = runnerVersion
+	return s
+}
+
+// TestGatewayRejectsUnsupportedRunnerSkew is the OPS-008 proof: a runner more than two minors behind the
+// control-plane is rejected at the connect handshake, and the rejection carries the required
+// intermediate-hop version so the operator knows the forward path. A runner INSIDE the window parks.
+func TestGatewayRejectsUnsupportedRunnerSkew(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-old", "gw-token-ok"))
+	f.gateway.SetControlPlaneVersion("0.15.0")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// A three-minors-behind runner (0.12.0 vs 0.15.0) is refused with the hop message naming 0.13.0.
+	oldID, err := runner.Enroll(ctx, f.bootstrap("gw-token-old"))
+	if err != nil {
+		t.Fatalf("enroll old runner: %v", err)
+	}
+	_, err = f.versionedSession(oldID, "0.12.0").ReceiveLease(ctx)
+	if err == nil {
+		t.Fatal("gateway served a runner three minors behind the control-plane")
+	}
+	if !strings.Contains(err.Error(), "0.13.0") {
+		t.Fatalf("skew rejection %q does not carry the required intermediate-hop version 0.13.0", err.Error())
+	}
+
+	// A runner two minors behind (0.13.0, the window edge) parks and is offered a lease — proving the
+	// rejection is the window boundary, not a blanket refusal of any older runner.
+	okID, err := runner.Enroll(ctx, f.bootstrap("gw-token-ok"))
+	if err != nil {
+		t.Fatalf("enroll in-window runner: %v", err)
+	}
+	leaseCh := make(chan runner.Lease, 1)
+	go func() {
+		if lease, err := f.versionedSession(okID, "0.13.0").ReceiveLease(ctx); err == nil {
+			leaseCh <- lease
+		}
+	}()
+	if _, err := f.gateway.Dial(ctx, f.attempt("run_skewok", "att_skewok", 1)); err != nil {
+		t.Fatalf("Dial to an in-window runner: %v", err)
+	}
+	select {
+	case <-leaseCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("an in-window runner (two minors behind) was not offered a lease")
+	}
+}
+
+// TestGatewayDialRefusesWhenCordoned is the drain half of SAN-011: a cordoned gateway offers NO new
+// lease (Dial returns ErrRunnerCordoned so the attempt requeues), and Resume restores service.
+func TestGatewayDialRefusesWhenCordoned(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	f.gateway.Cordon()
+	if _, err := f.gateway.Dial(ctx, f.attempt("run_cord", "att_cord", 1)); !errors.Is(err, execution.ErrRunnerCordoned) {
+		t.Fatalf("Dial while cordoned = %v, want ErrRunnerCordoned", err)
+	}
+
+	// Resume, then a real parked runner is offered a lease again.
+	f.gateway.Resume()
+	identity, err := runner.Enroll(ctx, f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	leaseCh := make(chan runner.Lease, 1)
+	go func() {
+		if lease, err := f.session(identity).ReceiveLease(ctx); err == nil {
+			leaseCh <- lease
+		}
+	}()
+	if _, err := f.gateway.Dial(ctx, f.attempt("run_resume", "att_resume", 1)); err != nil {
+		t.Fatalf("Dial after Resume: %v", err)
+	}
+	select {
+	case <-leaseCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("gateway did not offer a lease after Resume")
+	}
+}
+
+// TestGatewayDialRefusesRunnerParkedAfterCordon closes the SF-5 TOCTOU: a Dial already blocked in its
+// select when Cordon fires must NOT slip a lease through when a runner then parks — the post-receive
+// re-check refuses it, so a drain that read active==0 cannot be raced by a post-cordon lease.
+func TestGatewayDialRefusesRunnerParkedAfterCordon(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	identity, err := runner.Enroll(ctx, f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+
+	// Dial FIRST, with no runner available yet, so it parks in the select having already passed the
+	// pre-check (gateway not cordoned at that instant).
+	dialErr := make(chan error, 1)
+	go func() {
+		_, err := f.gateway.Dial(ctx, f.attempt("run_toctou", "att_toctou", 1))
+		dialErr <- err
+	}()
+	time.Sleep(150 * time.Millisecond) // let Dial reach <-g.available
+
+	// Cordon AFTER Dial is blocked, THEN a runner parks: Dial receives it and must refuse on the re-check.
+	f.gateway.Cordon()
+	go func() { _, _ = f.session(identity).OpenLease(ctx) }()
+
+	select {
+	case err := <-dialErr:
+		if !errors.Is(err, execution.ErrRunnerCordoned) {
+			t.Fatalf("Dial after a post-block cordon = %v, want ErrRunnerCordoned (post-receive re-check)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Dial neither offered a lease nor refused after a post-block cordon")
+	}
+}
+
+// TestGatewayDrainWaitsForInFlightLease proves Drain cordons and blocks while a lease is IN FLIGHT, then
+// returns once it closes — and that a parked-and-idle runner (no active lease) does NOT block a drain.
+// This is the §48.4 drain: stop new work, wait for the current work to finish.
+func TestGatewayDrainWaitsForInFlightLease(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	identity, err := runner.Enroll(ctx, f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+
+	// A parked-idle runner (no lease offered yet) must NOT block a drain — only an in-flight lease does.
+	go func() { _, _ = f.session(identity).OpenLease(ctx) }()
+	waitConnected(t, f.gateway, 1)
+	idleCtx, cancelIdle := context.WithTimeout(ctx, 2*time.Second)
+	defer cancelIdle()
+	if err := f.gateway.Drain(idleCtx); err != nil {
+		t.Fatalf("Drain with a parked-idle runner (no active lease) = %v, want nil (idle must not block)", err)
+	}
+	f.gateway.Resume() // undo the cordon so the next Dial can offer
+
+	// Now put a lease IN FLIGHT and prove Drain blocks until it closes.
+	runnerDone := make(chan struct{})
+	go func() {
+		defer close(runnerDone)
+		lease, err := f.session(identity).OpenLease(ctx)
+		if err != nil {
+			return
+		}
+		// Hold the lease until the gateway tears it down (Close), then report completion.
+		<-ctx.Done()
+		_ = lease.Complete(context.Background(), "succeeded", "")
+	}()
+	ch, err := f.gateway.Dial(ctx, f.attempt("run_drain", "att_drain", 3))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+
+	// Drain must time out while the lease is in flight.
+	timedCtx, cancelTimed := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancelTimed()
+	if err := f.gateway.Drain(timedCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Drain while a lease is in flight = %v, want DeadlineExceeded", err)
+	}
+	if !f.gateway.Cordoned() {
+		t.Fatal("Drain did not cordon the gateway")
+	}
+
+	// Close the lease; Drain now returns nil once the in-flight counter hits 0.
+	drainErr := make(chan error, 1)
+	go func() { drainErr <- f.gateway.Drain(ctx) }()
+	_ = ch.Close()
+	select {
+	case err := <-drainErr:
+		if err != nil {
+			t.Fatalf("Drain after the lease closed = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Drain did not return after the in-flight lease closed")
+	}
+}
+
+// TestGatewayRevokeRefusesConnectAndDial is the revoke half of SAN-011: a revoked gateway rejects a NEW
+// runner connect outright and Dial returns ErrRunnerRevoked — new leases and a decommissioned runner's
+// re-connect are both refused.
+func TestGatewayRevokeRefusesConnectAndDial(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	identity, err := runner.Enroll(ctx, f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+
+	f.gateway.Revoke()
+	if _, err := f.gateway.Dial(ctx, f.attempt("run_rev", "att_rev", 1)); !errors.Is(err, execution.ErrRunnerRevoked) {
+		t.Fatalf("Dial while revoked = %v, want ErrRunnerRevoked", err)
+	}
+	// A revoked gateway refuses a new session before it can park.
+	if _, err := f.session(identity).ReceiveLease(ctx); err == nil {
+		t.Fatal("revoked gateway served a session to a runner")
+	}
+	if !f.gateway.Revoked() {
+		t.Fatal("gateway does not report revoked after Revoke")
+	}
+}
+
+// TestGatewayRevokeDropsInFlightSessionFrames proves the "stale events refused" half of SAN-011: a
+// gateway revoked while a runner holds a lease drops that runner's next frame — the relay surfaces
+// ErrRunnerRevoked and closes rather than delivering a decommissioned runner's event to the attempt.
+func TestGatewayRevokeDropsInFlightSessionFrames(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	identity, err := runner.Enroll(ctx, f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+
+	// Open a lease and hold it (the runner side parks on the lease without completing).
+	sessCtx, cancelSession := context.WithCancel(ctx)
+	defer cancelSession()
+	leaseReady := make(chan *runner.LeaseSession, 1)
+	go func() {
+		ls, err := f.session(identity).OpenLease(sessCtx)
+		if err == nil {
+			leaseReady <- ls
+		}
+	}()
+
+	ch, err := f.gateway.Dial(ctx, f.attempt("run_revframe", "att_revframe", 2))
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	var lease *runner.LeaseSession
+	select {
+	case lease = <-leaseReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runner never obtained the lease")
+	}
+
+	// Revoke, then the runner streams a frame: the relay must refuse it (ErrRunnerRevoked), not deliver.
+	f.gateway.Revoke()
+	frame := contracts.EngineFrame{
+		Protocol: "engine.v1", ID: "frm_revd", Type: "engine.ready", Sequence: 1,
+		Time: time.Now().UTC().Format(time.RFC3339), RunID: "run_revframe", AttemptID: "att_revframe",
+	}
+	_ = lease.SendEngineFrame(ctx, frame)
+
+	if _, err := ch.Receive(ctx); err == nil {
+		t.Fatal("revoked gateway relayed a stale session frame to the attempt")
+	}
+	_ = ch.Close()
+}
+
 // runnerSide plays the runner over an open lease: it streams one engine.ready frame,
 // expects the controller frame the gateway relays back, and reports the terminal
 // outcome — the exact wire packages/runner drives in production.

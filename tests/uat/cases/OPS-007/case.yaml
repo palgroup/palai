@@ -1,0 +1,9 @@
+id: OPS-007
+name: application-rollback-runs-n-binary-on-expanded-schema
+proof_class: unit
+provider: fake
+input: "application rollback (§48.5) returns the control-plane image from N+1 back to N while the schema stays EXPANDED, and the N binary boots and serves on that expanded schema — because a contract only drops a shape no in-rollback-window binary reads, so N's chain head equals the database head and the boot preflight passes. The engine-alias rollback is separate: the pointer reverts for NEW runs while an active run stays on its pinned engine. Proof seam: the compat-window unit (a downgrade past the window is refused) + the migration-half journal (T1 OPS-006); the live rollback leg is the two-build drill (make upgrade-drill), and a downgrade PAST a contract restoring from backup is the operator leg"
+expect_status: completed
+proof:
+  - cmd/cli/internal/stack/upgrade_test.go:TestVerifyUpgradeCompat
+# ceiling: N and N+1 share the same migration head here (T2 adds no migration), so the N binary boots on an identical (already-expanded) schema; the migration-half preflight (a newer DB refuses an older binary) is T1's component proof TestMigrationPreflightRejectsNewerDatabase, and the fresh expand->contract interruption/resume is T1's OPS-006 drill; the live rollback leg is make upgrade-drill

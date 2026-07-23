@@ -17,7 +17,18 @@ import (
 
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/runner"
+	"github.com/palgroup/palai/packages/version"
 )
+
+// ErrRunnerCordoned is returned by Dial when the gateway is cordoned: no NEW lease is offered so an
+// attempt requeues rather than dispatching onto a runner that is draining for an upgrade (§48.4). An
+// in-flight lease is untouched — cordon stops new work, drain waits for the current work to finish.
+var ErrRunnerCordoned = errors.New("runner gateway cordoned: no new leases")
+
+// ErrRunnerRevoked is returned by Dial (and closes an incoming connect) when the gateway is revoked: a
+// decommissioned/compromised runner's new leases AND stale session frames are refused (SAN-011). Revoke
+// is the hard stop cordon is not — a cordoned runner still completes its lease, a revoked one does not.
+var ErrRunnerRevoked = errors.New("runner gateway revoked: leases and session frames refused")
 
 // CertIssuer signs an enrolling runner's public key into a short-lived client
 // certificate with the local control-plane CA. The CA the gateway binds is injected
@@ -48,6 +59,21 @@ type RunnerGateway struct {
 	// so this is >0 while a runner is up and drops to 0 when it stops — the real signal behind the
 	// palai_runner_sessions gauge and the runner-down alert (E14 Task 6).
 	connected atomic.Int64
+	// active counts leases currently in flight (offered and not yet closed). Drain waits on THIS, not on
+	// connected: a parked-and-idle runner (connected>0, active==0) must not block a drain, only an
+	// in-flight lease does. Incremented on a successful Dial offer, decremented when its channel closes.
+	active atomic.Int64
+	// cpVersion is this control-plane's version stamp, checked against the runner's advertised version in
+	// the connect handshake for the §48.2 support window (OPS-008). Defaulted to version.Resolve; a test
+	// or a deploy override sets it with SetControlPlaneVersion.
+	cpVersion string
+	// cordoned stops NEW leases (Dial refuses) while an in-flight lease finishes — the upgrade-drain
+	// signal. revoked is the hard stop: new connects rejected AND session frames dropped (SAN-011).
+	// ponytail: two atomic.Bool at whole-gateway granularity, not a per-runner registry — SH-0 is a
+	// single-runner topology (there is no hosts/runners table in this tier), so "the runner" IS the
+	// gateway. A multi-runner fleet would key these by runner id; that is the SaaS/post-SH-0 upgrade path.
+	cordoned atomic.Bool
+	revoked  atomic.Bool
 }
 
 // NewRunnerGateway binds the CA issuer and the one-use token store into a gateway.
@@ -57,12 +83,61 @@ func NewRunnerGateway(issuer CertIssuer, tokens EnrollmentTokens) *RunnerGateway
 		tokens:    tokens,
 		now:       time.Now,
 		available: make(chan *pendingRunner),
+		cpVersion: version.Resolve(),
 	}
 }
+
+// SetControlPlaneVersion overrides the control-plane version stamp the connect handshake checks the
+// runner's advertised version against (§48.2 window). Defaulted to version.Resolve; a test injects a
+// concrete version to exercise the OPS-008 skew rejection deterministically.
+func (g *RunnerGateway) SetControlPlaneVersion(v string) { g.cpVersion = v }
 
 // Connected reports the number of runner sessions currently held open on the gateway — the value
 // behind the palai_runner_sessions gauge. Safe to call from the metrics scrape goroutine.
 func (g *RunnerGateway) Connected() int64 { return g.connected.Load() }
+
+// Cordon stops the gateway offering NEW leases: Dial returns ErrRunnerCordoned so a waiting attempt
+// requeues instead of dispatching onto a runner that is about to be replaced (§48.4 drain). An in-flight
+// lease is untouched. Resume clears it. Idempotent.
+func (g *RunnerGateway) Cordon() { g.cordoned.Store(true) }
+
+// Resume clears a cordon so the gateway offers leases again — the rollback/abort counterpart to Cordon.
+func (g *RunnerGateway) Resume() { g.cordoned.Store(false) }
+
+// Revoke is the hard stop (SAN-011): new connects are rejected and session frames from any live runner
+// connection are dropped (stale events refused), on top of the cordon's new-lease refusal. A revoked
+// gateway never un-revokes in-process — a revoked runner identity is decommissioned, not paused.
+func (g *RunnerGateway) Revoke() {
+	g.cordoned.Store(true)
+	g.revoked.Store(true)
+}
+
+// Cordoned reports whether new leases are currently refused (cordoned or revoked). Revoked reports the
+// hard-stop state. Both back the drain/revoke drills and a doctor surface.
+func (g *RunnerGateway) Cordoned() bool { return g.cordoned.Load() }
+func (g *RunnerGateway) Revoked() bool  { return g.revoked.Load() }
+
+// Drain cordons the gateway and blocks until every in-flight lease has quiesced (active == 0) or ctx is
+// done. It stops new leases and waits for the in-flight lease to finish; if it cannot finish within ctx,
+// the caller (a control-plane shutting down for a swap) exits anyway and the interrupted run is reclaimed
+// and completed by the EXISTING E10 recovery layer (coordinator reconcile + WorkspaceRecovery, §26.3) —
+// drain REUSES that layer, it does not re-implement run migration here. Returns nil on quiesce, ctx.Err()
+// on timeout.
+func (g *RunnerGateway) Drain(ctx context.Context) error {
+	g.Cordon()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if g.active.Load() == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
 
 // pendingRunner is a runner that completed the handshake and is parked waiting for a
 // lease. The connect handler holds the HTTP goroutine open on release so the hijacked
@@ -181,6 +256,13 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "runner client certificate required", http.StatusUnauthorized)
 		return
 	}
+	// A revoked gateway refuses the session before the upgrade, so a decommissioned runner never even
+	// parks (SAN-011). Cordon does NOT reject the connect — a cordoned runner still parks and finishes an
+	// in-flight lease; it is only Dial that stops offering it NEW work.
+	if g.revoked.Load() {
+		http.Error(w, ErrRunnerRevoked.Error(), http.StatusForbidden)
+		return
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{runner.RunnerProtocolV1}})
 	if err != nil {
 		return
@@ -191,7 +273,17 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(websocket.StatusPolicyViolation, "subprotocol")
 		return
 	}
-	if _, _, err := conn.Read(r.Context()); err != nil { // consume runner.hello
+	_, helloPayload, err := conn.Read(r.Context()) // consume runner.hello
+	if err != nil {
+		return
+	}
+	// §48.2 support window (OPS-008): the runner advertises its build stamp in the hello's data.version.
+	// A skew outside the current+previous-two-minors window is rejected here — at CONNECT, not enroll — so
+	// an ALREADY-ENROLLED runner that is now too old after a control-plane upgrade is caught every session
+	// (an enroll-time check would miss it: the runner never re-enrolls). The close reason carries the
+	// required intermediate-hop message the runner logs. Two unstamped dev builds compare equal (skip).
+	if ok, message := version.Supported(g.cpVersion, helloRunnerVersion(helloPayload)); !ok {
+		_ = conn.Close(websocket.StatusPolicyViolation, truncateCloseReason(message))
 		return
 	}
 
@@ -227,8 +319,26 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 // until a runner is available or ctx is done, then publishes the channel to the connection's readLoop
 // and writes the lease.offer. It is the production EngineDialer the orchestrator drives unchanged.
 func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (EngineChannel, error) {
+	// A cordoned/revoked gateway offers no NEW lease: return before touching the available channel so the
+	// attempt requeues (drain) rather than dispatching onto a runner being replaced or decommissioned.
+	if g.revoked.Load() {
+		return nil, ErrRunnerRevoked
+	}
+	if g.cordoned.Load() {
+		return nil, ErrRunnerCordoned
+	}
 	select {
 	case pr := <-g.available:
+		// Re-check AFTER receiving the runner: a Dial already blocked in this select when Cordon/Revoke
+		// fired would otherwise slip a lease past the pre-check and increment active after a Drain read
+		// active==0 (a post-cordon lease). Refuse and hand the runner back (close release) instead.
+		if g.revoked.Load() || g.cordoned.Load() {
+			close(pr.release)
+			if g.revoked.Load() {
+				return nil, ErrRunnerRevoked
+			}
+			return nil, ErrRunnerCordoned
+		}
 		// A relayed engine frame can be as large as the lease's per-frame bound; raise the read limit
 		// off the handshake cap before the runner's post-offer frames reach readLoop's blocked Read.
 		pr.conn.SetReadLimit(attempt.Limits.MaxFrameBytes + 64*1024)
@@ -238,6 +348,7 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 			return nil, err
 		}
 		gc := newGatewayChannel(pr, attempt)
+		gc.active = &g.active // Close decrements the in-flight-lease counter Drain waits on.
 		// Publish the channel BEFORE writing the offer, so the runner's first engine frame — which it
 		// sends only after receiving the offer — always finds a relay target in readLoop.
 		pr.gc.Store(gc)
@@ -250,6 +361,7 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 			close(pr.release)
 			return nil, fmt.Errorf("offer lease: %w", err)
 		}
+		g.active.Add(1) // the lease is in flight; Close (always called on terminal) decrements it.
 		return gc, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -268,6 +380,16 @@ func (g *RunnerGateway) readLoop(pr *pendingRunner) {
 		if err != nil {
 			if gc := pr.gc.Load(); gc != nil {
 				gc.closeFrames() // Receive sees io.EOF
+			}
+			pr.markDisconnected()
+			return
+		}
+		// A gateway revoked mid-session refuses this runner's stale frames (SAN-011): tear the relay down
+		// as if the runner disconnected, so a decommissioned runner's in-flight events reach no attempt.
+		if g.revoked.Load() {
+			if gc := pr.gc.Load(); gc != nil {
+				gc.emit(relayRead{err: ErrRunnerRevoked})
+				gc.closeFrames()
 			}
 			pr.markDisconnected()
 			return
@@ -317,6 +439,9 @@ type gatewayChannel struct {
 	frames      chan relayRead
 	releaseOnce sync.Once
 	framesOnce  sync.Once
+	// active is the gateway's in-flight-lease counter (nil in the white-box channel tests). Close
+	// decrements it exactly once so a drain sees the lease finish.
+	active *atomic.Int64
 }
 
 type relayRead struct {
@@ -365,9 +490,15 @@ func (c *gatewayChannel) Receive(ctx context.Context) (contracts.EngineFrame, er
 	}
 }
 
-// Close releases the connect handler, which tears the WebSocket down.
+// Close releases the connect handler, which tears the WebSocket down, and decrements the gateway's
+// in-flight-lease counter exactly once so a concurrent Drain sees this lease finish.
 func (c *gatewayChannel) Close() error {
-	c.releaseOnce.Do(func() { close(c.pr.release) })
+	c.releaseOnce.Do(func() {
+		close(c.pr.release)
+		if c.active != nil {
+			c.active.Add(-1)
+		}
+	})
 	return nil
 }
 
@@ -436,6 +567,29 @@ func leaseID(attempt AttemptDescriptor) string {
 // its certificate without being hostname-checked.
 func runnerDNS(runnerID string) string {
 	return runnerID + ".runners.palai.internal"
+}
+
+// helloRunnerVersion extracts the runner's advertised build stamp from a runner.hello payload's
+// data.version field. A hello that carries none (a pre-E15-T2 runner, or a malformed frame) yields the
+// empty string, which version.Supported treats as an unstamped build and does not enforce — so an older
+// runner that predates the advertised-version handshake is not spuriously rejected by the window check.
+func helloRunnerVersion(payload []byte) string {
+	var message contracts.RunnerMessage
+	if err := json.Unmarshal(payload, &message); err != nil {
+		return ""
+	}
+	v, _ := message.Data["version"].(string)
+	return v
+}
+
+// truncateCloseReason bounds a WebSocket close reason to the 123-byte control-frame limit (RFC 6455), so
+// a long OPS-008 hop message still closes cleanly with as much of the reason as fits.
+func truncateCloseReason(reason string) string {
+	const maxCloseReason = 123
+	if len(reason) <= maxCloseReason {
+		return reason
+	}
+	return reason[:maxCloseReason]
 }
 
 // bearer extracts the token from an "Authorization: Bearer <token>" header.

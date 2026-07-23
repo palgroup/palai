@@ -1,0 +1,11 @@
+id: OPS-005
+name: n-to-n-plus-1-upgrade-active-run-survives-on-pinned-engine
+proof_class: unit
+provider: fake
+input: "the N->N+1 compose upgrade (backup+restore-status -> compat verify -> expand+control-plane-swap -> runner drain -> new-run engine-alias roll -> smoke) completes while a long fake-provider run is active, and that run SURVIVES on its PINNED engine (the alias rolls only after the drain) and completes; a new run then uses the rolled engine. Proof seam: the CLI upgrade compat/manifest units + the gateway drain component; the live two-build (fork-point vs current) docker drill with a real-provider smoke is the journey tier (make upgrade-drill), and a real published-release-to-release upgrade is the operator leg (plan §6)"
+expect_status: completed
+proof:
+  - cmd/cli/internal/stack/upgrade_test.go:TestVerifyUpgradeCompat
+  - cmd/cli/internal/stack/upgrade_test.go:TestLoadReleaseManifestRejectsIncomplete
+  - apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayDrainWaitsForInFlightLease
+# ceiling: N and N+1 are two LOCAL builds off the same fork point with the same migration head (T2 adds no migration); pinned engine holds by drain-before-roll sequencing, not a per-run durable column

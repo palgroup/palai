@@ -129,9 +129,122 @@ not an in-process fault): `make migration-resume-drill` (`scripts/test/migration
 spins a throwaway Postgres, kills the control-plane right after `000033`, restarts it, and asserts the
 journal resumed to the head with seeded rows intact.
 
-## Honest ceiling
+## Honest ceiling (migrations)
 
 The **background data-migration** pattern (a long backfill that runs resumably behind the schema change)
 is **not yet proven** — the live chain has no big-data backfill case, and the component tests exercise
 only a bounded-lock probe, not a real resumable backfill. The **first real** backfill migration must adopt
 this resumable, journaled, bounded-lock, advisory-locked path rather than a one-shot `UPDATE`.
+
+---
+
+# Upgrade — the N→N+1 sequence (`palai upgrade`)
+
+This is the **sequence half** (E15 T2): the control-plane swap, runner drain, engine-alias roll, and the
+two distinct rollbacks. The migration half above is the schema story; this half is the binary/image story.
+
+## Version stamp
+
+Every release build carries one version stamp, injected by `scripts/release/build.sh` via
+`-ldflags -X …/packages/version.Stamp=<stamp>` into the control-plane, runner, and CLI. The stamp is
+`<VERSION>+g<git-describe>` — `VERSION` (repo root) gives the semantic `major.minor.patch` the support
+window compares; the git-describe suffix makes each build a distinct id. It is **build metadata only** —
+"same binaries, different version stamp"; it never forks behaviour. `palai version` prints it, and the
+migrator records it in `schema_revisions.applied_by`. `PALAI_VERSION` (env) overrides the baked stamp for
+an operator pin or a drill; it is a compatibility identifier, never a secret.
+
+The build also emits a **release manifest** (`release-manifest.json`): the target version and the
+control-plane / runner / engine image digests. `palai upgrade` reads it to know what to pin.
+
+## The §48.2 support window (OPS-008)
+
+A control-plane serves its **current minor and the previous two** (current + previous two minors). The
+runner advertises its stamp in the enroll/connect handshake; the control-plane checks it at **connect**
+(not enroll, so an already-enrolled runner that has fallen too far behind after a control-plane upgrade is
+caught **every session** — it never re-enrolls). A runner more than two minors behind is **rejected** with
+the required intermediate-hop message, e.g.:
+
+> `runner 0.12.0 unsupported: hop to 0.13.0 first, then to control-plane 0.15.0 (window: current+prev 2 minors)`
+
+Two **unstamped** dev/from-source builds compare equal and skip the check, so a plain `palai local up` is
+unchanged. `palai upgrade` runs the same window check against the target manifest **before** the swap
+(`incompatible upgrade: …`), so a downgrade or too-wide jump is refused up front, not after the swap.
+
+## The sequence
+
+`palai upgrade --manifest <n+1-release-manifest.json>` runs, in order:
+
+1. **backup + restore-status** — `palai backup` captures a Postgres dump + object-store copy + manifest
+   BEFORE the swap, so a failed migration can be rolled back to it. The boot-time **require-backup
+   preflight** (`PALAI_MIGRATE_REQUIRE_BACKUP` + a marker) is *not* auto-wired by `palai upgrade`: its
+   marker must be readable **inside** the control-plane container, and the compose profile mounts no
+   backup volume — so that gate is the **operator / Kubernetes-migration-Job** option (a marker on a
+   mounted path), not the single-node compose default.
+2. **signature / compat verify** — the target manifest parses, its images carry digests, and the target
+   version supports the current version (§48.2). (Detached-signature verification of the manifest is the
+   air-gap bundle's job, T4 — the same `openssl` tool.)
+3. **expand** — the schema is expanded. On the single-node compose profile this is **folded into the
+   control-plane swap**: the swapped control-plane applies the idempotent, advisory-locked migration chain
+   at boot before it serves. The separate **pre-swap migration Job** is the Kubernetes path (Helm chart,
+   T3) — there, N pods do not each migrate at boot; the Job migrates once.
+4. **control-plane swap** — the control-plane image is pinned to N+1 and recreated. Compose sends the old
+   container `SIGTERM`; it **drains its runner gateway** (stops offering new leases, waits up to
+   `PALAI_DRAIN_TIMEOUT`, default 20 s, for the in-flight lease) before exiting — this is the graceful
+   half of the drain. The `PALAI_ENGINE_IMAGE` alias is left on the **old** engine so a run interrupted by
+   the swap re-pins the **same** engine on retry.
+5. **runner drain** — the runner image is pinned to N+1 and recreated. A run interrupted by either
+   recreate is reclaimed and completed by the **E10 §26.3 recovery layer** (coordinator reconcile +
+   `WorkspaceRecovery`) on the new control-plane — the drain **reuses** that layer, it does not
+   re-implement run migration. `palai upgrade` then **waits for the active run to reach a terminal
+   status** before step 6, so it completes on its pinned engine.
+6. **new-run engine-alias roll** — the control-plane is recreated once more with `PALAI_ENGINE_IMAGE`
+   pointed at the **new** engine digest, so runs started **from now** pin the new engine. Because this
+   happens **only after** the drain, any run that was active kept the old engine to completion — that is
+   what "the active run stays on its **pinned engine**" means: the alias is rolled only once no active run
+   can be disrupted by it.
+7. **smoke** — one fake response admits and reaches a terminal status end to end. A **real-provider**
+   smoke is the drill's job (credential from `.env.local`), never wired into the CLI.
+
+## The two rollbacks — do not conflate them
+
+E15 uses "rollback" for **two different things**. `palai upgrade rollback` does both for new runs but they
+are distinct mechanisms:
+
+- **Application rollback** (OPS-007, §48.5) — return the control-plane **binary/image from N+1 back to N**
+  while the **schema stays expanded**. The N binary boots on the expanded schema because a **contract**
+  only ever drops a shape that **no in-rollback-window binary reads** (see the migration half), so N's
+  chain head equals the database head and the boot preflight passes. A real downgrade **past** a contract
+  is **not** this — it restores from the **pre-upgrade backup** (the contract's `down.sql` does not
+  re-create dropped data).
+- **Engine-alias rollback** (§48.5) — return the **engine activation pointer** (`PALAI_ENGINE_IMAGE`) to
+  N's engine **for new runs**. An **active run stays on its pinned engine** — exactly as in the forward
+  roll, the alias change touches only runs started after it.
+
+`palai upgrade rollback --to <n-release-manifest.json>` swaps the control-plane (and runner) image back to
+N and rolls the engine alias back, then smokes. It does **not** run the migration chain backward.
+
+## Runner cordon / drain / revoke (SAN-011)
+
+The runner gateway carries three lifecycle primitives, proven at the component level and used by the
+graceful shutdown above:
+
+- **Cordon** — stop offering **new** leases; a waiting attempt requeues. An in-flight lease is untouched.
+- **Drain** — cordon, then wait for the **in-flight lease** (not a parked-idle runner) to finish, bounded
+  by a deadline; whatever does not finish is completed by the E10 recovery layer.
+- **Revoke** — the hard stop: reject a decommissioned runner's **new connects** and drop its **in-flight
+  session frames** (stale events refused).
+
+## Honest ceiling (sequence)
+
+- **Two local builds, no published prior release.** N→N+1 here is between **two local builds** off the same
+  fork point — there is no published previous release yet, so a real published-release-to-release upgrade
+  is the **operator leg** (plan §6). N and N+1 carry the **same migration head** (T2 adds no migration;
+  T1's expand/contract tranche already applied at the fork point), so this drill proves the **binary swap
+  + rollback-boots-on-expanded-schema**; the fresh expand→contract interruption/resume is T1's own OPS-006
+  drill.
+- **Single-runner drain.** Drain is a single-runner batch — there is no multi-runner fleet in SH-0, so the
+  cordon/drain/revoke primitives are whole-gateway (the gateway *is* the runner). A multi-runner fleet
+  would key them per runner id; that is the SaaS/post-SH-0 path.
+- **Pinned engine by sequencing.** The active run stays on its engine because the alias rolls only after
+  the drain — not because of a per-run durable engine column (T2 adds no migration). A per-run durable pin
+  would be the upgrade path if concurrent alias rolls during active runs ever became a requirement.

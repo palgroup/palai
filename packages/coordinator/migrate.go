@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
 
+	"github.com/palgroup/palai/packages/version"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -22,10 +22,11 @@ const journalIntroVersion = 33
 // to be the same across every control-plane replica.
 const migrationLockKey int64 = 0x50414c41495f4d47
 
-// MigratorVersion is the version stamp written to schema_revisions.applied_by. It is empty by default and
-// resolved from the build's embedded VCS revision at run time; a release build overrides it with
-// -ldflags "-X github.com/palgroup/palai/packages/coordinator.MigratorVersion=<v>" (E15 T2 wires the real
-// stamp). It is a build identifier, never a secret.
+// MigratorVersion is the version stamp written to schema_revisions.applied_by. Empty by default: the
+// stamp then falls back to the shared build stamp (packages/version.Resolve — the ldflags-injected
+// release stamp, else the embedded VCS revision, else "dev"). A caller may still override it directly
+// with -ldflags "-X github.com/palgroup/palai/packages/coordinator.MigratorVersion=<v>", but E15 T2's
+// scripts/release/build.sh injects the single shared packages/version.Stamp instead. Build id, never a secret.
 var MigratorVersion = ""
 
 // migrate applies the forward chain migration-by-migration (E15 T1): a boot PREFLIGHT, then each
@@ -206,34 +207,15 @@ func (s *Store) schemaHead(ctx context.Context) (int, error) {
 	return head, nil
 }
 
-// migratorVersionStamp resolves the applied_by stamp: an explicit ldflags override, else the build's
-// embedded VCS revision (short, +"-dirty" for a modified tree), else "dev" for a `go test`/`go run`
-// binary that carries no VCS stamp.
+// migratorVersionStamp resolves the applied_by stamp: an explicit coordinator.MigratorVersion override,
+// else the shared build stamp (packages/version.Resolve — the ldflags release stamp, the embedded VCS
+// revision, or "dev"). Sharing version.Resolve keeps the migrator's applied_by identical to the version
+// the runner advertises and the control-plane checks the support window against.
 func migratorVersionStamp() string {
 	if MigratorVersion != "" {
 		return MigratorVersion
 	}
-	if info, ok := debug.ReadBuildInfo(); ok {
-		rev, dirty := "", false
-		for _, setting := range info.Settings {
-			switch setting.Key {
-			case "vcs.revision":
-				rev = setting.Value
-			case "vcs.modified":
-				dirty = setting.Value == "true"
-			}
-		}
-		if rev != "" {
-			if len(rev) > 12 {
-				rev = rev[:12]
-			}
-			if dirty {
-				return rev + "-dirty"
-			}
-			return rev
-		}
-	}
-	return "dev"
+	return version.Resolve()
 }
 
 // freeDiskBytes returns the bytes available to a non-root writer on the filesystem backing path.
