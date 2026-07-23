@@ -16,6 +16,9 @@ FROM alpine:3.21
 # and the mounted .palai CA. The control-plane is trusted infrastructure; the untrusted
 # engine is isolated separately by the Task 8 OCI driver.
 COPY deploy/compose/control-plane-entrypoint.sh /usr/local/bin/entrypoint.sh
+# The production posture guard (E14 T1). Baked into the SAME image; the local profile keeps
+# the default ENTRYPOINT below, and production.yml overrides `entrypoint:` to run this first.
+COPY deploy/compose/production-entrypoint.sh /usr/local/bin/production-entrypoint.sh
 COPY --from=build /out/palai-control-plane /usr/local/bin/palai-control-plane
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/palai-control-plane
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/production-entrypoint.sh /usr/local/bin/palai-control-plane
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

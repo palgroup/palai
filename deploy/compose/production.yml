@@ -1,0 +1,90 @@
+# Production overlay for the packaged Palai stack (E14 T1). Layered ON TOP of compose.yaml —
+# it does NOT fork the base:
+#
+#   docker compose --env-file production.env \
+#     -f deploy/compose/compose.yaml -f deploy/compose/production.yml up -d
+#
+# Same images, hardened posture:
+#   - a digest-pinned TLS-terminating reverse-proxy edge is the ONLY host-published surface;
+#   - the control-plane API and the mutually-authenticated runner gateway (:8443) stay on the
+#     internal compose network, never host-published;
+#   - every persistent service restarts always;
+#   - the dispatch exec-path is ON by default (1 worker; base defaults 0/queued-only);
+#   - the control-plane REFUSES to boot on an unset/dev-default secret master key
+#     (production-entrypoint.sh, fail-closed — a real check, not documentation).
+#
+# Registration posture: the stack has NO public self-registration endpoint by construction
+# (bootstrap key + `provision` capability); this overlay adds none. Provisioning goes through
+# the `palai` admin CLI (E14 T2) over the edge. See docs/operations/install.md.
+#
+# HONEST CEILING (plan §6): the edge here presents the LOCAL `palai init` CA's server cert
+# (${PALAI_HOME}/ca/server.crt, SAN "control-plane") — the same self-minted pair the runner
+# gateway uses. A real deployment replaces it with a real-domain certificate and/or fronts it
+# with ACME; the dedicated cloud VM + real domain is the operator leg, not run here.
+
+services:
+  postgres:
+    restart: always
+    ports: !reset [] # not host-published in production
+
+  object-store:
+    restart: always
+    ports: !reset []
+
+  control-plane:
+    restart: always
+    # The API is no longer host-published; it is reachable ONLY behind the TLS edge. The
+    # runner gateway (:8443) keeps LISTENING on the internal network for runner enrollment —
+    # it is simply never published to the host.
+    ports: !reset []
+    # Guard the boot on a real secret master key, THEN exec the plain bridge entrypoint ($@).
+    entrypoint: ["/usr/local/bin/production-entrypoint.sh", "/usr/local/bin/entrypoint.sh"]
+    environment:
+      # Production exec-path on by default (base defaults 0 = queued-only).
+      PALAI_DISPATCH_WORKERS: ${PALAI_DISPATCH_WORKERS:-1}
+      # The DB-backed secret store's master key is MANDATORY in production: the entrypoint
+      # fails closed on an unset/dev-default key. Delivered as a file-secret, never an env value.
+      PALAI_SECRET_MASTER_KEY_FILE: /run/secrets/master_key
+    secrets:
+      - master_key
+
+  runner:
+    restart: always
+
+  edge:
+    # Digest-pinned TLS-terminating reverse proxy — the ONLY host-published surface. Caddy
+    # serves :443 with the mounted cert/key and proxies to the internal control-plane API.
+    image: caddy@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
+    restart: always
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    configs:
+      - source: edge_caddyfile
+        target: /etc/caddy/Caddyfile
+    volumes:
+      # The edge TLS pair: the self-minted local-CA server cert (SAN "control-plane") `palai
+      # init` writes into ${PALAI_HOME}/ca. Operator replaces with a real-domain cert (plan §6).
+      - "${PALAI_HOME}/ca/server.crt:/etc/palai/edge/edge.crt:ro"
+      - "${PALAI_HOME}/ca/server.key:/etc/palai/edge/edge.key:ro"
+    ports:
+      - "${PALAI_EDGE_PORT}:443"
+
+configs:
+  # Inline Caddyfile (no separate file, no bind-mount path ambiguity). auto_https off disables
+  # ACME + HTTP->HTTPS redirects; the explicit `tls` cert/key makes :443 a TLS listener that
+  # serves the mounted cert for any host, then proxies to the internal control-plane API.
+  edge_caddyfile:
+    content: |
+      {
+      	admin off
+      	auto_https off
+      }
+      :443 {
+      	tls /etc/palai/edge/edge.crt /etc/palai/edge/edge.key
+      	reverse_proxy control-plane:8080
+      }
+
+secrets:
+  master_key:
+    file: "${PALAI_HOME}/secrets/master-key"
