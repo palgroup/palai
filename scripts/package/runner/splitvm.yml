@@ -1,0 +1,11 @@
+# E14 T5 — PROOF-ONLY overlay for splitvm-proof.sh. It publishes the runner gateway on all
+# interfaces so a runner on a SEPARATE Docker network reaches it via the Docker host gateway —
+# the local representation of the two-VM topology where the control-plane VM exposes its gateway
+# to the runner subnet (a real deploy firewalls it there). The API stays on loopback for the host
+# harness. This is NOT a production profile (that is production.yml); it exists only to make the
+# gateway reachable from outside the stack's Docker network for the enrollment proof.
+services:
+  control-plane:
+    ports: !override
+      - "127.0.0.1:${PALAI_API_PORT}:8080"
+      - "0.0.0.0:${PALAI_RUNNER_PORT}:8443"
