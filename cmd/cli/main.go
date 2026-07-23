@@ -35,6 +35,10 @@ func dispatch(args []string) error {
 		return provider(args[1:])
 	case "response":
 		return response(args[1:])
+	case "config":
+		return config(args[1:])
+	case "support-bundle":
+		return supportBundle(args[1:])
 	case "org", "project", "apikey", "secret":
 		return admin.Run(args[0], args[1:], os.Stdout, os.Stdin)
 	case "-h", "--help", "help":
@@ -81,6 +85,32 @@ func provider(args []string) error {
 	return stack.AddProvider(args[1])
 }
 
+// config dispatches `palai config validate` — a static, stack-less audit of a production deploy.
+func config(args []string) error {
+	if len(args) == 0 || args[0] != "validate" {
+		return errors.New("usage: palai config validate [--env-file <path>] [--overlay <path>] [--json]")
+	}
+	fs := flag.NewFlagSet("config validate", flag.ContinueOnError)
+	envFile := fs.String("env-file", "deploy/compose/production.env", "production env file to validate")
+	overlay := fs.String("overlay", "deploy/compose/production.yml", "production compose overlay to validate")
+	jsonOut := fs.Bool("json", false, "emit the report as JSON")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	return stack.ConfigValidate(*envFile, *overlay, *jsonOut)
+}
+
+// supportBundle dispatches `palai support-bundle` — the redacted diagnostics tar.gz.
+func supportBundle(args []string) error {
+	fs := flag.NewFlagSet("support-bundle", flag.ContinueOnError)
+	out := fs.String("out", "palai-support-bundle.tar.gz", "output path for the bundle")
+	tail := fs.Int("tail", 200, "number of recent log lines per service")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return stack.SupportBundle(*out, *tail)
+}
+
 func response(args []string) error {
 	if len(args) == 0 || args[0] != "create" {
 		return errors.New("usage: palai response create --input <text>")
@@ -103,9 +133,15 @@ func usage() {
   palai local up                  build + start the four-service stack (retains data)
   palai local down                stop the stack, retaining data volumes
   palai local reset --confirm     stop and DELETE the data volumes
-  palai local doctor [--json]     run the health checks
+  palai local doctor [--json]     run the health checks (14: adds disk/queue/callback)
   palai provider add <ref>        store a provider secret (value on stdin)
   palai response create --input <text>
+
+operability (E14 T3):
+  palai config validate [--env-file <p>] [--overlay <p>] [--json]
+                                  static production-posture audit (master key, edge-only surface)
+  palai support-bundle [--out <p>] [--tail <n>]
+                                  redacted diagnostics tar.gz (doctor + compose ps/config/logs)
 
 admin (thin client over the E13 APIs; base URL + key from flags, env, or .palai):
   palai org create --display-name <n> | list | get <org_id>

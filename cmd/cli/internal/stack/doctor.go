@@ -44,7 +44,7 @@ type Report struct {
 	Checks map[string]Check `json:"checks"`
 }
 
-// Doctor runs the nine local-stack checks and reports them. With jsonOut it prints the
+// Doctor runs the fourteen local-stack checks and reports them. With jsonOut it prints the
 // report as JSON and always exits 0 (the verdict is in the body, which the e2e harness
 // parses). Human output prints a table and returns an error when any check is not green,
 // so `scripts/local/doctor` exits non-zero on an unhealthy stack.
@@ -94,6 +94,10 @@ func runChecks(cfg Config, p paths) Report {
 		"runner_tls_reject": checkRunnerTLSReject(cfg, p),
 		"supervisor":        checkSupervisor(ctx, cfg),
 		"host_quarantine":   checkQuarantine(ctx, pgURL),
+		// E14 T3 doctor v2 — disk/queue/callback, on top of the eleven above (doctor_v2.go).
+		"disk":     checkDisk(cfg),
+		"queue":    checkQueue(ctx, pgURL),
+		"callback": checkCallback(ctx, pgURL),
 	}
 	ok := true
 	for _, c := range checks {
