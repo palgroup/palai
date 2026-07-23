@@ -1,0 +1,48 @@
+# Air-gap overlay (E15 T4) — layered ON TOP of deploy/compose/compose.yaml; it does NOT fork it:
+#
+#   docker compose -p <proj> \
+#     -f deploy/compose/compose.yaml -f deploy/airgap/airgap.yml up -d --no-build --wait
+#
+# Same images, air-gapped posture:
+#   - every service image is overridden to a DIGEST-PINNED reference in the private registry
+#     mirror (install.sh sets ${PALAI_*_IMAGE} = 127.0.0.1:<port>/palai/...@sha256:...); with
+#     `--no-build` compose NEVER builds — a missing image is an error, so the mirror is proven
+#     to be the source;
+#   - all four services sit on an `internal: true` network where egress is TOPOLOGICALLY
+#     impossible (no gateway) — the zero-egress claim is the topology, not a log line;
+#   - nothing is host-published (ports !reset); a run is admitted via the admin CLI over
+#     `docker exec` (the E14 docker-exec-by-name pattern), not an exposed port;
+#   - dispatch is on with the in-process `fake` provider — no model egress, no credential.
+#
+# HONEST CEILING (plan §6): the fake provider stands in for a real private model endpoint, and
+# the engine sandbox already runs NetworkMode=none (adapters/sandboxes/oci) so it cannot egress
+# regardless. A real air-gapped facility, the operator trust-root/mirror ceremony, and a real
+# private model + Git server are the operator leg. The production TLS edge + master-key guard
+# (deploy/compose/production.yml, E14 T1) layer on top of this for a hardened real deployment.
+
+services:
+  postgres:
+    image: ${PALAI_PG_IMAGE}
+    ports: !reset []
+    networks: [airgap]
+
+  object-store:
+    image: ${PALAI_S3_IMAGE}
+    ports: !reset []
+    networks: [airgap]
+
+  control-plane:
+    image: ${PALAI_CP_IMAGE}
+    ports: !reset []
+    networks: [airgap]
+    environment:
+      PALAI_DISPATCH_WORKERS: "1"
+      PALAI_MODEL_PROVIDER: fake
+
+  runner:
+    image: ${PALAI_RUNNER_IMAGE}
+    networks: [airgap]
+
+networks:
+  airgap:
+    internal: true
