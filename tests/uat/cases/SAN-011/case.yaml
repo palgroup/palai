@@ -1,0 +1,12 @@
+id: SAN-011
+name: runner-cordon-drain-revoke-refuses-new-leases-and-stale-events
+proof_class: unit
+provider: fake
+input: "the runner gateway cordons (new leases refused so an attempt requeues; an in-flight lease untouched), drains (waits for the in-flight lease to finish, not a parked-idle runner, then returns), and revokes (a decommissioned runner's new connect is refused AND its in-flight session frames are dropped — stale events refused). Run migration/completion reuses the E10 §26.3 recovery layer, not a rewrite. Proof seam: the real mutually-authenticated gateway wire; the live drain-through-an-upgrade is the two-build drill (make upgrade-drill)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayDialRefusesWhenCordoned
+  - apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayDrainWaitsForInFlightLease
+  - apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayRevokeRefusesConnectAndDial
+  - apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayRevokeDropsInFlightSessionFrames
+# ceiling: whole-gateway granularity (SH-0 single runner: the gateway IS the runner); a multi-runner fleet keys these per runner id (post-SH-0). SAN-010/012 remain unowned (plan §5)

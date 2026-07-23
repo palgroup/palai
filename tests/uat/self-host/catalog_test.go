@@ -84,6 +84,22 @@ var expectedSelfHostCatalog = map[string]struct {
 	"DR-006": {"component-real", []string{
 		"apps/control-plane/internal/identity/install_backup_canary_component_test.go:TestInstallRestoreSecretCanaryTwoMasterKeys",
 	}},
+	// E15 T2 extends this E14-owned OPS-/DR- catalog (the plan reserved OPS-005/007/008 for the upgrade
+	// epic). All three ride untagged (unit-tier) proofs that run in make verify — the CLI compat/manifest
+	// units, the version-window unit, and the gateway drain/skew wire tests; the live two-build upgrade
+	// drill (make upgrade-drill) is the journey tier the case inputs name.
+	"OPS-005": {"unit", []string{
+		"cmd/cli/internal/stack/upgrade_test.go:TestVerifyUpgradeCompat",
+		"cmd/cli/internal/stack/upgrade_test.go:TestLoadReleaseManifestRejectsIncomplete",
+		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayDrainWaitsForInFlightLease",
+	}},
+	"OPS-007": {"unit", []string{
+		"cmd/cli/internal/stack/upgrade_test.go:TestVerifyUpgradeCompat",
+	}},
+	"OPS-008": {"unit", []string{
+		"packages/version/version_test.go:TestSupportedWindow",
+		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayRejectsUnsupportedRunnerSkew",
+	}},
 }
 
 // TestSelfHostCatalogMaterialized is the E14 self-host-catalog gate: every proven half from T1-T6 has a

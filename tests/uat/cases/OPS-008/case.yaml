@@ -1,0 +1,10 @@
+id: OPS-008
+name: unsupported-runner-skew-rejected-with-intermediate-hop
+proof_class: unit
+provider: fake
+input: "a runner more than two minors behind the control-plane is rejected at the connect handshake with the required intermediate-hop message (§48.2 support window: current + previous two minors), while a runner inside the window parks and is offered a lease; two unstamped dev builds compare equal and skip the check. Proof seam: the real mutually-authenticated gateway wire (Docker-free) + the version-window unit; the live old-stamp-runner rejection is the two-build upgrade drill (make upgrade-drill)"
+expect_status: completed
+proof:
+  - packages/version/version_test.go:TestSupportedWindow
+  - apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayRejectsUnsupportedRunnerSkew
+# ceiling: the window is enforced only between two RELEASE-stamped builds; from-source local up (both unstamped) is unchanged
