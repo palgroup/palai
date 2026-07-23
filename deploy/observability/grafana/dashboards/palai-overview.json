@@ -1,0 +1,130 @@
+{
+  "uid": "palai-self-host-overview",
+  "title": "Palai Self-Host Overview",
+  "tags": ["palai", "self-host"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Control-plane DB reads",
+      "description": "palai_db_up: 1 when the aggregate metric queries succeeded.",
+      "datasource": { "type": "prometheus", "uid": "palai-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ] }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "palai_db_up" } ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Runner sessions",
+      "description": "palai_runner_sessions: 0 means no runner is connected (drives PalaiRunnerDown).",
+      "datasource": { "type": "prometheus", "uid": "palai-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "palai_runner_sessions" } ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Object store",
+      "description": "palai_object_store_up: 1 when the HEAD probe answered.",
+      "datasource": { "type": "prometheus", "uid": "palai-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ] }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "palai_object_store_up" } ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Disk free %",
+      "description": "Free space on the data volume.",
+      "datasource": { "type": "prometheus", "uid": "palai-prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.1 }, { "color": "green", "value": 0.25 } ] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "palai_disk_free_bytes / palai_disk_total_bytes" } ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Runs by state",
+      "description": "palai_runs grouped by lifecycle state (installation-aggregate).",
+      "datasource": { "type": "prometheus", "uid": "palai-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "palai_runs", "legendFormat": "{{state}}" } ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Queue depth and oldest-ready age",
+      "description": "Claimable backlog depth and how long the oldest ready job has waited.",
+      "datasource": { "type": "prometheus", "uid": "palai-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line" } }, "overrides": [ { "matcher": { "id": "byName", "options": "oldest ready age (s)" }, "properties": [ { "id": "unit", "value": "s" } ] } ] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "palai_queue_ready_depth", "legendFormat": "ready depth" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "palai_queue_oldest_ready_seconds", "legendFormat": "oldest ready age (s)" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Provider call error rate",
+      "description": "Per-second rate of provider errors and total calls.",
+      "datasource": { "type": "prometheus", "uid": "palai-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line" }, "unit": "reqps" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "rate(palai_provider_calls_total[5m])", "legendFormat": "calls/s" },
+        { "refId": "B", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "rate(palai_provider_errors_total[5m])", "legendFormat": "errors/s" }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Webhook deliveries by state",
+      "description": "palai_webhook_deliveries: pending is backlog, dead is failure.",
+      "datasource": { "type": "prometheus", "uid": "palai-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "palai_webhook_deliveries", "legendFormat": "{{state}}" } ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "DB clock skew",
+      "description": "Database clock minus control-plane clock (drives PalaiClockSkew).",
+      "datasource": { "type": "prometheus", "uid": "palai-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "palai_db_clock_skew_seconds", "legendFormat": "skew (s)" } ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Background-loop restarts",
+      "description": "palai_supervisor_restarts_total by loop — a loop that keeps restarting is failing.",
+      "datasource": { "type": "prometheus", "uid": "palai-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "palai-prometheus" }, "expr": "palai_supervisor_restarts_total", "legendFormat": "{{loop}}" } ]
+    }
+  ]
+}

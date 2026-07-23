@@ -1,0 +1,14 @@
+# Grafana dashboard provisioning (E14 Task 6): loads the packaged Palai dashboards from disk on start.
+apiVersion: 1
+
+providers:
+  - name: palai
+    orgId: 1
+    folder: Palai
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

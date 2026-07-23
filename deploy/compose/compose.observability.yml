@@ -1,0 +1,46 @@
+# Observability overlay (E14 Task 6, §52.9/§52.10). Merge it over the base stack:
+#
+#   docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.observability.yml up -d
+#
+# It adds Prometheus (scrapes the control-plane's INTERNAL /metrics on the shared Compose network — the
+# same unauthenticated internal surface as /healthz, never the TLS edge) and Grafana (the §52.9
+# dashboards, provisioned read-only). Both bases are digest-pinned like the rest of the stack. It opens
+# NO new control-plane surface — /metrics already ships in the control-plane image; this overlay only
+# adds the two observers. Ports bind to 127.0.0.1 like every other published port.
+services:
+  prometheus:
+    image: prom/prometheus@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - palai-prometheus:/prometheus
+    ports:
+      - "127.0.0.1:${PALAI_PROM_PORT:-9090}:9090"
+    depends_on:
+      control-plane:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana@sha256:408afb9726de5122b00a2576763a8a57a3c86d5b0eff5305bc994ceb3eb96c3f
+    environment:
+      # Local single-node observability: anonymous read is fine (the dashboards expose only the same
+      # aggregate metrics /metrics does). The admin password is a local default the operator overrides.
+      GF_SECURITY_ADMIN_PASSWORD: ${PALAI_GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - palai-grafana:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${PALAI_GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  palai-prometheus: {}
+  palai-grafana: {}
