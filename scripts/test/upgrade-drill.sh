@@ -211,7 +211,7 @@ fi
 # ---- phase 6: application rollback -----------------------------------------
 log "palai upgrade rollback -> the N binary runs on the expanded schema"
 "$CLI" upgrade rollback --to "$N_MANIFEST" >&2
-[ "$(docker inspect "$PROJECT-control-plane-1" --format '{{.Image}}')" = "$cp_n" ] || fail "rollback did not restore the N control-plane image"
+[ "$(docker inspect "$PROJECT-control-plane-1" --format '{{.Config.Image}}')" = "$cp_n" ] || fail "rollback did not restore the N control-plane image"
 for _ in $(seq 1 30); do curl_api GET /v1/capabilities >/dev/null 2>&1 && break; sleep 1; done
 rb_id="$(admit_run 'drill post-rollback run')"
 rb_st="$(wait_terminal "$rb_id" 90)" || fail "post-rollback run did not complete (status=$rb_st)"
@@ -220,28 +220,28 @@ echo "rollback: N control-plane serving on expanded schema head=$db_head, post-r
 
 # ---- phase 7: OPS-008 old-stamp runner rejected ----------------------------
 log "OPS-008: an old-stamp runner (0.12.0) is rejected with the intermediate-hop message"
-# Roll forward to N+1 so the version handshake is active, then dial an old-stamp runner.
+# Roll forward to N+1 (0.15.0 control-plane, version handshake active), then recreate ONLY the runner with
+# PALAI_VERSION=0.12.0 so it advertises a three-minors-behind stamp. The control-plane keeps its baked
+# 0.15.0 stamp (it is not recreated), so the connect handshake rejects the runner with the hop message.
 compose_up "$d_engine_n1" "$cp_n1" "$runner_n1"
 for _ in $(seq 1 30); do curl_api GET /v1/capabilities >/dev/null 2>&1 && break; sleep 1; done
-head -c48 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$PALAI_HOME/runner-token" # fresh one-use enroll token
-old_logs="$(docker run --rm --name "palai-e15t2-oldrunner-$short" \
-  --network "container:$PROJECT-control-plane-1" \
-  -e PALAI_VERSION=0.12.0 \
-  -e PALAI_CONTROLLER_URL=https://control-plane:8443 \
-  -e PALAI_CONTROLLER_DNS=control-plane \
-  -e PALAI_RUNNER_CA_CERT=/palai/ca/ca.crt \
-  -e PALAI_ENROLLMENT_TOKEN_FILE=/palai/runner-token \
-  -e PALAI_ENGINE_IMAGE="$d_engine_n1" \
-  -e PALAI_COMPOSE_PROJECT="$PROJECT" \
-  -v "$PALAI_HOME/ca/ca.crt:/palai/ca/ca.crt:ro" \
-  -v "$PALAI_HOME/runner-token:/palai/runner-token:ro" \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  "$runner_n1" 2>&1 &
-sleep 12; docker logs "palai-e15t2-oldrunner-$short" 2>&1 || true)"
-docker rm -f "palai-e15t2-oldrunner-$short" >/dev/null 2>&1 || true
-echo "$old_logs" | grep -qiE 'hop to 0.13.0|unsupported' \
-  && echo "OPS-008 PASS: old-stamp runner rejected with the hop message" >&2 \
-  || echo "OPS-008 NOTE: hop message not found in runner logs (see above); component test TestGatewayRejectsUnsupportedRunnerSkew is the authoritative proof" >&2
+env PALAI_HOME="$PALAI_HOME" \
+    PALAI_API_PORT="$(api_port)" \
+    PALAI_RUNNER_PORT="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["runner_port"])' "$PALAI_HOME/config.json")" \
+    PALAI_PG_PORT="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["pg_port"])' "$PALAI_HOME/config.json")" \
+    PALAI_S3_PORT="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["s3_port"])' "$PALAI_HOME/config.json")" \
+    PALAI_ENGINE_IMAGE="$d_engine_n1" PALAI_COMPOSE_PROJECT="$PROJECT" \
+    PALAI_CONTROL_PLANE_IMAGE="$cp_n1" PALAI_RUNNER_IMAGE="$runner_n1" \
+    PALAI_DISPATCH_WORKERS=1 PALAI_VERSION=0.12.0 \
+    docker compose -p "$PROJECT" -f "$COMPOSE" up -d --force-recreate --no-deps runner >&2 || true
+sleep 10
+old_logs="$(docker logs "$PROJECT-runner-1" 2>&1 | tail -30 || true)"
+if echo "$old_logs" | grep -qiE 'hop to 0.13.0|unsupported'; then
+  echo "OPS-008 PASS: old-stamp runner rejected — $(echo "$old_logs" | grep -iE 'hop to 0.13.0|unsupported' | tail -1)" >&2
+else
+  echo "OPS-008 NOTE: hop message not found in runner logs (below); component TestGatewayRejectsUnsupportedRunnerSkew is authoritative" >&2
+  echo "$old_logs" | tail -8 >&2
+fi
 
 log "DRILL COMPLETE"
 echo "SUMMARY: engine_n=$d_engine_n engine_n1=$d_engine_n1 chatcmpl=${chatcmpl:-<none>} rollback_head=$db_head" >&2

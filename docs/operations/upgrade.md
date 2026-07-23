@@ -174,9 +174,12 @@ unchanged. `palai upgrade` runs the same window check against the target manifes
 
 `palai upgrade --manifest <n+1-release-manifest.json>` runs, in order:
 
-1. **backup + restore-status** — `palai backup` captures a Postgres dump + object-store copy + manifest.
-   Its path becomes the backup marker; the swap's boot migration refuses to run without it
-   (`PALAI_MIGRATE_REQUIRE_BACKUP`), so a contract never applies without a restore point.
+1. **backup + restore-status** — `palai backup` captures a Postgres dump + object-store copy + manifest
+   BEFORE the swap, so a failed migration can be rolled back to it. The boot-time **require-backup
+   preflight** (`PALAI_MIGRATE_REQUIRE_BACKUP` + a marker) is *not* auto-wired by `palai upgrade`: its
+   marker must be readable **inside** the control-plane container, and the compose profile mounts no
+   backup volume — so that gate is the **operator / Kubernetes-migration-Job** option (a marker on a
+   mounted path), not the single-node compose default.
 2. **signature / compat verify** — the target manifest parses, its images carry digests, and the target
    version supports the current version (§48.2). (Detached-signature verification of the manifest is the
    air-gap bundle's job, T4 — the same `openssl` tool.)

@@ -119,22 +119,23 @@ func Upgrade(opts UpgradeOptions) error {
 		return fmt.Errorf("resolve current engine digest: %w", err)
 	}
 
-	// 1. backup + restore-status. The marker gates the swap's boot-migration preflight (a contract needs a
-	// restore point). Skipped only by an explicit drill flag.
-	marker := ""
+	// 1. backup + restore-status: the pre-upgrade restore point (§48.4). It is taken BEFORE the swap so a
+	// failed migration can be rolled back to it. Skipped only by an explicit drill flag. The boot-time
+	// require-backup PREFLIGHT gate (PALAI_MIGRATE_REQUIRE_BACKUP) is deliberately NOT wired here: its
+	// marker must be readable INSIDE the control-plane container, and the compose profile mounts no backup
+	// volume — that gate is the operator/K8s-Job option (a mounted marker path), documented in upgrade.md.
 	if !opts.SkipBackup {
 		backupPath := fmt.Sprintf("%s/palai-upgrade-backup-%s.tar.gz", p.home, time.Now().UTC().Format("20060102T150405Z"))
 		if err := InstallBackup(backupPath); err != nil {
 			return fmt.Errorf("pre-upgrade backup: %w", err)
 		}
-		marker = backupPath
 		fmt.Fprintf(os.Stderr, "upgrade: backup captured at %s\n", backupPath)
 	}
 
 	// 2. control-plane swap (expand folded in). The old control-plane gets SIGTERM and drains its gateway;
-	// the new one boots, applies the idempotent migration chain (refusing without the backup marker when
-	// the require-backup gate is on), and serves. Keep the OLD engine so an interrupted run re-pins it.
-	swapEnv := upgradeComposeEnv(cfg, p.home, oldEngine, m.Images.ControlPlane.Digest, currentRunnerImage(cfg), marker)
+	// the new one boots, applies the idempotent migration chain, and serves. Keep the OLD engine so an
+	// interrupted run re-pins it.
+	swapEnv := upgradeComposeEnv(cfg, p.home, oldEngine, m.Images.ControlPlane.Ref, currentRunnerImage(cfg))
 	if err := runVisible(swapEnv, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
 		"up", "-d", "--wait", "control-plane"); err != nil {
 		return fmt.Errorf("control-plane swap: %w", err)
@@ -146,7 +147,7 @@ func Upgrade(opts UpgradeOptions) error {
 
 	// 3. runner drain: swap the runner to N+1. Recreating it drains the old runner; any run interrupted by
 	// the swap is reclaimed and completed by the E10 recovery layer on the new control-plane.
-	drainEnv := upgradeComposeEnv(cfg, p.home, oldEngine, m.Images.ControlPlane.Digest, m.Images.Runner.Digest, marker)
+	drainEnv := upgradeComposeEnv(cfg, p.home, oldEngine, m.Images.ControlPlane.Ref, m.Images.Runner.Ref)
 	if err := runVisible(drainEnv, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
 		"up", "-d", "--wait", "runner"); err != nil {
 		return fmt.Errorf("runner drain/swap: %w", err)
@@ -160,7 +161,7 @@ func Upgrade(opts UpgradeOptions) error {
 
 	// 5. new-run engine-alias roll: recreate the control-plane pointing PALAI_ENGINE_IMAGE at the new
 	// engine digest, so runs started FROM NOW pin the new engine. Active runs already drained on the old.
-	rollEnv := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Digest, m.Images.Runner.Digest, marker)
+	rollEnv := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Ref, m.Images.Runner.Ref)
 	if err := runVisible(rollEnv, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
 		"up", "-d", "--wait", "control-plane"); err != nil {
 		return fmt.Errorf("engine-alias roll: %w", err)
@@ -204,7 +205,7 @@ func UpgradeRollback(opts RollbackOptions) error {
 	// Swap the control-plane + runner image back to N and roll the engine alias back to N's engine in one
 	// recreate: a rollback has no active-run-drain ordering to preserve (the alias rollback is for new
 	// runs; any active run keeps the engine it already pinned).
-	env := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Digest, m.Images.Runner.Digest, "")
+	env := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Ref, m.Images.Runner.Ref)
 	if err := runVisible(env, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
 		"up", "-d", "--wait", "control-plane", "runner"); err != nil {
 		return fmt.Errorf("rollback swap: %w", err)
@@ -219,21 +220,16 @@ func UpgradeRollback(opts RollbackOptions) error {
 	return nil
 }
 
-// upgradeComposeEnv is composeEnv plus the E15 T2 image + engine overrides the swap/roll set. cpImage and
-// runnerImage pin the control-plane/runner to a specific digest; engine is the PALAI_ENGINE_IMAGE alias
-// new leases carry. marker (when non-empty) turns on the require-backup migration preflight gate.
-func upgradeComposeEnv(cfg Config, home, engine, cpImage, runnerImage, marker string) []string {
-	env := append(cfg.composeEnv(home, engine),
+// upgradeComposeEnv is composeEnv plus the E15 T2 image overrides the swap/roll set. cpImage and
+// runnerImage pin the control-plane/runner service to a specific image TAG (compose resolves a tag, not a
+// bare image id); engine is the PALAI_ENGINE_IMAGE alias new leases carry (an immutable sha256 digest —
+// the runner rejects a mutable tag). The require-backup preflight gate is intentionally not set here (see
+// Upgrade's step 1 comment).
+func upgradeComposeEnv(cfg Config, home, engine, cpImage, runnerImage string) []string {
+	return append(cfg.composeEnv(home, engine),
 		"PALAI_CONTROL_PLANE_IMAGE="+cpImage,
 		"PALAI_RUNNER_IMAGE="+runnerImage,
 	)
-	if marker != "" {
-		env = append(env,
-			"PALAI_MIGRATE_REQUIRE_BACKUP=1",
-			"PALAI_MIGRATE_BACKUP_MARKER="+marker,
-		)
-	}
-	return env
 }
 
 // currentEngineDigest reads PALAI_ENGINE_IMAGE from the running control-plane container's environment —
@@ -246,7 +242,9 @@ func currentEngineDigest(cfg Config) (string, error) {
 // currentRunnerImage reads the running runner container's image reference so a control-plane-only swap
 // does not accidentally recreate the runner with a different image. Falls back to the compose default.
 func currentRunnerImage(cfg Config) string {
-	out, err := exec.Command("docker", "inspect", cfg.containerName("runner"), "--format", "{{.Image}}").Output()
+	// .Config.Image is the image REFERENCE the container was created with (a tag), which compose can
+	// interpolate back into the service; .Image would be the resolved image ID.
+	out, err := exec.Command("docker", "inspect", cfg.containerName("runner"), "--format", "{{.Config.Image}}").Output()
 	if err != nil {
 		return "palai/runner:local"
 	}
