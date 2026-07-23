@@ -105,9 +105,11 @@ export PALAI_CP_IMAGE="$digest_control_plane"
 export PALAI_RUNNER_IMAGE="$digest_runner"
 export PALAI_PG_IMAGE="$digest_postgres"
 export PALAI_S3_IMAGE="$digest_object_store"
-# The engine sandbox is launched by the runner via the host socket (not a compose service); it
-# must be a locally-present ref. Use the mirror digest we just pulled.
-export PALAI_ENGINE_IMAGE="$digest_reference_engine"
+# The engine sandbox is launched by the runner via the host socket (not a compose service). The
+# lease validator (packages/runner/session.go) requires a BARE `sha256:<64hex>` config digest, not
+# a registry repo-ref — so pass the engine's config digest (the manifest id we just verified the
+# mirror pull against; same immutable content, locally present), matching splitvm-proof.
+export PALAI_ENGINE_IMAGE="$(manifest_field reference-engine id)"
 
 docker compose -p "$PALAI_AIRGAP_PROJECT" \
 	-f "$compose_root/compose.yaml" -f "$bundle/airgap.yml" \
