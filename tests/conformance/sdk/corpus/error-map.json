@@ -1,0 +1,89 @@
+{
+  "vectors": [
+    {
+      "name": "invalid-request-400",
+      "input": {
+        "status": 400,
+        "body": "{\"type\":\"https://docs.palai.dev/problems/invalid_request\",\"title\":\"invalid_request\",\"status\":400,\"code\":\"invalid_request\",\"detail\":\"missing field: input\",\"request_id\":\"req_400\"}"
+      },
+      "expected": { "class": "InvalidRequestError", "status": 400, "code": "invalid_request", "retryable": false, "request_id": "req_400" }
+    },
+    {
+      "name": "schema-validation-422",
+      "input": {
+        "status": 422,
+        "body": "{\"type\":\"https://docs.palai.dev/problems/schema_validation_failed\",\"title\":\"schema_validation_failed\",\"status\":422,\"code\":\"schema_validation_failed\",\"request_id\":\"req_422\"}"
+      },
+      "expected": { "class": "InvalidRequestError", "status": 422, "code": "schema_validation_failed", "retryable": false, "request_id": "req_422" }
+    },
+    {
+      "name": "authentication-401",
+      "input": {
+        "status": 401,
+        "body": "{\"type\":\"https://docs.palai.dev/problems/invalid_token\",\"title\":\"invalid_token\",\"status\":401,\"code\":\"invalid_token\",\"request_id\":\"req_401\"}"
+      },
+      "expected": { "class": "AuthenticationError", "status": 401, "code": "invalid_token", "retryable": false, "request_id": "req_401" }
+    },
+    {
+      "name": "permission-403",
+      "input": {
+        "status": 403,
+        "body": "{\"type\":\"https://docs.palai.dev/problems/permission_denied\",\"title\":\"permission_denied\",\"status\":403,\"code\":\"permission_denied\",\"request_id\":\"req_403\"}"
+      },
+      "expected": { "class": "PermissionDeniedError", "status": 403, "code": "permission_denied", "retryable": false, "request_id": "req_403" }
+    },
+    {
+      "name": "not-found-404",
+      "input": {
+        "status": 404,
+        "body": "{\"type\":\"https://docs.palai.dev/problems/not_found\",\"title\":\"not_found\",\"status\":404,\"code\":\"not_found\",\"request_id\":\"req_404\"}"
+      },
+      "expected": { "class": "NotFoundError", "status": 404, "code": "not_found", "retryable": false, "request_id": "req_404" }
+    },
+    {
+      "name": "conflict-409-idempotency-mismatch",
+      "input": {
+        "status": 409,
+        "body": "{\"type\":\"https://docs.palai.dev/problems/idempotency_mismatch\",\"title\":\"idempotency_mismatch\",\"status\":409,\"code\":\"idempotency_mismatch\",\"request_id\":\"req_409\"}"
+      },
+      "expected": { "class": "ConflictError", "status": 409, "code": "idempotency_mismatch", "retryable": false, "request_id": "req_409" }
+    },
+    {
+      "name": "gone-410-retention-purged",
+      "input": {
+        "status": 410,
+        "body": "{\"type\":\"https://docs.palai.dev/problems/retention_expired\",\"title\":\"retention_expired\",\"status\":410,\"code\":\"retention_expired\",\"detail\":\"this response was purged (store:false)\",\"request_id\":\"req_410\"}"
+      },
+      "expected": { "class": "GoneError", "status": 410, "code": "retention_expired", "retryable": false, "request_id": "req_410" }
+    },
+    {
+      "name": "rate-limited-429-retryable-by-status",
+      "input": {
+        "status": 429,
+        "body": "{\"type\":\"https://docs.palai.dev/problems/rate_limited\",\"title\":\"rate_limited\",\"status\":429,\"code\":\"rate_limited\",\"request_id\":\"req_429\"}"
+      },
+      "expected": { "class": "RateLimitError", "status": 429, "code": "rate_limited", "retryable": true, "request_id": "req_429" }
+    },
+    {
+      "name": "server-500-retryable",
+      "input": {
+        "status": 500,
+        "body": "{\"type\":\"https://docs.palai.dev/problems/internal_error\",\"title\":\"internal_error\",\"status\":500,\"code\":\"internal_error\",\"request_id\":\"req_500\"}"
+      },
+      "expected": { "class": "InternalServerError", "status": 500, "code": "internal_error", "retryable": true, "request_id": "req_500" }
+    },
+    {
+      "name": "non-problem-502-synthesized",
+      "input": { "status": 502, "body": "Bad Gateway", "request_id": "req_502" },
+      "expected": { "class": "InternalServerError", "status": 502, "code": "internal_error", "retryable": true, "request_id": "req_502" }
+    },
+    {
+      "name": "explicit-retryable-overrides-status-class",
+      "input": {
+        "status": 400,
+        "body": "{\"type\":\"https://docs.palai.dev/problems/invalid_request\",\"title\":\"invalid_request\",\"status\":400,\"code\":\"invalid_request\",\"retryable\":true,\"request_id\":\"req_ovr\"}"
+      },
+      "expected": { "class": "InvalidRequestError", "status": 400, "code": "invalid_request", "retryable": true, "request_id": "req_ovr" }
+    }
+  ]
+}

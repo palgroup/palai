@@ -1,0 +1,55 @@
+{
+  "vectors": [
+    {
+      "name": "page-with-cursor",
+      "input": {
+        "envelope": {
+          "data": [{ "id": "resp_1" }, { "id": "resp_2" }],
+          "has_more": true,
+          "next_cursor": "cur_next",
+          "previous_cursor": "cur_prev"
+        }
+      },
+      "expected": {
+        "kind": "page",
+        "has_more": true,
+        "data": [{ "id": "resp_1" }, { "id": "resp_2" }],
+        "next_cursor": "cur_next",
+        "previous_cursor": "cur_prev"
+      }
+    },
+    {
+      "name": "page-final-no-cursor",
+      "input": {
+        "envelope": { "data": [{ "id": "resp_9" }], "has_more": false }
+      },
+      "expected": {
+        "kind": "page",
+        "has_more": false,
+        "data": [{ "id": "resp_9" }]
+      }
+    },
+    {
+      "name": "listview-admin-full-set",
+      "input": {
+        "envelope": { "object": "list", "data": [{ "id": "sr_1" }, { "id": "sr_2" }] }
+      },
+      "expected": {
+        "kind": "list",
+        "object": "list",
+        "data": [{ "id": "sr_1" }, { "id": "sr_2" }]
+      }
+    },
+    {
+      "name": "listview-empty",
+      "input": {
+        "envelope": { "object": "list", "data": [] }
+      },
+      "expected": {
+        "kind": "list",
+        "object": "list",
+        "data": []
+      }
+    }
+  ]
+}

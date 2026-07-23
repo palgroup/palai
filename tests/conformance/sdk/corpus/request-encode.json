@@ -1,0 +1,57 @@
+{
+  "vectors": [
+    {
+      "name": "responses-create-rich-body",
+      "input": {
+        "resource": "responses",
+        "method": "create",
+        "args": {
+          "input": "Summarize the onboarding guide in three bullets.",
+          "model": "fake-1",
+          "instructions": "Answer concisely.",
+          "metadata": { "trace": "conf-req-001" },
+          "max_output_tokens": 256,
+          "tool_choice": "auto"
+        },
+        "options": { "idempotencyKey": "idem_conf_fixed" }
+      },
+      "expected": {
+        "method": "POST",
+        "path": "/v1/responses",
+        "idempotency_key": "idem_conf_fixed",
+        "body": {
+          "input": "Summarize the onboarding guide in three bullets.",
+          "model": "fake-1",
+          "instructions": "Answer concisely.",
+          "metadata": { "trace": "conf-req-001" },
+          "max_output_tokens": 256,
+          "tool_choice": "auto"
+        }
+      }
+    },
+    {
+      "name": "responses-list-query-snake-case",
+      "input": {
+        "resource": "responses",
+        "method": "list",
+        "args": { "after": "cursor_abc", "limit": 20, "createdAfter": "2026-07-01" }
+      },
+      "expected": {
+        "method": "GET",
+        "path": "/v1/responses?after=cursor_abc&limit=20&created_after=2026-07-01"
+      }
+    },
+    {
+      "name": "responses-retrieve-id-path-encoding",
+      "input": {
+        "resource": "responses",
+        "method": "retrieve",
+        "args": { "id": "resp_abc/def" }
+      },
+      "expected": {
+        "method": "GET",
+        "path": "/v1/responses/resp_abc%2Fdef"
+      }
+    }
+  ]
+}

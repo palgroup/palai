@@ -1,0 +1,54 @@
+{
+  "vectors": [
+    {
+      "name": "two-events-comment-and-crlf",
+      "input": {
+        "transcript": ": keep-alive\nid: e1\nevent: model_step.created.v1\ndata: {\"specversion\":\"1.0\",\"id\":\"e1\",\"source\":\"palai\",\"type\":\"model_step.created.v1\",\"time\":\"2026-07-18T00:00:00Z\",\"sequence\":1,\"data\":{}}\n\nid: e2\r\nevent: run.completed.v1\r\ndata: {\"specversion\":\"1.0\",\"id\":\"e2\",\"source\":\"palai\",\"type\":\"run.completed.v1\",\"time\":\"2026-07-18T00:00:01Z\",\"sequence\":2,\"data\":{}}\r\n\r\n"
+      },
+      "expected": {
+        "events": [
+          { "specversion": "1.0", "id": "e1", "source": "palai", "type": "model_step.created.v1", "time": "2026-07-18T00:00:00Z", "sequence": 1, "data": {} },
+          { "specversion": "1.0", "id": "e2", "source": "palai", "type": "run.completed.v1", "time": "2026-07-18T00:00:01Z", "sequence": 2, "data": {} }
+        ],
+        "terminal_index": 1
+      }
+    },
+    {
+      "name": "unknown-event-type-delivered-not-dropped",
+      "input": {
+        "transcript": "id: e1\nevent: some.brand.new.v9\ndata: {\"specversion\":\"1.0\",\"id\":\"e1\",\"source\":\"palai\",\"type\":\"some.brand.new.v9\",\"time\":\"2026-07-18T00:00:00Z\",\"sequence\":1,\"data\":{}}\n\nid: e2\nevent: run.completed.v1\ndata: {\"specversion\":\"1.0\",\"id\":\"e2\",\"source\":\"palai\",\"type\":\"run.completed.v1\",\"time\":\"2026-07-18T00:00:01Z\",\"sequence\":2,\"data\":{}}\n\n"
+      },
+      "expected": {
+        "events": [
+          { "specversion": "1.0", "id": "e1", "source": "palai", "type": "some.brand.new.v9", "time": "2026-07-18T00:00:00Z", "sequence": 1, "data": {} },
+          { "specversion": "1.0", "id": "e2", "source": "palai", "type": "run.completed.v1", "time": "2026-07-18T00:00:01Z", "sequence": 2, "data": {} }
+        ],
+        "terminal_index": 1
+      }
+    },
+    {
+      "name": "nonjson-data-and-heartbeat-skipped",
+      "input": {
+        "transcript": ": ping\ndata: plain text not an event\n\nid: e3\nevent: run.progress.v1\ndata: {\"specversion\":\"1.0\",\"id\":\"e3\",\"source\":\"palai\",\"type\":\"run.progress.v1\",\"time\":\"2026-07-18T00:00:02Z\",\"sequence\":3,\"data\":{\"pct\":42}}\n\n"
+      },
+      "expected": {
+        "events": [
+          { "specversion": "1.0", "id": "e3", "source": "palai", "type": "run.progress.v1", "time": "2026-07-18T00:00:02Z", "sequence": 3, "data": { "pct": 42 } }
+        ],
+        "terminal_index": -1
+      }
+    },
+    {
+      "name": "terminal-event-with-unknown-field-preserved",
+      "input": {
+        "transcript": "id: e9\nevent: run.completed.v1\ndata: {\"specversion\":\"1.0\",\"id\":\"e9\",\"source\":\"palai\",\"type\":\"run.completed.v1\",\"time\":\"2026-07-18T00:00:09Z\",\"sequence\":9,\"data\":{\"ok\":true},\"x_future\":\"preserved\"}\n\n"
+      },
+      "expected": {
+        "events": [
+          { "specversion": "1.0", "id": "e9", "source": "palai", "type": "run.completed.v1", "time": "2026-07-18T00:00:09Z", "sequence": 9, "data": { "ok": true }, "x_future": "preserved" }
+        ],
+        "terminal_index": 0
+      }
+    }
+  ]
+}
