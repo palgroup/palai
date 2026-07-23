@@ -53,17 +53,39 @@ It:
 palai restore --archive palai-backup-<project>-<UTC>.tar.gz
 ```
 
-**Fail-closed:** restore refuses any target that holds a **provisioned tenant** (an organization
-beyond the fixed boot seed `org_local`) or **any workload** (a response/run) — it never
-overwrites live data. A **freshly `init`ed, brought-up** stack carries only the seeded
-`org_local` tenant and no runs, so it passes; a stack that has been provisioned or used does not.
+> **PRECONDITION — carry the master key (production).** Secret values (`secret_refs`) are
+> AES-256-GCM-sealed under the **source** stack's `${PALAI_HOME}/secrets/master-key`. A restore does
+> NOT move that key. Before restoring an install that has secrets, **copy the source
+> `secrets/master-key` onto the target** (overwriting the target's own). Without it every restored
+> provider/MCP/webhook secret is undecryptable and the install is silently non-functional —
+> `restore verify`'s secret canary fails loudly if the key is missing or mismatched.
 
-It verifies the archive's member checksums, then, with the writers stopped for the swap:
+**Fail-closed (no-clobber):** restore refuses any target that holds tenant data — **any** row in an
+org-bearing (tenant-scoped) table beyond a fresh install's baseline: not just extra organizations or
+runs, but a project, api-key, `secret_ref`, model-route, schedule, tool, etc. created under **any**
+org (including the seeded `org_local`). The gate enumerates the FORCE-RLS tables from the live
+catalog, excludes the four boot-seed identity rows and the runner-enrollment tables, and counts the
+rest; a non-empty result names the offending tables. A **freshly `init`ed, brought-up** stack passes;
+a stack that has been provisioned or used does not — no live data is ever overwritten.
+
+The writers are stopped **before** the gate runs (so a client write cannot slip in between the check
+and the swap); if the gate refuses, the writers are restarted and the target is left as it was. It
+then verifies the archive's member checksums, requires the **target's migration version to equal the
+backup's** (a mismatch is refused — restoring across schema versions would rewind
+`schema_migrations` into a boot crash-loop), and with the writers stopped for the swap:
 
 1. `pg_restore --clean --if-exists --no-owner --exit-on-error` — replaces the fresh schema +
    loads the backup's data;
 2. clears and re-extracts the object-store data volume;
-3. restarts the object store and the writers, and waits for the API to answer.
+3. restarts the object store and the writers, and waits for the control-plane healthcheck.
+
+If a step past the migration/empty checks fails, the target is **half-restored**: the error says so
+and to re-init it (`palai local reset --confirm`) before retrying.
+
+> **Identity after restore.** The restore replaces the target's `key_local` row with the **source's**
+> bootstrap-key hash. So after a restore the target's own `palai init`-printed bootstrap key stops
+> authenticating, and the **source** stack's bootstrap key becomes the valid one against the target.
+> Provision fresh keys with the admin CLI, or keep using the source's bootstrap key.
 
 ## `palai restore verify`
 
@@ -75,9 +97,16 @@ Against the restored target it checks:
 
 - **archive checksum** — every member re-hashes to its manifest value;
 - **migration version** — live `max(schema_migrations.version)` == manifest;
-- **tenant ids** — live org ids == manifest (set equality);
+- **tenant ids** — every manifest org id is present in the restored data (a concurrent org created
+  during a live backup may add an extra one — that is not a failure; a *missing* backed-up org is);
 - **run retrieval** — the manifest's sample response is retrievable from the restored database
-  (proving the tenant data is queryable).
+  (proving the tenant data is queryable);
+- **rls isolation** — the restored data still has FORCE ROW LEVEL SECURITY + a `tenant_isolation`
+  policy on every org-bearing table (a restore that landed with RLS disabled is a silent
+  cross-tenant breach the superuser queries above would never notice);
+- **secret decrypt** — if `secret_refs` has rows, one is decrypted under the target's master key,
+  so a missing/mismatched master key (see the restore precondition) is caught here, not at the
+  first provider call.
 
 Exit 0 with `restore verify: all checks green`, or non-zero listing the failed checks.
 
@@ -111,7 +140,19 @@ host B). This document is verified against **two isolated stacks on the same Doc
 (different `PALAI_HOME`, ports, and volume set) — the local-production-compose equivalent of
 "restore to a separate clean install". It does **not** claim a real separate-host restore.
 
+> **The secret path is NOT exercised by that two-stack proof.** The base compose profile has no
+> secret store (`PALAI_SECRET_MASTER_KEY_FILE` is unset), so the two-stack backup/restore never
+> carries a `secret_ref`. The master-key round-trip — a secret sealed under key A fails closed under
+> key B, and `restore verify`'s canary catches it — is proven at the **component tier against a real
+> Postgres with two master keys**, not in the two-stack run.
+
 The object store in the packaged stack holds **no wired S3 objects** — the control-plane sets no
-`PALAI_S3_ENDPOINT`, so artifacts are not written to S3 today. The backup still copies the
-object-store data volume byte-for-byte and records a per-object sha256 of its contents; when the
-S3 write-path is wired, those entries are the stored objects with no code change.
+`PALAI_S3_ENDPOINT`, so artifacts are not written to S3 today. The backup copies the object-store
+data volume byte-for-byte and records a per-object sha256 of its contents.
+
+> **Ceiling when the S3 write-path is wired.** The volume is tar'd from the **live** object store,
+> which is crash-consistent-enough for today's empty/near-idle store but is **not** a consistent
+> snapshot under concurrent writes, and it is a slightly different point in time than the Postgres
+> dump. When artifacts are actually written to S3, take backups during a quiet window, or upgrade the
+> object-store copy to quiesce the store (or enumerate + GET each S3 object) so it aligns with the DB
+> snapshot. The per-object checksums are then the stored objects with no manifest change.

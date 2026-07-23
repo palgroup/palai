@@ -74,6 +74,7 @@ type paths struct {
 	serverKey   string
 	secretsDir  string
 	pgPassword  string
+	masterKey   string
 }
 
 func resolvePaths() (paths, error) {
@@ -93,6 +94,10 @@ func resolvePaths() (paths, error) {
 		serverKey:   filepath.Join(h, "ca", "server.key"),
 		secretsDir:  filepath.Join(h, "secrets"),
 		pgPassword:  filepath.Join(h, "secrets", "pg-password"),
+		// The production secret-store master key (production.env.example step). Present only in the
+		// production profile; the restore-verify secret canary reads it to prove restored secrets
+		// decrypt under the target's key.
+		masterKey: filepath.Join(h, "secrets", "master-key"),
 	}, nil
 }
 

@@ -25,9 +25,12 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -56,12 +59,22 @@ const (
 	// A one-off container of it copies the object-store VOLUME with a tool set (tar, sh) the
 	// scratch-based seaweedfs image does not carry — and it is already pulled by the stack.
 	postgresImageRef = "postgres@" + postgresDigest
-
-	// seedOrgID is the control-plane's fixed boot-seeded first organization
-	// (apps/control-plane/internal/identity/store.go firstOrg). A fresh install carries exactly
-	// this tenant, so the empty-target gate excludes it when deciding a target is unused.
-	seedOrgID = "org_local"
 )
+
+// seedRows are the four identity rows a FRESH install is born with (identity/store.go firstOrg/
+// firstProject/firstPrincipal/firstKey). The empty-target gate excludes exactly these by id: any
+// OTHER row in an org-bearing table is provisioned/workload data the restore must not overwrite.
+var seedRows = map[string]string{
+	"organizations": "org_local",
+	"projects":      "prj_local",
+	"principals":    "prin_local",
+	"api_keys":      "key_local",
+}
+
+// bootInfraTables are org-bearing tables a fresh boot fills on its own (the runner enrolls and takes
+// leases). They are NOT tenant data, so the empty-target gate skips them — else a fresh target that
+// has already enrolled its runner would false-positive as "not empty".
+var bootInfraTables = map[string]bool{"runners": true, "runner_pools": true, "runner_leases": true}
 
 // BackupManifest is the machine-readable index inside a backup archive. It records what the
 // backup captured (migration version, the tenant/org + project ids, a sample response id for the
@@ -80,8 +93,10 @@ type BackupManifest struct {
 	ObjectStoreSHA256 string    `json:"object_store_sha256"`
 	// Objects is the per-object sha256 of the object-store copy. The packaged control-plane sets
 	// no PALAI_S3_ENDPOINT, so no S3 objects are wired and these are the object-store DATA VOLUME's
-	// files (byte-for-byte). When the S3 write-path is wired they are the stored objects. Either
-	// way each entry lets a restore prove the object-store copy is intact file-by-file.
+	// files (byte-for-byte). Each entry lets a restore prove the copy is intact file-by-file.
+	// ponytail: the volume is tar'd LIVE — crash-consistent-enough for today's empty/idle store, but
+	// once artifacts are actually written to S3 a consistent copy must quiesce the store or enumerate
+	// S3 objects (docs/operations/backup-restore.md ceiling), and those entries become the objects.
 	Objects []objectChecksum `json:"objects"`
 }
 
@@ -196,41 +211,57 @@ func InstallRestore(archivePath string) error {
 	}
 
 	pg := cfg.containerName("postgres")
-
-	// Fail-closed empty-target gate: any provisioned tenant (an organization beyond the fixed
-	// boot seed) OR any workload (a response/run) refuses the restore. A fresh install carries
-	// only the seeded org_local tenant and no runs, so it passes; a stack that has been
-	// provisioned or used does not — no live data is ever overwritten.
-	count, err := pgQueryInt(ctx, pg,
-		"SELECT (SELECT count(*) FROM organizations WHERE id <> '"+seedOrgID+"') "+
-			"+ (SELECT count(*) FROM responses) + (SELECT count(*) FROM runs)")
-	if err != nil {
-		return fmt.Errorf("check target is empty: %w", err)
-	}
-	if err := assertEmptyTarget(count); err != nil {
-		return err
-	}
-
-	// The writers hold the DB pool and are the only object-store writers; stop them for the swap.
 	cp := cfg.containerName("control-plane")
 	runner := cfg.containerName("runner")
 	objStore := cfg.containerName("object-store")
+
+	// M2 (no TOCTOU window): stop the writers FIRST, then run the pre-flight checks — a client write
+	// that landed between the check and the stop would otherwise be destroyed by the restore. If a
+	// pre-flight refuses, restart the writers so the target is left exactly as we found it (running).
 	fmt.Fprintln(os.Stderr, "restore: stopping writers (control-plane, runner)…")
 	if err := dockerRun(ctx, "stop", cp, runner); err != nil {
 		return fmt.Errorf("stop writers: %w", err)
 	}
+	abort := func(err error) error {
+		_ = dockerRun(ctx, "start", cp, runner)
+		return err
+	}
+
+	// S4: the dump's schema must match the target's. pg_restore --clean into a MISMATCHED schema
+	// leaves orphan objects and rewinds schema_migrations, so the target's next boot crash-loops in
+	// Migrate with only "did not become healthy" as the symptom. Refuse before touching any data.
+	liveMig, err := pgQueryInt(ctx, pg, "SELECT coalesce(max(version), 0) FROM schema_migrations")
+	if err != nil {
+		return abort(fmt.Errorf("read target migration version: %w", err))
+	}
+	if liveMig != m.MigrationVersion {
+		return abort(fmt.Errorf("refusing to restore: target schema v%d != backup v%d; bring the target up on the backup's migration version first", liveMig, m.MigrationVersion))
+	}
+
+	// M1 (cardinal no-clobber): fail-closed over EVERY org-bearing (FORCE-RLS) table, so provisioned
+	// data created UNDER org_local (projects, api_keys, secret_refs, model_routes, …) — none of which
+	// the old orgs/responses/runs count caught — refuses the restore instead of being silently wiped.
+	excess, err := tenantDataExcess(ctx, pg)
+	if err != nil {
+		return abort(fmt.Errorf("check target is empty: %w", err))
+	}
+	if len(excess) > 0 {
+		return abort(fmt.Errorf("refusing to restore: target is not empty — holds tenant data [%s]; restore only into a fresh install", strings.Join(excess, ", ")))
+	}
 
 	fmt.Fprintln(os.Stderr, "restore: loading Postgres (pg_restore --clean)…")
 	if err := pgRestore(ctx, pg, dbDump); err != nil {
-		return fmt.Errorf("pg_restore: %w", err)
+		// N9: past this point the target is HALF-RESTORED (schema/data partly replaced, writers down);
+		// tell the operator not to trust it.
+		return fmt.Errorf("pg_restore: %w — the target is now HALF-RESTORED and must NOT be used; re-init it (`palai local reset --confirm`) before retrying", err)
 	}
 
 	fmt.Fprintln(os.Stderr, "restore: replacing the object-store volume…")
 	if err := dockerRun(ctx, "stop", objStore); err != nil {
-		return fmt.Errorf("stop object store: %w", err)
+		return fmt.Errorf("stop object store: %w — the target is HALF-RESTORED; re-init it before retrying", err)
 	}
 	if err := objectStoreRestore(ctx, cfg.objectVolume(), objTar); err != nil {
-		return fmt.Errorf("restore object store: %w", err)
+		return fmt.Errorf("restore object store: %w — the target is HALF-RESTORED; re-init it before retrying", err)
 	}
 	if err := dockerRun(ctx, "start", objStore); err != nil {
 		return fmt.Errorf("start object store: %w", err)
@@ -256,7 +287,7 @@ func InstallRestore(archivePath string) error {
 // checksums verify, the live migration version + tenant ids match the manifest, and the sample
 // response is retrievable from the restored database (proving the tenant data is queryable).
 func InstallRestoreVerify(archivePath string) error {
-	cfg, _, err := loadConfig()
+	cfg, p, err := loadConfig()
 	if err != nil {
 		return err
 	}
@@ -297,14 +328,17 @@ func InstallRestoreVerify(archivePath string) error {
 		pass("migration_version", fmt.Sprintf("v%d matches manifest", liveMig))
 	}
 
-	// tenant-id match (set equality)
+	// tenant-id match. N8: the backup reads the org ids BEFORE pg_dump, so the dump (a later snapshot)
+	// is a superset — an org created concurrently during a live backup lands in the restored data but
+	// not the manifest. The load-bearing invariant is that NO backed-up tenant went missing, so we
+	// check manifest ⊆ restored rather than strict equality (a concurrent extra org is not a failure).
 	liveOrgs, err := pgQueryList(ctx, pg, "SELECT id FROM organizations ORDER BY id")
 	if err != nil {
 		failf("tenant_ids", "read live org ids: %v", err)
-	} else if !sameIDSet(liveOrgs, m.OrganizationIDs) {
-		failf("tenant_ids", "live %v != manifest %v", liveOrgs, m.OrganizationIDs)
+	} else if missing := missingFrom(liveOrgs, m.OrganizationIDs); len(missing) > 0 {
+		failf("tenant_ids", "restored data is missing manifest org id(s) %v", missing)
 	} else {
-		pass("tenant_ids", fmt.Sprintf("%d org id(s) match manifest", len(liveOrgs)))
+		pass("tenant_ids", fmt.Sprintf("all %d manifest org id(s) present in restored data", len(m.OrganizationIDs)))
 	}
 
 	// sample run-retrieval — prove the restored tenant data is queryable
@@ -322,6 +356,39 @@ func InstallRestoreVerify(archivePath string) error {
 		} else {
 			pass("run_retrieval", fmt.Sprintf("response %s retrievable from restored data", m.SampleResponseID))
 		}
+	}
+
+	// S5: tenant isolation must survive the restore. pg_dump carries FORCE ROW LEVEL SECURITY + the
+	// tenant_isolation policies mechanically; this catches a restore that somehow landed with RLS off
+	// (a silent cross-tenant breach the RLS-bypassing superuser queries above would never notice).
+	forced, ferr := pgQueryInt(ctx, pg, "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relforcerowsecurity")
+	policies, perr := pgQueryInt(ctx, pg, "SELECT count(*) FROM pg_policies WHERE schemaname = 'public' AND policyname = 'tenant_isolation'")
+	switch {
+	case ferr != nil || perr != nil:
+		failf("rls_isolation", "read RLS catalog: %v / %v", ferr, perr)
+	case forced == 0 || policies == 0:
+		failf("rls_isolation", "RLS is DISABLED on restored data (forced=%d, tenant_isolation policies=%d)", forced, policies)
+	case policies < forced:
+		// Every FORCE-RLS table must carry its tenant_isolation policy; fewer means isolation is
+		// incomplete on some table. (More policies than forced tables is fine — mig 000029 pattern.)
+		failf("rls_isolation", "tenant_isolation policies (%d) < forced-RLS tables (%d) — isolation is incomplete", policies, forced)
+	default:
+		pass("rls_isolation", fmt.Sprintf("%d org-bearing tables FORCE RLS, %d tenant_isolation policies", forced, policies))
+	}
+
+	// M3: secret canary. Secrets are AES-256-GCM-sealed under the SOURCE stack's master key; a restore
+	// to a target with a different master key leaves every secret undecryptable while the rows survive
+	// — a silently-dead install. If secret_refs has rows, prove one decrypts under the TARGET's master
+	// key (the operator must have carried the source key), so a mismatch is caught here, not at the
+	// first provider call.
+	secretN, serr := pgQueryInt(ctx, pg, "SELECT count(*) FROM secret_refs")
+	switch {
+	case serr != nil:
+		failf("secret_decrypt", "count secret_refs: %v", serr)
+	case secretN == 0:
+		pass("secret_decrypt", "no secret_refs to verify")
+	default:
+		verifySecretCanary(ctx, pg, p.masterKey, pass, failf)
 	}
 
 	if len(fails) > 0 {
@@ -343,13 +410,125 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// assertEmptyTarget is the fail-closed restore gate: a target with any tenant row is refused so
-// a restore can never overwrite live data.
-func assertEmptyTarget(tenantRows int) error {
-	if tenantRows != 0 {
-		return fmt.Errorf("refusing to restore: target stack is not empty (%d tenant row(s)); restore only into a fresh install", tenantRows)
+// tenantDataExcess reports the org-bearing tables that hold data beyond a fresh install's baseline —
+// the empty-target gate's evidence. It enumerates the FORCE-RLS (tenant-scoped) tables from the live
+// catalog (so a table a future migration adds is covered automatically, matching mig 000029's intent)
+// and counts each, excluding the 4 boot-seed rows and the runner-enrollment tables. Any returned
+// "table=count" means the target holds provisioned/workload data a restore would clobber.
+func tenantDataExcess(ctx context.Context, container string) ([]string, error) {
+	tables, err := pgQueryList(ctx, container,
+		"SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "+
+			"WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relforcerowsecurity ORDER BY c.relname")
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	q := buildExcessQuery(tables)
+	if q == "" {
+		return nil, nil
+	}
+	return pgQueryList(ctx, container, q)
+}
+
+// buildExcessQuery assembles the per-table count query over the FORCE-RLS tables: the 4 identity
+// tables exclude their seed row by id, the runner-enrollment tables are skipped, everything else is
+// counted in full. Table names come from the catalog and the seed ids are constants, so the built
+// SQL carries no caller input. Returns "" for an empty table list.
+func buildExcessQuery(tables []string) string {
+	var parts []string
+	for _, t := range tables {
+		if bootInfraTables[t] {
+			continue
+		}
+		where := ""
+		if seed, ok := seedRows[t]; ok {
+			where = " WHERE id <> '" + seed + "'"
+		}
+		parts = append(parts, fmt.Sprintf("SELECT '%s' AS t, count(*) AS n FROM %s%s", t, t, where))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "SELECT t || '=' || n FROM (" + strings.Join(parts, " UNION ALL ") + ") s WHERE n > 0 ORDER BY t"
+}
+
+// missingFrom returns the want ids not present in have (order-independent).
+func missingFrom(have, want []string) []string {
+	present := make(map[string]bool, len(have))
+	for _, h := range have {
+		present[h] = true
+	}
+	var missing []string
+	for _, w := range want {
+		if !present[w] {
+			missing = append(missing, w)
+		}
+	}
+	return missing
+}
+
+// verifySecretCanary proves the target can decrypt a stored secret under its master key — the M3
+// guard against a restore whose master key differs from the backup's (every secret otherwise dead).
+// It reads the target master-key file the operator must have carried, pulls one ciphertext, and
+// AES-256-GCM-opens it. The CLI cannot import the control-plane's internal secret store, so it
+// mirrors that store's seal format (openSealed); the component test proves the two interoperate.
+func verifySecretCanary(ctx context.Context, container, masterKeyPath string, pass func(string, string), failf func(string, string, ...any)) {
+	keyHex, err := readTrimmed(masterKeyPath)
+	if err != nil {
+		failf("secret_decrypt", "secret_refs present but master key %s is unreadable (%v); the SOURCE master key MUST be carried to the target — the restored secrets are undecryptable without it", masterKeyPath, err)
+		return
+	}
+	key, err := parseMasterKeyHex(keyHex)
+	if err != nil {
+		failf("secret_decrypt", "target master key: %v", err)
+		return
+	}
+	ctHex, err := pgQueryScalar(ctx, container, "SELECT encode(ciphertext, 'hex') FROM secret_refs LIMIT 1")
+	if err != nil {
+		failf("secret_decrypt", "read a stored ciphertext: %v", err)
+		return
+	}
+	sealed, err := hex.DecodeString(ctHex)
+	if err != nil {
+		failf("secret_decrypt", "decode stored ciphertext: %v", err)
+		return
+	}
+	if _, err := openSealed(key, sealed); err != nil {
+		failf("secret_decrypt", "a stored secret does NOT decrypt under the target master key (%v) — the SOURCE master key was not carried; every restored secret is dead", err)
+		return
+	}
+	pass("secret_decrypt", "a stored secret decrypts under the target master key")
+}
+
+// parseMasterKeyHex decodes the 32-byte AES-256 master key from hex — mirrors identity.ParseMasterKey
+// (the CLI cannot import that internal package).
+func parseMasterKeyHex(s string) ([]byte, error) {
+	key, err := hex.DecodeString(strings.TrimSpace(s))
+	if err != nil {
+		return nil, fmt.Errorf("not valid hex: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("got %d bytes, want 32 (AES-256)", len(key))
+	}
+	return key, nil
+}
+
+// openSealed AES-256-GCM-decrypts a nonce||ciphertext blob — byte-compatible with the control-plane
+// secret store's seal (identity/secrets.go: a 12-byte GCM nonce prefix). A wrong key or a truncated
+// blob fails, which is exactly the master-key-mismatch signal the canary needs.
+func openSealed(masterKey, sealed []byte) ([]byte, error) {
+	block, err := aes.NewCipher(masterKey)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	n := gcm.NonceSize()
+	if len(sealed) < n {
+		return nil, errors.New("ciphertext shorter than the nonce")
+	}
+	return gcm.Open(nil, sealed[:n], sealed[n:], nil)
 }
 
 // objectChecksums walks the object-store tar and records each regular file's content sha256.
@@ -378,26 +557,6 @@ func objectChecksums(objTar []byte) ([]objectChecksum, error) {
 }
 
 func marshalManifest(m BackupManifest) ([]byte, error) { return json.MarshalIndent(m, "", "  ") }
-
-// sameIDSet reports set-equality of two id slices (order-independent).
-func sameIDSet(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	seen := make(map[string]int, len(a))
-	for _, x := range a {
-		seen[x]++
-	}
-	for _, y := range b {
-		seen[y]--
-	}
-	for _, n := range seen {
-		if n != 0 {
-			return false
-		}
-	}
-	return true
-}
 
 // --- archive (gzip'd tar of manifest.json + db.dump + object-store.tar) ---
 

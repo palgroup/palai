@@ -3,9 +3,31 @@ package stack
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"strings"
 	"testing"
 )
+
+// sealForTest AES-256-GCM-seals plaintext as nonce||ciphertext — the exact format the control-plane's
+// secret store writes, so openSealed is exercised against a real-shape blob.
+func sealForTest(t *testing.T, key, plaintext []byte) []byte {
+	t.Helper()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatalf("cipher: %v", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatalf("gcm: %v", err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("nonce: %v", err)
+	}
+	return gcm.Seal(nonce, nonce, plaintext, nil)
+}
 
 // buildObjectStoreTar packs name->content into a tar the same shape the object-store copy
 // produces, so objectChecksums and the archive round-trip exercise real tar bytes.
@@ -116,18 +138,54 @@ func TestBackupArchiveRejectsCorruptedMember(t *testing.T) {
 	}
 }
 
-// The fail-closed gate: restore refuses any target that already holds tenant rows, so a
-// restore can never overwrite live data. Zero rows (a fresh migrated stack) is allowed.
-func TestAssertEmptyTargetRefusesNonEmpty(t *testing.T) {
-	if err := assertEmptyTarget(0); err != nil {
-		t.Fatalf("empty target must be allowed, got %v", err)
+// The M1 empty-target gate is data-driven over EVERY org-bearing (FORCE-RLS) table, so provisioned
+// data UNDER org_local (projects, api_keys, secret_refs, …) is counted — not just orgs/responses/runs.
+// buildExcessQuery must exclude the 4 boot-seed rows by id, skip the runner-enrollment tables, and
+// count everything else in full.
+func TestBuildExcessQuery(t *testing.T) {
+	q := buildExcessQuery([]string{"organizations", "projects", "principals", "api_keys", "runners", "runner_leases", "secret_refs", "responses"})
+	mustContain := []string{
+		"FROM organizations WHERE id <> 'org_local'",
+		"FROM projects WHERE id <> 'prj_local'",
+		"FROM principals WHERE id <> 'prin_local'",
+		"FROM api_keys WHERE id <> 'key_local'",
+		"FROM secret_refs", // provisioned-under-org_local data IS counted (the M1 hole)
+		"FROM responses",
+		"n > 0",
 	}
-	err := assertEmptyTarget(1)
-	if err == nil {
-		t.Fatalf("non-empty target must be refused")
+	for _, s := range mustContain {
+		if !strings.Contains(q, s) {
+			t.Fatalf("query missing %q:\n%s", s, q)
+		}
 	}
-	if !strings.Contains(err.Error(), "not empty") {
-		t.Fatalf("refusal must name the reason, got %v", err)
+	// runner-enrollment tables fill on a fresh boot — they must NOT be counted (else a fresh target
+	// false-positives once the runner enrolls).
+	for _, banned := range []string{"FROM runners", "FROM runner_leases"} {
+		if strings.Contains(q, banned) {
+			t.Fatalf("query must skip boot-infra table but has %q:\n%s", banned, q)
+		}
+	}
+	if buildExcessQuery(nil) != "" {
+		t.Fatalf("empty table list must yield an empty query")
+	}
+}
+
+// openSealed is the M3 canary's AES-256-GCM decrypt, byte-compatible with the control-plane's
+// secret seal (nonce||ciphertext). Right key decrypts; wrong key / short input fail closed.
+func TestOpenSealedRoundTripAndWrongKey(t *testing.T) {
+	key := bytes.Repeat([]byte{0x11}, 32)
+	sealed := sealForTest(t, key, []byte("sk-live-secret"))
+
+	got, err := openSealed(key, sealed)
+	if err != nil || string(got) != "sk-live-secret" {
+		t.Fatalf("right key must decrypt: got %q err %v", got, err)
+	}
+	wrong := bytes.Repeat([]byte{0x22}, 32)
+	if _, err := openSealed(wrong, sealed); err == nil {
+		t.Fatalf("wrong master key must fail closed")
+	}
+	if _, err := openSealed(key, []byte("x")); err == nil {
+		t.Fatalf("ciphertext shorter than the nonce must error")
 	}
 }
 
