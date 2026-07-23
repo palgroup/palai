@@ -51,7 +51,10 @@ var allTables = []string{
 	"schedules", "schedule_occurrences",
 	"tools", "tool_revisions", "tool_set_revisions",
 	"remote_tool_operations",
-	"usage_events", "audit_events",
+	"audit_events",
+	// usage_events is intentionally absent: 000034 contracts it away (superseded by usage_ledger in
+	// 000032). schema_revisions is the E15 T1 migration journal 000033 creates.
+	"schema_revisions",
 	"schema_migrations",
 }
 
@@ -1251,29 +1254,9 @@ func TestIdempotencyScopeKeyUnique(t *testing.T) {
 	}
 }
 
-func TestUsageDedupeKeyUnique(t *testing.T) {
-	cs := openHarness(t)
-	pool := cs.Pool()
-	ctx := context.Background()
-	tenant, _, _ := seedRun(t, pool)
-
-	insert := func(dedupe string) error {
-		_, err := pool.Exec(storage.WithSystemScope(ctx),
-			`INSERT INTO usage_events (organization_id, project_id, dedupe_key, kind, quantity)
-			 VALUES ($1, $2, $3, 'tokens', 100)`,
-			tenant.Organization, tenant.Project, dedupe)
-		return err
-	}
-	if err := insert("meter-1"); err != nil {
-		t.Fatalf("first usage insert error = %v", err)
-	}
-	if got := pgCode(insert("meter-1")); got != "23505" {
-		t.Fatalf("duplicate usage dedupe code = %q, want 23505 unique_violation", got)
-	}
-	if err := insert("meter-2"); err != nil {
-		t.Fatalf("distinct usage dedupe insert error = %v", err)
-	}
-}
+// TestUsageDedupeKeyUnique was removed in E15 T1: 000034 contracts away usage_events (superseded by
+// usage_ledger in 000032, which carries its own dedupe uniqueness proven in usage_ledger_test.go). The
+// dedupe guarantee this test asserted now lives on the successor table.
 
 func TestAuditAppendOnlyToApplicationRole(t *testing.T) {
 	cs := openHarness(t)

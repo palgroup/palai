@@ -101,7 +101,7 @@ run_postgres() {
   # that drive its query-error propagation against the real spine.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
-      go test -tags=component -count=1 -v -run 'TestVerifyPublishedRevision' ./packages/coordinator
+      go test -tags=component -count=1 -v -run 'TestVerifyPublishedRevision|TestMigrationBoundedLockTimesOut' ./packages/coordinator
     status=$?
   fi
   # The E13 Task 2 tenancy provisioning store drives the real spine: second-tenant provisioning (MCI-001),
