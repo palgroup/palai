@@ -1,0 +1,82 @@
+{
+  "vectors": [
+    {
+      "name": "event-with-unknown-top-and-nested-fields",
+      "input": {
+        "value": {
+          "specversion": "1.0",
+          "id": "e1",
+          "source": "palai",
+          "type": "run.progress.v1",
+          "time": "2026-07-18T00:00:00Z",
+          "sequence": 1,
+          "data": { "pct": 42, "x_stage": "planning" },
+          "x_future_top": { "nested": ["a", "b"] }
+        }
+      },
+      "expected": {
+        "specversion": "1.0",
+        "id": "e1",
+        "source": "palai",
+        "type": "run.progress.v1",
+        "time": "2026-07-18T00:00:00Z",
+        "sequence": 1,
+        "data": { "pct": 42, "x_stage": "planning" },
+        "x_future_top": { "nested": ["a", "b"] }
+      }
+    },
+    {
+      "name": "response-with-unknown-field",
+      "input": {
+        "value": {
+          "id": "resp_1",
+          "object": "response",
+          "status": "completed",
+          "created_at": "2026-07-18T00:00:00Z",
+          "model": "fake-1",
+          "output": [{ "type": "output_text", "text": "done" }],
+          "usage": { "input_tokens": 5, "output_tokens": 3, "total_tokens": 8 },
+          "x_experimental_scoring": { "confidence": 0.9 }
+        }
+      },
+      "expected": {
+        "id": "resp_1",
+        "object": "response",
+        "status": "completed",
+        "created_at": "2026-07-18T00:00:00Z",
+        "model": "fake-1",
+        "output": [{ "type": "output_text", "text": "done" }],
+        "usage": { "input_tokens": 5, "output_tokens": 3, "total_tokens": 8 },
+        "x_experimental_scoring": { "confidence": 0.9 }
+      }
+    },
+    {
+      "name": "problem-with-unknown-field",
+      "input": {
+        "value": {
+          "type": "https://docs.palai.dev/problems/rate_limited",
+          "title": "rate_limited",
+          "status": 429,
+          "code": "rate_limited",
+          "request_id": "req_1",
+          "x_retry_hint": { "after_ms": 1200 }
+        }
+      },
+      "expected": {
+        "type": "https://docs.palai.dev/problems/rate_limited",
+        "title": "rate_limited",
+        "status": 429,
+        "code": "rate_limited",
+        "request_id": "req_1",
+        "x_retry_hint": { "after_ms": 1200 }
+      }
+    },
+    {
+      "name": "content-item-unknown-type-and-field",
+      "input": {
+        "value": { "type": "output_audio_v2", "transcript": "hi", "x_codec": "opus" }
+      },
+      "expected": { "type": "output_audio_v2", "transcript": "hi", "x_codec": "opus" }
+    }
+  ]
+}
