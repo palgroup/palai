@@ -6,6 +6,7 @@ postgres:
   existingSecret: palai-db
 s3:
   endpoint: "http://palai-s3-fixture:8333"
+  port: 8333            # MUST match the endpoint port so the NetworkPolicy opens the port the store listens on
   existingSecret: palai-s3
 runnerGateway:
   existingSecret: palai-runner-gw

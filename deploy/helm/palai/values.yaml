@@ -49,7 +49,9 @@ s3:
   existingSecret: ""      # name of a Secret holding the S3 credentials
   accessKeyKey: access-key
   secretKeyKey: secret-key
-  # Egress target port for the NetworkPolicy.
+  # Egress target port for the NetworkPolicy. This MUST match the port in `endpoint` above — otherwise
+  # the policy opens a port the store does not listen on and S3 egress is silently blocked on an
+  # enforcing CNI (e.g. endpoint http://...:8333 needs port: 8333, not the 443 default).
   port: 443
 
 # The runner gateway (mutually-authenticated mTLS listener on :8443) the OUTSIDE-cluster runner

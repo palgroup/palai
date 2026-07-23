@@ -128,17 +128,25 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          # A startupProbe gates liveness/readiness until the control-plane has actually bound :8080 and its
+          # first /healthz succeeds — up to failureThreshold*periodSeconds (150s). Without it, a slow first
+          # start (postgres dial + schema wait + bootstrap + bind, worse on a loaded node or a large DB)
+          # would trip the liveness probe and CrashLoop the pod before it could ever become healthy.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: api
+            periodSeconds: 5
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /healthz
               port: api
-            initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /healthz
               port: api
-            initialDelaySeconds: 3
             periodSeconds: 5
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

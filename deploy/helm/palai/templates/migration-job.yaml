@@ -25,7 +25,10 @@ spec:
         app.kubernetes.io/component: migrate
     spec:
       restartPolicy: Never
-      serviceAccountName: {{ include "palai.serviceAccountName" . }}
+      # NO serviceAccountName: this is a pre-install/pre-upgrade hook, so it runs BEFORE the chart's own
+      # ServiceAccount exists — naming it would make the SA admission plugin reject the pod and deadlock
+      # every fresh `helm install` at activeDeadlineSeconds. The Job needs zero Kubernetes API access, so
+      # the always-present `default` ServiceAccount is correct; the token stays unmounted below.
       automountServiceAccountToken: {{ .Values.serviceAccount.automountToken }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

@@ -216,6 +216,7 @@ helm install palai "$root/deploy/helm/palai" --namespace "$ns" --wait --timeout 
 	--set engineImage="$engine_digest" \
 	--set postgres.existingSecret=palai-db \
 	--set s3.endpoint="http://palai-s3-fixture:8333" \
+	--set s3.port=8333 \
 	--set s3.existingSecret=palai-s3 \
 	--set runnerGateway.existingSecret=palai-runner-gw \
 	--set runnerGateway.certTTL=5m \

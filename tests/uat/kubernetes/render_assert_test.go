@@ -160,6 +160,84 @@ func TestNetworkPolicyDefaultDeny(t *testing.T) {
 	}
 }
 
+// TestEveryPodTemplateSelectedByEgressAllow closes the MUST-FIX-2 blind spot permanently: on an enforcing
+// CNI the default-deny cuts ALL egress, so every pod the chart schedules — the control-plane Deployment AND
+// the pre-install migration Job — must be selected by an egress-ALLOW NetworkPolicy (one with a non-empty
+// egress rule) or it loses DNS + database egress and (for the hook Job) deadlocks. An allow policy whose
+// podSelector pins a component label the Job pod lacks regresses this; the assert fails on exactly that.
+func TestEveryPodTemplateSelectedByEgressAllow(t *testing.T) {
+	objs := renderChart(t)
+
+	// Selectors of every egress-ALLOW NetworkPolicy (non-empty spec.egress); default-deny grants nothing.
+	var allowSelectors []map[string]string
+	for _, o := range objs {
+		if o.Kind != "NetworkPolicy" {
+			continue
+		}
+		if egress, _ := o.Spec["egress"].([]any); len(egress) == 0 {
+			continue
+		}
+		sel, _ := o.Spec["podSelector"].(map[string]any)
+		ml, _ := sel["matchLabels"].(map[string]any)
+		allowSelectors = append(allowSelectors, stringMap(ml))
+	}
+	if len(allowSelectors) == 0 {
+		t.Fatal("no egress-allow NetworkPolicy rendered — every pod would be cut off on an enforcing CNI")
+	}
+
+	// Every pod-scheduling object's template labels must be selected by at least one egress-allow policy.
+	var checked int
+	for _, o := range objs {
+		labels := podTemplateLabels(o)
+		if len(labels) == 0 {
+			continue // not a pod-scheduling object
+		}
+		checked++
+		if !anySelectorMatches(allowSelectors, labels) {
+			t.Fatalf("%s/%s (pod-template labels %v) is not selected by any egress-allow NetworkPolicy — on an enforcing CNI it loses DNS + database egress", o.Kind, name(o), labels)
+		}
+	}
+	if checked < 2 {
+		t.Fatalf("expected at least the control-plane Deployment + migration Job pod templates, checked %d", checked)
+	}
+}
+
+// podTemplateLabels extracts spec.template.metadata.labels from a pod-scheduling object (Deployment/Job/…).
+func podTemplateLabels(o object) map[string]string {
+	tmpl, _ := o.Spec["template"].(map[string]any)
+	meta, _ := tmpl["metadata"].(map[string]any)
+	ml, _ := meta["labels"].(map[string]any)
+	return stringMap(ml)
+}
+
+// stringMap coerces a decoded map[string]any of string values into map[string]string.
+func stringMap(m map[string]any) map[string]string {
+	out := map[string]string{}
+	for k, v := range m {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+// anySelectorMatches reports whether any selector's matchLabels is a subset of the pod's labels.
+func anySelectorMatches(selectors []map[string]string, labels map[string]string) bool {
+	for _, sel := range selectors {
+		subset := true
+		for k, v := range sel {
+			if labels[k] != v {
+				subset = false
+				break
+			}
+		}
+		if subset {
+			return true
+		}
+	}
+	return false
+}
+
 // TestPodDisruptionBudgetPresent pins the PDB is rendered.
 func TestPodDisruptionBudgetPresent(t *testing.T) {
 	objs := renderChart(t)

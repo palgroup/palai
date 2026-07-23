@@ -97,11 +97,22 @@ end to end once a runner is enrolled. This full path is exercised by `tests/uat/
   securityContext, NetworkPolicy default-deny, PDB, migration Job hook, external-PG/S3-only) +
   `kubeconform` schema validation. Deterministic, no cluster required.
 - `tests/uat/kubernetes/kind-smoke.sh`: a live install on a local kind cluster — `kind load` the images,
-  `helm install`, the migration Job completes, `/healthz` green, provision via the admin CLI, enroll a
-  host-side runner, a fake-provider run completes. External PG/S3 are chart-EXTERNAL fixtures deployed
-  into the cluster.
+  `helm install`, **the pre-install migration Job completes** (proving the hook is deadlock-free — a fresh
+  `helm install` gets PAST the pre-install hook and rolls the Deployment), then on a resource-adequate node
+  `/healthz` goes green, provision via the admin CLI, enroll a host-side runner, and a fake-provider run
+  completes. External PG/S3 are chart-EXTERNAL fixtures deployed into the cluster.
 
-**Ceiling (plan §T3):** kind's default CNI (**kindnet**) does **NOT enforce NetworkPolicy** — the
-policies here are proven CORRECT (render/schema) and installed, but enforcement needs a
-policy-enforcing CNI (Calico/Cilium) on a real cluster. Real managed Kubernetes (EKS/GKE),
-HA/topology-spread behaviour, and real LB/cert-manager are the **operator leg** (§6).
+**Ceiling 1 — NetworkPolicy enforcement (plan §T3):** kind's default CNI (**kindnet**) does **NOT enforce
+NetworkPolicy** — the policies here are proven CORRECT (render/schema) and installed, but enforcement needs a
+policy-enforcing CNI (Calico/Cilium) on a real cluster.
+
+**Ceiling 2 — node resources:** the full install-to-`/healthz`-green path needs a resource-adequate node. On
+a constrained host (a ≤8 GB Docker Desktop running the kind node + the two PG/S3 fixtures + the control-plane
+concurrently), the control-plane's boot database ping can time out (`dial ... context deadline exceeded`)
+because kube-proxy ClusterIP routing to Postgres is too slow under the combined load — the pre-install
+migration Job connects fine earlier when the node is less loaded, but the later-starting control-plane hits
+the starved path. This is an ENVIRONMENT limit, not a chart defect (the chart renders clean, the fixtures
+deploy, the migration Job completes, and the control-plane starts and dials the DB). A `startupProbe`
+(150 s) gates liveness so a slow-but-reachable start is not CrashLooped; a genuinely unreachable DB is a node
+problem. Real managed Kubernetes (EKS/GKE), HA/topology-spread behaviour, and real LB/cert-manager are the
+**operator leg** (§6), where the full path runs.
