@@ -238,6 +238,22 @@ func anySelectorMatches(selectors []map[string]string, labels map[string]string)
 	return false
 }
 
+// TestMigrationJobHasNoServiceAccountName is the MUST-FIX-1 regression guard: the pre-install hook Job must
+// NOT name the chart's ServiceAccount, which does not exist yet when Helm runs pre-install hooks — naming it
+// makes the SA admission plugin reject the pod and deadlocks every fresh `helm install`. The always-present
+// `default` SA is correct (the hook needs no Kubernetes API). A future "consolidate the SA" cleanup that
+// re-adds serviceAccountName would reintroduce the deadlock; this fails at render time instead of only under
+// the expensive kind smoke.
+func TestMigrationJobHasNoServiceAccountName(t *testing.T) {
+	objs := renderChart(t)
+	job := requireObject(t, objs, "Job", "palai-migrate")
+	tmpl, _ := job.Spec["template"].(map[string]any)
+	spec, _ := tmpl["spec"].(map[string]any)
+	if sa, ok := spec["serviceAccountName"]; ok {
+		t.Fatalf("migration Job names serviceAccountName=%v — a pre-install hook runs BEFORE the chart's SA exists, so this deadlocks every fresh install; remove it (the default SA is correct)", sa)
+	}
+}
+
 // TestPodDisruptionBudgetPresent pins the PDB is rendered.
 func TestPodDisruptionBudgetPresent(t *testing.T) {
 	objs := renderChart(t)

@@ -98,21 +98,24 @@ end to end once a runner is enrolled. This full path is exercised by `tests/uat/
   `kubeconform` schema validation. Deterministic, no cluster required.
 - `tests/uat/kubernetes/kind-smoke.sh`: a live install on a local kind cluster — `kind load` the images,
   `helm install`, **the pre-install migration Job completes** (proving the hook is deadlock-free — a fresh
-  `helm install` gets PAST the pre-install hook and rolls the Deployment), then on a resource-adequate node
-  `/healthz` goes green, provision via the admin CLI, enroll a host-side runner, and a fake-provider run
-  completes. External PG/S3 are chart-EXTERNAL fixtures deployed into the cluster.
+  `helm install` gets PAST the pre-install hook and rolls the Deployment). The script THEN asserts the
+  post-hook leg — `/healthz` green, provision via the admin CLI, enroll a host-side runner, a fake-provider
+  run — but that leg has NOT been live-verified on the development host (see Ceiling 2); it is the path a
+  resource-adequate node runs. External PG/S3 are chart-EXTERNAL fixtures deployed into the cluster.
 
 **Ceiling 1 — NetworkPolicy enforcement (plan §T3):** kind's default CNI (**kindnet**) does **NOT enforce
 NetworkPolicy** — the policies here are proven CORRECT (render/schema) and installed, but enforcement needs a
 policy-enforcing CNI (Calico/Cilium) on a real cluster.
 
 **Ceiling 2 — node resources:** the full install-to-`/healthz`-green path needs a resource-adequate node. On
-a constrained host (a ≤8 GB Docker Desktop running the kind node + the two PG/S3 fixtures + the control-plane
-concurrently), the control-plane's boot database ping can time out (`dial ... context deadline exceeded`)
-because kube-proxy ClusterIP routing to Postgres is too slow under the combined load — the pre-install
-migration Job connects fine earlier when the node is less loaded, but the later-starting control-plane hits
-the starved path. This is an ENVIRONMENT limit, not a chart defect (the chart renders clean, the fixtures
-deploy, the migration Job completes, and the control-plane starts and dials the DB). A `startupProbe`
-(150 s) gates liveness so a slow-but-reachable start is not CrashLooped; a genuinely unreachable DB is a node
-problem. Real managed Kubernetes (EKS/GKE), HA/topology-spread behaviour, and real LB/cert-manager are the
-**operator leg** (§6), where the full path runs.
+the development host (a ≤8 GB Docker Desktop running the kind node + the two PG/S3 fixtures + the control-plane
+concurrently) it timed out on EVERY run: the control-plane's boot database ping fails with
+`dial ... context deadline exceeded` to the Postgres ClusterIP. The pre-install migration Job — which uses the
+SAME database plumbing (the same `palai.databaseEnv`, the same `store.Open`+ping in the same binary) —
+connects fine earlier when the node is less loaded, so the later-starting control-plane is hitting a
+load/timing limit under the starved node (slow ClusterIP routing and/or a momentarily-starved PG fixture pod —
+both environment), NOT a chart misconfiguration (the DB host/port/secret are correct, and the control-plane
+pod is selected by the egress-allow policy for the Postgres port). A `startupProbe` (150 s) gates liveness so a
+slow-but-reachable start is not CrashLooped; the binary exits on a failed boot ping and relies on the kubelet
+restart-until-ready loop. Real managed Kubernetes (EKS/GKE), HA/topology-spread behaviour, and real
+LB/cert-manager are the **operator leg** (§6), where the full path runs.

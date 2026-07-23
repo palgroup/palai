@@ -132,22 +132,27 @@ spec:
           # first /healthz succeeds — up to failureThreshold*periodSeconds (150s). Without it, a slow first
           # start (postgres dial + schema wait + bootstrap + bind, worse on a loaded node or a large DB)
           # would trip the liveness probe and CrashLoop the pod before it could ever become healthy.
+          # timeoutSeconds:3 (not the 1s default): on a loaded node a healthy /healthz can take >1s, and three
+          # consecutive 1s timeouts would kill an actually-healthy pod.
           startupProbe:
             httpGet:
               path: /healthz
               port: api
             periodSeconds: 5
+            timeoutSeconds: 3
             failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /healthz
               port: api
             periodSeconds: 10
+            timeoutSeconds: 3
           readinessProbe:
             httpGet:
               path: /healthz
               port: api
             periodSeconds: 5
+            timeoutSeconds: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

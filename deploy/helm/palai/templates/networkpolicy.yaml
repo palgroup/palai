@@ -66,8 +66,9 @@ spec:
           port: 53
     # The ONLY egress path besides DNS: external PostgreSQL + S3 on their configured ports, AND — because
     # this is the sole allowed egress — every other outbound the control-plane makes (provider-one model
-    # calls, outbound webhooks, MCP connections). Narrowing externalEgressCIDRs to just the DB/store hosts
-    # would silently cut those off on an enforcing CNI; keep it wide (or add each endpoint) — see README.
+    # calls, outbound webhooks, MCP connections). Narrowing `networkPolicy.externalEgressCIDRs` (values.yaml)
+    # to just the DB/store hosts would silently cut those off on an enforcing CNI — to narrow it, add a CIDR
+    # for EACH of the DB, object store, model provider(s), webhook and MCP endpoints, not only PG/S3.
     - to:
         {{- range .Values.networkPolicy.externalEgressCIDRs }}
         - ipBlock:
