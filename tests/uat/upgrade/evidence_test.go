@@ -1,5 +1,7 @@
 // Package upgrade holds the E15 T6 SH-2 RC EXIT gate: the Docker-free evidence anchor (this file) + the
-// UAT catalog gate (catalog_test.go), plus the host-agnostic live journey (journey_test.go, //go:build uat).
+// host-agnostic live journey (journey_test.go, //go:build uat). The E15 T6 UAT cases (OPS-003..006, DR-001,
+// SAN-011) are materialized in the shared self-host catalog (tests/uat/self-host/catalog_test.go — the
+// T2-established pattern), not in this package.
 //
 // This file is the ANTI-FABRICATION ANCHOR (plan §2, the crown jewel) for the self-host-0.2.0 RC bundle. It
 // verifies the committed bundle clean through the shared verifier AND re-derives every anchored value from its
@@ -55,6 +57,14 @@ func helmAssertsAnchored(asserts []string, digest string) bool {
 	return slices.Equal(asserts, uat.HelmPolicyAsserts) && digest == hashParts(uat.HelmPolicyAsserts...)
 }
 
+// continuityAnchored reports whether an event list is a real run stream: >= 2 events that START at
+// response.created and END at the run's own terminal type. The EventContinuityDigest alone is self-referential
+// (an arbitrary list + a consistent digest passes), so this canons the endpoints against the run's lifecycle
+// (MF-2a) — a fabricated list cannot both look like a real stream AND carry the case's terminal.
+func continuityAnchored(events []string, terminal string) bool {
+	return len(events) >= 2 && events[0] == "response.created" && events[len(events)-1] == terminal
+}
+
 // measureDerivable recomputes RPO/RTO from a DrillProof measure's RAW timestamps with the SAME dr.ComputeRPO/RTO
 // the T5 harness uses, and reports whether the stored seconds reproduce — the measurement anti-fabrication
 // anchor. A hand-edited rpo_seconds/rto_seconds the timestamps do not support is caught here.
@@ -73,18 +83,32 @@ func measureDerivable(m *dr.Measure) bool {
 	return math.Abs(dr.ComputeRPO(lw, lb)-m.RPOSeconds) <= eps && math.Abs(dr.ComputeRTO(da, ra)-m.RTOSeconds) <= eps
 }
 
+// selfHost02BackupParts is the declared canonical install-backup identity the 0.2.0 DR-002 BackupProof records
+// its manifest_digest over — hashParts(kind, migration, org ids, sample response). Migration is "34" (the T1
+// journal + contract head), the only field that moved from the self-host-0.1.0 identity. The anchor recomputes
+// this and fails if the committed manifest_digest does not reproduce (SF-7 — the E14 self-host anchor pinned
+// only 0.1.0's; the 0.2.0 digest was unrecomputed).
+var selfHost02BackupParts = []string{
+	"palai-install-backup", "34", "org_local", "org_self_host_journey", "resp_self_host_journey",
+}
+
 // sh2Case is the subset of the manifest a case carries for the anchored re-derivation.
 type sh2Case struct {
-	ID           string `json:"id"`
-	RunID        string `json:"run_id"`
-	Checksum     string `json:"checksum"`
+	ID       string `json:"id"`
+	RunID    string `json:"run_id"`
+	Checksum string `json:"checksum"`
+	Terminal struct {
+		Type string `json:"type"`
+	} `json:"terminal"`
 	InstallClaim string `json:"install_claim"`
 	InstallProof *struct {
 		StepIDs       []string `json:"step_ids"`
 		JourneyDigest string   `json:"journey_digest"`
 	} `json:"install_proof"`
-	BackupClaim        string          `json:"backup_claim"`
-	BackupProof        json.RawMessage `json:"backup_proof"`
+	BackupClaim string `json:"backup_claim"`
+	BackupProof *struct {
+		ManifestDigest string `json:"manifest_digest"`
+	} `json:"backup_proof"`
 	RestoreVerifyClaim string          `json:"restore_verify_claim"`
 	RestoreVerifyProof json.RawMessage `json:"restore_verify_proof"`
 	UpgradeClaim       string          `json:"upgrade_claim"`
@@ -165,8 +189,14 @@ func TestSH2ReleaseVerifiesClean(t *testing.T) {
 				t.Fatalf("%s install_proof is not anchored to the canonical self-host spine", c.ID)
 			}
 		}
-		if c.BackupClaim != "" && len(c.BackupProof) > 0 {
+		if c.BackupClaim != "" && c.BackupProof != nil {
 			backup++
+			// SF-7: the backup manifest_digest must be hashParts of the declared canonical backup identity —
+			// a committed digest that does not reproduce is fabricated (the E14 self-host backup anchor, now
+			// pinned for 0.2.0's migration-34 identity too).
+			if want := hashParts(selfHost02BackupParts...); c.BackupProof.ManifestDigest != want {
+				t.Fatalf("%s backup manifest_digest %q is not hashParts(canonical backup identity) %q", c.ID, c.BackupProof.ManifestDigest, want)
+			}
 		}
 		if c.RestoreVerifyClaim != "" && len(c.RestoreVerifyProof) > 0 {
 			restoreVerify++
@@ -182,6 +212,11 @@ func TestSH2ReleaseVerifiesClean(t *testing.T) {
 			// digest over an unstated event stream is caught.
 			if want := hashParts(c.UpgradeProof.ContinuityEventIDs...); c.UpgradeProof.EventContinuityDigest != want {
 				t.Fatalf("%s event_continuity_digest %q is not hashParts(continuity_event_ids) %q — a fabricated continuity digest", c.ID, c.UpgradeProof.EventContinuityDigest, want)
+			}
+			// MF-2a: canon the endpoints against the run's own lifecycle (the digest alone is self-referential).
+			// The gaplessness across the recreate is proven live by the journey's DB check; here we pin the shape.
+			if !continuityAnchored(c.UpgradeProof.ContinuityEventIDs, c.Terminal.Type) {
+				t.Fatalf("%s continuity_event_ids %v are not a real run stream: must start at response.created and end at the case terminal %q", c.ID, c.UpgradeProof.ContinuityEventIDs, c.Terminal.Type)
 			}
 		}
 		if c.MigrationJournalClaim != "" && len(c.MigrationJournalProof) > 0 {
@@ -236,6 +271,18 @@ func TestSH2AnchorsRejectFabrication(t *testing.T) {
 	dropped := slices.Clone(uat.HelmPolicyAsserts)[1:] // drop no-cluster-role
 	if helmAssertsAnchored(dropped, hashParts(dropped...)) {
 		t.Fatal("a dropped-assert list with a self-consistent digest must NOT anchor")
+	}
+
+	// MF-2a: the event-continuity endpoints canon a real run stream — an arbitrary list (even with a
+	// self-consistent digest) must NOT anchor; only created→…→terminal does.
+	if !continuityAnchored([]string{"response.created", "response.in_progress", "response.completed"}, "response.completed") {
+		t.Fatal("a real created→…→completed stream must anchor")
+	}
+	if continuityAnchored([]string{"foo", "bar", "baz"}, "response.completed") {
+		t.Fatal("an arbitrary event list must NOT anchor (the self-referential-digest hole)")
+	}
+	if continuityAnchored([]string{"response.created", "response.failed"}, "response.completed") {
+		t.Fatal("a stream not ending at the case terminal must NOT anchor")
 	}
 
 	// THE MEASUREMENT ANCHOR: a hand-edited RPO the raw timestamps do not support must be rejected.

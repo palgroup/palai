@@ -36,10 +36,14 @@ go test -count=1 ./tests/uat/upgrade/... ./tests/uat/self-host/... ./tests/uat
 # Core 4 — the committed self-host-0.2.0 RC bundle verifies clean through the shipped CLI verifier.
 RELEASE=self-host-0.2.0 scripts/evidence/verify
 
-# Core 5 — the mechanical promote gate: rc passes, stable is refused (the operator legs have not run).
+# Core 5 — the mechanical promote gate: rc passes, stable is refused (the operator legs have not run). Grep the
+# EXACT refusal reason, not a bare non-zero exit, so a promote.sh that failed for an UNRELATED reason (a build
+# error, a missing bundle) is not mistaken for the operator-leg refusal (M-9).
 RELEASE=self-host-0.2.0 scripts/release/promote.sh rc
-if RELEASE=self-host-0.2.0 scripts/release/promote.sh stable >/dev/null 2>&1; then
-  echo "promote gate FAILED to refuse a stable promote without the operator attestation" >&2
+stable_out="$(RELEASE=self-host-0.2.0 scripts/release/promote.sh stable 2>&1 || true)"
+if ! printf '%s' "$stable_out" | grep -q "awaits the E14 §6 operator legs"; then
+  echo "promote gate did not refuse a stable promote for the operator-leg reason; got:" >&2
+  printf '%s\n' "$stable_out" >&2
   exit 1
 fi
 echo "promote gate: rc PASS, stable correctly REFUSED (E14 §6 operator legs pending — not claimed)" >&2

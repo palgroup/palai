@@ -832,9 +832,9 @@ func TestUpgradeClaimRequiresSurvivingRunAndDrainedRollback(t *testing.T) {
 			"from_version": "v0.1.0-1-gaaaaaaa", "to_version": "v0.2.0-rc1-gbbbbbbb",
 			"surviving_run_id": "run_survivor", "surviving_run_completed": true,
 			"continuity_event_ids":    []any{"response.created", "response.in_progress", "response.completed"},
-			"event_continuity_digest": "sha256:" + strings.Repeat("c", 64),
+			"event_continuity_digest": hashParts("response.created", "response.in_progress", "response.completed"),
 			"app_rollback":            true, "engine_alias_rollback": true, "rollback_drained": true,
-			"step_ids": UpgradeStepIDs, "journey_digest": "sha256:" + strings.Repeat("d", 64),
+			"step_ids": UpgradeStepIDs, "journey_digest": hashParts(UpgradeStepIDs...),
 		}
 	}
 	m := baseManifest()
@@ -1024,7 +1024,7 @@ func TestHelmRenderClaimRequiresRestrictedAsserts(t *testing.T) {
 	full := func() map[string]any {
 		return map[string]any{
 			"render_hash": "sha256:" + strings.Repeat("f", 64), "policy_asserts": HelmPolicyAsserts,
-			"asserts_digest": "sha256:" + strings.Repeat("9", 64), "no_cluster_role": true,
+			"asserts_digest": hashParts(HelmPolicyAsserts...), "no_cluster_role": true,
 		}
 	}
 	m := baseManifest()

@@ -11,8 +11,10 @@
 //	  drain-before-recreate (T2 MF-3) surviving-run integration — the load-bearing SH-2 proof.
 //	Phase 2 (T5, DR-001 + DR-002/004..006): tests/uat/dr TestDRDrills — five measured/detection drills on two
 //	  isolated stacks, RPO/RTO recomputed from raw timestamps (the measurement anti-fabrication anchor).
-//	Phase 3 (T4, OPS-004): deploy/airgap — the signed bundle builds, re-verifies, and is fail-closed on tamper;
-//	  best-effort the OFFLINE `verify.sh --network-none` topological proof if a tool image is present.
+//	Phase 3 (T4, OPS-004): deploy/airgap — the signed bundle builds, re-verifies (signature + digest chain), is
+//	  fail-closed on a tampered component, and rejects a wrong out-of-band key. The OFFLINE `--network-none`
+//	  topological proof is T4's own `deploy/airgap/verify.sh --network-none` capability (needs a loaded tool
+//	  image) — referenced here, NOT re-run in the EXIT journey.
 //	Phase 4 (T3, OPS-003): tests/uat/kubernetes — helm lint + render + policy asserts (no ClusterRole, restricted
 //	  posture); the `kind` install smoke (make uat-kind) is the cluster-adjacent live leg, referenced not run.
 //
@@ -57,17 +59,34 @@ func TestSH2Journey(t *testing.T) {
 	// scripts/test/upgrade-drill.sh does its own two-build bring-up, active run, upgrade, rollback, real smoke,
 	// and 0-leak teardown. We run it, then assert the load-bearing invariants from its output.
 	out := phase(t, root, 55*time.Minute, "bash", "scripts/test/upgrade-drill.sh")
-	if !strings.Contains(out, "active run survived the upgrade") {
-		t.Fatalf("phase 1: the active run did not survive the N->N+1 upgrade — see the drill output")
+	// MF-1: the survivor must reach status=completed. wait_terminal returns green on failed/cancelled too, so
+	// the bare "survived" line is NOT enough — assert the exact completed status. And the drain must NOT have
+	// timed out: a drain timeout is a SILENT migration to the new engine (the exact MF-3 violation the bundle
+	// claims did not happen), and the drill continues past it.
+	if !strings.Contains(out, "active run survived the upgrade: status=completed") {
+		t.Fatalf("phase 1: the active run did not COMPLETE across the upgrade (want status=completed) — see the drill output")
+	}
+	if strings.Contains(out, "WARNING drain timed out") {
+		t.Fatalf("phase 1: the upgrade drain TIMED OUT — the active run was silently migrated to the new engine (MF-3 violation), not drained before recreate")
+	}
+	// MF-2: the survivor run's event stream stayed GAPLESS across the control-plane recreate (proven at the DB
+	// by the drill: events is UNIQUE(session_id, seq), so count == span iff contiguous). This is the real
+	// continuity invariant the bundle's UpgradeProof claims — not just a status poll.
+	if !strings.Contains(out, "event-continuity: ") || !strings.Contains(out, "gapless=yes") {
+		t.Fatalf("phase 1: the survivor run's event stream was not proven gapless across the recreate")
 	}
 	if !strings.Contains(out, "rollback: N control-plane serving on expanded schema") {
 		t.Fatalf("phase 1: app rollback to the N binary on the expanded schema was not confirmed")
+	}
+	// SF-3: the engine-alias rollback restored engine_n for new runs (not just the control-plane image).
+	if !strings.Contains(out, "engine-alias rollback: new-run engine restored to engine_n") {
+		t.Fatalf("phase 1: the engine-alias rollback did not restore engine_n for new runs")
 	}
 	chatcmpl := chatcmplRe.FindString(out)
 	if chatcmpl == "" {
 		t.Fatalf("phase 1: no real provider request id (chatcmpl-…) — the journey must end in a REAL provider run")
 	}
-	t.Logf("PHASE 1 PASS (T2): surviving run completed across the upgrade; app + engine-alias rollback drained; REAL provider run %s", chatcmpl)
+	t.Logf("PHASE 1 PASS (T2): active run DRAINED + COMPLETED across the upgrade with a GAPLESS event stream; app rollback on the expanded schema + engine-alias rollback to engine_n; REAL provider run %s", chatcmpl)
 
 	// --- Phase 2: the measured DR drills (T5, two stacks, sequential after phase 1 tore down) ---
 	phase(t, root, 45*time.Minute, "go", "test", "-tags", "uat", "-count=1", "-timeout", "40m", "-run", "TestDRDrills", "./tests/uat/dr")
@@ -81,7 +100,7 @@ func TestSH2Journey(t *testing.T) {
 	phase(t, root, 10*time.Minute, "go", "test", "-count=1", "./tests/uat/kubernetes")
 	t.Logf("PHASE 4 PASS (T3): helm lint + render + policy asserts green (no ClusterRole, restricted posture). Kind install smoke is make uat-kind (Docker+kind gated); NetworkPolicy ENFORCEMENT is the §6 operator leg")
 
-	t.Logf("SH-2 JOURNEY PASS: surviving-run upgrade + drained rollbacks (real run %s), measured DR, air-gap verify, helm render — LOCAL seam only; §6 operator legs named, not claimed", chatcmpl)
+	t.Logf("SH-2 JOURNEY PASS: drained+gapless surviving-run upgrade + rollback to engine_n (real run %s), measured DR, air-gap verify, helm render — LOCAL seam only; §6 operator legs named, not claimed", chatcmpl)
 }
 
 // phase runs one orchestrated sub-harness under a deadline, streaming its output to the test log and failing the

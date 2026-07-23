@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/palgroup/palai/packages/coordinator/recovery"
@@ -150,9 +151,10 @@ type evidenceCase struct {
 	RestoreVerifyClaim string              `json:"restore_verify_claim"`
 	RestoreVerifyProof *RestoreVerifyProof `json:"restore_verify_proof"`
 	// The E15 SH-2 RC claims (plan §T6, OPS-003..008 + DR-001 + SAN-011 — the E15 EXIT gate) extend the same
-	// marker-alone-is-NEVER-proof discipline to the five upgrade/DR/air-gap/helm invariants: an active run
-	// SURVIVED an N->N+1 upgrade on its pinned engine and both rollbacks (app + engine-alias) DRAINED it, not
-	// silently migrated it (UpgradeClaim, OPS-005/007 + SAN-011 — the journey's spine); the migration chain
+	// marker-alone-is-NEVER-proof discipline to the five upgrade/DR/air-gap/helm invariants: an active run was
+	// DRAINED before the N->N+1 control-plane recreate and SURVIVED on its pinned engine to completion (the T2
+	// MF-3 with-active-run drain), and the app + engine-alias rollbacks then ran the same drain-before-recreate
+	// ordering (UpgradeClaim, OPS-005/007 + SAN-011 — the journey's spine); the migration chain
 	// RESUMED after an interruption to the right journal head with no data corruption (MigrationJournalClaim,
 	// OPS-006); a DR drill produced a MEASURED RPO/RTO the verifier recomputes from raw timestamps
 	// (DrillClaim, DR-001 + DR-002/004..006 — the measurement anti-fabrication anchor); a signed air-gap
@@ -610,15 +612,17 @@ var HelmPolicyAsserts = []string{
 }
 
 // UpgradeProof is the evidence an upgrade_claim requires (plan §T6, OPS-005/007 + SAN-011): an active run was
-// alive across an N->N+1 `palai upgrade` and SURVIVED on its pinned engine (SurvivingRunCompleted), the event
-// stream it emitted stayed continuous across the control-plane recreate (EventContinuityDigest = hashParts of
-// the ordered ContinuityEventIDs — re-derivable, so a fabricated digest is caught), and BOTH rollbacks took
-// effect: the app image rolled back to N with the schema still expanded (AppRollback) and the new-run engine
-// alias pointer rolled back (EngineAliasRollback), each DRAINING the active run before recreate rather than
-// silently migrating it (RollbackDrained — the T2 MF-3 invariant). FromVersion/ToVersion are the two build
-// stamps (must differ — same binaries, different -ldflags stamp). StepIDs is the ordered journey spine
-// (UpgradeStepIDs) and JourneyDigest is hashParts(StepIDs...). An "upgraded" marker with a run that did not
-// survive, a fabricated continuity digest, a rollback that did not drain, or equal version stamps is not proof.
+// DRAINED before the N->N+1 control-plane recreate and SURVIVED on its pinned engine to completion
+// (SurvivingRunCompleted) — the T2 MF-3 with-active-run drain (RollbackDrained records that drain-before-recreate
+// path took, not a silent migration). The event stream it emitted stayed continuous across the recreate
+// (EventContinuityDigest = hashParts of the ordered ContinuityEventIDs — re-derivable; the live journey proves
+// the survivor's session events are GAPLESS at the DB and the anchor canons the created→terminal endpoints).
+// BOTH rollbacks then ran the same ordering: the app image rolled back to N with the schema still expanded
+// (AppRollback) and the new-run engine alias rolled back to engine_n while the survivor stayed pinned
+// (EngineAliasRollback). FromVersion/ToVersion are the two build stamps (must differ — same binaries, different
+// -ldflags stamp). StepIDs is the ordered journey spine (UpgradeStepIDs) and JourneyDigest is hashParts(StepIDs...).
+// An "upgraded" marker with a run that did not survive, a fabricated continuity/spine digest, a drain that did
+// not take, or equal version stamps is not proof.
 type UpgradeProof struct {
 	FromVersion           string   `json:"from_version"`
 	ToVersion             string   `json:"to_version"`
@@ -633,17 +637,18 @@ type UpgradeProof struct {
 	JourneyDigest         string   `json:"journey_digest"`
 }
 
-// Complete reports two DISTINCT version stamps, a surviving+completed run, a re-derivable continuity digest
-// over a real event list, both rollbacks with the drain-before-recreate invariant, a full ordered spine, and a
-// well-formed journey digest. It does NOT recompute the digests (that is the anti-fabrication gate's job,
-// mirroring InstallProof) — but a run that did not complete, equal stamps, a rollback that did not drain, a
-// short spine, or a malformed digest fails here so the surviving-run spine can never be marker-passed.
+// Complete reports two DISTINCT version stamps, a surviving+completed run, a continuity digest re-derivable from
+// the event list, both rollbacks with the drain-before-recreate invariant, and the CANONICAL upgrade spine +
+// its digest. Unlike InstallProof, this recomputes the spine anchor IN the gate (SF-4): step_ids must equal
+// UpgradeStepIDs and journey_digest must be hashParts of that canonical list, so a shape-consistent fabricated
+// spine/digest is rejected by VerifyManifest/PromoteGate, not only the anchor test. A run that did not complete,
+// equal stamps, a rollback that did not drain, or a non-canonical spine/digest is not proof.
 func (p UpgradeProof) Complete() bool {
 	return p.FromVersion != "" && p.ToVersion != "" && p.FromVersion != p.ToVersion &&
 		p.SurvivingRunID != "" && p.SurvivingRunCompleted && len(p.ContinuityEventIDs) >= 2 &&
-		checksumPattern.MatchString(p.EventContinuityDigest) &&
+		p.EventContinuityDigest == hashParts(p.ContinuityEventIDs...) &&
 		p.AppRollback && p.EngineAliasRollback && p.RollbackDrained &&
-		len(p.StepIDs) >= len(UpgradeStepIDs) && checksumPattern.MatchString(p.JourneyDigest)
+		slices.Equal(p.StepIDs, UpgradeStepIDs) && p.JourneyDigest == hashParts(UpgradeStepIDs...)
 }
 
 // MigrationJournalProof is the evidence a migration_journal_claim requires (plan §T6, OPS-006): the boot
@@ -740,12 +745,15 @@ type HelmRenderProof struct {
 	NoClusterRole bool     `json:"no_cluster_role"`
 }
 
-// Complete reports a well-formed render hash, at least the canonical policy asserts, a well-formed asserts
-// digest, and the no-ClusterRole invariant. A malformed hash/digest, a short assert list, or a ClusterRole
-// present fails.
+// Complete reports a well-formed render hash, the CANONICAL restricted policy asserts + their digest, and the
+// no-ClusterRole invariant. Like UpgradeProof (SF-4) the asserts anchor is recomputed IN the gate: policy_asserts
+// must equal HelmPolicyAsserts and asserts_digest must be hashParts of that canonical list, so a bundle that
+// quietly drops an assert (e.g. no-cluster-role) with a self-consistent digest is rejected by VerifyManifest/
+// PromoteGate. A malformed render hash, a non-canonical assert list/digest, or a ClusterRole present fails.
 func (p HelmRenderProof) Complete() bool {
-	return checksumPattern.MatchString(p.RenderHash) && len(p.PolicyAsserts) >= len(HelmPolicyAsserts) &&
-		checksumPattern.MatchString(p.AssertsDigest) && p.NoClusterRole
+	return checksumPattern.MatchString(p.RenderHash) &&
+		slices.Equal(p.PolicyAsserts, HelmPolicyAsserts) && p.AssertsDigest == hashParts(HelmPolicyAsserts...) &&
+		p.NoClusterRole
 }
 
 // secretPattern matches a credential-shaped token (an OpenAI-style sk- key), so a plaintext

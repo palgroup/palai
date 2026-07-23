@@ -16,9 +16,9 @@ func promotableManifest() map[string]any {
 		"from_version": "v0.1.0-0-gaaaaaaa", "to_version": "v0.2.0-rc1-gbbbbbbb",
 		"surviving_run_id": "run_s", "surviving_run_completed": true,
 		"continuity_event_ids":    []any{"response.created", "response.completed"},
-		"event_continuity_digest": "sha256:" + repeat64('c'),
+		"event_continuity_digest": hashParts("response.created", "response.completed"),
 		"app_rollback":            true, "engine_alias_rollback": true, "rollback_drained": true,
-		"step_ids": UpgradeStepIDs, "journey_digest": "sha256:" + repeat64('d'),
+		"step_ids": UpgradeStepIDs, "journey_digest": hashParts(UpgradeStepIDs...),
 	}
 	c["restore_verify_claim"] = "verified"
 	c["restore_verify_proof"] = map[string]any{
@@ -26,14 +26,6 @@ func promotableManifest() map[string]any {
 		"run_retrieval": true, "rls_isolation": true, "secret_decrypt": true,
 	}
 	return m
-}
-
-func repeat64(b byte) string {
-	s := make([]byte, 64)
-	for i := range s {
-		s[i] = b
-	}
-	return string(s)
 }
 
 // TestPromoteGateRefusesWithoutRollbackAndRestore pins the SH-2 exit-gate sentence (plan §7): promote.sh (which

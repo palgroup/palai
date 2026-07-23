@@ -37,9 +37,11 @@ cleanup() {
   set +e
   log "cleanup"
   if [ -f "$PALAI_HOME/config.json" ]; then
-    "$CLI" local down >/dev/null 2>&1 || \
-      docker compose -p "$PROJECT" -f "$COMPOSE" down --volumes --remove-orphans >/dev/null 2>&1
+    "$CLI" local down >/dev/null 2>&1 || true
   fi
+  # `palai local down` KEEPS its Postgres/object-store volumes by design — so removing them must be
+  # UNCONDITIONAL, not a fallback for a failed CLI down; otherwise every successful run leaks a volume set.
+  docker compose -p "$PROJECT" -f "$COMPOSE" down --volumes --remove-orphans >/dev/null 2>&1 || true
   # Unquoted so multiple ids word-split into separate args (a quoted "$(...)" folds N ids into ONE arg,
   # a no-op when there is >1 leak — the exact case cleanup must handle).
   local stray; stray="$(docker ps -aq --filter "label=io.palai.project=$PROJECT" 2>/dev/null)"
@@ -198,6 +200,21 @@ echo "active run survived the upgrade: status=$st" >&2
 [ "$(cp_env_engine)" = "$d_engine_n1" ] || fail "engine alias did not roll to engine_n1 after the upgrade"
 echo "engine alias rolled: $d_engine_n -> $d_engine_n1 (new runs only)" >&2
 
+# event-continuity (MF-2): the survivor run's session events must form a GAPLESS seq sequence across the
+# control-plane recreate — no events were lost when the process was swapped. Proven at the DB (the source of
+# truth): events is UNIQUE(session_id, seq), so count == max-min+1 iff the sequence is contiguous. This is the
+# real "stream stayed continuous across the recreate" invariant the bundle's UpgradeProof claims.
+ev_session="$(docker exec "$PROJECT-postgres-1" psql -U palai -d palai -tA -c \
+  "SELECT session_id FROM runs WHERE response_id='$run_id' LIMIT 1" | tr -d '[:space:]')"
+[ -n "$ev_session" ] || fail "could not resolve the survivor run's session for the event-continuity check"
+read -r ev_count ev_span ev_first ev_last <<EOF
+$(docker exec "$PROJECT-postgres-1" psql -U palai -d palai -tA -F' ' -c \
+  "SELECT count(*), max(seq)-min(seq)+1, min(seq), max(seq) FROM events WHERE session_id='$ev_session'")
+EOF
+[ "${ev_count:-0}" -ge 2 ] || fail "survivor run emitted <2 session events ($ev_count) — cannot prove continuity"
+[ "$ev_count" = "$ev_span" ] || fail "survivor event stream has a GAP across the upgrade: count=$ev_count span=$ev_span (session=$ev_session)"
+echo "event-continuity: run=$run_id session=$ev_session events=$ev_count gapless=yes seq=$ev_first..$ev_last" >&2
+
 # ---- phase 4: a new run uses the rolled engine -----------------------------
 log "a NEW run after the roll uses the new engine"
 new_id="$(admit_run 'drill post-roll run')"
@@ -214,6 +231,9 @@ echo "post-roll run: $new_id status=$new_st engine_container=${new_engine:-<none
 log "palai upgrade rollback -> the N binary runs on the expanded schema"
 "$CLI" upgrade rollback --to "$N_MANIFEST" >&2
 [ "$(docker inspect "$PROJECT-control-plane-1" --format '{{.Config.Image}}')" = "$cp_n" ] || fail "rollback did not restore the N control-plane image"
+# The rollback restores BOTH: the app image (above) AND the engine alias to engine_n for new runs (SF-3).
+[ "$(cp_env_engine)" = "$d_engine_n" ] || fail "engine-alias rollback did not restore engine_n (still $(cp_env_engine))"
+echo "engine-alias rollback: new-run engine restored to engine_n ($d_engine_n)" >&2
 for _ in $(seq 1 30); do curl_api GET /v1/capabilities >/dev/null 2>&1 && break; sleep 1; done
 rb_id="$(admit_run 'drill post-rollback run')"
 rb_st="$(wait_terminal "$rb_id" 90)" || fail "post-rollback run did not complete (status=$rb_st)"
