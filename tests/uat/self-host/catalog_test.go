@@ -42,9 +42,10 @@ var validProofClasses = map[string]bool{
 
 var honestNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-// selfHostIDPrefixes are the case-id families whose orphan guard E14 T7 owns. Today no other OPS-/DR- case is
-// materialized as a dir (the plan reserves OPS-001/003..008 for E07 and DR-001/003 for E15/SaaS — none are
-// in-tree); a future epic that materializes one extends this catalog (the managed-cloud MCI- precedent).
+// selfHostIDPrefixes are the case-id families whose orphan guard E14 T7 owns. E15 (T2 + T6) extended this
+// catalog with OPS-003..008 + DR-001 (the upgrade/DR/air-gap/helm halves), so every materialized OPS-/DR- dir
+// must be in expectedSelfHostCatalog; OPS-001 stays reserved for E07 and DR-003 for the SaaS plan. A future
+// epic that materializes another extends this catalog (the managed-cloud MCI- precedent).
 var selfHostIDPrefixes = []string{"OPS-", "DR-"}
 
 // expectedSelfHostCatalog is the E14 self-host UAT catalog: every case ID this slice materializes (plan §T7),
