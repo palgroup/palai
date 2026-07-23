@@ -64,6 +64,17 @@ trap cleanup EXIT
 
 step() { echo "==> $*" >&2; }
 
+# dump_ns prints namespace diagnostics BEFORE the cleanup trap deletes the cluster, so a real failure
+# surfaces its reason (a timed-out rollout otherwise vanishes with the cluster).
+dump_ns() {
+	echo "--- diagnostics ($1) ---" >&2
+	kubectl -n "$ns" get pods -o wide >&2 2>&1 || true
+	kubectl -n "$ns" get events --sort-by=.lastTimestamp 2>&1 | tail -25 >&2 || true
+	for d in palai-pg-fixture palai-s3-fixture palai; do
+		kubectl -n "$ns" logs "deploy/$d" --tail=20 >&2 2>&1 || true
+	done
+}
+
 step "build palai CLI"
 ( cd "$root" && go build -o "$palai" ./cmd/cli )
 
@@ -184,8 +195,8 @@ EOF
 kubectl apply -f "$work/fixtures.yaml" >&2
 
 step "wait for the external PG + S3 fixtures"
-kubectl -n "$ns" rollout status deploy/palai-pg-fixture --timeout=120s >&2
-kubectl -n "$ns" rollout status deploy/palai-s3-fixture --timeout=120s >&2
+kubectl -n "$ns" rollout status deploy/palai-pg-fixture --timeout=180s >&2 || { dump_ns "pg fixture"; exit 1; }
+kubectl -n "$ns" rollout status deploy/palai-s3-fixture --timeout=180s >&2 || { dump_ns "s3 fixture"; exit 1; }
 
 ca_dir="$PALAI_HOME/ca"
 kubectl -n "$ns" create secret generic palai-db \
@@ -212,7 +223,7 @@ helm install palai "$root/deploy/helm/palai" --namespace "$ns" --wait --timeout 
 	--set runnerGateway.service.nodePort=$gw_np \
 	--set service.type=NodePort \
 	--set service.nodePort=$api_np \
-	--set bootstrap.existingSecret=palai-bootstrap >&2
+	--set bootstrap.existingSecret=palai-bootstrap >&2 || { dump_ns "helm install"; exit 1; }
 
 step "prove the migration Job ran as a pre-install hook and completed"
 if ! kubectl -n "$ns" get job palai-migrate -o jsonpath='{.status.succeeded}' 2>/dev/null | grep -q 1; then
