@@ -6,7 +6,7 @@ SHELL := /bin/bash
 	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
-	uat-kubernetes uat-kind evidence-verify migration-resume-drill upgrade-drill
+	uat-kubernetes uat-kind uat-sh2 evidence-verify promote migration-resume-drill upgrade-drill
 
 bootstrap:
 	go mod download
@@ -207,3 +207,19 @@ uat-kind:
 evidence-verify:
 	@test -x scripts/evidence/verify || { echo "evidence verifier not implemented" >&2; exit 2; }
 	@RELEASE='$(RELEASE)' scripts/evidence/verify
+
+# E15 T6 EXIT gate (SH-2 RC): the SH-2 evidence anchor + catalog + verifier/promote units (always, no Docker) +
+# the committed self-host-0.2.0 bundle through the shipped verifier + the mechanical promote gate (rc PASS /
+# stable REFUSED). The live tier (PROVIDER=provider-one) drives the whole upgrade + DR + air-gap + helm journey
+# one stack at a time, ending in a REAL provider run. HONEST CEILING (plan §6): the local seam is two-local-build
+# upgrade, a kind cluster, an internal-network air-gap, and a same-host DR — the real cluster/air-gap/second-site
+# legs are §6 operator legs and RC-beyond promote awaits §6 legs 1, 2 and 5.
+uat-sh2:
+	@test -x scripts/uat/sh2 || { echo "sh2 UAT not implemented" >&2; exit 2; }
+	@PROVIDER='$(PROVIDER)' scripts/uat/sh2
+
+# E15 T6 promote gate: refuse to tag a release without a rollback + restore proof (plan §7). Default target rc;
+# `make promote RELEASE=<name> TO=stable` gates a stable promote (awaits the E14 §6 operator-leg attestation).
+promote:
+	@test -x scripts/release/promote.sh || { echo "promote gate not implemented" >&2; exit 2; }
+	@RELEASE='$(RELEASE)' scripts/release/promote.sh '$(TO)'

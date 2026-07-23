@@ -1,0 +1,14 @@
+id: OPS-003
+name: restricted-helm-chart-renders-with-no-cluster-role-and-restricted-posture
+proof_class: unit
+provider: fake
+input: "`helm lint` + `helm template` of the restricted deploy/helm/palai chart render with ZERO ClusterRole (no ongoing cluster-admin), a runAsNonRoot + non-privileged securityContext, a default-deny NetworkPolicy, a PodDisruptionBudget, the migration Job as a pre-install/pre-upgrade hook, and external-PostgreSQL/S3-only (no in-cluster DB) — the render/policy-assert half. The live `kind` install smoke (make uat-kind) and make uat-sh2 exercise the chart on a cluster. Proof seam: render + policy asserts + kubeconform on the local toolchain; kindnet does NOT enforce NetworkPolicy, so enforcement on a real CNI'd managed-K8s (EKS/GKE) with PSS-restricted admission is the operator leg (plan §6 leg 1)"
+expect_status: completed
+proof:
+  - tests/uat/kubernetes/render_assert_test.go:TestNoClusterRole
+  - tests/uat/kubernetes/render_assert_test.go:TestControlPlaneSecurityContextRestricted
+  - tests/uat/kubernetes/render_assert_test.go:TestNetworkPolicyDefaultDeny
+  - tests/uat/kubernetes/render_assert_test.go:TestMigrationJobIsPreInstallHook
+  - tests/uat/kubernetes/render_assert_test.go:TestPodDisruptionBudgetPresent
+  - tests/uat/kubernetes/render_assert_test.go:TestNoInClusterDatabase
+# ceiling: render/schema correctness only; NetworkPolicy ENFORCEMENT + HA/topology behaviour need a real CNI'd cluster (operator leg, plan §6)

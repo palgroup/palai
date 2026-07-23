@@ -1,0 +1,11 @@
+id: OPS-004
+name: signed-air-gap-bundle-verifies-offline-and-rejects-tamper
+proof_class: unit
+provider: fake
+input: "the signed offline air-gap bundle (OCI image tars by digest + the E14 runner host package + CLI + compose/helm + storage/migrations + a sha256sums root signed with the E14 T5 openssl P-256 detached signature — one signing tool) builds, re-verifies its signature + digest chain, and FAILS CLOSED on a tampered component or a wrong out-of-band key. The live `--network none` offline verify + internal-network telemetry-free install running a real run is the make uat-sh2 tier. Proof seam: local bundle build + offline verify; a real air-gapped facility, the operator trust-root/mirror ceremony, and a real private model server are the operator leg (plan §6 leg 2); SBOM/provenance generation is E18"
+expect_status: completed
+proof:
+  - deploy/airgap/airgap_test.go:TestBundleBuildsAndVerifies
+  - deploy/airgap/airgap_test.go:TestVerifyFailsOnTamperedComponent
+  - deploy/airgap/airgap_test.go:TestVerifyRejectsWrongKey
+# ceiling: the offline-network-none topology proof + internal-network run is the live tier (make uat-sh2); this unit half proves the sign/verify/tamper logic

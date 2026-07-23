@@ -1,0 +1,9 @@
+id: DR-001
+name: primary-database-loss-recovers-with-measured-rpo-rto-recomputed-from-raw-timestamps
+proof_class: unit
+provider: fake
+input: "on primary (database) loss — the pg container + volume destroyed under steady marker traffic — a scripted recovery (fresh pg + restore from the last `palai backup`) returns the stack healthy AND run-capable, and the DR report's MEASURED RPO/RTO are RECOMPUTED from the raw timestamps by dr.Verify (and again by the T6 DrillProof verifier) so a hand-edited value fails. This unit proof pins the recompute-catches-fabrication logic; the live two-stack destruction drill is the make uat-sh2 / DR harness tier. Proof seam: container + volume destruction on ONE Docker Desktop host; a real instance/zone loss and a separate-physical-host restore are the operator leg (plan §6, incl. E14 leg 2); DR-003 regional failover is the SaaS plan"
+expect_status: completed
+proof:
+  - tests/uat/dr/report_test.go:TestVerifyRecomputesAndCatchesFabrication
+# ceiling: same-host two-stack drill; a second physical site / real instance loss is the operator leg (plan §6)

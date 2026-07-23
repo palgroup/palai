@@ -42,9 +42,10 @@ var validProofClasses = map[string]bool{
 
 var honestNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-// selfHostIDPrefixes are the case-id families whose orphan guard E14 T7 owns. Today no other OPS-/DR- case is
-// materialized as a dir (the plan reserves OPS-001/003..008 for E07 and DR-001/003 for E15/SaaS — none are
-// in-tree); a future epic that materializes one extends this catalog (the managed-cloud MCI- precedent).
+// selfHostIDPrefixes are the case-id families whose orphan guard E14 T7 owns. E15 (T2 + T6) extended this
+// catalog with OPS-003..008 + DR-001 (the upgrade/DR/air-gap/helm halves), so every materialized OPS-/DR- dir
+// must be in expectedSelfHostCatalog; OPS-001 stays reserved for E07 and DR-003 for the SaaS plan. A future
+// epic that materializes another extends this catalog (the managed-cloud MCI- precedent).
 var selfHostIDPrefixes = []string{"OPS-", "DR-"}
 
 // expectedSelfHostCatalog is the E14 self-host UAT catalog: every case ID this slice materializes (plan §T7),
@@ -99,6 +100,40 @@ var expectedSelfHostCatalog = map[string]struct {
 	"OPS-008": {"unit", []string{
 		"packages/version/version_test.go:TestSupportedWindow",
 		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayRejectsUnsupportedRunnerSkew",
+	}},
+	// E15 T6 (the SH-2 RC EXIT gate, plan §T6) extends this OPS-/DR- catalog with the remaining
+	// upgrade/DR/air-gap/helm halves. Each rides an in-tree proof at its real build tier: OPS-003 the
+	// render/policy asserts, OPS-004 the signed OFFLINE air-gap verify + tamper rejection, and DR-001 the DR
+	// measurement recompute (all unit — they ride make verify); OPS-006 the migration-journal interruption/
+	// resume + preflight against a REAL Postgres (component-real); SAN-011 the gateway cordon/drain/revoke wire
+	// tests (unit). The live two-build upgrade + measured DR + offline air-gap + kind smoke is the make uat-sh2
+	// journey tier the case inputs name — this gate reads the deterministic half only (the E11-E14 split).
+	"OPS-003": {"unit", []string{
+		"tests/uat/kubernetes/render_assert_test.go:TestNoClusterRole",
+		"tests/uat/kubernetes/render_assert_test.go:TestControlPlaneSecurityContextRestricted",
+		"tests/uat/kubernetes/render_assert_test.go:TestNetworkPolicyDefaultDeny",
+		"tests/uat/kubernetes/render_assert_test.go:TestMigrationJobIsPreInstallHook",
+		"tests/uat/kubernetes/render_assert_test.go:TestPodDisruptionBudgetPresent",
+		"tests/uat/kubernetes/render_assert_test.go:TestNoInClusterDatabase",
+	}},
+	"OPS-004": {"unit", []string{
+		"deploy/airgap/airgap_test.go:TestBundleBuildsAndVerifies",
+		"deploy/airgap/airgap_test.go:TestVerifyFailsOnTamperedComponent",
+		"deploy/airgap/airgap_test.go:TestVerifyRejectsWrongKey",
+	}},
+	"OPS-006": {"component-real", []string{
+		"tests/component/postgres/migration_journal_test.go:TestMigrationInterruptionResumes",
+		"tests/component/postgres/migration_journal_test.go:TestMigrationJournalRecordsChainHead",
+		"tests/component/postgres/migration_journal_test.go:TestMigrationPreflightRejectsNewerDatabase",
+	}},
+	"DR-001": {"unit", []string{
+		"tests/uat/dr/report_test.go:TestVerifyRecomputesAndCatchesFabrication",
+	}},
+	"SAN-011": {"unit", []string{
+		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayDialRefusesWhenCordoned",
+		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayDrainWaitsForInFlightLease",
+		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayRevokeRefusesConnectAndDial",
+		"apps/control-plane/internal/execution/runner_gateway_test.go:TestGatewayRevokeDropsInFlightSessionFrames",
 	}},
 }
 
