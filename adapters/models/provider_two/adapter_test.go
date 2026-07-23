@@ -221,6 +221,22 @@ func TestSanitizesHTTPError(t *testing.T) {
 	}
 }
 
+// TestBuildBodyRejectsCollidingToolNames proves two canonical names that encode to one
+// wire name fail loudly instead of silently overwriting the restore map (which would map
+// a returned tool call back to the wrong canonical name). buildBody fails before any HTTP.
+func TestBuildBodyRejectsCollidingToolNames(t *testing.T) {
+	req := toolSchemaRequest()
+	req.ForceToolCall = false
+	req.Tools = []modelbroker.ToolSchema{
+		{Name: "a.b", Parameters: map[string]any{"type": "object"}},
+		{Name: "a_b", Parameters: map[string]any{"type": "object"}}, // both encode to "a_b"
+	}
+	_, err := providertwo.Adapter{BaseURL: "http://never-dialed.invalid"}.Execute(context.Background(), req, sentinelSecret, nil)
+	if err == nil || !strings.Contains(err.Error(), "collides") {
+		t.Fatalf("execute error = %v, want a wire-name collision error", err)
+	}
+}
+
 // TestHonorsCancellation proves a canceled context aborts the call rather than
 // returning a completed result.
 func TestHonorsCancellation(t *testing.T) {

@@ -316,6 +316,11 @@ func (a Adapter) buildBody(req modelbroker.Request) ([]byte, map[string]string, 
 		tools := make([]map[string]any, 0, len(req.Tools))
 		for _, t := range req.Tools {
 			wire := wireToolName(t.Name)
+			if existing, dup := names[wire]; dup {
+				// Two canonical names encoding to one wire name would silently overwrite the
+				// restore map (e.g. "a.b" and "a_b", or a 64-char truncation) — fail loudly.
+				return nil, nil, fmt.Errorf("tool name %q collides with %q on the wire (both encode to %q)", t.Name, existing, wire)
+			}
 			names[wire] = t.Name
 			tool := map[string]any{"name": wire, "input_schema": t.Parameters}
 			if t.Description != "" {
@@ -428,15 +433,18 @@ func canonicalName(names map[string]string, wire string) string {
 }
 
 // canonicalFinishReason maps Anthropic stop reasons onto the broker's canonical
-// vocabulary (the one provider-one and the fake already use), so a tool-producing
-// completion reports "tool_calls" and a plain completion "stop" regardless of family.
-// Anything else passes through unchanged.
+// vocabulary (the one provider-one passes through from OpenAI and the fake uses), so a
+// completion reports the SAME finish reason across families: "stop" for a natural end,
+// "tool_calls" for a tool request, "length" for a truncation. Anything else (e.g.
+// "refusal") passes through unchanged.
 func canonicalFinishReason(stop string) string {
 	switch stop {
 	case "end_turn":
 		return "stop"
 	case "tool_use":
 		return "tool_calls"
+	case "max_tokens":
+		return "length" // Anthropic's truncation reason == OpenAI's "length"
 	default:
 		return stop
 	}

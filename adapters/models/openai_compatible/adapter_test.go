@@ -220,6 +220,54 @@ func TestStaleRecordIsReprobed(t *testing.T) {
 	}
 }
 
+// TestTransient429IsNotCachedAsUnsupported proves the operational fix: a transient 429
+// on the probe returns a probe ERROR (not a capability answer) and does NOT cache an
+// all-false record — so a rate-limit blip does not become a full-TTL outage. When the
+// endpoint recovers, the next probe re-observes it as fully capable.
+func TestTransient429IsNotCachedAsUnsupported(t *testing.T) {
+	var status atomic.Int32
+	status.Store(http.StatusTooManyRequests)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(int(status.Load()))
+		_, _ = io.WriteString(w, "{}")
+	}))
+	defer srv.Close()
+
+	prober := openaicompatible.NewProber()
+	_, err := prober.Probe(context.Background(), srv.URL, secret, "m")
+	if err == nil {
+		t.Fatal("a 429 probe returned no error; a transient blip must not be treated as a capability answer")
+	}
+	if errors.Is(err, openaicompatible.ErrCapabilityUnsupported) {
+		t.Fatalf("429 surfaced as a capability rejection, not a probe error: %v", err)
+	}
+	// Endpoint recovers; the next probe must re-observe (proving no all-false was cached).
+	status.Store(http.StatusOK)
+	rec, err := prober.Probe(context.Background(), srv.URL, secret, "m")
+	if err != nil {
+		t.Fatalf("recovered probe: %v", err)
+	}
+	if !rec.Streaming || !rec.ToolCalls || !rec.StructuredJSON {
+		t.Fatalf("recovered record = %+v, want all-true (a poisoned all-false cache would have been served instead)", rec)
+	}
+}
+
+// TestRejectErrorRedactsCredentialInBaseURL proves a credential carried in the endpoint
+// URL (a gateway with a query-param token) is not echoed into the rejection error.
+func TestRejectErrorRedactsCredentialInBaseURL(t *testing.T) {
+	base := "https://gw.example/v1/chat/completions?api-key=SECRETTOKEN123"
+	prober := openaicompatible.NewProber()
+	prober.Preload(base, openaicompatible.CapabilityRecord{Streaming: false}) // streaming-missing rejects before any dial
+	adapter := openaicompatible.Adapter{Adapter: providerone.Adapter{BaseURL: base}, Prober: prober}
+	_, err := adapter.Execute(context.Background(), toolRequest(), secret, nil)
+	if !errors.Is(err, openaicompatible.ErrCapabilityUnsupported) {
+		t.Fatalf("err = %v, want a capability rejection", err)
+	}
+	if strings.Contains(err.Error(), "SECRETTOKEN123") {
+		t.Fatalf("rejection error leaked the credential in the base URL: %v", err)
+	}
+}
+
 // assert cannedToolStream parses as a well-formed forced-tool exchange guard: the args
 // fragment must be valid JSON so the reused conversion yields parseable arguments.
 func TestCannedStreamArgsAreValidJSON(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -23,7 +24,8 @@ import (
 )
 
 // ErrCapabilityUnsupported is the admission rejection: the endpoint does not support
-// a capability the run hard-requires. It is returned PRE-run — no provider call is made.
+// a capability the run hard-requires. It is returned PRE-run — the run's completion is
+// never sent (the capability probe itself does reach the endpoint).
 var ErrCapabilityUnsupported = errors.New("capability_unsupported")
 
 // defaultProbeTTL is how long a probed capability record is trusted before a re-probe.
@@ -102,7 +104,21 @@ func admit(baseURL string, req modelbroker.Request, rec CapabilityRecord) error 
 
 func reject(baseURL, capability string, rec CapabilityRecord) error {
 	return fmt.Errorf("%w: endpoint %q does not support %s (probed %s)",
-		ErrCapabilityUnsupported, baseURL, capability, rec.LastValidated.UTC().Format(time.RFC3339))
+		ErrCapabilityUnsupported, redactBaseURL(baseURL), capability, rec.LastValidated.UTC().Format(time.RFC3339))
+}
+
+// redactBaseURL strips any credential-bearing query string or userinfo before an endpoint
+// URL is embedded in an error or Result — a gateway may carry a token in the URL, and the
+// error surfaces into logs and the run outcome (same credential-boundary care as the
+// adapters' header discipline).
+func redactBaseURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<endpoint>"
+	}
+	u.RawQuery = ""
+	u.User = nil
+	return u.String()
 }
 
 // Prober actively probes OpenAI-compatible endpoints and caches the result in process,
@@ -229,8 +245,16 @@ func (p *Prober) observe(ctx context.Context, baseURL, secret, model string) (Ca
 	return CapabilityRecord{Streaming: streaming, ToolCalls: tools, StructuredJSON: structured}, nil
 }
 
-// accepts POSTs one probe body and reports whether the endpoint accepted it (2xx). A
-// transport error (unreachable endpoint) is a probe failure, not "unsupported".
+// accepts POSTs one probe body and classifies the outcome: a 2xx means the endpoint
+// SUPPORTS the feature; a 400/422 means it REJECTED this specific feature (unsupported);
+// anything else (401/403/408/429/5xx, or a transport error) is a TRANSIENT/auth
+// condition that is NOT a capability signal and returns an error — so a rate-limit or
+// auth blip is never cached as an all-false record (which would turn a momentary blip
+// into a full TTL of misleading "unsupported" rejects). ponytail: 400/422 == feature
+// rejection is the acceptance-probe heuristic; an endpoint fronting a newer OpenAI model
+// that needs max_completion_tokens 400s every probe → all-false → total reject. That
+// (and a server that accepts the tools field but never emits a tool_call, e.g.
+// vLLM/Ollama) is a §6 operator leg — a declared-capability override, not a wire fix.
 func (p *Prober) accepts(ctx context.Context, baseURL, secret string, body map[string]any) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
@@ -253,5 +277,12 @@ func (p *Prober) accepts(ctx context.Context, baseURL, secret string, body map[s
 	defer resp.Body.Close()
 	// Drain a little so the connection can be reused; the body itself is not inspected.
 	_, _ = resp.Body.Read(make([]byte, 512))
-	return resp.StatusCode >= 200 && resp.StatusCode < 300, nil
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return true, nil
+	case resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnprocessableEntity:
+		return false, nil // the endpoint rejected THIS feature — genuinely unsupported
+	default:
+		return false, fmt.Errorf("probe of %q got HTTP %d (transient/auth, not a capability signal)", redactBaseURL(baseURL), resp.StatusCode)
+	}
 }
