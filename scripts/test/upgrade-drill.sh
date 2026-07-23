@@ -27,7 +27,7 @@ PROJECT="palai-e15t2-${short}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/palai-e15t2-XXXXXX")"
 export PALAI_HOME="$WORK/.palai"
 COMPOSE="$repo_root/deploy/compose/compose.yaml"
-CLI="$WORK/palai"
+CLI="$WORK/n1/palai" # scripts/release/build.sh --out "$WORK/n1" writes the stamped N+1 CLI here
 N_SRC="$WORK/n-src"
 
 log()  { printf '\n=== %s ===\n' "$*" >&2; }
