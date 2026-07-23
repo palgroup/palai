@@ -118,6 +118,14 @@ run_postgres() {
       go test -tags=component -count=1 -v ./apps/control-plane/internal/metering
     status=$?
   fi
+  # The E14 Task 6 metrics collector drives the real spine: the installation-aggregate /metrics queries
+  # run under the system-scope escape hatch across two seeded tenants, and the exposition carries the
+  # summed counts but leaks no tenant id (the unauthenticated-surface guarantee).
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v ./apps/control-plane/internal/metrics
+    status=$?
+  fi
   set -e
   if test "$status" -ne 0; then
     docker logs "$container" >&2 || true

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -42,6 +43,11 @@ type RunnerGateway struct {
 	tokens    EnrollmentTokens
 	now       func() time.Time
 	available chan *pendingRunner
+	// connected counts runner sessions currently held open on this gateway (handshaked and either
+	// parked for a lease or serving one). An alive runner keeps its Concurrency park-loops dialed in,
+	// so this is >0 while a runner is up and drops to 0 when it stops — the real signal behind the
+	// palai_runner_sessions gauge and the runner-down alert (E14 Task 6).
+	connected atomic.Int64
 }
 
 // NewRunnerGateway binds the CA issuer and the one-use token store into a gateway.
@@ -54,14 +60,30 @@ func NewRunnerGateway(issuer CertIssuer, tokens EnrollmentTokens) *RunnerGateway
 	}
 }
 
+// Connected reports the number of runner sessions currently held open on the gateway — the value
+// behind the palai_runner_sessions gauge. Safe to call from the metrics scrape goroutine.
+func (g *RunnerGateway) Connected() int64 { return g.connected.Load() }
+
 // pendingRunner is a runner that completed the handshake and is parked waiting for a
 // lease. The connect handler holds the HTTP goroutine open on release so the hijacked
 // WebSocket stays alive for the whole lease; the EngineChannel closes release when the
 // attempt ends, letting the handler return and tear the connection down.
+//
+// A single readLoop goroutine owns the connection's read side for its whole life. gc is set by Dial
+// (before it writes the lease offer) so that readLoop, which is the sole reader, relays the runner's
+// engine frames once a lease is assigned and otherwise just detects a park-time disconnect. That
+// disconnect detection is what keeps palai_runner_sessions honest: a runner that dies while parked-
+// and-idle (nothing else reads the connection then) is noticed at once, not only at the next Dial.
 type pendingRunner struct {
-	conn    *websocket.Conn
-	release chan struct{}
+	conn         *websocket.Conn
+	release      chan struct{}
+	disconnected chan struct{}
+	discOnce     sync.Once
+	gc           atomic.Pointer[gatewayChannel]
 }
+
+// markDisconnected closes disconnected exactly once (readLoop may reach it from several paths).
+func (pr *pendingRunner) markDisconnected() { pr.discOnce.Do(func() { close(pr.disconnected) }) }
 
 // Routes returns the gateway HTTP surface: the certless enrollment endpoint and the
 // mutually-authenticated session endpoint. It carries no public API auth middleware —
@@ -173,55 +195,128 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pr := &pendingRunner{conn: conn, release: make(chan struct{})}
+	// The handshake succeeded: this connection is a live runner session for as long as the handler
+	// runs (parked, then leased). Count it here and release the count on any return path below.
+	g.connected.Add(1)
+	defer g.connected.Add(-1)
+
+	pr := &pendingRunner{conn: conn, release: make(chan struct{}), disconnected: make(chan struct{})}
+	// One goroutine owns the read side for the connection's whole life: while parked it turns a
+	// dropped connection into a disconnected signal (nothing else reads then), and once a lease is
+	// assigned it relays the runner's engine frames. Without it a runner that died while parked-and-
+	// idle would keep the connected count — and so palai_runner_sessions — falsely at its old value.
+	go g.readLoop(pr)
+
 	select {
 	case g.available <- pr:
+	case <-pr.disconnected:
+		return // the runner dropped before any lease
 	case <-r.Context().Done():
 		return
 	}
-	// Hold the hijacked connection open for the lease. The channel closes release when
-	// the attempt ends; a runner that disconnects first cancels the request context.
+	// Hold the hijacked connection open for the lease. release closes when the attempt ends;
+	// disconnected closes if the runner drops mid-lease; the request context covers server shutdown.
 	select {
 	case <-pr.release:
+	case <-pr.disconnected:
 	case <-r.Context().Done():
 	}
 }
 
-// Dial offers a connected runner the attempt's lease and returns the bridged
-// EngineChannel. It blocks until a runner is available or ctx is done, then writes the
-// lease.offer and starts relaying the runner's session frames. It is the production
-// EngineDialer the orchestrator drives unchanged.
+// Dial offers a connected runner the attempt's lease and returns the bridged EngineChannel. It blocks
+// until a runner is available or ctx is done, then publishes the channel to the connection's readLoop
+// and writes the lease.offer. It is the production EngineDialer the orchestrator drives unchanged.
 func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (EngineChannel, error) {
 	select {
 	case pr := <-g.available:
-		// A relayed engine frame can be as large as the lease's per-frame bound; raise
-		// the read limit off the handshake cap before any frame is read.
+		// A relayed engine frame can be as large as the lease's per-frame bound; raise the read limit
+		// off the handshake cap before the runner's post-offer frames reach readLoop's blocked Read.
 		pr.conn.SetReadLimit(attempt.Limits.MaxFrameBytes + 64*1024)
 		offer, err := leaseOffer(attempt, g.now())
 		if err != nil {
 			close(pr.release)
 			return nil, err
 		}
+		gc := newGatewayChannel(pr, attempt)
+		// Publish the channel BEFORE writing the offer, so the runner's first engine frame — which it
+		// sends only after receiving the offer — always finds a relay target in readLoop.
+		pr.gc.Store(gc)
 		if err := pr.conn.Write(ctx, websocket.MessageText, offer); err != nil {
+			// Do NOT close frames here: Write can flush the offer and still return a ctx-cancel error, so
+			// the runner may already be sending a frame that readLoop is mid-emit on. close(release) alone
+			// unblocks that emit (it returns false); the handler then returns → CloseNow → readLoop's Read
+			// errors → readLoop closes frames itself. readLoop is the SOLE frames-closer, so there is no
+			// send-on-closed-channel panic (which would crash the whole control plane).
 			close(pr.release)
 			return nil, fmt.Errorf("offer lease: %w", err)
 		}
-		return newGatewayChannel(pr, attempt), nil
+		return gc, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
-// gatewayChannel bridges the runner's lease session to the orchestrator's EngineChannel:
-// Send relays a controller frame to the runner, a background pump surfaces the runner's
-// engine frames on Receive, and the runner's lease.complete closes the stream — clean
-// (io.EOF) on a succeeded outcome, an error otherwise so the attempt is retried.
+// readLoop is the connection's sole reader for its whole life. Before a lease (pr.gc unset) it exists
+// only to notice a disconnect: a read error there closes disconnected, so the parked connect handler
+// returns and the connected count — and palai_runner_sessions — drops at once rather than lingering
+// until the next Dial. After Dial publishes the channel it relays the runner's session frames: an
+// engine.frame surfaces on Receive; a lease.complete ends the stream (clean io.EOF on a succeeded
+// outcome, an error otherwise so the attempt retries); a read error ends it as EOF.
+func (g *RunnerGateway) readLoop(pr *pendingRunner) {
+	for {
+		messageType, payload, err := pr.conn.Read(context.Background())
+		if err != nil {
+			if gc := pr.gc.Load(); gc != nil {
+				gc.closeFrames() // Receive sees io.EOF
+			}
+			pr.markDisconnected()
+			return
+		}
+		gc := pr.gc.Load()
+		if gc == nil {
+			continue // parked: a runner sends nothing before a lease; ignore any stray frame
+		}
+		if messageType != websocket.MessageText {
+			gc.emit(relayRead{err: errors.New("runner session frame must be a text message")})
+			gc.closeFrames()
+			return
+		}
+		var message contracts.RunnerMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			gc.emit(relayRead{err: fmt.Errorf("decode runner session frame: %w", err)})
+			gc.closeFrames()
+			return
+		}
+		switch message.Type {
+		case "engine.frame":
+			frame, err := decodeRelayFrame(message.Data)
+			if !gc.emit(relayRead{frame: frame, err: err}) || err != nil {
+				gc.closeFrames()
+				return
+			}
+		case "lease.complete":
+			if outcome, _ := message.Data["outcome"].(string); outcome != "succeeded" {
+				gc.emit(relayRead{err: fmt.Errorf("runner reported lease outcome %q", outcome)})
+			}
+			gc.closeFrames() // succeeded → close frames → Receive sees io.EOF
+			return
+		default:
+			// heartbeat or other non-frame messages carry nothing to relay.
+		}
+	}
+}
+
+// gatewayChannel bridges the runner's lease session to the orchestrator's EngineChannel: Send relays a
+// controller frame to the runner, the gateway's readLoop surfaces the runner's engine frames on
+// Receive, and the runner's lease.complete closes the stream — clean (io.EOF) on a succeeded outcome,
+// an error otherwise so the attempt is retried.
 type gatewayChannel struct {
-	pr        *pendingRunner
-	attempt   AttemptDescriptor
-	leaseID   string
-	frames    chan relayRead
-	closeOnce sync.Once
+	pr          *pendingRunner
+	attempt     AttemptDescriptor
+	leaseID     string
+	frames      chan relayRead
+	releaseOnce sync.Once
+	framesOnce  sync.Once
 }
 
 type relayRead struct {
@@ -230,10 +325,12 @@ type relayRead struct {
 }
 
 func newGatewayChannel(pr *pendingRunner, attempt AttemptDescriptor) *gatewayChannel {
-	c := &gatewayChannel{pr: pr, attempt: attempt, leaseID: leaseID(attempt), frames: make(chan relayRead)}
-	go c.pump()
-	return c
+	return &gatewayChannel{pr: pr, attempt: attempt, leaseID: leaseID(attempt), frames: make(chan relayRead)}
 }
+
+// closeFrames closes the frames channel exactly once (readLoop reaches it from several paths), so
+// Receive sees io.EOF and a repeated close never panics.
+func (c *gatewayChannel) closeFrames() { c.framesOnce.Do(func() { close(c.frames) }) }
 
 // Send relays one controller->engine frame to the runner inside a controller.frame.
 func (c *gatewayChannel) Send(ctx context.Context, frame contracts.EngineFrame) error {
@@ -270,44 +367,8 @@ func (c *gatewayChannel) Receive(ctx context.Context) (contracts.EngineFrame, er
 
 // Close releases the connect handler, which tears the WebSocket down.
 func (c *gatewayChannel) Close() error {
-	c.closeOnce.Do(func() { close(c.pr.release) })
+	c.releaseOnce.Do(func() { close(c.pr.release) })
 	return nil
-}
-
-// pump reads the runner's session messages and routes them: an engine.frame surfaces on
-// Receive; a lease.complete ends the stream, classified from its outcome; a read error
-// (the connection closed) ends it as EOF. It is the sole reader of the connection.
-func (c *gatewayChannel) pump() {
-	defer close(c.frames)
-	for {
-		messageType, payload, err := c.pr.conn.Read(context.Background())
-		if err != nil {
-			return // connection closed → Receive sees io.EOF
-		}
-		if messageType != websocket.MessageText {
-			c.emit(relayRead{err: errors.New("runner session frame must be a text message")})
-			return
-		}
-		var message contracts.RunnerMessage
-		if err := json.Unmarshal(payload, &message); err != nil {
-			c.emit(relayRead{err: fmt.Errorf("decode runner session frame: %w", err)})
-			return
-		}
-		switch message.Type {
-		case "engine.frame":
-			frame, err := decodeRelayFrame(message.Data)
-			if !c.emit(relayRead{frame: frame, err: err}) || err != nil {
-				return
-			}
-		case "lease.complete":
-			if outcome, _ := message.Data["outcome"].(string); outcome != "succeeded" {
-				c.emit(relayRead{err: fmt.Errorf("runner reported lease outcome %q", outcome)})
-			}
-			return // succeeded → close frames → Receive sees io.EOF
-		default:
-			// heartbeat or other non-frame messages carry nothing to relay.
-		}
-	}
 }
 
 // emit delivers one read to Receive, or stops if the channel was closed.

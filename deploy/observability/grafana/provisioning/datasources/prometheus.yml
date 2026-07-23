@@ -1,0 +1,12 @@
+# Grafana datasource provisioning (E14 Task 6): the Prometheus that scrapes the control-plane. The uid
+# is stable so the packaged dashboard can bind its panels to it by uid.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: palai-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

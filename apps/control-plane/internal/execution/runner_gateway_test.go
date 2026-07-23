@@ -17,6 +17,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -468,6 +469,91 @@ func TestGatewayOffersLeaseWithImmutableDigestAndFence(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Dial did not offer the connected runner a lease")
 	}
+}
+
+// waitConnected polls the gateway's connected-session gauge until it reaches want.
+func waitConnected(t *testing.T, g *execution.RunnerGateway, want int64) {
+	t.Helper()
+	for i := 0; i < 300; i++ {
+		if g.Connected() == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("gateway Connected() = %d, want %d after 3s", g.Connected(), want)
+}
+
+// TestGatewayConnectedDropsWhenParkedRunnerDisconnects is the honesty proof behind palai_runner_sessions
+// and the runner-down alert: a runner that dies while parked-and-idle (no lease, nothing else reading
+// the connection) must drop the gauge at once, not linger until the next Dial.
+func TestGatewayConnectedDropsWhenParkedRunnerDisconnects(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	identity, err := runner.Enroll(ctx, f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+
+	// Park a runner with a lease that is never offered, so it sits idle in the gateway.
+	sessCtx, cancelSession := context.WithCancel(ctx)
+	go func() { _, _ = f.session(identity).OpenLease(sessCtx) }()
+	waitConnected(t, f.gateway, 1)
+
+	// The runner disconnects while parked-and-idle; the gauge must drop.
+	cancelSession()
+	waitConnected(t, f.gateway, 0)
+}
+
+// TestGatewayDiscardsPreOfferFrameAndStaysConnected proves readLoop ignores a frame a runner sends
+// before any lease is assigned (a stray or a compromised runner speaking early) — the connection stays
+// parked and healthy, and the gauge tracks it. It exercises the raw wire so it can send that early frame.
+func TestGatewayDiscardsPreOfferFrameAndStaysConnected(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	identity, err := runner.Enroll(ctx, f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{identity.Certificate},
+		RootCAs:      f.ca.pool,
+		ServerName:   gwControllerDNS,
+	}}}
+	conn, _, err := websocket.Dial(ctx, f.sessionURL, &websocket.DialOptions{
+		HTTPClient:   client,
+		Subprotocols: []string{runner.RunnerProtocolV1},
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	writeMsg := func(msgType string) {
+		payload, _ := json.Marshal(contracts.RunnerMessage{
+			Protocol: runner.RunnerProtocolV1, Type: msgType,
+			Time: time.Now().UTC().Format(time.RFC3339),
+		})
+		if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
+			t.Fatalf("write %s: %v", msgType, err)
+		}
+	}
+
+	writeMsg("runner.hello") // handshake → the gateway parks this runner
+	waitConnected(t, f.gateway, 1)
+	writeMsg("engine.frame") // a stray frame BEFORE any lease.offer — readLoop must discard it
+
+	// The discard must not crash or drop the connection: still parked after a beat.
+	time.Sleep(150 * time.Millisecond)
+	if got := f.gateway.Connected(); got != 1 {
+		t.Fatalf("Connected() = %d after a discarded pre-offer frame, want 1 (still parked)", got)
+	}
+
+	_ = conn.Close(websocket.StatusNormalClosure, "done")
+	waitConnected(t, f.gateway, 0)
 }
 
 // TestGatewayRelaysFramesBothWays proves the EngineChannel Dial returns bridges the

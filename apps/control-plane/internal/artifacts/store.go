@@ -110,6 +110,16 @@ func (s *Store) EnsureBucket(ctx context.Context) error {
 	return nil
 }
 
+// Ping is a read-only reachability probe: a single HeadBucket, no write. The metrics collector calls
+// it once per scrape to publish palai_object_store_up (E14 Task 6), so an object store that has gone
+// unreachable surfaces as an alert rather than only as failed artifact writes.
+func (s *Store) Ping(ctx context.Context) error {
+	if _, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(s.bucket)}); err != nil {
+		return fmt.Errorf("head bucket %q: %w", s.bucket, err)
+	}
+	return nil
+}
+
 // Put writes body under key with an end-to-end SHA-256 integrity check (the store
 // verifies the digest on receipt) and returns the content checksum as "sha256:<hex>"
 // plus the byte size, so the caller records them on the artifacts row.

@@ -1,0 +1,122 @@
+# §52.10 alert rules for the packaged Palai self-host stack (E14 Task 6). Each rule reads a real series
+# the control-plane /metrics exposes; the master-plan line-500 alert half is disk/queue/runner-down/
+# provider-error/object-store/clock/callback, each present below plus two scrape-health rules.
+#
+# `for:` windows debounce transients. They are syntax + synthetic-trigger validated here (promtool
+# check rules + the local runner-down live-fire); real production tuning (e.g. a disk-TREND rule over a
+# long window) needs an operator's own telemetry — the honest ceiling stated in the plan.
+groups:
+  - name: palai-self-host
+    rules:
+      # --- scrape health -------------------------------------------------------------------------
+      - alert: PalaiControlPlaneDown
+        expr: up{job="palai-control-plane"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Control-plane /metrics target is down"
+          description: "Prometheus cannot scrape control-plane:8080/metrics for over a minute."
+
+      - alert: PalaiScrapeDatabaseDown
+        expr: palai_db_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Control-plane cannot read its database"
+          description: "palai_db_up has been 0 for 2m — the aggregate metric queries are failing."
+
+      # --- runner-down (the live-fire proof) -----------------------------------------------------
+      - alert: PalaiRunnerDown
+        expr: palai_runner_sessions == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "No runner connected to the gateway"
+          description: "palai_runner_sessions has been 0 for 30s — no runner is parked for a lease, so admitted runs cannot execute."
+
+      # --- queue backlog -------------------------------------------------------------------------
+      - alert: PalaiQueueBacklog
+        expr: palai_queue_oldest_ready_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Oldest claimable job is waiting too long"
+          description: "The oldest ready queued job has been unclaimed for over 5 minutes (palai_queue_oldest_ready_seconds > 300) — dispatch is not keeping up."
+
+      # --- provider errors -----------------------------------------------------------------------
+      - alert: PalaiProviderErrors
+        expr: increase(palai_provider_errors_total[10m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Provider model calls are failing"
+          description: "More than 5 provider model calls returned an error in the last 10 minutes (increase of palai_provider_errors_total)."
+
+      # --- object store --------------------------------------------------------------------------
+      - alert: PalaiObjectStoreDown
+        expr: palai_object_store_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Object store is unreachable"
+          description: "palai_object_store_up has been 0 for 2m — the control-plane's HEAD probe of the object store is failing, so artifact writes/reads will fail."
+
+      # --- clock skew ----------------------------------------------------------------------------
+      - alert: PalaiClockSkew
+        expr: abs(palai_db_clock_skew_seconds) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database clock skew exceeds 2s"
+          description: "abs(palai_db_clock_skew_seconds) has exceeded 2 seconds for 5m — lease and idempotency windows assume a tight clock."
+
+      # --- disk ----------------------------------------------------------------------------------
+      - alert: PalaiDiskLow
+        expr: palai_disk_free_bytes / palai_disk_total_bytes < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Data volume is running low on space"
+          description: "Free space on the control-plane data volume has been under 10% for 10 minutes."
+
+      - alert: PalaiDiskMetricMissing
+        # Guard against silent blindness: a statfs failure omits the disk series entirely, so PalaiDiskLow
+        # would simply never evaluate. absent() surfaces that the metric itself is gone.
+        expr: absent(palai_disk_total_bytes)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk metrics are missing"
+          description: "palai_disk_total_bytes has been absent for 10m — statfs(PALAI_METRICS_DISK_PATH) is failing, so PalaiDiskLow cannot evaluate. Check the configured path/mount."
+
+      # --- callback (outbound webhook delivery) --------------------------------------------------
+      - alert: PalaiWebhookDeliveryBacklog
+        expr: palai_webhook_deliveries{state="pending"} > 50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbound webhook delivery backlog is growing"
+          description: "More than 50 webhook deliveries have been pending for 10 minutes — the delivery pump is not draining."
+
+      - alert: PalaiWebhookDeadLetters
+        # delta(), not increase(): palai_webhook_deliveries{state="dead"} is a row-count GAUGE, not a
+        # counter. increase() would read a future retention/restore DROP as a counter reset and re-count
+        # the whole window (false fire); delta() over a gauge measures the net change, and a drop is
+        # negative (not > 0), so only genuine new dead-letters fire.
+        expr: delta(palai_webhook_deliveries{state="dead"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbound webhook deliveries are dead-lettering"
+          description: "One or more webhook deliveries exhausted their retries and moved to dead in the last 15 minutes."
