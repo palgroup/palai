@@ -200,9 +200,10 @@ if [ -n "${OPENAI_API_KEY:-}" ]; then
   for _ in $(seq 1 30); do curl_api GET /v1/capabilities >/dev/null 2>&1 && break; sleep 1; done
   smoke_id="$(admit_run 'reply with the single word ok')"
   smoke_st="$(wait_terminal "$smoke_id" 90)" || echo "real smoke status=$smoke_st (non-terminal)" >&2
-  # The provider's own request id (chatcmpl-...) is journalled as provider_request_id — safe correlation evidence.
+  # The provider's own request id (chatcmpl-...) is journalled in the events.payload as provider_request_id
+  # — safe, non-secret correlation evidence.
   chatcmpl="$(docker exec "$PROJECT-postgres-1" psql -U palai -d palai -tA -c \
-    "SELECT data->>'provider_request_id' FROM events WHERE data ? 'provider_request_id' ORDER BY created_at DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
+    "SELECT payload->>'provider_request_id' FROM events WHERE payload ? 'provider_request_id' ORDER BY created_at DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]' || true)"
   echo "real-provider smoke: $smoke_id status=$smoke_st chatcmpl=${chatcmpl:-<none>}" >&2
 else
   echo "SKIP real-provider smoke: OPENAI_API_KEY not in .env.local" >&2
