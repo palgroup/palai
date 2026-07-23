@@ -260,10 +260,11 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		_, _ = w.Write([]byte("ok"))
 	})
 	// /metrics is the Prometheus text-exposition surface (E14 Task 6). It rides the SAME
-	// unauthenticated top mux as /healthz — internal-network only, never proxied by the TLS edge —
-	// and carries installation-aggregate series with no per-tenant labels, so an unauthenticated
-	// scrape leaks no tenant identity. Wired via WithMetrics; unset in every tier that passes no
-	// collector, so the route simply stays unmounted there.
+	// unauthenticated top mux as /healthz — internal-network only: the production edge path-matches
+	// `reverse_proxy /v1/*` (deploy/compose/production.yml), so neither /metrics nor /healthz is
+	// proxied externally. It carries installation-aggregate series with no per-tenant labels, so an
+	// unauthenticated scrape leaks no tenant identity. Wired via WithMetrics; unset in every tier that
+	// passes no collector, so the route simply stays unmounted there.
 	if cfg.metrics != nil {
 		top.Handle("GET /metrics", cfg.metrics)
 	}

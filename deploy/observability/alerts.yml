@@ -87,6 +87,17 @@ groups:
           summary: "Data volume is running low on space"
           description: "Free space on the control-plane data volume has been under 10% for 10 minutes."
 
+      - alert: PalaiDiskMetricMissing
+        # Guard against silent blindness: a statfs failure omits the disk series entirely, so PalaiDiskLow
+        # would simply never evaluate. absent() surfaces that the metric itself is gone.
+        expr: absent(palai_disk_total_bytes)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk metrics are missing"
+          description: "palai_disk_total_bytes has been absent for 10m — statfs(PALAI_METRICS_DISK_PATH) is failing, so PalaiDiskLow cannot evaluate. Check the configured path/mount."
+
       # --- callback (outbound webhook delivery) --------------------------------------------------
       - alert: PalaiWebhookDeliveryBacklog
         expr: palai_webhook_deliveries{state="pending"} > 50
@@ -98,7 +109,11 @@ groups:
           description: "More than 50 webhook deliveries have been pending for 10 minutes — the delivery pump is not draining."
 
       - alert: PalaiWebhookDeadLetters
-        expr: increase(palai_webhook_deliveries{state="dead"}[15m]) > 0
+        # delta(), not increase(): palai_webhook_deliveries{state="dead"} is a row-count GAUGE, not a
+        # counter. increase() would read a future retention/restore DROP as a counter reset and re-count
+        # the whole window (false fire); delta() over a gauge measures the net change, and a drop is
+        # negative (not > 0), so only genuine new dead-letters fire.
+        expr: delta(palai_webhook_deliveries{state="dead"}[15m]) > 0
         for: 0m
         labels:
           severity: warning

@@ -7,8 +7,9 @@ Grafana/Prometheus bundle under `deploy/observability/`. This page is the operat
 
 `GET /metrics` on the control-plane serves Prometheus text exposition. It rides the same **internal,
 unauthenticated** surface as `/healthz` (the top mux, ahead of the tenant-auth middleware): a
-Prometheus on the stack's internal network scrapes it, and the production TLS edge proxies `/v1` only,
-so it is never reachable off the internal network. It needs no tenant key.
+Prometheus on the stack's internal network scrapes it. The production edge path-matches
+`reverse_proxy /v1/*` (`deploy/compose/production.yml`), so neither `/metrics` nor `/healthz` is
+proxied externally — both are internal-network only. It needs no tenant key.
 
 Every series is **installation-aggregate** — grouped by a lifecycle enum (`state`, `status`) or a
 background-loop name (`loop`), never by organization/project/secret. An unauthenticated scrape
@@ -97,9 +98,16 @@ connection then) is noticed at once rather than only at the next lease dial.
 - Alert `for:` windows and long-horizon rules (e.g. a disk-**trend** rule) are validated here only by
   syntax and a synthetic trigger. Real-load tuning needs an operator's own production telemetry.
 - `palai_disk_*` measures the control-plane container's view of `PALAI_METRICS_DISK_PATH`. A true
-  multi-volume host wants one series per mount; single-node alpha has one data volume.
+  multi-volume host wants one series per mount; single-node alpha has one data volume. A `statfs`
+  failure OMITS the disk series (so `PalaiDiskLow` cannot evaluate) — the `PalaiDiskMetricMissing`
+  `absent()` rule surfaces that so it is never silently blind.
 - The object-store probe is a per-scrape HEAD (fine at single-node scrape intervals); cache it if scrape
   load ever matters.
+- `palai_runner_sessions` is 0 on an assignment-only tier that wires no runner gateway. Only point
+  `PalaiRunnerDown` at a stack that actually enrolls runners — otherwise it fires permanently.
+- `palai_provider_errors_total` counts UPSTREAM failures only (transport + provider-side rejection);
+  config errors (unknown provider/secret) and the platform budget cutoff are excluded, so a small
+  tenant sampling budget hitting its cap does not trip `PalaiProviderErrors`.
 - Everything above runs on the local production-compose seam. Pointing the same bundle at a real
   cloud VM is an operator leg (see the phase-14 plan §6) — the mechanism is identical; only the scrape
   target address changes.

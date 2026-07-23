@@ -82,9 +82,10 @@ func WithModelRoutes(routes ModelRouteAPI) RouterOption {
 }
 
 // WithMetrics mounts the Prometheus text-exposition surface (E14 Task 6) at GET /metrics on the
-// UNAUTHENTICATED top mux beside /healthz — the same internal-network posture: the production TLS
-// edge proxies /v1 only, so /metrics is reachable to a Prometheus on the internal network but never
-// published externally. A trailing option because only production (and its dedicated tests) wire the
+// UNAUTHENTICATED top mux beside /healthz — the same internal-network posture: the production edge
+// path-matches `reverse_proxy /v1/*` (deploy/compose/production.yml), so /metrics is reachable to a
+// Prometheus on the internal network but never published externally. A trailing option because only
+// production (and its dedicated tests) wire the
 // collector; every other caller compiles unchanged and mounts no /metrics. The handler exposes
 // installation-aggregate series only — no per-tenant labels — so an unauthenticated scrape leaks no
 // tenant identity.

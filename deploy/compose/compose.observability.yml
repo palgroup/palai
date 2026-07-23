@@ -3,7 +3,8 @@
 #   docker compose -f deploy/compose/compose.yaml -f deploy/compose/compose.observability.yml up -d
 #
 # It adds Prometheus (scrapes the control-plane's INTERNAL /metrics on the shared Compose network — the
-# same unauthenticated internal surface as /healthz, never the TLS edge) and Grafana (the §52.9
+# same unauthenticated internal surface as /healthz; the production edge path-matches reverse_proxy
+# /v1/* so neither is proxied externally) and Grafana (the §52.9
 # dashboards, provisioned read-only). Both bases are digest-pinned like the rest of the stack. It opens
 # NO new control-plane surface — /metrics already ships in the control-plane image; this overlay only
 # adds the two observers. Ports bind to 127.0.0.1 like every other published port.

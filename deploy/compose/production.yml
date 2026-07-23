@@ -77,6 +77,15 @@ configs:
   # Inline Caddyfile (no separate file, no bind-mount path ambiguity). auto_https off disables
   # ACME + HTTP->HTTPS redirects; the explicit `tls` cert/key makes :443 a TLS listener that
   # serves the mounted cert for any host, then proxies to the internal control-plane API.
+  #
+  # The reverse_proxy is PATH-MATCHED to /v1/* deliberately: every externally-required surface on the
+  # control-plane's top mux lives under /v1/* (the API, the signed /v1/inbound receiver, /v1/tool-
+  # callbacks). The unauthenticated internal probes — /healthz (compose healthcheck) and /metrics
+  # (Prometheus) — do NOT, and both are reached on the internal Compose network, never through this
+  # edge. Matching /v1/* keeps them off the public listener, so /metrics cannot leak operational
+  # intel to the internet. An unmatched path is never proxied — it gets Caddy's default empty response,
+  # so nothing on the control-plane top mux outside /v1/* is reachable through the edge (verified: a
+  # public GET /metrics returns no exposition, while GET /v1/... proxies through).
   edge_caddyfile:
     content: |
       {
@@ -85,7 +94,7 @@ configs:
       }
       :443 {
       	tls /etc/palai/edge/edge.crt /etc/palai/edge/edge.key
-      	reverse_proxy control-plane:8080
+      	reverse_proxy /v1/* control-plane:8080
       }
 
 secrets:

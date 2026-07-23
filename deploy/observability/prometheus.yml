@@ -1,8 +1,9 @@
 # Prometheus scrape + rule config for the packaged Palai self-host stack (E14 Task 6, §52.9/§52.10).
 # Prometheus runs on the stack's Compose network (deploy/compose/compose.observability.yml) and scrapes
 # the control-plane's INTERNAL /metrics — the same unauthenticated internal surface as /healthz. The
-# production TLS edge proxies /v1 only, so /metrics is never reachable off the internal network; a
-# scrape needs no tenant key and every series is installation-aggregate (no per-tenant labels).
+# production edge path-matches `reverse_proxy /v1/*` (deploy/compose/production.yml), so /metrics is
+# never reachable off the internal network; a scrape needs no tenant key and every series is
+# installation-aggregate (no per-tenant labels).
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
