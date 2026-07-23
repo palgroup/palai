@@ -13,7 +13,9 @@ corpus's expected output.
   must produce. The category is the filename.
 - `harness_test.go` — the harness. It runs two independent implementations against the corpus:
   1. a Go **reference decode** using the server's own `packages/contracts` types +
-     `webhook.Verify` (validates every vector, in-process);
+     `webhook.Verify`. It validates the full normalized output for every decode category, and
+     for `request-encode` it validates the wire **body** is a canonical server request (the
+     `{method,path}` routing is the SDK's, validated by the runners — see the ceiling);
   2. each registered language **runner** (the TS SDK now; Python/Go in T3/T4), driven over the
      stdin/stdout contract below.
 
@@ -75,6 +77,15 @@ expected output and asserts the diff DETECTS it — the harness cannot pass a co
   not a live-server test (fixtures are deterministic data; no provider/credential involved).
 - `request-encode` bodies are omitempty-canonical (only non-zero fields), so the corpus tests
   field/nesting/path/query encoding — not zero-value omission (which the SDK does not do anyway).
+- `request-encode` **routing** (`method`, `path`, query, idempotency header) is validated by the
+  **TS runner alone** in T2 — the Go reference only checks the body is server-valid. Full
+  cross-language routing equality lands when T4's Go runner registers. In a node-less env the TS
+  leg (and thus routing validation) fails by default; set `PALAI_SDK_CONFORMANCE_ALLOW_NO_NODE=1`
+  to opt out.
+- `stream()` shares `create()`'s wire request: `responses-stream-shares-create-post` drives
+  `stream().finalResponse()` and captures the same create POST (the SDK adds no body fields for
+  streaming; the stream-only `Last-Event-ID` rides the SSE GET, covered by `event-decode`). The
+  vector pins that contract for the Python/Go `stream()` implementations.
 - `unknown-field` and `envelope-decode` are near-identity for a structurally-typed SDK (TS); they
   become load-bearing for the struct-based Go/Python runners, where a naive decode would strip
   unknown fields or conflate the two envelopes — which this corpus is built to catch.

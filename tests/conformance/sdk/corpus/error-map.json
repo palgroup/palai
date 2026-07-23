@@ -78,6 +78,11 @@
       "expected": { "class": "InternalServerError", "status": 502, "code": "internal_error", "retryable": true, "request_id": "req_502" }
     },
     {
+      "name": "non-problem-429-synthesized",
+      "input": { "status": 429, "body": "Too Many Requests", "request_id": "req_429b" },
+      "expected": { "class": "RateLimitError", "status": 429, "code": "rate_limited", "retryable": true, "request_id": "req_429b" }
+    },
+    {
       "name": "explicit-retryable-overrides-status-class",
       "input": {
         "status": 400,

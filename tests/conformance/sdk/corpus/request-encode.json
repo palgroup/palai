@@ -30,6 +30,27 @@
       }
     },
     {
+      "name": "responses-stream-shares-create-post",
+      "input": {
+        "resource": "responses",
+        "method": "stream",
+        "args": {
+          "input": "Stream a haiku about laziness.",
+          "model": "fake-1"
+        },
+        "options": { "idempotencyKey": "idem_stream_fixed" }
+      },
+      "expected": {
+        "method": "POST",
+        "path": "/v1/responses",
+        "idempotency_key": "idem_stream_fixed",
+        "body": {
+          "input": "Stream a haiku about laziness.",
+          "model": "fake-1"
+        }
+      }
+    },
+    {
       "name": "responses-list-query-snake-case",
       "input": {
         "resource": "responses",

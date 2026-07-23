@@ -39,6 +39,18 @@
       }
     },
     {
+      "name": "multi-line-data-joined-with-newline",
+      "input": {
+        "transcript": "id: e5\nevent: run.progress.v1\ndata: {\"specversion\":\"1.0\",\"id\":\"e5\",\"source\":\"palai\",\"type\":\"run.progress.v1\",\ndata: \"time\":\"2026-07-18T00:00:05Z\",\"sequence\":5,\"data\":{\"note\":\"multi-line\"}}\n\n"
+      },
+      "expected": {
+        "events": [
+          { "specversion": "1.0", "id": "e5", "source": "palai", "type": "run.progress.v1", "time": "2026-07-18T00:00:05Z", "sequence": 5, "data": { "note": "multi-line" } }
+        ],
+        "terminal_index": -1
+      }
+    },
+    {
       "name": "terminal-event-with-unknown-field-preserved",
       "input": {
         "transcript": "id: e9\nevent: run.completed.v1\ndata: {\"specversion\":\"1.0\",\"id\":\"e9\",\"source\":\"palai\",\"type\":\"run.completed.v1\",\"time\":\"2026-07-18T00:00:09Z\",\"sequence\":9,\"data\":{\"ok\":true},\"x_future\":\"preserved\"}\n\n"

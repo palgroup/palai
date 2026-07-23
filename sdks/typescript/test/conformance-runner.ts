@@ -51,26 +51,53 @@ function streamFromString(text: string): ReadableStream<Uint8Array> {
   });
 }
 
-// --- per-category decoders (each drives a REAL SDK surface) -----------------------------
+// --- per-category decoders --------------------------------------------------------------
+// request-encode / event-decode / error-map drive REAL @palai/sdk surfaces (client transport,
+// parseEventStream, errorForResponse). unknown-field / envelope-decode are hand-rolled JSON
+// projections: Page/ListView and the typed models are TypeScript interfaces erased at runtime,
+// so there is no runtime decoder to call — the corpus stresses these against the struct-based
+// Go/Python runners, where a naive decode WOULD strip unknowns or conflate the envelopes.
 
 // requestEncode drives the resource method through a capturing fetch and reports the exact
-// outgoing wire request (method, path, idempotency key, body) the SDK produced.
+// outgoing wire request (method, path, idempotency key, body) the SDK produced. The FIRST
+// request wins the capture, so stream() — which fires the same create POST before opening the
+// SSE GET — reports its create request, proving stream shares create's encoding.
 async function requestEncode(input: Record<string, unknown>): Promise<unknown> {
   let captured: { method: string; url: string; idempotencyKey: string | null; body: string | undefined } | undefined;
   const captureFetch: typeof fetch = (info, init) => {
     const url = typeof info === "string" ? info : info.toString();
-    const headers = new Headers(init?.headers ?? undefined);
-    captured = {
-      method: init?.method ?? "GET",
-      url,
-      idempotencyKey: headers.get("Idempotency-Key"),
-      body: typeof init?.body === "string" ? init.body : undefined,
-    };
+    if (captured === undefined) {
+      const headers = new Headers(init?.headers ?? undefined);
+      captured = {
+        method: init?.method ?? "GET",
+        url,
+        idempotencyKey: headers.get("Idempotency-Key"),
+        body: typeof init?.body === "string" ? init.body : undefined,
+      };
+    }
+    // stream() opens the session SSE after the create POST: answer it with a single terminal
+    // frame so finalResponse() resolves and the run ends cleanly.
+    if (url.includes("/events")) {
+      const terminal =
+        'id: e1\nevent: run.completed.v1\ndata: {"specversion":"1.0","id":"e1","source":"palai","type":"run.completed.v1","time":"2026-07-18T00:00:00Z","sequence":1,"data":{}}\n\n';
+      return Promise.resolve(
+        new Response(streamFromString(terminal), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      );
+    }
     return Promise.resolve(
-      new Response(JSON.stringify({ id: "resp_stub", session_id: "sess_stub" }), {
-        status: 202,
-        headers: { "content-type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({
+          id: "resp_stub",
+          session_id: "sess_stub",
+          object: "response",
+          status: "completed",
+          model: "fake-1",
+          output: [],
+          usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          created_at: "2026-07-18T00:00:00Z",
+        }),
+        { status: 202, headers: { "content-type": "application/json" } },
+      ),
     );
   };
 
@@ -85,6 +112,9 @@ async function requestEncode(input: Record<string, unknown>): Promise<unknown> {
   switch (method) {
     case "create":
       await client.responses.create(args as never, options as never);
+      break;
+    case "stream":
+      await client.responses.stream(args as never, options as never).finalResponse();
       break;
     case "list":
       await client.responses.list(args as never);

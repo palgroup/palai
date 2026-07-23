@@ -19,6 +19,7 @@ package sdkconf_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -63,6 +64,13 @@ func loadCategory(t *testing.T, category string) []vector {
 	}
 	if len(file.Vectors) == 0 {
 		t.Fatalf("corpus %s has no vectors", category)
+	}
+	seen := map[string]bool{}
+	for _, v := range file.Vectors {
+		if seen[v.Name] {
+			t.Fatalf("corpus %s has a duplicate vector name %q (names key the equality maps)", category, v.Name)
+		}
+		seen[v.Name] = true
 	}
 	return file.Vectors
 }
@@ -473,12 +481,17 @@ func runExternalRunner(t *testing.T, argv []string, all []runnerVector) map[stri
 	if err != nil {
 		t.Fatalf("marshal runner payload: %v", err)
 	}
-	cmd := exec.Command(argv[0], argv[1:]...)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdin = bytes.NewReader(payload)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			t.Fatalf("runner %v timed out after 60s (a hung runner must fail, not stall)\nstderr: %s", argv, stderr.String())
+		}
 		t.Fatalf("runner %v failed: %v\nstderr: %s", argv, err, stderr.String())
 	}
 	var resp struct {
@@ -497,7 +510,13 @@ func runExternalRunner(t *testing.T, argv []string, all []runnerVector) map[stri
 func TestCorpusTypeScriptRunnerEquality(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("node not on PATH; TS runner leg skipped (reference still validated the corpus)")
+		// Fail by default: a node-less CI must NOT silently drop the TS leg — it is the sole
+		// validator of request-encode routing (method/path/query/idempotency) until T4's Go
+		// runner lands. A genuinely node-less environment opts out explicitly.
+		if os.Getenv("PALAI_SDK_CONFORMANCE_ALLOW_NO_NODE") != "" {
+			t.Skip("node not on PATH and PALAI_SDK_CONFORMANCE_ALLOW_NO_NODE set; TS leg skipped")
+		}
+		t.Fatalf("node not on PATH: the TS runner leg is required (set PALAI_SDK_CONFORMANCE_ALLOW_NO_NODE=1 to opt out on a node-less env): %v", err)
 	}
 	runnerPath, err := filepath.Abs(filepath.Join("..", "..", "..", "sdks", "typescript", "test", "conformance-runner.ts"))
 	if err != nil {
