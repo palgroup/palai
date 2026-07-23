@@ -6,7 +6,7 @@ SHELL := /bin/bash
 	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
-	uat-kubernetes uat-kind evidence-verify migration-resume-drill
+	uat-kubernetes uat-kind evidence-verify migration-resume-drill upgrade-drill
 
 bootstrap:
 	go mod download
@@ -60,6 +60,14 @@ test-component:
 # credentials. Not part of verify (Docker-bound).
 migration-resume-drill:
 	@bash scripts/test/migration-resume-drill.sh
+
+# E15 T2 live N->N+1 upgrade drill (OPS-005/007/008): two REAL builds (fork-point N + current N+1), an
+# active fake run survives `palai upgrade` on its pinned engine, the alias rolls for new runs, ONE
+# real-provider smoke (credential from .env.local), then `palai upgrade rollback` runs N on the expanded
+# schema and an old-stamp runner is rejected with the hop message. One stack at a time; 0 leaks on exit.
+# Not part of verify (Docker-bound + heavy).
+upgrade-drill:
+	@bash scripts/test/upgrade-drill.sh
 
 test-e2e:
 	@test -x scripts/test/e2e || { echo "end-to-end suite not implemented" >&2; exit 2; }
