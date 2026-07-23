@@ -1,0 +1,8 @@
+id: DR-006
+name: restore-verify-secret-canary-decrypts-under-target-master-key
+proof_class: component-real
+provider: fake
+input: "`palai restore verify` secret canary — a stored secret sealed under the SOURCE master key must still decrypt under the TARGET stack's master key (the operator carried it), and fail closed under a different key; the CLI's openSealed AES-256-GCM open is byte-compatible with the control-plane secret store's seal, pinned against a real stored ciphertext under two master keys on a real Postgres. Proof seam: the restored production-compose stack B (plan §6); the cloud-VM leg is the operator leg"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/identity/install_backup_canary_component_test.go:TestInstallRestoreSecretCanaryTwoMasterKeys

@@ -684,6 +684,142 @@ func TestSteerClaimRequiresAppliedCommand(t *testing.T) {
 	}
 }
 
+// completeInstallProof returns a fresh OPS-002 InstallProof map: the hardened posture, a CA-verified edge, a
+// green config-validate + doctor, the canonical restart-less install spine, its re-derivable digest, and zero
+// restarts.
+func completeInstallProof() map[string]any {
+	steps := make([]any, len(SelfHostStepIDs))
+	for i, s := range SelfHostStepIDs {
+		steps[i] = s
+	}
+	return map[string]any{
+		"master_key_non_dev": true, "registration_closed": true, "edge_verified": true,
+		"config_valid": true, "doctor_green": true, "step_ids": steps,
+		"journey_digest": hashParts(SelfHostStepIDs...), "restart_count": 0,
+	}
+}
+
+// TestInstallClaimRequiresHardenedRestartlessSpine pins OPS-002 (plan §T7 + the restart-less install spine):
+// an install case must carry the hardened posture (non-dev master key, closed registration, CA-verified edge),
+// a green config-validate + doctor, the ordered spine + a well-formed digest, and zero restarts. A marker
+// alone is missing; an unhardened posture, an unverified edge, a red doctor, a malformed digest, a short spine,
+// or any restart is invalid.
+func TestInstallClaimRequiresHardenedRestartlessSpine(t *testing.T) {
+	m := baseManifest()
+	c := caseOf(m)
+	c["install_claim"] = "installed"
+	c["install_proof"] = completeInstallProof()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete install proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["install_claim"] = "installed" // marker, no proof
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("an install claim with no proof must be a Finding (an 'installed' marker is not restart-less-install proof)")
+	}
+
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { p["master_key_non_dev"] = false },  // booted on a dev-default key
+		func(p map[string]any) { p["registration_closed"] = false }, // a public signup surface
+		func(p map[string]any) { p["edge_verified"] = false },       // did not go through the CA-verified edge
+		func(p map[string]any) { p["config_valid"] = false },
+		func(p map[string]any) { p["doctor_green"] = false },
+		func(p map[string]any) { p["journey_digest"] = "not-a-sha256" },   // malformed digest
+		func(p map[string]any) { p["restart_count"] = 1 },                 // the control-plane restarted
+		func(p map[string]any) { p["step_ids"] = []any{"clean-install"} }, // short spine
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["install_claim"] = "installed"
+		proof := completeInstallProof()
+		mutate(proof)
+		c["install_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid install proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestBackupClaimRequiresSeparateStackRestore pins DR-002 (plan §T7 T4): a backup case must carry two DISTINCT
+// stacks, a re-derivable manifest digest, an empty restore target, and a completed restore. A marker is
+// missing; a same-stack restore, a malformed digest, or a non-empty target is invalid.
+func TestBackupClaimRequiresSeparateStackRestore(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{
+			"source_project": "palai-src", "target_project": "palai-dst",
+			"manifest_digest": "sha256:" + strings.Repeat("a", 64), "migration_version": 32,
+			"target_was_empty": true, "restored": true,
+		}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["backup_claim"] = "restored"
+	c["backup_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete backup proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["backup_claim"] = "restored"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a backup claim with no proof must be a Finding")
+	}
+	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) { p["target_project"] = "palai-src" }, // restored into the SAME stack
+		func(p map[string]any) { p["manifest_digest"] = "not-a-sha256" },
+		func(p map[string]any) { p["migration_version"] = 0 },
+		func(p map[string]any) { p["target_was_empty"] = false }, // clobbered a non-empty target
+		func(p map[string]any) { p["restored"] = false },
+	} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["backup_claim"] = "restored"
+		proof := full()
+		mutate(proof)
+		c["backup_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("an invalid backup proof %v must be a Finding", proof)
+		}
+	}
+}
+
+// TestRestoreVerifyClaimRequiresAllSixChecks pins DR-004..006 (plan §T7 T4): a restore-verify case must carry
+// ALL SIX checks green — a marker, or ANY one check false (a checksum mismatch, RLS disabled on the restored
+// data, a secret that no longer decrypts), is not a verified restore.
+func TestRestoreVerifyClaimRequiresAllSixChecks(t *testing.T) {
+	full := func() map[string]any {
+		return map[string]any{
+			"archive_checksum": true, "migration_version": true, "tenant_ids": true,
+			"run_retrieval": true, "rls_isolation": true, "secret_decrypt": true,
+		}
+	}
+	m := baseManifest()
+	c := caseOf(m)
+	c["restore_verify_claim"] = "verified"
+	c["restore_verify_proof"] = full()
+	if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+		t.Fatalf("a complete restore-verify proof should pass, got %v", f)
+	}
+
+	m = baseManifest()
+	caseOf(m)["restore_verify_claim"] = "verified"
+	if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+		t.Fatal("a restore-verify claim with no proof must be a Finding")
+	}
+	for _, field := range []string{"archive_checksum", "migration_version", "tenant_ids", "run_retrieval", "rls_isolation", "secret_decrypt"} {
+		m = baseManifest()
+		c = caseOf(m)
+		c["restore_verify_claim"] = "verified"
+		proof := full()
+		proof[field] = false
+		c["restore_verify_proof"] = proof
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+			t.Fatalf("a restore-verify proof with %q false must be a Finding", field)
+		}
+	}
+}
+
 // TestRemoteSigningSecretRedacted pins the E12 T10 credential-marker extension: a leaked whsec_ webhook/
 // remote-tool signing secret (the E11 callback + E12 remote-tool/hook signed transports share the same
 // webhook signer) is caught by the redaction pattern scan, so a plaintext signing secret fails the bundle

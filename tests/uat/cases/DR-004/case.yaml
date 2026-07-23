@@ -1,0 +1,9 @@
+id: DR-004
+name: restore-verify-integrity-checksum-migration-tenant-ids-run-retrieval
+proof_class: unit
+provider: fake
+input: "`palai restore verify` matches a restored target against its backup manifest on the integrity quarter — the db + object-store members re-hash to the manifest, the live schema version and org ids match, and the manifest's sample response is queryable from the restored data; a corrupted archive member is rejected by the manifest checksum, never silently restored. Proof seam: the restored production-compose stack B (plan §6); the cloud-VM restore is the operator leg"
+expect_status: completed
+proof:
+  - cmd/cli/internal/stack/install_backup_test.go:TestBackupArchiveRejectsCorruptedMember
+  - cmd/cli/internal/stack/install_backup_test.go:TestObjectChecksumsPerFile

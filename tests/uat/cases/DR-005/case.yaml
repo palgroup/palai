@@ -1,0 +1,8 @@
+id: DR-005
+name: restore-verify-rls-isolation-and-no-clobber-empty-target-gate
+proof_class: unit
+provider: fake
+input: "tenant isolation survives the restore — the no-clobber empty-target gate counts EVERY org-bearing FORCE-RLS table (boot-seed rows excluded) so a restore refuses a target holding provisioned tenant data, and `palai restore verify` asserts the restored data still FORCE's row-level security with its tenant_isolation policies (a silent cross-tenant breach a superuser read would never notice). Proof seam: the restored production-compose stack B (plan §6); the cloud-VM leg is the operator leg"
+expect_status: completed
+proof:
+  - cmd/cli/internal/stack/install_backup_test.go:TestBuildExcessQuery
