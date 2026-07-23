@@ -1,0 +1,11 @@
+# Test-only overlay for the E15 T5 DR drills (tests/uat/dr). NOT a shipped deploy artifact — layered
+# ON TOP of compose.yaml + production.yml only by the drill harness. One change: re-publish the
+# control-plane API on loopback so the shipped `palai response create`/`secret create` reach the
+# control-plane behind the edge-less production stack (production.yml keeps the API internal with
+# `ports: !reset []`). The runner gateway :8443 stays internal; pg + object-store stay internal and
+# are reached by docker-exec, never a host port. The TLS edge is never started by the harness, so its
+# cert is not needed — this overlay only touches the API port.
+services:
+  control-plane:
+    ports: !override
+      - "127.0.0.1:${PALAI_API_PORT}:8080"
