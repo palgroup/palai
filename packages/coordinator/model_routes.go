@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -51,13 +52,31 @@ type ModelRouteTarget struct {
 	SecretRef  string
 }
 
-// ModelRouteRevision is a created/published revision's projection.
+// ModelRouteRevision is a created/published revision's projection. CreatedAt is populated only by a
+// read-back (the create/publish paths leave it zero, and the store's projection omits a zero timestamp).
 type ModelRouteRevision struct {
 	ID           string
 	Revision     int
 	Model        string
 	ConnectionID string
 	Published    bool
+	CreatedAt    time.Time
+}
+
+// ModelConnectionRecord is a connection's read-back projection. It carries the secret REFERENCE name
+// only — a credential value is redeemed at call time and never travels here.
+type ModelConnectionRecord struct {
+	ID        string
+	Provider  string
+	SecretRef string
+	CreatedAt time.Time
+}
+
+// ModelRouteRecord is a route alias's read-back projection.
+type ModelRouteRecord struct {
+	ID        string
+	Name      string
+	CreatedAt time.Time
 }
 
 // ProjectModelRoute resolves the project's published route, or found=false when the project has none —
@@ -82,6 +101,150 @@ func (s *Store) ProjectModelRoute(ctx context.Context, tenant Tenant) (ModelRout
 	}
 	target.Provider, target.SecretRef = *provider, *secretRef
 	return target, true, nil
+}
+
+// The E16 T1 read-back readers (the E13 T10 write-only gap). Every read runs under the caller's
+// (organization, project) scope — migration 000029's RLS is the first half of the boundary, the org/project
+// predicate in each query the second — so a foreign row is invisible (a non-disclosing 404), never leaked.
+
+// ListModelConnections returns the caller's project connections, secret REF names only.
+func (s *Store) ListModelConnections(ctx context.Context, tenant Tenant) ([]ModelConnectionRecord, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListModelConnections"), tenant.Organization, tenant.Project)
+	if err != nil {
+		return nil, fmt.Errorf("list model connections: %w", err)
+	}
+	defer rows.Close()
+	out := []ModelConnectionRecord{}
+	for rows.Next() {
+		var rec ModelConnectionRecord
+		if err := rows.Scan(&rec.ID, &rec.Provider, &rec.SecretRef, &rec.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan model connection: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate model connections: %w", err)
+	}
+	return out, nil
+}
+
+// GetModelConnection reads one connection in scope; an absent/foreign id is ErrModelConnectionNotFound.
+func (s *Store) GetModelConnection(ctx context.Context, tenant Tenant, connectionID string) (ModelConnectionRecord, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	var rec ModelConnectionRecord
+	err := s.pool.QueryRow(ctx, storage.Query("GetModelConnection"), connectionID, tenant.Organization, tenant.Project).
+		Scan(&rec.ID, &rec.Provider, &rec.SecretRef, &rec.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ModelConnectionRecord{}, ErrModelConnectionNotFound
+	}
+	if err != nil {
+		return ModelConnectionRecord{}, fmt.Errorf("get model connection: %w", err)
+	}
+	return rec, nil
+}
+
+// ListModelRoutes returns the caller's project route aliases.
+func (s *Store) ListModelRoutes(ctx context.Context, tenant Tenant) ([]ModelRouteRecord, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListModelRoutes"), tenant.Organization, tenant.Project)
+	if err != nil {
+		return nil, fmt.Errorf("list model routes: %w", err)
+	}
+	defer rows.Close()
+	out := []ModelRouteRecord{}
+	for rows.Next() {
+		var rec ModelRouteRecord
+		if err := rows.Scan(&rec.ID, &rec.Name, &rec.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan model route: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate model routes: %w", err)
+	}
+	return out, nil
+}
+
+// GetModelRoute reads one route in scope; an absent/foreign id is ErrModelRouteNotFound.
+func (s *Store) GetModelRoute(ctx context.Context, tenant Tenant, routeID string) (ModelRouteRecord, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	var rec ModelRouteRecord
+	err := s.pool.QueryRow(ctx, storage.Query("GetModelRoute"), routeID, tenant.Organization, tenant.Project).
+		Scan(&rec.ID, &rec.Name, &rec.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ModelRouteRecord{}, ErrModelRouteNotFound
+	}
+	if err != nil {
+		return ModelRouteRecord{}, fmt.Errorf("get model route: %w", err)
+	}
+	return rec, nil
+}
+
+// ListModelRouteRevisions returns a route's revisions in ascending order. The route is verified in scope
+// first, so a foreign/unknown route id is ErrModelRouteNotFound — never another tenant's revision list.
+func (s *Store) ListModelRouteRevisions(ctx context.Context, tenant Tenant, routeID string) ([]ModelRouteRevision, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	if err := s.requireModelRoute(ctx, tenant, routeID); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, storage.Query("ListModelRouteRevisions"), routeID)
+	if err != nil {
+		return nil, fmt.Errorf("list model route revisions: %w", err)
+	}
+	defer rows.Close()
+	out := []ModelRouteRevision{}
+	for rows.Next() {
+		rev, err := scanModelRouteRevision(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate model route revisions: %w", err)
+	}
+	return out, nil
+}
+
+// GetModelRouteRevision reads one revision of a route the caller owns. A foreign/unknown route is
+// ErrModelRouteNotFound; a revision id absent from that route is ErrModelRouteRevisionNotFound.
+func (s *Store) GetModelRouteRevision(ctx context.Context, tenant Tenant, routeID, revisionID string) (ModelRouteRevision, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	if err := s.requireModelRoute(ctx, tenant, routeID); err != nil {
+		return ModelRouteRevision{}, err
+	}
+	rev, err := scanModelRouteRevision(s.pool.QueryRow(ctx, storage.Query("GetModelRouteRevision"), revisionID, routeID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ModelRouteRevision{}, ErrModelRouteRevisionNotFound
+	}
+	if err != nil {
+		return ModelRouteRevision{}, err
+	}
+	return rev, nil
+}
+
+// scanModelRouteRevision reads a revision row and derives model/connection_id/published from the config
+// JSONB (publication state rides config->>'published_at', since 000001 gave the table no published_at
+// column). Shared by the list and get readers, and by a pgx.Row or pgx.Rows alike.
+func scanModelRouteRevision(row pgx.Row) (ModelRouteRevision, error) {
+	var (
+		rev    ModelRouteRevision
+		config []byte
+	)
+	if err := row.Scan(&rev.ID, &rev.Revision, &config, &rev.CreatedAt); err != nil {
+		return ModelRouteRevision{}, err
+	}
+	var cfg struct {
+		Model        string  `json:"model"`
+		ConnectionID string  `json:"connection_id"`
+		PublishedAt  *string `json:"published_at"`
+	}
+	if err := json.Unmarshal(config, &cfg); err != nil {
+		return ModelRouteRevision{}, fmt.Errorf("decode model route revision config: %w", err)
+	}
+	rev.Model, rev.ConnectionID, rev.Published = cfg.Model, cfg.ConnectionID, cfg.PublishedAt != nil
+	return rev, nil
 }
 
 // CreateModelConnection binds a provider family to a secret-ref handle for one project (spec §27.2: a

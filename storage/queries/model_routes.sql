@@ -57,6 +57,39 @@ RETURNING id;
 -- name: ModelRouteRevisionExists
 SELECT 1 FROM model_route_revisions WHERE id = $1 AND route_id = $2;
 
+-- The E16 T1 read-back queries (the E13 T10 write-only gap). Each carries the org/project predicate as the
+-- application half of the tenant boundary — the SAME discipline the write queries above use — so a foreign
+-- id matches zero rows (a non-disclosing 404) even independently of RLS. Revisions carry no tenant column,
+-- so they are reached through a route the caller's scope has already been verified to own (requireModelRoute).
+-- No query here selects a credential value: a connection returns its secret REFERENCE name only.
+
+-- name: ListModelConnections
+SELECT id, provider, secret_ref, created_at FROM model_connections
+WHERE organization_id = $1 AND project_id = $2
+ORDER BY id;
+
+-- name: GetModelConnection
+SELECT id, provider, secret_ref, created_at FROM model_connections
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- name: ListModelRoutes
+SELECT id, name, created_at FROM model_routes
+WHERE organization_id = $1 AND project_id = $2
+ORDER BY id;
+
+-- name: GetModelRoute
+SELECT id, name, created_at FROM model_routes
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- name: ListModelRouteRevisions
+SELECT id, revision, config, created_at FROM model_route_revisions
+WHERE route_id = $1
+ORDER BY revision;
+
+-- name: GetModelRouteRevision
+SELECT id, revision, config, created_at FROM model_route_revisions
+WHERE id = $1 AND route_id = $2;
+
 -- ResolveProjectModelRoute is the dispatch-path read: the project's highest PUBLISHED revision of the named
 -- alias, joined to the connection that carries the provider and the credential reference.
 --
