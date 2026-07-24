@@ -31,7 +31,12 @@ if [ "${1:-}" = "--network-none" ]; then
 	bundle_abs="$(cd "$bundle" && pwd)"
 	pub_dir="$(cd "$(dirname "$pub")" && pwd)"
 	pub_base="$(basename "$pub")"
+	# Inside the container the only verifier is the bundle's copy (self_dir == /bundle); --network-none
+	# is a same-session, no-egress local proof (proving offline-verifiability, not channel-swap
+	# resistance), so we explicitly opt into the bundled verifier. For channel-attack safety, run the
+	# git-tracked host scripts/release/sdk-verify.sh (fail-closed sibling verifier) instead.
 	exec docker run --rm --network none \
+		-e PALAI_SDK_ALLOW_BUNDLED_VERIFIER=1 \
 		-v "$bundle_abs:/bundle:ro" \
 		-v "$pub_dir/$pub_base:/pub:ro" \
 		--entrypoint /bin/sh "$tool" /bundle/sdk-verify.sh /bundle /pub
@@ -50,14 +55,34 @@ case "$pub" in
 esac
 
 self_dir="$(cd "$(dirname "$0")" && pwd)"
-verifier="$self_dir/runner-verify.sh"
 
 cd "$bundle"
+bundle_abs="$(pwd)"
 
 for f in sha256sums sha256sums.sig sha256sums.sha256 runner-verify.sh manifest.json; do
 	[ -f "$f" ] || { echo "verify: bundle missing $f" >&2; exit 2; }
 done
-[ -f "$verifier" ] || verifier="$(pwd)/runner-verify.sh"
+
+# The signature check is delegated to runner-verify.sh (E14 T5, ONE signer) — and the VERIFYING CODE
+# must come from OUTSIDE the bundle. A channel attacker with no key can swap the bundle's copy for
+# `#!/bin/sh; exit 0`, tamper the artifacts, and regenerate the WHOLE digest chain (sha256sums +
+# .sha256) to cover every tampered file incl. the fake verifier — the openssl check would then never
+# run (E15 T4 SF-1 class). So PREFER a runner-verify.sh sitting next to THIS script (in the repo
+# workflow that is the git-tracked scripts/release/runner-verify.sh). If the only one available is
+# the bundle's own copy — either no sibling exists, or THIS script IS the bundle's copy
+# (self_dir == bundle) — REFUSE, unless PALAI_SDK_ALLOW_BUNDLED_VERIFIER=1 opts in for a
+# same-session local proof (no channel attacker).
+verifier="$self_dir/runner-verify.sh"
+if [ ! -f "$verifier" ] || [ "$self_dir" = "$bundle_abs" ]; then
+	if [ "${PALAI_SDK_ALLOW_BUNDLED_VERIFIER:-}" = "1" ]; then
+		verifier="$bundle_abs/runner-verify.sh"
+		echo "verify: WARNING — using the BUNDLE's runner-verify.sh (PALAI_SDK_ALLOW_BUNDLED_VERIFIER=1; same-session local proof only, NOT channel-attack safe)" >&2
+	else
+		echo "verify: REFUSING — no trusted out-of-band runner-verify.sh beside this script; the bundle's own copy is untrusted (a channel attacker can neuter it)." >&2
+		echo "verify: run the git-tracked scripts/release/sdk-verify.sh (its sibling runner-verify.sh is version-controlled), or set PALAI_SDK_ALLOW_BUNDLED_VERIFIER=1 for a same-session local proof." >&2
+		exit 2
+	fi
+fi
 echo "verify: using verifier $verifier" >&2
 
 # (1) SIGNATURE over the signed root — E14 T5 verifier VERBATIM. `sha256sums` plays the role of
