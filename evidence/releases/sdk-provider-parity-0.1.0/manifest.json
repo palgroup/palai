@@ -1,0 +1,259 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-24T06:00:00Z",
+  "cases": [
+    {
+      "checksum": "sha256:7dca633472b9b3b3e0b4be89aed1cf55ab7611b46a21766465c3f271ffcd4dcd",
+      "db_assertions": [
+        "API-012 (plan §T8, the E16 EXIT crown): the SAME normalized Responses output was decoded independently by all four clients — the TypeScript, Python, and Go SDKs plus the palai CLI — and the four normalized decodes RE-CANONICALIZE byte-identical; equality_digest = hashParts(the agreed canonical output) is re-derivable + recomputed by the verifier (a fabricated 'equal' over divergent outputs fails)",
+        "PROOF SEAM (plan §6): the deterministic mirror rides make verify (authored data, no Docker/credential); the LIVE four-client parity over a real stack + real provider is the journey tier (make uat-sdk-parity PROVIDER=provider-one) — named, proven independently, NOT claimed here"
+      ],
+      "id": "API-012",
+      "image_digest": "sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "mtls_enroll": "runner-local cn=controller",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_final",
+      "run_id": "run_parity_journey",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "three_language_equality_claim": "equal",
+      "three_language_equality_proof": {
+        "client_outputs": {
+          "cli": {
+            "id": "resp_parity_journey",
+            "model": "conformance-echo",
+            "output_text": "parity ok",
+            "status": "response.completed",
+            "usage": {
+              "input_tokens": 7,
+              "output_tokens": 5,
+              "total_tokens": 12
+            }
+          },
+          "go": {
+            "id": "resp_parity_journey",
+            "model": "conformance-echo",
+            "output_text": "parity ok",
+            "status": "response.completed",
+            "usage": {
+              "input_tokens": 7,
+              "output_tokens": 5,
+              "total_tokens": 12
+            }
+          },
+          "python": {
+            "id": "resp_parity_journey",
+            "model": "conformance-echo",
+            "output_text": "parity ok",
+            "status": "response.completed",
+            "usage": {
+              "input_tokens": 7,
+              "output_tokens": 5,
+              "total_tokens": 12
+            }
+          },
+          "typescript": {
+            "id": "resp_parity_journey",
+            "model": "conformance-echo",
+            "output_text": "parity ok",
+            "status": "response.completed",
+            "usage": {
+              "input_tokens": 7,
+              "output_tokens": 5,
+              "total_tokens": 12
+            }
+          }
+        },
+        "equality_digest": "sha256:644b56f304f5ce84459eec5b7c8dd840efbe9cf8ef17c3d24a148a339b238510",
+        "run_id": "run_parity_journey"
+      },
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      }
+    },
+    {
+      "checksum": "sha256:71eb9c46829092cc900375fe3f82ec7f5178e2c6038b316052483b80fc24a819",
+      "db_assertions": [
+        "MOD-001 (plan §T8): the second independent provider family (provider-two, Anthropic Messages) passes the canonical conformance surface text/stream/tool/schema with a single attempt (no hidden retry). facets == the canonical ProviderConformanceFacets (anchored: a dropped facet cannot pass)",
+        "PROOF SEAM: deterministic wire-fixture conformance (tests/conformance/models, live_class=deterministic); the REAL Anthropic completion is the journey tier (ANTROPHIC_API_KEY in .env.local) — the live run's msg_ id is captured there, NOT authored here"
+      ],
+      "id": "MOD-001",
+      "image_digest": "sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "mtls_enroll": "runner-local cn=controller",
+      "proof_class": "e2e-deterministic",
+      "provider_conformance_claim": "conformant",
+      "provider_conformance_proof": {
+        "attempts": 1,
+        "facets": [
+          "text",
+          "stream",
+          "tool",
+          "schema"
+        ],
+        "live_class": "deterministic",
+        "provider": "provider-two"
+      },
+      "provider_request_id": "prov_final",
+      "run_id": "run_parity_journey",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      }
+    },
+    {
+      "checksum": "sha256:71fc3c6c680043855a76332c2acd10f560d71b6d33d65a384967691923fe1e2b",
+      "db_assertions": [
+        "MOD-002 (plan §T8, §27.5): the openai-compatible adapter's ACTIVE capability probe records streaming/tool_calls/structured_json support, and an unsupported HARD requirement is admission-rejected BEFORE any run (capability_unsupported). facets == canonical + probe_digest well-formed + admission_rejected",
+        "PROOF SEAM: deterministic capability-filter conformance (tests/conformance/models/capability_filter_conformance_test.go); the live probe against a real OpenAI endpoint + a feature-poor stand-in is the journey tier"
+      ],
+      "id": "MOD-002",
+      "image_digest": "sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "mtls_enroll": "runner-local cn=controller",
+      "proof_class": "e2e-deterministic",
+      "provider_conformance_claim": "conformant",
+      "provider_conformance_proof": {
+        "admission_rejected": true,
+        "attempts": 1,
+        "facets": [
+          "text",
+          "stream",
+          "tool",
+          "schema"
+        ],
+        "live_class": "deterministic",
+        "probe_digest": "sha256:bafe4cc4baab190c6788feaea93496ebd7e3940ea93505a4645c8762d1da8a18",
+        "provider": "openai-compatible"
+      },
+      "provider_request_id": "prov_final",
+      "run_id": "run_parity_journey",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      }
+    },
+    {
+      "checksum": "sha256:f0c6b731b9d087a8f6c3772d08f93f39738eadee160af16688b1347eaa9327e4",
+      "db_assertions": [
+        "MOD-008 (plan §T8): provider-one passes text/stream/tool/schema with an HONEST attempt count of 1 — proof of no hidden-retry multiplier. facets == canonical ProviderConformanceFacets",
+        "PROOF SEAM: deterministic conformance (tests/conformance/models); the live provider-one run is the journey tier (OPENAI_API_KEY)"
+      ],
+      "id": "MOD-008",
+      "image_digest": "sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "mtls_enroll": "runner-local cn=controller",
+      "proof_class": "e2e-deterministic",
+      "provider_conformance_claim": "conformant",
+      "provider_conformance_proof": {
+        "attempts": 1,
+        "facets": [
+          "text",
+          "stream",
+          "tool",
+          "schema"
+        ],
+        "live_class": "deterministic",
+        "provider": "provider-one"
+      },
+      "provider_request_id": "prov_final",
+      "run_id": "run_parity_journey",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      }
+    },
+    {
+      "checksum": "sha256:9018442234fc4e0b28fa926cfa684d833396e34aee32068c81e11e7c5ec9636c",
+      "db_assertions": [
+        "MOD-003 (plan §T8, the exit sentence's second clause): the openai-compatible route points at a local stand-in proxy; the proxy is KILLED, a run on the gateway route TYPED-FAILS, and the DIRECT provider-one/provider-two routes keep serving a REAL run. config_digest = hashParts(canonical GatewayOffRouteConfig) is re-derivable (a dropped direct route cannot keep it); direct_provider_request_id is provider-shaped",
+        "PROOF SEAM: the deterministic mirror authors the shape; the LIVE proxy-kill drill over a real stack + real provider is the journey tier (make uat-sdk-parity). The stand-in proxy is explicitly NAMED a stand-in (a real LiteLLM/private-server gateway drill is the §6 operator leg)"
+      ],
+      "gateway_off_claim": "gateway-off",
+      "gateway_off_proof": {
+        "config_digest": "sha256:9a6e9ad7ac6aca46d9940d18a20b31df3fe3830685a05cbdc8f3ce19ed1a358f",
+        "direct_completed": true,
+        "direct_provider_request_id": "chatcmpl-parityDirect01",
+        "direct_run_id": "run_parity_direct",
+        "gateway_route": "gpt-4.1-mini@openai-compatible",
+        "gateway_run_failed": true,
+        "proxy_killed": true
+      },
+      "id": "MOD-003",
+      "image_digest": "sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "mtls_enroll": "runner-local cn=controller",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_final",
+      "run_id": "run_parity_journey",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      }
+    },
+    {
+      "checksum": "sha256:4145e564cd9ff979c4a6a81ab08bc14f893eb70a5ef16553ad5d7b21e35b5f48",
+      "db_assertions": [
+        "PKG-001 (plan §T8, reusing T7): the three SDK packages (typescript/python/go) build locally, their sha256sums manifest is signed (openssl P-256 detached, E14 T5 tool), and the bundle re-verifies OFFLINE with a tamper rejected — scripts/release/sdk-package.sh + sdk-verify.sh, unit-pinned by scripts/release/sdk_package_test.go. manifest_digest = hashParts(sorted package names) is re-derivable",
+        "PROOF SEAM (plan §5): LOCAL build + checksum + signature only; public-registry publish + SBOM/provenance attestation is E18 (named, NOT claimed)"
+      ],
+      "id": "PKG-001",
+      "image_digest": "sha256:e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1",
+      "mtls_enroll": "runner-local cn=controller",
+      "packaging_claim": "packaged",
+      "packaging_proof": {
+        "manifest_digest": "sha256:e20dfabfc1f87bbea1d0b034293d60fada0567fd16bd93830b7be3804e7b7013",
+        "offline_verified": true,
+        "packages": [
+          "go",
+          "python",
+          "typescript"
+        ],
+        "signature_verified": true,
+        "tamper_rejected": true
+      },
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_final",
+      "run_id": "run_parity_journey",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      }
+    }
+  ],
+  "git_sha": "7c3c724",
+  "maturity": "rc",
+  "migration": "000034_contract_usage_events",
+  "release": "sdk-provider-parity-0.1.0"
+}

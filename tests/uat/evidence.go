@@ -171,6 +171,24 @@ type evidenceCase struct {
 	AirgapProof           *AirgapProof           `json:"airgap_proof"`
 	HelmRenderClaim       string                 `json:"helm_render_claim"`
 	HelmRenderProof       *HelmRenderProof       `json:"helm_render_proof"`
+	// The E16 SDK-parity + provider-completeness claims (plan §T8, API-012..015 + MOD-001..012 — the E16 EXIT
+	// gate, the capstone) extend the same marker-alone-is-NEVER-proof discipline to the four invariants this
+	// gate owns: the SAME live run decoded IDENTICALLY by the three SDK languages + the CLI
+	// (ThreeLanguageEqualityClaim, API-012 — the mechanical cross-language equality crown; the verifier
+	// RE-CANONICALIZES the four outputs and recomputes the equality digest, so a fabricated "equal" fails); a
+	// provider FAMILY passed text/stream/tool/schema with an honest attempt count + honest live class
+	// (ProviderConformanceClaim, MOD-001/002 — folding the openai-compatible capability probe/admission-reject);
+	// the stand-in gateway was KILLED and the direct provider routes kept serving a real run (GatewayOffClaim,
+	// MOD-003 direct-path half — the exit sentence's second clause); and the SDK packages built + signed +
+	// re-verified offline (PackagingClaim, reusing T7). Each requires its proof.
+	ThreeLanguageEqualityClaim string                      `json:"three_language_equality_claim"`
+	ThreeLanguageEqualityProof *ThreeLanguageEqualityProof `json:"three_language_equality_proof"`
+	ProviderConformanceClaim   string                      `json:"provider_conformance_claim"`
+	ProviderConformanceProof   *ProviderConformanceProof   `json:"provider_conformance_proof"`
+	GatewayOffClaim            string                      `json:"gateway_off_claim"`
+	GatewayOffProof            *GatewayOffProof            `json:"gateway_off_proof"`
+	PackagingClaim             string                      `json:"packaging_claim"`
+	PackagingProof             *PackagingProof             `json:"packaging_proof"`
 }
 
 type evidenceTerm struct {
@@ -756,6 +774,188 @@ func (p HelmRenderProof) Complete() bool {
 		p.NoClusterRole
 }
 
+// EqualityClients is the canonical four-client set the E16 SDK-parity EXIT journey (plan §T8, API-012) drives
+// the SAME live Responses run through: the three SDK LANGUAGES (TypeScript, Python, Go) plus the palai CLI. The
+// "three languages semantically equal" exit sentence is the load-bearing claim; the CLI is a fourth client that
+// must also agree. A ThreeLanguageEqualityProof's client_outputs must cover EXACTLY this set, and the
+// anti-fabrication gate RE-CANONICALIZES each client's raw output and asserts all four are byte-identical AND
+// that equality_digest reproduces from that agreed form — a fabricated "equal" over divergent outputs, or a
+// hand-written digest, is caught the way the E15 event_continuity_digest was.
+var EqualityClients = []string{"typescript", "python", "go", "cli"}
+
+// ProviderConformanceFacets is the canonical conformance surface each provider FAMILY must pass (plan §T8,
+// MOD-001): text, streaming, tool-calling, strict-schema. A ProviderConformanceProof's facets must equal this
+// set exactly (slices.Equal), so a bundle that quietly drops a facet cannot keep a matching claim — the
+// HelmPolicyAsserts anchoring discipline applied to provider conformance.
+var ProviderConformanceFacets = []string{"text", "stream", "tool", "schema"}
+
+// GatewayOffRouteConfig is the canonical route->adapter topology the gateway-off leg proves (plan §T8, the exit
+// sentence's second half "when the stand-in gateway is killed, the direct routes still serve"): the stand-in
+// gateway route resolves the openai-compatible adapter (killable), while the two DIRECT routes resolve the
+// provider-one and provider-two families (which never touch the gateway base URL). A GatewayOffProof's
+// config_digest must be hashParts of exactly this list, so a fabricated config that drops a direct route cannot
+// keep a matching digest.
+var GatewayOffRouteConfig = []string{"gateway=openai-compatible", "direct=provider-one", "direct=provider-two"}
+
+// knownProviders is the adapter-family vocabulary a ProviderConformanceProof may name.
+var knownProviders = map[string]bool{
+	"provider-one": true, "provider-two": true, "openai-compatible": true, "fake": true,
+}
+
+// canonicalJSON renders a raw JSON value in canonical form (map keys sorted, number forms normalized) via a
+// decode-then-re-encode round trip — the same construction the T2 harness's canon() uses. Two structurally-equal
+// values from different SDK languages canonicalize to identical bytes; ok is false for non-JSON input.
+func canonicalJSON(raw json.RawMessage) (string, bool) {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return "", false
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+// ThreeLanguageEqualityProof is the evidence a three_language_equality_claim requires (plan §T8, API-012 — the
+// E16 EXIT gate's crown): the SAME live Responses run, decoded independently by all four EqualityClients (the
+// three SDK languages + the CLI), produced the SAME normalized output. ClientOutputs maps each client to its raw
+// normalized decode of the shared run; RunID is the run every client decoded; EqualityDigest is hashParts of the
+// single agreed canonical output. This is the mechanical cross-language diff (design invariant §2) hoisted into
+// the evidence tier: Complete() RE-CANONICALIZES every client's output and asserts they are byte-identical AND
+// that EqualityDigest reproduces from that agreed form — so a fabricated "equal" over divergent outputs, a
+// missing client, or a hand-edited digest FAILS here (the anti-fabrication anchor, the E15 SF-4 shape applied to
+// cross-language equality). A hand-written per-language expectation was never the proof — the four real decodes are.
+type ThreeLanguageEqualityProof struct {
+	RunID          string                     `json:"run_id"`
+	ClientOutputs  map[string]json.RawMessage `json:"client_outputs"`
+	EqualityDigest string                     `json:"equality_digest"`
+}
+
+// Complete reports a run id, an output from EVERY canonical client that RE-CANONICALIZES to one shared form, and
+// an equality_digest that is hashParts of that agreed canonical output. It recomputes the equality IN the gate
+// (not from a stored "equal" boolean): divergent outputs, a missing/extra client, a non-JSON output, or a digest
+// that does not reproduce all fail — a fabricated cross-language "equality" cannot pass.
+func (p ThreeLanguageEqualityProof) Complete() bool {
+	if p.RunID == "" || len(p.ClientOutputs) != len(EqualityClients) {
+		return false
+	}
+	var agreed string
+	for i, client := range EqualityClients {
+		raw, ok := p.ClientOutputs[client]
+		if !ok {
+			return false
+		}
+		canon, ok := canonicalJSON(raw)
+		if !ok || canon == "" {
+			return false
+		}
+		if i == 0 {
+			agreed = canon
+		} else if canon != agreed {
+			return false // a client's decode diverged — not semantically equal
+		}
+	}
+	return p.EqualityDigest == hashParts(agreed)
+}
+
+// GatewayOffProof is the evidence a gateway_off_claim requires (plan §T8, MOD-003 direct-path half — the exit
+// sentence's second clause): the openai-compatible route pointed at a local stand-in proxy, the proxy was KILLED,
+// a run on the gateway route then TYPED-FAILED, and the DIRECT provider-one/provider-two routes kept serving a
+// REAL run. ConfigDigest is hashParts of the canonical GatewayOffRouteConfig (re-derivable — a dropped direct
+// route cannot keep the digest); GatewayRoute is the killed route's model id; ProxyKilled/GatewayRunFailed record
+// the kill + the typed failure; DirectRunID/DirectProviderRequestID/DirectCompleted record the direct run that
+// COMPLETED after the kill with a real provider request id. A "gateway-off" marker with a fabricated config, a
+// proxy that was not killed, a gateway run that did not fail, or no completed direct run is not proof.
+type GatewayOffProof struct {
+	ConfigDigest            string `json:"config_digest"`
+	GatewayRoute            string `json:"gateway_route"`
+	ProxyKilled             bool   `json:"proxy_killed"`
+	GatewayRunFailed        bool   `json:"gateway_run_failed"`
+	DirectRunID             string `json:"direct_run_id"`
+	DirectProviderRequestID string `json:"direct_provider_request_id"`
+	DirectCompleted         bool   `json:"direct_completed"`
+}
+
+// Complete reports the CANONICAL route config digest (anchored in-gate to GatewayOffRouteConfig, the SF-4
+// shape), a killed proxy, a typed gateway failure, and a direct run that completed with a provider-shaped
+// request id. A fabricated config (dropping a direct route), a proxy that stayed up, a gateway run that did not
+// fail, or a direct run that did not complete/carry a real id fails.
+func (p GatewayOffProof) Complete() bool {
+	return p.ConfigDigest == hashParts(GatewayOffRouteConfig...) && p.GatewayRoute != "" &&
+		p.ProxyKilled && p.GatewayRunFailed && p.DirectRunID != "" &&
+		liveProviderIDPattern.MatchString(p.DirectProviderRequestID) && p.DirectCompleted
+}
+
+// ProviderConformanceProof is the evidence a provider_conformance_claim requires (plan §T8, MOD-001/002): one
+// adapter FAMILY passed the canonical conformance surface (text/stream/tool/schema) with an HONEST attempt count
+// (no hidden retry — Attempts==1) and an honestly-named live class. Facets must equal ProviderConformanceFacets
+// exactly (anchored). LiveClass is "live" (a real completion ran, so ProviderRequestID must be provider-shaped),
+// "credential-gated" (the §6 operator leg — named, not claimed, no id), or "deterministic" (the wire-fixture
+// conformance tier, no id). For the openai-compatible family this proof ALSO carries the capability-probe
+// evidence: ProbeDigest is a well-formed digest of the probed capability record and AdmissionRejected records
+// that an unsupported hard requirement was refused BEFORE a run (MOD-002/004 — the probe evidence folded in). A
+// dropped facet, a hidden-retry attempt count, a "live" class without a provider-shaped id, or (openai-compatible)
+// missing probe evidence is not proof.
+type ProviderConformanceProof struct {
+	Provider          string   `json:"provider"`
+	Facets            []string `json:"facets"`
+	Attempts          int      `json:"attempts"`
+	LiveClass         string   `json:"live_class"`
+	ProviderRequestID string   `json:"provider_request_id"`
+	ProbeDigest       string   `json:"probe_digest"`
+	AdmissionRejected bool     `json:"admission_rejected"`
+}
+
+// Complete reports a known provider family, the CANONICAL conformance facet set (anchored in-gate), a single
+// attempt, and an honest live class consistent with the request id. For the openai-compatible family it also
+// requires a well-formed probe digest AND that an unsupported hard requirement was admission-rejected. A
+// non-canonical facet set, Attempts!=1, a "live" class whose id is not provider-shaped, a non-live class that
+// smuggles an id, or (openai-compatible) missing probe evidence fails.
+func (p ProviderConformanceProof) Complete() bool {
+	if !knownProviders[p.Provider] || !slices.Equal(p.Facets, ProviderConformanceFacets) || p.Attempts != 1 {
+		return false
+	}
+	switch p.LiveClass {
+	case "live":
+		if !liveProviderIDPattern.MatchString(p.ProviderRequestID) {
+			return false
+		}
+	case "credential-gated", "deterministic":
+		if p.ProviderRequestID != "" {
+			return false // a non-live class must not smuggle a request id it did not earn
+		}
+	default:
+		return false
+	}
+	if p.Provider == "openai-compatible" {
+		return checksumPattern.MatchString(p.ProbeDigest) && p.AdmissionRejected
+	}
+	return true
+}
+
+// PackagingProof is the evidence a packaging_claim requires (plan §T8, reusing T7): the SDK packages built
+// locally, their sha256sums manifest SIGNED (openssl P-256 detached, the E14 T5 tool), and the bundle re-verified
+// OFFLINE with a tamper rejected — the scripts/release/sdk-package.sh + sdk-verify.sh chain, unit-pinned by
+// scripts/release/sdk_package_test.go. ManifestDigest is the signed sha256sums root digest; Packages are the
+// built package names (>= 1); SignatureVerified/OfflineVerified/TamperRejected record the verify outcome. Honest
+// ceiling (plan §5): LOCAL build + checksum + signature only — public-registry publish + SBOM/provenance
+// attestation is E18. A malformed digest, no packages, or any false is not proof.
+type PackagingProof struct {
+	ManifestDigest    string   `json:"manifest_digest"`
+	Packages          []string `json:"packages"`
+	SignatureVerified bool     `json:"signature_verified"`
+	OfflineVerified   bool     `json:"offline_verified"`
+	TamperRejected    bool     `json:"tamper_rejected"`
+}
+
+// Complete reports a well-formed manifest digest, at least one built package, a verified signature, an offline
+// re-verify, and a rejected tamper. A malformed digest, no packages, or any false is not proof.
+func (p PackagingProof) Complete() bool {
+	return checksumPattern.MatchString(p.ManifestDigest) && len(p.Packages) >= 1 &&
+		p.SignatureVerified && p.OfflineVerified && p.TamperRejected
+}
+
 // secretPattern matches a credential-shaped token (an OpenAI-style sk- key), so a plaintext
 // credential fails the redaction scan even when the exact value is not supplied as a needle.
 var secretPattern = regexp.MustCompile(`sk-[A-Za-z0-9_-]{12,}`)
@@ -782,10 +982,10 @@ var remoteSigningSecretPattern = regexp.MustCompile(`whsec_[A-Za-z0-9_-]{6,}`)
 // checksumPattern is the required checksum shape (sha256:<64 hex>).
 var checksumPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-// liveProviderIDPattern is the provider request-id shape a live-provider case must carry.
-// Today the only live adapter is provider-one (OpenAI Chat Completions, ids "chatcmpl-...");
-// widen the alternation when a second live adapter lands.
-var liveProviderIDPattern = regexp.MustCompile(`^chatcmpl-[A-Za-z0-9_-]+$`)
+// liveProviderIDPattern is the provider request-id shape a live-provider case must carry. Two live adapters
+// now ship (E16 T5): provider-one (OpenAI Chat Completions, ids "chatcmpl-...") and provider-two (Anthropic
+// Messages, ids "msg_..."). Widen the alternation when a third live adapter lands.
+var liveProviderIDPattern = regexp.MustCompile(`^(chatcmpl-|msg_)[A-Za-z0-9_-]+$`)
 
 // externalReceiptPattern is the real remote-ref/PR receipt shape an external-receipt case must carry
 // (spec §30.9-30.10, REP-006/008) — parallel to liveProviderIDPattern's ^chatcmpl- for live-provider.
@@ -1047,6 +1247,41 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "helm_render_proof (a helm-render claim requires the render hash + the restricted policy asserts + a re-derivable asserts digest + no-ClusterRole; a 'rendered' marker is not proof)"})
 			case !c.HelmRenderProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "helm_render_proof is incomplete: a malformed render/asserts digest, fewer than the canonical policy asserts, or a ClusterRole present in the render (OPS-003)"})
+			}
+		}
+
+		// The E16 SDK-parity claims mirror the rule exactly: a non-empty marker with no proof is "missing"; a
+		// proof that fails its Complete() invariant is "invalid" (plan §T8, API-012..015 + MOD-001..012).
+		if c.ThreeLanguageEqualityClaim != "" {
+			switch {
+			case c.ThreeLanguageEqualityProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "three_language_equality_proof (a parity claim requires the four clients' raw normalized outputs + the equality digest; an 'equal' marker is not proof)"})
+			case !c.ThreeLanguageEqualityProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "three_language_equality_proof is incomplete: a missing client, a client whose output does not re-canonicalize equal to the others, or an equality_digest that does not reproduce from the agreed output (API-012)"})
+			}
+		}
+		if c.ProviderConformanceClaim != "" {
+			switch {
+			case c.ProviderConformanceProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "provider_conformance_proof (a conformance claim requires the provider + the canonical facet set + attempts + honest live class; a marker is not proof)"})
+			case !c.ProviderConformanceProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "provider_conformance_proof is incomplete: an unknown provider, a non-canonical facet set, a hidden-retry attempt count, a 'live' class without a provider-shaped id, or (openai-compatible) missing probe/admission-reject evidence (MOD-001/002)"})
+			}
+		}
+		if c.GatewayOffClaim != "" {
+			switch {
+			case c.GatewayOffProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "gateway_off_proof (a gateway-off claim requires the canonical route-config digest + a killed proxy + a typed gateway failure + a completed direct run; a marker is not proof)"})
+			case !c.GatewayOffProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "gateway_off_proof is incomplete: a fabricated route-config digest, a proxy that stayed up, a gateway run that did not fail, or a direct run that did not complete with a provider-shaped id (MOD-003 direct-path half)"})
+			}
+		}
+		if c.PackagingClaim != "" {
+			switch {
+			case c.PackagingProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "packaging_proof (a packaging claim requires the signed manifest digest + built packages + an offline re-verify + a rejected tamper; a marker is not proof)"})
+			case !c.PackagingProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "packaging_proof is incomplete: a malformed manifest digest, no built packages, a signature that did not verify, a verify that was not offline, or a tamper that was not rejected (T7)"})
 			}
 		}
 
