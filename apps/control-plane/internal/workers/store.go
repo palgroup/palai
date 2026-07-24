@@ -139,6 +139,16 @@ func (s *Store) DispatchJob(ctx context.Context, tenant Tenant, spec JobSpec) (s
 	jobID := spec.JobID
 	if jobID == "" {
 		jobID = s.mintID("cjob")
+	} else {
+		// MINOR 4: never re-open an existing job with a fresh 'dispatched' at fence 1 — that wedges it (latest
+		// fence 1 != MAX ⇒ every submit is ErrStaleFence). A re-dispatch is RedispatchForRetry (fence+1).
+		var exists bool
+		if err := s.pool.QueryRow(ctx, storage.Query("JobHasEntries"), jobID, tenant.Organization, tenant.Project).Scan(&exists); err != nil {
+			return "", fmt.Errorf("check job exists: %w", err)
+		}
+		if exists {
+			return "", ErrJobExists
+		}
 	}
 	if err := s.appendEntry(ctx, tenant, entry{
 		jobID: jobID, kind: "dispatched", idempotencyKey: spec.IdempotencyKey, runID: spec.RunID,
@@ -191,12 +201,17 @@ func (s *Store) ClaimNext(ctx context.Context, tenant Tenant, workerID string) (
 		return Claim{}, false, ErrUntypedOperation
 	}
 
+	fireAfterFenceGuard()
 	if err := s.appendEntry(sctx, tenant, entry{
 		jobID: jobID, kind: "leased", workerID: workerID, capability: worker.Spec.Capability,
 		operation: operation, fence: jobFence, sideEffectKey: sideEffectKey,
+		guarded: true, workerFence: worker.Fence,
 	}); err != nil {
-		if isUniqueViolation(err) {
-			return Claim{}, false, nil // another worker leased it first
+		// A stale lease — the job fence was bumped by a re-dispatch (or the worker drained) between the ready
+		// read and this append — or a lost seq race both mean the lease did not land. The job stays claimable
+		// by the next worker; a stale 'leased' entry never buries the re-dispatch.
+		if errors.Is(err, errFenceGuardMiss) || isUniqueViolation(err) {
+			return Claim{}, false, nil
 		}
 		return Claim{}, false, err
 	}
@@ -240,12 +255,25 @@ func (s *Store) SubmitResult(ctx context.Context, claim Claim, outcome Outcome) 
 	default:
 		return fmt.Errorf("workers: invalid outcome class %q", outcome.Class)
 	}
+	fireAfterFenceGuard()
 	sctx := storage.WithTenant(ctx, claim.Tenant.Organization, claim.Tenant.Project)
-	return s.appendEntry(sctx, claim.Tenant, entry{
+	if err := s.appendEntry(sctx, claim.Tenant, entry{
 		jobID: claim.JobID, kind: kind, workerID: claim.WorkerID, capability: claim.Capability,
 		operation: claim.Operation, fence: claim.JobFence, receipt: orEmptyMap(outcome.Receipt),
 		outputRefs: outcome.OutputRefs, sideEffectKey: claim.SideEffectKey,
-	})
+		guarded: true, workerFence: claim.WorkerFence,
+	}); err != nil {
+		if errors.Is(err, errFenceGuardMiss) {
+			// The guard passed but the world moved before the terminal append landed: re-read to name the
+			// precise reason (stale job fence / worker fenced / lease lost), else fall back to stale fence.
+			if ge := s.guardFences(ctx, claim); ge != nil {
+				return ge
+			}
+			return ErrStaleFence
+		}
+		return err
+	}
+	return nil
 }
 
 // RedispatchForRetry re-dispatches a job to another compatible worker by appending a NEW dispatched entry at
@@ -356,6 +384,14 @@ func (s *Store) guardFences(ctx context.Context, claim Claim) error {
 	if !ok || worker.Fence != claim.WorkerFence {
 		return ErrWorkerFenced
 	}
+	// SHOULD-FIX 2: the job's CURRENT lease must be THIS worker's — the latest entry is 'leased' AND its
+	// worker_id is the claimant. A caller forging a claim for a job it never leased (fences are small,
+	// guessable ints) clears the fence checks but fails here; a double-terminal submit (latest already
+	// terminal, not 'leased') is refused too. Leaseholder identity can change only via a re-dispatch, which
+	// bumps the fence — so the guarded append's atomic fence re-check backstops this read.
+	if cur.kind != "leased" || cur.workerID != claim.WorkerID {
+		return ErrNotLeaseholder
+	}
 	return nil
 }
 
@@ -417,6 +453,27 @@ type entry struct {
 	fence            int64
 	receipt          map[string]any
 	outputRefs       []string
+	guarded          bool  // append via AppendGuardedJobEntry — the fence-guarded leased/terminal legs
+	workerFence      int64 // the claim's worker enrollment fence, re-verified inside the guarded append
+}
+
+// errFenceGuardMiss is the guarded append's "did not land": the in-statement fence / worker-fence predicate
+// no longer matched (a concurrent re-dispatch or health change advanced the world in the guard-then-append
+// window), or the computed entry_seq lost the UNIQUE(job_id, entry_seq) race. Callers re-classify it —
+// SubmitResult to the precise fence error, ClaimNext to a no-op no-claim.
+var errFenceGuardMiss = errors.New("workers: guarded append did not land (fence no longer current)")
+
+// afterFenceGuardHook, when non-nil, runs in the WINDOW between the fence guard read and the guarded journal
+// append (SubmitResult and ClaimNext). It exists ONLY so a component test can DETERMINISTICALLY interleave a
+// concurrent re-dispatch / health change into the exact TOCTOU window the guarded append must close; it is
+// nil in every non-test build. ponytail: a package var over a Store field — the seam is test-only and the
+// component tier runs -p 1, so a single set/reset per test is safe.
+var afterFenceGuardHook func()
+
+func fireAfterFenceGuard() {
+	if afterFenceGuardHook != nil {
+		afterFenceGuardHook()
+	}
 }
 
 func (s *Store) appendEntry(ctx context.Context, tenant Tenant, e entry) error {
@@ -435,11 +492,24 @@ func (s *Store) appendEntry(ctx context.Context, tenant Tenant, e entry) error {
 	if !e.deadline.IsZero() {
 		deadline = e.deadline
 	}
-	var seq, fence int64
-	err := s.pool.QueryRow(sctx, storage.Query("AppendCapabilityJobEntry"),
+	query := "AppendCapabilityJobEntry"
+	args := []any{
 		s.mintID("cje"), tenant.Organization, tenant.Project, e.jobID, e.kind, e.idempotencyKey, e.runID,
 		e.attemptID, e.workerID, e.capability, e.operation, inputRefs, secretRefs, deadline, resourceLimits,
-		outputSchema, networkPolicy, e.sideEffectKey, e.fence, receiptJSON).Scan(&seq, &fence)
+		outputSchema, networkPolicy, e.sideEffectKey, e.fence, receiptJSON,
+	}
+	if e.guarded {
+		// Leased/terminal legs re-verify the §31.6 fence IN the INSERT (one statement snapshot). A concurrent
+		// re-dispatch/health change that has committed makes it 0 rows; if not yet visible, the two appenders
+		// compute the same entry_seq and one loses UNIQUE — both surface as errFenceGuardMiss.
+		query = "AppendGuardedJobEntry"
+		args = append(args, e.workerFence)
+	}
+	var seq, fence int64
+	err := s.pool.QueryRow(sctx, storage.Query(query), args...).Scan(&seq, &fence)
+	if e.guarded && (errors.Is(err, pgx.ErrNoRows) || isUniqueViolation(err)) {
+		return errFenceGuardMiss
+	}
 	if err != nil {
 		return fmt.Errorf("append job entry (%s): %w", e.kind, err)
 	}

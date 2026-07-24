@@ -136,4 +136,11 @@ var (
 	// ErrNotRetryable rejects a blind retry of a side-effecting operation (only read-only ops retry on
 	// another worker; a side-effecting one relies on destination idempotency — §31.6).
 	ErrNotRetryable = errors.New("workers: a side-effecting operation is not blindly retryable")
+	// ErrNotLeaseholder rejects a submit/redeem whose claim is not the job's CURRENT lease: the latest journal
+	// entry must be a 'leased' entry held by exactly this worker. A caller constructing a claim for a job it
+	// does not hold the lease on (fences are small guessable ints) is refused here, not just at the fence.
+	ErrNotLeaseholder = errors.New("workers: claim does not hold the job's current lease")
+	// ErrJobExists refuses a dispatch onto a job_id that already has journal entries: a fresh 'dispatched' at
+	// fence 1 would re-open a terminal job into a wedged state. A re-dispatch goes through RedispatchForRetry.
+	ErrJobExists = errors.New("workers: job id already has journal entries; re-dispatch via RedispatchForRetry")
 )

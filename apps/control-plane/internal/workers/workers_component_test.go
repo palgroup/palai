@@ -508,3 +508,211 @@ func TestCapabilityWorkerCrossTenantIsolation(t *testing.T) {
 		t.Fatalf("ClaimNext(B) ok=%v err=%v, want no cross-tenant job", ok, err)
 	}
 }
+
+// --- fence-TOCTOU: the guarded append closes the guard-then-append window ----------------------------------
+//
+// The §31.6 fence guard (guardFences) is one read; the journal append is a second statement. Under real
+// concurrency a re-dispatch / health change can commit BETWEEN them, so a guard that passed at fence N lets a
+// stale terminal (or a stale lease) land after the fence moved to N+1 — the crown security hole. The tests
+// below make that interleave DETERMINISTIC with a test-only seam (SetAfterFenceGuardHook) that fires in
+// exactly that window, then assert the GUARDED append rejects the stale write and the re-dispatch stays the
+// journal's latest/claimable entry. RED against an unguarded append (the stale write lands); GREEN with the
+// in-statement fence predicate (AppendGuardedJobEntry).
+
+// TestSubmitFenceTOCTOUInterleaveRejected is the submit leg: a re-dispatch bumps the job fence in the window
+// between SubmitResult's guard and its append. The stale 'completed' must NOT land (ErrStaleFence), and the
+// re-dispatch stays the latest entry, claimable by the next worker.
+func TestSubmitFenceTOCTOUInterleaveRejected(t *testing.T) {
+	cs := openHarness(t)
+	store := newStore(cs, fakeSecrets{}, nil)
+	tenant := seedTenant(t, cs)
+	wa := enrolledWorker(t, store, tenant, nil)
+	wb := enrolledWorker(t, store, tenant, nil)
+
+	jobID, err := store.DispatchJob(context.Background(), tenant, workers.JobSpec{
+		Capability: "swift-toolchain", Operation: "swift.build-check", Deadline: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("DispatchJob() error = %v", err)
+	}
+	claimA, ok, err := store.ClaimNext(context.Background(), tenant, wa.ID)
+	if err != nil || !ok {
+		t.Fatalf("ClaimNext(A) ok=%v err=%v", ok, err)
+	}
+
+	var newFence int64
+	workers.SetAfterFenceGuardHook(func() {
+		workers.SetAfterFenceGuardHook(nil) // fire once
+		nf, e := store.RedispatchForRetry(context.Background(), tenant, jobID)
+		if e != nil {
+			t.Errorf("interleaved RedispatchForRetry() error = %v", e)
+		}
+		newFence = nf
+	})
+	t.Cleanup(func() { workers.SetAfterFenceGuardHook(nil) })
+
+	err = store.SubmitResult(context.Background(), claimA, workers.Outcome{Class: "completed", Operation: "swift.build-check"})
+	if !errors.Is(err, workers.ErrStaleFence) {
+		t.Fatalf("interleaved stale SubmitResult error = %v, want ErrStaleFence (the guarded append must reject the terminal that raced a re-dispatch)", err)
+	}
+	// The stale 'completed' never landed: the latest entry is the re-dispatch, not a terminal.
+	assertJournalKinds(t, cs, jobID, []string{"dispatched", "leased", "dispatched"})
+	// And the re-dispatch is NOT buried — worker B claims it at the current fence and completes it.
+	claimB, ok, err := store.ClaimNext(context.Background(), tenant, wb.ID)
+	if err != nil || !ok {
+		t.Fatalf("ClaimNext(B) after interleave ok=%v err=%v (the re-dispatch was buried under a stale terminal)", ok, err)
+	}
+	if claimB.JobFence != newFence {
+		t.Fatalf("claim B fence = %d, want the re-dispatch fence %d", claimB.JobFence, newFence)
+	}
+	if err := store.SubmitResult(context.Background(), claimB, workers.Outcome{Class: "completed", Operation: "swift.build-check"}); err != nil {
+		t.Fatalf("SubmitResult(B) error = %v, want accepted at the current fence", err)
+	}
+}
+
+// TestSubmitWorkerFenceTOCTOUInterleaveRejected is the worker-fence leg: a health change bumps the worker's
+// enrollment fence between SubmitResult's guard and its append. The stale terminal must be rejected
+// (ErrWorkerFenced) and no terminal entry lands.
+func TestSubmitWorkerFenceTOCTOUInterleaveRejected(t *testing.T) {
+	cs := openHarness(t)
+	store := newStore(cs, fakeSecrets{}, nil)
+	tenant := seedTenant(t, cs)
+	w := enrolledWorker(t, store, tenant, nil)
+
+	jobID, err := store.DispatchJob(context.Background(), tenant, workers.JobSpec{
+		Capability: "swift-toolchain", Operation: "swift.build-check", Deadline: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("DispatchJob() error = %v", err)
+	}
+	claim, ok, err := store.ClaimNext(context.Background(), tenant, w.ID)
+	if err != nil || !ok {
+		t.Fatalf("ClaimNext() ok=%v err=%v", ok, err)
+	}
+
+	workers.SetAfterFenceGuardHook(func() {
+		workers.SetAfterFenceGuardHook(nil)
+		if _, e := store.SetWorkerHealth(context.Background(), tenant, w.ID, "draining"); e != nil {
+			t.Errorf("interleaved SetWorkerHealth() error = %v", e)
+		}
+	})
+	t.Cleanup(func() { workers.SetAfterFenceGuardHook(nil) })
+
+	err = store.SubmitResult(context.Background(), claim, workers.Outcome{Class: "completed", Operation: "swift.build-check"})
+	if !errors.Is(err, workers.ErrWorkerFenced) {
+		t.Fatalf("interleaved worker-fence SubmitResult error = %v, want ErrWorkerFenced (the guarded append must reject a terminal from a just-drained worker)", err)
+	}
+	assertJournalKinds(t, cs, jobID, []string{"dispatched", "leased"})
+}
+
+// TestClaimFenceTOCTOUInterleaveDoesNotBuryRedispatch is the claim leg: a re-dispatch bumps the fence between
+// ClaimNext's ready read and its 'leased' append. The stale lease must NOT land (ClaimNext misses cleanly),
+// so the re-dispatched job stays the latest entry and is claimable by the next worker — never wedged under a
+// stale 'leased' at a superseded fence.
+func TestClaimFenceTOCTOUInterleaveDoesNotBuryRedispatch(t *testing.T) {
+	cs := openHarness(t)
+	store := newStore(cs, fakeSecrets{}, nil)
+	tenant := seedTenant(t, cs)
+	wa := enrolledWorker(t, store, tenant, nil)
+	wb := enrolledWorker(t, store, tenant, nil)
+
+	jobID, err := store.DispatchJob(context.Background(), tenant, workers.JobSpec{
+		Capability: "swift-toolchain", Operation: "swift.build-check", Deadline: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("DispatchJob() error = %v", err)
+	}
+
+	var newFence int64
+	workers.SetAfterFenceGuardHook(func() {
+		workers.SetAfterFenceGuardHook(nil)
+		nf, e := store.RedispatchForRetry(context.Background(), tenant, jobID)
+		if e != nil {
+			t.Errorf("interleaved RedispatchForRetry() error = %v", e)
+		}
+		newFence = nf
+	})
+	t.Cleanup(func() { workers.SetAfterFenceGuardHook(nil) })
+
+	claimA, ok, err := store.ClaimNext(context.Background(), tenant, wa.ID)
+	if err != nil {
+		t.Fatalf("ClaimNext(A) during interleave error = %v, want a clean no-claim", err)
+	}
+	if ok {
+		t.Fatalf("ClaimNext(A) landed a lease at a stale fence (%+v); the guarded append must have missed", claimA)
+	}
+	// The stale 'leased' never landed — only the two dispatch entries exist.
+	assertJournalKinds(t, cs, jobID, []string{"dispatched", "dispatched"})
+	// The re-dispatch is claimable by the next worker at the current fence.
+	claimB, ok, err := store.ClaimNext(context.Background(), tenant, wb.ID)
+	if err != nil || !ok {
+		t.Fatalf("ClaimNext(B) ok=%v err=%v (the re-dispatch was buried under a stale lease)", ok, err)
+	}
+	if claimB.JobFence != newFence {
+		t.Fatalf("claim B fence = %d, want the re-dispatch fence %d", claimB.JobFence, newFence)
+	}
+}
+
+// TestForeignLeaseholderSubmitAndRedeemRefused is the SHOULD-FIX 2 crown: fences are small, guessable ints, so
+// a caller can construct a claim for a job it never leased. Such a foreign claim (worker B against worker A's
+// leased job) must be refused at BOTH submit and redeem — it does not hold the current lease — even though its
+// job/worker fences match. Without the leaseholder check it could terminalize the job or redeem its secret.
+func TestForeignLeaseholderSubmitAndRedeemRefused(t *testing.T) {
+	const marker = "LEASE-SECRET-do-not-leak-7c1d"
+	cs := openHarness(t)
+	store := newStore(cs, fakeSecrets{vals: map[string]string{"build-cache-token": marker}}, nil)
+	tenant := seedTenant(t, cs)
+	wa := enrolledWorker(t, store, tenant, nil)
+	wb := enrolledWorker(t, store, tenant, nil)
+
+	jobID, err := store.DispatchJob(context.Background(), tenant, workers.JobSpec{
+		Capability: "swift-toolchain", Operation: "swift.build-check",
+		SecretHandleRefs: []string{"build-cache-token"}, Deadline: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("DispatchJob() error = %v", err)
+	}
+	claimA, ok, err := store.ClaimNext(context.Background(), tenant, wa.ID)
+	if err != nil || !ok {
+		t.Fatalf("ClaimNext(A) ok=%v err=%v", ok, err)
+	}
+
+	// B forges a claim for A's job at the same (guessable) fences, having never held the lease.
+	forged := claimA
+	forged.WorkerID = wb.ID
+	forged.WorkerFence = wb.Fence
+
+	if err := store.SubmitResult(context.Background(), forged, workers.Outcome{Class: "completed", Operation: "swift.build-check"}); !errors.Is(err, workers.ErrNotLeaseholder) {
+		t.Fatalf("foreign-leaseholder submit error = %v, want ErrNotLeaseholder", err)
+	}
+	if _, err := store.RedeemSecretHandle(context.Background(), forged, "build-cache-token"); !errors.Is(err, workers.ErrNotLeaseholder) {
+		t.Fatalf("foreign-leaseholder redeem error = %v, want ErrNotLeaseholder", err)
+	}
+	// Nothing terminalized under B, and A's genuine lease still completes.
+	assertJournalKinds(t, cs, jobID, []string{"dispatched", "leased"})
+	if err := store.SubmitResult(context.Background(), claimA, workers.Outcome{Class: "completed", Operation: "swift.build-check"}); err != nil {
+		t.Fatalf("SubmitResult(A) the genuine leaseholder error = %v, want accepted", err)
+	}
+}
+
+// TestDispatchRefusesReopeningExistingJob is MINOR 4: a dispatch onto a job_id that already has entries would
+// re-open a terminal job into a wedged state (a fresh 'dispatched' at fence 1 whose fence is below MAX). It is
+// refused; a re-dispatch is RedispatchForRetry.
+func TestDispatchRefusesReopeningExistingJob(t *testing.T) {
+	cs := openHarness(t)
+	store := newStore(cs, fakeSecrets{}, nil)
+	tenant := seedTenant(t, cs)
+
+	jobID, err := store.DispatchJob(context.Background(), tenant, workers.JobSpec{
+		Capability: "swift-toolchain", Operation: "swift.build-check", Deadline: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("DispatchJob() error = %v", err)
+	}
+	if _, err := store.DispatchJob(context.Background(), tenant, workers.JobSpec{
+		JobID: jobID, Capability: "swift-toolchain", Operation: "swift.build-check", Deadline: time.Now().Add(time.Hour),
+	}); !errors.Is(err, workers.ErrJobExists) {
+		t.Fatalf("re-dispatch onto an existing job_id error = %v, want ErrJobExists", err)
+	}
+	assertJournalKinds(t, cs, jobID, []string{"dispatched"})
+}

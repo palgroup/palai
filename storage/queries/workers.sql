@@ -41,9 +41,38 @@ INSERT INTO capability_jobs (
     worker_id, capability, operation, input_refs, secret_handle_refs, deadline_at, resource_limits,
     output_schema, network_policy, side_effect_key, fence_token, receipt)
 SELECT $1, $2, $3, $4,
-       COALESCE((SELECT max(entry_seq) FROM capability_jobs WHERE job_id = $4), 0) + 1,
+       COALESCE((SELECT max(entry_seq) FROM capability_jobs WHERE job_id = $4 AND organization_id = $2 AND project_id = $3), 0) + 1,
        $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14, $15::jsonb, $16::jsonb, $17::jsonb, $18, $19, $20::jsonb
 RETURNING entry_seq, fence_token;
+
+-- AppendGuardedJobEntry is AppendCapabilityJobEntry with the §31.6 fence guard MOVED INTO the statement, for
+-- the leased + terminal legs (NOT dispatch, which intentionally sets/raises the fence). The row inserts ONLY
+-- when the carried job fence ($19) is STILL the job's current MAX(fence_token) AND the carried worker fence
+-- ($21) is STILL the worker's current lease_fence. Under one statement snapshot this closes the
+-- guard-then-append TOCTOU that a separate guard SELECT + INSERT leaves open: a concurrent re-dispatch (bumps
+-- the job fence) or health change (bumps the worker fence) that has COMMITTED makes a subquery non-equal ->
+-- WHERE false -> 0 rows (the AckQueueMessage state-fence precedent); if that write is not yet visible, the two
+-- appenders compute the SAME entry_seq and one loses UNIQUE(job_id, entry_seq). Either way a fenced worker can
+-- neither bury a re-dispatch (leased leg) nor land a terminal under a superseded fence (submit leg).
+-- name: AppendGuardedJobEntry
+INSERT INTO capability_jobs (
+    id, organization_id, project_id, job_id, entry_seq, entry_kind, idempotency_key, run_id, attempt_id,
+    worker_id, capability, operation, input_refs, secret_handle_refs, deadline_at, resource_limits,
+    output_schema, network_policy, side_effect_key, fence_token, receipt)
+SELECT $1, $2, $3, $4,
+       COALESCE((SELECT max(entry_seq) FROM capability_jobs WHERE job_id = $4 AND organization_id = $2 AND project_id = $3), 0) + 1,
+       $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14, $15::jsonb, $16::jsonb, $17::jsonb, $18, $19, $20::jsonb
+WHERE $19 = (SELECT max(fence_token) FROM capability_jobs WHERE job_id = $4 AND organization_id = $2 AND project_id = $3)
+  AND $21 = (SELECT lease_fence FROM capability_workers WHERE id = $9 AND organization_id = $2 AND project_id = $3)
+RETURNING entry_seq, fence_token;
+
+-- JobHasEntries reports whether a job_id already has ANY journal entry in this tenant — the guard that a
+-- dispatch never re-opens a job that already exists (a re-dispatch is RedispatchForRetry, not a fresh
+-- dispatch). RLS confines the count; the org/project predicate is defence in depth.
+-- name: JobHasEntries
+SELECT EXISTS (
+    SELECT 1 FROM capability_jobs WHERE job_id = $1 AND organization_id = $2 AND project_id = $3
+);
 
 -- CurrentCapabilityJob resolves a job's CURRENT state for the §31.6 fence guard. current_fence is
 -- MAX(fence_token) over the job's entries, which is MONOTONIC and tamper-evident: the journal is append-only,
@@ -53,11 +82,11 @@ RETURNING entry_seq, fence_token;
 -- job yields no rows (ErrNoSuchJob).
 -- name: CurrentCapabilityJob
 SELECT
-    (SELECT max(fence_token) FROM capability_jobs f WHERE f.job_id = $1) AS current_fence,
+    (SELECT max(fence_token) FROM capability_jobs f WHERE f.job_id = $1 AND f.organization_id = $2 AND f.project_id = $3) AS current_fence,
     latest.entry_kind,
     latest.worker_id,
-    (SELECT d.deadline_at FROM capability_jobs d WHERE d.job_id = $1 AND d.entry_seq = 1) AS deadline_at,
-    (SELECT s.secret_handle_refs FROM capability_jobs s WHERE s.job_id = $1 AND s.entry_seq = 1) AS secret_handle_refs
+    (SELECT d.deadline_at FROM capability_jobs d WHERE d.job_id = $1 AND d.organization_id = $2 AND d.project_id = $3 AND d.entry_seq = 1) AS deadline_at,
+    (SELECT s.secret_handle_refs FROM capability_jobs s WHERE s.job_id = $1 AND s.organization_id = $2 AND s.project_id = $3 AND s.entry_seq = 1) AS secret_handle_refs
 FROM (
     SELECT entry_kind, worker_id
     FROM capability_jobs
