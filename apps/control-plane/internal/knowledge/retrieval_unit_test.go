@@ -53,17 +53,19 @@ func TestACLAdmits(t *testing.T) {
 // returns a foreign-scope record or one for an unauthorized chunk, re-resolution against the ACL-first
 // admitted set drops it — only the authorized in-scope record survives.
 func TestResolveVectorHitsDropsLeakyRecords(t *testing.T) {
-	kbID, idxID := "kb_1", "kidx_1"
+	org, project, kbID, idxID := "org_1", "proj_1", "kb_1", "kidx_1"
 	admitted := map[string]RetrievedChunk{
 		"kchk_ok": {ChunkID: "kchk_ok", Content: "authorized", DocumentRevisionID: "kdoc_1"},
 	}
 	recs := []VectorRecord{
-		{KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"},        // authorized, in-scope
-		{KnowledgeBaseID: "kb_other", IndexRevisionID: idxID, ChunkID: "kchk_ok"},  // foreign KB -> dropped
-		{KnowledgeBaseID: kbID, IndexRevisionID: "kidx_old", ChunkID: "kchk_ok"},   // foreign revision -> dropped
-		{KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_secret"},    // not in admitted set -> dropped
+		{Organization: org, Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"},       // authorized, in-scope
+		{Organization: "org_other", Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"}, // foreign org -> dropped
+		{Organization: org, Project: "proj_other", KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_ok"},    // foreign project -> dropped
+		{Organization: org, Project: project, KnowledgeBaseID: "kb_other", IndexRevisionID: idxID, ChunkID: "kchk_ok"},   // foreign KB -> dropped
+		{Organization: org, Project: project, KnowledgeBaseID: kbID, IndexRevisionID: "kidx_old", ChunkID: "kchk_ok"},    // foreign revision -> dropped
+		{Organization: org, Project: project, KnowledgeBaseID: kbID, IndexRevisionID: idxID, ChunkID: "kchk_secret"},     // not in admitted set -> dropped
 	}
-	got := resolveVectorHits(recs, kbID, idxID, admitted)
+	got := resolveVectorHits(recs, org, project, kbID, idxID, admitted)
 	if len(got) != 1 || got[0].ChunkID != "kchk_ok" {
 		t.Fatalf("resolveVectorHits let a leaky record through: %+v", got)
 	}

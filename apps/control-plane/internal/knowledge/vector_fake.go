@@ -106,8 +106,10 @@ func (a *DeterministicVectorAdapter) Upsert(_ context.Context, rec VectorRecord,
 }
 
 // Search returns the nearest record ids for a query embedding, PRE-SCOPED to the given tenant/kb/index-
-// revision. A well-behaved store scopes here; the caller re-authorizes every hit regardless, so correctness
-// never depends on this pre-scope being trustworthy.
+// revision AND to the ACL-first admitted chunk-id set (§25.15.3): a chunk not in scope.AdmittedChunkIDs is
+// excluded BEFORE ranking, so the top-K window is taken among admitted chunks only — an unauthorized chunk
+// can never fill a slot (displacement) nor sit at a rank a returned score would leak (side-channel). The
+// caller re-authorizes every hit regardless, so correctness never depends on this pre-scope being trustworthy.
 func (a *DeterministicVectorAdapter) Search(_ context.Context, scope VectorScope, embedding []float32, k int) ([]VectorRecord, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -120,6 +122,9 @@ func (a *DeterministicVectorAdapter) Search(_ context.Context, scope VectorScope
 		if sv.rec.Organization != scope.Organization || sv.rec.Project != scope.Project ||
 			sv.rec.KnowledgeBaseID != scope.KnowledgeBaseID || sv.rec.IndexRevisionID != scope.IndexRevisionID {
 			continue
+		}
+		if _, ok := scope.AdmittedChunkIDs[sv.rec.ChunkID]; !ok {
+			continue // ACL-first metadata pre-filter: only admitted chunks enter the ranking (a nil/empty set admits nothing)
 		}
 		hits = append(hits, scored{rec: sv.rec, score: cosine(embedding, sv.emb)})
 	}
@@ -182,9 +187,12 @@ func (s *Store) IndexKBIntoVector(ctx context.Context, scope middleware.Scope, k
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate embedding rows: %w", err)
 	}
+	// KNO-007 guard: abort-all BEFORE embedding any chunk (empty-allowlist fail-closed). The guard placement
+	// is correct; ponytail: when the real §6-leg-4 vector store is wired, `policy` must bind from operator
+	// CONFIG (the deployment's AllowedRegions/Providers), not from this call-site parameter.
 	for _, c := range chunks {
 		if err := policy.allows(c.classification, route); err != nil {
-			return err // KNO-007: refuse before a restricted source's bytes leave for a disallowed target
+			return err // refuse before a restricted source's bytes leave for a disallowed target
 		}
 	}
 	for _, c := range chunks {
@@ -211,13 +219,21 @@ func (s *Store) runVectorStrategy(ctx context.Context, scope middleware.Scope, s
 	if err != nil {
 		return nil, RetrievalCost{}, err
 	}
+	// Push the ACL admission INTO Search as a metadata pre-filter (§25.15.3): the store takes its top-K window
+	// among ADMITTED chunks only, so an unauthorized chunk never enters the ranking — no displacement, no
+	// score side-channel. resolveVectorHits still re-resolves every hit (defense in depth).
+	admittedIDs := make(map[string]struct{}, len(admitted))
+	for id := range admitted {
+		admittedIDs[id] = struct{}{}
+	}
 	recs, err := s.vector.Search(ctx, VectorScope{
 		Organization: scope.Organization, Project: scope.Project, KnowledgeBaseID: kbID, IndexRevisionID: idxID,
+		AdmittedChunkIDs: admittedIDs,
 	}, deterministicEmbed(query), limit)
 	if err != nil {
 		return nil, RetrievalCost{}, fmt.Errorf("vector search: %w", err)
 	}
-	vhits := resolveVectorHits(recs, kbID, idxID, admitted)
+	vhits := resolveVectorHits(recs, scope.Organization, scope.Project, kbID, idxID, admitted)
 
 	cost := RetrievalCost{Strategy: strategy, VectorHits: len(vhits), EmbeddingTokens: len(strings.Fields(query))}
 	if strategy == strategyVector {
@@ -240,6 +256,9 @@ func (s *Store) runVectorStrategy(ctx context.Context, scope middleware.Scope, s
 // admittedChunks loads the ACL-first authorized chunk set for a pinned index revision, keyed by chunk id —
 // the source of truth a vector hit is re-resolved against. It carries the SAME authorization predicate as
 // the keyword query (grants applied in the WHERE), so an unauthorized chunk is never in the map.
+// ponytail: ChunksForVectorScope loads the whole authorized set unbounded — fine for the fake (the map is the
+// metadata pre-filter passed to Search). A real store instead pushes the admitted-id predicate down into the
+// vector index (the AdmittedChunkIDs metadata filter) so it never materializes the full set here.
 func (s *Store) admittedChunks(ctx context.Context, kbID, idxID string, grants []string) (map[string]RetrievedChunk, error) {
 	if grants == nil {
 		grants = []string{}
@@ -268,15 +287,16 @@ func (s *Store) admittedChunks(ctx context.Context, kbID, idxID string, grants [
 }
 
 // resolveVectorHits re-resolves vector-store candidates against the authorized chunk set (§25.15.3). It is
-// the guard that makes the vector store untrusted: a record whose kb/index-revision does not match the query
-// scope, or whose chunk is not in the ACL-first authorized set, is DROPPED — the store can never widen a
-// result. Order is preserved (the store's rank), scores are the rank position rendered as a descending
-// pseudo-score so a hybrid fusion has a stable ordering signal.
-func resolveVectorHits(recs []VectorRecord, kbID, idxID string, admitted map[string]RetrievedChunk) []RetrievedChunk {
+// the guard that makes the vector store untrusted: a record whose org/project/kb/index-revision does not match
+// the query scope, or whose chunk is not in the ACL-first authorized set, is DROPPED — the store can never
+// widen a result. Every identity field the record carries is verified here (the "record IDs carry full
+// identity" invariant). Order is preserved (the store's post-filter rank), scores are the rank position
+// rendered as a descending pseudo-score so a hybrid fusion has a stable ordering signal.
+func resolveVectorHits(recs []VectorRecord, org, project, kbID, idxID string, admitted map[string]RetrievedChunk) []RetrievedChunk {
 	out := make([]RetrievedChunk, 0, len(recs))
 	for i, rec := range recs {
-		if rec.KnowledgeBaseID != kbID || rec.IndexRevisionID != idxID {
-			continue // scope mismatch: a leaky store cannot inject a foreign-scope record
+		if rec.Organization != org || rec.Project != project || rec.KnowledgeBaseID != kbID || rec.IndexRevisionID != idxID {
+			continue // scope mismatch: a leaky store cannot inject a foreign-tenant/project/kb/revision record
 		}
 		h, ok := admitted[rec.ChunkID]
 		if !ok {
