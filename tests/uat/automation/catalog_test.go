@@ -116,8 +116,13 @@ var expectedAutomationCatalog = map[string]struct {
 		"apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetrySameIdempotencyKeySingleEverything",
 		"apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetryDifferentKeySameDedupeSingleAction",
 		// Queue-adapter leg (E17 T7): same idempotency key -> single effect via the append-only receipts
-		// ledger. The orchestrator-kit leg (§35) is T8's, appended separately.
+		// ledger. The orchestrator-kit leg (§35) is T8's, appended below.
 		"apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect",
+		// Orchestrator-kit leg (E17 T8, §35.2 single retry owner): a scripted fake external orchestrator
+		// replays the SAME workflow id + workflow-derived idempotency key under a retry storm and collapses
+		// to ONE run (real Postgres). The five-step contract + kill-and-reconcile are pinned in
+		// tests/conformance/orchestrator; a real Temporal/Restate run is §6 operator leg 6.
+		"apps/control-plane/internal/automation/orchestrator_storm_component_test.go:TestOrchestratorRetryStormSingleRun",
 	}},
 }
 
