@@ -47,5 +47,11 @@ export type { CallOptions, DownloadOptions, ListParams, Page, ListView } from ".
 export { ResponseStream, isTerminalEvent, parseEventStream, fullJitterBackoff, delay } from "./stream.ts";
 export type { SSEFrame, StreamTransport, ResponseStreamInit, StreamStart } from "./stream.ts";
 
+// The E17 T8 external-orchestrator kit: the §35.1 five-step contract as thin helpers over the client,
+// keeping the external workflow id and Palai's canonical run id SEPARATE (docs/orchestrator-kit.md). It
+// imports the server-only client path, so it is never re-exported from ./index.browser.
+export { Orchestrator, workflowIdempotencyKey, isTerminalStatus } from "./orchestrator.ts";
+export type { WorkflowRun, StartOptions, WaitOptions, RunActivityOptions } from "./orchestrator.ts";
+
 export * from "./errors.ts";
 export type * from "./generated/types.ts";
