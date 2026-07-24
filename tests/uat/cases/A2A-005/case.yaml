@@ -1,0 +1,13 @@
+id: A2A-005
+name: remote-output-untrusted-and-remote-agent-never-inherits-parent-credential
+proof_class: e2e-deterministic
+provider: fake
+input: "A remote A2A agent is UNTRUSTED and never inherits the caller's credential. Untrusted output (A2A-005): a remote reply is DATA — it lands in the tool-result layer, can NOT instruct the parent and can NOT grant a tool/capability. The RemoteResult type carries only Output/Artifacts with a fixed TrustClass 'untrusted' and has NO capability/instruction surface, so an injection or grant-demand in a remote reply is contained as data. NO credential inheritance (A2A-005/SUB-007): the ONLY outbound Authorization is the remote connection's OWN credential, redeemed from its auth_connection_ref secret_ref HANDLE at call time and scoped to the agent's tenant — there is structurally no field or parameter through which the parent run's or the platform's token could reach the client; an agent with an auth connection but no resolver fails CLOSED rather than dialing unauthenticated. Remote task ids are connection-scoped: a task id is only resolvable against the SAME agent's endpoint, never a global key. LOCAL proof: RED-first client tests assert the untrusted trust class + verbatim-data containment, the outbound bearer is the remote's own (a sentinel parent token present in scope never reaches the wire), the cross-tenant resolver denial, and connection-scoped task ids; the registration store is RLS-isolated with the auth ref stored as a HANDLE; a loopback exchange drives the on-main T2 server. §6 operator leg: a FOREIGN A2A peer round-trip (loopback != interop) — a2a stays preview."
+expect_status: completed
+proof:
+  - adapters/integrations/a2a/client_test.go:TestA2AClientRemoteOutputIsUntrusted
+  - adapters/integrations/a2a/client_test.go:TestA2AClientNeverInheritsParentCredential
+  - adapters/integrations/a2a/client_test.go:TestA2AClientNeedsResolverForAuthConnection
+  - adapters/integrations/a2a/client_test.go:TestA2AClientRemoteTaskIDsAreConnectionScoped
+  - adapters/integrations/a2a/client_test.go:TestA2AClientLoopbackInteropAgainstT2Server
+  - tests/component/postgres/a2a_remote_agent_store_test.go:TestA2ARemoteAgentStoreRLS

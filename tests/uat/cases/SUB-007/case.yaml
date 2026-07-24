@@ -1,0 +1,9 @@
+id: SUB-007
+name: remote-a2a-child-run-executor-untrusted-and-no-credential-inheritance
+proof_class: e2e-deterministic
+provider: fake
+input: "A registered remote A2A agent can act as an external CHILD-RUN executor — the remote counterpart of an inline E08 ChildRun — materialized here for the first time. The delegated child receives the MINIMUM context (its objective only, no parent artifacts by default per the data_policy 'minimum' pin) and its reply is UNTRUSTED tool-result data folded into the child.result the engine folds (completed -> typed result; any other terminal -> a failure the parent treats per the delegation's required flag). CROWN: the remote child NEVER inherits the parent credential — the sole outbound Authorization is the remote connection's OWN redeemed secret; a sentinel parent token present in scope is never forwarded. LOCAL proof: a deterministic FAKE-ENGINE emission delegates one child to a remote agent and the client's RemoteChildRun negotiates the card, dispatches the objective, and folds an untrusted result; the outbound bearer is asserted to be the remote's own; the exchange also runs over the on-main T2 server (loopback). HONEST CEILING (E08): the engine opens NO tool to a real provider, so the remote child is FAKE-ENGINE-driven and NOT live-wired into orchestrator.dispatchChild — that plus a real remote peer is the §6 operator leg (loopback != interop) — a2a stays preview."
+expect_status: completed
+proof:
+  - adapters/integrations/a2a/client_test.go:TestA2AClientRemoteChildIsUntrustedAndNoCredentialInheritance
+  - adapters/integrations/a2a/client_test.go:TestA2AClientLoopbackInteropAgainstT2Server
