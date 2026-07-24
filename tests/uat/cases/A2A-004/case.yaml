@@ -1,0 +1,14 @@
+id: A2A-004
+name: client-card-endpoint-ssrf-vetted-and-pushed-file-ingest-scanned-both-halves
+proof_class: e2e-deterministic
+provider: fake
+input: "The A2A CLIENT's card/endpoint retrieval is the crown SSRF surface, and a pushed file is ingested+scanned on BOTH sides. SSRF: every card/endpoint retrieval is vetted through packages/egress (the SSRF home) — a remote card/endpoint pointing at a private/internal address (169.254.169.254 cloud-metadata, loopback, RFC1918, CGNAT) is REFUSED before any dial, and a redirect FORCES revalidation: a redirect to an internal address is re-vetted through egress and refused, never blindly followed. A remote card advertising an A2A extension URI outside the registered agent's allowlist is REFUSED (card-poisoning containment). Version negotiation is EXPLICIT (§38.7): a card that no longer advertises the negotiated protocol version fails, never silently degrades. Pushed file (A2A-004): an inbound remote file part is ingested + scanned into a stored artifact and NEVER becomes a privileged instruction — the CLIENT half here, mirroring the T2 SERVER half in one case; a file part with no scanning sink is REFUSED, never silently dropped. LOCAL proof: RED-first client tests drive a FAKE remote A2A agent (malicious card, redirect-to-internal, disallowed extension, unsupported version, pushed file) and the egress decision table; the server half reuses the on-main T2 ingest test. §6 operator leg: a FOREIGN A2A peer round-trip (loopback != interop) — a2a stays preview."
+expect_status: completed
+proof:
+  - adapters/integrations/a2a/client_test.go:TestA2AClientRefusesInternalCardEndpoint
+  - adapters/integrations/a2a/client_test.go:TestA2AClientRevalidatesRedirectToInternal
+  - adapters/integrations/a2a/client_test.go:TestA2AClientRefusesDisallowedExtensionURI
+  - adapters/integrations/a2a/client_test.go:TestA2AClientVersionNegotiationExplicitFail
+  - adapters/integrations/a2a/client_test.go:TestA2AClientIngestsAndScansPushedFile
+  - adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InboundFilePartIsIngested
+  - packages/egress/egress_test.go:TestVetIPDeniesMetadataPrivateAndSpecialUse

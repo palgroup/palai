@@ -204,3 +204,50 @@ func (s *Store) SetPushConfigs(ctx context.Context, org, project, interfaceID, a
 	}
 	return nil
 }
+
+// ---- A2A CLIENT registration (a2a_remote_agents, migration 000039, §38.5) ----
+
+// RegisterRemoteAgent persists a registered outbound remote A2A agent (the client's trust envelope). It runs
+// tenant-scoped so RLS confines the row; the returned id is the minted registration id. auth_connection_ref is
+// stored as a secret_ref HANDLE — never a bearer value (A2A-005/SUB-007: no credential inheritance).
+func (s *Store) RegisterRemoteAgent(ctx context.Context, agent RemoteAgent) (string, error) {
+	id := agent.ID
+	if id == "" {
+		id = s.mintID("a2arem")
+	}
+	ctx = storage.WithTenant(ctx, agent.Organization, agent.Project)
+	_, err := s.pool.Exec(ctx, storage.Query("InsertA2ARemoteAgent"),
+		id, agent.Organization, agent.Project, agent.Name, agent.CardURL, agent.Endpoint, protocolOrDefault(agent.ProtocolVersion),
+		agent.AuthConnectionRef, agent.AllowedInputModes, agent.AllowedOutputModes, agent.AllowedExtensionURIs,
+		agent.DataPolicy, agent.MaxCostCents, agent.TimeoutMS, agent.MaxOutputBytes, true)
+	if err != nil {
+		return "", fmt.Errorf("insert a2a remote agent: %w", err)
+	}
+	return id, nil
+}
+
+// GetRemoteAgent resolves a registered remote agent within the authenticated scope. RLS confines the row; the
+// org/project predicate is defence in depth. A foreign scope finds nothing (no existence oracle).
+func (s *Store) GetRemoteAgent(ctx context.Context, org, project, id string) (RemoteAgent, bool, error) {
+	ctx = storage.WithTenant(ctx, org, project)
+	row := s.pool.QueryRow(ctx, storage.Query("GetA2ARemoteAgent"), id, org, project)
+	var a RemoteAgent
+	var enabled bool
+	err := row.Scan(&a.ID, &a.Organization, &a.Project, &a.Name, &a.CardURL, &a.Endpoint, &a.ProtocolVersion,
+		&a.AuthConnectionRef, &a.AllowedInputModes, &a.AllowedOutputModes, &a.AllowedExtensionURIs,
+		&a.DataPolicy, &a.MaxCostCents, &a.TimeoutMS, &a.MaxOutputBytes, &enabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RemoteAgent{}, false, nil
+	}
+	if err != nil {
+		return RemoteAgent{}, false, fmt.Errorf("scan a2a remote agent: %w", err)
+	}
+	return a, true, nil
+}
+
+func protocolOrDefault(v string) string {
+	if v == "" {
+		return ProtocolVersion
+	}
+	return v
+}

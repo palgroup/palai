@@ -119,10 +119,23 @@ type AgentInterface struct {
 }
 
 // AgentCapabilities is the advertised capability set. It reflects what THIS server serves for the interface.
+// Extensions is the A2A 1.0 capability-extensions list (spec §5.5.2). This SERVER never populates it (omitempty
+// keeps its rendered card byte-identical); it exists so the CLIENT (E17 T3) can PARSE a remote card's
+// advertised extensions and refuse any URI outside its per-agent allowlist (the crown card-poisoning guard).
 type AgentCapabilities struct {
-	Streaming         bool `json:"streaming"`
-	PushNotifications bool `json:"pushNotifications"`
-	ExtendedAgentCard bool `json:"extendedAgentCard"`
+	Streaming         bool             `json:"streaming"`
+	PushNotifications bool             `json:"pushNotifications"`
+	ExtendedAgentCard bool             `json:"extendedAgentCard"`
+	Extensions        []AgentExtension `json:"extensions,omitempty"`
+}
+
+// AgentExtension is one advertised A2A protocol extension on a remote card (spec §5.5.2). URI identifies it;
+// Required marks an extension the remote insists a client honor. The CLIENT refuses a card whose extension URI
+// is not on the registered remote agent's allowlist — required or not — so a malicious card cannot smuggle an
+// unvetted extension into a dispatch (A2A-004 client half).
+type AgentExtension struct {
+	URI      string `json:"uri"`
+	Required bool   `json:"required,omitempty"`
 }
 
 // CardEndpoint locates an interface's HTTP+JSON base so the card advertises the exact URL clients call.
