@@ -1,0 +1,11 @@
+id: KNO-005
+name: hybrid-keyword-vector-retrieval-records-strategy-and-cites-verifiable-offsets
+proof_class: component-real
+provider: fake
+input: "the hybrid strategy combines the REAL FTS keyword ranking with a DETERMINISTIC fake vector adapter (record ids carry tenant+kb+doc+chunk+index-rev; the store is NEVER the source of truth — every vector hit is re-resolved against the ACL-first authorized set, so a leaky store cannot widen a result), records the pinned strategy/scores/cost (KNO-005), and every hit carries a stable citation whose byte offsets recompute against the stored document bytes; deterministic against a real Postgres FTS index + the fake vector adapter (make test-component TEST=postgres). A REAL vector/pgvector store is §6 leg 4 — knowledge-vector stays disabled (the vector strategy is a loud 409 with no backend wired)."
+expect_status: completed
+proof:
+  - apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestHybridStrategyFusesKeywordAndVectorWithCitations
+  - apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestVectorStrategyDisabledByDefault
+  - apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestResolveVectorHitsDropsLeakyRecords
+  - apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestReciprocalRankFusionRewardsBothStrategies

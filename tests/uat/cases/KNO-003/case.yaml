@@ -1,0 +1,12 @@
+id: KNO-003
+name: retrieval-authorization-is-server-derived-acl-first-never-post-filter-top-k
+proof_class: component-real
+provider: fake
+input: "retrieval authorization is DERIVED SERVER-SIDE from the verified key scopes (kb-acl:<label>), never a request body: a forged acl_grants body field is rejected and a caller without the server-side grant sees NOTHING of a restricted source; the ACL predicate is in the QUERY (before ranking + LIMIT) so an unauthorized document can never displace an authorized one from the top-K window (post-filter top-K is FORBIDDEN); two tenants + two projects deliberate-leak fixtures are rejected by RLS + the ACL-first predicate; deterministic against a real Postgres FTS index (make test-component TEST=postgres). A real vector-store ACL / cross-encoder rerank is §6 leg 4 — knowledge-vector stays disabled."
+expect_status: completed
+proof:
+  - apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestForgedACLGrantInBodyIsRejectedAndGovernedByScope
+  - apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestPostFilterTopKIsForbidden
+  - apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestCrossProjectACLNegative
+  - apps/control-plane/internal/knowledge/knowledge_component_test.go:TestRetrievalIsTenantAndACLScoped
+  - apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestDerivePrincipalGrantsFromKeyScopesOnly
