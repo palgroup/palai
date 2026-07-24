@@ -61,6 +61,9 @@ var allTables = []string{
 	// The E17 T2 A2A server-projection tables (000038): the published Agent Card projection and the
 	// external A2A task/context <-> canonical run/session bridge.
 	"a2a_interfaces", "a2a_task_refs",
+	// The E17 T9 CapabilityWorker contract tables (000039, renumbered to 000040 at merge): the enrolled-
+	// worker registry and the APPEND-ONLY job journal (self-re-asserting REVOKE).
+	"capability_workers", "capability_jobs",
 	"schema_migrations",
 }
 
