@@ -266,8 +266,11 @@ func (c *Client) GetTask(ctx context.Context, agent RemoteAgent, remoteTaskID st
 	return task, nil
 }
 
-// parseReply turns a message:send reply (a Task or a direct Message) into an UNTRUSTED RemoteResult, ingesting
-// + scanning any file part it carries. A file part with no Files sink is REFUSED (never dropped).
+// parseReply turns a message:send reply (a Task or a direct Message) into an UNTRUSTED RemoteResult. On the
+// TASK branch it ingests + scans every pushed file part (a file part with no Files sink is REFUSED, never
+// dropped). On the direct-MESSAGE branch it currently keeps only the text and DROPS any file part — fail-safe
+// (an untrusted file never becomes an artifact, so nothing is stored unscanned), but the "never dropped"
+// invariant holds only on the Task branch until the client is live-wired (message-branch ingest is a follow-on).
 func (c *Client) parseReply(ctx context.Context, agent RemoteAgent, req RemoteRequest, body []byte) (RemoteResult, error) {
 	var probe struct {
 		Kind string `json:"kind"`
@@ -285,6 +288,9 @@ func (c *Client) parseReply(ctx context.Context, agent RemoteAgent, req RemoteRe
 		res.State = TaskStateCompleted
 		res.RemoteContextID = msg.ContextID
 		res.Output = textOf(msg.Parts)
+		// ponytail: a file part in a direct-message reply is dropped here (text only). Fail-safe — an
+		// untrusted file never becomes an artifact — but a legit remote returning a file via direct message
+		// loses it. Run ingestPushedFiles on this branch too when the client is live-wired into dispatchChild.
 		return res, nil
 	default: // a Task (kind "task", or an empty/unknown kind we treat conservatively as a trackable task)
 		var task Task

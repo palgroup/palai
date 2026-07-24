@@ -33,16 +33,18 @@ CREATE TABLE IF NOT EXISTS a2a_remote_agents (
     -- the ONLY Authorization the client sends outbound. It is NEVER the parent run's or the platform's token
     -- (A2A-005/SUB-007: no credential inheritance) and never stored as a bearer value here.
     auth_connection_ref TEXT NOT NULL DEFAULT '',
-    -- Modality allowlists (§38.5): the input/output media types this remote may be sent / may return. A part
-    -- outside them is refused rather than forwarded.
+    -- Modality allowlists (§38.5): the input/output media types this remote may be sent / may return, stored
+    -- as a PIN. The modality gate (refuse a part outside them rather than forward it) is enforced when the
+    -- client is live-wired; T3 sends only the text/plain objective, so it is not yet exercised.
     allowed_input_modes TEXT[] NOT NULL DEFAULT ARRAY['text/plain']::text[],
     allowed_output_modes TEXT[] NOT NULL DEFAULT ARRAY['text/plain']::text[],
     -- Extension-URI ALLOWLIST: a remote card's advertised A2A extension is honored only if its URI is listed
     -- here. Empty = no extensions allowed. This is the crown SSRF/capability guard against a malicious card.
     allowed_extension_uris TEXT[] NOT NULL DEFAULT ARRAY[]::text[],
     -- Data/cost policy pins (§38.5). data_policy names the max data class the remote may receive (default
-    -- 'minimum': just the objective, no parent artifacts). max_cost_cents caps the spend a single dispatch may
-    -- incur (0 = unbounded, honestly recorded).
+    -- 'minimum': just the objective, no parent artifacts — this IS honored: SendMessage forwards only the
+    -- objective, no parent artifacts). max_cost_cents RECORDS the spend cap a single dispatch may incur
+    -- (0 = unbounded); the cost gate is enforced on live wiring (no real spend under the fake-engine ceiling).
     data_policy TEXT NOT NULL DEFAULT 'minimum',
     max_cost_cents INTEGER NOT NULL DEFAULT 0,
     -- Request timeout PIN (§38.5). The client bounds every outbound call by this; a remote that hangs past it
