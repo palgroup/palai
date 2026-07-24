@@ -43,6 +43,12 @@ var nonTenantTables = map[string]bool{
 	"schema_migrations": true,
 	"host_quarantine":   true,
 	"session_sequences": true,
+	// schema_revisions is the 000033 boot-migration journal (E15 T1): installation-global, no
+	// organization_id, append-only by its own REVOKE. Like schema_migrations it holds no tenant data, so it
+	// is deliberately outside RLS. It was added to the chain (000033) without this allowlist entry, so this
+	// gate failed on it in the Docker-bound security tier (not run by `make verify`); the entry is added
+	// here with the E17 T4 knowledge migration that first re-exercised the corpus.
+	"schema_revisions": true,
 }
 
 // suite holds the two connections the corpus contrasts: the migration owner (which seeds fixtures

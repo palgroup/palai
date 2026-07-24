@@ -38,6 +38,7 @@ import (
 	tools "github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/apps/control-plane/internal/identity"
+	"github.com/palgroup/palai/apps/control-plane/internal/knowledge"
 	"github.com/palgroup/palai/apps/control-plane/internal/metering"
 	"github.com/palgroup/palai/apps/control-plane/internal/metrics"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
@@ -167,10 +168,14 @@ func main() {
 	//
 	// WithModelRoutes mounts the DB-backed model-routing write surface (E13 T8): the store is the same
 	// non-nil repo the positional seams use, so it is unconditional.
+	// WithKnowledge mounts the knowledge spine (E17 T4): the FTS ingestion/index/retrieval store over the
+	// same spine pool. Unconditional like WithUsage — it needs no external key material, and a stack that
+	// serves no knowledge simply gets no traffic on the routes (discovery reports "knowledge":"preview").
 	routerOpts := []api.RouterOption{
 		api.WithEdgeLimits(edgeLimitsFromEnv()),
 		api.WithUsage(metering.New(repo.Spine().Pool())),
 		api.WithModelRoutes(repo),
+		api.WithKnowledge(knowledge.New(repo.Spine().Pool())),
 	}
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))

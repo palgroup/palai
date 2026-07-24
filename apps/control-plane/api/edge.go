@@ -47,6 +47,7 @@ type routerConfig struct {
 	secrets     SecretRefAPI
 	usage       UsageAPI
 	modelRoutes ModelRouteAPI
+	knowledge   KnowledgeAPI
 	metrics     http.Handler
 }
 
@@ -79,6 +80,14 @@ func WithUsage(usage UsageAPI) RouterOption {
 // every existing caller compiles unchanged, and a stack that never routes leaves it unset.
 func WithModelRoutes(routes ModelRouteAPI) RouterOption {
 	return func(c *routerConfig) { c.modelRoutes = routes }
+}
+
+// WithKnowledge mounts the knowledge spine (E17 Task 4): knowledge bases, ingest sources, the immutable
+// ingest -> FTS index build, ranked retrieval, and the index-revision history. A trailing option for the
+// same reason as WithSecretRefs — every existing caller compiles unchanged, and a stack that wires no
+// knowledge store leaves the routes unmounted (discovery advertises `knowledge` only where it is served).
+func WithKnowledge(knowledge KnowledgeAPI) RouterOption {
+	return func(c *routerConfig) { c.knowledge = knowledge }
 }
 
 // WithMetrics mounts the Prometheus text-exposition surface (E14 Task 6) at GET /metrics on the

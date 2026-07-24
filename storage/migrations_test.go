@@ -39,13 +39,15 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
+	// E17 T4 knowledge spine is the current chain head (built as 000035 for contiguity; renumbered to
+	// 000036 at merge per the fixed order — see the migration's MERGE NOTE).
 	head := migrations[len(migrations)-1]
-	if head.Version != 34 || head.Name != "contract_usage_events" {
-		t.Fatalf("chain head = %06d_%s, want 000034_contract_usage_events", head.Version, head.Name)
+	if head.Version != 35 || head.Name != "knowledge" {
+		t.Fatalf("chain head = %06d_%s, want 000035_knowledge", head.Version, head.Name)
 	}
-	journal := migrations[len(migrations)-2]
-	if journal.Version != 33 || journal.Name != "migration_journal" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000033_migration_journal", journal.Version, journal.Name)
+	contract := migrations[len(migrations)-2]
+	if contract.Version != 34 || contract.Name != "contract_usage_events" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000034_contract_usage_events", contract.Version, contract.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path
