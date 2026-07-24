@@ -178,4 +178,4 @@ GRANT SELECT, INSERT ON document_revisions, chunk_revisions, index_revisions TO 
 -- them every boot and keeps the ingested corpus append-only. A re-ingest appends a version; it never edits.
 REVOKE UPDATE, DELETE ON document_revisions, chunk_revisions, index_revisions FROM palai_app;
 
-INSERT INTO schema_migrations (version) VALUES (35) ON CONFLICT DO NOTHING;
+INSERT INTO schema_migrations (version) VALUES (36) ON CONFLICT DO NOTHING;

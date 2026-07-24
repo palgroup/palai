@@ -12,7 +12,7 @@ DROP TABLE IF EXISTS knowledge_bases;
 DO $$
 BEGIN
     IF to_regclass('public.schema_migrations') IS NOT NULL THEN
-        DELETE FROM schema_migrations WHERE version = 35;
+        DELETE FROM schema_migrations WHERE version = 36;
     END IF;
 END
 $$;
