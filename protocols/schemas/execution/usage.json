@@ -9,8 +9,8 @@
     "output_tokens": {"type": "integer", "minimum": 0},
     "total_tokens": {"type": "integer", "minimum": 0},
     "tool_calls": {"type": "integer", "minimum": 0},
-    "cache_read_tokens": {"type": "integer", "minimum": 0},
-    "cache_write_tokens": {"type": "integer", "minimum": 0},
+    "cache_read_tokens": {"type": "integer", "minimum": 0, "description": "Provider-native prompt-cache READ tokens, for additive metering. NOT guaranteed additive to input_tokens: provider-one (OpenAI) folds cached tokens INTO input_tokens/total (a subset), provider-two (Anthropic) reports them DISJOINT from input_tokens and the derived total EXCLUDES them. A biller must apply the per-provider convention, not assume one — and Reservation.MaxTotalTokens meters total_tokens, so a family that reports cache tokens disjointly does not count them toward the cap."},
+    "cache_write_tokens": {"type": "integer", "minimum": 0, "description": "Provider-native prompt-cache WRITE (creation) tokens, for additive metering. Reported disjoint by provider-two (Anthropic cache_creation_input_tokens, billed at a premium); provider-one has no explicit write count (0). Same additivity caveat as cache_read_tokens."},
     "cost": {
       "type": "object",
       "properties": {

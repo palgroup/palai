@@ -26,11 +26,15 @@ func (r Reservation) Admit(u contracts.Usage) error {
 	return nil
 }
 
-// Budget accumulates usage against a reservation across calls. It is the accounting
-// ledger a coordinator holds for a run: each settled call adds to Consumed and is
-// rejected once the running total would pass the reservation. It is safe for
-// concurrent steps — the check and the accumulation are one atomic critical section,
-// so no interleaving can admit two calls that together overspend (MOD-011).
+// Budget accumulates usage against a reservation across calls: each settled call adds to
+// Consumed and is rejected once the running total would pass the reservation. It is safe for
+// concurrent steps — the check and the accumulation are one atomic critical section, so no
+// interleaving can admit two calls that together overspend (MOD-011).
+//
+// ponytail: NOT wired into the live dispatch path — no run coordinator holds a Budget today (the
+// live budget gate is E13 T6's usage_ledger reservation→settlement in the store, not this type).
+// This is the in-memory ledger the MOD-011 conformance drives to prove overspend is impossible
+// under concurrency; wiring an in-process per-run Budget is a follow-up if one is ever needed.
 type Budget struct {
 	mu          sync.Mutex
 	reservation Reservation

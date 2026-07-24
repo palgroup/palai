@@ -214,12 +214,15 @@ func TestChainCancelStopsTheChainWithoutFailingOver(t *testing.T) {
 	})
 	chain := modelbroker.NewChain(broker, 5, 0)
 	targets := []modelbroker.Target{{Provider: "primary", Secret: "primary"}, {Provider: "secondary", Secret: "secondary"}}
-	_, err := chain.Route(context.Background(), targets, baseRequest(), nil)
+	res, err := chain.Route(context.Background(), targets, baseRequest(), nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel: got %v, want context.Canceled surfaced", err)
 	}
 	if secondaryCalls != 0 {
 		t.Errorf("secondary calls = %d, want 0 — a cancel must not fail over", secondaryCalls)
+	}
+	if res.Attempts != 1 {
+		t.Errorf("attempts = %d, want 1 — the stop reports the one real attempt made before it", res.Attempts)
 	}
 }
 
@@ -242,5 +245,8 @@ func TestChainRoutesAroundMisconfiguredTarget(t *testing.T) {
 	}
 	if res.Output != "ok" || secondaryCalls != 1 {
 		t.Errorf("result=%q secondaryCalls=%d, want the chain to route around the missing target to the served secondary", res.Output, secondaryCalls)
+	}
+	if res.Attempts != 1 {
+		t.Errorf("attempts = %d, want 1 — a misconfigured target makes no provider call and must not add a phantom attempt", res.Attempts)
 	}
 }

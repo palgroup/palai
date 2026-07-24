@@ -6,7 +6,9 @@ package models_test
 // provider-agnostic (fake per-delta) plus proven over a REAL pending HTTP read for both wire
 // families; truncation is a wire behavior (the fake has no stream to cut), proven on both wire
 // families; idempotent replay is the fake ledger — the local, no-spend counterpart of a real
-// provider's Idempotency-Key, which the wire adapters forward.
+// provider's Idempotency-Key, which provider-one (OpenAI) forwards on the wire. provider-two
+// (Anthropic) has no Idempotency-Key header, so its cross-attempt dedup rides the DB replay half
+// (dispatchModel LookupModelResult), not a provider header — a named ceiling, not a wire fold.
 
 import (
 	"context"
@@ -167,7 +169,8 @@ func TestWireAdaptersSurfaceTruncatedStreamAsVisiblePartial(t *testing.T) {
 // idempotency key returns the STORED result and streams nothing new — no blind tool-producing
 // replay — so exactly one provider effect is settled even when a crash window re-opens the call.
 // A DIFFERENT key is a distinct effect. Provider-agnostic: the fake ledger is the local, no-spend
-// counterpart of a real provider's Idempotency-Key, which provider-one/two forward on the wire.
+// counterpart of a real provider's Idempotency-Key, which provider-one (OpenAI) forwards on the
+// wire; provider-two (Anthropic) has no such header, so its dedup rides the DB replay half.
 func TestFakeIdempotentReplayServesStoredEffectWithoutReExecuting(t *testing.T) {
 	ledger := fake.NewIdempotencyLedger()
 	adapter := fake.Adapter{

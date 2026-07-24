@@ -81,15 +81,22 @@ func (c *Chain) Route(ctx context.Context, targets []Target, req Request, onDelt
 			call.Model = tgt.Model
 		}
 		res, err := c.broker.Route(ctx, tgt.Provider, call, onDelta)
-		totalAttempts += attemptsOf(res)
+		oc := classifyOutcome(err, res)
+		// Count an attempt only when a real provider call was made. A misconfigured target (unknown
+		// provider/secret) is rejected before the adapter runs, so it is NOT an attempt.
+		if oc != outcomeMisconfigured {
+			totalAttempts += attemptsOf(res)
+		}
 
-		switch classifyOutcome(err, res) {
+		switch oc {
 		case outcomeSuccess:
 			c.breaker.RecordSuccess(key)
 			res.Attempts = totalAttempts
 			return res, nil
 		case outcomeStop:
-			// Cancel / deadline / budget cutoff — a fallover cannot help and must not mask it.
+			// Cancel / deadline / budget cutoff — a fallover cannot help and must not mask it. Report
+			// the cumulative attempts made before the stop (this target's call plus any prior fallovers).
+			res.Attempts = totalAttempts
 			return res, err
 		case outcomeCallerInvalid:
 			// The caller's own request is bad; it fails identically on every target. Do not trip the
@@ -168,8 +175,13 @@ func upstreamErr(err error, res Result) error {
 }
 
 // breaker is a per-target, in-memory circuit breaker (the mcp.Breaker mirror; see the file header).
-// It trips after threshold consecutive failures, stays open for cooldown, then admits ONE half-open
-// trial whose outcome re-opens or closes it.
+// It trips after threshold consecutive failures, stays open for cooldown, then admits a half-open
+// trial whose outcome re-opens or closes it. ponytail (the caveat the mcp original names and this
+// context sharpens): during the half-open window Allow admits EVERY caller until the first outcome
+// lands — mcp's per-connection calls are serial so it is one trial in practice, but Chain.Route can
+// be driven concurrently, so several fallover attempts may slip through one half-open window. That
+// is acceptable (they all resolve the trial), not a wedge; a strict single-trial gate is the upgrade
+// path if a thundering half-open ever matters.
 type breaker struct {
 	mu        sync.Mutex
 	states    map[string]*breakerState
@@ -199,7 +211,8 @@ func newBreaker(threshold int, cooldown time.Duration, now func() time.Time) *br
 }
 
 // Allow reports whether a call to key may proceed. An open breaker denies until the cooldown elapses,
-// then admits one half-open trial that RecordSuccess/RecordFailure resolves.
+// then admits half-open trials that RecordSuccess/RecordFailure resolves — every caller during the
+// half-open window is admitted until an outcome lands (see the breaker type's ponytail caveat).
 func (b *breaker) Allow(key string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()

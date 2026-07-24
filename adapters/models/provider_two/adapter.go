@@ -207,6 +207,11 @@ func (a Adapter) consume(req modelbroker.Request, r io.Reader, names map[string]
 	res.ToolCalls = tools.result()
 	// Anthropic reports input/output separately and never a total; the canonical
 	// contract carries a consistent total (Result.Validate), so derive it.
+	// Cross-family asymmetry the schema documents: Anthropic reports cache read/creation DISJOINT
+	// from input_tokens, and the derived total below EXCLUDES them, so for THIS family CacheReadTokens
+	// and CacheWriteTokens are ADDITIVE to input/total (unlike provider-one, where cache-read is a
+	// subset of input). A biller meters them per-provider; total_tokens (hence Reservation) does not
+	// count this family's cache tokens.
 	res.Usage = contracts.Usage{
 		InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens,
 		CacheReadTokens: cacheReadTokens, CacheWriteTokens: cacheWriteTokens,

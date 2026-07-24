@@ -127,7 +127,10 @@ func (a Adapter) consume(req modelbroker.Request, r io.Reader, names map[string]
 				TotalTokens:  c.Usage.TotalTokens,
 				// OpenAI reports cache-READ under prompt_tokens_details.cached_tokens and no
 				// explicit cache-WRITE count (it auto-caches), so the canonical write counter
-				// stays 0 for this family — an honest normalization (MOD-010).
+				// stays 0 for this family — an honest normalization (MOD-010). NOTE the
+				// cross-family asymmetry the schema documents: OpenAI FOLDS cached tokens INTO
+				// prompt_tokens, so here CacheReadTokens is a SUBSET of InputTokens/TotalTokens
+				// (a biller must not add it again). Provider-two reports them DISJOINT.
 				CacheReadTokens: c.Usage.PromptTokensDetails.CachedTokens,
 			}
 		}
