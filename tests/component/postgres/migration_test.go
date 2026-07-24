@@ -64,6 +64,9 @@ var allTables = []string{
 	// The E17 T3 A2A client-registration table (000039): a registered outbound remote A2A agent's trust
 	// envelope (card/endpoint, negotiated version, auth secret_ref handle, allowlists, timeout pins).
 	"a2a_remote_agents",
+	// The E17 T9 CapabilityWorker contract tables (000040): the enrolled-worker registry and the
+	// APPEND-ONLY job journal (self-re-asserting REVOKE).
+	"capability_workers", "capability_jobs",
 	"schema_migrations",
 }
 
