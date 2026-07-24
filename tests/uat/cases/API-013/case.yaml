@@ -1,0 +1,9 @@
+id: API-013
+name: sdk-retry-reuses-one-idempotency-key
+proof_class: unit
+provider: fake
+input: "the SDK retries a transient transport failure under the SAME Idempotency-Key so the server records a single mutation, and a non-idempotent POST fails closed rather than silently retrying (proven for the Go SDK here; the TS + Python halves are their own suites, driven live by the journey)"
+expect_status: completed
+proof:
+  - sdks/go/client_test.go:TestRetryReusesSameIdempotencyKey
+  - sdks/go/client_test.go:TestNonIdempotentPostFailsClosed

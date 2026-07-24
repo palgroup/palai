@@ -1,0 +1,8 @@
+id: MOD-001
+name: second-provider-family-text-stream-tool-schema-conformance
+proof_class: unit
+provider: provider-two
+input: "a second INDEPENDENT provider family (provider-two, Anthropic Messages) converges on the canonical tool result with provider-one/openai-compatible/fake — text, streaming, tool-calling and schema-conforming args all agree; the REAL Anthropic completion (msg_ id) is the journey tier (ANTROPHIC_API_KEY in .env.local)"
+expect_status: completed
+proof:
+  - tests/conformance/models/adapters_canonical_test.go:TestAdaptersConvergeOnCanonicalToolResult

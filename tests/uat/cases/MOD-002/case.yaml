@@ -1,0 +1,8 @@
+id: MOD-002
+name: openai-compatible-capability-probe-rejects-unsupported-before-admission
+proof_class: unit
+provider: openai-compatible
+input: "the openai-compatible adapter actively probes an endpoint's streaming/tool/strict-JSON support and REJECTS a run requiring an unsupported capability BEFORE any billable compute (capability_unsupported); the live probe against a real OpenAI endpoint + a feature-poor stand-in is the journey tier"
+expect_status: completed
+proof:
+  - tests/conformance/models/capability_filter_conformance_test.go:TestCapabilityHardFilterRejectsUnsupportedBeforeAdmission

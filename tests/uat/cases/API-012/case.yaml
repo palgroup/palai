@@ -1,0 +1,12 @@
+id: API-012
+name: four-client-mechanical-cross-language-equality
+proof_class: unit
+provider: fake
+input: "the shared fixture corpus decodes IDENTICALLY across the three SDK languages (TS/Python/Go runners) + the Go reference, checked by ONE mechanical canonical-bytes diff (no per-language expectation); the LIVE four-client parity (three SDKs + the palai CLI) over a real stack + real provider is the journey tier (make uat-sdk-parity PROVIDER=provider-one)"
+expect_status: completed
+proof:
+  - tests/conformance/sdk/harness_test.go:TestCorpusReferenceEquality
+  - tests/conformance/sdk/harness_test.go:TestCorpusTypeScriptRunnerEquality
+  - tests/conformance/sdk/harness_test.go:TestCorpusPythonRunnerEquality
+  - tests/conformance/sdk/go_runner_test.go:TestCorpusGoRunnerEquality
+  - tests/conformance/sdk/harness_test.go:TestHarnessFailsOnDivergence

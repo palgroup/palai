@@ -1,0 +1,9 @@
+id: MOD-009
+name: midstream-cancel-consistent-partial-final-usage
+proof_class: unit
+provider: fake
+input: "a mid-stream cancel is honored — the adapter attempts provider cancel and the partial/final/usage stay consistent, and a cancel STOPS the chain without failing over; the live provider cancel + usage settlement is the journey tier"
+expect_status: completed
+proof:
+  - tests/conformance/models/lifecycle_conformance_test.go:TestAdaptersHonorMidStreamCancel
+  - tests/conformance/models/resilience_conformance_test.go:TestChainCancelStopsTheChainWithoutFailingOver

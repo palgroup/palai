@@ -1,0 +1,8 @@
+id: MOD-008
+name: honest-attempt-count-no-hidden-retry-multiplier
+proof_class: unit
+provider: fake
+input: "the recorded attempt count is HONEST — there is no hidden-retry multiplier inflating or hiding attempts across a fallback chain (the attempt-count truthfulness invariant)"
+expect_status: completed
+proof:
+  - tests/conformance/models/resilience_conformance_test.go:TestChainFailsOverAfterPartialWithHonestAttemptCount

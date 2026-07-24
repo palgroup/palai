@@ -1,0 +1,9 @@
+id: MOD-003
+name: gateway-off-direct-routes-still-serve
+proof_class: unit
+provider: openai-compatible
+input: "the openai-compatible adapter is the parametrizable gateway/proxy-target path and the broker routes AROUND a misconfigured target to a working one — the deterministic form of the exit sentence's second clause; the LIVE stand-in-proxy KILL then direct-route real run is the journey tier (make uat-sdk-parity)"
+expect_status: completed
+proof:
+  - tests/conformance/models/adapters_canonical_test.go:TestAdaptersConvergeOnCanonicalToolResult
+  - tests/conformance/models/resilience_conformance_test.go:TestChainRoutesAroundMisconfiguredTarget

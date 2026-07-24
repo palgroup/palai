@@ -6,7 +6,7 @@ SHELL := /bin/bash
 	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
-	uat-kubernetes uat-kind uat-sh2 evidence-verify promote migration-resume-drill upgrade-drill
+	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity evidence-verify promote migration-resume-drill upgrade-drill
 
 bootstrap:
 	go mod download
@@ -217,6 +217,19 @@ evidence-verify:
 uat-sh2:
 	@test -x scripts/uat/sh2 || { echo "sh2 UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' scripts/uat/sh2
+
+# E16 EXIT gate (SDK parity + provider completeness, plan §T8 — the capstone): the SDK-parity evidence anchor +
+# catalog + verifier/promote units (always, no Docker) + the two-provider runtime conformance + the shared-corpus
+# cross-language equality + the committed sdk-provider-parity-0.1.0 bundle through the shipped verifier + the
+# mechanical promote gate (rc PASS / stable REFUSED). The live tier (PROVIDER=provider-one) drives journey 63.1 —
+# a model connection over the T1 API, a Responses run from ALL FOUR clients (three SDKs + the CLI) whose
+# normalized decodes are mechanically diffed EQUAL, a store:false 410, a restart, and the gateway-off leg (the
+# stand-in gateway killed, direct routes still serving) — ending in REAL provider-one + provider-two runs. HONEST
+# CEILING (plan §6): the stand-in gateway is a local proxy (a real LiteLLM/private-server drill is §6); published
+# npm/PyPI/Go-proxy releases are E18.
+uat-sdk-parity:
+	@test -x scripts/uat/sdk-parity || { echo "sdk-parity UAT not implemented" >&2; exit 2; }
+	@PROVIDER='$(PROVIDER)' scripts/uat/sdk-parity
 
 # E15 T6 promote gate: refuse to tag a release without a rollback + restore proof (plan §7). Default target rc;
 # `make promote RELEASE=<name> TO=stable` gates a stable promote (awaits the E14 §6 operator-leg attestation).

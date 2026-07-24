@@ -1,0 +1,8 @@
+id: API-015
+name: purged-replay-410-tombstone-no-reexecution
+proof_class: unit
+provider: fake
+input: "a duplicate create after a store:false purge renders a 410 tombstone with NO re-execution and NO content disclosure (the server half); the SDKs surface it as a typed GoneError (the shared corpus gone-410 vector), and the journey exercises the typed 410 across all three SDKs live"
+expect_status: completed
+proof:
+  - apps/control-plane/api/responses_admission_test.go:TestAdmitPurgedReplayRenders410Tombstone
