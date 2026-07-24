@@ -72,15 +72,20 @@ UPDATE queue_messages m
  WHERE m.id = deliverable.id
 RETURNING m.id, m.idempotency_key, m.body, m.attempt_count;
 
+-- AckQueueMessage retires a leased message. The `state = 'leased'` fence stops a zombie consumer whose
+-- lease already expired from acking a row a NEW consumer has since re-leased: the stale ack no-ops
+-- (RowsAffected()==0) instead of retiring another consumer's in-flight work.
 -- name: AckQueueMessage
 UPDATE queue_messages
    SET state = 'acked', updated_at = clock_timestamp()
- WHERE id = $1;
+ WHERE id = $1 AND state = 'leased';
 
+-- DeadLetterQueueMessage moves a leased poison message to dead. Same lease fence as Ack: a zombie consumer
+-- must not mark DEAD a message a new consumer has re-leased (whose effect may already be committing).
 -- name: DeadLetterQueueMessage
 UPDATE queue_messages
    SET state = 'dead', updated_at = clock_timestamp()
- WHERE id = $1;
+ WHERE id = $1 AND state = 'leased';
 
 -- RecordQueueEffect inserts the append-only idempotency receipt IN THE SAME TRANSACTION as the effect.
 -- ON CONFLICT DO NOTHING -> RowsAffected()==0 means the effect already committed for this key (a lost-ack
@@ -103,8 +108,11 @@ INSERT INTO queue_deliveries
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (queue_connection_id, destination_key) DO NOTHING;
 
--- DueQueueDeliveries returns pending outbound deliveries whose backoff clock has elapsed. FOR UPDATE SKIP
--- LOCKED lets concurrent pump ticks take disjoint work.
+-- DueQueueDeliveries returns pending outbound deliveries whose backoff clock has elapsed. DeliverDue runs
+-- this as a standalone auto-commit SELECT, so the FOR UPDATE SKIP LOCKED row locks die at statement end and
+-- do NOT reserve the rows for the pump — the rows stay 'pending' for the next scan. This is safe for a
+-- SINGLE pump only; a concurrent-pump deploy MUST hold the lease and the process/UPDATE in ONE transaction
+-- (FOR UPDATE spanning the mutation), or two pumps read the same due row and double-send it.
 -- name: DueQueueDeliveries
 SELECT id, queue_connection_id, destination_key, payload, attempt_count, max_attempts
   FROM queue_deliveries
