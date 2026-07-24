@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "palai"
+version = "0.1.0"
+description = "Palai control-plane SDK (sync + async): typed /v1 client, resumable SSE, RFC 9457 errors, webhook verify."
+requires-python = ">=3.10"
+# One new dependency ceiling (plan §2, T3): httpx carries both the sync AND async transport, so
+# there is no second HTTP library. No provider SDK — plain HTTP+SSE, the single retry owner is the
+# SDK transport itself.
+dependencies = ["httpx>=0.27"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/palai"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

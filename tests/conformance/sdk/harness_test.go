@@ -573,6 +573,77 @@ func TestCorpusTypeScriptRunnerEquality(t *testing.T) {
 // rawAny lets a json.RawMessage flow through diff()'s canonicalizer unchanged.
 func rawAny(raw json.RawMessage) any { return raw }
 
+// --- Test 2b: the Python SDK runner matches the corpus (implementation #3, E16 T3) -------
+
+// TestCorpusPythonRunnerEquality registers the Python SDK leg against the SAME corpus with ZERO
+// corpus change — one runExternalRunner entry pointing at sdks/python/conformance/runner.py, run in
+// its uv-locked env so httpx is present. Unlike the TS SDK, the Python SDK ships palai.webhook.verify,
+// so it covers ALL SIX categories including signature-verify (which the TS runner omits and the
+// reference alone validates). With this leg green, the corpus now has three independent decoders
+// (Go reference + TS + Python); the full "three languages equal" claim still lands at the T8 gate
+// once T4's Go SDK runner registers.
+func TestCorpusPythonRunnerEquality(t *testing.T) {
+	uv, err := exec.LookPath("uv")
+	if err != nil {
+		// Fail by default, like the TS leg: a uv-less CI must not silently drop the Python leg (the
+		// sole validator of the Python SDK's decode). A genuinely uv-less environment opts out.
+		if os.Getenv("PALAI_SDK_CONFORMANCE_ALLOW_NO_UV") != "" {
+			t.Skip("uv not on PATH and PALAI_SDK_CONFORMANCE_ALLOW_NO_UV set; Python leg skipped")
+		}
+		t.Fatalf("uv not on PATH: the Python runner leg is required (set PALAI_SDK_CONFORMANCE_ALLOW_NO_UV=1 to opt out): %v", err)
+	}
+	projectDir, err := filepath.Abs(filepath.Join("..", "..", "..", "sdks", "python"))
+	if err != nil {
+		t.Fatalf("resolve python project dir: %v", err)
+	}
+	runnerPath := filepath.Join(projectDir, "conformance", "runner.py")
+	if _, err := os.Stat(runnerPath); err != nil {
+		t.Fatalf("Python runner missing at %s: %v", runnerPath, err)
+	}
+
+	// The Python SDK is expected to cover every category — signature-verify included.
+	pyCovers := map[string]bool{
+		"request-encode": true, "event-decode": true, "error-map": true,
+		"signature-verify": true, "unknown-field": true, "envelope-decode": true,
+	}
+
+	var all []runnerVector
+	byKey := map[string]vector{}
+	for _, category := range categories {
+		for _, v := range loadCategory(t, category) {
+			all = append(all, runnerVector{Category: category, Name: v.Name, Input: v.Input})
+			byKey[category+"\x00"+v.Name] = v
+		}
+	}
+
+	outputs := runExternalRunner(t, []string{uv, "run", "--locked", "--project", projectDir, "python", runnerPath}, all)
+
+	covered := 0
+	for key, v := range byKey {
+		category := strings.SplitN(key, "\x00", 2)[0]
+		got, ok := outputs[key]
+		if !ok {
+			if pyCovers[category] {
+				t.Errorf("Python runner produced no output for %s (expected coverage)", key)
+			}
+			continue
+		}
+		covered++
+		equal, gotCanon, wantCanon, err := diff(rawAny(got), v.Expected)
+		if err != nil {
+			t.Errorf("%s: %v", key, err)
+			continue
+		}
+		if !equal {
+			t.Errorf("Python runner diverged for %s\n got: %s\nwant: %s", key, gotCanon, wantCanon)
+		}
+	}
+	if covered == 0 {
+		t.Fatal("Python runner covered zero vectors — the harness must not pass by running nothing")
+	}
+	t.Logf("Python runner matched %d/%d vectors (all six categories, signature-verify included)", covered, len(byKey))
+}
+
 // --- Test 3: the harness CAN fail (negative / anti-fabrication) --------------------------
 
 // TestHarnessFailsOnDivergence proves the mechanical equality is genuine: it runs a real
