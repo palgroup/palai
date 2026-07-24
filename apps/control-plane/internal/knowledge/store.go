@@ -266,6 +266,13 @@ func (s *Store) runBuild(ctx context.Context, scope middleware.Scope, kb knowled
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	// Serialize builds per KB (SF-1): take the KB row lock as the FIRST statement so a concurrent same-KB
+	// ingest cannot snapshot membership (step 8) or read NextIndexVersion between our snapshot and commit and
+	// then activate an index whose member set OMITS our just-committed doc (or collide on UNIQUE(kb,version)).
+	if _, err := tx.Exec(ctx, storage.Query("LockKnowledgeBaseForBuild"), kb.id); err != nil {
+		return buildResult{}, fmt.Errorf("lock knowledge base: %w", err)
+	}
+
 	// Steps 3-4: validate + immutable DocumentRevision. Deterministic chunking BEFORE the doc is written so
 	// a document that parses to nothing indexable is rejected as an empty build (completeness), leaving the
 	// prior active index intact.

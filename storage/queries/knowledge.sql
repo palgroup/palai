@@ -54,6 +54,13 @@ UPDATE ingestion_jobs
 SET state = $2, document_revision_id = $3, index_revision_id = $4, error = $5, updated_at = clock_timestamp()
 WHERE id = $1;
 
+-- LockKnowledgeBaseForBuild takes a per-KB row lock as the FIRST statement of a build transaction, so
+-- concurrent same-KB ingests SERIALIZE (KNO-002). Without it, job B could snapshot membership before job A
+-- commits its index, then commit a later version whose member set OMITS A's just-committed doc (A's content
+-- silently drops from the active index until the next rebuild) — or the two collide on UNIQUE(kb, version).
+-- name: LockKnowledgeBaseForBuild
+SELECT id FROM knowledge_bases WHERE id = $1 FOR UPDATE;
+
 -- NextDocumentVersion computes the next immutable version for a source (org/project enforced by RLS): 1 for
 -- a first ingest, MAX(version)+1 for a re-ingest. A re-ingest is a new version, never an in-place edit.
 -- name: NextDocumentVersion
