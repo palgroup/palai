@@ -24,7 +24,7 @@ const a2aAdmitRoute = "/v1/a2a/messages"
 // INSIDE middleware.Auth, so ScopeFrom is populated by the time a handler runs.
 func a2aScopeFunc(r *http.Request) (a2a.Scope, bool) {
 	s, ok := middleware.ScopeFrom(r.Context())
-	return a2a.Scope{Organization: s.Organization, Project: s.Project}, ok
+	return a2a.Scope{Organization: s.Organization, Project: s.Project, Principal: s.Principal}, ok
 }
 
 // NewA2AServer builds the production A2A 1.0 server projection (E17 T2, spec §38). It wires the real
@@ -61,7 +61,7 @@ type a2aRuns struct {
 // admission rejection (bad pin, session/limit/conflict) becomes an error, so message:send surfaces a 502
 // admission_failed rather than a fabricated task.
 func (a a2aRuns) Admit(ctx context.Context, req a2a.RunRequest) (a2a.RunResult, error) {
-	scope := middleware.Scope{Organization: req.Org, Project: req.Project}
+	scope := middleware.Scope{Organization: req.Org, Project: req.Project, Principal: req.Principal}
 	responseID := middleware.NewID("resp")
 	runID := middleware.NewID("run")
 	sessionID := middleware.NewID("ses")

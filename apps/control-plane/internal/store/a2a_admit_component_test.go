@@ -49,9 +49,12 @@ func TestA2ARealAdmitterBirthsRun(t *testing.T) {
 	pool := repo.Spine().Pool()
 
 	org, project := newID("org"), newID("prj")
+	principalID := newID("prin")
 	profileID, revID := newID("aprof"), newID("arev")
 	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, org)
 	exec(t, pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, project, org)
+	exec(t, pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`,
+		principalID, org, project)
 	exec(t, pool, `INSERT INTO agent_profiles (id, organization_id, project_id, name) VALUES ($1,$2,$3,$4)`,
 		profileID, org, project, newID("name"))
 	exec(t, pool, `INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, published_at)
@@ -62,7 +65,8 @@ func TestA2ARealAdmitterBirthsRun(t *testing.T) {
 	a2aStore := a2a.NewStore(pool, newID)
 	iface := a2a.ProjectInterface(revID,
 		a2a.RevisionSource{Organization: org, Project: project, Model: "model-pinned"},
-		a2a.PublishMeta{Name: "Real Planner", Version: "1", AuthScheme: "bearer"})
+		a2a.PublishMeta{Name: "Real Planner", Version: "1", AuthScheme: "bearer",
+			InputModes: []string{"text/plain"}, OutputModes: []string{"application/json"}})
 	ifaceID, err := a2aStore.PublishInterface(ctx, iface)
 	if err != nil {
 		t.Fatalf("PublishInterface: %v", err)
@@ -73,7 +77,7 @@ func TestA2ARealAdmitterBirthsRun(t *testing.T) {
 	// middleware.Auth -> ScopeFrom plumbing is separately proven by the api-package wiring test). The point
 	// here is that the REAL admission births a run under exactly this scope — never a client-supplied one.
 	srv.ScopeFunc = func(*http.Request) (a2a.Scope, bool) {
-		return a2a.Scope{Organization: org, Project: project}, true
+		return a2a.Scope{Organization: org, Project: project, Principal: principalID}, true
 	}
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
