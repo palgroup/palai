@@ -1,0 +1,11 @@
+id: WRK-006
+name: an-ordinary-sandbox-worker-cannot-be-used-as-a-general-tunnel
+proof_class: unit
+provider: fake
+input: "The NEGATIVE crown (§31.5): a worker's TYPED operation is the WHOLE of what it may run. An operation absent from its capability's Catalog is refused at dispatch, at claim, and at submit (no SOCKS-like passthrough), and the transport surface exposes ONLY four typed routes (enroll/claim/redeem/result) — any other path is 404, so there is no generic connect/proxy/exec. A worker cannot request broad credentials from the model, and a SIGNING credential is absent EVERYWHERE (apple-build has NO Catalog entry). LOCAL proof: the unit no-tunnel refusal + apple-build-absent guards, the component-real re-typed-submit refusal, and the two-sided-live 404 surface. RED-first: disabling the typed-operation guard accepts a tunnel job. §6 leg 3: a real signed Apple worker is operator work — never claimed here."
+expect_status: completed
+proof:
+  - apps/control-plane/internal/workers/catalog_test.go:TestNoTunnel_UntypedOperationIsRefusedAtDispatch
+  - apps/control-plane/internal/workers/catalog_test.go:TestAppleBuildCapabilityIsAbsentEverywhere
+  - apps/control-plane/internal/workers/workers_component_test.go:TestNoTunnelSubmitForForeignOperationRefused
+  - apps/control-plane/internal/workers/live/worker_live_test.go:TestNoTunnelSurface

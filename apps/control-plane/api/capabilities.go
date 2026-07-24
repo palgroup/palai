@@ -65,6 +65,15 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 			// operator leg (§6) and are deliberately NOT advertised here (an unwritten adapter is never
 			// discoverable). Discovery never claims what the deployment cannot serve.
 			"queues": "preview",
+			// The CapabilityWorker contract (E17 T9): the outbound-enrolled, lease/fenced typed-operation
+			// surface for out-of-process capability jobs (the macOS swift.build-check fixture). It enters as
+			// "preview" and is a STABLE CANDIDATE — NO task writes its own tier (§2); only the T11 exit gate
+			// flips it, recomputing from the WRK-001..007 outcomes (CapabilityTierProof). apple-build is
+			// advertised DISABLED and never flipped here: there is no real Xcode + signing proof (no signing
+			// cert / provisioning profile / store credential anywhere — the §6 leg 3 operator work), so
+			// discovery never claims a macOS/iOS BUILD this deployment cannot serve.
+			"capability-workers": "preview",
+			"apple-build":        "disabled",
 		}
 		// The A2A 1.0 server projection (E17 T2): advertised ONLY when WithA2A actually mounted the surface,
 		// so a binary that wires no A2A store does not claim `a2a` while every A2A route 404s. When mounted it

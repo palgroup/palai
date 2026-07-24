@@ -1,0 +1,9 @@
+id: WRK-007
+name: an-uncertain-failure-quarantines-the-job-rather-than-blindly-retrying
+proof_class: component-real
+provider: fake
+input: "Failure/idempotency (§31.6): a read-only operation failure may retry on another compatible worker (re-dispatch bumps the fence, fencing out the old lease), but an UNCERTAIN failure — where a side effect may or may not have happened — QUARANTINES the job rather than blindly retrying it (a side-effecting op relies on destination idempotency, not a blind retry, and RedispatchForRetry refuses a non-read-only op). LOCAL proof: the component-real store terminalizes an uncertain outcome as 'quarantined' (never completed, never auto-retried). The append-only journal makes the quarantine tamper-evident (it cannot be deleted). Provider is fake: the worker is deterministic (E08 — the engine opens no tools to a real provider)."
+expect_status: completed
+proof:
+  - apps/control-plane/internal/workers/workers_component_test.go:TestQuarantineOnUncertain
+  - apps/control-plane/internal/workers/workers_component_test.go:TestWorkerFenceStaleRejectOnRedispatch

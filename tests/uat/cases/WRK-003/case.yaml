@@ -1,0 +1,10 @@
+id: WRK-003
+name: a-superseded-fence-result-is-rejected-and-a-health-or-capability-change-cuts-the-lease
+proof_class: component-real
+provider: fake
+input: "The lease is FENCED exactly as a runner's (§31.6). A job re-dispatched to another compatible worker bumps its fence (MAX(fence_token) over the append-only journal is monotonic and tamper-evident), so the first worker's late result under the OLD fence is REJECTED with a stale-fence error, while the new worker's result under the current fence is accepted. Separately, a worker health/capability change bumps the worker's ENROLLMENT fence, so a result under the pre-change worker fence is rejected — the lease is cut. LOCAL proof: component-real fence-stale-reject + health-change lease cut, and the two-sided-live gateway returns 409 for a re-dispatched job's late result. RED-first: disabling either fence guard turns the reject green."
+expect_status: completed
+proof:
+  - apps/control-plane/internal/workers/workers_component_test.go:TestWorkerFenceStaleRejectOnRedispatch
+  - apps/control-plane/internal/workers/workers_component_test.go:TestWorkerHealthChangeCutsLease
+  - apps/control-plane/internal/workers/live/worker_live_test.go:TestFenceStaleRejectThroughGateway

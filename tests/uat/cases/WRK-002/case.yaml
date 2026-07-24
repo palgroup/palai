@@ -1,0 +1,10 @@
+id: WRK-002
+name: typed-operation-is-dispatched-claimed-and-completed-with-an-execution-receipt
+proof_class: component-real
+provider: fake
+input: "A typed capability job (§31.3) is dispatched with the EXACT capability + operation the control plane owns, the run/attempt identity and the fence — never anything the worker asserts. A compatible worker claims it (append 'leased' at the dispatch fence) and submits a structured result; the append-only journal records dispatched -> leased -> completed and the execution receipt round-trips. The only typed operation is swift.build-check (read-only); the worker does the work OUT OF PROCESS. LOCAL proof: component-real store round-trip + the two-sided-live subprocess worker completing a real swift.build-check. §6 leg 3: a signed macOS/iOS build is a separate capability (apple-build disabled) — NO build/signing is claimed here."
+expect_status: completed
+proof:
+  - apps/control-plane/internal/workers/workers_component_test.go:TestWorkerEnrollTypedDispatchAndArtifactRoundTrip
+  - apps/control-plane/internal/workers/catalog_test.go:TestNoTunnel_TypedOperationPassesTheGate
+  - apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip
