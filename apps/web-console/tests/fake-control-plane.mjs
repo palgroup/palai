@@ -1,7 +1,13 @@
-// A deterministic fake control-plane that speaks the EXACT /v1/* HTTP contract the console consumes, so
-// the browser proofs run against a scripted canonical surface instead of a live provider — no credential
-// spend, no flakiness, nothing to leak (it is a plain in-process HTTP server, no Docker, torn down with
-// the Playwright webServer). This is the console's counterpart of examples/nextjs-sdk's fake-control-plane.
+// A deterministic fake control-plane for the console's browser proofs: it serves the /v1/* HTTP surface the
+// console consumes (paths, methods, the Bearer gate, problem+json) and scripts a canonical event stream, so
+// the proofs run against a fixed surface instead of a live provider — no credential spend, no flakiness,
+// nothing to leak (a plain in-process HTTP server, no Docker, torn down with the Playwright webServer). This
+// is the console's counterpart of examples/nextjs-sdk's fake-control-plane.
+//
+// The scripted event payloads mirror the REAL journaled shapes (protocols + packages/coordinator): notably
+// approval.requested.v1 carries ONLY {publication_id, operation, branch, request_hash, display} — the exact
+// fields a real approval UI has, because there is NO publications/approvals READ endpoint (apps/control-plane/
+// api/router.go), so the event payload is all a real client receives.
 //
 // HONEST SEAM (named in the UI-001/UI-002 case text): this is a FAKE upstream. The automated axe/keyboard
 // + public-API-only + exact-approval proofs run against it; a DEPLOYED console against a real compose stack
@@ -90,19 +96,21 @@ function scriptedEvents(sid, rid, runId) {
     [
       "approval.requested.v1",
       {
-        approval_id: "apr_1",
-        action: "git.push",
-        args: { remote: "origin", branch: "release", commits: 3 },
-        diff: "--- a/VERSION\n+++ b/VERSION\n@@ -1 +1 @@\n-0.1.0\n+0.1.1",
-        destination: "github.com/acme/app  (branch: release)",
-        risk: "high",
-        expires_at: "2026-07-24T00:05:00Z",
-        model_summary: "Routine release push — everything looks fine, safe to approve.",
+        // The REAL journaled shape (packages/coordinator/publication.go): the AUTHORITATIVE, model-independent
+        // detail is operation/branch/request_hash — the remote/branch come from the resolved binding, not model
+        // output, and request_hash is the one-shot binding token.
+        publication_id: "pub_1",
+        operation: "push_branch",
+        branch: "release",
+        request_hash: "sha256:9f2b1c",
+        // The proposal-supplied display string — NON-authoritative (the summary-equivalent). A soothing
+        // "everything looks fine" here must NOT stand in for the authoritative operation/branch/request_hash.
+        display: "Routine release push — everything looks fine, safe to approve.",
       },
       null,
     ],
-    // GATED: this frame is withheld until the approve command arrives.
-    ["approval.approved.v1", { approval_id: "apr_1" }, "approved"],
+    // GATED: this frame is withheld until the approve command arrives. Real shape: {publication_id, command_id}.
+    ["approval.approved.v1", { publication_id: "pub_1", command_id: "cmd_approve_pub_1" }, "approved"],
     ["tool_call.completed.v1", { tool_call_id: "tc_push", name: "git.push", result: { pushed: true, head: "a1b2c3d" } }, null],
     // Recovery / attempt lane: a host loss and a checkpoint-proven resume.
     ["attempt.recovering.v1", { attempt: 2, detail: "runner host lost; recovering from the last checkpoint" }, null],
@@ -163,7 +171,7 @@ function streamEvents(sid, rid, runId, request, response) {
     // yet is a genuine pause (the run stays waiting_for_approval).
     if (event.gate === "approved") {
       if (state.denied) {
-        write("approval.denied.v1", { approval_id: "apr_1" });
+        write("approval.denied.v1", { publication_id: "pub_1", command_id: "cmd_deny_pub_1" });
         write("run.canceled.v1", { outcome: "canceled", reason: "approval_denied" });
         stop();
         response.end();
@@ -210,17 +218,6 @@ const server = createServer((request, response) => {
 
   // Agent revisions (revision diff surface).
   if (method === "GET" && /^\/v1\/agents\/[^/]+\/revisions$/.test(pathname)) return sendJSON(response, 200, AGENT_REVISIONS);
-
-  // --- Admin writes exercised by the provisioning journey (create org/key/route) ---
-  if (method === "POST" && pathname === "/v1/organizations") {
-    return drain(request, () => sendJSON(response, 201, { id: "org_new", object: "organization", display_name: "New Org", default_project_id: "proj_new", admin_api_key: { id: "key_new", object: "api_key", key: "palai-sk-created-once", project_id: "proj_new" } }));
-  }
-  if (method === "POST" && pathname === "/v1/api-keys") {
-    return drain(request, () => sendJSON(response, 201, { id: "key_new", object: "api_key", key: "palai-sk-created-once", project_id: "proj_local", scopes: ["responses"] }));
-  }
-  if (method === "POST" && pathname === "/v1/model-routes") {
-    return drain(request, () => sendJSON(response, 201, { id: "mr_new", object: "model_route", name: "release-route" }));
-  }
 
   // --- Run stream ---
   if (method === "POST" && pathname === "/v1/responses") {

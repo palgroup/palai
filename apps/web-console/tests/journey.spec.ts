@@ -2,34 +2,31 @@ import { test, expect } from "@playwright/test";
 
 // The §T10 live journey against the local stack (built console + fake /v1 upstream): provision reads →
 // start a run → watch the lane-separated timeline → act on the EXACT approval → see a recovery/attempt →
-// download an artifact. UI-002 is the crown here: the AUTHORITATIVE approval detail is never replaced by
-// the model's summary.
+// download an artifact. UI-002 is the crown here: the AUTHORITATIVE approval detail — the operation/branch/
+// request_hash the canonical approval.requested.v1 event actually carries — is never replaced by the
+// proposal-supplied display string.
 
-test("UI-002: the approval UI shows the authoritative action/args/diff/destination/risk/expiry — the model summary does not replace it", async ({ page }) => {
+test("UI-002: the approval UI shows the authoritative operation/branch/request_hash from the canonical event — the proposal display string does not replace them", async ({ page }) => {
   await page.goto("/runs");
   await page.getByTestId("run-button").click();
 
   await expect(page.getByTestId("approval-panel")).toBeVisible({ timeout: 15_000 });
 
-  // The AUTHORITATIVE, model-independent detail — each field surfaced from the canonical event, not the
-  // model's prose.
-  await expect(page.getByTestId("approval-action")).toHaveText("git.push");
-  await expect(page.getByTestId("approval-destination")).toContainText("github.com/acme/app");
-  await expect(page.getByTestId("approval-destination")).toContainText("branch: release");
-  await expect(page.getByTestId("approval-risk")).toContainText("high");
-  await expect(page.getByTestId("approval-expiry")).toContainText("2026-07-24T00:05:00Z");
-  await expect(page.getByTestId("approval-args")).toContainText('"commits": 3');
-  await expect(page.getByTestId("approval-args")).toContainText('"branch": "release"');
-  await expect(page.getByTestId("approval-diff")).toContainText("-0.1.0");
-  await expect(page.getByTestId("approval-diff")).toContainText("+0.1.1");
+  // The AUTHORITATIVE, model-independent detail the approval.requested.v1 event ACTUALLY carries
+  // (packages/coordinator/publication.go): operation / branch / request_hash — each its own field, surfaced
+  // from the canonical event, not from the model's prose.
+  await expect(page.getByTestId("approval-operation")).toHaveText("push_branch");
+  await expect(page.getByTestId("approval-branch")).toHaveText("release");
+  await expect(page.getByTestId("approval-request-hash")).toContainText("sha256:9f2b1c");
 
-  // The model's summary is present but SEPARATE and explicitly non-authoritative — it must NOT replace the
-  // detail above. The soothing "everything looks fine, safe to approve" does not erase the high risk.
-  await expect(page.getByTestId("approval-model-summary")).toContainText("not authoritative");
-  await expect(page.getByTestId("approval-model-summary")).toContainText("looks fine");
-  // Proof the summary did NOT substitute: the authoritative risk is still shown as high, independently.
-  await expect(page.getByTestId("approval-risk")).toContainText("high");
-  await expect(page.getByTestId("approval-risk")).toContainText("a bare");
+  // The proposal-supplied display string is present but SEPARATE and explicitly non-authoritative — it must
+  // NOT replace the detail above. The soothing "everything looks fine, safe to approve" does not stand in for
+  // the operation/branch the operator is actually authorizing.
+  await expect(page.getByTestId("approval-display")).toContainText("not authoritative");
+  await expect(page.getByTestId("approval-display")).toContainText("looks fine");
+  // Proof the display did NOT substitute: the authoritative operation + branch are still shown independently.
+  await expect(page.getByTestId("approval-operation")).toHaveText("push_branch");
+  await expect(page.getByTestId("approval-branch")).toHaveText("release");
 });
 
 test("approve proceeds through recovery to a completed run with a downloadable artifact", async ({ page }) => {

@@ -6,22 +6,23 @@ import { apiSend, RelayError } from "@/lib/api";
 
 export interface PendingApproval {
   id: string | null;
-  action: string | null;
-  args: unknown;
-  diff: string | null;
-  destination: string | null;
-  risk: string | null;
-  expires_at: string | null;
-  model_summary: string | null;
+  operation: string | null;
+  branch: string | null;
+  request_hash: string | null;
+  display: string | null;
 }
 
 // ApprovalPanel is the EXACT approval UI (UI-002, §47.2). It renders the AUTHORITATIVE, model-independent
-// detail — action, args, diff, destination, risk, expiry — as the primary content, each with its own test
-// id. The model's own summary is shown in a SEPARATE, explicitly-labelled region and is NEVER allowed to
-// substitute for the authoritative detail: approving "yes" to a summary is not approving the operation;
-// the operator approves the exact action/args/diff/destination they see here.
+// detail the canonical approval.requested.v1 event ACTUALLY carries (packages/coordinator/publication.go:
+// operation, branch, request_hash) as the primary content, each with its own test id. The proposal-supplied
+// `display` string is shown in a SEPARATE, explicitly-labelled region and is NEVER allowed to substitute for
+// the authoritative detail: approving "yes" to a soothing display is not approving the operation; the
+// operator approves the exact operation/branch (bound by request_hash) they see here.
 //
-// Approve/deny POST a durable command (kind=approve|deny) to /v1/sessions/{id}/commands through the relay.
+// Richer detail (action/args/diff/destination/risk/expiry) is NOT on the event today and there is no
+// publications/approvals READ endpoint — it is a filed public-API GAP (README); the console renders those
+// fields when the API emits them. Approve/deny POST a durable command (kind=approve|deny) to
+// /v1/sessions/{id}/commands through the relay.
 export function ApprovalPanel({
   approval,
   sessionId,
@@ -49,48 +50,30 @@ export function ApprovalPanel({
     }
   }
 
-  const highRisk = (approval.risk ?? "").toLowerCase().includes("high");
-
   return (
     <section className="panel" data-testid="approval-panel" aria-labelledby="approval-h" role="region">
       <h2 id="approval-h">Approval required</h2>
 
-      {/* AUTHORITATIVE DETAIL — the operator approves THIS, not the summary. */}
+      {/* AUTHORITATIVE DETAIL — the operator approves THIS exact operation, not the display string. These are
+          the only detail fields the approval.requested.v1 event carries today (publication.go). */}
       <fieldset data-testid="approval-authoritative">
         <legend>Authoritative request detail</legend>
         <dl>
-          <dt>Action</dt>
-          <dd data-testid="approval-action">{approval.action ?? "—"}</dd>
-          <dt>Destination</dt>
-          <dd data-testid="approval-destination">{approval.destination ?? "—"}</dd>
-          <dt>
-            Risk
-          </dt>
-          <dd data-testid="approval-risk" className={highRisk ? "risk-high" : undefined}>
-            {approval.risk ?? "—"}
-            {highRisk ? " (high — a bare “yes” is not sufficient)" : ""}
-          </dd>
-          <dt>Expires</dt>
-          <dd data-testid="approval-expiry">{approval.expires_at ?? "—"}</dd>
-          <dt>Arguments</dt>
+          <dt>Operation</dt>
+          <dd data-testid="approval-operation">{approval.operation ?? "—"}</dd>
+          <dt>Branch</dt>
+          <dd data-testid="approval-branch">{approval.branch ?? "—"}</dd>
+          <dt>Request hash</dt>
           <dd>
-            <pre className="code" data-testid="approval-args">
-              {approval.args === null || approval.args === undefined ? "—" : JSON.stringify(approval.args, null, 2)}
-            </pre>
-          </dd>
-          <dt>Diff</dt>
-          <dd>
-            <pre className="code" data-testid="approval-diff">
-              {approval.diff ?? "—"}
-            </pre>
+            <code data-testid="approval-request-hash">{approval.request_hash ?? "—"}</code>
           </dd>
         </dl>
       </fieldset>
 
-      {/* The model's summary — clearly secondary, NEVER a substitute for the detail above. */}
-      {approval.model_summary ? (
-        <p className="muted" data-testid="approval-model-summary">
-          <strong>Model summary (not authoritative):</strong> {approval.model_summary}
+      {/* The proposal-supplied display string — clearly secondary, NEVER a substitute for the detail above. */}
+      {approval.display ? (
+        <p className="muted" data-testid="approval-display">
+          <strong>Proposal summary (not authoritative):</strong> {approval.display}
         </p>
       ) : null}
 
@@ -102,7 +85,7 @@ export function ApprovalPanel({
 
       <div>
         <button type="button" data-testid="approve-button" disabled={busy} onClick={() => resolve("approve")}>
-          Approve this exact action
+          Approve this exact operation
         </button>{" "}
         <button type="button" data-testid="deny-button" disabled={busy} onClick={() => resolve("deny")}>
           Deny

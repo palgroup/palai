@@ -11,8 +11,20 @@ the server-side relay (`app/api/palai/**`) and never reaches the browser — the
   `/v1` list through the same-origin relay.
 - **Live (§47.2, `/runs`):** start a run and watch its canonical event timeline sorted into lanes
   (messages / model steps / tool+subagent / approvals / usage / recovery+attempt / terminal). The
-  **exact approval UI** shows the authoritative action / args / diff / destination / risk / expiry — the
-  model's summary never replaces it. Recovery/attempt transitions and artifact download included.
+  **exact approval UI** shows the authoritative **operation / branch / request_hash** — the detail the
+  canonical `approval.requested.v1` event actually carries (`packages/coordinator/publication.go`) — and
+  renders the proposal-supplied `display` string in a separate, explicitly non-authoritative region that
+  never replaces it. Recovery/attempt transitions and artifact download included.
+
+### Public-API GAP: richer approval detail
+
+The `approval.requested.v1` event carries only `{publication_id, operation, branch, request_hash, display}`,
+and there is **no `/v1/publications` or approvals READ endpoint** — so the event payload is all a real client
+receives. Richer per-approval detail the exact-approval UI would ideally show — `action`, `args`, `diff`,
+`destination`, `risk`, `expiry` — is **not on the public API today**. This is a named public-API GAP (the
+same shape as the E13-T10 modelRoutes write-only gap), E18/hardening input, **not a console defect**: the
+console renders those fields the moment the event (or a publications read endpoint) provides them. Until then
+it honestly shows only what the API emits, and the proposal `display` string never stands in for it.
 
 ## Public-API-only relay
 

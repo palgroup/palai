@@ -186,10 +186,6 @@ pre.code {
   color: var(--muted);
 }
 
-.risk-high {
-  font-weight: 700;
-}
-
 fieldset {
   border: 1px solid var(--border);
   border-radius: 6px;

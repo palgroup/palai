@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { test, expect, type Request } from "@playwright/test";
+import { test, expect, type Request, type Response as NetResponse } from "@playwright/test";
 
 import { API_KEY, NEXT_PORT, UPSTREAM, UPSTREAM_PORT } from "./constants";
 
@@ -30,6 +30,12 @@ function browserServedAssets(): { path: string; body: string }[] {
 test("every console request rides the /v1 relay — no privileged backchannel, no direct upstream/DB", async ({ page, request }) => {
   const requests: Request[] = [];
   page.on("request", (req) => requests.push(req));
+  // page.on("request") does NOT fire for WebSocket or service-worker fetches — collect those separately so
+  // the "no backchannel of ANY type" claim holds against the request types the request event cannot see.
+  const responses: NetResponse[] = [];
+  page.on("response", (resp) => responses.push(resp));
+  const websockets: string[] = [];
+  page.on("websocket", (ws) => websockets.push(ws.url()));
 
   // Exercise the admin surface (many list fetches) and a full live run incl. an approval round-trip and an
   // artifact download — the broadest set of data requests the console makes.
@@ -83,4 +89,26 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
   }
   // Sanity: the upstream really is a different origin, so "same-origin only" above is a real constraint.
   expect(UPSTREAM_PORT).not.toBe(NEXT_PORT);
+
+  // --- Assertion 6: the key is in NO RESPONSE BODY. A server component that leaked process.env.PALAI_API_KEY
+  // into a client prop ships in the page HTML / RSC flight payload — not in .next/static, not in any request
+  // (assertions 3-4) — so this scans the one leak class those miss. ---
+  for (const resp of responses) {
+    let body: string;
+    try {
+      body = await resp.text();
+    } catch {
+      continue; // body not retained (redirect / aborted / no content) — nothing to scan
+    }
+    expect(body, `key leaked in a response body from ${resp.url()}`).not.toContain(API_KEY);
+  }
+
+  // --- Assertion 7: NO WebSocket backchannel and NO service worker (neither surfaces in page.on("request"),
+  // so both would be a blind spot in assertions 1-2). There is none today; this hardens "ANY type". ---
+  expect(websockets, `the console opened a websocket backchannel: ${websockets.join(", ")}`).toEqual([]);
+  const serviceWorkers = await page.evaluate(async () => {
+    if (!("serviceWorker" in navigator)) return 0;
+    return (await navigator.serviceWorker.getRegistrations()).length;
+  });
+  expect(serviceWorkers, "a service worker was registered — an uncaptured fetch backchannel").toBe(0);
 });

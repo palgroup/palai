@@ -83,9 +83,12 @@ export async function POST(request: Request): Promise<Response> {
 
 // projectEvent maps a canonical Event to a curated, lane-tagged browser projection. Each lane carries
 // only the fields the timeline renders. The approval lane is the SECURITY-CRITICAL one (UI-002): it
-// forwards the AUTHORITATIVE detail (action / args / diff / destination / risk / expiry) as distinct
-// fields AND the model's summary SEPARATELY — the UI renders the authoritative detail and never lets the
-// summary substitute for it.
+// forwards the AUTHORITATIVE detail the approval.requested.v1 event ACTUALLY carries
+// (packages/coordinator/publication.go: operation / branch / request_hash) as distinct fields AND the
+// proposal-supplied `display` string SEPARATELY — the UI renders the authoritative detail and never lets
+// the display substitute for it. There is no publications/approvals READ endpoint, so the event payload is
+// all the console has; richer detail (action/args/diff/destination/risk/expiry) is a filed public-API GAP
+// (README) the console will render when the API emits it.
 function projectEvent(event: Event): Record<string, unknown> {
   const data = (event.data ?? {}) as Record<string, unknown>;
   const lane = laneFor(event.type);
@@ -108,17 +111,14 @@ function projectEvent(event: Event): Record<string, unknown> {
       return {
         ...head,
         approval: {
-          id: data.approval_id ?? data.publication_id ?? null,
+          id: data.publication_id ?? null,
           resolution: approvalResolution(event.type),
-          // The authoritative, model-independent detail (§47.2 / UI-002).
-          action: data.action ?? null,
-          args: data.args ?? null,
-          diff: data.diff ?? null,
-          destination: data.destination ?? null,
-          risk: data.risk ?? null,
-          expires_at: data.expires_at ?? null,
-          // The model's own words — kept SEPARATE so the UI never substitutes it for the detail above.
-          model_summary: data.model_summary ?? null,
+          // The AUTHORITATIVE, model-independent detail the event actually carries (publication.go).
+          operation: data.operation ?? null,
+          branch: data.branch ?? null,
+          request_hash: data.request_hash ?? null,
+          // The proposal-supplied string — kept SEPARATE so the UI never substitutes it for the detail above.
+          display: data.display ?? null,
         },
       };
     case "recovery":
