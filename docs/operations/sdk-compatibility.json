@@ -1,0 +1,55 @@
+{
+  "schema": "palai-sdk-compatibility/v1",
+  "api_version": "2026-07-16",
+  "note": "Authoritative, machine-readable SDK compatibility matrix. A cell is 'supported' ONLY if a real conformance test proves it. The honest-matrix guard (TestSDKCompatibilityMatrixHonest, tests/conformance/sdk/) recomputes each SDK's covered capabilities by running its conformance runner against the shared corpus and FAILS any claimed-but-untested (or omitted-but-tested) cell. Do not hand-edit a 'supported' entry without a corpus proof.",
+  "capabilities": [
+    "request-encode",
+    "event-decode",
+    "error-map",
+    "signature-verify",
+    "unknown-field",
+    "envelope-decode"
+  ],
+  "proof": {
+    "harness": "tests/conformance/sdk/harness_test.go",
+    "corpus_dir": "tests/conformance/sdk/corpus",
+    "guard": "tests/conformance/sdk/compat_matrix_test.go"
+  },
+  "sdks": {
+    "typescript": {
+      "version": "0.1.0",
+      "proof_test": "TestCorpusTypeScriptRunnerEquality",
+      "supported": [
+        "request-encode",
+        "event-decode",
+        "error-map",
+        "unknown-field",
+        "envelope-decode"
+      ]
+    },
+    "python": {
+      "version": "0.1.0",
+      "proof_test": "TestCorpusPythonRunnerEquality",
+      "supported": [
+        "request-encode",
+        "event-decode",
+        "error-map",
+        "signature-verify",
+        "unknown-field",
+        "envelope-decode"
+      ]
+    },
+    "go": {
+      "version": "0.1.0",
+      "proof_test": "TestCorpusGoRunnerEquality",
+      "supported": [
+        "request-encode",
+        "event-decode",
+        "error-map",
+        "signature-verify",
+        "unknown-field",
+        "envelope-decode"
+      ]
+    }
+  }
+}
