@@ -18,9 +18,11 @@ import (
 type VectorAdapter interface {
 	// Upsert indexes a chunk's embedding under its fully-scoped record ID.
 	Upsert(ctx context.Context, rec VectorRecord, embedding []float32) error
-	// Search returns the nearest record IDs for a query embedding, pre-scoped to one tenant/kb; the caller
-	// re-resolves and re-authorizes each hit against chunk_revisions (ACL-first), so a leaky store cannot
-	// widen the result.
+	// Search returns the nearest record IDs for a query embedding, pre-scoped to one tenant/kb AND to the
+	// ACL-first admitted chunk-id set (scope.AdmittedChunkIDs) — the top-K window is taken among ADMITTED
+	// chunks only, so an unauthorized chunk never enters the ranking (no displacement, no score side-channel).
+	// The caller still re-resolves and re-authorizes each hit against chunk_revisions (ACL-first), so a leaky
+	// store cannot widen the result.
 	Search(ctx context.Context, scope VectorScope, embedding []float32, k int) ([]VectorRecord, error)
 	// Enabled reports whether a real vector backend is wired. It is false for the disabled default.
 	Enabled() bool
@@ -38,12 +40,18 @@ type VectorRecord struct {
 	IndexRevisionID  string
 }
 
-// VectorScope narrows a vector search to one tenant/kb/index-revision before the store is even consulted.
+// VectorScope narrows a vector search before the store ranks anything: to one tenant/kb/index-revision AND to
+// the ACL-first admitted chunk-id set (§25.15.3). AdmittedChunkIDs is the metadata pre-filter a real store
+// MUST apply — only chunks the principal's server-derived grants admit enter the top-K window, so an
+// unauthorized chunk can neither displace an authorized one NOR leak its rank through a returned score. A nil
+// or empty set admits nothing (fail-closed): a lookup miss drops the chunk, so a store with no admitted set
+// never ranks the whole index.
 type VectorScope struct {
-	Organization    string
-	Project         string
-	KnowledgeBaseID string
-	IndexRevisionID string
+	Organization     string
+	Project          string
+	KnowledgeBaseID  string
+	IndexRevisionID  string
+	AdmittedChunkIDs map[string]struct{}
 }
 
 // ErrVectorDisabled is returned by the disabled adapter for every operation. It is errors.Is-able so a

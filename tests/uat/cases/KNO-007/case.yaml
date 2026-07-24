@@ -1,0 +1,9 @@
+id: KNO-007
+name: restricted-classification-source-is-not-embedded-to-a-disallowed-provider-or-region
+proof_class: component-real
+provider: fake
+input: "a restricted-classification source's content is REFUSED for an embedding route/region outside the allowlist (a hard error naming the target, never silently embedded) and admitted for an allowed one — the embedding pass consults the classification policy BEFORE any restricted bytes leave; an empty allowlist is fail-closed for restricted content; deterministic against a real Postgres FTS index + the deterministic embedding pass (make test-component TEST=postgres). Real embedding provider/region enforcement over a real vector store is §6 leg 4."
+expect_status: completed
+proof:
+  - apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestRestrictedSourceNotEmbeddedToDisallowedRegion
+  - apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestEmbeddingPolicyBlocksRestrictedToDisallowedTarget

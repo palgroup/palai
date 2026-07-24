@@ -40,6 +40,10 @@ type ProvisionResult struct {
 	MissingField string
 	BadField     bool
 	NotFound     bool
+	// Conflict renders 409: a well-formed request that a current-state precondition refuses (E17 T5
+	// retrieval uses it for a missed freshness deadline under the fail policy, and for a disabled vector
+	// strategy). Other provisioning surfaces leave it false, so their renderers are unaffected.
+	Conflict bool
 }
 
 // provisionScope is the capability a key must hold to administer tenancy. A key with an empty scope set

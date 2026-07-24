@@ -1,0 +1,9 @@
+id: KNO-008
+name: missed-freshness-deadline-fails-or-warns-but-never-serves-silently-stale
+proof_class: component-real
+provider: fake
+input: "a retrieval whose freshness deadline the active index cannot meet FAILS (409) under the fail policy or serves-with-a-stale-warning under the warn policy — never a silent stale serve; no deadline is fresh; the verdict reads the active index build time (KNO-008); deterministic against a real Postgres FTS index (make test-component TEST=postgres)."
+expect_status: completed
+proof:
+  - apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestFreshnessDeadlineFailsWarnsNeverSilentStale
+  - apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestEvaluateFreshness

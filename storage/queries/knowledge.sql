@@ -115,20 +115,63 @@ JOIN knowledge_sources s ON s.id = dr.source_id
 WHERE dr.knowledge_base_id = $1
 ORDER BY dr.source_id, dr.version DESC;
 
--- RetrieveChunks is the ranked FTS retrieval, ACL-FIRST. It intersects the KB's ACTIVE index_revision member
--- set ($1 kb) with the FTS match on $2, applies the principal's ACL grants ($3) AT THE QUERY LEVEL (a source
--- with a non-empty acl is invisible unless the principal holds it — never post-filtered), and ranks by
--- ts_rank. Tenant isolation is one layer down (RLS). $4 caps the result count. T5 hardens this into the full
--- KNO-003 (second filter before return, existence-leak proof); T4 pins the query-level predicate here.
+-- RetrieveChunks is the ranked FTS retrieval, ACL-FIRST (KNO-003). It intersects a PINNED index_revision's
+-- member set ($5 — the active revision or a caller-pinned one, resolved server-side) with the FTS match on
+-- $2, applies the principal's SERVER-DERIVED ACL grants ($3) AT THE QUERY LEVEL (a source with a non-empty
+-- acl is invisible unless the principal holds it — the predicate is in the WHERE, so an unauthorized chunk
+-- is neither returned NOR ranked NOR able to occupy a slot in the LIMIT window; post-filter top-K is
+-- forbidden — §25.15.4). $3 is derived from the verified key scopes, never a request body. Tenant isolation
+-- is one layer down (RLS). $4 caps the result count. The index revision id is passed explicitly (not joined
+-- via kb.active) so a caller can pin a stale-but-reproducible revision and so the freshness check reads its
+-- build time. c.created_at is the chunk timestamp the typed result (§25.15.5) carries.
 -- name: RetrieveChunks
-SELECT c.id, c.source_id, c.document_revision_id, c.ordinal, c.byte_start, c.byte_end, c.checksum, c.acl, c.content,
+SELECT c.id, c.source_id, c.document_revision_id, c.ordinal, c.byte_start, c.byte_end, c.checksum, c.acl, c.content, c.created_at,
        ts_rank(c.fts, plainto_tsquery('english', $2)) AS rank
 FROM chunk_revisions c
-JOIN knowledge_bases kb ON kb.id = c.knowledge_base_id
-JOIN index_revisions ir ON ir.id = kb.active_index_revision_id
+JOIN index_revisions ir ON ir.id = $5 AND ir.knowledge_base_id = $1
 WHERE c.knowledge_base_id = $1
   AND c.document_revision_id = ANY (ir.document_revision_ids)
   AND c.fts @@ plainto_tsquery('english', $2)
   AND (c.acl = '' OR c.acl = ANY ($3))
 ORDER BY rank DESC, c.id
 LIMIT $4;
+
+-- GetActiveIndexRevision resolves the KB's ACTIVE index revision id + its build time (the freshness anchor,
+-- KNO-008). Returns no rows if the KB has never been built (no active pointer).
+-- name: GetActiveIndexRevision
+SELECT ir.id, ir.created_at
+FROM knowledge_bases kb
+JOIN index_revisions ir ON ir.id = kb.active_index_revision_id
+WHERE kb.id = $1;
+
+-- GetIndexRevisionByID resolves a caller-PINNED index revision (§25.15.4) within the KB — its id + build
+-- time. Scoped to the KB so a pinned id from another KB (or tenant, via RLS) resolves to no rows.
+-- name: GetIndexRevisionByID
+SELECT id, created_at
+FROM index_revisions
+WHERE id = $1 AND knowledge_base_id = $2;
+
+-- ChunksForVectorScope lists every chunk in a pinned index revision that the principal's ACL grants admit —
+-- the ACL-first ($3) coordinate set the DETERMINISTIC fake vector adapter (T5, §25.15.3) indexes and the
+-- hybrid path re-resolves each vector hit against. It carries the same authorization predicate as
+-- RetrieveChunks, so the vector store is never a source of truth: a record that does not appear here (wrong
+-- tenant/kb/revision, or an unheld ACL) can never widen a hybrid result.
+-- name: ChunksForVectorScope
+SELECT c.id, c.source_id, c.document_revision_id, c.ordinal, c.byte_start, c.byte_end, c.checksum, c.acl, c.content, c.created_at
+FROM chunk_revisions c
+JOIN index_revisions ir ON ir.id = $2 AND ir.knowledge_base_id = $1
+WHERE c.knowledge_base_id = $1
+  AND c.document_revision_id = ANY (ir.document_revision_ids)
+  AND (c.acl = '' OR c.acl = ANY ($3));
+
+-- ChunksForEmbedding lists a pinned index revision's chunks with their SOURCE classification — the input to
+-- the deterministic embedding pass (T5, §25.15.2 step 7). classification drives the KNO-007 guard: a
+-- restricted source is not embedded to a disallowed region/provider. No ACL predicate here: embedding
+-- indexes the whole revision; ACL-first is enforced at RETRIEVAL (RetrieveChunks/ChunksForVectorScope).
+-- name: ChunksForEmbedding
+SELECT c.id, c.document_revision_id, c.acl, s.classification, c.content
+FROM chunk_revisions c
+JOIN index_revisions ir ON ir.id = $2 AND ir.knowledge_base_id = $1
+JOIN knowledge_sources s ON s.id = c.source_id
+WHERE c.knowledge_base_id = $1
+  AND c.document_revision_id = ANY (ir.document_revision_ids);
