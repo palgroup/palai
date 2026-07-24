@@ -1,0 +1,10 @@
+id: A2A-003
+name: input-required-maps-to-waiting-cancel-reports-uncertain-side-effect-push-reuses-signed-webhook
+proof_class: e2e-deterministic
+provider: fake
+input: "The A2A task lifecycle maps onto canonical run states: a run awaiting input projects to A2A input-required (waiting_for_input). cancel issues a canonical cancel Command (monotonic, retry-safe) AND reports any non-cancelable uncertain side-effect honestly rather than claiming a clean cancel (§38.3). pushNotificationConfigs (set/get/list/delete) reuse the EXISTING signed outbound webhook model — the bearer token is a handle, redacted on every read, never echoed back. LOCAL proof: a generic loopback HTTP client drives the input-required mapping, the cancel-with-uncertain-side-effect report, and the full push-config CRUD (token-redaction asserted) against the server with in-memory fakes. §6 operator leg: a real signed push delivered to a FOREIGN receiver + foreign-peer interop (loopback != interop) — a2a stays preview."
+expect_status: completed
+proof:
+  - adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InputRequiredMapsToWaiting
+  - adapters/integrations/a2a/conformance_test.go:TestA2AConformance_TaskGetListCancel
+  - adapters/integrations/a2a/conformance_test.go:TestA2AConformance_PushConfigCRUD
