@@ -189,6 +189,14 @@ type evidenceCase struct {
 	GatewayOffProof            *GatewayOffProof            `json:"gateway_off_proof"`
 	PackagingClaim             string                      `json:"packaging_claim"`
 	PackagingProof             *PackagingProof             `json:"packaging_proof"`
+	// The E17 T6 eval-gate claim (plan §T6, QUA-004) carries the release machinery's held-out threshold
+	// evidence: per-suite held-out score + threshold + a security-regression count + the content-address
+	// digest of the fixtures that produced them. EvalPromoteGate reads it to REFUSE a sub-threshold candidate
+	// and to BLOCK a security regression independent of the aggregate (§57.13). A "thresholds-met" marker is
+	// NEVER proof — it is a GATE-MECHANICS claim (the deterministic reference engine opens no tool to a real
+	// provider, E08), not a model-quality claim; real-model quality numbers are §6 leg 7.
+	EvalGateClaim string         `json:"eval_gate_claim"`
+	EvalGateProof *EvalGateProof `json:"eval_gate_proof"`
 }
 
 type evidenceTerm struct {
@@ -958,6 +966,54 @@ func (p PackagingProof) Complete() bool {
 		p.SignatureVerified && p.OfflineVerified && p.TamperRejected
 }
 
+// EvalSuiteScore is one suite's held-out result the release gate reads (plan §T6, QUA-004): the held-out
+// aggregate Score, the Threshold it must clear, the SecurityRegressions count (a security-suite failure or a
+// protected-signal failure — the gate's INDEPENDENT block, §57.13), and the content-address DatasetDigest of
+// the immutable fixtures that produced the numbers.
+type EvalSuiteScore struct {
+	Suite               string  `json:"suite"`
+	HeldOutScore        float64 `json:"held_out_score"`
+	Threshold           float64 `json:"threshold"`
+	SecurityRegressions int     `json:"security_regressions"`
+	DatasetDigest       string  `json:"dataset_digest"`
+}
+
+// EvalGateProof is the evidence an eval_gate_claim requires (plan §T6, QUA-004). It is STRUCTURAL proof —
+// Complete() only checks the proof is on the held-out split and carries every one of the four suites with a
+// threshold and a content-address digest. The PASS/FAIL VERDICT (thresholds met, no security regression) is
+// EvalPromoteGate's job, not Complete()'s: a well-formed proof can still be REFUSED at promotion, which is
+// exactly how a sub-threshold or security-regressed candidate is caught.
+type EvalGateProof struct {
+	Split  string           `json:"split"`
+	Suites []EvalSuiteScore `json:"suites"`
+}
+
+// evalSuites is the fixed set of the four eval suites (plan §T6). Kept here so Complete() gates a bundle that
+// silently drops a suite (e.g. omitting the security suite to dodge its regression block).
+var evalSuites = []string{"coding", "research", "recovery", "security"}
+
+// Complete reports the proof is structurally well-formed: it is the held-out split and carries all four
+// suites, each with a positive threshold and a content-address digest. A missing suite, a wrong split, a
+// zero threshold, or a malformed digest is not proof.
+func (p EvalGateProof) Complete() bool {
+	if p.Split != "held-out" {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, s := range p.Suites {
+		if s.Threshold <= 0 || !checksumPattern.MatchString(s.DatasetDigest) {
+			return false
+		}
+		seen[s.Suite] = true
+	}
+	for _, want := range evalSuites {
+		if !seen[want] {
+			return false
+		}
+	}
+	return true
+}
+
 // secretPattern matches a credential-shaped token (an OpenAI-style sk- key), so a plaintext
 // credential fails the redaction scan even when the exact value is not supplied as a needle.
 var secretPattern = regexp.MustCompile(`sk-[A-Za-z0-9_-]{12,}`)
@@ -1284,6 +1340,19 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "packaging_proof (a packaging claim requires the signed manifest digest + built packages + an offline re-verify + a rejected tamper; a marker is not proof)"})
 			case !c.PackagingProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "packaging_proof is incomplete: a malformed manifest digest, no built packages, a signature that did not verify, a verify that was not offline, or a tamper that was not rejected (T7)"})
+			}
+		}
+
+		// The E17 T6 eval-gate claim mirrors the rule exactly: a non-empty marker with no proof is "missing";
+		// a proof that fails its structural Complete() invariant is "invalid" (plan §T6, QUA-004). The
+		// PASS/FAIL verdict is EvalPromoteGate's, not the manifest verifier's — a well-formed proof still
+		// verifies clean here and is judged at promotion.
+		if c.EvalGateClaim != "" {
+			switch {
+			case c.EvalGateProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "eval_gate_proof (an eval-gate claim requires the held-out per-suite score/threshold/regression + dataset digests; a 'thresholds-met' marker is not proof)"})
+			case !c.EvalGateProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "eval_gate_proof is incomplete: not the held-out split, a missing suite, a zero threshold, or a malformed dataset digest (QUA-004)"})
 			}
 		}
 
