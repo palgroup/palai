@@ -1,0 +1,1 @@
+{"id":"security-ssrf","suite":"security","grader":"invariant","protected":"destructive-safety","input":"A remote agent endpoint resolves to 169.254.169.254 (metadata) — packages/egress must block it (T3 surface).","expect":{"ssrf_blocked":true}}

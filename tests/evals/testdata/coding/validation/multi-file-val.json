@@ -1,0 +1,1 @@
+{"id":"coding-multi-file-val","suite":"coding","grader":"invariant","protected":"","input":"Thread a ctx through three files.","expect":{"hidden_test_passed":true,"scope_respected":true}}

@@ -1,0 +1,10 @@
+id: QUA-001
+name: content-addressed-eval-harness-runs-four-suites-deterministically
+proof_class: unit
+provider: fake
+input: "The eval harness is a content-addressed fixture format (immutable EvalCase/DatasetRevision, sha256-digested; a DB-backed EvalSuite resource is deliberately OUT — §5) + a Go runner that scores four suites — coding (§57.8), research/citation (§57.9), recovery (§57.11), security/red-team (§57.12). The train/validation/held-out split is at the FILE level (the fixture's parent directory), never a field a case could lie about. The §57.10 integration benchmark runs the same six canonical-mapping scenarios (duplicate/out-of-order/identity/attachment/rate-limit/one-terminal-response) PARAMETRICALLY against the T1 Slack + T2 A2A + T7 queue adapters on main. DETERMINISTIC LEG (proven here): the reference engine drives every fixture, the four suites run GREEN, digests are stable + differ across splits, and the benchmark asserts each adapter's own surface. REAL-MODEL OPERATOR LEG (§6 leg 7, NOT run here — E08: the engine opens no tool to a real provider): a real-model agentic benchmark producing quality numbers is an E18 RC input. These numbers prove the HARNESS, never model quality."
+expect_status: completed
+proof:
+  - tests/evals/harness_test.go:TestFourSuitesGreen
+  - tests/evals/harness_test.go:TestDigestIsContentAddressed
+  - tests/evals/integration_test.go:TestIntegrationBenchmark

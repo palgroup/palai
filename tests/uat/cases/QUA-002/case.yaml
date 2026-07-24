@@ -1,0 +1,10 @@
+id: QUA-002
+name: grader-priority-deterministic-over-model-judge-never-sole-gate-for-protected
+proof_class: unit
+provider: fake
+input: "Grader priority is deterministic-first (§57.6): schema/test/invariant/cost > trace grader > model-as-judge. A model-judge grade is CALIBRATION ONLY and can NEVER be the sole gate for a protected class — destructive-safety, secret, tenant, or protocol. DETERMINISTIC LEG (proven here): ValidateDataset REJECTS a protected fixture graded solely by model-judge and accepts the same case graded deterministically; every shipped protected fixture is deterministic; and a Grade records whether its kind is authoritative. REAL-MODEL OPERATOR LEG (§6 leg 7, run via the `live` tag with .env.local, NOT gated): a model-judge CALIBRATION smoke sends a known-good vs known-bad answer to a real provider and asserts the judge ranks good over bad — this only calibrates the judge, it is never promoted to a gate, and it proves nothing about model quality on the suites (E08: no agentic benchmark)."
+expect_status: completed
+proof:
+  - tests/evals/harness_test.go:TestModelJudgeNeverSoleGateForProtected
+  - tests/evals/harness_test.go:TestRegressedPolicyIsDetectable
+  - tests/evals/live_test.go:TestModelJudgeCalibrationSmoke

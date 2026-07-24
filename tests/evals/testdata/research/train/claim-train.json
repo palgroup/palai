@@ -1,0 +1,1 @@
+{"id":"research-claim-train","suite":"research","grader":"invariant","protected":"protocol","input":"Cite the one claim.","expect":{"claims_grounded":true}}

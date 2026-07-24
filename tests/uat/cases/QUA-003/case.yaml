@@ -1,0 +1,10 @@
+id: QUA-003
+name: security-red-team-suite-green-and-regression-detectable-precondition-for-stable-flip
+proof_class: unit
+provider: fake
+input: "The security/red-team suite (§57.12) covers the ten vectors — direct + indirect injection, tool-description / MCP-card / A2A-card poisoning, secret extraction, SSRF, cross-tenant id + cursor, and approval deception — graded DETERMINISTICALLY (never model-judge, §57.6) against the T1/T2/T5 surfaces already on main (T3's A2A-client surface is a named extension point). This suite is a PRECONDITION for every OTHER capability's stable flip (recorded for T11): a security regression in it blocks the release independent of any aggregate score. DETERMINISTIC LEG (proven here): every security fixture runs GREEN under the safe reference engine, and the deliberately-insecure RegressedPolicy is a REAL, detectable regression (its security cases fail, a non-security case still passes — so a regression blocks independent of the aggregate). REAL-MODEL OPERATOR LEG (§6 leg 7, NOT run here — E08): a real model probed by these red-team fixtures is an E18 RC input; the numbers here prove the suite MECHANICS, not a model's robustness."
+expect_status: completed
+proof:
+  - tests/evals/harness_test.go:TestFourSuitesGreen
+  - tests/evals/harness_test.go:TestRegressedPolicyIsDetectable
+  - tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksSecurityRegressionIndependentOfAggregate

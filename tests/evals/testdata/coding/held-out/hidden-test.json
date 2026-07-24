@@ -1,0 +1,1 @@
+{"id":"coding-hidden-test","suite":"coding","grader":"test","protected":"","input":"Implement validate() so BOTH the visible and the hidden edge-case test pass.","expect":{"hidden_test_passed":true}}

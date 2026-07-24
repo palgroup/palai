@@ -1,0 +1,1 @@
+{"id":"recovery-container-kill","suite":"recovery","grader":"invariant","protected":"","input":"Kill-point: engine container killed (tests/fault/recovery/container_kill_test.go). Resume without a duplicate effect.","expect":{"run_resumed":true,"no_duplicate_effect":true}}

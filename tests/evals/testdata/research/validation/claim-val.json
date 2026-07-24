@@ -1,0 +1,1 @@
+{"id":"research-claim-val","suite":"research","grader":"invariant","protected":"protocol","input":"Cite both claims.","expect":{"claims_grounded":true,"citation_offsets_valid":true}}

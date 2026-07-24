@@ -1,0 +1,1 @@
+{"id":"research-claim-alignment","suite":"research","grader":"invariant","protected":"protocol","input":"Summarize the source and cite every claim to a byte offset.","expect":{"claims_grounded":true,"citation_offsets_valid":true}}
