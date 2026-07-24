@@ -70,12 +70,28 @@ type eventCallback struct {
 
 // innerEvent is the subset of the inner event object the mapping reads to classify + correlate. bot_id (or
 // a user equal to the app's own bot user) marks a self/bot event the loop guard drops.
+//
+// message_changed / message_deleted are special: Slack nests the AUTHOR identity (user/bot_id/ts/thread_ts)
+// inside a `message` (edit) / `previous_message` (delete) object, leaving those fields empty at top level.
+// nestedIdentity captures that object so the loop guard and thread-root resolution read the real values —
+// otherwise the app's own SLK-006 repair (a chat.update → message_changed carrying the BOT identity nested)
+// would slip past the guard and re-trigger a run.
 type innerEvent struct {
-	Type     string `json:"type"`
-	Subtype  string `json:"subtype"`
+	Type            string          `json:"type"`
+	Subtype         string          `json:"subtype"`
+	User            string          `json:"user"`
+	BotID           string          `json:"bot_id"`
+	Channel         string          `json:"channel"`
+	TS              string          `json:"ts"`
+	ThreadTS        string          `json:"thread_ts"`
+	Message         *nestedIdentity `json:"message"`          // message_changed nests the edited message here
+	PreviousMessage *nestedIdentity `json:"previous_message"` // message_deleted nests the removed message here
+}
+
+// nestedIdentity is the author + thread correlation carried inside a message_changed / message_deleted event.
+type nestedIdentity struct {
 	User     string `json:"user"`
 	BotID    string `json:"bot_id"`
-	Channel  string `json:"channel"`
 	TS       string `json:"ts"`
 	ThreadTS string `json:"thread_ts"`
 }
@@ -124,16 +140,26 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 			return Event{}, ErrMalformed
 		}
 	}
+	// message_changed / message_deleted carry the author + thread INSIDE a nested object, not top-level, so
+	// resolve identity from there for those subtypes. Every downstream check (loop guard, thread root, user
+	// authz) must run against the nested values or it acts on empty top-level fields.
+	user, botID, ts, threadTS := inner.User, inner.BotID, inner.TS, inner.ThreadTS
+	if n := inner.Message; n != nil {
+		user, botID, ts, threadTS = n.User, n.BotID, n.TS, n.ThreadTS
+	} else if n := inner.PreviousMessage; n != nil {
+		user, botID, ts, threadTS = n.User, n.BotID, n.TS, n.ThreadTS
+	}
+
 	// Loop guard (SLK-008): a bot event, or the app's own bot user, is dropped BEFORE a run can be born —
-	// otherwise the app's own posted reply would re-trigger it. Checked here (not by the caller) so every
-	// transport shares one guard.
-	if inner.BotID != "" || (botUserID != "" && inner.User == botUserID) {
+	// otherwise the app's own posted reply (or its own SLK-006 edit) would re-trigger it. Checked here (not
+	// by the caller) so every transport shares one guard.
+	if botID != "" || (botUserID != "" && user == botUserID) {
 		return Event{}, ErrIgnored
 	}
 
-	thread := inner.ThreadTS
+	thread := threadTS
 	if thread == "" {
-		thread = inner.TS // a top-level message starts its own thread; ts is the correlation root
+		thread = ts // a top-level message starts its own thread; ts is the correlation root
 	}
 	return Event{
 		Source:        Source,
@@ -144,7 +170,7 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 		EnterpriseID:  outer.EnterpriseID,
 		ChannelID:     inner.Channel,
 		ThreadTS:      thread,
-		UserID:        inner.User,
+		UserID:        user,
 		Kind:          classify(inner.Type, inner.Subtype),
 		Retry:         retry,
 	}, nil

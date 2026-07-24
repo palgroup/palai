@@ -63,6 +63,49 @@ func TestMapEventDropsBotAndSelfEvents(t *testing.T) {
 	}
 }
 
+// Slack's real message_changed nests the author identity under `message` (message_deleted under
+// `previous_message`): bot_id/user/ts/thread_ts are NOT top-level for those subtypes. The bot's OWN
+// SLK-006 repair does a chat.update, which Slack re-emits as a message_changed carrying the BOT identity
+// nested — so the loop guard MUST read the nested object, or the bot's own edit flows through as a
+// KindCorrection and re-triggers a run (the exact loop SLK-008 exists to kill).
+func TestMapEventDropsNestedBotEdit(t *testing.T) {
+	edit := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev9","event":{
+		"type":"message","subtype":"message_changed","channel":"C1","ts":"9.9",
+		"message":{"type":"message","bot_id":"B1","user":"Ubot","ts":"1.1","thread_ts":"1.1","text":"edited by bot"}
+	}}`)
+	if _, err := MapEvent(edit, "Ubot", false); !errors.Is(err, ErrIgnored) {
+		t.Fatalf("nested bot edit: err = %v, want ErrIgnored (loop guard must see the nested bot_id)", err)
+	}
+	// A message_deleted nests the author under previous_message — a bot's own deletion is likewise dropped.
+	del := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev10","event":{
+		"type":"message","subtype":"message_deleted","channel":"C1","ts":"10.1",
+		"previous_message":{"type":"message","bot_id":"B1","ts":"1.1","thread_ts":"1.1"}
+	}}`)
+	if _, err := MapEvent(del, "Ubot", false); !errors.Is(err, ErrIgnored) {
+		t.Fatalf("nested bot delete: err = %v, want ErrIgnored", err)
+	}
+}
+
+// A HUMAN edit nests the real user + thread root under `message`; the correction must carry that user
+// (SLK-004 authz reads it) and the thread ROOT (not the edit-event ts) so it correlates to the existing
+// thread-session rather than claiming a new one.
+func TestMapEventNestedHumanEditCorrelation(t *testing.T) {
+	edit := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev11","event":{
+		"type":"message","subtype":"message_changed","channel":"C1","ts":"11.9",
+		"message":{"type":"message","user":"U9","ts":"5.5","thread_ts":"100.0","text":"fixed typo"}
+	}}`)
+	ev, err := MapEvent(edit, "Ubot", false)
+	if err != nil {
+		t.Fatalf("nested human edit: err = %v", err)
+	}
+	if ev.Kind != KindCorrection {
+		t.Fatalf("kind = %q, want correction", ev.Kind)
+	}
+	if ev.UserID != "U9" || ev.ThreadTS != "100.0" {
+		t.Fatalf("correlation = user %q thread %q, want U9/100.0 (from the nested message, not top-level)", ev.UserID, ev.ThreadTS)
+	}
+}
+
 func TestMapEventClassifiesEditsAndDeletes(t *testing.T) {
 	edit := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev3","event":{"type":"message","subtype":"message_changed","channel":"C1","ts":"3.3"}}`)
 	if ev, _ := MapEvent(edit, "Ubot", false); ev.Kind != KindCorrection {
