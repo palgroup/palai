@@ -2,6 +2,7 @@ packages:
   - sdks/typescript
   - sdks/typescript/extension-sdk
   - examples/nextjs-sdk
+  - apps/web-console
   - spikes/control-plane/node-server
   - spikes/contracts/tooling
   - spikes/nextjs-streaming

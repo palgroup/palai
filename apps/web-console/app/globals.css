@@ -1,0 +1,201 @@
+/* Accessibility fundamentals (UI-001, §47.5). These are load-bearing for the axe + keyboard proofs, not
+   decoration: a visible skip link, an always-visible focus ring, reduced-motion honored, and status
+   conveyed by text + glyph (never color alone). Light/dark follow the OS. */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #55606b;
+  --border: #d0d7de;
+  --panel: #f6f8fa;
+  --accent: #0b5cad;
+  --focus: #0b5cad;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --fg: #e6edf3;
+    --muted: #9aa7b4;
+    --border: #30363d;
+    --panel: #161b22;
+    --accent: #4aa3ff;
+    --focus: #4aa3ff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* Focus is ALWAYS visible — keyboard users must see where they are (axe: focusable content). */
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* The skip link is off-screen until focused, then jumps into view — the first Tab stop. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--accent);
+  color: #fff;
+  padding: 0.5rem 1rem;
+  z-index: 100;
+}
+.skip-link:focus {
+  left: 0;
+}
+
+/* Reduced-motion: no transitions/animations for users who ask for calm (axe / §47.5). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+header.app-header {
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1.25rem;
+  display: flex;
+  gap: 1.25rem;
+  align-items: baseline;
+}
+header.app-header h1 {
+  font-size: 1.05rem;
+  margin: 0;
+}
+header.app-header nav a {
+  margin-right: 1rem;
+}
+
+main {
+  padding: 1.25rem;
+  max-width: 72rem;
+  margin: 0 auto;
+}
+
+h2 {
+  font-size: 1.15rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.25rem;
+}
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 0 0 1.25rem;
+  background: var(--panel);
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9rem;
+}
+th,
+td {
+  text-align: left;
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+button {
+  font: inherit;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+button:hover {
+  border-color: var(--accent);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+input[type="text"],
+textarea {
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  width: 100%;
+}
+
+/* A status is NEVER color-only: the glyph + the word carry the meaning; color is a redundant hint. */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+.status .glyph {
+  font-weight: 700;
+}
+
+pre.code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  margin: 0.3rem 0;
+}
+
+.lane {
+  border-left: 3px solid var(--border);
+  padding: 0.2rem 0 0.2rem 0.6rem;
+  margin: 0.25rem 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.risk-high {
+  font-weight: 700;
+}
+
+fieldset {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0 0 1rem;
+}
+legend {
+  padding: 0 0.4rem;
+  font-weight: 600;
+}
