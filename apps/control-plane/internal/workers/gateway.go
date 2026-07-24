@@ -1,6 +1,7 @@
 package workers
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -44,7 +45,8 @@ type workerSess struct {
 	workerID string
 	tenant   Tenant
 	notAfter time.Time
-	claims   map[string]Claim // job id -> the authoritative claim the gateway issued
+	claims   map[string]Claim    // job id -> the authoritative claim the gateway issued
+	redeemed map[string][][]byte // job id -> secret VALUES redeemed for it, so a result echoing one is refused
 }
 
 // NewGateway builds the surface over a store. ttl is the short-lived workload-identity lifetime (a claim/
@@ -150,7 +152,7 @@ func (g *Gateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	workload := randToken("cwwl")
 	notAfter := time.Now().Add(g.ttl)
 	g.mu.Lock()
-	g.sessions[workload] = &workerSess{workerID: worker.ID, tenant: grant.tenant, notAfter: notAfter, claims: map[string]Claim{}}
+	g.sessions[workload] = &workerSess{workerID: worker.ID, tenant: grant.tenant, notAfter: notAfter, claims: map[string]Claim{}, redeemed: map[string][][]byte{}}
 	g.mu.Unlock()
 	writeJSON(w, http.StatusOK, enrollResp{WorkerID: worker.ID, WorkloadToken: workload, NotAfter: notAfter.UTC().Format(time.RFC3339)})
 }
@@ -240,6 +242,13 @@ func (g *Gateway) handleRedeem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "redeem refused", http.StatusForbidden)
 		return
 	}
+	// Remember what we handed out for this job so handleResult can REFUSE to journal it back — WRK-004 must
+	// hold against ANY worker, not just the honest fixture.
+	if len(value) > 0 {
+		g.mu.Lock()
+		sess.redeemed[req.JobID] = append(sess.redeemed[req.JobID], append([]byte(nil), value...))
+		g.mu.Unlock()
+	}
 	writeJSON(w, http.StatusOK, redeemResp{ValueB64: base64.StdEncoding.EncodeToString(value)})
 }
 
@@ -275,16 +284,34 @@ func (g *Gateway) handleResult(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such claim for this worker", http.StatusForbidden)
 		return
 	}
-	var outputRefs []string
+	var outputData []byte
 	if req.OutputArtifact != "" {
 		if data, err := base64.StdEncoding.DecodeString(req.OutputArtifact); err == nil {
-			g.mu.Lock()
-			g.artifactSeq++
-			ref := "cwart_out_" + itoaGW(g.artifactSeq)
-			g.artifacts[ref] = data
-			g.mu.Unlock()
-			outputRefs = []string{ref}
+			outputData = data
 		}
+	}
+	// SHOULD-FIX 3: a redeemed secret VALUE must never reach the durable, evidence-visible journal. The store
+	// writes the worker-controlled receipt/output VERBATIM, so REFUSE here — before any persistence — a
+	// result that echoes a value this session redeemed for this job. This is what makes WRK-004 hold against
+	// a hostile/buggy worker, not only the honest fixture.
+	g.mu.Lock()
+	redeemed := sess.redeemed[req.JobID]
+	g.mu.Unlock()
+	if len(redeemed) > 0 {
+		receiptJSON, _ := json.Marshal(req.Receipt)
+		if containsAnySecret(redeemed, receiptJSON, outputData) {
+			http.Error(w, "result rejected: would leak a redeemed secret", http.StatusForbidden)
+			return
+		}
+	}
+	var outputRefs []string
+	if len(outputData) > 0 {
+		g.mu.Lock()
+		g.artifactSeq++
+		ref := "cwart_out_" + itoaGW(g.artifactSeq)
+		g.artifacts[ref] = outputData
+		g.mu.Unlock()
+		outputRefs = []string{ref}
 	}
 	err := g.store.SubmitResult(r.Context(), claim, Outcome{
 		Class: req.Class, Operation: req.Operation, Receipt: req.Receipt, OutputRefs: outputRefs,
@@ -293,9 +320,10 @@ func (g *Gateway) handleResult(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		g.mu.Lock()
 		delete(sess.claims, req.JobID)
+		delete(sess.redeemed, req.JobID)
 		g.mu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{"accepted": true, "output_refs": outputRefs})
-	case errors.Is(err, ErrStaleFence), errors.Is(err, ErrWorkerFenced):
+	case errors.Is(err, ErrStaleFence), errors.Is(err, ErrWorkerFenced), errors.Is(err, ErrNotLeaseholder):
 		http.Error(w, "stale fence", http.StatusConflict)
 	case errors.Is(err, ErrUntypedOperation):
 		http.Error(w, "untyped operation (no tunnel)", http.StatusForbidden)
@@ -315,6 +343,23 @@ func (g *Gateway) session(r *http.Request) (*workerSess, bool) {
 		return nil, false
 	}
 	return sess, true
+}
+
+// containsAnySecret reports whether any non-empty secret value appears verbatim in any haystack (the
+// serialized receipt and the decoded output artifact) — the server-side guard that a redeemed value never
+// lands in the journal, regardless of what the worker put in its result.
+func containsAnySecret(secrets [][]byte, haystacks ...[]byte) bool {
+	for _, sec := range secrets {
+		if len(sec) == 0 {
+			continue
+		}
+		for _, h := range haystacks {
+			if len(h) > 0 && bytes.Contains(h, sec) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func bearer(r *http.Request) string {
