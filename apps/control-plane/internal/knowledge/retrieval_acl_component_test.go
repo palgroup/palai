@@ -150,6 +150,96 @@ func TestPostFilterTopKIsForbidden(t *testing.T) {
 	}
 }
 
+// seedDominantRestrictedKB builds a KB whose RESTRICTED-acl chunk dominates the query in cosine similarity
+// (its content is exactly the query term → unit-aligned embedding, score 1.0), while the authorized KB-wide
+// chunk is cosine-diluted by filler tokens (score < 1.0). Optionally omit the restricted chunk (baseline).
+// The whole revision is embedded into the deterministic vector store (embedding is ACL-less by design — the
+// ACL filter must happen at SEARCH time). Returns the KB id.
+func seedDominantRestrictedKB(t *testing.T, ks *knowledge.Store, scope middleware.Scope, name string, withRestricted bool) string {
+	t.Helper()
+	kb := createKB(t, ks, scope, name)
+	openSrc := createSource(t, ks, scope, kb, "")
+	ingest(t, ks, scope, kb, openSrc, "widgets and assorted unrelated filler tokens spread thin here")
+	if withRestricted {
+		secretSrc := createSource(t, ks, scope, kb, "restricted")
+		ingest(t, ks, scope, kb, secretSrc, "widgets") // exact query term → cosine 1.0, out-ranks the diluted authorized chunk
+	}
+	route := knowledge.EmbeddingRoute{Provider: "fake", Region: "local"}
+	policy := knowledge.EmbeddingPolicy{AllowedRegions: []string{"local"}}
+	if err := ks.IndexKBIntoVector(context.Background(), scope, kb, route, policy); err != nil {
+		t.Fatalf("IndexKBIntoVector(%s) = %v", name, err)
+	}
+	return kb
+}
+
+// TestVectorPostFilterTopKIsForbidden is the VECTOR-leg twin of TestPostFilterTopKIsForbidden (§25.15.3,
+// KNO-003/005). The vector store indexes every chunk ACL-less, so if the top-K window is taken BEFORE the ACL
+// filter a restricted chunk that dominates cosine both (a) displaces the authorized chunk out of a LIMIT=1
+// window — an EMPTY result while an authorized positive-similarity chunk exists — and (b) leaks its existence
+// through the returned score (a pre-filter rank of 0 demotes the authorized chunk's score). The fix pushes the
+// ACL admission INTO Search (metadata pre-filter): the top-K window is taken among ADMITTED chunks only, so an
+// unauthorized chunk never enters the ranking. A grant-less caller must get the authorized chunk with a score
+// that does NOT encode the (invisible) restricted chunk's presence.
+func TestVectorPostFilterTopKIsForbidden(t *testing.T) {
+	cs, ks := openStore(t)
+	ks.SetVectorAdapter(knowledge.NewDeterministicVectorAdapter())
+	scope := provisionTenant(t, cs, "kno-vec-topk")
+
+	kbBoth := seedDominantRestrictedKB(t, ks, scope, "both", true)
+	kbBase := seedDominantRestrictedKB(t, ks, scope, "baseline", false)
+
+	// (a) Displacement: grant-less caller, strategy=vector, LIMIT=1. Pre-filter top-K fills the single slot
+	// with the dominant restricted chunk, drops it on re-resolution, and returns NOTHING. ACL-first returns
+	// the authorized chunk (the restricted one never entered the window).
+	_, disp := retrieveTyped(t, ks, scope, kbBoth, map[string]any{"query": "widgets", "strategy": "vector", "max_results": 1})
+	if len(disp.Data) != 1 {
+		t.Fatalf("vector post-filter-top-K breach: LIMIT=1 returned %d hits — the restricted chunk displaced the authorized one from the window", len(disp.Data))
+	}
+	if disp.Data[0].ACL == "restricted" {
+		t.Fatalf("ACL-first breach: restricted chunk returned to a grant-less caller: %q", disp.Data[0].Content)
+	}
+
+	// (b) Score side-channel: with a wider window the authorized chunk is not displaced, but a pre-filter rank
+	// leaks the restricted chunk's presence into the returned score (1/(i+1) over the PRE-filter rank). The
+	// score must be identical whether or not the invisible restricted chunk exists.
+	_, wide := retrieveTyped(t, ks, scope, kbBoth, map[string]any{"query": "widgets", "strategy": "vector", "max_results": 5})
+	_, base := retrieveTyped(t, ks, scope, kbBase, map[string]any{"query": "widgets", "strategy": "vector", "max_results": 5})
+	if len(wide.Data) != 1 || len(base.Data) != 1 {
+		t.Fatalf("expected exactly the authorized chunk in both KBs, got both=%d base=%d", len(wide.Data), len(base.Data))
+	}
+	if wide.Data[0].Score != base.Data[0].Score {
+		t.Fatalf("score side-channel: authorized chunk scored %v with a restricted chunk present but %v without — the returned score leaks the restricted chunk's rank",
+			wide.Data[0].Score, base.Data[0].Score)
+	}
+}
+
+// TestHybridVectorLegPostFilterScoreSideChannel proves the hybrid strategy inherits the vector-leg fix. The
+// keyword leg is already ACL-first so it backstops displacement, but a pre-filter vector window is filled by
+// the dominant restricted chunk and dropped, so at LIMIT=1 the authorized chunk loses its vector-leg RRF
+// contribution ONLY when the restricted chunk exists — its fused score then reveals the restricted chunk's
+// presence. After the fix the vector leg ranks among admitted chunks, so the fused score is invariant.
+func TestHybridVectorLegPostFilterScoreSideChannel(t *testing.T) {
+	cs, ks := openStore(t)
+	ks.SetVectorAdapter(knowledge.NewDeterministicVectorAdapter())
+	scope := provisionTenant(t, cs, "kno-hybrid-topk")
+
+	kbBoth := seedDominantRestrictedKB(t, ks, scope, "both", true)
+	kbBase := seedDominantRestrictedKB(t, ks, scope, "baseline", false)
+
+	_, both := retrieveTyped(t, ks, scope, kbBoth, map[string]any{"query": "widgets", "strategy": "hybrid", "max_results": 1})
+	_, base := retrieveTyped(t, ks, scope, kbBase, map[string]any{"query": "widgets", "strategy": "hybrid", "max_results": 1})
+	if len(both.Data) != 1 || len(base.Data) != 1 {
+		t.Fatalf("expected the authorized chunk via the keyword backstop in both KBs, got both=%d base=%d", len(both.Data), len(base.Data))
+	}
+	if both.Data[0].ACL == "restricted" || base.Data[0].ACL == "restricted" {
+		t.Fatalf("ACL-first breach: restricted chunk fused into a grant-less hybrid result")
+	}
+	if both.Data[0].Score != base.Data[0].Score {
+		t.Fatalf("hybrid score side-channel: authorized chunk fused to %v with a restricted chunk present but %v without — the vector-leg RRF contribution leaks the restricted chunk",
+			both.Data[0].Score, base.Data[0].Score)
+	}
+}
+
 // TestCrossProjectACLNegative proves intra-tenant project isolation: two projects in ONE organization, each
 // with its own restricted KB. A caller scoped to project 2 (even holding the restricted grant label) sees
 // NOTHING of project 1's KB — the knowledge base belongs to a project, so RLS (org+project) rejects the
