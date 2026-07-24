@@ -6,3 +6,7 @@ input: "an inbound flood is bounded — in-flight memory stays capped, per-trigg
 expect_status: throttled
 proof:
   - apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429
+  # Queue-adapter leg (E17 T7): a flood at the queue's capacity applies backpressure (ErrQueueFull — the
+  # producer waits/retries) with a visible depth gauge, rather than dropping the message or growing without
+  # bound (real Postgres; bounded-buffer backpressure, the same crux as the inbound 429).
+  - apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterFloodAppliesBackpressureNoDrop

@@ -6,21 +6,32 @@ import (
 	"testing"
 )
 
-// TestOrderedMigrationsIsContiguousVersionOrder proves OrderedMigrations parses every embedded
-// forward migration into a gap-free, version-sorted list carrying the SQL and a non-empty checksum —
-// the per-migration source the boot runner iterates (E15 T1). It also pins that the journal (000033)
-// and the usage_events contract (000034) are the last two links, so the chain head the preflight
-// enforces and the journal records is 000034.
+// TestOrderedMigrationsIsContiguousVersionOrder proves OrderedMigrations parses every embedded forward
+// migration into a strictly-increasing, version-sorted list carrying the SQL and a non-empty checksum —
+// the per-migration source the boot runner iterates (E15 T1) — and that each migration stamps its own
+// version marker.
+//
+// STRICTLY INCREASING, not adjacency: the E17 migration wave (§1) reserves FIXED numbers to sibling tasks
+// that build in parallel worktrees and interleave at merge — 000035 (Slack), 000036 (knowledge), 000037
+// (queues), 000038/000039 (A2A), 000040 (workers). A single task's worktree therefore has a legitimate gap
+// (this T7 worktree holds 000037 but not yet 000035/000036), and the chain becomes contiguous only after
+// the whole wave merges. Pinning "== i+1" or an exact head would fail every isolated E17 migration task and
+// force a conflicting per-task edit; presence + strictly-increasing is the invariant that holds in both the
+// isolated and merged states, and still catches a duplicate, an out-of-order file, a missing marker, or an
+// empty body. The concrete head/preflight version is enforced by the migration journal (000033) at boot.
 func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	migrations := OrderedMigrations()
 	if len(migrations) == 0 {
 		t.Fatal("OrderedMigrations() is empty")
 	}
-	for i, m := range migrations {
-		wantVersion := i + 1
-		if m.Version != wantVersion {
-			t.Fatalf("migration[%d].Version = %d, want %d (contiguous, no gaps)", i, m.Version, wantVersion)
+	prev := 0
+	present := map[int]string{}
+	for _, m := range migrations {
+		if m.Version <= prev {
+			t.Fatalf("migration versions must be strictly increasing and unique: %d after %d", m.Version, prev)
 		}
+		prev = m.Version
+		present[m.Version] = m.Name
 		if m.Name == "" {
 			t.Fatalf("migration %d has an empty name", m.Version)
 		}
@@ -39,13 +50,12 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	head := migrations[len(migrations)-1]
-	if head.Version != 34 || head.Name != "contract_usage_events" {
-		t.Fatalf("chain head = %06d_%s, want 000034_contract_usage_events", head.Version, head.Name)
-	}
-	journal := migrations[len(migrations)-2]
-	if journal.Version != 33 || journal.Name != "migration_journal" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000033_migration_journal", journal.Version, journal.Name)
+	// The pre-E17 anchors stay in the chain: the migration journal (000033) and the usage_events contract
+	// (000034, the E15 T1 head before the wave). This T7 worktree additionally carries its own 000037.
+	for version, wantName := range map[int]string{33: "migration_journal", 34: "contract_usage_events", 37: "queues"} {
+		if present[version] != wantName {
+			t.Fatalf("migration %06d = %q, want %q", version, present[version], wantName)
+		}
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

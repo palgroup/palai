@@ -55,6 +55,9 @@ var allTables = []string{
 	// usage_events is intentionally absent: 000034 contracts it away (superseded by usage_ledger in
 	// 000032). schema_revisions is the E15 T1 migration journal 000033 creates.
 	"schema_revisions",
+	// The E17 T7 queue-adapter tables (000037): the durable consumer queue, its append-only idempotency
+	// ledger, and the outbound result-delivery outbox.
+	"queue_connections", "queue_messages", "queue_effect_receipts", "queue_deliveries",
 	"schema_migrations",
 }
 
@@ -1571,6 +1574,99 @@ func TestMigration31SecretRefsGrantsAppendOnlyAcrossReboots(t *testing.T) {
 	}
 	if got := pgCode(mustFail(conn.Exec(ctx, `DELETE FROM secret_refs`))); got != "42501" {
 		t.Fatalf("secret_refs DELETE code = %q, want 42501 (append-only: DELETE withheld)", got)
+	}
+}
+
+// TestMigration37Queues proves 000037 adds the queue-adapter tables (E17 Task 7, spec §34.1-34.5)
+// idempotently: present after apply, a re-apply is a clean no-op (every object IF NOT EXISTS), version 37
+// recorded exactly once. It pins the load-bearing invariants: the queue_messages enqueue-dedupe UNIQUE
+// (a producer double-publish collapses), and — the crux — the queue_effect_receipts idempotency ledger is
+// append-only ACROSS REBOOTS: even after the chain re-runs (re-exposing 000001/000029's blanket grants),
+// palai_app holds SELECT+INSERT but NOT UPDATE/DELETE, so the process can neither rewrite nor erase a
+// receipt (which would let a redelivered message re-run its effect). Mirrors the secret_refs reboot proof.
+func TestMigration37Queues(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// A second boot re-runs the whole chain (the boot that re-exposes the blanket grants to the now-existing
+	// queue tables) — every object is IF NOT EXISTS / idempotent, so it is a clean no-op.
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, name := range []string{"queue_connections", "queue_messages", "queue_effect_receipts", "queue_deliveries"} {
+		if !tableExists(t, pool, name) {
+			t.Fatalf("after apply, %q is missing", name)
+		}
+	}
+	if !indexExists(t, pool, "queue_messages_deliverable_idx") || !indexExists(t, pool, "queue_deliveries_due_idx") {
+		t.Fatal("after apply, a 000037 index is missing")
+	}
+	var version37 int
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM schema_migrations WHERE version = 37`).Scan(&version37); err != nil {
+		t.Fatalf("count version 37 error = %v", err)
+	}
+	if version37 != 1 {
+		t.Fatalf("schema_migrations records version 37 %d times, want 1", version37)
+	}
+
+	// Seed a tenant + a connection so the unique/append-only inserts have a valid scope + FK target.
+	tenant, _, _ := seedRun(t, pool)
+	connID := newID("qconn")
+	exec(t, pool,
+		`INSERT INTO queue_connections (id, organization_id, project_id, name) VALUES ($1,$2,$3,'q')`,
+		connID, tenant.Organization, tenant.Project)
+
+	// Enqueue-dedupe: a second message with the same (connection, idempotency_key) is rejected.
+	insertMsg := func(key string) error {
+		_, err := pool.Exec(storage.WithSystemScope(ctx),
+			`INSERT INTO queue_messages (id, organization_id, project_id, queue_connection_id, idempotency_key, body)
+			 VALUES ($1,$2,$3,$4,$5,$6)`,
+			newID("qmsg"), tenant.Organization, tenant.Project, connID, key, []byte("x"))
+		return err
+	}
+	if err := insertMsg("k1"); err != nil {
+		t.Fatalf("first queue_messages insert error = %v", err)
+	}
+	if got := pgCode(insertMsg("k1")); got != "23505" {
+		t.Fatalf("duplicate (connection, idempotency_key) code = %q, want 23505 unique_violation", got)
+	}
+
+	// The append-only privilege assertion (RLS-independent), after two boots: palai_app SELECT+INSERT, not
+	// UPDATE/DELETE.
+	sctx := storage.WithSystemScope(ctx)
+	assertPriv := func(priv string, want bool) {
+		var got bool
+		if err := pool.QueryRow(sctx,
+			`SELECT has_table_privilege('palai_app', 'queue_effect_receipts', $1)`, priv).Scan(&got); err != nil {
+			t.Fatalf("has_table_privilege(%s) error = %v", priv, err)
+		}
+		if got != want {
+			t.Fatalf("palai_app %s on queue_effect_receipts = %v, want %v (append-only grant eroded across reboots)", priv, got, want)
+		}
+	}
+	assertPriv("SELECT", true)
+	assertPriv("INSERT", true)
+	assertPriv("UPDATE", false)
+	assertPriv("DELETE", false)
+
+	// Behavioral half: as the runtime role, an UPDATE/DELETE on the ledger is refused (42501) before RLS is
+	// even consulted — a redelivered message cannot re-run its effect by tampering with its receipt.
+	conn, err := pool.Acquire(sctx)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(sctx, `SET ROLE palai_app`); err != nil {
+		t.Fatalf("SET ROLE palai_app error = %v", err)
+	}
+	defer func() { _, _ = conn.Exec(sctx, `RESET ROLE`) }()
+	if got := pgCode(mustFail(conn.Exec(sctx, `UPDATE queue_effect_receipts SET idempotency_key = 'x'`))); got != "42501" {
+		t.Fatalf("queue_effect_receipts UPDATE code = %q, want 42501 (append-only: UPDATE withheld)", got)
+	}
+	if got := pgCode(mustFail(conn.Exec(sctx, `DELETE FROM queue_effect_receipts`))); got != "42501" {
+		t.Fatalf("queue_effect_receipts DELETE code = %q, want 42501 (append-only: DELETE withheld)", got)
 	}
 }
 

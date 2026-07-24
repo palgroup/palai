@@ -47,6 +47,13 @@ func capabilities(w http.ResponseWriter, r *http.Request) {
 			// discovery derives it from PALAI_WORKSPACE_ROOT the same way it reads the retention TTL — a
 			// deployment with no coding stack never advertises a capability it cannot serve.
 			"workspaces": workspacesCapability(),
+			// The queue adapter (E17 T7): a durable SQS/PubSub/Kafka-class consumer + outbound result-delivery
+			// outbox, proven by the Postgres-durable REFERENCE adapter. It enters as "preview" and is a STABLE
+			// CANDIDATE — NO task writes its own capability as "stable" (§2); only the T11 exit gate flips it,
+			// recomputing the tier from the per-case UAT outcomes. Real SQS/PubSub/Kafka brokers are the
+			// operator leg (§6) and are deliberately NOT advertised here (an unwritten adapter is never
+			// discoverable). Discovery never claims what the deployment cannot serve.
+			"queues": "preview",
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")

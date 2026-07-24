@@ -7,3 +7,7 @@ expect_status: completed
 proof:
   - apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetrySameIdempotencyKeySingleEverything
   - apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetryDifferentKeySameDedupeSingleAction
+  # Queue-adapter leg (E17 T7): an at-least-once redelivery carrying the SAME idempotency key runs the
+  # effect exactly once via the append-only receipts ledger — the queue half of idempotency-key -> single
+  # action (real Postgres). The orchestrator-kit leg (§35) is T8's, appended separately.
+  - apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect

@@ -43,6 +43,11 @@ var nonTenantTables = map[string]bool{
 	"schema_migrations": true,
 	"host_quarantine":   true,
 	"session_sequences": true,
+	// schema_revisions (000033) is the append-only migration journal — installation-global, written only
+	// by the owner boot runner, carrying no organization_id, so its own migration declares it takes NO RLS
+	// policy. It arrived after this allowlist was last touched (E13 T5, before 000033), so name it here now
+	// that the E17 tenancy gate exercises the full chain — deliberately and visibly, like its siblings.
+	"schema_revisions": true,
 }
 
 // suite holds the two connections the corpus contrasts: the migration owner (which seeds fixtures
