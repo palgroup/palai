@@ -9,13 +9,13 @@
 -- name: InsertSlackConnection
 INSERT INTO slack_connections (
     id, organization_id, project_id, team_id, enterprise_id, bot_user_id,
-    signing_secret_ref, bot_token_ref, scopes, allowed_channels, allowed_users, default_policy)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+    signing_secret_ref, bot_token_ref, app_token_ref, scopes, allowed_channels, allowed_users, default_policy)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13);
 
 -- GetSlackConnection reads a connection's metadata within scope. The secret refs are HANDLES, not values,
 -- so they are safe to return to an admin read; the resolved bytes never live in this table.
 -- name: GetSlackConnection
-SELECT id, team_id, enterprise_id, bot_user_id, signing_secret_ref, bot_token_ref, scopes, disabled
+SELECT id, team_id, enterprise_id, bot_user_id, signing_secret_ref, bot_token_ref, app_token_ref, scopes, disabled
 FROM slack_connections
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
@@ -34,8 +34,11 @@ LIMIT $7;
 -- ResolveSlackConnectionByTeam establishes the tenant for a signed inbound callback, keyed by the Slack
 -- team + enterprise id. System-scoped (there is no tenant to scope by yet); the signature over the returned
 -- signing_secret_ref is the auth. A disabled connection still resolves so the caller can reject explicitly.
+-- Note for the future webhook receiver: this resolve is UNAUTHENTICATED (one DB query per request), so the
+-- caller must bound the request body size BEFORE the HMAC verify and treat the pre-parse team_id as a lookup
+-- key ONLY — never as trust — or it is an edge rate-limit / amplification hole.
 -- name: ResolveSlackConnectionByTeam
-SELECT id, organization_id, project_id, signing_secret_ref, bot_token_ref, bot_user_id, disabled
+SELECT id, organization_id, project_id, signing_secret_ref, bot_token_ref, app_token_ref, bot_user_id, disabled
 FROM slack_connections
 WHERE team_id = $1 AND enterprise_id = $2;
 

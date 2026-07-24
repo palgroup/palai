@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS slack_connections (
     bot_user_id TEXT NOT NULL DEFAULT '',               -- the app's own bot user id — the self-loop guard (SLK-008)
     signing_secret_ref TEXT NOT NULL,                   -- handle into secret_refs; the v0 verify resolves it
     bot_token_ref TEXT NOT NULL DEFAULT '',             -- handle into secret_refs; outbound chat.* resolves it
+    app_token_ref TEXT NOT NULL DEFAULT '',             -- handle into secret_refs; the Socket Mode WS app-token (xapp-) resolves it at connect (T11)
     scopes TEXT NOT NULL DEFAULT '',                    -- granted OAuth scopes (space-separated), advisory
     allowed_channels JSONB NOT NULL DEFAULT '[]'::jsonb, -- allowlist; empty = no channel restriction
     allowed_users JSONB NOT NULL DEFAULT '[]'::jsonb,    -- users permitted to approve/steer (SLK-004)

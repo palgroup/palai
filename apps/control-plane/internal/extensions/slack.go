@@ -26,6 +26,9 @@ var (
 	ErrSlackConnectionExists = errors.New("extensions: slack connection already exists for this workspace")
 	// ErrSlackConnectionNotFound is a get/resolve for a connection absent from scope.
 	ErrSlackConnectionNotFound = errors.New("extensions: slack connection not found in scope")
+	// ErrSlackThreadSessionNotFound is a thread-session read for a (team, channel, thread) with no correlated
+	// session yet — the connection exists, the thread row does not.
+	ErrSlackThreadSessionNotFound = errors.New("extensions: slack thread session not found in scope")
 )
 
 // SlackConnection is a registered workspace binding's committed shape. The refs are handles, never values.
@@ -36,6 +39,7 @@ type SlackConnection struct {
 	BotUserID        string
 	SigningSecretRef string
 	BotTokenRef      string
+	AppTokenRef      string
 	Scopes           string
 	Disabled         bool
 }
@@ -48,6 +52,7 @@ type SlackConnectionInput struct {
 	BotUserID        string         `json:"bot_user_id"`
 	SigningSecretRef string         `json:"signing_secret_ref"`
 	BotTokenRef      string         `json:"bot_token_ref"`
+	AppTokenRef      string         `json:"app_token_ref"` // Socket Mode WS app-token (xapp-) handle; ref only, never a raw token
 	Scopes           string         `json:"scopes"`
 	AllowedChannels  []string       `json:"allowed_channels"`
 	AllowedUsers     []string       `json:"allowed_users"`
@@ -71,7 +76,7 @@ func (s *Store) CreateSlackConnection(ctx context.Context, org, project string, 
 	id := newID("slkc")
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertSlackConnection"),
 		id, org, project, in.TeamID, in.EnterpriseID, in.BotUserID,
-		in.SigningSecretRef, in.BotTokenRef, in.Scopes,
+		in.SigningSecretRef, in.BotTokenRef, in.AppTokenRef, in.Scopes,
 		marshalJSON(orEmptyList(in.AllowedChannels)), marshalJSON(orEmptyList(in.AllowedUsers)),
 		marshalJSON(orEmptyObject(in.DefaultPolicy))); err != nil {
 		if isUniqueViolation(err) {
@@ -81,7 +86,7 @@ func (s *Store) CreateSlackConnection(ctx context.Context, org, project string, 
 	}
 	return SlackConnection{
 		ID: id, TeamID: in.TeamID, EnterpriseID: in.EnterpriseID, BotUserID: in.BotUserID,
-		SigningSecretRef: in.SigningSecretRef, BotTokenRef: in.BotTokenRef, Scopes: in.Scopes,
+		SigningSecretRef: in.SigningSecretRef, BotTokenRef: in.BotTokenRef, AppTokenRef: in.AppTokenRef, Scopes: in.Scopes,
 	}, nil
 }
 
@@ -90,7 +95,7 @@ func (s *Store) GetSlackConnection(ctx context.Context, org, project, id string)
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	c := SlackConnection{ID: id}
 	err := s.pool.QueryRow(ctx, storage.Query("GetSlackConnection"), id, org, project).
-		Scan(&c.ID, &c.TeamID, &c.EnterpriseID, &c.BotUserID, &c.SigningSecretRef, &c.BotTokenRef, &c.Scopes, &c.Disabled)
+		Scan(&c.ID, &c.TeamID, &c.EnterpriseID, &c.BotUserID, &c.SigningSecretRef, &c.BotTokenRef, &c.AppTokenRef, &c.Scopes, &c.Disabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SlackConnection{}, ErrSlackConnectionNotFound
 	}
@@ -108,6 +113,7 @@ type ResolvedSlackConnection struct {
 	Project          string
 	SigningSecretRef string
 	BotTokenRef      string
+	AppTokenRef      string
 	BotUserID        string
 	Disabled         bool
 }
@@ -120,7 +126,7 @@ func (s *Store) ResolveSlackConnectionByTeam(ctx context.Context, teamID, enterp
 	ctx = storage.WithSystemScope(ctx)
 	var r ResolvedSlackConnection
 	switch err := s.pool.QueryRow(ctx, storage.Query("ResolveSlackConnectionByTeam"), teamID, enterpriseID).
-		Scan(&r.ID, &r.Org, &r.Project, &r.SigningSecretRef, &r.BotTokenRef, &r.BotUserID, &r.Disabled); {
+		Scan(&r.ID, &r.Org, &r.Project, &r.SigningSecretRef, &r.BotTokenRef, &r.AppTokenRef, &r.BotUserID, &r.Disabled); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return ResolvedSlackConnection{}, false, nil
 	case err != nil:
@@ -159,7 +165,7 @@ func (s *Store) threadSession(ctx context.Context, org, project, team, channel, 
 	var sessionID, lastTS string
 	err := s.pool.QueryRow(ctx, storage.Query("GetThreadSession"), org, project, team, channel, thread).Scan(&sessionID, &lastTS)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", ErrSlackConnectionNotFound
+		return "", "", ErrSlackThreadSessionNotFound
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("read thread session: %w", err)
