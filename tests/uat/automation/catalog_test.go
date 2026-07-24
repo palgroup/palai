@@ -93,8 +93,16 @@ var expectedAutomationCatalog = map[string]struct {
 		"apps/control-plane/internal/automation/fault/outage_test.go:TestSchedulerOutageFireOnceNowLatestMissed",
 		"apps/control-plane/internal/automation/fault/outage_test.go:TestSchedulerOutageCatchUpBoundedOldestFirst",
 	}},
-	"AUT-009": {"component-real", []string{"apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate"}},
-	"AUT-010": {"component-real", []string{"apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429"}},
+	"AUT-009": {"component-real", []string{
+		"apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate",
+		// Queue-adapter leg (E17 T7): redelivery-after-lost-ack via the durable queue adapter.
+		"apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect",
+	}},
+	"AUT-010": {"component-real", []string{
+		"apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429",
+		// Queue-adapter leg (E17 T7): flood -> bounded-buffer backpressure via the queue adapter.
+		"apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterFloodAppliesBackpressureNoDrop",
+	}},
 	"AUT-011": {"component-real", []string{
 		"apps/control-plane/internal/automation/webhook_component_test.go:TestSignedDeliveryEndToEndRealHTTP",
 		"apps/control-plane/internal/automation/callback_component_test.go:TestCallbackFailureLeavesRunTerminalIntact",
@@ -107,6 +115,9 @@ var expectedAutomationCatalog = map[string]struct {
 	"AUT-013": {"component-real", []string{
 		"apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetrySameIdempotencyKeySingleEverything",
 		"apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetryDifferentKeySameDedupeSingleAction",
+		// Queue-adapter leg (E17 T7): same idempotency key -> single effect via the append-only receipts
+		// ledger. The orchestrator-kit leg (§35) is T8's, appended separately.
+		"apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect",
 	}},
 }
 
