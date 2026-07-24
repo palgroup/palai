@@ -58,6 +58,9 @@ var allTables = []string{
 	// The E17 T7 queue-adapter tables (000037): the durable consumer queue, its append-only idempotency
 	// ledger, and the outbound result-delivery outbox.
 	"queue_connections", "queue_messages", "queue_effect_receipts", "queue_deliveries",
+	// The E17 T2 A2A server-projection tables (000038): the published Agent Card projection and the
+	// external A2A task/context <-> canonical run/session bridge.
+	"a2a_interfaces", "a2a_task_refs",
 	"schema_migrations",
 }
 

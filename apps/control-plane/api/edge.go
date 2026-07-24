@@ -49,6 +49,8 @@ type routerConfig struct {
 	modelRoutes ModelRouteAPI
 	knowledge   KnowledgeAPI
 	metrics     http.Handler
+	a2a         http.Handler // the authed A2A 1.0 surface (E17 T2)
+	a2aCard     http.Handler // the unauthenticated public Agent Card handler
 }
 
 // WithEdgeLimits supplies the §20.12 request-rate limiter and per-project admission caps.
@@ -90,6 +92,16 @@ func WithModelRoutes(routes ModelRouteAPI) RouterOption {
 // advertisement, not gated on the store being wired.
 func WithKnowledge(knowledge KnowledgeAPI) RouterOption {
 	return func(c *routerConfig) { c.knowledge = knowledge }
+}
+
+// WithA2A mounts the A2A 1.0 server projection (E17 T2, spec §38): the authed surface (message/task
+// lifecycle + the authenticated extended card) under /v1/a2a/, and the UNAUTHENTICATED public Agent Card on
+// the top mux (a safe published projection — A2A-001 — so it bypasses bearer auth like /healthz). A trailing
+// option for the same reason as WithSecretRefs: every existing caller compiles unchanged, and a stack that
+// wires no A2A store leaves the surface unmounted. Discovery advertises `a2a` STATICALLY as `preview`
+// (capabilities.go); the tier is the T11 exit gate's to recompute, never this task's.
+func WithA2A(authed, publicCard http.Handler) RouterOption {
+	return func(c *routerConfig) { c.a2a = authed; c.a2aCard = publicCard }
 }
 
 // WithMetrics mounts the Prometheus text-exposition surface (E14 Task 6) at GET /metrics on the

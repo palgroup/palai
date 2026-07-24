@@ -177,7 +177,7 @@ func TestA2AConformance_SendReturnsTaskWithExternalCanonicalSeparation(t *testin
 	if task.ID == "run_canon_1" || task.ContextID == "ses_canon_1" {
 		t.Fatalf("A2A task/context id replaced the canonical run/session id: id=%s context=%s", task.ID, task.ContextID)
 	}
-	ref, ok, _ := tasks.Get(nil, testOrg, testProject, testIfaceID, task.ID)
+	ref, ok, _ := tasks.GetRef(nil, testOrg, testProject, testIfaceID, task.ID)
 	if !ok {
 		t.Fatalf("no task ref persisted for %s", task.ID)
 	}

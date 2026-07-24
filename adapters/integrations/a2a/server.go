@@ -78,7 +78,7 @@ type TaskRef struct {
 // configs.
 type Tasks interface {
 	Put(ctx context.Context, org, project string, ref TaskRef) error
-	Get(ctx context.Context, org, project, interfaceID, a2aTaskID string) (TaskRef, bool, error)
+	GetRef(ctx context.Context, org, project, interfaceID, a2aTaskID string) (TaskRef, bool, error)
 	List(ctx context.Context, org, project, interfaceID string, limit int) ([]TaskRef, error)
 	SetPushConfigs(ctx context.Context, org, project, interfaceID, a2aTaskID string, cfgs []PushNotificationConfig) error
 }
@@ -443,7 +443,7 @@ func (s *Server) taskVerb(w http.ResponseWriter, r *http.Request, interfaceID, s
 // resolveTask resolves the external task ref within scope and reads its canonical run. A miss (unknown or
 // foreign id) is an indistinguishable 404 — no existence oracle.
 func (s *Server) resolveTask(r *http.Request, sc Scope, interfaceID, taskID string) (TaskRef, RunResult, bool) {
-	ref, ok, err := s.Tasks.Get(r.Context(), sc.Organization, sc.Project, interfaceID, taskID)
+	ref, ok, err := s.Tasks.GetRef(r.Context(), sc.Organization, sc.Project, interfaceID, taskID)
 	if err != nil || !ok {
 		return TaskRef{}, RunResult{}, false
 	}

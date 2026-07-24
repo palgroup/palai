@@ -66,6 +66,12 @@ func capabilities(w http.ResponseWriter, r *http.Request) {
 			// operator leg (§6) and are deliberately NOT advertised here (an unwritten adapter is never
 			// discoverable). Discovery never claims what the deployment cannot serve.
 			"queues": "preview",
+			// The A2A 1.0 server projection (E17 T2): the Agent Card + message/task lifecycle. It enters as
+			// "preview" and NEVER writes its own tier — the T11 exit gate recomputes it from the A2A claim
+			// outcomes (CapabilityTierProof). The local proof is a fake/loopback generic client driving this
+			// server; a FOREIGN A2A peer is the §6 operator leg, so it stays preview (loopback != interop),
+			// and JWS/JCS card signing is a v0-OUT hardening item — neither is claimed here.
+			"a2a": "preview",
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")

@@ -102,7 +102,7 @@ func (f *fakeTasks) Put(_ context.Context, _, _ string, ref TaskRef) error {
 	return nil
 }
 
-func (f *fakeTasks) Get(_ context.Context, _, _, interfaceID, a2aTaskID string) (TaskRef, bool, error) {
+func (f *fakeTasks) GetRef(_ context.Context, _, _, interfaceID, a2aTaskID string) (TaskRef, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	ref, ok := f.byID[taskKey(interfaceID, a2aTaskID)]
