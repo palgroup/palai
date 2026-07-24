@@ -96,19 +96,19 @@ func ProjectInterface(revisionID string, src RevisionSource, meta PublishMeta) P
 
 // Card is the rendered A2A 1.0 Agent Card (the JSON discovery document). Every field is a safe projection.
 type Card struct {
-	Name              string             `json:"name"`
-	Description       string             `json:"description,omitempty"`
-	Version           string             `json:"version"`
-	ProtocolVersion   string             `json:"protocolVersion"`
-	SupportedInterfaces []AgentInterface `json:"supportedInterfaces"`
-	PreferredTransport string            `json:"preferredTransport"`
-	Capabilities      AgentCapabilities  `json:"capabilities"`
-	DefaultInputModes  []string          `json:"defaultInputModes,omitempty"`
-	DefaultOutputModes []string          `json:"defaultOutputModes,omitempty"`
-	Skills            []AgentSkill       `json:"skills,omitempty"`
-	SecuritySchemes   map[string]any     `json:"securitySchemes,omitempty"`
-	Security          []map[string][]string `json:"security,omitempty"`
-	SupportsAuthenticatedExtendedCard bool `json:"supportsAuthenticatedExtendedCard"`
+	Name                              string                `json:"name"`
+	Description                       string                `json:"description,omitempty"`
+	Version                           string                `json:"version"`
+	ProtocolVersion                   string                `json:"protocolVersion"`
+	SupportedInterfaces               []AgentInterface      `json:"supportedInterfaces"`
+	PreferredTransport                string                `json:"preferredTransport"`
+	Capabilities                      AgentCapabilities     `json:"capabilities"`
+	DefaultInputModes                 []string              `json:"defaultInputModes,omitempty"`
+	DefaultOutputModes                []string              `json:"defaultOutputModes,omitempty"`
+	Skills                            []AgentSkill          `json:"skills,omitempty"`
+	SecuritySchemes                   map[string]any        `json:"securitySchemes,omitempty"`
+	Security                          []map[string][]string `json:"security,omitempty"`
+	SupportsAuthenticatedExtendedCard bool                  `json:"supportsAuthenticatedExtendedCard"`
 }
 
 // AgentInterface is one advertised transport interface (exact url + binding + version, A2A-001).

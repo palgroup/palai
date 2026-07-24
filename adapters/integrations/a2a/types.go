@@ -49,10 +49,10 @@ func (s TaskState) Terminal() bool {
 // Part is one piece of a Message or Artifact. kind discriminates: "text" (Text set), "file" (File set),
 // "data" (Data set). The A2A 1.0 shape uses a `kind` discriminator per part.
 type Part struct {
-	Kind string          `json:"kind"`
-	Text string          `json:"text,omitempty"`
-	File *FilePart       `json:"file,omitempty"`
-	Data map[string]any  `json:"data,omitempty"`
+	Kind string         `json:"kind"`
+	Text string         `json:"text,omitempty"`
+	File *FilePart      `json:"file,omitempty"`
+	Data map[string]any `json:"data,omitempty"`
 }
 
 // FilePart carries an inline file (base64 Bytes) or a URI. An inbound file part is ingested + scanned +
