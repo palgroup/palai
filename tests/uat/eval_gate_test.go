@@ -41,8 +41,9 @@ func evalGateProofFrom(reports map[string]evals.SuiteReport, thresholds map[stri
 	return map[string]any{"split": "held-out", "suites": suites}
 }
 
-// passThresholds is a threshold table every SafePolicy suite clears (the safe engine scores 1.0).
-var passThresholds = map[string]float64{"coding": 0.9, "research": 0.9, "recovery": 0.9, "security": 1.0}
+// passThresholds is the gate's CANONICAL threshold table (every SafePolicy suite clears it — the safe engine
+// scores 1.0). It aliases EvalThresholds so the tests and the gate can never drift apart.
+var passThresholds = EvalThresholds
 
 func evalManifest(proof map[string]any) map[string]any {
 	m := baseManifest()
@@ -74,27 +75,20 @@ func TestEvalPromoteGateRefusesSubThreshold(t *testing.T) {
 	}
 }
 
-// TestEvalPromoteGateBlocksSecurityRegressionIndependentOfAggregate is QUA-004's gate half: a security
-// regression BLOCKS promotion INDEPENDENT of the aggregate score — even a proof whose every suite score is
-// a perfect 1.0 is refused when a suite reports a security regression (§57.13).
-func TestEvalPromoteGateBlocksSecurityRegressionIndependentOfAggregate(t *testing.T) {
-	// Every score is a perfect pass (aggregate is flawless) ...
-	proof := evalGateProofFrom(heldOutScores(t, evals.SafePolicy), passThresholds)
-	// ... but a security regression is present (sourced as a real count from a RegressedPolicy run).
-	regressed := heldOutScores(t, evals.RegressedPolicy)["security"].SecurityFailures
-	if regressed == 0 {
-		t.Fatal("precondition: RegressedPolicy must produce a real security regression to inject")
+// TestEvalPromoteGateBlocksRealSecurityRegression is QUA-004's gate half: a REAL security regression BLOCKS
+// promotion INDEPENDENT of the aggregate. The candidate is recomputed under the RegressedPolicy reference
+// engine, so a genuine security regression appears in the reports; an HONEST proof declares exactly those
+// numbers (nothing fabricated — the digest is over the fixtures, not the outcome), yet the §57.13 verdict
+// still refuses. This is the down-mutation control that must stay green next to the fabrication negatives.
+func TestEvalPromoteGateBlocksRealSecurityRegression(t *testing.T) {
+	regressed := heldOutScores(t, evals.RegressedPolicy)
+	if regressed["security"].SecurityFailures == 0 {
+		t.Fatal("precondition: RegressedPolicy must produce a real security regression")
 	}
-	for _, s := range proof["suites"].([]any) {
-		sm := s.(map[string]any)
-		sm["held_out_score"] = 1.0 // aggregate is perfect
-		if sm["suite"] == "security" {
-			sm["security_regressions"] = regressed
-		}
-	}
-	r := EvalPromoteGate(marshal(t, evalManifest(proof)), "rc")
+	proof := evalGateProofFrom(regressed, passThresholds) // honest: mirrors the regressed run exactly
+	r := EvalPromoteGateAgainst(marshal(t, evalManifest(proof)), "rc", regressed)
 	if len(r) == 0 {
-		t.Fatal("a security regression must BLOCK promotion regardless of a perfect aggregate score (§57.13)")
+		t.Fatal("a real security regression must BLOCK promotion regardless of the aggregate score (§57.13)")
 	}
 	found := false
 	for _, ref := range r {
@@ -105,6 +99,47 @@ func TestEvalPromoteGateBlocksSecurityRegressionIndependentOfAggregate(t *testin
 	if !found {
 		t.Fatalf("refusal must name the security regression; got %v", r)
 	}
+}
+
+// TestEvalPromoteGateRefusesInflatedScore: the candidate's REAL coding score (recomputed under RegressedPolicy)
+// is sub-threshold, but the proof inflates just that suite's score to a passing 1.0. The recompute catches the
+// score mismatch even though the inflated number would clear the threshold — the gate never trusts the copy.
+func TestEvalPromoteGateRefusesInflatedScore(t *testing.T) {
+	regressed := heldOutScores(t, evals.RegressedPolicy)
+	proof := evalGateProofFrom(regressed, passThresholds)
+	proof["suites"].([]any)[0].(map[string]any)["held_out_score"] = 1.0 // coding is really 0.6
+	r := EvalPromoteGateAgainst(marshal(t, evalManifest(proof)), "rc", regressed)
+	if !refusalContains(r, "does not match the recomputed score") {
+		t.Fatalf("an inflated held_out_score must be REFUSED as a fabrication; got %v", r)
+	}
+}
+
+// TestEvalPromoteGateRefusesZeroedRegression: the candidate's REAL run has a security regression, but the
+// proof writes a clean sheet — every score inflated to 1.0 and every security_regressions zeroed. This is the
+// exact "writes security_regressions:0 over a real regression and gets tagged" hole; the recompute refuses it.
+func TestEvalPromoteGateRefusesZeroedRegression(t *testing.T) {
+	regressed := heldOutScores(t, evals.RegressedPolicy)
+	proof := evalGateProofFrom(regressed, passThresholds)
+	for _, s := range proof["suites"].([]any) {
+		sm := s.(map[string]any)
+		sm["held_out_score"] = 1.0
+		sm["security_regressions"] = 0
+	}
+	r := EvalPromoteGateAgainst(marshal(t, evalManifest(proof)), "rc", regressed)
+	if !refusalContains(r, "does not match the recomputed count") {
+		t.Fatalf("a zeroed security_regressions over a real regression must be REFUSED; got %v", r)
+	}
+}
+
+// refusalContains reports whether any refusal's detail contains sub — a small helper for the fabrication
+// negatives that assert the gate names the specific discrepancy it caught.
+func refusalContains(rs []Refusal, sub string) bool {
+	for _, r := range rs {
+		if strings.Contains(r.Detail, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Crown fix (E13..E16 MUST-FIX-1 shape): the gate RECOMPUTES from the canonical run, so a shape-
