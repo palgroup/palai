@@ -355,6 +355,107 @@ func TestA2AConformance_PushConfigCRUD(t *testing.T) {
 	}
 }
 
+// TestA2AConformance_StreamedTaskIsGettable is the SF-2 guard: message:stream persists the task ref even for
+// a synchronously-complete (direct-message) run, so the id in the streamed frames is GET-able — a subsequent
+// tasks/{id} returns the SAME terminal state (A2A-002), not a 404 for a phantom fabricated task.
+func TestA2AConformance_StreamedTaskIsGettable(t *testing.T) {
+	// A complete + NON-durable run is exactly the case that used to fabricate an un-persisted stream task id.
+	srv, _, _, _ := newServer(RunResult{RunID: "run_stream", SessionID: "ses_stream", State: "completed", OutputText: "done", Durable: false})
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	msg := map[string]any{"message": map[string]any{"role": "user", "parts": []Part{{Kind: "text", Text: "stream"}}, "messageId": "ms1"}}
+	status, body := loopback(t, ts.URL, http.MethodPost, ifacePath("message:stream"), true, msg, nil)
+	if status != http.StatusOK {
+		t.Fatalf("stream status = %d; %s", status, body)
+	}
+	taskID := streamedTaskID(t, body)
+	if taskID == "" {
+		t.Fatalf("no taskId in streamed frames: %s", body)
+	}
+	// The streamed task must be GET-able and report the SAME terminal state.
+	gs, gb := loopback(t, ts.URL, http.MethodGet, ifacePath("tasks/"+taskID), true, nil, nil)
+	if gs != http.StatusOK {
+		t.Fatalf("GET streamed task = %d, want 200 (SF-2: a streamed task id must not 404); %s", gs, gb)
+	}
+	var task Task
+	if err := json.Unmarshal(gb, &task); err != nil {
+		t.Fatalf("unmarshal task: %v; %s", err, gb)
+	}
+	if task.Status.State != TaskStateCompleted {
+		t.Fatalf("GET streamed task state = %q, want completed (terminal consistency)", task.Status.State)
+	}
+}
+
+// TestA2AConformance_ReplayedMessageDeduplicatesTask is the M-2 guard: a retried messageId re-admits to the
+// SAME canonical response (idempotent Admit), so it must yield ONE external task, not a fresh one per retry.
+func TestA2AConformance_ReplayedMessageDeduplicatesTask(t *testing.T) {
+	srv, _, _, _ := newServer(completedDurable())
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	msg := map[string]any{"message": map[string]any{"role": "user", "parts": []Part{{Kind: "text", Text: "retry me"}}, "messageId": "dup-1"}}
+	var first, second Task
+	_, b1 := loopback(t, ts.URL, http.MethodPost, ifacePath("message:send"), true, msg, nil)
+	_ = json.Unmarshal(b1, &first)
+	_, b2 := loopback(t, ts.URL, http.MethodPost, ifacePath("message:send"), true, msg, nil)
+	_ = json.Unmarshal(b2, &second)
+
+	if first.ID == "" || first.ID != second.ID {
+		t.Fatalf("replayed messageId minted a different task: first=%q second=%q (M-2 dedupe failed)", first.ID, second.ID)
+	}
+	// The tasks list carries exactly one task for the deduped run.
+	_, lb := loopback(t, ts.URL, http.MethodGet, ifacePath("tasks"), true, nil, nil)
+	var list struct {
+		Tasks []Task `json:"tasks"`
+	}
+	if err := json.Unmarshal(lb, &list); err != nil {
+		t.Fatalf("unmarshal task list: %v; %s", err, lb)
+	}
+	if len(list.Tasks) != 1 {
+		t.Fatalf("replayed messageId produced %d tasks, want 1 (M-2): %s", len(list.Tasks), lb)
+	}
+}
+
+// TestA2AConformance_ReapedRunReadsUnknown is the M-1 guard: once a task's canonical run is retention-reaped,
+// GET and list must report the honest "unknown" state, not a forever-"working"/"submitted" phantom.
+func TestA2AConformance_ReapedRunReadsUnknown(t *testing.T) {
+	srv, runs, _, _ := newServer(completedDurable())
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	msg := map[string]any{"message": map[string]any{"role": "user", "parts": []Part{{Kind: "text", Text: "t"}}, "messageId": "reap-1"}}
+	_, body := loopback(t, ts.URL, http.MethodPost, ifacePath("message:send"), true, msg, nil)
+	var task Task
+	_ = json.Unmarshal(body, &task)
+
+	runs.reap("run_canon_1") // retention deletes the canonical run
+
+	_, gb := loopback(t, ts.URL, http.MethodGet, ifacePath("tasks/"+task.ID), true, nil, nil)
+	var got Task
+	_ = json.Unmarshal(gb, &got)
+	if got.Status.State != TaskStateUnknown {
+		t.Fatalf("reaped-run GET state = %q, want unknown (M-1): %s", got.Status.State, gb)
+	}
+	_, lb := loopback(t, ts.URL, http.MethodGet, ifacePath("tasks"), true, nil, nil)
+	if !strings.Contains(string(lb), `"state":"unknown"`) {
+		t.Fatalf("reaped-run list did not report unknown (M-1): %s", lb)
+	}
+}
+
+// streamedTaskID pulls the taskId out of the first statusUpdate frame of an SSE stream body.
+func streamedTaskID(t *testing.T, body []byte) string {
+	t.Helper()
+	for _, frame := range parseSSE(t, body) {
+		if su, ok := frame["statusUpdate"].(map[string]any); ok {
+			if id, _ := su["taskId"].(string); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
 func TestA2AConformance_UnknownInterfaceAndTaskAre404(t *testing.T) {
 	srv, _, _, _ := newServer(completedDurable())
 	ts := httptest.NewServer(srv)

@@ -85,6 +85,13 @@ func (f *fakeRuns) lastAdmit() admitCall {
 	return f.admits[len(f.admits)-1]
 }
 
+// reap simulates retention deleting the canonical run: a subsequent Get reports found=false, the M-1 path.
+func (f *fakeRuns) reap(runID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.byRun, runID)
+}
+
 type fakeTasks struct {
 	mu   sync.Mutex
 	byID map[string]TaskRef // key: interfaceID + "\x00" + a2aTaskID
@@ -107,6 +114,17 @@ func (f *fakeTasks) GetRef(_ context.Context, _, _, interfaceID, a2aTaskID strin
 	defer f.mu.Unlock()
 	ref, ok := f.byID[taskKey(interfaceID, a2aTaskID)]
 	return ref, ok, nil
+}
+
+func (f *fakeTasks) GetRefByRun(_ context.Context, _, _, interfaceID, runID string) (TaskRef, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, ref := range f.byID {
+		if ref.InterfaceID == interfaceID && ref.RunID == runID {
+			return ref, true, nil
+		}
+	}
+	return TaskRef{}, false, nil
 }
 
 func (f *fakeTasks) List(_ context.Context, _, _, interfaceID string, _ int) ([]TaskRef, error) {

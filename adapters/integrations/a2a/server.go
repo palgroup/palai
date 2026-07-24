@@ -79,6 +79,10 @@ type TaskRef struct {
 type Tasks interface {
 	Put(ctx context.Context, org, project string, ref TaskRef) error
 	GetRef(ctx context.Context, org, project, interfaceID, a2aTaskID string) (TaskRef, bool, error)
+	// GetRefByRun resolves an existing task ref by its canonical run reference under an interface. It is the
+	// A2A-retry dedupe seam (M-2): a replayed messageId re-admits to the SAME canonical response, so the
+	// external task minted the first time is reused instead of spawning a second one.
+	GetRefByRun(ctx context.Context, org, project, interfaceID, runID string) (TaskRef, bool, error)
 	List(ctx context.Context, org, project, interfaceID string, limit int) ([]TaskRef, error)
 	SetPushConfigs(ctx context.Context, org, project, interfaceID, a2aTaskID string, cfgs []PushNotificationConfig) error
 }
@@ -89,8 +93,11 @@ type Files interface {
 	Ingest(ctx context.Context, org, project, runID string, f FilePart) (artifactID string, err error)
 }
 
-// Pusher sends a signed outbound push notification, reusing the existing signed webhook delivery model
-// (A2A-003). nil disables push (the capability is advertised only when a Pusher is wired).
+// Pusher DELIVERS a task's asynchronous push notification. HONEST CEILING (A2A-003, §6): push DELIVERY is
+// not wired in this phase — only the pushNotificationConfigs CRUD surface (register/read/delete targets)
+// exists, and no code path calls Push. A production deployment leaves this nil, and the Agent Card advertises
+// `pushNotifications` ONLY when a Pusher is actually wired (see effectivePush), so discovery never claims a
+// delivery the server will not perform. A real signed delivery to a foreign receiver is the §6 operator leg.
 type Pusher interface {
 	Push(ctx context.Context, cfg PushNotificationConfig, payload []byte) error
 }
@@ -206,12 +213,21 @@ func (s *Server) publicCard(w http.ResponseWriter, r *http.Request, interfaceID 
 		writeErr(w, http.StatusNotFound, "not_found", "no such A2A interface")
 		return
 	}
+	iface.PushNotifications = s.effectivePush(iface)
 	card := RenderCard(iface, CardEndpoint{BaseURL: s.BaseURL, InterfaceID: interfaceID})
 	// Revisioned + cacheable (A2A-001): the etag lets a client cache the card across unchanged revisions.
 	if iface.ETag != "" {
 		w.Header().Set("ETag", `"`+iface.ETag+`"`)
 	}
 	writeJSON(w, http.StatusOK, card)
+}
+
+// effectivePush is the HONEST push-capability the card advertises (SF-1): an interface may be published with
+// push_notifications=true, but the card claims it ONLY when a Pusher is actually wired to DELIVER — otherwise
+// pushNotificationConfigs would be a register-only surface that never fires. With no Pusher wired (the
+// current phase), this is always false, so the card does not overclaim.
+func (s *Server) effectivePush(iface PublishedInterface) bool {
+	return iface.PushNotifications && s.Pusher != nil
 }
 
 func (s *Server) extendedCard(w http.ResponseWriter, r *http.Request, interfaceID string) {
@@ -229,6 +245,7 @@ func (s *Server) extendedCard(w http.ResponseWriter, r *http.Request, interfaceI
 		writeErr(w, http.StatusNotFound, "not_found", "no such A2A interface")
 		return
 	}
+	iface.PushNotifications = s.effectivePush(iface)
 	card := RenderExtendedCard(iface, CardEndpoint{BaseURL: s.BaseURL, InterfaceID: interfaceID})
 	writeJSON(w, http.StatusOK, card)
 }
@@ -245,10 +262,12 @@ type sendParams struct {
 
 // admitFromMessage runs the canonical admission for an inbound A2A message: it resolves the interface within
 // the AUTHENTICATED scope, governs identity (metadata ignored — §38.6), admits a run through the canonical
-// seam, ingests any inbound file parts as scanned artifacts (A2A-004), and — for a durable/non-complete
-// outcome — records the external->canonical task ref (§38.2). It returns the interface, the run result, and
-// the minted external task/context ids (empty for the direct-message case).
-func (s *Server) admitFromMessage(r *http.Request, interfaceID string) (PublishedInterface, RunResult, string, string, *problem) {
+// seam, ingests any inbound file parts as scanned artifacts (A2A-004), and — unless the outcome is a direct
+// message and forceTask is false — records the external->canonical task ref (§38.2). It returns the
+// interface, the run result, and the minted external task/context ids (empty only for the direct-message
+// case). forceTask makes it persist a task ref even for a synchronously-complete run: the stream path always
+// deals in Task frames, so a streamed task must be GET-able rather than a phantom id (A2A-002, SF-2).
+func (s *Server) admitFromMessage(r *http.Request, interfaceID string, forceTask bool) (PublishedInterface, RunResult, string, string, *problem) {
 	sc, ok := s.scope(r)
 	if !ok {
 		return PublishedInterface{}, RunResult{}, "", "", &problem{http.StatusUnauthorized, "authentication_required", "a bearer API key is required"}
@@ -287,18 +306,30 @@ func (s *Server) admitFromMessage(r *http.Request, interfaceID string) (Publishe
 		return PublishedInterface{}, RunResult{}, "", "", &problem{http.StatusBadGateway, "admission_failed", "the run could not be admitted"}
 	}
 
-	// A2A-004 server half: ingest each inbound file part as a scanned artifact under the canonical run.
+	// A2A-004 server half: ingest each inbound file part as a scanned artifact under the canonical run. A
+	// failed ingest is NOT silently dropped (M-6) — that would be a hidden data-loss path — it fails the
+	// request so the client can retry.
 	if s.Files != nil {
 		for _, f := range FileParts(params.Message) {
-			_, _ = s.Files.Ingest(r.Context(), org, project, res.RunID, f)
+			if _, err := s.Files.Ingest(r.Context(), org, project, res.RunID, f); err != nil {
+				return PublishedInterface{}, RunResult{}, "", "", &problem{http.StatusBadGateway, "file_ingest_failed", "an inbound file part could not be ingested"}
+			}
 		}
 	}
 
 	state := MapRunState(res.State)
-	if DecideDirectMessage(state, res.Durable) {
+	if !forceTask && DecideDirectMessage(state, res.Durable) {
 		return iface, res, "", "", nil // direct message; no task ref persisted
 	}
-	// Task outcome: mint EXTERNAL ids and bridge them to the CANONICAL run/session (never replacing them).
+	// Task outcome (or the stream path forcing one): reuse the external task an earlier admit of the SAME
+	// canonical response already minted, so an A2A retry (replayed messageId → same response) yields one task
+	// (M-2). Otherwise mint fresh EXTERNAL ids and bridge them to the CANONICAL run/session (never replacing
+	// them, §38.2).
+	if existing, ok, err := s.Tasks.GetRefByRun(r.Context(), org, project, interfaceID, res.RunID); err != nil {
+		return PublishedInterface{}, RunResult{}, "", "", &problem{http.StatusInternalServerError, "internal_error", ""}
+	} else if ok {
+		return iface, res, existing.A2ATaskID, existing.A2AContextID, nil
+	}
 	a2aTaskID := s.newID("a2atask")
 	a2aContextID := params.Message.ContextID
 	if a2aContextID == "" {
@@ -314,7 +345,7 @@ func (s *Server) admitFromMessage(r *http.Request, interfaceID string) (Publishe
 }
 
 func (s *Server) messageSend(w http.ResponseWriter, r *http.Request, interfaceID string) {
-	_, res, taskID, contextID, prob := s.admitFromMessage(r, interfaceID)
+	_, res, taskID, contextID, prob := s.admitFromMessage(r, interfaceID, false)
 	if prob != nil {
 		writeErr(w, prob.status, prob.code, prob.detail)
 		return
@@ -337,15 +368,14 @@ func (s *Server) messageSend(w http.ResponseWriter, r *http.Request, interfaceID
 // /v1/sessions/{id}/events SSE seam and is not re-implemented here (honest ceiling; the fake/live proof
 // drives a synchronously-terminal run).
 func (s *Server) messageStream(w http.ResponseWriter, r *http.Request, interfaceID string) {
-	iface, res, taskID, contextID, prob := s.admitFromMessage(r, interfaceID)
+	// forceTask=true: a stream is inherently Task-shaped (its frames carry a taskId), so admitFromMessage
+	// persists a task ref even for a synchronously-complete run. The streamed task id is therefore GET-able —
+	// a subsequent tasks/{id} returns the SAME terminal state (A2A-002), not a 404 for a phantom id (SF-2).
+	iface, res, taskID, contextID, prob := s.admitFromMessage(r, interfaceID, true)
 	_ = iface
 	if prob != nil {
 		writeErr(w, prob.status, prob.code, prob.detail)
 		return
-	}
-	if taskID == "" { // a direct-message outcome still needs a task id for the stream's frames
-		taskID = s.newID("a2atask")
-		contextID = s.newID("a2actx")
 	}
 	s.streamRun(w, r, taskID, contextID, res)
 }
@@ -415,10 +445,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request, interfaceID s
 			writeErr(w, http.StatusInternalServerError, "internal_error", "")
 			return
 		}
-		state := TaskStateSubmitted
-		if found {
-			state = MapRunState(res.State)
-		}
+		state := effectiveTaskState(res, found) // a reaped run reads "unknown", never a phantom "submitted" (M-1)
 		tasks = append(tasks, BuildTask(ref.A2ATaskID, ref.A2AContextID, TaskStatus{State: state, Timestamp: s.now().UTC().Format(time.RFC3339)}, s.artifactsFor(res)))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
@@ -440,15 +467,26 @@ func (s *Server) taskVerb(w http.ResponseWriter, r *http.Request, interfaceID, s
 	}
 }
 
-// resolveTask resolves the external task ref within scope and reads its canonical run. A miss (unknown or
-// foreign id) is an indistinguishable 404 — no existence oracle.
-func (s *Server) resolveTask(r *http.Request, sc Scope, interfaceID, taskID string) (TaskRef, RunResult, bool) {
+// resolveTask resolves the external task ref within scope and reads its canonical run. A miss on the ref
+// (unknown or foreign id) is an indistinguishable 404 — no existence oracle. The returned runFound is false
+// when the ref exists but its canonical run is gone (retention-reaped), so a caller projects an honest
+// terminal/unknown state rather than a forever-"working" task (M-1).
+func (s *Server) resolveTask(r *http.Request, sc Scope, interfaceID, taskID string) (ref TaskRef, res RunResult, runFound, ok bool) {
 	ref, ok, err := s.Tasks.GetRef(r.Context(), sc.Organization, sc.Project, interfaceID, taskID)
 	if err != nil || !ok {
-		return TaskRef{}, RunResult{}, false
+		return TaskRef{}, RunResult{}, false, false
 	}
-	res, _, _ := s.Runs.Get(r.Context(), sc.Organization, sc.Project, ref.RunID)
-	return ref, res, true
+	res, runFound, _ = s.Runs.Get(r.Context(), sc.Organization, sc.Project, ref.RunID)
+	return ref, res, runFound, true
+}
+
+// effectiveTaskState projects a canonical run's state onto an A2A TaskState, mapping a gone (reaped) run to
+// the honest "unknown" terminal-ish state instead of MapRunState("")="working" (M-1).
+func effectiveTaskState(res RunResult, runFound bool) TaskState {
+	if !runFound {
+		return TaskStateUnknown
+	}
+	return MapRunState(res.State)
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request, interfaceID, taskID string) {
@@ -457,12 +495,12 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request, interfaceID, ta
 		writeErr(w, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	ref, res, ok := s.resolveTask(r, sc, interfaceID, taskID)
+	ref, res, runFound, ok := s.resolveTask(r, sc, interfaceID, taskID)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "not_found", "no such task")
 		return
 	}
-	status := TaskStatus{State: MapRunState(res.State), Timestamp: s.now().UTC().Format(time.RFC3339)}
+	status := TaskStatus{State: effectiveTaskState(res, runFound), Timestamp: s.now().UTC().Format(time.RFC3339)}
 	writeJSON(w, http.StatusOK, BuildTask(ref.A2ATaskID, ref.A2AContextID, status, s.artifactsFor(res)))
 }
 
@@ -472,7 +510,7 @@ func (s *Server) cancelTask(w http.ResponseWriter, r *http.Request, interfaceID,
 		writeErr(w, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	ref, _, ok := s.resolveTask(r, sc, interfaceID, taskID)
+	ref, _, _, ok := s.resolveTask(r, sc, interfaceID, taskID)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "not_found", "no such task")
 		return
@@ -499,7 +537,7 @@ func (s *Server) subscribeTask(w http.ResponseWriter, r *http.Request, interface
 		writeErr(w, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	ref, res, ok := s.resolveTask(r, sc, interfaceID, taskID)
+	ref, res, _, ok := s.resolveTask(r, sc, interfaceID, taskID)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "not_found", "no such task")
 		return
@@ -537,7 +575,7 @@ func (s *Server) setPush(w http.ResponseWriter, r *http.Request, interfaceID, ta
 		writeErr(w, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	ref, _, ok := s.resolveTask(r, sc, interfaceID, taskID)
+	ref, _, _, ok := s.resolveTask(r, sc, interfaceID, taskID)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "not_found", "no such task")
 		return
@@ -566,7 +604,7 @@ func (s *Server) listPush(w http.ResponseWriter, r *http.Request, interfaceID, t
 		writeErr(w, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	ref, _, ok := s.resolveTask(r, sc, interfaceID, taskID)
+	ref, _, _, ok := s.resolveTask(r, sc, interfaceID, taskID)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "not_found", "no such task")
 		return
@@ -584,7 +622,7 @@ func (s *Server) getPush(w http.ResponseWriter, r *http.Request, interfaceID, ta
 		writeErr(w, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	ref, _, ok := s.resolveTask(r, sc, interfaceID, taskID)
+	ref, _, _, ok := s.resolveTask(r, sc, interfaceID, taskID)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "not_found", "no such task")
 		return
@@ -604,7 +642,7 @@ func (s *Server) deletePush(w http.ResponseWriter, r *http.Request, interfaceID,
 		writeErr(w, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	ref, _, ok := s.resolveTask(r, sc, interfaceID, taskID)
+	ref, _, _, ok := s.resolveTask(r, sc, interfaceID, taskID)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "not_found", "no such task")
 		return

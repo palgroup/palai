@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS a2a_interfaces (
 -- the client sees, bridged to the CANONICAL run_id / session_id the platform minted (never replaced by an
 -- A2A id). UNIQUE(interface_id, a2a_task_id) makes the external id stable per interface. push_configs holds
 -- the task's A2A push-notification targets (§38, A2A-003) as a JSONB array — a set/get/list/delete surface
--- without a third table; the HMAC signing secret is a secret_ref handle inside each entry, never a raw value.
+-- without a third table. HONEST posture (M-3): each entry's bearer token is stored here and REDACTED on every
+-- read, with RLS confining the row — it is NOT a secret_ref handle, and DELIVERY is not wired in this phase.
 CREATE TABLE IF NOT EXISTS a2a_task_refs (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL,

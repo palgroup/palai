@@ -16,12 +16,13 @@ INSERT INTO a2a_interfaces (
     input_modes, output_modes, skills, auth_scheme, published, etag)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17);
 
--- ResolveA2AInterfacePublic establishes the interface (and its owning tenant) for the unauthenticated public
--- card, keyed by the server-minted interface id. System-scoped: there is no bearer scope on the public card
--- route. It returns ONLY safe card columns plus the owning org/project (needed to scope any follow-on work),
--- never the agent_revision provenance internals beyond the pin id.
+-- ResolveA2AInterfacePublic serves the UNAUTHENTICATED public card, keyed by the server-minted interface id.
+-- System-scoped: there is no bearer scope on the public card route. It returns ONLY the card-visible SAFE
+-- columns the public card actually renders — NOT the owning org/project or the agent_profile/agent_revision
+-- provenance pins (the public card path does no follow-on tenant work and never renders provenance), so a
+-- public read reaches nothing beyond what the card shows (M-5).
 -- name: ResolveA2AInterfacePublic
-SELECT id, organization_id, project_id, name, description, version, agent_profile_id, agent_revision_id,
+SELECT id, name, description, version,
        streaming, push_notifications, extended_card, input_modes, output_modes, skills, auth_scheme, etag
 FROM a2a_interfaces
 WHERE id = $1 AND published = true;
@@ -58,6 +59,16 @@ SELECT id, a2a_task_id, a2a_context_id, run_id, session_id, push_configs
 FROM a2a_task_refs
 WHERE interface_id = $1 AND a2a_task_id = $2 AND organization_id = $3 AND project_id = $4;
 
+-- GetA2ATaskRefByRun resolves an existing task ref within scope by its canonical run reference under an
+-- interface (the A2A-retry dedupe seam — a replayed messageId re-admits to the SAME canonical response, so
+-- the external task minted the first time is reused, not duplicated). At most one ref exists per
+-- (interface_id, run_id) once dedupe holds; LIMIT 1 is defensive.
+-- name: GetA2ATaskRefByRun
+SELECT id, a2a_task_id, a2a_context_id, run_id, session_id, push_configs
+FROM a2a_task_refs
+WHERE interface_id = $1 AND run_id = $2 AND organization_id = $3 AND project_id = $4
+LIMIT 1;
+
 -- ListA2ATaskRefs pages an interface's tasks newest-first (the tasks list endpoint).
 -- name: ListA2ATaskRefs
 SELECT id, a2a_task_id, a2a_context_id, run_id, session_id, push_configs
@@ -67,7 +78,9 @@ ORDER BY created_at DESC, id DESC
 LIMIT $4;
 
 -- UpdateA2ATaskPushConfigs replaces a task's push-config array (set/delete both write the whole array). The
--- signing secret inside each entry is a secret_ref handle, never a raw value. updated_at bumps for audit.
+-- ACTUAL secret posture (M-3): each entry's bearer token is stored in the JSONB and REDACTED on every read
+-- (server.redactPush), with RLS confining the row to its tenant — it is NOT a secret_ref handle. Adopting the
+-- webhook store's secret_ref indirection for push tokens is later hardening (§6). updated_at bumps for audit.
 -- name: UpdateA2ATaskPushConfigs
 UPDATE a2a_task_refs
 SET push_configs = $5, updated_at = clock_timestamp()

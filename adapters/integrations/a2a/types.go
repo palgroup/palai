@@ -4,11 +4,14 @@
 // card is a projection of explicitly-published safe fields (A2A-001). Inbound A2A messages map to canonical
 // runs through the SAME admission the /v1/responses path uses (the adapter invents NO run identity, §38.2);
 // A2A task/context ids are stored as an EXTERNAL ref beside the canonical run/session id, which is never
-// replaced by an A2A-supplied id. Push notifications reuse the existing signed outbound webhook model.
+// replaced by an A2A-supplied id. Push notifications expose only the CONFIG CRUD surface — delivery is an
+// honest ceiling.
 //
-// Honest ceilings (spec §5, §6): JWS/JCS Agent Card signing is v0-OUT ("when trust policy requires"); the
-// only interop proof here is a loopback/fake generic client driving this server — a FOREIGN A2A peer is the
-// §6 operator leg, so the capability stays "preview" and this package never claims otherwise.
+// Honest ceilings (spec §5, §6): JWS/JCS Agent Card signing is v0-OUT ("when trust policy requires"); push
+// DELIVERY is not wired (only pushNotificationConfigs CRUD, tokens read-redacted — the card advertises push
+// only when a Pusher exists); multi-turn continuation of an input-required task is not correlated yet; and
+// the only interop proof here is a loopback/fake generic client driving this server — a FOREIGN A2A peer is
+// the §6 operator leg, so the capability stays "preview" and this package never claims otherwise.
 package a2a
 
 // The A2A 1.0 protocol version this server speaks, advertised on every Agent Card interface and checked on
@@ -33,6 +36,10 @@ const (
 	TaskStateCanceled      TaskState = "canceled"
 	TaskStateFailed        TaskState = "failed"
 	TaskStateRejected      TaskState = "rejected"
+	// TaskStateUnknown is the honest projection of a task whose canonical run record is no longer resolvable
+	// — retention-reaped, or otherwise gone (M-1). It is a valid A2A 1.0 state; using it stops a client from
+	// polling a phantom "working" task forever while never fabricating a completed/failed outcome we can't see.
+	TaskStateUnknown TaskState = "unknown"
 )
 
 // Terminal reports whether a state is a lifecycle end — the streaming terminal-consistency anchor (A2A-002):
@@ -65,10 +72,15 @@ type FilePart struct {
 }
 
 // Message is an A2A message (inbound request or a direct agent reply). Role is "user" (inbound) or "agent"
-// (reply). MessageID is the client-supplied idempotency anchor (used as the run idempotency key). TaskID /
-// ContextID, when set on an inbound message, are EXTERNAL references the server correlates — they never
-// replace a canonical run/session id (§38.2). Metadata is opaque and, critically, can NOT carry identity:
-// any org/project inside it is IGNORED (§38.6, the authenticated bearer scope governs).
+// (reply). MessageID is the client-supplied idempotency anchor (used as the run idempotency key). ContextID
+// is an EXTERNAL reference carried onto the task (it never replaces a canonical session id, §38.2). Metadata
+// is opaque and, critically, can NOT carry identity: any org/project inside it is IGNORED (§38.6, the
+// authenticated bearer scope governs).
+//
+// HONEST CEILING (§6): an inbound TaskID (a follow-up to an input-required task) is NOT yet correlated —
+// multi-turn continuation that resumes a waiting run through the SAME canonical run is later work; today a
+// taskId'd message:send admits a fresh run. The field is parsed but deliberately not acted on, and message:
+// send does not claim otherwise.
 type Message struct {
 	Role      string         `json:"role"`
 	Parts     []Part         `json:"parts"`
@@ -134,9 +146,11 @@ func NewArtifactUpdate(taskID string, a Artifact) ArtifactUpdateEvent {
 	return ArtifactUpdateEvent{artifactUpdate{TaskID: taskID, Artifact: a}}
 }
 
-// PushNotificationConfig is an A2A push-notification target for a task's asynchronous updates. It reuses the
-// existing signed outbound webhook model (A2A-003): URL is the destination, Token an optional bearer the
-// receiver checks. The HMAC signing secret is a secret_ref handle, never inlined here or returned on a read.
+// PushNotificationConfig is an A2A push-notification target for a task's asynchronous updates: URL is the
+// destination, Token an optional bearer the receiver checks. HONEST posture (A2A-003, M-3): only the
+// CONFIG CRUD exists — the token is stored in the task's push_configs JSONB and REDACTED on every read
+// (server.redactPush), with RLS confining the row. It is NOT a secret_ref handle, and DELIVERY is not wired
+// (see Pusher). A secret_ref indirection + real signed delivery are later hardening (§6).
 type PushNotificationConfig struct {
 	ID    string `json:"id"`
 	URL   string `json:"url"`

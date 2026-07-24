@@ -67,20 +67,34 @@ func (s *Store) PublishInterface(ctx context.Context, iface PublishedInterface) 
 }
 
 // ResolvePublic serves the UNAUTHENTICATED public card, keyed by interface id (system-scoped: there is no
-// bearer scope on the public card route). It returns only safe card columns.
+// bearer scope on the public card route). It reads ONLY the card-visible safe columns — the query never
+// SELECTs org/project or the agent_profile/agent_revision provenance pins (M-5), so the public path reaches
+// nothing beyond what the card renders.
 func (s *Store) ResolvePublic(ctx context.Context, interfaceID string) (PublishedInterface, bool, error) {
 	ctx = storage.WithSystemScope(ctx)
-	return s.scanInterface(s.pool.QueryRow(ctx, storage.Query("ResolveA2AInterfacePublic"), interfaceID))
+	row := s.pool.QueryRow(ctx, storage.Query("ResolveA2AInterfacePublic"), interfaceID)
+	var iface PublishedInterface
+	var skills []byte
+	err := row.Scan(&iface.ID, &iface.Name, &iface.Description, &iface.Version,
+		&iface.Streaming, &iface.PushNotifications, &iface.ExtendedCard,
+		&iface.InputModes, &iface.OutputModes, &skills, &iface.AuthScheme, &iface.ETag)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PublishedInterface{}, false, nil
+	}
+	if err != nil {
+		return PublishedInterface{}, false, fmt.Errorf("scan a2a public interface: %w", err)
+	}
+	if len(skills) > 0 {
+		_ = json.Unmarshal(skills, &iface.Skills)
+	}
+	return iface, true, nil
 }
 
-// Get resolves an interface within the authenticated scope (the extended card + all authed ops).
+// Get resolves an interface within the authenticated scope (the extended card + all authed ops). It reads
+// the full row including the provenance pins (never rendered onto a card, but read for tenant scoping).
 func (s *Store) Get(ctx context.Context, org, project, interfaceID string) (PublishedInterface, bool, error) {
 	ctx = storage.WithTenant(ctx, org, project)
-	return s.scanInterface(s.pool.QueryRow(ctx, storage.Query("GetA2AInterface"), interfaceID, org, project))
-}
-
-// scanInterface reads a full interface row (both public + authed queries return the same column set).
-func (s *Store) scanInterface(row pgx.Row) (PublishedInterface, bool, error) {
+	row := s.pool.QueryRow(ctx, storage.Query("GetA2AInterface"), interfaceID, org, project)
 	var iface PublishedInterface
 	var skills []byte
 	err := row.Scan(&iface.ID, &iface.Organization, &iface.Project, &iface.Name, &iface.Description, &iface.Version,
@@ -123,6 +137,27 @@ func (s *Store) GetRef(ctx context.Context, org, project, interfaceID, a2aTaskID
 	}
 	if err != nil {
 		return TaskRef{}, false, fmt.Errorf("get a2a task ref: %w", err)
+	}
+	if len(push) > 0 {
+		_ = json.Unmarshal(push, &ref.PushConfigs)
+	}
+	return ref, true, nil
+}
+
+// GetRefByRun resolves an existing task ref within scope by its canonical run reference under an interface —
+// the A2A-retry dedupe seam (M-2). A replayed messageId re-admits to the same canonical response, so the
+// external task minted the first time is reused rather than duplicated.
+func (s *Store) GetRefByRun(ctx context.Context, org, project, interfaceID, runID string) (TaskRef, bool, error) {
+	ctx = storage.WithTenant(ctx, org, project)
+	ref := TaskRef{InterfaceID: interfaceID}
+	var push []byte
+	err := s.pool.QueryRow(ctx, storage.Query("GetA2ATaskRefByRun"), interfaceID, runID, org, project).
+		Scan(new(string), &ref.A2ATaskID, &ref.A2AContextID, &ref.RunID, &ref.SessionID, &push)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TaskRef{}, false, nil
+	}
+	if err != nil {
+		return TaskRef{}, false, fmt.Errorf("get a2a task ref by run: %w", err)
 	}
 	if len(push) > 0 {
 		_ = json.Unmarshal(push, &ref.PushConfigs)
