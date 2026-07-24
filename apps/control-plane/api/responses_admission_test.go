@@ -129,3 +129,41 @@ func knownProblemCodes(t *testing.T) map[string]bool {
 	}
 	return set
 }
+
+// TestAdmitPurgedReplayRenders410Tombstone pins API-015's server half (E16 T1 review SF-1): an idempotent
+// replay whose transient result has been reaped is a TOMBSTONE — 410 idempotency_result_expired, with the
+// original operation identity in Location (§20.9), NO re-execution (the handler returns on Purged before any
+// dispatch), and NO content disclosure (the body is the stable RFC 9457 problem, never the reaped resource's
+// content). The behavior lives in responses.go:345-349; this is the missing HTTP-level pin.
+func TestAdmitPurgedReplayRenders410Tombstone(t *testing.T) {
+	srv := admissionTestServer(t, AdmitResult{Purged: true, ResponseID: "resp_reaped"})
+	resp := postResponse(t, srv.URL)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusGone {
+		t.Fatalf("status = %d, want 410", resp.StatusCode)
+	}
+	// Original operation identity echoed in Location (§20.9) so a client can correlate — not a disclosure.
+	if loc := resp.Header.Get("Location"); !strings.Contains(loc, "resp_reaped") {
+		t.Fatalf("Location = %q, want the original response id", loc)
+	}
+	// NO content disclosure: the body decodes as ONLY the stable problem; a run-content field (output/input/
+	// content) present would leak the reaped resource. Decode into a raw map and assert none appear.
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode 410 body: %v", err)
+	}
+	for _, leak := range []string{"output", "input", "content", "messages"} {
+		if _, ok := raw[leak]; ok {
+			t.Fatalf("410 tombstone leaked reaped content field %q: %v", leak, raw)
+		}
+	}
+	// The emitted code MUST be the published §20.10 stable code so a spec-coded client can match it.
+	code, _ := raw["code"].(string)
+	if code != "idempotency_result_expired" || !knownProblemCodes(t)[code] {
+		t.Fatalf("problem code = %q, want the published idempotency_result_expired", code)
+	}
+	if status, _ := raw["status"].(float64); int(status) != http.StatusGone {
+		t.Fatalf("problem status = %v, want 410", raw["status"])
+	}
+}

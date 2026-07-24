@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 )
 
@@ -32,5 +33,37 @@ func TestModelRouteWritesRejectAnOrgGranularKey(t *testing.T) {
 	pub, err := s.PublishModelRouteRevision(ctx, orgOnly, "mroute_1", "mrev_1")
 	if err != nil || pub.MissingField == "" {
 		t.Fatalf("PublishModelRouteRevision(org-granular key) = (%+v, %v), want a MissingField reject (400)", pub, err)
+	}
+}
+
+// TestModelRouteReadsRejectAnOrgGranularKey is the read-back partner (E16 T1, review SF-2) of the write
+// guard above: the six read-back methods must short-circuit on an ORG-granular key (Scope.Project == "")
+// with the same MissingField reject (400) BEFORE any store query — model routing is per project. Without
+// requireProjectScope on a read, an org-granular key would reach the (here nil) spine, panicking or 500ing
+// a well-formed request. This is the fast glue-layer regression guard partnering the real-Postgres
+// tenant-scoping proof (tests/component/postgres TestModelRouteReadsAreTenantScoped); it needs no database.
+func TestModelRouteReadsRejectAnOrgGranularKey(t *testing.T) {
+	s := &Store{}
+	ctx := context.Background()
+	orgOnly := middleware.Scope{Organization: "org_1"}
+
+	reads := []struct {
+		name string
+		call func() (api.ProvisionResult, error)
+	}{
+		{"ListModelConnections", func() (api.ProvisionResult, error) { return s.ListModelConnections(ctx, orgOnly) }},
+		{"GetModelConnection", func() (api.ProvisionResult, error) { return s.GetModelConnection(ctx, orgOnly, "mconn_1") }},
+		{"ListModelRoutes", func() (api.ProvisionResult, error) { return s.ListModelRoutes(ctx, orgOnly) }},
+		{"GetModelRoute", func() (api.ProvisionResult, error) { return s.GetModelRoute(ctx, orgOnly, "mroute_1") }},
+		{"ListModelRouteRevisions", func() (api.ProvisionResult, error) { return s.ListModelRouteRevisions(ctx, orgOnly, "mroute_1") }},
+		{"GetModelRouteRevision", func() (api.ProvisionResult, error) {
+			return s.GetModelRouteRevision(ctx, orgOnly, "mroute_1", "mrev_1")
+		}},
+	}
+	for _, r := range reads {
+		out, err := r.call()
+		if err != nil || out.MissingField == "" {
+			t.Fatalf("%s(org-granular key) = (%+v, %v), want a MissingField reject (400), not a store call", r.name, out, err)
+		}
 	}
 }
