@@ -1211,3 +1211,104 @@ func TestExternalReceiptProofClass(t *testing.T) {
 		}
 	}
 }
+
+// TestSDKParityClaimsVerified pins the E16 T8 verifier branches (plan §T8): each of the four SDK-parity claims,
+// when marked, requires a COMPLETE proof through VerifyManifest — a marked claim with no proof is a "missing"
+// Finding, and an incomplete proof is "invalid". Without this the four VerifyManifest branches could be deleted
+// with no test failing (the anchor tests don't go through VerifyManifest, and the promote gate calls Complete()
+// independently) — so this is the verifier's own enforcement guard, the E11-E15 claim-branch discipline.
+func TestSDKParityClaimsVerified(t *testing.T) {
+	agreed := json.RawMessage(`{"id":"r","status":"completed"}`)
+	canon, _ := canonicalJSON(agreed)
+	eqDigest := hashParts(canon)
+
+	fulls := map[string]struct {
+		claimKey, proofKey string
+		full               func() map[string]any
+		invalids           []func(map[string]any)
+	}{
+		"three_language_equality": {
+			"three_language_equality_claim", "three_language_equality_proof",
+			func() map[string]any {
+				return map[string]any{
+					"run_id":          "run_p",
+					"client_outputs":  map[string]any{"typescript": agreed, "python": agreed, "go": agreed, "cli": agreed},
+					"equality_digest": eqDigest,
+				}
+			},
+			[]func(map[string]any){
+				func(p map[string]any) { delete(p["client_outputs"].(map[string]any), "cli") }, // a dropped client
+				func(p map[string]any) {
+					p["client_outputs"].(map[string]any)["cli"] = json.RawMessage(`{"id":"OTHER"}`)
+				}, // a divergent client
+				func(p map[string]any) { p["equality_digest"] = hashParts("not-the-agreed-output") }, // a fabricated digest
+			},
+		},
+		"gateway_off": {
+			"gateway_off_claim", "gateway_off_proof",
+			func() map[string]any {
+				return map[string]any{
+					"config_digest": hashParts(GatewayOffRouteConfig...), "gateway_route": "m@openai-compatible",
+					"proxy_killed": true, "gateway_run_failed": true,
+					"direct_run_id": "run_d", "direct_provider_request_id": "chatcmpl-x", "direct_completed": true,
+				}
+			},
+			[]func(map[string]any){
+				func(p map[string]any) { p["config_digest"] = hashParts("dropped-a-direct-route") }, // a fabricated route config
+				func(p map[string]any) { p["proxy_killed"] = false },                                // the proxy stayed up
+				func(p map[string]any) { p["direct_provider_request_id"] = "not-provider-shaped" },  // a non-real direct id
+			},
+		},
+		"provider_conformance": {
+			"provider_conformance_claim", "provider_conformance_proof",
+			func() map[string]any {
+				return map[string]any{"provider": "provider-two", "facets": []any{"text", "stream", "tool", "schema"}, "attempts": 1, "live_class": "deterministic"}
+			},
+			[]func(map[string]any){
+				func(p map[string]any) { p["facets"] = []any{"text", "stream", "tool"} }, // a dropped facet
+				func(p map[string]any) { p["attempts"] = 2 },                             // a hidden-retry attempt count
+				func(p map[string]any) { p["live_class"] = "live" },                      // "live" with no provider-shaped id
+			},
+		},
+		"packaging": {
+			"packaging_claim", "packaging_proof",
+			func() map[string]any {
+				return map[string]any{"manifest_digest": "sha256:" + strings.Repeat("a", 64), "packages": []any{"go"}, "signature_verified": true, "offline_verified": true, "tamper_rejected": true}
+			},
+			[]func(map[string]any){
+				func(p map[string]any) { p["manifest_digest"] = "not-a-sha" }, // a malformed digest
+				func(p map[string]any) { p["signature_verified"] = false },    // the signature did not verify
+				func(p map[string]any) { p["packages"] = []any{} },            // no packages
+			},
+		},
+	}
+
+	for name, tc := range fulls {
+		// A complete proof passes.
+		m := baseManifest()
+		c := caseOf(m)
+		c[tc.claimKey] = name
+		c[tc.proofKey] = tc.full()
+		if f := VerifyManifest(marshal(t, m), nil); len(f) != 0 {
+			t.Fatalf("%s: a complete proof should pass, got %v", name, f)
+		}
+		// A marked claim with NO proof is a missing Finding.
+		m = baseManifest()
+		caseOf(m)[tc.claimKey] = name
+		if !hasKind(VerifyManifest(marshal(t, m), nil), "missing") {
+			t.Fatalf("%s: a claim with no proof must be a missing Finding", name)
+		}
+		// Each incomplete proof is an invalid Finding.
+		for i, mutate := range tc.invalids {
+			m = baseManifest()
+			c = caseOf(m)
+			c[tc.claimKey] = name
+			proof := tc.full()
+			mutate(proof)
+			c[tc.proofKey] = proof
+			if !hasKind(VerifyManifest(marshal(t, m), nil), "invalid") {
+				t.Fatalf("%s: incomplete proof #%d %v must be an invalid Finding", name, i, proof)
+			}
+		}
+	}
+}

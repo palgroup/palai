@@ -168,6 +168,18 @@ func TestSDKParityJourney(t *testing.T) {
 			t.Fatalf("SDK PARITY FAILED: %s client diverged\n  %s = %s\n  go = %s", client, client, got, agreed)
 		}
 	}
+	// The crown is only meaningful if the AGREED content is the REAL terminal run — four clients agreeing on a
+	// "queued" placeholder would otherwise pass. Assert the shared identity + a completed terminal.
+	var agreedProj struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(agreed), &agreedProj); err != nil {
+		t.Fatalf("agreed parity output is not decodable: %s", agreed)
+	}
+	if agreedProj.ID != sharedResp || agreedProj.Status != "completed" {
+		t.Fatalf("the four clients agreed, but not on the COMPLETED shared run: id=%q status=%q (want %q / completed)", agreedProj.ID, agreedProj.Status, sharedResp)
+	}
 	// Build the crown proof from the four REAL outputs and assert it passes Complete() (it re-canonicalizes them
 	// and recomputes the equality digest — the mechanical diff hoisted into the evidence proof).
 	equalityProof := uat.ThreeLanguageEqualityProof{
@@ -192,6 +204,12 @@ func TestSDKParityJourney(t *testing.T) {
 	// --- GATEWAY-OFF: kill the stand-in; the gateway route fails, the direct provider-one route still serves ---
 	tenantG, _ := provisionAPITenant(t, srv2.URL, bootstrapToken, "sdk-parity-gateway")
 	publishRoute(t, ctx, repo, secretStore, tenantG, "openai-compatible", "gpt-4.1-mini", openaiKey)
+	// Prove the gateway route WORKS while the stand-in is alive, so the post-kill failure is caused by the kill
+	// and not a route that was broken from the start (the stand-in answers a canned ChatCompletions SSE).
+	warmRun, _ := seedParityRun(t, pool, tenantG, "warm the gateway")
+	if err := orch.ExecuteAttempt(ctx, descriptor(warmRun, 1)); err != nil {
+		t.Fatalf("the gateway route did not serve BEFORE the kill (the live stand-in should answer): %v", err)
+	}
 	standIn.Close() // the kill
 	gwRun, _ := seedParityRun(t, pool, tenantG, "hello through the gateway")
 	gwErr := orch.ExecuteAttempt(ctx, descriptor(gwRun, 1))

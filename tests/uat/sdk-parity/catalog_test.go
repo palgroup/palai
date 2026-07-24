@@ -38,6 +38,10 @@ var honestNamePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // sdkParityIDPrefixes are the case-id families E16 T8 owns. No API-/MOD- case dir existed before this gate, so
 // this gate is the first materializer of both prefixes; a future epic that adds an API-/MOD- case extends
 // expectedSDKParityCatalog (the OPS-/DR- precedent in self-host).
+//
+// The evidence bundle's PKG-001 (PackagingProof) is intentionally NOT a catalog case: packaging is a T7 support
+// task with no UAT case in the plan (§T7 "UAT: none" — it only feeds the T8 PackagingProof). So there is no
+// PKG- prefix here and no PKG- case dir; the bundle case is justified in its own db_assertions, not the catalog.
 var sdkParityIDPrefixes = []string{"API-", "MOD-"}
 
 // expectedSDKParityCatalog is the E16 SDK-parity UAT catalog: every case ID this epic materializes (plan §T8 —

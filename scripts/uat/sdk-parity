@@ -20,10 +20,11 @@
 #   live tier (PROVIDER=provider-one): TestSDKParityJourney (tests/uat/sdk-parity, //go:build uat) brings up a
 #     real in-process control-plane over a throwaway Postgres and drives journey 63.1: a model connection
 #     provisioned via the T1 API -> a Responses run driven from ALL FOUR clients (TS + Python + Go SDKs + the
-#     palai CLI) whose normalized decodes are asserted EQUAL by ONE mechanical canonical-bytes diff -> a
-#     store:false purge returning the typed 410 -> a restart with retained retrieval -> the gateway-off leg (the
-#     stand-in openai-compatible proxy is KILLED and the direct provider-one/provider-two routes keep serving a
-#     REAL run) -> real provider-one + provider-two live smokes. It ends in REAL provider runs. It does NOT write
+#     palai CLI) whose normalized decodes are asserted EQUAL by ONE mechanical canonical-bytes diff -> a restart
+#     with retained retrieval -> the gateway-off leg (the stand-in openai-compatible proxy is KILLED and the
+#     direct provider-one/provider-two routes keep serving a REAL run) -> real provider-one + provider-two live
+#     smokes. The typed-410 SDK surface is proven DETERMINISTICALLY (the corpus gone-410 + API-015), not in the
+#     journey. It ends in REAL provider runs. It does NOT write
 #     the committed bundle (authored data verified by the core). Credentials load ONLY from .env.local via
 #     `set -a` — never argv, never `set -x`, never the bundle or a commit. Honest ceiling (plan §6): the stand-in
 #     gateway is a local proxy (a real LiteLLM / private-server gateway drill is the §6 operator leg); published

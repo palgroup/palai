@@ -223,10 +223,11 @@ uat-sh2:
 # cross-language equality + the committed sdk-provider-parity-0.1.0 bundle through the shipped verifier + the
 # mechanical promote gate (rc PASS / stable REFUSED). The live tier (PROVIDER=provider-one) drives journey 63.1 —
 # a model connection over the T1 API, a Responses run from ALL FOUR clients (three SDKs + the CLI) whose
-# normalized decodes are mechanically diffed EQUAL, a store:false 410, a restart, and the gateway-off leg (the
-# stand-in gateway killed, direct routes still serving) — ending in REAL provider-one + provider-two runs. HONEST
-# CEILING (plan §6): the stand-in gateway is a local proxy (a real LiteLLM/private-server drill is §6); published
-# npm/PyPI/Go-proxy releases are E18.
+# normalized decodes are mechanically diffed EQUAL, a restart with retained retrieval, and the gateway-off leg
+# (the stand-in gateway killed, direct routes still serving) — ending in REAL provider-one + provider-two runs.
+# HONEST CEILING (plan §6): the stand-in gateway is a local proxy (a real LiteLLM/private-server drill is §6);
+# the typed-410 SDK surface is proven DETERMINISTICALLY (the corpus gone-410 + API-015), not in the journey;
+# published npm/PyPI/Go-proxy releases are E18.
 uat-sdk-parity:
 	@test -x scripts/uat/sdk-parity || { echo "sdk-parity UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' scripts/uat/sdk-parity

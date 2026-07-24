@@ -937,8 +937,10 @@ func (p ProviderConformanceProof) Complete() bool {
 // PackagingProof is the evidence a packaging_claim requires (plan §T8, reusing T7): the SDK packages built
 // locally, their sha256sums manifest SIGNED (openssl P-256 detached, the E14 T5 tool), and the bundle re-verified
 // OFFLINE with a tamper rejected — the scripts/release/sdk-package.sh + sdk-verify.sh chain, unit-pinned by
-// scripts/release/sdk_package_test.go. ManifestDigest is the signed sha256sums root digest; Packages are the
-// built package names (>= 1); SignatureVerified/OfflineVerified/TamperRejected record the verify outcome. Honest
+// scripts/release/sdk_package_test.go. ManifestDigest is a names-only PRESENCE digest — hashParts of the sorted
+// package names, carrying zero information about the package bytes; package BYTE-integrity is proven in T7's
+// signed sha256sums chain (sdk-verify.sh), NOT here. Packages are the built package names (>= 1);
+// SignatureVerified/OfflineVerified/TamperRejected record the T7 verify outcome. Honest
 // ceiling (plan §5): LOCAL build + checksum + signature only — public-registry publish + SBOM/provenance
 // attestation is E18. A malformed digest, no packages, or any false is not proof.
 type PackagingProof struct {
