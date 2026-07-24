@@ -45,12 +45,85 @@ func expireLease(t *testing.T, pool *pgxpool.Pool, connID string) {
 		  WHERE queue_connection_id = $1 AND state = 'leased'`, connID)
 }
 
+// ensureEffectScratch creates the test-only side-effect table the atomic handler writes into. The effect
+// MUST be a real durable row (not an in-memory counter) so a rollback can prove the receipt and the effect
+// vanish TOGETHER — an in-memory counter can never model a crash between the two. It is a fixture table
+// (no RLS), granted to the runtime role so the tenant-scoped effect tx can insert; keyed by (connID, key)
+// so rows from different tests never collide in the shared component database.
+func ensureEffectScratch(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	mustExecAsOwner(t, pool, `CREATE TABLE IF NOT EXISTS queue_effect_scratch (
+		queue_connection_id TEXT NOT NULL,
+		idempotency_key TEXT NOT NULL,
+		PRIMARY KEY (queue_connection_id, idempotency_key))`)
+	mustExecAsOwner(t, pool, `GRANT SELECT, INSERT ON queue_effect_scratch TO palai_app`)
+}
+
+// atomicEffectHandler is the CORRECT reference pattern the future wiring task must copy: it opens ONE
+// transaction and writes the idempotency receipt AND the real side effect in it, committing them together —
+// so a redelivery can never observe a committed effect without its receipt (the lost-effect anti-pattern).
+// fresh receipts drive whether the effect runs, so the effect commits exactly once per key. If crash is
+// true it returns an error AFTER the receipt+effect are staged but BEFORE commit, modeling a mid-effect
+// crash: the deferred Rollback drops BOTH together (nothing is stranded).
+func atomicEffectHandler(store *QueueStore, pool *pgxpool.Pool, org, project, connID string, after queue.Disposition, crash bool) queue.Handler {
+	return func(ctx context.Context, m queue.Message) (queue.Disposition, error) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return queue.Retry, err
+		}
+		defer tx.Rollback(ctx) // no-op once Commit succeeds; on a crash/error path it drops receipt+effect
+		fresh, err := store.RecordEffect(ctx, tx, org, project, connID, m.IdempotencyKey)
+		if err != nil {
+			return queue.Retry, err
+		}
+		if fresh {
+			// The real, durable side effect — in the SAME tx as the receipt.
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO queue_effect_scratch (queue_connection_id, idempotency_key) VALUES ($1, $2)`,
+				connID, m.IdempotencyKey); err != nil {
+				return queue.Retry, err
+			}
+		}
+		if crash {
+			return queue.Retry, fmt.Errorf("simulated crash after RecordEffect, before commit")
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return queue.Retry, err
+		}
+		return after, nil
+	}
+}
+
+// countScratchEffect counts committed side-effect rows for a key — the durable, atomic-with-receipt effect.
+func countScratchEffect(t *testing.T, pool *pgxpool.Pool, org, project, connID, key string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(storage.ScopeToTenant(context.Background(), org, project),
+		`SELECT count(*) FROM queue_effect_scratch WHERE queue_connection_id = $1 AND idempotency_key = $2`,
+		connID, key).Scan(&n); err != nil {
+		t.Fatalf("count scratch effect error = %v", err)
+	}
+	return n
+}
+
+// countReceipts counts idempotency receipts for a key — the append-only dedupe anchor.
+func countReceipts(t *testing.T, pool *pgxpool.Pool, org, project, connID, key string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(storage.ScopeToTenant(context.Background(), org, project),
+		storage.Query("CountQueueEffects"), connID, key).Scan(&n); err != nil {
+		t.Fatalf("CountQueueEffects error = %v", err)
+	}
+	return n
+}
+
 // TestQueueAdapterRedeliversAfterLostAckSingleEffect is the AUT-009 / AUT-013 queue leg: a message whose
 // effect committed but whose ack was lost (a crash) redelivers — it is NOT lost — and the append-only
 // idempotency ledger makes the redelivery a single effect. At-least-once delivery + an idempotency key =
 // effectively-once effect, over real Postgres.
 func TestQueueAdapterRedeliversAfterLostAckSingleEffect(t *testing.T) {
 	pool := componentPool(t)
+	ensureEffectScratch(t, pool)
 	store := NewQueueStore(pool)
 	ctx := context.Background()
 	org, project, _ := seedSession(t, pool)
@@ -65,36 +138,22 @@ func TestQueueAdapterRedeliversAfterLostAckSingleEffect(t *testing.T) {
 		t.Fatalf("Publish error = %v", err)
 	}
 
-	effects := 0
-	effect := func(after queue.Disposition) queue.Handler {
-		return func(ctx context.Context, m queue.Message) (queue.Disposition, error) {
-			// The idempotency ledger is the dedupe anchor: fresh means this key's effect has not committed.
-			fresh, err := store.RecordEffect(ctx, pool, org, project, connID, m.IdempotencyKey)
-			if err != nil {
-				return queue.Retry, err
-			}
-			if fresh {
-				effects++ // the (idempotent) side effect runs exactly once per key
-			}
-			return after, nil
-		}
-	}
-
-	// First delivery: the effect commits, but the ack is LOST (a crash) — modeled by returning Retry, so
-	// Consume does NOT ack; the message stays leased.
-	if n, err := q.Consume(ctx, 10, effect(queue.Retry)); err != nil || n != 1 {
+	// First delivery: the receipt+effect COMMIT atomically (one tx), but the ack is LOST (a crash) — modeled
+	// by returning Retry, so Consume does NOT ack; the message stays leased. This is the durable-effect,
+	// lost-ack window.
+	if n, err := q.Consume(ctx, 10, atomicEffectHandler(store, pool, org, project, connID, queue.Retry, false)); err != nil || n != 1 {
 		t.Fatalf("first Consume = (%d, %v), want (1, nil)", n, err)
 	}
 	// The crashed consumer's lease expires; a restarted consumer re-leases the un-acked message.
 	expireLease(t, pool, connID)
 
 	// Redelivery: the key's receipt already exists -> the effect does NOT run again; this time it acks.
-	if n, err := q.Consume(ctx, 10, effect(queue.Ack)); err != nil || n != 1 {
+	if n, err := q.Consume(ctx, 10, atomicEffectHandler(store, pool, org, project, connID, queue.Ack, false)); err != nil || n != 1 {
 		t.Fatalf("redelivery Consume = (%d, %v), want (1, nil)", n, err)
 	}
 
-	if effects != 1 {
-		t.Fatalf("effects = %d, want 1 (a redelivered message must run the effect exactly once)", effects)
+	if got := countScratchEffect(t, pool, org, project, connID, "order-42"); got != 1 {
+		t.Fatalf("committed effect rows = %d, want 1 (a redelivered message must run the effect exactly once)", got)
 	}
 	d, err := q.Depth(ctx)
 	if err != nil {
@@ -104,13 +163,116 @@ func TestQueueAdapterRedeliversAfterLostAckSingleEffect(t *testing.T) {
 		t.Fatalf("depth = %+v, want drained (the message was acked, never lost)", d)
 	}
 	// The durable idempotency ledger holds exactly one receipt for the key.
-	var receipts int
-	if err := pool.QueryRow(storage.ScopeToTenant(ctx, org, project),
-		storage.Query("CountQueueEffects"), connID, "order-42").Scan(&receipts); err != nil {
-		t.Fatalf("CountQueueEffects error = %v", err)
+	if got := countReceipts(t, pool, org, project, connID, "order-42"); got != 1 {
+		t.Fatalf("durable receipts = %d, want 1", got)
 	}
-	if receipts != 1 {
-		t.Fatalf("durable receipts = %d, want 1", receipts)
+}
+
+// TestQueueAdapterEffectAtomicWithReceiptOnCrash is the executable exactly-once ATOMICITY proof: the
+// idempotency receipt and the real side effect commit in ONE transaction, so a crash mid-effect (a rollback
+// after the receipt is staged) drops BOTH together — neither survives. A receipt that committed standalone
+// (the anti-pattern the reference handler must NOT use) would strand the effect forever: a redelivery would
+// find the receipt and skip the effect, losing it. This proves that cannot happen — after the crash,
+// redelivery re-runs the handler FRESH and applies the effect exactly once.
+func TestQueueAdapterEffectAtomicWithReceiptOnCrash(t *testing.T) {
+	pool := componentPool(t)
+	ensureEffectScratch(t, pool)
+	store := NewQueueStore(pool)
+	ctx := context.Background()
+	org, project, _ := seedSession(t, pool)
+	connID := mustCreateQueueConn(t, store, org, project,
+		QueueConnectionInput{Name: "atomic", Visibility: time.Minute, MaxDeliveries: 10})
+
+	q, err := store.InboundQueue(ctx, org, project, connID)
+	if err != nil {
+		t.Fatalf("InboundQueue error = %v", err)
+	}
+	if err := q.Publish(ctx, "charge-1", []byte("x")); err != nil {
+		t.Fatalf("Publish error = %v", err)
+	}
+
+	// First delivery crashes AFTER staging the receipt+effect but BEFORE commit: the tx rolls back.
+	if _, err := q.Consume(ctx, 10, atomicEffectHandler(store, pool, org, project, connID, queue.Ack, true)); err != nil {
+		t.Fatalf("first (crashing) Consume error = %v", err)
+	}
+	// The receipt AND the effect vanished together — atomicity. If the receipt had committed standalone this
+	// would be 1 and the effect would be stranded forever.
+	if got := countReceipts(t, pool, org, project, connID, "charge-1"); got != 0 {
+		t.Fatalf("receipts after rollback = %d, want 0 (the receipt rolled back with the effect)", got)
+	}
+	if got := countScratchEffect(t, pool, org, project, connID, "charge-1"); got != 0 {
+		t.Fatalf("effect rows after rollback = %d, want 0 (the effect rolled back with the receipt)", got)
+	}
+
+	// The un-acked message redelivers; the handler runs FRESH and applies the effect exactly once.
+	expireLease(t, pool, connID)
+	if n, err := q.Consume(ctx, 10, atomicEffectHandler(store, pool, org, project, connID, queue.Ack, false)); err != nil || n != 1 {
+		t.Fatalf("redelivery Consume = (%d, %v), want (1, nil)", n, err)
+	}
+	if got := countScratchEffect(t, pool, org, project, connID, "charge-1"); got != 1 {
+		t.Fatalf("effect rows after redelivery = %d, want 1 (effect applied exactly once on the retry)", got)
+	}
+	if got := countReceipts(t, pool, org, project, connID, "charge-1"); got != 1 {
+		t.Fatalf("receipts after redelivery = %d, want 1", got)
+	}
+}
+
+// TestQueueAdapterConcurrentEffectSerializes proves the idempotency receipt serializes CONCURRENT delivery
+// of the same key: two transactions racing to record the same (connection, key) receipt resolve to exactly
+// one fresh=true (its effect commits) and one fresh=false (a no-op) via the UNIQUE conflict — never two
+// effects. This is the concurrent form of the lost-ack dedupe (whichever tx commits first wins; the other's
+// ON CONFLICT DO NOTHING makes it a no-op regardless of interleaving).
+func TestQueueAdapterConcurrentEffectSerializes(t *testing.T) {
+	pool := componentPool(t)
+	ensureEffectScratch(t, pool)
+	store := NewQueueStore(pool)
+	org, project, _ := seedSession(t, pool)
+	connID := mustCreateQueueConn(t, store, org, project,
+		QueueConnectionInput{Name: "race", Visibility: time.Minute, MaxDeliveries: 10})
+	sctx := storage.ScopeToTenant(context.Background(), org, project)
+
+	var wg sync.WaitGroup
+	freshes := make([]bool, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			tx, err := pool.Begin(sctx)
+			if err != nil {
+				t.Errorf("Begin error = %v", err)
+				return
+			}
+			defer tx.Rollback(sctx)
+			fresh, err := store.RecordEffect(sctx, tx, org, project, connID, "race-1")
+			if err != nil {
+				t.Errorf("RecordEffect error = %v", err)
+				return
+			}
+			if fresh {
+				if _, err := tx.Exec(sctx,
+					`INSERT INTO queue_effect_scratch (queue_connection_id, idempotency_key) VALUES ($1, $2)`,
+					connID, "race-1"); err != nil {
+					t.Errorf("effect insert error = %v", err)
+					return
+				}
+			}
+			if err := tx.Commit(sctx); err != nil {
+				t.Errorf("Commit error = %v", err)
+				return
+			}
+			freshes[i] = fresh
+		}(i)
+	}
+	wg.Wait()
+
+	if freshes[0] == freshes[1] {
+		t.Fatalf("fresh flags = %v, want exactly one true (concurrent effects must serialize to one)", freshes)
+	}
+	if got := countScratchEffect(t, pool, org, project, connID, "race-1"); got != 1 {
+		t.Fatalf("committed effect rows = %d, want 1 (exactly one effect under concurrency)", got)
+	}
+	if got := countReceipts(t, pool, org, project, connID, "race-1"); got != 1 {
+		t.Fatalf("receipts = %d, want 1", got)
 	}
 }
 
