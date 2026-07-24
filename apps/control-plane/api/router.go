@@ -214,6 +214,14 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/model-routes", mh.createRoute)
 		mux.HandleFunc("POST /v1/model-routes/{route_id}/revisions", mh.createRevision)
 		mux.HandleFunc("POST /v1/model-routes/{route_id}/revisions/{revision_id}/publish", mh.publishRevision)
+		// The E16 T1 read-back half (the E13 T10 write-only gap): GET(one) + LIST for every
+		// connection/route/revision. Admin ListView envelope, provision-gated, tenant-scoped under RLS.
+		mux.HandleFunc("GET /v1/model-connections", mh.listConnections)
+		mux.HandleFunc("GET /v1/model-connections/{connection_id}", mh.getConnection)
+		mux.HandleFunc("GET /v1/model-routes", mh.listRoutes)
+		mux.HandleFunc("GET /v1/model-routes/{route_id}", mh.getRoute)
+		mux.HandleFunc("GET /v1/model-routes/{route_id}/revisions", mh.listRevisions)
+		mux.HandleFunc("GET /v1/model-routes/{route_id}/revisions/{revision_id}", mh.getRevision)
 	}
 
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}

@@ -23,10 +23,9 @@ export type { Trigger } from "./resources/reads.ts";
 export { SecretRefs } from "./resources/secret-refs.ts";
 export type { SecretRef, SecretRefCreateParams, SecretRefRotateParams } from "./resources/secret-refs.ts";
 export { ModelRoutes } from "./resources/model-routes.ts";
+// ModelConnection/ModelRoute/ModelRouteRevision are now the generated contract types, exported once via
+// the `export type * from ./generated/types.ts` below (E16 T1: no more hand-written open interfaces).
 export type {
-  ModelConnection,
-  ModelRoute,
-  ModelRouteRevision,
   ModelConnectionCreateParams,
   ModelRouteCreateParams,
   ModelRouteRevisionCreateParams,

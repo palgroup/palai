@@ -115,6 +115,98 @@ func TestProjectModelRouteResolvesPublishedRevisionOnly(t *testing.T) {
 	}
 }
 
+// TestModelRouteReadsAreTenantScoped is the E16 T1 read-back tenant boundary against the real RLS schema:
+// the owner reads its own connections/routes/revisions back (LIST + GET, with the published flag derived
+// from config), while the intruder — on the same stack — sees NOTHING of the owner's. A foreign id is the
+// same answer as a nonexistent one (NotFound), never a leak, and a LIST is an EMPTY set, never the owner's
+// rows. This is the read half of the write-only gap E13 T10 flagged.
+func TestModelRouteReadsAreTenantScoped(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	owner, intruder := seedProject(t, cs), seedProject(t, cs)
+
+	connID, err := cs.CreateModelConnection(ctx, owner, "provider-one", "openai-owner")
+	if err != nil {
+		t.Fatalf("CreateModelConnection() error = %v", err)
+	}
+	routeID, err := cs.CreateModelRoute(ctx, owner, coordinator.DefaultModelRouteAlias)
+	if err != nil {
+		t.Fatalf("CreateModelRoute() error = %v", err)
+	}
+	published, err := cs.CreateModelRouteRevision(ctx, owner, routeID, "model-owner", connID)
+	if err != nil {
+		t.Fatalf("CreateModelRouteRevision(published) error = %v", err)
+	}
+	if err := cs.PublishModelRouteRevision(ctx, owner, routeID, published.ID); err != nil {
+		t.Fatalf("PublishModelRouteRevision() error = %v", err)
+	}
+	draft, err := cs.CreateModelRouteRevision(ctx, owner, routeID, "model-draft", connID)
+	if err != nil {
+		t.Fatalf("CreateModelRouteRevision(draft) error = %v", err)
+	}
+
+	// The owner reads its own rows back — a connection carries the secret REF name, never a value.
+	conns, err := cs.ListModelConnections(ctx, owner)
+	if err != nil || len(conns) != 1 || conns[0].ID != connID || conns[0].SecretRef != "openai-owner" || conns[0].Provider != "provider-one" {
+		t.Fatalf("ListModelConnections(owner) = (%+v, %v), want the one owner connection with ref openai-owner", conns, err)
+	}
+	if got, err := cs.GetModelConnection(ctx, owner, connID); err != nil || got.SecretRef != "openai-owner" {
+		t.Fatalf("GetModelConnection(owner) = (%+v, %v), want the owner connection", got, err)
+	}
+	routes, err := cs.ListModelRoutes(ctx, owner)
+	if err != nil || len(routes) != 1 || routes[0].ID != routeID || routes[0].Name != coordinator.DefaultModelRouteAlias {
+		t.Fatalf("ListModelRoutes(owner) = (%+v, %v), want the one owner route", routes, err)
+	}
+	if got, err := cs.GetModelRoute(ctx, owner, routeID); err != nil || got.Name != coordinator.DefaultModelRouteAlias {
+		t.Fatalf("GetModelRoute(owner) = (%+v, %v), want the owner route", got, err)
+	}
+
+	// The revision read-back derives the published flag from config: revision 1 published, 2 a draft.
+	revs, err := cs.ListModelRouteRevisions(ctx, owner, routeID)
+	if err != nil || len(revs) != 2 {
+		t.Fatalf("ListModelRouteRevisions(owner) = (%+v, %v), want 2 revisions", revs, err)
+	}
+	if !revs[0].Published || revs[0].Model != "model-owner" || revs[0].ConnectionID != connID {
+		t.Fatalf("revision 1 = %+v, want published model-owner bound to the owner connection", revs[0])
+	}
+	if revs[1].Published {
+		t.Fatalf("revision 2 = %+v, want a DRAFT (published=false) — a draft never reads back as routed", revs[1])
+	}
+	if got, err := cs.GetModelRouteRevision(ctx, owner, routeID, published.ID); err != nil || !got.Published || got.Model != "model-owner" {
+		t.Fatalf("GetModelRouteRevision(owner, published) = (%+v, %v), want the published revision", got, err)
+	}
+	if got, err := cs.GetModelRouteRevision(ctx, owner, routeID, draft.ID); err != nil || got.Published {
+		t.Fatalf("GetModelRouteRevision(owner, draft) = (%+v, %v), want the draft (published=false)", got, err)
+	}
+	// A revision id absent from the route is ErrModelRouteRevisionNotFound (not a leak, not a panic).
+	if _, err := cs.GetModelRouteRevision(ctx, owner, routeID, "mrev_nonexistent"); !errors.Is(err, coordinator.ErrModelRouteRevisionNotFound) {
+		t.Fatalf("GetModelRouteRevision(unknown id) error = %v, want ErrModelRouteRevisionNotFound", err)
+	}
+
+	// The intruder — same stack, different tenant — sees NONE of the owner's rows. A LIST is EMPTY; a GET
+	// of the owner's id is the SAME non-disclosing NotFound as an id that never existed.
+	if got, err := cs.ListModelConnections(ctx, intruder); err != nil || len(got) != 0 {
+		t.Fatalf("ListModelConnections(intruder) = (%+v, %v), want an EMPTY set — no cross-tenant leak", got, err)
+	}
+	if _, err := cs.GetModelConnection(ctx, intruder, connID); !errors.Is(err, coordinator.ErrModelConnectionNotFound) {
+		t.Fatalf("GetModelConnection(intruder, owner id) error = %v, want ErrModelConnectionNotFound", err)
+	}
+	if got, err := cs.ListModelRoutes(ctx, intruder); err != nil || len(got) != 0 {
+		t.Fatalf("ListModelRoutes(intruder) = (%+v, %v), want an EMPTY set", got, err)
+	}
+	if _, err := cs.GetModelRoute(ctx, intruder, routeID); !errors.Is(err, coordinator.ErrModelRouteNotFound) {
+		t.Fatalf("GetModelRoute(intruder, owner id) error = %v, want ErrModelRouteNotFound", err)
+	}
+	// Listing/reading the owner's revisions through the intruder's scope is a route miss — the intruder
+	// cannot even name the route, so it never reaches the revision rows.
+	if _, err := cs.ListModelRouteRevisions(ctx, intruder, routeID); !errors.Is(err, coordinator.ErrModelRouteNotFound) {
+		t.Fatalf("ListModelRouteRevisions(intruder, owner route) error = %v, want ErrModelRouteNotFound", err)
+	}
+	if _, err := cs.GetModelRouteRevision(ctx, intruder, routeID, published.ID); !errors.Is(err, coordinator.ErrModelRouteNotFound) {
+		t.Fatalf("GetModelRouteRevision(intruder, owner route) error = %v, want ErrModelRouteNotFound", err)
+	}
+}
+
 // TestModelRouteWritesAreTenantScoped proves the write surface discloses nothing across tenants: a route
 // id belonging to another project is indistinguishable from a nonexistent one (NotFound → 404, never a
 // 403), and a revision can never bind a connection the caller cannot see.

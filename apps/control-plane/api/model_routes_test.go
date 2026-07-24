@@ -28,6 +28,7 @@ type fakeModelRoutes struct {
 	lastBody  []byte
 	lastRoute string
 	lastRev   string
+	lastConn  string
 }
 
 func (f *fakeModelRoutes) CreateModelConnection(_ context.Context, s middleware.Scope, b []byte) (ProvisionResult, error) {
@@ -43,6 +44,30 @@ func (f *fakeModelRoutes) CreateModelRouteRevision(_ context.Context, s middlewa
 	return f.out, nil
 }
 func (f *fakeModelRoutes) PublishModelRouteRevision(_ context.Context, s middleware.Scope, routeID, revisionID string) (ProvisionResult, error) {
+	f.lastScope, f.lastRoute, f.lastRev = s, routeID, revisionID
+	return f.out, nil
+}
+func (f *fakeModelRoutes) ListModelConnections(_ context.Context, s middleware.Scope) (ProvisionResult, error) {
+	f.lastScope = s
+	return f.out, nil
+}
+func (f *fakeModelRoutes) GetModelConnection(_ context.Context, s middleware.Scope, connectionID string) (ProvisionResult, error) {
+	f.lastScope, f.lastConn = s, connectionID
+	return f.out, nil
+}
+func (f *fakeModelRoutes) ListModelRoutes(_ context.Context, s middleware.Scope) (ProvisionResult, error) {
+	f.lastScope = s
+	return f.out, nil
+}
+func (f *fakeModelRoutes) GetModelRoute(_ context.Context, s middleware.Scope, routeID string) (ProvisionResult, error) {
+	f.lastScope, f.lastRoute = s, routeID
+	return f.out, nil
+}
+func (f *fakeModelRoutes) ListModelRouteRevisions(_ context.Context, s middleware.Scope, routeID string) (ProvisionResult, error) {
+	f.lastScope, f.lastRoute = s, routeID
+	return f.out, nil
+}
+func (f *fakeModelRoutes) GetModelRouteRevision(_ context.Context, s middleware.Scope, routeID, revisionID string) (ProvisionResult, error) {
 	f.lastScope, f.lastRoute, f.lastRev = s, routeID, revisionID
 	return f.out, nil
 }
@@ -118,6 +143,85 @@ func TestModelRouteSurfaceRequiresProvisionCapability(t *testing.T) {
 	}
 }
 
+// TestModelRouteReadSurface pins the E16 T1 read-back contract (the E13 T10 write-only gap): every
+// connection/route/revision is readable via GET(one) + LIST, each read reaches the store carrying the
+// VERIFIED identity's scope (never a body/query field), a LIST renders 200, and an id the caller cannot
+// see is a NON-DISCLOSING 404 (the store's NotFound, never a 403 that would confirm the id exists).
+func TestModelRouteReadSurface(t *testing.T) {
+	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{"object":"list","data":[]}`)}}
+	srv := modelRouteTestServer(t, admin, WithModelRoutes(fake))
+
+	// Every read is a GET; the LISTs return the ListView envelope, the GETs a single projection.
+	lists := []string{
+		"/v1/model-connections",
+		"/v1/model-routes",
+		"/v1/model-routes/mroute_1/revisions",
+	}
+	for _, path := range lists {
+		resp := do(t, "GET", srv+path, "", nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s (list) status = %d, want 200", path, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	if fake.lastScope.Organization != "org_1" || fake.lastScope.Project != "prj_1" {
+		t.Fatalf("a list reached the store with scope %+v, want the verified identity's org/project", fake.lastScope)
+	}
+
+	// Singular GETs carry the path ids through to the store.
+	fake.out = ProvisionResult{Body: []byte(`{"id":"mconn_1","object":"model_connection"}`)}
+	if resp := do(t, "GET", srv+"/v1/model-connections/mconn_1", "", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET connection status = %d, want 200", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if fake.lastConn != "mconn_1" {
+		t.Fatalf("GET connection reached the store with %q, want mconn_1", fake.lastConn)
+	}
+	if resp := do(t, "GET", srv+"/v1/model-routes/mroute_1", "", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET route status = %d, want 200", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if resp := do(t, "GET", srv+"/v1/model-routes/mroute_1/revisions/mrev_1", "", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET revision status = %d, want 200", resp.StatusCode)
+	} else {
+		resp.Body.Close()
+	}
+	if fake.lastRoute != "mroute_1" || fake.lastRev != "mrev_1" {
+		t.Fatalf("GET revision reached the store with (%q, %q), want (mroute_1, mrev_1)", fake.lastRoute, fake.lastRev)
+	}
+
+	// An id owned by another tenant (or absent) is the SAME non-disclosing 404 for every singular GET.
+	fake.out = ProvisionResult{NotFound: true}
+	for _, path := range []string{"/v1/model-connections/foreign", "/v1/model-routes/foreign", "/v1/model-routes/mroute_1/revisions/foreign"} {
+		resp := do(t, "GET", srv+path, "", nil)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("GET %s status = %d, want a non-disclosing 404", path, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+}
+
+// TestModelRouteReadsRequireProvisionCapability proves a read is an org-admin operation too: a key without
+// the provision capability is refused BEFORE the store is reached (a read must not leak another tenant's
+// routing to a run-only key).
+func TestModelRouteReadsRequireProvisionCapability(t *testing.T) {
+	limited := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1", Scopes: []string{"responses"}}}
+	fake := &fakeModelRoutes{out: ProvisionResult{Body: []byte(`{"object":"list","data":[]}`)}}
+	srv := modelRouteTestServer(t, limited, WithModelRoutes(fake))
+
+	resp := do(t, "GET", srv+"/v1/model-routes", "", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("limited-key list status = %d, want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if fake.lastScope.Organization != "" {
+		t.Fatal("a key without the provision capability reached the store on a read")
+	}
+}
+
 // TestModelRoutesUnmountedWithoutOption proves the seam is opt-in: a router built without the option
 // serves no model-route path at all (the tiers that never touch routing stay bit-unchanged).
 func TestModelRoutesUnmountedWithoutOption(t *testing.T) {
@@ -130,5 +234,11 @@ func TestModelRoutesUnmountedWithoutOption(t *testing.T) {
 	}
 	if strings.Contains(resp.Header.Get("Content-Type"), "model_route") {
 		t.Fatal("an unmounted surface answered with a model-route body")
+	}
+	// The read-back routes share the same opt-in gate, so they are unmounted together.
+	if r := do(t, "GET", srv+"/v1/model-routes", "", nil); r.StatusCode != http.StatusNotFound {
+		t.Fatalf("unmounted model-route list status = %d, want 404", r.StatusCode)
+	} else {
+		r.Body.Close()
 	}
 }

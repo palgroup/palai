@@ -20,6 +20,17 @@ type ModelRouteAPI interface {
 	CreateModelRoute(ctx context.Context, scope middleware.Scope, body []byte) (ProvisionResult, error)
 	CreateModelRouteRevision(ctx context.Context, scope middleware.Scope, routeID string, body []byte) (ProvisionResult, error)
 	PublishModelRouteRevision(ctx context.Context, scope middleware.Scope, routeID, revisionID string) (ProvisionResult, error)
+
+	// The E16 T1 read-back half (the E13 T10 write-only gap): every connection/route/revision is
+	// readable within the caller's scope. LISTs render the admin ListView envelope (a full, small,
+	// tenant-scoped set — no cursor); a singular GET renders one projection, or NotFound (404) for an
+	// absent/foreign id. A connection projection carries the secret REF name only, never a value.
+	ListModelConnections(ctx context.Context, scope middleware.Scope) (ProvisionResult, error)
+	GetModelConnection(ctx context.Context, scope middleware.Scope, connectionID string) (ProvisionResult, error)
+	ListModelRoutes(ctx context.Context, scope middleware.Scope) (ProvisionResult, error)
+	GetModelRoute(ctx context.Context, scope middleware.Scope, routeID string) (ProvisionResult, error)
+	ListModelRouteRevisions(ctx context.Context, scope middleware.Scope, routeID string) (ProvisionResult, error)
+	GetModelRouteRevision(ctx context.Context, scope middleware.Scope, routeID, revisionID string) (ProvisionResult, error)
 }
 
 // modelRouteHandler renders the model-routing routes. Like the secret-ref surface it reuses ProvisionResult
@@ -71,6 +82,63 @@ func (h *modelRouteHandler) publishRevision(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	out, err := h.routes.PublishModelRouteRevision(r.Context(), scope, r.PathValue("route_id"), r.PathValue("revision_id"))
+	h.write(w, r, out, err, http.StatusOK)
+}
+
+// The read-back handlers (E16 T1). Each authorizes (provision capability), then renders the store's
+// ListView envelope (LIST) or single projection / NotFound (GET) through the shared write helper — the
+// scope comes from the verified identity, never a path or query field.
+func (h *modelRouteHandler) listConnections(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.routes.ListModelConnections(r.Context(), scope)
+	h.write(w, r, out, err, http.StatusOK)
+}
+
+func (h *modelRouteHandler) getConnection(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.routes.GetModelConnection(r.Context(), scope, r.PathValue("connection_id"))
+	h.write(w, r, out, err, http.StatusOK)
+}
+
+func (h *modelRouteHandler) listRoutes(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.routes.ListModelRoutes(r.Context(), scope)
+	h.write(w, r, out, err, http.StatusOK)
+}
+
+func (h *modelRouteHandler) getRoute(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.routes.GetModelRoute(r.Context(), scope, r.PathValue("route_id"))
+	h.write(w, r, out, err, http.StatusOK)
+}
+
+func (h *modelRouteHandler) listRevisions(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.routes.ListModelRouteRevisions(r.Context(), scope, r.PathValue("route_id"))
+	h.write(w, r, out, err, http.StatusOK)
+}
+
+func (h *modelRouteHandler) getRevision(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.routes.GetModelRouteRevision(r.Context(), scope, r.PathValue("route_id"), r.PathValue("revision_id"))
 	h.write(w, r, out, err, http.StatusOK)
 }
 

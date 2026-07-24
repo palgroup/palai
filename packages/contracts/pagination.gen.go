@@ -1,6 +1,11 @@
 // Code generated from the canonical Pagination schema; DO NOT EDIT.
 package contracts
 
+type ListView struct {
+	Data   []any  `json:"data"`
+	Object string `json:"object"`
+}
+
 type Page struct {
 	Data           []any   `json:"data"`
 	HasMore        bool    `json:"has_more"`
