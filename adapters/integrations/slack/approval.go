@@ -60,6 +60,11 @@ type blockActions struct {
 //   - a decision is bound to the exact operation (the hash), the workspace (team), and the clicker (user);
 //   - a bare/foreign button, a shortcut, or a view_submission authorizes nothing;
 //   - message text ("yes", "approve") never reaches here — it is an event, not an interaction.
+//
+// Contract for the caller: Slack's HTTP interactivity transport sends the JSON as a FORM body —
+// `payload=<urlencoded JSON>`, not a raw JSON body. The receiver must therefore verify the v0 signature over
+// the RAW form body (the exact bytes Slack signed) and THEN url-decode + extract `payload` to pass here —
+// never verify over the extracted JSON, which is not what was signed.
 func MapInteractiveApproval(body []byte) (ApprovalIntent, error) {
 	var p blockActions
 	if err := json.Unmarshal(body, &p); err != nil {

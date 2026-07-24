@@ -257,6 +257,11 @@ func TestEveryTenantTableIsRowLevelSecured(t *testing.T) {
 			t.Fatalf("scan table row: %v", err)
 		}
 		if nonTenantTables[name] {
+			// The allowlist is for genuinely non-tenant tables only; a table carrying organization_id must
+			// never be exempted here (that would silently un-secure a real tenant table).
+			if tenantScoped {
+				t.Errorf("allowlisted table %q is tenant-scoped; remove from nonTenantTables", name)
+			}
 			continue
 		}
 		if !enabled || !forced {
