@@ -6,3 +6,7 @@ input: "an upstream redelivery after a lost ack (the receiver committed but the 
 expect_status: completed
 proof:
   - apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate
+  # Queue-adapter leg (E17 T7): the SAME redelivery-after-lost-ack crux proven via the durable queue
+  # adapter — a crashed consumer's un-acked message redelivers and the append-only idempotency ledger
+  # makes the effect run exactly once (real Postgres; no real broker — SQS/PubSub/Kafka is the operator leg).
+  - apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect

@@ -9,8 +9,9 @@ import (
 // TestOrderedMigrationsIsContiguousVersionOrder proves OrderedMigrations parses every embedded
 // forward migration into a gap-free, version-sorted list carrying the SQL and a non-empty checksum —
 // the per-migration source the boot runner iterates (E15 T1). It also pins the chain head so the
-// preflight/journal invariant is anchored: the head advances to 000035_slack with E17 T1's Slack store
-// (000034_contract_usage_events becomes the penultimate link).
+// preflight/journal invariant is anchored: after E17 wave-1 the head is 000037_queues (E17 T7), with
+// 000036_knowledge (T4) the penultimate link — strict, no gaps (T1 slack=035 → T4 knowledge=036 →
+// T7 queue=037, merged in the fixed order §1).
 func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	migrations := OrderedMigrations()
 	if len(migrations) == 0 {
@@ -39,15 +40,15 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	// E17 T4 knowledge spine is the current chain head (built as 000035 for contiguity; renumbered to
-	// 000036 at merge per the fixed order — see the migration's MERGE NOTE).
+	// E17 T7 queue spine is the current chain head (built as 000037 in its worktree, its final number;
+	// merged after T1 slack=035 and T4 knowledge=036 per the fixed order §1).
 	head := migrations[len(migrations)-1]
-	if head.Version != 36 || head.Name != "knowledge" {
-		t.Fatalf("chain head = %06d_%s, want 000036_knowledge", head.Version, head.Name)
+	if head.Version != 37 || head.Name != "queues" {
+		t.Fatalf("chain head = %06d_%s, want 000037_queues", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 35 || penultimate.Name != "slack" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000035_slack", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 36 || penultimate.Name != "knowledge" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000036_knowledge", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path
