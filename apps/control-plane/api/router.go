@@ -34,7 +34,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// Cancel is naturally idempotent (a canceled terminal is monotonic), so it is not wrapped
 	// with RequireIdempotencyKey; the OpenAPI cancelResponse operation defines no key parameter.
 	mux.HandleFunc("POST /v1/responses/{response_id}/cancel", responses.cancel)
-	mux.HandleFunc("GET /v1/capabilities", capabilities)
+	mux.HandleFunc("GET /v1/capabilities", capabilities(cfg))
 
 	// Repository-binding registration (spec §30.1): a project registers the external repository its
 	// coding sessions attach via the `repository` field. A durable, unkeyed create — nil in tiers that
@@ -266,6 +266,14 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/sessions/{session_id}/commands", sh.command)
 	}
 
+	// The A2A 1.0 server projection (E17 T2, spec §38): the authed message/task lifecycle + extended card
+	// mount under /v1/a2a/ INSIDE the auth middleware, so every A2A operation runs under the bearer scope the
+	// server reads (the authenticated identity governs — §38.6). The public Agent Card mounts separately on
+	// the unauthenticated top mux below. nil in tiers that wire no A2A store.
+	if cfg.a2a != nil {
+		mux.Handle("/v1/a2a/", cfg.a2a)
+	}
+
 	var root http.Handler = mux
 	root = middleware.Auth(verifier)(root)
 	// The §20.12 request-rate limiter sits INSIDE RequestContext (so a shed 429 still carries the
@@ -310,6 +318,14 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// that never touch remote tools.
 	if toolCallbacks != nil {
 		top.Handle("POST /v1/tool-callbacks/{operation_id}", middleware.RequestContext(toolCallbacks))
+	}
+	// The A2A public Agent Card (E17 T2, spec §38.1): a safe published projection carrying no internal detail
+	// (A2A-001), so — like /healthz and the signed inbound receiver — it mounts on the UNAUTHENTICATED top mux
+	// bypassing middleware.Auth (still wrapped in RequestContext for the correlation id). This exact-path route
+	// is more specific than the `/` fallthrough, so it intercepts the card before the authed router; every
+	// other A2A route requires the bearer scope on the authed mux above.
+	if cfg.a2aCard != nil {
+		top.Handle("GET /v1/a2a/interfaces/{interface_id}/agent-card.json", middleware.RequestContext(cfg.a2aCard))
 	}
 	if runner != nil {
 		top.Handle("/v1/runner/", runner)

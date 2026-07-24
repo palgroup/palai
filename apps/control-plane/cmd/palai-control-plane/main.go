@@ -21,6 +21,7 @@ import (
 	// container without /usr/share/zoneinfo (spec §33.1; time.LoadLocation's documented final fallback).
 	_ "time/tzdata"
 
+	"github.com/palgroup/palai/adapters/integrations/a2a"
 	mcpclient "github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/adapters/integrations/webhook"
 	fake "github.com/palgroup/palai/adapters/models/fake"
@@ -32,6 +33,7 @@ import (
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
 	"github.com/palgroup/palai/apps/control-plane/api"
+	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/automation"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
@@ -171,8 +173,9 @@ func main() {
 	// WithKnowledge mounts the knowledge spine (E17 T4): the FTS ingestion/index/retrieval store over the
 	// same spine pool. Unconditional like WithUsage — it needs no external key material, and a stack that
 	// serves no knowledge simply gets no traffic on the routes (discovery reports "knowledge":"preview").
+	edge := edgeLimitsFromEnv()
 	routerOpts := []api.RouterOption{
-		api.WithEdgeLimits(edgeLimitsFromEnv()),
+		api.WithEdgeLimits(edge),
 		api.WithUsage(metering.New(repo.Spine().Pool())),
 		api.WithModelRoutes(repo),
 		api.WithKnowledge(knowledge.New(repo.Spine().Pool())),
@@ -180,6 +183,18 @@ func main() {
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))
 	}
+	// The A2A 1.0 server projection (E17 T2, spec §38): the DB-backed interface + task store over the same
+	// spine pool, wired behind the api.Admitter so an inbound A2A message admits through the SAME §20.9 path a
+	// POST /v1/responses takes (no invented run identity, §34.1) under the SAME per-project caps. Mounting it
+	// is what makes discovery advertise `a2a` (capabilities derives the tier from the live mount, never a
+	// static claim — §2). PALAI_PUBLIC_BASE_URL is the public origin the Agent Card advertises its exact
+	// interface URLs under (empty ⇒ relative). Push DELIVERY and inbound file ingest stay unwired honest
+	// ceilings (§5/§6): the card advertises push only when a Pusher exists, so it reads false here.
+	a2aStore := a2a.NewStore(repo.Spine().Pool(), middleware.NewID)
+	a2aServer := api.NewA2AServer(repo, a2aStore, a2aStore,
+		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns},
+		os.Getenv("PALAI_PUBLIC_BASE_URL"))
+	routerOpts = append(routerOpts, api.WithA2A(a2aServer, a2aServer.PublicCardHandler()))
 	// The Prometheus /metrics exposition (E14 T6): installation-aggregate operational series over the
 	// same spine pool, mounted unauthenticated on the internal top mux beside /healthz. The runner-session
 	// gauge reads the gateway (nil in assignment-only tiers, reported as 0); the object-store up-probe reads

@@ -134,6 +134,14 @@ run_postgres() {
       go test -tags=component -count=1 -v ./apps/control-plane/internal/knowledge
     status=$?
   fi
+  # The E17 Task 2 A2A wiring drives this same real spine: an A2A message:send through the production
+  # WithA2A Admitter (NewA2AServer's a2aRuns over store.Store) births a genuine run under the auth scope
+  # and resolves through the real GetResponse — the real-Admitter admission the review requires.
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v -run 'TestA2ARealAdmitterBirthsRun' ./apps/control-plane/internal/store
+    status=$?
+  fi
   set -e
   if test "$status" -ne 0; then
     docker logs "$container" >&2 || true

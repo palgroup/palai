@@ -1,0 +1,11 @@
+id: A2A-001
+name: agent-card-projects-only-safe-fields-and-advertises-exact-version-auth
+proof_class: component-real
+provider: fake
+input: "The A2A Agent Card is a projection of a PUBLISHED AgentRevision's SAFE fields only — the provider model name, the internal tool inventory, the system prompt, and the tenant identity NEVER appear on the public OR the authenticated extended card (A2A-001). The card advertises the EXACT protocol version (1.0), binding (HTTP+JSON), and auth scheme (bearer) it actually serves, and is revisioned + cacheable (ETag). LOCAL proof: a RED-first unit test drives the projection with a revision carrying distinctive sensitive markers and asserts neither rendered card echoes them; the loopback HTTP client asserts the same over the wire; the component-real DB test proves the stored interface + public resolve leak nothing and are tenant-isolated (RLS). §6 operator leg: a FOREIGN A2A generic client verifying the card is interop (loopback != interop) — a2a stays preview. JWS/JCS card signing is a v0-OUT hardening item, not claimed here."
+expect_status: completed
+proof:
+  - adapters/integrations/a2a/card_test.go:TestAgentCardNeverLeaksInternalDetail
+  - adapters/integrations/a2a/conformance_test.go:TestA2AConformance_PublicCardNeverLeaksAndAdvertisesExactVersion
+  - adapters/integrations/a2a/conformance_test.go:TestA2AConformance_ExtendedCardRequiresAuth
+  - tests/component/postgres/a2a_store_test.go:TestA2AStoreRLSAndCanonicalRefInvariant

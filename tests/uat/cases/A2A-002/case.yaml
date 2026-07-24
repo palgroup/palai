@@ -1,0 +1,15 @@
+id: A2A-002
+name: send-stream-map-to-canonical-run-with-terminal-consistency-and-governed-identity
+proof_class: e2e-deterministic
+provider: fake
+input: "An inbound A2A message maps to a canonical run through the SAME admission seam the platform already owns — the adapter invents NO run identity (§34.1). message:send returns a DIRECT Message only for a genuinely-complete non-durable response, otherwise a Task; the A2A task/context id is an EXTERNAL ref stored BESIDE the canonical run/session id and NEVER replaces it (§38.2). message:stream emits status/artifact updates with TERMINAL CONSISTENCY — the final frame carries the terminal state with final=true and matches a subsequent tasks/{id} GET (A2A-002). Identity is GOVERNED by the authenticated bearer scope: a forged org/project in A2A message metadata is IGNORED (§38.6). LOCAL proof: a generic loopback HTTP client drives a real A2A 1.0 exchange (send -> retrieve -> subscribe) against the server with in-memory fakes; the external!=canonical invariant is also proven at the DB. §6 operator leg: a FOREIGN A2A peer round-trip (loopback != interop) — a2a stays preview."
+expect_status: completed
+proof:
+  - adapters/integrations/a2a/card_test.go:TestGovernIdentityIgnoresForgedMetadata
+  - adapters/integrations/a2a/conformance_test.go:TestA2AConformance_SendReturnsTaskWithExternalCanonicalSeparation
+  - adapters/integrations/a2a/conformance_test.go:TestA2AConformance_ForgedMetadataIdentityIsIgnored
+  - adapters/integrations/a2a/conformance_test.go:TestA2AConformance_SendReturnsDirectMessageForCompleteNonDurable
+  - adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InboundFilePartIsIngested
+  - adapters/integrations/a2a/conformance_test.go:TestA2AConformance_StreamTerminalConsistency
+  - adapters/integrations/a2a/conformance_test.go:TestA2ALoopbackExchange
+  - tests/component/postgres/a2a_store_test.go:TestA2AStoreRLSAndCanonicalRefInvariant
