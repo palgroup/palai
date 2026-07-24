@@ -113,7 +113,7 @@ func (a Adapter) consume(req modelbroker.Request, r io.Reader, names map[string]
 	res := modelbroker.Result{ModelRequestID: req.ModelRequestID, Attempts: 1}
 	var output strings.Builder
 	tools := newToolAccumulator()
-	var inputTokens, outputTokens int
+	var inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineBytes)
@@ -143,6 +143,11 @@ func (a Adapter) consume(req modelbroker.Request, r io.Reader, names map[string]
 				if ev.Message.Usage != nil {
 					inputTokens = ev.Message.Usage.InputTokens
 					outputTokens = ev.Message.Usage.OutputTokens
+					// Anthropic reports cache-read and cache-creation (write) SEPARATELY from
+					// input/output, so they fold into the canonical cache counters without
+					// disturbing the base usage invariant (MOD-010).
+					cacheReadTokens = ev.Message.Usage.CacheReadInputTokens
+					cacheWriteTokens = ev.Message.Usage.CacheCreationInputTokens
 				}
 			}
 		case "content_block_start":
@@ -202,7 +207,10 @@ func (a Adapter) consume(req modelbroker.Request, r io.Reader, names map[string]
 	res.ToolCalls = tools.result()
 	// Anthropic reports input/output separately and never a total; the canonical
 	// contract carries a consistent total (Result.Validate), so derive it.
-	res.Usage = contracts.Usage{InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens}
+	res.Usage = contracts.Usage{
+		InputTokens: inputTokens, OutputTokens: outputTokens, TotalTokens: inputTokens + outputTokens,
+		CacheReadTokens: cacheReadTokens, CacheWriteTokens: cacheWriteTokens,
+	}
 	if res.Usage.ToolCalls == 0 {
 		res.Usage.ToolCalls = len(res.ToolCalls)
 	}
@@ -218,8 +226,10 @@ type event struct {
 		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage *struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
 	ContentBlock *struct {

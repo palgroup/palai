@@ -339,6 +339,8 @@ export interface ToolSet {
 }
 
 export interface Usage {
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
   cost?: Record<string, unknown>;
   input_tokens: number;
   output_tokens: number;
