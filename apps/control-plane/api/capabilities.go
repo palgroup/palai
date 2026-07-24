@@ -47,6 +47,11 @@ func capabilities(w http.ResponseWriter, r *http.Request) {
 			// discovery derives it from PALAI_WORKSPACE_ROOT the same way it reads the retention TTL — a
 			// deployment with no coding stack never advertises a capability it cannot serve.
 			"workspaces": workspacesCapability(),
+			// The Slack integration (E17 T1) enters discovery as "preview" and NEVER writes its own tier:
+			// the stable flip belongs to the T11 exit-gate verifier, which recomputes the tier from the
+			// canonical per-case outcomes (a real-workspace external-receipt leg is §6 operator work, so the
+			// local proof — canonical mapping + fake/loopback Slack peer — keeps it preview, not stable).
+			"slack": "preview",
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")

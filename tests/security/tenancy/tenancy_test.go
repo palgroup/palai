@@ -41,6 +41,7 @@ const runtimeRole = "palai_app"
 // silently leaking.
 var nonTenantTables = map[string]bool{
 	"schema_migrations": true,
+	"schema_revisions":  true, // the append-only migration journal (000033) — installation-global, no tenant column
 	"host_quarantine":   true,
 	"session_sequences": true,
 }
