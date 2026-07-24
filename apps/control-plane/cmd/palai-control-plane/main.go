@@ -308,7 +308,8 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			tools.CommitTool(),
 			tools.PushTool(),
 			tools.PullRequestTool(),
-			tools.ResearchFetchTool(), // web-research fetch + citations (E12 T3); code-defined, no registry seed
+			tools.ResearchFetchTool(),                                          // web-research fetch + citations (E12 T3); code-defined, no registry seed
+			tools.KnowledgeRetrievalTool(knowledge.New(repo.Spine().Pool())),   // ACL-first, cited knowledge retrieval (E17 T5); untrusted result, server-derived scope, KB-wide (fail-closed)
 		)
 		// Wire the E12 per-tenant registry lookup: a tool absent from the static set above is resolved
 		// through the run's pinned tool_sets (control_plane echo binder in T2) and runs the SAME fenced
