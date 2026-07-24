@@ -47,12 +47,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "promote REFUSED: read manifest: %v\n", err)
 		os.Exit(1)
 	}
-	if refusals := uat.PromoteGate(raw, *to); len(refusals) > 0 {
+	if refusals := uat.PromoteGateFor(raw, *to); len(refusals) > 0 {
 		fmt.Fprintf(os.Stderr, "promote REFUSED: %s cannot be promoted to %s:\n", *release, *to)
 		for _, r := range refusals {
 			fmt.Fprintln(os.Stderr, "  - "+r.String())
 		}
 		os.Exit(1)
 	}
-	fmt.Printf("promote-gate PASS: %s may be tagged (%s) — verified clean, rollback + restore proof present\n", *release, *to)
+	fmt.Printf("promote-gate PASS: %s may be tagged (%s) — verified clean, the release-family exit proofs present\n", *release, *to)
 }

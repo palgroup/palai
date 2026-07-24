@@ -1,0 +1,9 @@
+id: MOD-012
+name: caller-invalid-errors-never-trip-shared-circuit
+proof_class: unit
+provider: fake
+input: "caller-invalid errors NEVER trip the shared circuit (only upstream failures do, then the circuit sheds and an allowed route fails over) — a single bad caller cannot open the breaker on a shared provider"
+expect_status: completed
+proof:
+  - tests/conformance/models/resilience_conformance_test.go:TestChainCallerInvalidTripsNothingAndFailsOverNowhere
+  - tests/conformance/models/resilience_conformance_test.go:TestChainUpstreamFailuresTripCircuitThenShed

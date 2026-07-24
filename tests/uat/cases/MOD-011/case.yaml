@@ -1,0 +1,9 @@
+id: MOD-011
+name: budget-reservation-settlement-no-overspend
+proof_class: component-real
+provider: fake
+input: "the E13 usage_ledger reservation settles EXACTLY once per run and an exhausted durable budget rejects admission before compute — overspend beyond the documented estimate variance is impossible (a real Postgres ledger; the live ledger-vs-provider-usage reconciliation is the journey tier)"
+expect_status: completed
+proof:
+  - tests/component/postgres/usage_ledger_test.go:TestCommitModelResultSettlesUsageExactlyOnce
+  - tests/component/postgres/usage_ledger_test.go:TestAdmissionRejectsWhenTheDurableBudgetIsExhausted

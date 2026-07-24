@@ -1,0 +1,9 @@
+id: API-014
+name: webhook-signature-rotation-valid-tampered-stale
+proof_class: unit
+provider: fake
+input: "the SDK webhook verify accepts a validly-signed body, accepts either key across a rotation overlap window, and rejects a tampered/stale signature (the API-014 rotation vectors, Go SDK half; the shared corpus signature-verify vectors are the cross-language half)"
+expect_status: completed
+proof:
+  - sdks/go/webhook_test.go:TestVerifyWebhook
+  - sdks/go/webhook_test.go:TestVerifyWebhookRotationOverlap

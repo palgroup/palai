@@ -1,0 +1,8 @@
+id: MOD-005
+name: fallback-before-output-records-new-attempt
+proof_class: unit
+provider: fake
+input: "a fallback triggered BEFORE any output records a new attempt with the correct target + usage (no silent swap); proven deterministically over the broker chain, live cancel/usage consistency is the journey tier"
+expect_status: completed
+proof:
+  - tests/conformance/models/resilience_conformance_test.go:TestChainFailsOverAfterPartialWithHonestAttemptCount

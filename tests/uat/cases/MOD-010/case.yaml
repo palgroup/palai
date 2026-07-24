@@ -1,0 +1,8 @@
+id: MOD-010
+name: provider-cache-counters-fold-into-canonical-usage
+proof_class: unit
+provider: fake
+input: "provider prompt-cache counters (cached-token reads/creations) fold into the canonical Usage with tenant/provider isolation and cost visibility; the counters come from the provider's OWN report (the honest ceiling)"
+expect_status: completed
+proof:
+  - tests/conformance/models/usage_cache_conformance_test.go:TestAdaptersFoldProviderCacheCountersIntoCanonicalUsage

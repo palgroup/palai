@@ -48,3 +48,60 @@ func PromoteGate(raw []byte, target string) []Refusal {
 	}
 	return refusals
 }
+
+// PromoteGateFor dispatches to the release-family promote gate: a bundle carrying E16 SDK-parity claims
+// (three_language_equality / gateway_off) is gated by SDKParityPromoteGate; a bundle carrying E15 upgrade claims
+// is gated by PromoteGate. A bundle with neither is refused — there is no promote policy for it, so the promote
+// command cannot silently pass a release no gate recognizes. This lets one `make promote` entry serve both
+// families without coupling their rules.
+func PromoteGateFor(raw []byte, target string) []Refusal {
+	var m evidenceManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
+	}
+	for _, c := range m.Cases {
+		if c.ThreeLanguageEqualityClaim != "" || c.GatewayOffClaim != "" {
+			return SDKParityPromoteGate(raw, target)
+		}
+	}
+	for _, c := range m.Cases {
+		if c.UpgradeClaim != "" {
+			return PromoteGate(raw, target)
+		}
+	}
+	return []Refusal{{Detail: "no promote policy for this release: it carries neither the E16 SDK-parity nor the E15 upgrade claims a promote gate recognizes"}}
+}
+
+// SDKParityPromoteGate is the mechanical form of the E16 exit-gate sentence (plan §7): a release cannot be
+// promoted unless its bundle carries a COMPLETE ThreeLanguageEqualityProof (the three SDK languages + the CLI
+// decoded one run identically) AND a COMPLETE GatewayOffProof (the direct routes served a real run with the
+// stand-in gateway killed). Absent either, the promote is REFUSED — the two load-bearing exit invariants can
+// never be skipped. A promote BEYOND rc (target=="stable") ALSO awaits the §6 operator legs (a real
+// published-registry release + a real LiteLLM/private-server gateway drill) via an operator_attestation note,
+// never auto-claimed here.
+func SDKParityPromoteGate(raw []byte, target string) []Refusal {
+	var m evidenceManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
+	}
+	hasEquality, hasGatewayOff := false, false
+	for _, c := range m.Cases {
+		if c.ThreeLanguageEqualityClaim != "" && c.ThreeLanguageEqualityProof != nil && c.ThreeLanguageEqualityProof.Complete() {
+			hasEquality = true
+		}
+		if c.GatewayOffClaim != "" && c.GatewayOffProof != nil && c.GatewayOffProof.Complete() {
+			hasGatewayOff = true
+		}
+	}
+	var refusals []Refusal
+	if !hasEquality {
+		refusals = append(refusals, Refusal{Detail: "no COMPLETE ThreeLanguageEqualityProof (the three SDK languages + CLI decoding one run identically) — a release without cross-language parity proof cannot be promoted (plan §7 exit gate)"})
+	}
+	if !hasGatewayOff {
+		refusals = append(refusals, Refusal{Detail: "no COMPLETE GatewayOffProof (the direct routes serving a real run with the stand-in gateway killed) — a release without the gateway-off proof cannot be promoted (plan §7 exit gate)"})
+	}
+	if target == "stable" && (len(m.OperatorAttestation) == 0 || string(m.OperatorAttestation) == "null") {
+		refusals = append(refusals, Refusal{Detail: "promote to stable awaits the §6 operator legs (a real published-registry release + a real LiteLLM/private-server gateway drill); no operator_attestation in the manifest — never auto-claimed (plan §6)"})
+	}
+	return refusals
+}

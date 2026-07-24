@@ -1,0 +1,8 @@
+id: MOD-007
+name: idempotent-replay-serves-stored-effect-without-reexecuting
+proof_class: unit
+provider: fake
+input: "an idempotent replay serves the STORED effect without re-executing the provider call — no blind tool-producing re-run on ambiguous acceptance (reconciliation, not double-spend)"
+expect_status: completed
+proof:
+  - tests/conformance/models/lifecycle_conformance_test.go:TestFakeIdempotentReplayServesStoredEffectWithoutReExecuting

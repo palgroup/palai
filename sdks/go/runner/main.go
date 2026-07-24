@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,6 +41,16 @@ type output struct {
 }
 
 func main() {
+	// E16 T8 live-retrieve mode: when PALAI_LIVE_RESPONSE_ID is set, this runner is the Go SDK's leg of the
+	// four-client parity journey — it retrieves that shared response over the REAL server (base URL + key from
+	// PALAI_BASE_URL/PALAI_API_KEY, the SDK's env defaults) and prints its NORMALIZED projection
+	// {"id","output_text","status"} on stdout, the exact shape the CLI + TS + Python legs emit. The journey
+	// canonical-bytes-diffs the four.
+	if id := os.Getenv("PALAI_LIVE_RESPONSE_ID"); id != "" {
+		liveRetrieve(id)
+		return
+	}
+
 	raw, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		fail(err)
@@ -385,4 +396,35 @@ func stringEq(m map[string]json.RawMessage, key, want string) bool {
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "go-runner: %v\n", err)
 	os.Exit(1)
+}
+
+// liveRetrieve is the Go SDK's parity-journey leg: retrieve one response over the real server and print its
+// normalized {"id","output_text","status"} projection. A GoneError (410 tombstone) prints a gone marker and
+// exits 3, so the journey can assert the TYPED gone surface across the three SDKs. The client reads
+// PALAI_BASE_URL + PALAI_API_KEY from the environment (the SDK defaults).
+func liveRetrieve(id string) {
+	client, err := palai.New()
+	if err != nil {
+		fail(err)
+	}
+	resp, err := client.Responses.Retrieve(context.Background(), id)
+	if err != nil {
+		var apiErr *palai.APIError
+		if errors.As(err, &apiErr) && apiErr.Status == 410 {
+			fmt.Fprintln(os.Stdout, `{"gone":true,"status":410}`)
+			os.Exit(3)
+		}
+		fail(err)
+	}
+	var text strings.Builder
+	for _, item := range resp.Output {
+		if t, ok := item["text"].(string); ok {
+			text.WriteString(t)
+		}
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"id": string(resp.ID), "output_text": text.String(), "status": resp.Status,
+	}); err != nil {
+		fail(err)
+	}
 }

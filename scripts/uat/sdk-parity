@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# SDK-parity + provider-completeness UAT — the E16 EXIT gate (plan §T8, the capstone). One target, a
+# deterministic/evidence CORE (always) + a PROVIDER-gated live journey. The core is Docker-free.
+#
+#   deterministic core (always):
+#     1. tests/uat/sdk-parity — the E16 evidence ANCHOR (the committed sdk-provider-parity-0.1.0 bundle verifies
+#        clean through the shared verifier with every E16 rule active; the cross-language equality digest is
+#        RE-CANONICALIZED from the four clients' raw outputs, and the gateway-off/config, conformance-facet, and
+#        packaging digests are all re-derived — a fabricated value fails) + the anti-fabrication rejection tests +
+#        the catalog gate (API-012..015 + MOD-001..012 materialized, each pointing at an in-tree proof at its real
+#        build tier) + the promote-refusal RED test.
+#     2. tests/conformance/models — the two-provider-family runtime conformance (MOD-001..012, pure Go, no node).
+#     3. tests/conformance/sdk — the shared corpus cross-language equality (API-012; needs node + uv for the TS +
+#        Python runners — a workstation gate).
+#     4. tests/uat (the shared verifier + promote-gate units).
+#     5. evidence-verify RELEASE=sdk-provider-parity-0.1.0 — the committed bundle through the shipped CLI verifier (0/0/0/0).
+#     6. promote.sh sdk-provider-parity-0.1.0 — the mechanical promote gate: rc PASSES (equality + gateway-off
+#        proof present); stable is REFUSED (the §6 operator legs have not run — never auto-claimed).
+#
+#   live tier (PROVIDER=provider-one): TestSDKParityJourney (tests/uat/sdk-parity, //go:build uat) brings up a
+#     real in-process control-plane over a throwaway Postgres and drives journey 63.1: a model connection
+#     provisioned via the T1 API -> a Responses run driven from ALL FOUR clients (TS + Python + Go SDKs + the
+#     palai CLI) whose normalized decodes are asserted EQUAL by ONE mechanical canonical-bytes diff -> a restart
+#     with retained retrieval -> the gateway-off leg (the stand-in openai-compatible proxy is KILLED and the
+#     direct provider-one/provider-two routes keep serving a REAL run) -> real provider-one + provider-two live
+#     smokes. The typed-410 SDK surface is proven DETERMINISTICALLY (the corpus gone-410 + API-015), not in the
+#     journey. It ends in REAL provider runs. It does NOT write
+#     the committed bundle (authored data verified by the core). Credentials load ONLY from .env.local via
+#     `set -a` — never argv, never `set -x`, never the bundle or a commit. Honest ceiling (plan §6): the stand-in
+#     gateway is a local proxy (a real LiteLLM / private-server gateway drill is the §6 operator leg); published
+#     npm/PyPI/Go-proxy releases are E18.
+#
+# set -x must NEVER be enabled in this script: it would echo the sourced secret.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# Core 1 — the E16 anchor + catalog + promote-refusal units (no Docker, no credential).
+go test -count=1 ./tests/uat/sdk-parity/... ./tests/uat
+
+# Core 2 — the two-provider-family runtime conformance (pure Go).
+go test -count=1 ./tests/conformance/models/...
+
+# Core 3 — the shared-corpus cross-language equality (TS + Python + Go runners). Needs node + uv on the
+# workstation; a genuinely node/uv-less env opts out via the harness's documented env flags.
+go test -count=1 ./tests/conformance/sdk/...
+
+# Core 5 — the committed bundle verifies clean through the shipped CLI verifier.
+RELEASE=sdk-provider-parity-0.1.0 scripts/evidence/verify
+
+# Core 6 — the mechanical promote gate: rc passes, stable is refused (the operator legs have not run). Grep the
+# EXACT refusal reason, not a bare non-zero exit, so a promote that failed for an UNRELATED reason is not
+# mistaken for the operator-leg refusal.
+RELEASE=sdk-provider-parity-0.1.0 scripts/release/promote.sh rc
+stable_out="$(RELEASE=sdk-provider-parity-0.1.0 scripts/release/promote.sh stable 2>&1 || true)"
+if ! printf '%s' "$stable_out" | grep -q "§6 operator legs"; then
+  echo "promote gate did not refuse a stable promote for the operator-leg reason; got:" >&2
+  printf '%s\n' "$stable_out" >&2
+  exit 1
+fi
+echo "promote gate: rc PASS, stable correctly REFUSED (§6 operator legs pending — not claimed)" >&2
+
+# Live tier — PROVIDER=provider-one runs journey 63.1 ending in REAL provider runs. The credential loads from the
+# git-ignored .env.local into the go test child's environment (set -a, never set -x / argv / log). Without
+# PROVIDER the journey skip-guards itself, so this target is green in CI without a key.
+if [ "${PROVIDER:-fake}" = "provider-one" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "OPENAI_API_KEY is unset; the SDK-parity journey's live run needs it in .env.local" >&2
+    exit 1
+  fi
+  export PALAI_UAT_PROVIDER=provider-one
+  echo "uat-sdk-parity: live journey TestSDKParityJourney (four-client parity + gateway-off, ends in real provider runs)" >&2
+  exec go test -tags uat -count=1 -timeout 45m -run TestSDKParityJourney ./tests/uat/sdk-parity -v
+fi

@@ -1,0 +1,8 @@
+id: MOD-006
+name: partial-then-fallback-stays-visible-no-hidden-retry
+proof_class: unit
+provider: fake
+input: "after a partial stream, a fallback keeps the partial VISIBLE — no hidden/seamless retry that swallows emitted output (the truncated-stream visible-partial invariant)"
+expect_status: completed
+proof:
+  - tests/conformance/models/lifecycle_conformance_test.go:TestWireAdaptersSurfaceTruncatedStreamAsVisiblePartial

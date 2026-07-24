@@ -122,18 +122,28 @@ func supportBundle(args []string) error {
 }
 
 func response(args []string) error {
-	if len(args) == 0 || args[0] != "create" {
-		return errors.New("usage: palai response create --input <text>")
+	if len(args) == 0 {
+		return errors.New("usage: palai response create --input <text> | palai response get <id>")
 	}
-	fs := flag.NewFlagSet("response create", flag.ContinueOnError)
-	input := fs.String("input", "", "response input text")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
+	switch args[0] {
+	case "create":
+		fs := flag.NewFlagSet("response create", flag.ContinueOnError)
+		input := fs.String("input", "", "response input text")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *input == "" {
+			return errors.New("response create requires --input <text>")
+		}
+		return stack.CreateResponse(*input)
+	case "get":
+		if len(args) < 2 || args[1] == "" {
+			return errors.New("usage: palai response get <id>")
+		}
+		return stack.GetResponse(args[1])
+	default:
+		return errors.New("usage: palai response create --input <text> | palai response get <id>")
 	}
-	if *input == "" {
-		return errors.New("response create requires --input <text>")
-	}
-	return stack.CreateResponse(*input)
 }
 
 // backup drives the installation-level backup: a consistent Postgres dump + object-store copy +

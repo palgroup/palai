@@ -1,0 +1,8 @@
+id: MOD-004
+name: capability-hard-filter-never-relaxes-before-admission
+proof_class: unit
+provider: openai-compatible
+input: "a hard capability/price requirement is a PRE-admission filter that never relaxes — a run needing an unsupported capability is rejected before compute, a text-only run on the same endpoint is served (the capability record consumed by routing, T5+T6 half)"
+expect_status: completed
+proof:
+  - tests/conformance/models/capability_filter_conformance_test.go:TestCapabilityHardFilterRejectsUnsupportedBeforeAdmission
