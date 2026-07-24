@@ -434,6 +434,21 @@ var migrationUp38 string
 //go:embed migrations/000038_a2a.down.sql
 var migrationDown38 string
 
+// 000039 adds the A2A 1.0 CLIENT registration table (E17 Task 3, spec §38.5): a2a_remote_agents — one row per
+// registered OUTBOUND remote A2A agent (an external child-run executor or tool-like specialist) pinning the
+// trust envelope the client enforces: card identity/version, endpoint, the auth Connection secret_ref HANDLE
+// (the remote connection's OWN credential, never the parent's — A2A-005/SUB-007), modality + extension-URI
+// allowlists, data/cost policy, and the request timeout. It carries organization_id + project_id, so it
+// asserts its own project-aware tenant policy (M3 born-secured) and its own palai_app grant. It references
+// projects (000001), so it opens from the tip of the chain (after 000038 a2a). This is the FINAL number of the
+// E17 chain in this worktree.
+//
+//go:embed migrations/000039_a2a_remote_agents.up.sql
+var migrationUp39 string
+
+//go:embed migrations/000039_a2a_remote_agents.down.sql
+var migrationDown39 string
+
 //go:embed queries/a2a.sql
 var a2aSQL string
 
@@ -510,13 +525,13 @@ var knowledgeSQL string
 // (E11 Task 4 webhooks + events cursor rider) land in parallel and interleave here at merge; 000021 (E11
 // Task 2 triggers) opens from the tip of both; 000022 (E11 Task 3 schedules) opens from the tip of 000021.
 func MigrationUp() string {
-	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp17 + "\n" + migrationUp18 + "\n" + migrationUp19 + "\n" + migrationUp20 + "\n" + migrationUp21 + "\n" + migrationUp22 + "\n" + migrationUp23 + "\n" + migrationUp24 + "\n" + migrationUp25 + "\n" + migrationUp26 + "\n" + migrationUp27 + "\n" + migrationUp28 + "\n" + migrationUp29 + "\n" + migrationUp30 + "\n" + migrationUp31 + "\n" + migrationUp32 + "\n" + migrationUp33 + "\n" + migrationUp34 + "\n" + migrationUp35 + "\n" + migrationUp36 + "\n" + migrationUp37 + "\n" + migrationUp38
+	return migrationUp + "\n" + migrationUp2 + "\n" + migrationUp3 + "\n" + migrationUp4 + "\n" + migrationUp5 + "\n" + migrationUp6 + "\n" + migrationUp7 + "\n" + migrationUp8 + "\n" + migrationUp9 + "\n" + migrationUp10 + "\n" + migrationUp11 + "\n" + migrationUp12 + "\n" + migrationUp13 + "\n" + migrationUp14 + "\n" + migrationUp15 + "\n" + migrationUp16 + "\n" + migrationUp17 + "\n" + migrationUp18 + "\n" + migrationUp19 + "\n" + migrationUp20 + "\n" + migrationUp21 + "\n" + migrationUp22 + "\n" + migrationUp23 + "\n" + migrationUp24 + "\n" + migrationUp25 + "\n" + migrationUp26 + "\n" + migrationUp27 + "\n" + migrationUp28 + "\n" + migrationUp29 + "\n" + migrationUp30 + "\n" + migrationUp31 + "\n" + migrationUp32 + "\n" + migrationUp33 + "\n" + migrationUp34 + "\n" + migrationUp35 + "\n" + migrationUp36 + "\n" + migrationUp37 + "\n" + migrationUp38 + "\n" + migrationUp39
 }
 
 // MigrationDown reverses MigrationUp in the opposite order: each migration drops its added
 // objects before the earlier one drops the tables that carried them.
 func MigrationDown() string {
-	return migrationDown38 + "\n" + migrationDown37 + "\n" + migrationDown36 + "\n" + migrationDown35 + "\n" + migrationDown34 + "\n" + migrationDown33 + "\n" + migrationDown32 + "\n" + migrationDown31 + "\n" + migrationDown30 + "\n" + migrationDown29 + "\n" + migrationDown28 + "\n" + migrationDown27 + "\n" + migrationDown26 + "\n" + migrationDown25 + "\n" + migrationDown24 + "\n" + migrationDown23 + "\n" + migrationDown22 + "\n" + migrationDown21 + "\n" + migrationDown20 + "\n" + migrationDown19 + "\n" + migrationDown18 + "\n" + migrationDown17 + "\n" + migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
+	return migrationDown39 + "\n" + migrationDown38 + "\n" + migrationDown37 + "\n" + migrationDown36 + "\n" + migrationDown35 + "\n" + migrationDown34 + "\n" + migrationDown33 + "\n" + migrationDown32 + "\n" + migrationDown31 + "\n" + migrationDown30 + "\n" + migrationDown29 + "\n" + migrationDown28 + "\n" + migrationDown27 + "\n" + migrationDown26 + "\n" + migrationDown25 + "\n" + migrationDown24 + "\n" + migrationDown23 + "\n" + migrationDown22 + "\n" + migrationDown21 + "\n" + migrationDown20 + "\n" + migrationDown19 + "\n" + migrationDown18 + "\n" + migrationDown17 + "\n" + migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
 var namedQueries = parseNamedQueries(usageSQL, agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, provisioningSQL, secretsSQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL, triggersSQL, schedulesSQL, toolsSQL, remoteToolsSQL, mcpSQL, skillsSQL, hooksSQL, modelRoutesSQL, metricsSQL, slackSQL, knowledgeSQL, queuesSQL, a2aSQL)

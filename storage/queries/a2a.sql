@@ -85,3 +85,34 @@ LIMIT $4;
 UPDATE a2a_task_refs
 SET push_configs = $5, updated_at = clock_timestamp()
 WHERE interface_id = $1 AND a2a_task_id = $2 AND organization_id = $3 AND project_id = $4;
+
+-- A2A 1.0 CLIENT registration (migration 000039, E17 Task 3, spec §38.5). a2a_remote_agents is the registered
+-- OUTBOUND remote agent: the trust envelope the client enforces on every dial. auth_connection_ref is a
+-- secret_ref HANDLE (the remote connection's OWN credential, never the parent's — A2A-005/SUB-007); the value
+-- is redeemed at call time, never stored or read as a bearer here. Every query is tenant-scoped (RLS + the
+-- org/project predicate as defence in depth) — there is NO system-scoped read: a remote agent is dialed only
+-- within the tenant that registered it.
+
+-- name: InsertA2ARemoteAgent
+INSERT INTO a2a_remote_agents (
+    id, organization_id, project_id, name, card_url, endpoint_url, protocol_version,
+    auth_connection_ref, allowed_input_modes, allowed_output_modes, allowed_extension_uris,
+    data_policy, max_cost_cents, timeout_ms, max_output_bytes, enabled)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16);
+
+-- GetA2ARemoteAgent resolves a registered remote agent within the authenticated scope. RLS confines the row;
+-- the org/project predicate is defence in depth. A foreign scope finds nothing (404, no existence oracle).
+-- name: GetA2ARemoteAgent
+SELECT id, organization_id, project_id, name, card_url, endpoint_url, protocol_version,
+       auth_connection_ref, allowed_input_modes, allowed_output_modes, allowed_extension_uris,
+       data_policy, max_cost_cents, timeout_ms, max_output_bytes, enabled
+FROM a2a_remote_agents
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- ListA2ARemoteAgents pages a project's registered remote agents newest-first (admin ListView envelope).
+-- name: ListA2ARemoteAgents
+SELECT id, name, card_url, endpoint_url, protocol_version, enabled, created_at
+FROM a2a_remote_agents
+WHERE organization_id = $1 AND project_id = $2
+ORDER BY created_at DESC, id DESC
+LIMIT $3;

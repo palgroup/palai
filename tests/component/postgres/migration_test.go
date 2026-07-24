@@ -61,6 +61,9 @@ var allTables = []string{
 	// The E17 T2 A2A server-projection tables (000038): the published Agent Card projection and the
 	// external A2A task/context <-> canonical run/session bridge.
 	"a2a_interfaces", "a2a_task_refs",
+	// The E17 T3 A2A client-registration table (000039): a registered outbound remote A2A agent's trust
+	// envelope (card/endpoint, negotiated version, auth secret_ref handle, allowlists, timeout pins).
+	"a2a_remote_agents",
 	"schema_migrations",
 }
 
