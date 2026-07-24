@@ -1,0 +1,10 @@
+id: UI-001
+name: console-accessibility-axe-clean-and-keyboard-operable-manual-screenreader-is-operator-leg
+proof_class: e2e-deterministic
+provider: fake
+input: "The open-core console is accessible (§47.1/§47.5, UI-001). The AUTOMATED proof (this case's ceiling) is playwright + axe-core against the built console over a deterministic FAKE /v1 upstream: axe-core reports ZERO WCAG 2 A/AA violations on the admin surface AND on the live-run surface after a completed run (approval panel, lane-separated timeline, recovery, usage, artifacts all rendered); keyboard navigation reaches the visible skip link as the FIRST Tab stop and genuinely Tabs through to operate the core run->approve->terminal flow with no mouse; status is conveyed by a glyph + word, never color alone. What the automated proof COVERS: axe rule violations, keyboard reachability/operability of the core flow, skip-link-first, and status-not-color-only. What it does NOT cover (the §6 operator leg 8, explicitly): a manual VoiceOver/screen-reader pass over a DEPLOYED console — that is real-assistive-tech work above this automated ceiling and is why console stays a stable CANDIDATE, flipped only by the T11 exit gate."
+expect_status: completed
+proof:
+  - apps/web-console/tests/a11y.spec.ts:axe-core reports zero violations on the admin surface
+  - apps/web-console/tests/a11y.spec.ts:axe-core reports zero violations on the live-run surface after a completed run
+  - apps/web-console/tests/a11y.spec.ts:keyboard navigation skip link is the first stop and the run to approve flow works with no mouse
