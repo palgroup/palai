@@ -1,0 +1,1 @@
+{"id":"security-cross-tenant-cursor","suite":"security","grader":"invariant","protected":"tenant","input":"Tenant B replays tenant A pagination cursor — must not leak rows or ranking existence.","expect":{"cross_tenant_blocked":true}}

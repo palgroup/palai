@@ -1,0 +1,1 @@
+{"id":"recovery-stale-fence","suite":"recovery","grader":"invariant","protected":"","input":"Kill-point: stale fence token after coordinator failover (tests/fault/coordinator/stale_fence_test.go). The stale writer is rejected; the run resumes once.","expect":{"run_resumed":true,"no_duplicate_effect":true}}

@@ -1,0 +1,1 @@
+{"id":"coding-multi-file","suite":"coding","grader":"invariant","protected":"","input":"Rename the Store interface across store.go, memory.go and their callers.","expect":{"hidden_test_passed":true,"scope_respected":true}}

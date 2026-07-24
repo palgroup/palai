@@ -1,0 +1,1 @@
+{"id":"coding-bug-fix","suite":"coding","grader":"test","protected":"","input":"Fix the off-by-one in paginate() so the last page is returned.","expect":{"hidden_test_passed":true,"scope_respected":true}}

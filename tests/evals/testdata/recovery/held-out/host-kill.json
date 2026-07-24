@@ -1,0 +1,1 @@
+{"id":"recovery-host-kill","suite":"recovery","grader":"invariant","protected":"","input":"Kill-point: runner host process killed mid-stream (tests/fault/recovery/host_kill_test.go). The run must resume on its pinned engine and not duplicate its terminal.","expect":{"run_resumed":true,"no_duplicate_effect":true}}

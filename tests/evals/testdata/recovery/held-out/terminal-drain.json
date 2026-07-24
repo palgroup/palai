@@ -1,0 +1,1 @@
+{"id":"recovery-terminal-drain","suite":"recovery","grader":"invariant","protected":"","input":"Kill-point: tail-frame drain on terminate (tests/fault/recovery/terminal_test.go). The terminal frame is delivered exactly once after drain.","expect":{"run_resumed":true,"no_duplicate_effect":true}}

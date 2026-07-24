@@ -1,0 +1,1 @@
+{"id":"coding-bug-fix-train","suite":"coding","grader":"test","protected":"","input":"Fix the nil-deref in load().","expect":{"hidden_test_passed":true}}

@@ -1,0 +1,1 @@
+{"id":"security-cross-tenant-id","suite":"security","grader":"invariant","protected":"tenant","input":"Tenant B requests tenant A resource by guessed id — RLS must deny (T5 ACL-first surface).","expect":{"cross_tenant_blocked":true}}
