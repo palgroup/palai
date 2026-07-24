@@ -84,9 +84,13 @@ func TestIntegrationBenchmark(t *testing.T) {
 			})
 		}
 	}
-	// The benchmark must genuinely exercise the adapters, not skip its way to green.
-	if covered == 0 {
-		t.Fatal("no benchmark cell asserted anything — every cell skipped")
+	// The benchmark must genuinely exercise the adapters, not skip its way to green. The skips are
+	// compile-time hardcoded (queue/attachment + a2a/rate-limit), so the covered count is EXACT: 18 cells − 2
+	// skips = 16. Pinning it exactly catches a silent skip regression (a cell that starts skipping instead of
+	// asserting) that a `covered == 0` guard would wave through at 1/16.
+	const wantCovered = 16 // 6 scenarios × 3 adapters − 2 compile-time N/A cells
+	if covered != wantCovered {
+		t.Fatalf("benchmark covered %d cells; want exactly %d (18 − 2 compile-time skips) — a silent skip regression", covered, wantCovered)
 	}
 }
 

@@ -155,7 +155,10 @@ func (d DatasetRevision) Digest() string {
 
 // ValidateDataset enforces the §57.6 grader-priority rule at load time: a protected case (destructive /
 // secret / tenant / protocol) may NOT be graded SOLELY by a model-judge — a calibrated judge can never be
-// the gate for those classes. A malformed fixture (missing id/suite/grader/expect) is also rejected.
+// the gate for those classes. The rule is derived from the CASE, not just the declared field, so a security
+// case (security suite or a security-signal expectation) with protected:"" is caught too. It also rejects a
+// VACUOUS expectation (a followed_injection/secret_leaked assertion whose triggering input is absent, so its
+// regression is undetectable) and a malformed fixture (missing id/suite/grader/expect).
 func ValidateDataset(d DatasetRevision) error {
 	for _, c := range d.Cases {
 		if c.ID == "" || c.Suite == "" || c.Grader == "" || len(c.Expect) == 0 {
@@ -163,6 +166,22 @@ func ValidateDataset(d DatasetRevision) error {
 		}
 		if c.Protected != NotProtected && c.Grader == GradeModelJudge {
 			return fmt.Errorf("eval fixture %q is a protected class (%s) graded SOLELY by model-judge — §57.6 forbids a model-judge as the sole gate for destructive-safety/secret/tenant/protocol", c.ID, c.Protected)
+		}
+		// §57.6 derived from the CASE, not just the declared field: a case the harness already knows is a
+		// security case (security suite OR a security-signal expectation) may not be graded solely by a
+		// model-judge, even with protected:"". Otherwise a real judge (E18) could false-pass the sole gate for
+		// a secret/tenant/protocol case.
+		if c.Grader == GradeModelJudge && c.isSecurityCase() {
+			return fmt.Errorf("eval fixture %q is a security case (suite=%q or expects a security signal) graded SOLELY by model-judge — §57.6 forbids a model-judge as the sole gate for a security-class case, whether or not `protected` is declared", c.ID, c.Suite)
+		}
+		// An expectation must be REACHABLE: the signal it asserts on must have its triggering input present,
+		// or the regression it guards can never fire under either policy (a silently toothless case). A typo
+		// that expects followed_injection with no injection, or secret_leaked with no secret, is rejected.
+		if _, ok := c.Expect["followed_injection"]; ok && c.Injected == "" {
+			return fmt.Errorf("eval fixture %q expects `followed_injection` but dangles no injected instruction (injected is empty) — the expectation is vacuous (unreachable under both policies), so its regression is undetectable", c.ID)
+		}
+		if _, ok := c.Expect["secret_leaked"]; ok && !c.HasSecret {
+			return fmt.Errorf("eval fixture %q expects `secret_leaked` but sets no secret (has_secret is false) — the expectation is vacuous, so its regression is undetectable", c.ID)
 		}
 	}
 	return nil
