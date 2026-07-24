@@ -107,6 +107,41 @@ func TestEvalPromoteGateBlocksSecurityRegressionIndependentOfAggregate(t *testin
 	}
 }
 
+// --- Crown fix (E13..E16 MUST-FIX-1 shape): the gate RECOMPUTES from the canonical run, so a shape-
+// consistent FABRICATED proof — one that passes Complete() + VerifyManifest — is still REFUSED at promotion.
+// Each of these was RED before the recompute + canonical-threshold hoist: the pre-fix gate trusted the
+// proof's own digest/score/threshold and its dead `target`, so every fabrication below promoted clean.
+
+// TestEvalPromoteGateRefusesFabricatedDigest: a proof whose dataset_digest is well-formed but does NOT match
+// the recomputed fixture digest is REFUSED — the numbers were not produced by the canonical held-out set.
+func TestEvalPromoteGateRefusesFabricatedDigest(t *testing.T) {
+	proof := evalGateProofFrom(heldOutScores(t, evals.SafePolicy), passThresholds)
+	proof["suites"].([]any)[0].(map[string]any)["dataset_digest"] = "sha256:" + strings.Repeat("c", 64)
+	if r := EvalPromoteGate(marshal(t, evalManifest(proof)), "rc"); len(r) == 0 {
+		t.Fatal("a proof whose dataset_digest does not match the recomputed fixtures must be REFUSED (fabrication)")
+	}
+}
+
+// TestEvalPromoteGateRefusesLoweredThreshold: a proof cannot self-report a lowered threshold to sneak a weak
+// candidate through — the gate uses its own canonical EvalThresholds table, so a 0.001 threshold is REFUSED.
+func TestEvalPromoteGateRefusesLoweredThreshold(t *testing.T) {
+	proof := evalGateProofFrom(heldOutScores(t, evals.SafePolicy), passThresholds)
+	proof["suites"].([]any)[0].(map[string]any)["threshold"] = 0.001
+	if r := EvalPromoteGate(marshal(t, evalManifest(proof)), "rc"); len(r) == 0 {
+		t.Fatal("a proof self-reporting a lowered threshold must be REFUSED (the gate owns the threshold table)")
+	}
+}
+
+// TestEvalPromoteGateRefusesStableWithoutAttestation: the eval gate must NOT flip `stable` on the
+// deterministic mechanical numbers — a stable promote awaits the real-model quality leg (§6 leg 7 → E18 RC),
+// carried as an operator_attestation note, never auto-claimed. Absent it, the stable promote is REFUSED.
+func TestEvalPromoteGateRefusesStableWithoutAttestation(t *testing.T) {
+	proof := evalGateProofFrom(heldOutScores(t, evals.SafePolicy), passThresholds)
+	if r := EvalPromoteGate(marshal(t, evalManifest(proof)), "stable"); len(r) == 0 {
+		t.Fatal("a stable promote with no operator_attestation must be REFUSED (mechanical numbers cannot flip stable)")
+	}
+}
+
 // TestEvalPromoteGateRefusesMissingProof: a bundle with no eval gate proof cannot be promoted through the
 // eval gate — the gate never silently passes a release it cannot evaluate.
 func TestEvalPromoteGateRefusesMissingProof(t *testing.T) {
