@@ -8,9 +8,9 @@ import (
 
 // TestOrderedMigrationsIsContiguousVersionOrder proves OrderedMigrations parses every embedded
 // forward migration into a gap-free, version-sorted list carrying the SQL and a non-empty checksum —
-// the per-migration source the boot runner iterates (E15 T1). It also pins that the journal (000033)
-// and the usage_events contract (000034) are the last two links, so the chain head the preflight
-// enforces and the journal records is 000034.
+// the per-migration source the boot runner iterates (E15 T1). It also pins the chain head so the
+// preflight/journal invariant is anchored: the head advances to 000035_slack with E17 T1's Slack store
+// (000034_contract_usage_events becomes the penultimate link).
 func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	migrations := OrderedMigrations()
 	if len(migrations) == 0 {
@@ -40,12 +40,12 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	}
 
 	head := migrations[len(migrations)-1]
-	if head.Version != 34 || head.Name != "contract_usage_events" {
-		t.Fatalf("chain head = %06d_%s, want 000034_contract_usage_events", head.Version, head.Name)
+	if head.Version != 35 || head.Name != "slack" {
+		t.Fatalf("chain head = %06d_%s, want 000035_slack", head.Version, head.Name)
 	}
-	journal := migrations[len(migrations)-2]
-	if journal.Version != 33 || journal.Name != "migration_journal" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000033_migration_journal", journal.Version, journal.Name)
+	penultimate := migrations[len(migrations)-2]
+	if penultimate.Version != 34 || penultimate.Name != "contract_usage_events" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000034_contract_usage_events", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

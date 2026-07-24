@@ -1,0 +1,9 @@
+id: SLK-002
+name: redelivered-event-id-runs-the-effect-once
+proof_class: unit
+provider: fake
+input: "a redelivered Slack event (X-Slack-Retry-Num set, SAME event_id) maps to the identical canonical dedupe key, so the effect runs ONCE — no parallel Slack dedupe is invented; the durable collapse is the canonical source-dedupe unique index the webhook seam already proves (AUT-001/AUT-009, component-real). LOCAL proof here: the identity-stable mapping unit test (a retry yields the same source_event_id)."
+expect_status: completed
+proof:
+  - adapters/integrations/slack/inbound_test.go:TestMapEventRedeliveryIsIdentityStable
+  - apps/control-plane/internal/automation/dedupe_component_test.go:TestDuplicateDeliveryLinksOriginalSingleAction

@@ -1,0 +1,9 @@
+id: SLK-001
+name: two-transports-one-canonical-identity-ack-before-work
+proof_class: unit
+provider: fake
+input: "Events API HTTP callback and Socket Mode WebSocket both normalize to ONE canonical identity (source=slack, team_id, event_id) — the transport switch never changes correlation; the 3-second ack's durable-insert-before-ack + dedupe-commit is the REUSED canonical automation seam (AUT-009), not a Slack-specific path. LOCAL proof: the unit mapping over fake Slack peer frames (Events API + Socket Mode). The real-workspace ack-timing external receipt is the §6 operator leg (slack stays preview)."
+expect_status: completed
+proof:
+  - adapters/integrations/slack/inbound_test.go:TestMapEventNormalizesToCanonicalIdentity
+  - adapters/integrations/slack/inbound_test.go:TestUnwrapSocketFrameFeedsTheSameMapping

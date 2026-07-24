@@ -1,0 +1,10 @@
+id: SLK-004
+name: unmapped-user-is-a-constrained-actor-cannot-approve
+proof_class: unit
+provider: fake
+input: "an unmapped/unauthorized Slack user is a constrained integration actor that cannot approve, change the model, or inject content. LOCAL proof (T1): the approval mapping carries the clicking user + workspace so the control-plane allow-list check (slack_connections.allowed_users, stored + RLS-scoped in the component test) can reject a non-mapped approver, AND a decision can ONLY come from a signed minted button — never from message text — so an unauthorized user's chat cannot authorize anything. HONEST CEILING: the full constrained-actor ENFORCEMENT wiring (rejecting an unmapped approver at the command boundary) is completed in the T11 Slack journey; T1 proves the carried identity + the button-only decision + the stored allow-list."
+expect_status: rejected
+proof:
+  - adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace
+  - adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse
+  - apps/control-plane/internal/extensions/slack_component_test.go:TestSlackConnectionCreateReadRLS

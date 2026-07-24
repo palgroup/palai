@@ -1,0 +1,8 @@
+id: SLK-005
+name: edit-is-correction-delete-is-tombstone-file-is-scoped
+proof_class: unit
+provider: fake
+input: "a message edit maps to a correction (it supersedes, not a new turn), a delete maps to a tombstone (the prior content is retracted), and a file share is classified for a scoped fetch. LOCAL proof (T1): the (type, subtype) classification unit test. HONEST CEILING: the file leg's scoped fetch + scan + artifact + token-discard reuses the existing E09 artifact/scan seam and is materialized in the T11 Slack journey; T1 pins the classification the pipeline branches on."
+expect_status: completed
+proof:
+  - adapters/integrations/slack/inbound_test.go:TestMapEventClassifiesEditsAndDeletes

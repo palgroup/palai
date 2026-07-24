@@ -1,0 +1,9 @@
+id: SLK-006
+name: rate-limit-repairs-the-visible-message-once-canonical-survives
+proof_class: unit
+provider: fake
+input: "a rate-limited outbound post is repaired by honoring Retry-After for a BOUNDED budget (default one repair) with the value clamped, then retrying the SAME body — the visible message is repaired once, not duplicated; a persistent 429 past the budget is a DELIVERY failure that leaves the canonical run result untouched (a Slack failure never erases the canonical result). LOCAL proof: the fake Slack peer 429->200 repair unit tests. HONEST CEILING: bounded coalesced live-output updates + the single terminal summary per delivery are the control-plane live-output leg materialized in the T11 journey."
+expect_status: completed
+proof:
+  - adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once
+  - adapters/integrations/slack/ratelimit_test.go:TestPostMessageBoundedRepairThenRateLimited

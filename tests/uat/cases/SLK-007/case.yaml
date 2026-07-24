@@ -1,0 +1,10 @@
+id: SLK-007
+name: exact-approval-only-from-a-minted-hash-bearing-button
+proof_class: unit
+provider: fake
+input: "a high-risk approval is authorized ONLY by a signed interactive action from a minted button carrying the EXACT request_hash — the coordinator.ApplyApprovalDecision one-shot binding (a stale/mismatched hash authorizes nothing there). Message text ('yes', 'approve') is an ordinary event, never an interaction, and can never approve; a bare/foreign button, a missing hash, a shortcut, or a view_submission authorizes nothing (no privilege widening). LOCAL proof: the interactive-approval mapping unit tests."
+expect_status: completed
+proof:
+  - adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace
+  - adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalDenyIsMapped
+  - adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse

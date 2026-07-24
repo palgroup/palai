@@ -1,0 +1,8 @@
+id: SLK-003
+name: thread-correlates-to-one-canonical-session
+proof_class: component-real
+provider: fake
+input: "two events in the same (team, channel, thread_ts) resolve the SAME canonical session, and a later event (or a web-console attach) joins that one session, not a second; a different thread gets its own session; a concurrent race collapses at the unique index to a single session. component-real against a real Postgres slack_thread_sessions table."
+expect_status: completed
+proof:
+  - apps/control-plane/internal/extensions/slack_component_test.go:TestSlackThreadSessionCorrelation
