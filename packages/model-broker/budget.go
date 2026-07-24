@@ -3,6 +3,7 @@ package modelbroker
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/palgroup/palai/packages/contracts"
 )
@@ -27,8 +28,11 @@ func (r Reservation) Admit(u contracts.Usage) error {
 
 // Budget accumulates usage against a reservation across calls. It is the accounting
 // ledger a coordinator holds for a run: each settled call adds to Consumed and is
-// rejected once the running total would pass the reservation.
+// rejected once the running total would pass the reservation. It is safe for
+// concurrent steps — the check and the accumulation are one atomic critical section,
+// so no interleaving can admit two calls that together overspend (MOD-011).
 type Budget struct {
+	mu          sync.Mutex
 	reservation Reservation
 	consumed    contracts.Usage
 }
@@ -38,13 +42,18 @@ func NewBudget(r Reservation) *Budget { return &Budget{reservation: r} }
 
 // Settle adds one call's usage to the ledger, rejecting it with ErrBudgetExceeded
 // if the running total would exceed the reservation. On rejection the ledger is
-// left unchanged, so a rejected call spends nothing.
+// left unchanged, so a rejected call spends nothing. The admit-then-accumulate is
+// held under the lock so concurrent settlements cannot race past the reservation.
 func (b *Budget) Settle(u contracts.Usage) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	next := contracts.Usage{
-		InputTokens:  b.consumed.InputTokens + u.InputTokens,
-		OutputTokens: b.consumed.OutputTokens + u.OutputTokens,
-		TotalTokens:  b.consumed.TotalTokens + u.TotalTokens,
-		ToolCalls:    b.consumed.ToolCalls + u.ToolCalls,
+		InputTokens:      b.consumed.InputTokens + u.InputTokens,
+		OutputTokens:     b.consumed.OutputTokens + u.OutputTokens,
+		TotalTokens:      b.consumed.TotalTokens + u.TotalTokens,
+		ToolCalls:        b.consumed.ToolCalls + u.ToolCalls,
+		CacheReadTokens:  b.consumed.CacheReadTokens + u.CacheReadTokens,
+		CacheWriteTokens: b.consumed.CacheWriteTokens + u.CacheWriteTokens,
 	}
 	if err := b.reservation.Admit(next); err != nil {
 		return err
@@ -54,4 +63,8 @@ func (b *Budget) Settle(u contracts.Usage) error {
 }
 
 // Consumed reports the running total settled so far.
-func (b *Budget) Consumed() contracts.Usage { return b.consumed }
+func (b *Budget) Consumed() contracts.Usage {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.consumed
+}
