@@ -34,7 +34,7 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// Cancel is naturally idempotent (a canceled terminal is monotonic), so it is not wrapped
 	// with RequireIdempotencyKey; the OpenAPI cancelResponse operation defines no key parameter.
 	mux.HandleFunc("POST /v1/responses/{response_id}/cancel", responses.cancel)
-	mux.HandleFunc("GET /v1/capabilities", capabilities)
+	mux.HandleFunc("GET /v1/capabilities", capabilities(cfg))
 
 	// Repository-binding registration (spec §30.1): a project registers the external repository its
 	// coding sessions attach via the `repository` field. A durable, unkeyed create — nil in tiers that

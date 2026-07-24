@@ -28,18 +28,17 @@ type retentionBody struct {
 
 // capabilities serves the discovery body. It reads the configured retention TTL from the
 // same PALAI_RETENTION_STORE_FALSE_TTL the reaper honors — a single source of truth, so
-// discovery never advertises a TTL the reaper is not enforcing (unset ⇒ 0 ⇒ disabled).
-func capabilities(w http.ResponseWriter, r *http.Request) {
-	if _, ok := middleware.ScopeFrom(r.Context()); !ok {
-		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
-		return
-	}
-	body := capabilitiesBody{
-		Object:    "capabilities",
-		Maturity:  "preview",
-		Isolation: "development",
-		Retention: retentionBody{StoreFalseTTLSeconds: int(configuredRetentionTTL().Seconds())},
-		Capabilities: map[string]string{
+// discovery never advertises a TTL the reaper is not enforcing (unset ⇒ 0 ⇒ disabled). It
+// closes over the router config so a capability whose backing surface is optional (a2a) is
+// advertised ONLY when that surface is actually mounted (§2: discovery never claims what the
+// deployment cannot serve — the workspacesCapability posture).
+func capabilities(cfg routerConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := middleware.ScopeFrom(r.Context()); !ok {
+			middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+			return
+		}
+		caps := map[string]string{
 			"responses": "preview",
 			"sessions":  "unavailable",
 			// Coding workspaces are reachable end to end (a session attaches a repository binding, the root
@@ -66,17 +65,27 @@ func capabilities(w http.ResponseWriter, r *http.Request) {
 			// operator leg (§6) and are deliberately NOT advertised here (an unwritten adapter is never
 			// discoverable). Discovery never claims what the deployment cannot serve.
 			"queues": "preview",
-			// The A2A 1.0 server projection (E17 T2): the Agent Card + message/task lifecycle. It enters as
-			// "preview" and NEVER writes its own tier — the T11 exit gate recomputes it from the A2A claim
-			// outcomes (CapabilityTierProof). The local proof is a fake/loopback generic client driving this
-			// server; a FOREIGN A2A peer is the §6 operator leg, so it stays preview (loopback != interop),
-			// and JWS/JCS card signing is a v0-OUT hardening item — neither is claimed here.
-			"a2a": "preview",
-		},
+		}
+		// The A2A 1.0 server projection (E17 T2): advertised ONLY when WithA2A actually mounted the surface,
+		// so a binary that wires no A2A store does not claim `a2a` while every A2A route 404s. When mounted it
+		// enters as "preview" and NEVER writes its own tier — the T11 exit gate recomputes it from the A2A
+		// claim outcomes (CapabilityTierProof). The local proof is a fake/loopback generic client; a FOREIGN
+		// A2A peer is the §6 operator leg (loopback != interop), and JWS/JCS card signing is a v0-OUT
+		// hardening item — neither is claimed here.
+		if cfg.a2a != nil {
+			caps["a2a"] = "preview"
+		}
+		body := capabilitiesBody{
+			Object:       "capabilities",
+			Maturity:     "preview",
+			Isolation:    "development",
+			Retention:    retentionBody{StoreFalseTTLSeconds: int(configuredRetentionTTL().Seconds())},
+			Capabilities: caps,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(body)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(body)
 }
 
 // workspacesCapability reports whether this deployment can serve coding workspaces: "available" when
