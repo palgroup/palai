@@ -126,6 +126,14 @@ run_postgres() {
       go test -tags=component -count=1 -v ./apps/control-plane/internal/metrics
     status=$?
   fi
+  # The E17 Task 4 knowledge spine drives this same real spine: immutable versioned ingestion + the
+  # append-only REVOKE, ranked FTS retrieval with verifiable citation offsets, failed-refresh isolation
+  # (KNO-002), source-delete propagation (KNO-004), and query-level tenant/ACL scoping (the KNO-003 hook).
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v ./apps/control-plane/internal/knowledge
+    status=$?
+  fi
   set -e
   if test "$status" -ne 0; then
     docker logs "$container" >&2 || true

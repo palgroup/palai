@@ -1,0 +1,8 @@
+id: KNO-002
+name: failed-index-refresh-leaves-the-prior-active-index-intact
+proof_class: component-real
+provider: fake
+input: "an index refresh that fails its completeness check (a document that parses to nothing indexable) records a failed ingestion job and does NOT activate — the knowledge base's prior active index is untouched and still serves retrieval; atomic activation flips the pointer only after a committed, complete build; deterministic against a real Postgres FTS index (make test-component TEST=postgres)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/knowledge/knowledge_component_test.go:TestFailedRefreshLeavesPriorActiveIntact

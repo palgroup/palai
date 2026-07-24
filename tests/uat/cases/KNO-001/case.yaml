@@ -1,0 +1,10 @@
+id: KNO-001
+name: knowledge-ingest-is-immutable-versioned-and-fts-retrieval-cites-verifiable-offsets
+proof_class: component-real
+provider: fake
+input: "the knowledge spine ingests a source into an immutable, versioned document_revision (a re-ingest is a NEW version, never an in-place edit; the append-only REVOKE refuses UPDATE/DELETE) with a source->document->chunk->index provenance chain, and a PostgreSQL FTS query returns ranked chunks whose citation byte-offsets recompute exactly against the stored document bytes; deterministic (no real provider needed) against a real Postgres FTS index (make test-component TEST=postgres)"
+expect_status: completed
+proof:
+  - apps/control-plane/internal/knowledge/knowledge_component_test.go:TestIngestIsImmutableAndVersioned
+  - apps/control-plane/internal/knowledge/knowledge_component_test.go:TestFTSRanksAndCitesWithVerifiableOffsets
+  - apps/control-plane/internal/knowledge/chunk_test.go:TestChunkDocumentIsDeterministicWithVerifiableOffsets

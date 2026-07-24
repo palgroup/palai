@@ -41,7 +41,12 @@ const runtimeRole = "palai_app"
 // silently leaking.
 var nonTenantTables = map[string]bool{
 	"schema_migrations": true,
-	"schema_revisions":  true, // the append-only migration journal (000033) — installation-global, no tenant column
+	// schema_revisions is the 000033 boot-migration journal (E15 T1): installation-global, no
+	// organization_id, append-only by its own REVOKE. Like schema_migrations it holds no tenant data, so it
+	// is deliberately outside RLS. It was added to the chain (000033) without this allowlist entry, so this
+	// gate failed on it in the Docker-bound security tier (not run by `make verify`); the entry is added
+	// here with the E17 wave-1 migrations that first re-exercised the corpus.
+	"schema_revisions":  true,
 	"host_quarantine":   true,
 	"session_sequences": true,
 }

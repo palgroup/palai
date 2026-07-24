@@ -52,6 +52,13 @@ func capabilities(w http.ResponseWriter, r *http.Request) {
 			// canonical per-case outcomes (a real-workspace external-receipt leg is §6 operator work, so the
 			// local proof — canonical mapping + fake/loopback Slack peer — keeps it preview, not stable).
 			"slack": "preview",
+			// Knowledge spine (E17 Task 4): the FTS ingestion/index/retrieval core. It enters as "preview"
+			// like every new capability — no task writes its own "stable"; the E17 exit gate (T11)
+			// RECOMPUTES the tier from the KNO claim outcomes and flips it to stable only if all are green
+			// (CapabilityTierProof). The vector strategy is a defined-but-disabled adapter (pgvector not
+			// wired — §6 operator leg), so it is advertised disabled and never claims a store it lacks.
+			"knowledge":        "preview",
+			"knowledge-vector": "disabled",
 		},
 	}
 	w.Header().Set("Content-Type", "application/json")

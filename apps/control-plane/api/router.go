@@ -193,6 +193,22 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	// to see what it has spent). Mounted via WithUsage, so a tier that wires no metering store leaves the
 	// routes unmounted — while any limit already stored still binds, because enforcement lives in the
 	// admission transaction rather than here.
+	// The knowledge spine (E17 Task 4, 17b): knowledge bases, their ingest sources, the immutable ingest ->
+	// FTS index build, ranked ACL-first retrieval, and the append-only index-revision history. Mounted via
+	// WithKnowledge, so a tier that wires no knowledge store leaves the routes unmounted. Gated on the same
+	// `provision` capability as the other org-admin surfaces (retrieval's principal-level auth is T5).
+	if cfg.knowledge != nil {
+		kh := &knowledgeHandler{knowledge: cfg.knowledge}
+		mux.HandleFunc("POST /v1/knowledge-bases", kh.createBase)
+		mux.HandleFunc("GET /v1/knowledge-bases", kh.listBases)
+		mux.HandleFunc("POST /v1/knowledge-bases/{kb_id}/sources", kh.createSource)
+		mux.HandleFunc("GET /v1/knowledge-bases/{kb_id}/sources", kh.listSources)
+		mux.HandleFunc("DELETE /v1/knowledge-bases/{kb_id}/sources/{source_id}", kh.deleteSource)
+		mux.HandleFunc("POST /v1/knowledge-bases/{kb_id}/sources/{source_id}/ingest", kh.ingest)
+		mux.HandleFunc("POST /v1/knowledge-bases/{kb_id}/query", kh.query)
+		mux.HandleFunc("GET /v1/knowledge-bases/{kb_id}/index-revisions", kh.listIndexRevisions)
+	}
+
 	if cfg.usage != nil {
 		uh := &usageHandler{usage: cfg.usage}
 		mux.HandleFunc("POST /v1/budgets", uh.setBudget)
