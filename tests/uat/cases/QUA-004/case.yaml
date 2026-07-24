@@ -1,0 +1,10 @@
+id: QUA-004
+name: held-out-threshold-gate-refuses-sub-threshold-and-blocks-security-regression
+proof_class: unit
+provider: fake
+input: "The release gate wires held-out thresholds into the promote.go chain (§57.13). MECHANICAL GATE, proven DETERMINISTICALLY here: (1) a deliberately sub-threshold FAKE candidate — its held-out score forced below the bar — is REFUSED at promotion; (2) a security regression BLOCKS the tag INDEPENDENT of the aggregate score — a proof whose every suite score is a perfect 1.0 is still refused when a suite carries a security regression (the count sourced as a REAL number from a RegressedPolicy run); (3) a missing or structurally-incomplete EvalGateProof is refused (the gate never silently passes a release it cannot evaluate). EvalGateProof.Complete() is STRUCTURAL only — the pass/fail verdict is the gate's, so a well-formed proof still refuses when sub-threshold or regressed. HONEST CEILING: 'thresholds met' is a GATE-MECHANICS claim — the scores come from the deterministic reference engine that opens no tool to a real provider (E08). It is NOT a model-quality claim; real-model quality numbers are §6 leg 7 → E18 RC and do not flow through this gate."
+expect_status: completed
+proof:
+  - tests/uat/eval_gate_test.go:TestEvalPromoteGateRefusesSubThreshold
+  - tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksSecurityRegressionIndependentOfAggregate
+  - tests/uat/eval_gate_test.go:TestEvalPromoteGateRefusesMissingProof
