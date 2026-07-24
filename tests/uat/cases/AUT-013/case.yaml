@@ -11,3 +11,11 @@ proof:
   # effect exactly once via the append-only receipts ledger — the queue half of idempotency-key -> single
   # action (real Postgres). The orchestrator-kit leg (§35) is T8's, appended separately.
   - apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect
+  # Orchestrator-kit leg (E17 T8, §35.2 single retry owner): a scripted fake external orchestrator replays
+  # the SAME workflow id + workflow-derived idempotency key under a RETRY STORM. Without a key the storm
+  # multiplies (N runs); with it the same storm collapses to ONE run, the DB unique index arbitrating the
+  # concurrent race, and reconcile-by-key resolves the recovering orchestrator back to that one run (real
+  # Postgres). Proof seam = scripted-fake-orchestrator storm + reconcile; the five-step contract across the
+  # webhook/SSE/poll wait modes AND the kill-and-reconcile e2e are pinned in tests/conformance/orchestrator.
+  # A run against a real Temporal/Restate instance is the §6 operator leg 6; no native adapter is written.
+  - apps/control-plane/internal/automation/orchestrator_storm_component_test.go:TestOrchestratorRetryStormSingleRun
