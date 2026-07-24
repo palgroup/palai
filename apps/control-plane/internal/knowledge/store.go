@@ -11,7 +11,11 @@
 // HONEST CEILINGS: parser v0 is text/markdown/code only (office/PDF are §5); the connector fetch (from an
 // uploaded artifact's bytes or a repository path) is the E09 seam — Ingest accepts the resolved content
 // directly and records the source uri as provenance; the object-store canonical-byte copy is likewise the
-// E09 seam (object_key is recorded, the chunk text lives in Postgres for the FTS spine).
+// E09 seam (object_key is recorded, the chunk text lives in Postgres for the FTS spine). A crash or
+// ctx-cancel mid-build strands the ingestion_job in 'running' forever — there is no reaper (a sweep that
+// fails stale 'running' jobs is a follow-up; the corpus itself is intact because the build tx rolled back).
+// The FTS text-search config is hardcoded 'english' (migration 000035 + RetrieveChunks), so non-English
+// corpora — Turkish included — stem/stopword sub-optimally; a per-KB language config is a follow-up.
 package knowledge
 
 import (

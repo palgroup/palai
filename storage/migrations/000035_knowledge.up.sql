@@ -140,15 +140,16 @@ CREATE INDEX IF NOT EXISTS chunk_revisions_docrev_idx
 -- index_revisions: APPEND-ONLY. One immutable KB-wide build snapshot. document_revision_ids is the member
 -- set retrieval intersects against (each source's active document_revision at build time), so a rebuild that
 -- omits a deleted source's document naturally excludes it from the active index (KNO-004) without mutating
--- any chunk. state is terminal at INSERT: the completeness check runs BEFORE the row is written, so an index
--- row only ever exists as 'active' (built successfully) or 'failed' (recorded, never activated).
+-- any chunk. state is terminal at INSERT: the completeness check runs BEFORE the row is written and a failed
+-- build rolls back ENTIRELY (its failure is recorded on ingestion_jobs, never here), so an index_revision row
+-- only ever exists as 'active' — a successfully built, activated snapshot.
 CREATE TABLE IF NOT EXISTS index_revisions (
     id TEXT PRIMARY KEY,
     organization_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
     knowledge_base_id TEXT NOT NULL REFERENCES knowledge_bases (id) ON DELETE CASCADE,
     version INTEGER NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('active', 'failed')),
+    state TEXT NOT NULL DEFAULT 'active' CHECK (state = 'active'),
     document_revision_ids TEXT[] NOT NULL DEFAULT '{}',
     chunk_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),

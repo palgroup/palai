@@ -85,7 +85,9 @@ func WithModelRoutes(routes ModelRouteAPI) RouterOption {
 // WithKnowledge mounts the knowledge spine (E17 Task 4): knowledge bases, ingest sources, the immutable
 // ingest -> FTS index build, ranked retrieval, and the index-revision history. A trailing option for the
 // same reason as WithSecretRefs — every existing caller compiles unchanged, and a stack that wires no
-// knowledge store leaves the routes unmounted (discovery advertises `knowledge` only where it is served).
+// knowledge store leaves the routes unmounted. Discovery advertises `knowledge` STATICALLY as `preview`
+// (capabilities.go), like the pre-existing `responses` capability — the maturity flag is a static
+// advertisement, not gated on the store being wired.
 func WithKnowledge(knowledge KnowledgeAPI) RouterOption {
 	return func(c *routerConfig) { c.knowledge = knowledge }
 }
