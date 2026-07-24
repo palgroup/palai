@@ -51,12 +51,13 @@ Registering a new language is one entry in `TestCorpus…RunnerEquality` (an arg
 runner executable in that SDK's tree. The corpus and the harness's compare are untouched:
 
 ```go
-// T3: outputs := runExternalRunner(t, []string{python, ".../runner.py"}, all)
+// T3 (registered): runExternalRunner(t, []string{"uv","run","--locked","--project",".../sdks/python","python",".../runner.py"}, all)
 // T4: outputs := runExternalRunner(t, []string{"go", "run", ".../runner"}, all)
 ```
 
 The TS runner lives at `sdks/typescript/test/conformance-runner.ts` and is driven as
-`node --experimental-strip-types conformance-runner.ts`.
+`node --experimental-strip-types conformance-runner.ts`. The Python runner lives at
+`sdks/python/conformance/runner.py` and is driven in its uv-locked env (so `httpx` is present).
 
 ## Running
 
@@ -67,12 +68,14 @@ go test ./tests/conformance/sdk/ -v
 `TestHarnessFailsOnDivergence` is the anti-fabrication guard: it mutates one byte of a real
 expected output and asserts the diff DETECTS it — the harness cannot pass a corrupted corpus.
 
-## Honest ceiling (T2)
+## Honest ceiling (T2, updated by T3)
 
-- **Two implementations today**, not three: the Go reference validates all six categories; the
-  **TS SDK runner** validates the five it exposes (`signature-verify` is reference-only — the TS
-  SDK has no webhook verify). The **"three languages semantically equal" claim is made only by
-  the T8 gate**, once the Python (T3) and Go (T4) SDK runners register against this same corpus.
+- **Three decoders today** (T3 landed the Python leg): the Go reference validates all six
+  categories; the **TS SDK runner** validates the five it exposes (`signature-verify` is
+  TS-omitted — the TS SDK has no webhook verify); the **Python SDK runner** validates all six
+  (it ships `palai.webhook.verify`, so it covers `signature-verify` too). The **"three SDK
+  languages semantically equal" claim is still made only by the T8 gate**, once the Go SDK
+  runner (T4) registers against this same corpus — TS+Python are two SDK legs; Go completes it.
 - The corpus proves **decoded-output equality on the shipped vectors** — it is not a fuzzer and
   not a live-server test (fixtures are deterministic data; no provider/credential involved).
 - `request-encode` bodies are omitempty-canonical (only non-zero fields), so the corpus tests
