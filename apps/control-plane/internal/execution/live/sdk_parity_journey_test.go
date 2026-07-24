@@ -48,9 +48,9 @@ import (
 	"strings"
 	"testing"
 
+	openaicompatible "github.com/palgroup/palai/adapters/models/openai_compatible"
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
 	providertwo "github.com/palgroup/palai/adapters/models/provider_two"
-	openaicompatible "github.com/palgroup/palai/adapters/models/openai_compatible"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"

@@ -157,8 +157,8 @@ func TestSDKParityReleaseVerifiesClean(t *testing.T) {
 		t.Fatalf("read sdk-provider-parity-0.1.0 manifest: %v", err)
 	}
 	var parsed struct {
-		Maturity string    `json:"maturity"`
-		Cases    []spCase  `json:"cases"`
+		Maturity string   `json:"maturity"`
+		Cases    []spCase `json:"cases"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		t.Fatalf("decode sdk-provider-parity-0.1.0 manifest: %v", err)

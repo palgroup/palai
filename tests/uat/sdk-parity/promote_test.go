@@ -19,8 +19,8 @@ func promotableManifest() map[string]any {
 	equalityCase := map[string]any{
 		"id": "API-012", "status": "PASS", "proof_class": "e2e-deterministic", "run_id": "run_p",
 		"image_digest": "sha256:" + repeat("a", 64), "provider_request_id": "prov_final",
-		"mtls_enroll": "runner-local cn=controller",
-		"terminal":    map[string]any{"type": "response.completed", "count": 1},
+		"mtls_enroll":   "runner-local cn=controller",
+		"terminal":      map[string]any{"type": "response.completed", "count": 1},
 		"db_assertions": []any{"parity"}, "checksum": hashParts("API-012", "run_p", equalityDigest),
 		"three_language_equality_claim": "equal",
 		"three_language_equality_proof": map[string]any{
@@ -34,8 +34,8 @@ func promotableManifest() map[string]any {
 	gatewayCase := map[string]any{
 		"id": "MOD-003", "status": "PASS", "proof_class": "e2e-deterministic", "run_id": "run_p",
 		"image_digest": "sha256:" + repeat("a", 64), "provider_request_id": "prov_final",
-		"mtls_enroll": "runner-local cn=controller",
-		"terminal":    map[string]any{"type": "response.completed", "count": 1},
+		"mtls_enroll":   "runner-local cn=controller",
+		"terminal":      map[string]any{"type": "response.completed", "count": 1},
 		"db_assertions": []any{"gateway-off"}, "checksum": hashParts("MOD-003", "run_p", equalityDigest),
 		"gateway_off_claim": "gateway-off",
 		"gateway_off_proof": map[string]any{
