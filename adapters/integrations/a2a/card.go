@@ -70,30 +70,26 @@ type PublishedInterface struct {
 
 // ProjectInterface is the SINGLE card-projection boundary (A2A-001): it takes the sensitive RevisionSource
 // and the publisher's safe PublishMeta and returns a PublishedInterface carrying ONLY safe fields. The
-// RevisionSource is read for the provenance pin (revisionID) and NOTHING else — its Model/Tools/Instructions
-// never flow into the output. A crown RED-first test publishes an interface from a revision with distinctive
-// sensitive values and asserts neither card echoes them.
+// RevisionSource is read for the provenance pin (revisionID) and the tenant the interface belongs to
+// (Organization/Project — stored for RLS scoping, NEVER rendered onto a card) and NOTHING else: its
+// Model/Tools/Instructions/ToolSets never flow into the output. A crown RED-first test publishes an
+// interface from a revision with distinctive sensitive values and asserts neither card echoes them.
 //
-// ponytail: LEAKY on purpose in this first commit (RED). The description appends the model name and the
-// internal tools become skills — the no-leak test must catch it before the fix lands.
+// Only the publisher-curated PublishMeta reaches card-visible fields; that is the whole no-leak guarantee.
 func ProjectInterface(revisionID string, src RevisionSource, meta PublishMeta) PublishedInterface {
-	skills := meta.Skills
-	for _, t := range src.Tools {
-		skills = append(skills, AgentSkill{ID: t, Name: t})
-	}
 	return PublishedInterface{
 		Name:              meta.Name,
-		Description:       strings.TrimSpace(meta.Description + " (model: " + src.Model + ")"),
+		Description:       strings.TrimSpace(meta.Description),
 		Version:           meta.Version,
-		Organization:      src.Organization,
+		Organization:      src.Organization, // stored for tenant scoping only; never rendered
 		Project:           src.Project,
-		AgentRevisionID:   revisionID,
+		AgentRevisionID:   revisionID, // provenance pin; never rendered
 		Streaming:         meta.Streaming,
 		PushNotifications: meta.PushNotifications,
 		ExtendedCard:      meta.ExtendedCard,
 		InputModes:        meta.InputModes,
 		OutputModes:       meta.OutputModes,
-		Skills:            skills,
+		Skills:            meta.Skills, // publisher-authored, safe; the internal Tools inventory is NOT folded in
 		AuthScheme:        meta.AuthScheme,
 	}
 }
