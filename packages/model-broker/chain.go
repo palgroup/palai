@@ -81,7 +81,7 @@ func (c *Chain) Route(ctx context.Context, targets []Target, req Request, onDelt
 			call.Model = tgt.Model
 		}
 		res, err := c.broker.Route(ctx, tgt.Provider, call, onDelta)
-		totalAttempts += attemptsOf(res, err)
+		totalAttempts += attemptsOf(res)
 
 		switch classifyOutcome(err, res) {
 		case outcomeSuccess:
@@ -112,11 +112,11 @@ func (c *Chain) Route(ctx context.Context, targets []Target, req Request, onDelt
 type outcome int
 
 const (
-	outcomeSuccess outcome = iota
-	outcomeStop            // cancel / deadline / budget — return as-is, never fail over
-	outcomeCallerInvalid   // the caller's 4xx — return, no trip, no fallover
-	outcomeMisconfigured   // unknown provider/secret — fail over, do not trip the circuit
-	outcomeUpstream        // transport error or provider 5xx/429/401/403 — trip + fail over
+	outcomeSuccess       outcome = iota
+	outcomeStop                  // cancel / deadline / budget — return as-is, never fail over
+	outcomeCallerInvalid         // the caller's 4xx — return, no trip, no fallover
+	outcomeMisconfigured         // unknown provider/secret — fail over, do not trip the circuit
+	outcomeUpstream              // transport error or provider 5xx/429/401/403 — trip + fail over
 )
 
 // classifyOutcome decides how the chain treats one target's (err, res). A provider-side failure
@@ -147,11 +147,8 @@ func callerInvalidStatus(status int) bool {
 }
 
 // attemptsOf reports how many provider attempts one Route made: a served/error Result carries its
-// own Attempts; a transport Go error left no Result, so it counts as one attempt.
-func attemptsOf(res Result, err error) int {
-	if err != nil && res.Attempts == 0 {
-		return 1
-	}
+// own Attempts; a transport Go error left a zero Result, which counts as one attempt.
+func attemptsOf(res Result) int {
 	if res.Attempts == 0 {
 		return 1
 	}
