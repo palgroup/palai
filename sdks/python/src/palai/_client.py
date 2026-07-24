@@ -11,6 +11,7 @@ flow — unifying them with a generator would be the kind of cleverness someone 
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import time
 from typing import Any, Awaitable, Callable
@@ -105,7 +106,9 @@ class _BaseClient:
                 seconds = float(header)
             except ValueError:
                 seconds = -1
-            if seconds >= 0:
+            # A non-finite Retry-After (inf/nan) is ignored, so we fall back to jittered backoff rather
+            # than wait forever / raise on the deadline check (TS parity: Number.isFinite).
+            if math.isfinite(seconds) and seconds >= 0:
                 return seconds * 1000
         return full_jitter_backoff(attempt, self.backoff_base_ms, self.backoff_max_ms)
 
@@ -198,7 +201,9 @@ class Palai(_BaseClient):
         if last_event_id is not None:
             headers["Last-Event-ID"] = last_event_id
         url = f"{self.base_url}/v1/sessions/{enc(session_id)}/events"
-        req = self._http.build_request("GET", url, headers=headers)
+        # No READ timeout on the event stream: a live run may idle past httpx's 5s default between SSE
+        # bytes (TS parity — fetch has no read timeout). Connect/write/pool stay bounded.
+        req = self._http.build_request("GET", url, headers=headers, timeout=httpx.Timeout(self.timeout_ms / 1000, read=None))
         try:
             return self._http.send(req, stream=True)
         except httpx.HTTPError as cause:
@@ -320,7 +325,9 @@ class AsyncPalai(_BaseClient):
         if last_event_id is not None:
             headers["Last-Event-ID"] = last_event_id
         url = f"{self.base_url}/v1/sessions/{enc(session_id)}/events"
-        req = self._http.build_request("GET", url, headers=headers)
+        # No READ timeout on the event stream: a live run may idle past httpx's 5s default between SSE
+        # bytes (TS parity — fetch has no read timeout). Connect/write/pool stay bounded.
+        req = self._http.build_request("GET", url, headers=headers, timeout=httpx.Timeout(self.timeout_ms / 1000, read=None))
         try:
             return await self._http.send(req, stream=True)
         except httpx.HTTPError as cause:

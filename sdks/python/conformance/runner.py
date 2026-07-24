@@ -150,7 +150,14 @@ def _signature_verify(inp: dict[str, Any]) -> Any:
 
 
 def _unknown_field(inp: dict[str, Any]) -> Any:
-    return inp["value"]  # the SDK decodes to a dict, so an unknown field round-trips untouched
+    # Route the value through the REAL client decode (request -> _parse_body -> resp.json), so this
+    # category exercises the SDK's forward-compat pipeline rather than echoing the input verbatim.
+    value = inp["value"]
+    client = Palai(api_key="conf", base_url=BASE, transport=httpx.MockTransport(lambda req: httpx.Response(200, json=value)))
+    try:
+        return client.request("GET", "/v1/echo")
+    finally:
+        client.close()
 
 
 def _envelope_decode(inp: dict[str, Any]) -> Any:

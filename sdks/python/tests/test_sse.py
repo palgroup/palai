@@ -58,6 +58,18 @@ def test_partial_trailing_frame_not_dispatched():
     assert _events(transcript) == []
 
 
+def test_multibyte_split_across_chunks_not_corrupted():
+    # Non-ASCII streamed output (Turkish text, CJK, emoji) split across TCP chunk boundaries must NOT
+    # become U+FFFD. chunk=1 splits every multibyte char; a per-chunk decode corrupts, the incremental
+    # decoder does not.
+    text = "café ğşü 🚀 日本語"
+    transcript = 'data: {"type":"run.progress.v1","text":"' + text + '"}\n\n'
+    for chunk in (1, 2, 3, 5):
+        events = _events(transcript, chunk=chunk)
+        assert events == [{"type": "run.progress.v1", "text": text}], f"chunk={chunk}"
+    assert "�" not in json.dumps(_events(transcript, chunk=1))
+
+
 def test_terminal_event_regex_families():
     for t in ("run.completed.v1", "response.failed.v2", "run.budget_exceeded.v1", "response.canceled.v1"):
         assert is_terminal_event({"type": t})

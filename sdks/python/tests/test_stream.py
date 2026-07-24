@@ -45,6 +45,36 @@ def test_drop_then_resume_dedupes_boundary_event():
     assert stream.last_event_id == "e2"
 
 
+def test_transport_tear_midstream_reconnects_not_propagates():
+    # A REAL httpx transport error (ReadError) raised mid-iteration is the exact case resumability
+    # exists for: it must reconnect from Last-Event-ID, not propagate raw to the consumer. (Before the
+    # fix, httpx.HTTPError was not caught — it derives from Exception, not OSError — so this raised.)
+    calls = {"events": 0}
+
+    def torn_stream():
+        yield b'id: e1\nevent: run.progress.v1\ndata: {"type":"run.progress.v1","id":"e1"}\n\n'
+        raise httpx.ReadError("connection reset by peer")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/v1/responses") and request.method == "POST":
+            return httpx.Response(202, json=CREATE)
+        if "/events" in url:
+            calls["events"] += 1
+            if calls["events"] == 1:
+                return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=torn_stream())
+            assert request.headers.get("Last-Event-ID") == "e1", "must resume from the last seen id"
+            body = 'id: e2\nevent: run.completed.v1\ndata: {"type":"run.completed.v1","id":"e2"}\n\n'
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
+        return httpx.Response(200, json={"id": "resp_1", "status": "completed"})
+
+    client = _client(handler)
+    ids = [event["id"] for event in client.responses.stream({"input": "hi"})]
+    client.close()
+    assert ids == ["e1", "e2"], "e1 before the tear, e2 after the reconnect"
+    assert calls["events"] == 2, "the transport tear must trigger exactly one reconnect"
+
+
 def test_final_response_drains_to_terminal_then_retrieves():
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)

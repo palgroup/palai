@@ -15,6 +15,8 @@ import json
 import time
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
 
+import httpx
+
 from ._sse import _SSEDecoder, full_jitter_backoff, is_terminal_event
 from .errors import PalaiConnectionError, error_for_response
 
@@ -111,7 +113,6 @@ class ResponseStream:
                 raise error_for_response(resp.status_code, body, resp.headers.get("Request-Id"))
             decoder = _SSEDecoder()
             dedupe_pending = resumed_from is not None
-            dropped = False
             try:
                 for chunk in resp.iter_bytes():
                     for frame in decoder.feed(chunk):
@@ -129,12 +130,11 @@ class ResponseStream:
                         yield event
                         if is_terminal_event(event):
                             return  # terminal reached: stop, do not reconnect
-            except (OSError, RuntimeError):
-                dropped = True  # a mid-stream transport drop → reconnect below
+            except (httpx.HTTPError, OSError):
+                pass  # a mid-stream transport tear (ReadError/RemoteProtocolError/ReadTimeout) → reconnect
             finally:
                 resp.close()
             # The stream ended (or dropped) without a terminal event: reconnect, bounded, with backoff.
-            _ = dropped
             if reconnects >= self._max_reconnects:
                 raise PalaiConnectionError("event stream dropped before a terminal event and exhausted reconnects")
             time.sleep(full_jitter_backoff(reconnects, self._backoff_base_ms, self._backoff_max_ms) / 1000)
@@ -234,8 +234,8 @@ class AsyncResponseStream:
                         yield event
                         if is_terminal_event(event):
                             return
-            except (OSError, RuntimeError):
-                pass  # a mid-stream transport drop → reconnect below
+            except (httpx.HTTPError, OSError):
+                pass  # a mid-stream transport tear (ReadError/RemoteProtocolError/ReadTimeout) → reconnect
             finally:
                 await resp.aclose()
             if reconnects >= self._max_reconnects:

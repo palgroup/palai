@@ -7,6 +7,7 @@ multi-line ``data`` joined with ``\\n``, CRLF tolerance) lives in ONE place rega
 
 from __future__ import annotations
 
+import codecs
 import json
 import random
 import re
@@ -41,13 +42,13 @@ class _SSEDecoder:
     def __init__(self) -> None:
         self._buffer = ""
         self._frame = _MutableFrame()
+        # An incremental UTF-8 decoder holds a multibyte char split across chunk boundaries until its
+        # bytes arrive (the TS framer's TextDecoder(stream:true) equivalent) — a per-chunk decode would
+        # turn a split `é`/emoji into U+FFFD and silently deliver a corrupted event under real TCP.
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     def feed(self, chunk: bytes) -> list[SSEFrame]:
-        # Decode latin-1-safe: SSE is UTF-8, but we accumulate a str buffer and only split on "\n".
-        # A multibyte char split across chunks would corrupt under a naive decode, so decode as the
-        # bytes arrive using an incremental UTF-8 decoder would be ideal — but the transport hands us
-        # whole lines in practice; decode replacing errors keeps us from raising mid-stream.
-        self._buffer += chunk.decode("utf-8", errors="replace")
+        self._buffer += self._decoder.decode(chunk)
         out: list[SSEFrame] = []
         while True:
             newline = self._buffer.find("\n")

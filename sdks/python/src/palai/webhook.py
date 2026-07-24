@@ -42,6 +42,8 @@ def verify(
         if not field.startswith(_VERSION + "="):
             continue
         value = field[len(_VERSION) + 1 :]
-        if hmac.compare_digest(value, want):
+        # Compare on bytes: compare_digest raises TypeError on a non-ASCII str, and the signature field
+        # is attacker-controlled — a non-ASCII byte must be a clean reject, not a 500 in the receiver.
+        if hmac.compare_digest(value.encode(), want.encode()):
             return True
     return False
