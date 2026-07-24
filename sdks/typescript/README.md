@@ -68,6 +68,10 @@ All resources hang off the server-only `Palai` client:
 - admin — `secretRefs` (write-only value, metadata reads, rotate), `modelRoutes`
   (connections / routes / revisions / publish), and tenancy provisioning
   (`organizations` / `projects` / `apiKeys`)
+- `Orchestrator` — the external-orchestrator kit: the §35.1 five-step contract
+  (`start` / `waitByPoll` / `waitByStream` / `sendMessage` / `cancel` / `reconcile` / `runActivity`),
+  keeping the external workflow id and Palai's canonical run id separate. See
+  [docs/orchestrator-kit.md](docs/orchestrator-kit.md) for who owns which timeout/retry (§35.2).
 
 Lists page with an opaque `after` cursor and a `limit`; the SDK passes the server's
 `next_cursor` straight back — it never parses the cursor (it is tenant-bound and server-minted).
