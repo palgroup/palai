@@ -61,22 +61,30 @@ type indexRevisionView struct {
 	CreatedAt         *time.Time `json:"created_at,omitempty"`
 }
 
-// RetrievedChunk is one ranked retrieval hit. It carries the stable citation coordinates (document_revision
-// id + byte offsets + checksum) so a citation is verifiable against the document bytes, and the FTS score.
-// ACL is included so a caller (and T5's hardening) can see the authorization label the query already
-// enforced. Exported because the component tests and the T5 retrieval layer consume it directly.
+// RetrievedChunk is one typed retrieval hit (§25.15.5). It carries the revision + source identity, the EXACT
+// byte offsets and checksum (so a citation is verifiable against the document bytes), the score(s), the
+// chunk timestamp, the trust class, and a stable citation ref. TrustClass is ALWAYS "untrusted": retrieved
+// source content is data in the tool-result layer, never a privileged instruction and never a capability
+// grant (KNO-006) — it is stamped on every hit so a consumer cannot mistake it for authored context. ACL is
+// the authorization label the query-level predicate already enforced (the T5 hardening derives the grant
+// server-side). Exported because the component tests, the retrieval tool, and the API projection consume it.
 type RetrievedChunk struct {
-	Object             string  `json:"object"`
-	ChunkID            string  `json:"chunk_id"`
-	SourceID           string  `json:"source_id"`
-	DocumentRevisionID string  `json:"document_revision_id"`
-	Ordinal            int     `json:"ordinal"`
-	ByteStart          int     `json:"byte_start"`
-	ByteEnd            int     `json:"byte_end"`
-	Checksum           string  `json:"checksum"`
-	ACL                string  `json:"acl,omitempty"`
-	Content            string  `json:"content"`
-	Score              float64 `json:"score"`
+	Object             string     `json:"object"`
+	ChunkID            string     `json:"chunk_id"`
+	SourceID           string     `json:"source_id"`
+	DocumentRevisionID string     `json:"document_revision_id"`
+	IndexRevisionID    string     `json:"index_revision_id"`
+	Ordinal            int        `json:"ordinal"`
+	ByteStart          int        `json:"byte_start"`
+	ByteEnd            int        `json:"byte_end"`
+	Checksum           string     `json:"checksum"`
+	ACL                string     `json:"acl,omitempty"`
+	TrustClass         string     `json:"trust_class"`
+	CitationRef        string     `json:"citation_ref"`
+	Content            string     `json:"content"`
+	Score              float64    `json:"score"`
+	Strategy           string     `json:"strategy"`
+	CreatedAt          *time.Time `json:"created_at,omitempty"`
 }
 
 // scanner is the row shape shared by pool.QueryRow and rows.

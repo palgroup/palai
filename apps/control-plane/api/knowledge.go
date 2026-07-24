@@ -153,6 +153,13 @@ func (h *knowledgeHandler) write(w http.ResponseWriter, r *http.Request, out Pro
 	case out.NotFound:
 		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such knowledge resource in this scope")
 		return
+	case out.Conflict:
+		// A well-formed request a current-state precondition refuses (T5: missed freshness deadline under
+		// the fail policy, or a disabled vector strategy). The body carries the typed reason.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write(out.Body)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(okStatus)

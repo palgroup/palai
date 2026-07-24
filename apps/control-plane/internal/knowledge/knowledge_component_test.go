@@ -119,10 +119,15 @@ type ingestOutcome struct {
 	Error              string `json:"error"`
 }
 
-// retrieve runs a query and returns the ranked chunks.
+// retrieve runs a query and returns the ranked chunks. Grants are SERVER-DERIVED from the principal's key
+// scopes (T5) — never a request body — so this helper moves the caller's grant labels onto scope.Scopes as
+// kb-acl:<label>, exactly how a provisioned key carries them.
 func retrieve(t *testing.T, ks *knowledge.Store, scope middleware.Scope, kbID, query string, grants []string) []knowledge.RetrievedChunk {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"query": query, "acl_grants": grants})
+	for _, g := range grants {
+		scope.Scopes = append(scope.Scopes, knowledge.ACLGrantScope(g))
+	}
+	body, _ := json.Marshal(map[string]any{"query": query})
 	out, err := ks.Retrieve(context.Background(), scope, kbID, body)
 	if err != nil {
 		t.Fatalf("Retrieve error = %v", err)
