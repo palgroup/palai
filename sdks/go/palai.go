@@ -90,6 +90,13 @@ func New(opts ...Option) (*Client, error) {
 	return c, nil
 }
 
+// String / GoString redact the API key so a %v/%+v/%#v of a Client (or anything embedding it) never
+// leaks the secret in a log line — Go structs print their fields by default, so this is explicit.
+func (c *Client) String() string {
+	return "palai.Client{baseURL:" + c.baseURL + ", apiKey:REDACTED}"
+}
+func (c *Client) GoString() string { return c.String() }
+
 // requestOptions are the per-call transport controls a resource method threads through.
 type requestOptions struct {
 	body           any
@@ -241,8 +248,9 @@ func newIdempotencyKey() string {
 	return "idem_" + hex.EncodeToString(b[:])
 }
 
-// escapePathSegment URL-encodes an id for a single path segment (encodes "/" as %2F), matching the
-// TS SDK's encodeURIComponent so cross-language routing is byte-identical.
+// escapePathSegment URL-encodes an id for a single path segment (encodes "/" as %2F). It agrees with
+// the TS SDK's encodeURIComponent for real ids ([A-Za-z0-9_-] plus "/"); the two differ only on
+// sub-delims (e.g. url.PathEscape leaves "!$&'()*+,;=" raw), which no Palai id contains.
 func escapePathSegment(s string) string { return url.PathEscape(s) }
 
 // queryEscape URL-encodes a list query value (application/x-www-form-urlencoded, matching the TS

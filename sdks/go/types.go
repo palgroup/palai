@@ -57,6 +57,13 @@ func forwardMarshal(typed any, extra map[string]json.RawMessage) ([]byte, error)
 // forward-compat split knows which keys are "known". A field tagged `json:"-"` (the Extra catch-all)
 // is intentionally excluded so it never counts as a wire key.
 //
+// ponytail: this returns the exact tag name (e.g. "id"), but encoding/json matches field names
+// CASE-INSENSITIVELY on decode — so an input key "Id" fills the typed ID field AND, because "Id" !=
+// "id", stays in Extra, and a round-trip emits both "Id" and "id". TS would instead leave the typed
+// field unset and keep only "Id". A cross-language divergence the corpus doesn't cover (its keys are
+// canonical snake_case), inherent to encoding/json v1. Not worth a strict case-exact decoder now;
+// revisit only if a real server ever emits mixed-case keys.
+//
 // ponytail: a known field that is BOTH omitempty AND zero in the input is dropped on round-trip
 // (its key lands in neither the typed marshal nor Extra). No shipped payload carries an
 // information-bearing zero for a known field, and a reader never depends on one; upgrade to a

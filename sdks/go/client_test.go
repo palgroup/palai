@@ -3,6 +3,7 @@ package palai
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -156,6 +157,18 @@ func TestContextCancelIsTerminal(t *testing.T) {
 	var connErr *ConnectionError
 	if !errors.As(err, &connErr) {
 		t.Fatalf("want *ConnectionError on cancel, got %v", err)
+	}
+}
+
+func TestClientDoesNotLeakAPIKeyInFormatting(t *testing.T) {
+	c, err := New(WithAPIKey("sk-SUPER-SECRET"), WithBaseURL("http://palai.test"))
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	for _, verb := range []string{"%v", "%+v", "%s", "%#v"} {
+		if s := fmt.Sprintf(verb, c); strings.Contains(s, "sk-SUPER-SECRET") {
+			t.Fatalf("%s leaked the API key: %s", verb, s)
+		}
 	}
 }
 

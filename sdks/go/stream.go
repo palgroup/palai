@@ -32,6 +32,11 @@ type SSEFrame struct {
 // stopping early if fn returns false. It tolerates CRLF, skips comment lines (a leading colon),
 // joins multi-line data fields with "\n", strips one optional space after a field colon, and caps
 // a single line at maxSSELineBytes. It returns the first read error (nil at clean EOF).
+//
+// A trailing frame not terminated by a blank line is DISCARDED at EOF, mirroring parseEventStream,
+// the harness reference framer, and WHATWG: a graceful close mid-frame (e.g. a Caddy-edge idle FIN)
+// must not dispatch a truncated event, or a resume would advance Last-Event-ID past an event that
+// was never delivered.
 func scanSSE(r io.Reader, fn func(SSEFrame) bool) error {
 	sc := bufio.NewScanner(r)
 	// bufio.ScanLines splits on '\n' and strips a trailing '\r', so CRLF is tolerated. The buffer
@@ -54,13 +59,7 @@ func scanSSE(r io.Reader, fn func(SSEFrame) bool) error {
 		hasAny = true
 		applySSEField(&frame, &hasData, line)
 	}
-	if err := sc.Err(); err != nil {
-		return err
-	}
-	if hasAny { // a final frame with no trailing blank line
-		fn(frame)
-	}
-	return nil
+	return sc.Err()
 }
 
 // applySSEField parses one SSE line into the current frame. A leading colon is a comment; a field

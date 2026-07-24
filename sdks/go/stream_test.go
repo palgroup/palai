@@ -72,6 +72,30 @@ func TestSSEUnknownEventTypeDelivered(t *testing.T) {
 	}
 }
 
+// TestSSEUnterminatedTrailingFrameDiscarded pins the WHATWG/TS behavior: a frame with a complete,
+// VALID data line but no blank-line terminator (a graceful close mid-frame) is DISCARDED, not
+// dispatched. Dispatching it would deliver a truncated event and — worse — advance Last-Event-ID
+// (its id: line) past an event that was never delivered, silently dropping it on resume.
+func TestSSEUnterminatedTrailingFrameDiscarded(t *testing.T) {
+	terminated := "id: e1\nevent: run.progress.v1\ndata: {\"type\":\"run.progress.v1\",\"id\":\"e1\",\"sequence\":1,\"data\":{}}\n\n"
+	// e2 is valid JSON on its data line but the stream ends with a single '\n' — no blank terminator.
+	unterminated := "id: e2\nevent: run.progress.v1\ndata: {\"type\":\"run.progress.v1\",\"id\":\"e2\",\"sequence\":2,\"data\":{}}\n"
+
+	events, _ := collect(t, terminated+unterminated)
+	if len(events) != 1 {
+		t.Fatalf("an unterminated trailing frame must be discarded: got %d events, want 1", len(events))
+	}
+	if events[0].ID != "e1" {
+		t.Fatalf("only the blank-terminated event should be delivered, got %q", events[0].ID)
+	}
+	// Sanity: the SAME e2 frame, once blank-terminated, IS delivered — proving it was the missing
+	// terminator, not the content, that suppressed it.
+	full, _ := collect(t, terminated+unterminated+"\n")
+	if len(full) != 2 {
+		t.Fatalf("a blank-terminated e2 must be delivered: got %d events, want 2", len(full))
+	}
+}
+
 func TestFullJitterBackoffBounds(t *testing.T) {
 	base, max := 100, 5000
 	for attempt := 0; attempt < 8; attempt++ {
