@@ -1,6 +1,9 @@
 package knowledge
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // chunkerRevision pins the deterministic chunking algorithm. It is recorded on every document_revision so a
 // re-chunk is reproducible and an algorithm change is a NEW revision, never a silent reinterpretation of
@@ -22,8 +25,10 @@ type Chunk struct {
 }
 
 // chunkDocument splits content into deterministic paragraph chunks with exact byte offsets. Paragraphs are
-// separated by blank lines; a paragraph longer than maxBytes is hard-split at maxBytes so no chunk is
-// unbounded. It is a PURE function of (content, maxBytes) — the same input always yields the same chunks,
+// separated by blank lines; a paragraph longer than maxBytes is hard-split at the last UTF-8 rune boundary
+// at or before maxBytes, so no chunk is unbounded AND no chunk is invalid UTF-8 (a mid-rune split would fail
+// the ingest — Postgres rejects invalid UTF-8 text with SQLSTATE 22021). It is a PURE function of (content,
+// maxBytes) — the same input always yields the same chunks,
 // which is what makes a re-ingest reproducible and a citation offset verifiable.
 //
 // ponytail: one text chunker for all three parsers (text/markdown/code) — office/PDF parsers and
@@ -45,10 +50,21 @@ func chunkDocument(content string, maxBytes int) []Chunk {
 		// The trimmed content may start after seg.start; find its real offset so citations point at the
 		// non-whitespace bytes.
 		start := seg.start + strings.Index(seg.text, text)
-		for off := 0; off < len(text); off += maxBytes {
+		for off := 0; off < len(text); {
 			end := off + maxBytes
-			if end > len(text) {
+			if end >= len(text) {
 				end = len(text)
+			} else if !utf8.RuneStart(text[end]) {
+				// A hard split at maxBytes would land inside a multibyte rune (Turkish/CJK/emoji). Postgres
+				// rejects invalid UTF-8 text params (22021), so walk the boundary BACK to the rune start.
+				for end > off && !utf8.RuneStart(text[end]) {
+					end--
+				}
+				// A single rune wider than maxBytes: emit the whole rune rather than loop forever.
+				if end == off {
+					_, size := utf8.DecodeRuneInString(text[off:])
+					end = off + size
+				}
 			}
 			chunks = append(chunks, Chunk{
 				Ordinal:   ordinal,
@@ -57,6 +73,7 @@ func chunkDocument(content string, maxBytes int) []Chunk {
 				Content:   text[off:end],
 			})
 			ordinal++
+			off = end
 		}
 	}
 	return chunks
