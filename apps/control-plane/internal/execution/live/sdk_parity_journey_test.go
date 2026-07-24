@@ -235,7 +235,7 @@ func liveModelTwo() string {
 	if m := os.Getenv("PALAI_LIVE_MODEL_TWO"); m != "" {
 		return m
 	}
-	return "claude-3-5-haiku-20241022"
+	return "claude-haiku-4-5"
 }
 
 // standInChatCompletions is the local stand-in gateway upstream: it answers every POST (the openai-compatible
