@@ -131,7 +131,8 @@ func (r Result) Validate() error {
 	if r.ModelRequestID == "" {
 		return errors.New("result: model_request_id is required for correlation")
 	}
-	if r.Usage.InputTokens < 0 || r.Usage.OutputTokens < 0 || r.Usage.TotalTokens < 0 {
+	if r.Usage.InputTokens < 0 || r.Usage.OutputTokens < 0 || r.Usage.TotalTokens < 0 ||
+		r.Usage.CacheReadTokens < 0 || r.Usage.CacheWriteTokens < 0 {
 		return errors.New("result: usage token counts must be non-negative")
 	}
 	if r.Usage.TotalTokens > 0 && r.Usage.TotalTokens < r.Usage.InputTokens+r.Usage.OutputTokens {

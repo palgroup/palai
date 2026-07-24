@@ -125,6 +125,13 @@ func (a Adapter) consume(req modelbroker.Request, r io.Reader, names map[string]
 				InputTokens:  c.Usage.PromptTokens,
 				OutputTokens: c.Usage.CompletionTokens,
 				TotalTokens:  c.Usage.TotalTokens,
+				// OpenAI reports cache-READ under prompt_tokens_details.cached_tokens and no
+				// explicit cache-WRITE count (it auto-caches), so the canonical write counter
+				// stays 0 for this family — an honest normalization (MOD-010). NOTE the
+				// cross-family asymmetry the schema documents: OpenAI FOLDS cached tokens INTO
+				// prompt_tokens, so here CacheReadTokens is a SUBSET of InputTokens/TotalTokens
+				// (a biller must not add it again). Provider-two reports them DISJOINT.
+				CacheReadTokens: c.Usage.PromptTokensDetails.CachedTokens,
 			}
 		}
 		for _, choice := range c.Choices {
@@ -179,9 +186,12 @@ type chunk struct {
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		TotalTokens         int `json:"total_tokens"`
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 

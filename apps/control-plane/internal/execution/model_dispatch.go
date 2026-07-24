@@ -352,10 +352,12 @@ func toEngineToolCalls(calls []modelbroker.ToolCall) ([]contracts.ToolCall, erro
 
 func addUsage(a, b contracts.Usage) contracts.Usage {
 	return contracts.Usage{
-		InputTokens:  a.InputTokens + b.InputTokens,
-		OutputTokens: a.OutputTokens + b.OutputTokens,
-		TotalTokens:  a.TotalTokens + b.TotalTokens,
-		ToolCalls:    a.ToolCalls + b.ToolCalls,
+		InputTokens:      a.InputTokens + b.InputTokens,
+		OutputTokens:     a.OutputTokens + b.OutputTokens,
+		TotalTokens:      a.TotalTokens + b.TotalTokens,
+		ToolCalls:        a.ToolCalls + b.ToolCalls,
+		CacheReadTokens:  a.CacheReadTokens + b.CacheReadTokens,
+		CacheWriteTokens: a.CacheWriteTokens + b.CacheWriteTokens,
 	}
 }
 
