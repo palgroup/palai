@@ -29,11 +29,10 @@ type KnowledgeAPI interface {
 // tenancy provisioning and secret refs. The auth/render plumbing is kept local rather than shared so this
 // surface stays decoupled from the other tested handlers.
 //
-// ACL-FIRST HOOK (T5 hardens): retrieval applies the principal's ACL grants AT THE QUERY LEVEL. In this T4
-// spine the grants arrive in the request body (`acl_grants`) as the mechanism; T5 REPLACES body-supplied
-// grants with grants derived from the authenticated principal — a request body is never trusted for
-// authorization. The query-level predicate is the seam that makes that hardening a WHERE-clause change,
-// not a post-fetch filter (which §25.15.4 forbids).
+// ACL-FIRST (T5, KNO-003): retrieval derives the principal's ACL grants SERVER-SIDE from the verified key
+// scopes (internal/knowledge.derivePrincipalGrants) and applies them AT THE QUERY LEVEL — a request body is
+// never trusted for authorization (a forged acl_grants field is strict-rejected). The query-level predicate
+// keeps this a WHERE-clause change, not a post-fetch filter (which §25.15.4 forbids).
 type knowledgeHandler struct {
 	knowledge KnowledgeAPI
 }
