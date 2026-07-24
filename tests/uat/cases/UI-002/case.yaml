@@ -1,0 +1,10 @@
+id: UI-002
+name: console-exact-approval-detail-is-authoritative-and-model-summary-never-replaces-it
+proof_class: e2e-deterministic
+provider: fake
+input: "The console's approval UI shows the EXACT, model-independent detail (§47.2, UI-002): action, args, diff, destination, risk, and expiry — each surfaced from the canonical approval.requested event, not the model's prose. The model's own summary is rendered in a SEPARATE, explicitly non-authoritative region and NEVER substitutes for the authoritative detail: a soothing 'everything looks fine, safe to approve' summary does not erase the high risk / real destination shown independently, and a bare 'yes' is flagged insufficient for a high-risk action. Approve drives a durable approve command through the /v1 relay and the run proceeds through recovery to completed; deny BLOCKS the side effect (the run terminates canceled, the push tool-completed frame never arrives). PROOF SEAM: playwright against the built console over a deterministic FAKE /v1 upstream (tests/fake-control-plane.mjs) that scripts the approval.requested event with a deliberately reassuring model summary and a high-risk authoritative detail. §6 operator leg: exercising the exact-approval UI against a real run on a deployed stack is operator work above this automated ceiling."
+expect_status: completed
+proof:
+  - apps/web-console/tests/journey.spec.ts:UI-002 the approval UI shows the authoritative action args diff destination risk expiry the model summary does not replace it
+  - apps/web-console/tests/journey.spec.ts:approve proceeds through recovery to a completed run with a downloadable artifact
+  - apps/web-console/tests/journey.spec.ts:deny blocks the operation the run terminates canceled the push never completes
