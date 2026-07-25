@@ -16,8 +16,9 @@
 #
 # ORDER — build.sh → (T2: sbom.sh) → provenance.sh → (T4: release-verify.sh). This script hashes
 # EVERY file in the dir into the signed root, so whatever T2 has already written is bound by the
-# same signature with no coordination; any SBOM present is additionally recorded as a byproduct of
-# the run. That is the SBOM slot: it needs no change here when T2 lands.
+# same signature with no coordination; everything under sbom/ is additionally DECLARED as a byproduct
+# of the run — the SBOM documents, the scanner reports, the license inventory and the §51.3 policy
+# decision, each named for what it is. That is the SBOM slot.
 #
 # SIGNING — the E14 T5 command set, VERBATIM (`openssl genpkey -algorithm EC -pkeyopt
 # ec_paramgen_curve:P-256` / `openssl pkey -pubout` / `openssl dgst -sha256 -sign`). There is exactly
@@ -220,17 +221,38 @@ for rel_mod in ("go.mod", "go.sum"):
 # --- SBOM slot (T2) -------------------------------------------------------------------------------
 # Anything T2 wrote into the release dir is bound by the signed root below; here it is also named as
 # a byproduct of the run, with its digest recomputed like everything else.
+#
+# The set is the sbom/ SUBTREE, declared by RELPATH — T2 writes everything it produces there and its
+# own containment test pins that. A basename glob (what this did until E18 T4) named the SBOM
+# documents and nothing else: not vuln-report.json, which carries the §51.3 policy DECISION, not the
+# per-artifact scanner reports, not the policy copy, not the license inventory. They were all SIGNED,
+# since every file in the dir is hashed into the root below, but never DECLARED — so a consumer
+# reading the attestation could not see the vulnerability decision, and the count line below reported
+# a fraction of the run. Each byproduct is also named for WHAT IT IS: "sbom" on a vulnerability
+# decision is a mislabel a consumer filters on.
+def byproduct_name(base):
+    for exact, name in (("vuln-report.json", "vuln-decision"),
+                        ("vuln-policy.json", "vuln-policy"),
+                        ("license-inventory.json", "license-inventory")):
+        if base == exact:
+            return name
+    for suffix, name in ((".spdx.json", "sbom-spdx"),
+                         (".cdx.json", "sbom-cyclonedx"),
+                         (".grype.json", "vuln-scan")):
+        if base.endswith(suffix):
+            return name
+    return "scan-byproduct"
+
 byproducts = []
-for root, _dirs, files in os.walk(rel):
+for root, _dirs, files in os.walk(os.path.join(rel, "sbom")):
     for name in sorted(files):
-        low = name.lower()
-        if low.startswith("sbom") or low.endswith((".spdx.json", ".cdx.json")):
-            path = os.path.join(root, name)
-            byproducts.append({
-                "uri": "file://" + os.path.relpath(path, rel),
-                "digest": {"sha256": sha256_file(path)},
-                "name": "sbom",
-            })
+        path = os.path.join(root, name)
+        byproducts.append({
+            "uri": "file://" + os.path.relpath(path, rel),
+            "digest": {"sha256": sha256_file(path)},
+            "name": byproduct_name(name),
+        })
+byproducts.sort(key=lambda b: b["uri"])
 
 invocation = index.get("invocation")
 if not isinstance(invocation, dict) or "args" not in invocation:
@@ -287,9 +309,11 @@ statement = {
                     " identity; a local session has none and does not invent one."
                 ),
                 "sbom_slot": (
-                    "SBOMs are produced by plan §T2 into this same release dir BEFORE this script"
-                    " runs; every one found is listed in runDetails.byproducts and covered by the"
-                    " signed sha256sums root. This run found %d." % len(byproducts)
+                    "SBOMs, scanner reports, the license inventory and the §51.3 policy DECISION are"
+                    " produced by plan §T2 into this release dir's sbom/ subtree BEFORE this script"
+                    " runs; EVERY file found there is listed in runDetails.byproducts (named for what"
+                    " it is) and covered by the signed sha256sums root. This run found %d."
+                    % len(byproducts)
                 ),
                 "honest_ceiling": honest_ceiling,
             },
