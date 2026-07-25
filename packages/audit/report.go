@@ -8,11 +8,11 @@ import (
 // Alert kinds. These are the TYPED surface a caller asserts on — never a substring of prose, so a
 // failing run and a passing run can never be told apart by grepping the same word (the E15 T6 lesson).
 const (
-	// AlertGap: rows the checkpoint anchored are MISSING — an interior hole in a session's seq,
-	// a truncated tail, or a whole anchored session gone.
+	// AlertGap: rows the checkpoint anchored are MISSING — a session holds fewer anchored rows than
+	// were anchored, tops out below the anchored seq, or is gone entirely.
 	AlertGap = "gap"
-	// AlertTamper: the anchored rows are all still there (count, max_seq and contiguity match the
-	// checkpoint exactly) but their BYTES no longer chain to the anchored head.
+	// AlertTamper: the anchored rows are all still there (same count, same top seq) but their BYTES
+	// no longer chain to the anchored head.
 	AlertTamper = "tamper"
 	// AlertSignature: the checkpoint itself is not trustworthy — bad/absent signature, untrusted key
 	// resolution, or an unreadable envelope. Raised before any row is even read.
@@ -63,11 +63,20 @@ func (r Report) Has(kind string) bool {
 // max_seq. Rows above it, and sessions the checkpoint never saw, are counted as unanchored and
 // reported — they are newer than the anchor, so no verdict about them is possible or claimed.
 //
-// gap vs tamper: a session whose anchored seq set is intact (same count, same max_seq, contiguous
-// 1..max) but whose head differs is a TAMPER — the only thing that can have changed is bytes. A
-// session whose seq set is broken is a GAP, and no tamper is additionally claimed for it: the head
-// difference is already fully explained by the missing rows, and a tamper alert that co-fires on
-// every gap would make the byte-level arm vacuous.
+// gap vs tamper: a session that still holds exactly as many anchored rows, up to exactly the same
+// seq, but whose head differs is a TAMPER — the only thing that can have changed is bytes. A session
+// that has FEWER anchored rows, or a lower top seq, is a GAP, and no tamper is additionally claimed
+// for it: the head difference is already fully explained by the missing rows, and a tamper alert that
+// co-fired on every gap would make the byte-level arm vacuous.
+//
+// The gap rule is deliberately NOT "seq 1..max must be contiguous". The journal legitimately carries
+// holes — the §22.2 retention purge deletes a terminated response's events — so contiguity would cry
+// gap over ordinary housekeeping. What is anchored is the seq set as it stood when the checkpoint was
+// cut; losing any of it shows up as a smaller count or a lower top seq.
+//
+// ponytail: count+max_seq localizes a gap to a session, not to the individual missing seq. The
+// checkpoint would have to carry the anchored seq set (run-length encoded) to name it; add that if an
+// operator ever needs the exact row rather than the session.
 func Compare(cp Checkpoint, rows []Row) Report {
 	rep := Report{Algorithm: cp.Algorithm, CheckpointHead: cp.Head}
 
@@ -94,23 +103,25 @@ func Compare(cp Checkpoint, rows []Row) Report {
 	var anchored []Row
 	for _, a := range anchors {
 		var prefix []Row
-		seen := map[int64]bool{}
+		var topSeq int64
 		for _, r := range bySession[a.SessionID] {
 			if r.Seq <= a.MaxSeq {
 				prefix = append(prefix, r)
-				seen[r.Seq] = true
+				if r.Seq > topSeq {
+					topSeq = r.Seq
+				}
 			}
 		}
 		anchored = append(anchored, prefix...)
 
-		if missing := missingSeqs(seen, a.MaxSeq); len(missing) > 0 || len(prefix) != a.Count {
+		if len(prefix) != a.Count || topSeq != a.MaxSeq {
 			rep.Alerts = append(rep.Alerts, Alert{
 				Kind:      AlertGap,
 				SessionID: a.SessionID,
-				Detail: fmt.Sprintf("the checkpoint anchored %d row(s) up to seq %d; %d are present, missing seq %v",
-					a.Count, a.MaxSeq, len(prefix), missing),
-				Want: fmt.Sprintf("%d rows", a.Count),
-				Got:  fmt.Sprintf("%d rows", len(prefix)),
+				Detail: fmt.Sprintf("the checkpoint anchored %d row(s) up to seq %d; %d row(s) up to seq %d are present — anchored rows have been removed",
+					a.Count, a.MaxSeq, len(prefix), topSeq),
+				Want: fmt.Sprintf("%d rows up to seq %d", a.Count, a.MaxSeq),
+				Got:  fmt.Sprintf("%d rows up to seq %d", len(prefix), topSeq),
 			})
 			continue
 		}
@@ -141,19 +152,4 @@ func Compare(cp Checkpoint, rows []Row) Report {
 	}
 	rep.OK = len(rep.Alerts) == 0
 	return rep
-}
-
-// missingSeqs lists the 1..maxSeq values absent from seen, bounded so a wholly-deleted session
-// reports a readable head rather than thousands of integers.
-func missingSeqs(seen map[int64]bool, maxSeq int64) []int64 {
-	var out []int64
-	for s := int64(1); s <= maxSeq; s++ {
-		if !seen[s] {
-			out = append(out, s)
-			if len(out) == 16 {
-				return out
-			}
-		}
-	}
-	return out
 }

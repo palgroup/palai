@@ -74,7 +74,7 @@ func TestIntactJournalVerifiesGreen(t *testing.T) {
 }
 
 // TestDeletedRowRaisesGap is the GAP arm: a row removed from an anchored session is a typed "gap"
-// alert naming the session and the missing seq — and NOT reported as a tamper (a missing row already
+// alert naming the session — and NOT reported as a tamper (a missing row already
 // explains the head difference; see Compare).
 func TestDeletedRowRaisesGap(t *testing.T) {
 	rows := fixture()
@@ -276,5 +276,27 @@ func pubOf(t *testing.T, key, pub string) {
 	out, err := exec.Command("openssl", "pkey", "-in", key, "-pubout", "-out", pub).CombinedOutput()
 	if err != nil {
 		t.Fatalf("pubout: %v: %s", err, out)
+	}
+}
+
+// TestALegitimateHoleIsNotAGap is the regression the real journal caught: the §22.2 retention purge
+// deletes a terminated response's events, so a live journal genuinely carries seq holes. A checkpoint
+// cut over a journal that ALREADY has one must verify green — a gap rule built on "seq 1..max must be
+// contiguous" cries tamper over ordinary housekeeping and trains an operator to ignore the alert.
+func TestALegitimateHoleIsNotAGap(t *testing.T) {
+	var holed []audit.Row
+	for _, r := range fixture() {
+		if r.SessionID == "sess_a" && r.Seq == 2 {
+			continue // purged before the checkpoint was ever cut
+		}
+		holed = append(holed, r)
+	}
+	cp := audit.NewCheckpoint(holed, time.Now())
+	if rep := audit.Compare(cp, holed); !rep.OK {
+		t.Fatalf("a journal with a pre-existing retention hole raised %+v, want no alerts", rep.Alerts)
+	}
+	// ... and losing a row from that already-holed journal is still a gap.
+	if rep := audit.Compare(cp, holed[1:]); !rep.Has(audit.AlertGap) {
+		t.Fatalf("removing a row from a holed journal did not raise %q: %+v", audit.AlertGap, rep.Alerts)
 	}
 }
