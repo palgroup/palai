@@ -11,14 +11,18 @@
 package performance
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -206,4 +210,127 @@ func jsonBody(v any) string {
 		panic(fmt.Sprintf("encode body: %v", err))
 	}
 	return string(raw)
+}
+
+// sseConn is a live SSE reader over the real stream endpoint. Cancel disconnects the client; the
+// journal is unaffected.
+type sseConn struct {
+	cancel context.CancelFunc
+	body   io.ReadCloser
+	sc     *bufio.Scanner
+}
+
+// openStream issues the streaming GET and returns once the 200 headers are back, together with the
+// time-to-headers. rawQuery carries the resume cursor (after_sequence=N) on a reconnect.
+func (s *stack) openStream(sessionID, rawQuery string) (*sseConn, time.Duration, error) {
+	target := s.base + "/v1/sessions/" + sessionID + "/events"
+	if rawQuery != "" {
+		target += "?" + rawQuery
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		cancel()
+		return nil, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	start := time.Now()
+	resp, err := s.client.Do(req)
+	if err != nil {
+		cancel()
+		return nil, time.Since(start), err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		cancel()
+		return nil, time.Since(start), fmt.Errorf("GET events status = %d, want 200", resp.StatusCode)
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	return &sseConn{cancel: cancel, body: resp.Body, sc: sc}, time.Since(start), nil
+}
+
+// next returns the next event's id and CloudEvents sequence, skipping heartbeat comments. ok is false
+// at EOF.
+func (c *sseConn) next() (id string, seq int, ok bool) {
+	var dataLine string
+	for c.sc.Scan() {
+		line := c.sc.Text()
+		switch {
+		case line == "":
+			if id != "" || dataLine != "" {
+				var envelope struct {
+					Sequence int `json:"sequence"`
+				}
+				_ = json.Unmarshal([]byte(dataLine), &envelope)
+				return id, envelope.Sequence, true
+			}
+		case strings.HasPrefix(line, ":"): // heartbeat comment
+		case strings.HasPrefix(line, "id: "):
+			id = strings.TrimPrefix(line, "id: ")
+		case strings.HasPrefix(line, "data: "):
+			dataLine = strings.TrimPrefix(line, "data: ")
+		}
+	}
+	return "", 0, false
+}
+
+func (c *sseConn) close() {
+	c.cancel()
+	c.body.Close()
+}
+
+// firstEvent measures time-to-FIRST-EVENT, not time-to-headers: §54.3's "first SSE event p95 below 1 s"
+// is about the event, and a server that answered 200 and then stalled would pass the weaker reading.
+func (s *stack) firstEvent(sessionID string) (time.Duration, int, error) {
+	start := time.Now()
+	conn, _, err := s.openStream(sessionID, "")
+	if err != nil {
+		return time.Since(start), 0, err
+	}
+	defer conn.close()
+	_, seq, ok := conn.next()
+	if !ok {
+		return time.Since(start), 0, errors.New("stream closed before the first event")
+	}
+	return time.Since(start), seq, nil
+}
+
+// residentBytes reads the control-plane process's RSS. The binary is a child of the tier script, which
+// exports its pid; ps is the portable reading (KiB on both macOS and Linux).
+func residentBytes(t *testing.T) float64 {
+	t.Helper()
+	pid := os.Getenv("PALAI_PERF_SERVER_PID")
+	if pid == "" {
+		t.Skip("PALAI_PERF_SERVER_PID is required; run make test-performance TEST=service")
+	}
+	out, err := exec.Command("ps", "-o", "rss=", "-p", pid).Output()
+	if err != nil {
+		t.Fatalf("read rss of pid %s: %v", pid, err)
+	}
+	kib, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil {
+		t.Fatalf("parse rss %q: %v", out, err)
+	}
+	return kib * 1024
+}
+
+// envInt reads a load-shape knob, so a machine under pressure can lower the shape without editing code
+// (and the chosen value lands in the profile's load_shape string either way).
+func envInt(name string, def int) int {
+	if raw := os.Getenv(name); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			return v
+		}
+	}
+	return def
+}
+
+func envDuration(name string, def time.Duration) time.Duration {
+	if raw := os.Getenv(name); raw != "" {
+		if v, err := time.ParseDuration(raw); err == nil && v > 0 {
+			return v
+		}
+	}
+	return def
 }
