@@ -45,14 +45,21 @@ Obtain **out of band** (the release page / your config management), never from t
 the signing **public key** AND the verifying **code** — both `verify.sh` and `runner-verify.sh` (all
 three live in the repo, ~80 lines each). A channel attacker can swap the artifacts, the signature,
 a sibling key, AND the bundle's verifier (replacing it with `exit 0`) all at once; the out-of-band
-key is worthless if the code checking it came from the same channel. Run the out-of-band `verify.sh`
-— it PREFERS a `runner-verify.sh` sitting next to it over the bundle's copy.
+key is worthless if the code checking it came from the same channel. Run the out-of-band `verify.sh`:
+it resolves the signer from **outside** the bundle — a `runner-verify.sh` sitting next to it, else the
+git-tracked `scripts/package/runner/verify.sh` when run from a checkout — and **REFUSES (exit 2)** if
+neither is reachable. It never falls back to the bundle's copy. The bundle's own `verify.sh` therefore
+refuses too, unless you set `PALAI_AIRGAP_ALLOW_BUNDLED_VERIFIER=1` to say out loud that this is a
+same-session local proof with no channel attacker in it (`--network-none` below sets it for you: inside
+that container the bundle's copy is the only one there, and what it proves is offline-verifiability,
+not channel-swap resistance).
 
 **Verify on the host first — no Docker, no daemon, and BEFORE any `docker load`** (a `docker load`
 hands an untrusted tar to the daemon's parser, so never load until the bundle is verified):
 
 ```sh
-./verify.sh dist/airgap-bundle /path/to/trusted.pub     # host: openssl + sha256sum only
+# the OUT-OF-BAND copy (a checkout, or verify.sh + runner-verify.sh in a directory of their own)
+deploy/airgap/verify.sh dist/airgap-bundle /path/to/trusted.pub   # host: openssl + sha256sum only
 ```
 
 `verify.sh` checks **(1)** the signature over `sha256sums` (E14 T5 verifier verbatim) and **(2)** the

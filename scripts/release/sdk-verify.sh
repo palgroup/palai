@@ -112,7 +112,10 @@ fi
 # accepts an unsigned file, which is the one thing this check exists to prevent.
 echo "verify: (3) no unsigned file in the bundle ..." >&2
 listed="$(sed 's/^[0-9a-f]*[ *]*//' sha256sums)"
-riders="$(find . -type f \
+# SYMLINKS COUNT. `-type f` does not list them, so `rider.link -> /etc/hosts` rode along under a
+# "nothing unlisted" line: unsigned by construction (the signed root lists no symlink either) and the
+# classic traversal vector for whatever extracts or consumes this tree next.
+riders="$(find . \( -type f -o -type l \) \
 	! -name 'sha256sums' ! -name 'sha256sums.sha256' ! -name 'sha256sums.sig' \
 	! -name 'palai-sdk-signing.pub' \
 	| LC_ALL=C sort | while IFS= read -r f; do

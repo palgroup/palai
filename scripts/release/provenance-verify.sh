@@ -58,10 +58,10 @@ if [ "${1:-}" = "--network-none" ]; then
 	pub="${2:?usage: provenance-verify.sh --network-none <release-dir> <pubkey> [tool-image]}"
 	tool="${3:-${PALAI_PROVENANCE_TOOL_IMAGE:-}}"
 	[ -n "$tool" ] || { echo "verify: a tool image is REQUIRED (arg 3 or PALAI_PROVENANCE_TOOL_IMAGE) — an already-loaded image with openssl + python3 (the project's own reference-engine image qualifies)" >&2; exit 2; }
-	rel_abs="$(cd "$rel" && pwd)"
-	pub_dir="$(cd "$(dirname "$pub")" && pwd)"
+	rel_abs="$(cd "$rel" && pwd -P)"
+	pub_dir="$(cd "$(dirname "$pub")" && pwd -P)"
 	pub_base="$(basename "$pub")"
-	repo="$(cd "$(dirname "$0")/../.." && pwd)"
+	repo="$(cd "$(dirname "$0")/../.." && pwd -P)"
 	# --network none: the container has NO network device. The repo is mounted read-only so BOTH the
 	# verifying code and the canonical materials source come from OUTSIDE the release dir — the
 	# fail-closed resolution below is satisfied naturally, with no opt-in. CEILING: a minimal tool
@@ -81,29 +81,39 @@ if [ -z "$pub" ]; then
 	echo "verify: obtain it OUT OF BAND — never from the release dir — then re-run." >&2
 	exit 2
 fi
-case "$pub" in
-	/*) : ;;
-	*) pub="$(cd "$(dirname "$pub")" && pwd)/$(basename "$pub")" ;;
-esac
+pub_dir="$(cd "$(dirname "$pub")" && pwd -P)"
+pub="${pub_dir%/}/$(basename "$pub")"
 
-self_dir="$(cd "$(dirname "$0")" && pwd)"
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
 cd "$rel"
-rel_abs="$(pwd)"
+rel_abs="$(pwd -P)"
+
+# inside <path> <dir> — TRUE when <path> IS <dir> or anything under it, decided by DEVICE+INODE
+# identity rather than by spelling. A string comparison is defeated by any second NAME for the same
+# directory: one level down, a symlinked release, macOS's /tmp -> /private/tmp, an APFS case
+# respelling. Both fences below are about the LOCATION a file comes from, not how the path is written.
+[ / -ef / ] 2>/dev/null || { echo "verify: REFUSING — this shell's \`test\` has no -ef, so the location fence cannot be decided." >&2; exit 3; }
+inside() {
+	_p="$1"
+	while :; do
+		[ "$_p" -ef "$2" ] && return 0
+		case "$_p" in /|//|.|"") return 1 ;; esac
+		_p="$(dirname "$_p")"
+	done
+}
 
 # The trust ANCHOR gets the same fail-closed treatment as the verifying code below: provenance.sh
 # leaves palai-release-signing.pub out of the signed root on purpose, so a key taken from inside the
 # release dir turns the signature into a second checksum an attacker controls end to end.
-case "$pub" in
-	"$rel_abs"/*)
-		if [ "${PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY:-}" = "1" ]; then
-			echo "verify: WARNING — the public key comes from INSIDE the release dir (PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY=1): an attacker who swapped the artifacts could have swapped this key too, so the signature proves only self-consistency. Same-session local proof only." >&2
-		else
-			echo "verify: REFUSING — the public key $pub is INSIDE the release dir it would verify; it is not a trust anchor (it is not even covered by the signed root)." >&2
-			echo "verify: obtain the key OUT OF BAND and pass it, optionally pinning PALAI_RUNNER_PUBKEY_FINGERPRINT, or set PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY=1 for a same-session local proof." >&2
-			exit 2
-		fi
-		;;
-esac
+if inside "$pub_dir" "$rel_abs"; then
+	if [ "${PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY:-}" = "1" ]; then
+		echo "verify: WARNING — the public key comes from INSIDE the release dir (PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY=1): an attacker who swapped the artifacts could have swapped this key too, so the signature proves only self-consistency. Same-session local proof only." >&2
+	else
+		echo "verify: REFUSING — the public key $pub is INSIDE the release dir it would verify ($rel_abs); it is not a trust anchor (it is not even covered by the signed root)." >&2
+		echo "verify: obtain the key OUT OF BAND and pass it, optionally pinning PALAI_RUNNER_PUBKEY_FINGERPRINT, or set PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY=1 for a same-session local proof." >&2
+		exit 2
+	fi
+fi
 
 for f in sha256sums sha256sums.sig sha256sums.sha256 runner-verify.sh release-index.json provenance.intoto.json; do
 	[ -f "$f" ] || { echo "verify: release dir is missing $f" >&2; exit 2; }
@@ -113,12 +123,12 @@ command -v openssl >/dev/null 2>&1 || { echo "verify: openssl not found" >&2; ex
 command -v python3 >/dev/null 2>&1 || { echo "verify: python3 not found — legs (3) and (4) parse JSON" >&2; exit 3; }
 
 verifier="$self_dir/runner-verify.sh"
-if [ ! -f "$verifier" ] || [ "$self_dir" = "$rel_abs" ]; then
+if [ ! -f "$verifier" ] || inside "$self_dir" "$rel_abs"; then
 	if [ "${PALAI_RELEASE_ALLOW_BUNDLED_VERIFIER:-}" = "1" ]; then
 		verifier="$rel_abs/runner-verify.sh"
 		echo "verify: WARNING — using the RELEASE DIR's runner-verify.sh (PALAI_RELEASE_ALLOW_BUNDLED_VERIFIER=1; same-session local proof only, NOT channel-attack safe)" >&2
 	else
-		echo "verify: REFUSING — no trusted out-of-band runner-verify.sh beside this script; the release dir's own copy is untrusted (a channel attacker can neuter it)." >&2
+		echo "verify: REFUSING — no trusted out-of-band runner-verify.sh beside this script ($self_dir); the release dir's own copy is untrusted (a channel attacker can neuter it). A verifier resolved from INSIDE the release dir ($rel_abs) is refused however the path is spelled." >&2
 		echo "verify: run the git-tracked scripts/release/provenance-verify.sh, or set PALAI_RELEASE_ALLOW_BUNDLED_VERIFIER=1 for a same-session local proof." >&2
 		exit 2
 	fi
@@ -150,7 +160,10 @@ fi
 # which cannot sign itself (provenance.sh excludes exactly these when it builds the root).
 # ponytail: O(n*m) grep over a release dir's few dozen paths; sort+comm if a release ever gets big.
 listed="$(sed 's/^[0-9a-f]*[ *]*//' sha256sums)"
-unlisted="$(find . -type f \
+# SYMLINKS COUNT. `-type f` does not list them, so `rider.link -> /etc/hosts` rode along under a
+# "nothing unlisted" line: unsigned by construction (the signed root lists no symlink either) and the
+# classic traversal vector for whatever extracts or consumes this tree next.
+unlisted="$(find . \( -type f -o -type l \) \
 	! -name 'sha256sums' ! -name 'sha256sums.sha256' ! -name 'sha256sums.sig' \
 	! -name 'palai-release-signing.pub' \
 	| LC_ALL=C sort | while IFS= read -r f; do
