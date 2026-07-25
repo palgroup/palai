@@ -137,9 +137,17 @@ func (h *slackHandler) receive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. The url_verification handshake — answered before (and without) any lookup, because it carries no
-	// team_id. The challenge is echoed VERBATIM as text/plain, which is what Slack reads.
+	// team_id. That also makes it the ONE surface here that renders caller-chosen bytes on this deployment's
+	// own origin, unauthenticated, so the echo is bounded to what a real handshake can be: a short
+	// alphanumeric token, served as declared-inert text that a browser may not sniff into a document.
+	// Anything else is a reflection surface rather than a handshake, and is refused terminally.
 	if challenge, ok := slack.ParseChallenge(body); ok {
-		w.Header().Set("Content-Type", "text/plain")
+		if !validSlackChallenge(challenge) {
+			slackTerminal(w, r, http.StatusBadRequest, "invalid_request", "the url_verification challenge is not a valid token")
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(challenge))
 		return
@@ -225,6 +233,26 @@ func (h *slackHandler) receive(w http.ResponseWriter, r *http.Request) {
 	h.log("slack events: admitted connection=%s event=%s response=%s session=%s replayed=%t",
 		conn.ID, ev.SourceEventID, out.ResponseID, out.SessionID, out.Replayed)
 	w.WriteHeader(http.StatusOK)
+}
+
+// validSlackChallenge bounds what the handshake will echo back.
+//
+// CONTRACT: https://docs.slack.dev/apis/events-api/ (checked 2026-07-25) — the challenge is a short random
+// token (the documented example is 50-odd alphanumerics). Nothing says it is alphanumeric FOREVER, so this is
+// the deliberate trade: a token shaped like every one Slack has ever sent is echoed, and anything else is
+// refused rather than reflected. If Slack ever widens the alphabet the handshake fails loudly at Request-URL
+// configuration time — visible immediately, unlike a reflection nobody notices.
+func validSlackChallenge(challenge string) bool {
+	const maxSlackChallenge = 1024 // ~20x the documented length; a real token is nowhere near it
+	if challenge == "" || len(challenge) > maxSlackChallenge {
+		return false
+	}
+	for _, r := range challenge {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 // slackTerminal answers a rejection Slack must NOT redeliver (plan §3.5 D1). Every caller is a state a

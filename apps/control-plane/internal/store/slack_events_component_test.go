@@ -8,12 +8,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,6 +52,10 @@ type slackFixture struct {
 	revision  string
 	team      string
 	botUser   string
+	// secrets is the org-scoped secret bridge's backing map, keyed org+"/"+ref. A test that seeds a SECOND
+	// tenant adds that tenant's own ref here, so a cross-tenant proof runs against a resolver that serves both
+	// — otherwise "the other tenant could not verify" would be an artefact of the fixture, not of the code.
+	secrets map[string][]byte
 }
 
 // newSlackFixture seeds the tenant, publishes an agent revision, registers the Slack workspace with the run
@@ -99,11 +105,13 @@ func newSlackFixture(t *testing.T) *slackFixture {
 
 	// The org-scoped secret bridge, the production resolver's shape: a ref only resolves under the org it was
 	// provisioned in, so a connection can never redeem another tenant's secret.
+	f.secrets = map[string][]byte{f.org + "/" + signingRef: f.secret}
 	secrets := func(org, ref string) ([]byte, error) {
-		if org != f.org || ref != signingRef {
+		secret, ok := f.secrets[org+"/"+ref]
+		if !ok {
 			return nil, fmt.Errorf("no secret bridge for %q/%q", org, ref)
 		}
-		return f.secret, nil
+		return secret, nil
 	}
 	bridge := extensions.NewSlackAdmitter(ext, repo, secrets, api.AdmissionLimits{})
 	ts := httptest.NewServer(api.NewRouter(nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
@@ -120,18 +128,32 @@ func newSlackFixture(t *testing.T) *slackFixture {
 // base string exactly 'v0:' + timestamp + ':' + request_body, HMAC-SHA256 hex, header value 'v0='-prefixed.
 func (f *slackFixture) deliver(t *testing.T, body []byte, at time.Time, retryNum, retryReason string) *http.Response {
 	t.Helper()
-	timestamp := strconv.FormatInt(at.Unix(), 10)
-	mac := hmac.New(sha256.New, f.secret)
-	mac.Write([]byte("v0:" + timestamp + ":"))
-	mac.Write(body)
-	return f.deliverSigned(t, body, timestamp, "v0="+hex.EncodeToString(mac.Sum(nil)), retryNum, retryReason)
+	return f.deliverAs(t, f.secret, body, at, retryNum, retryReason)
 }
 
-func (f *slackFixture) deliverSigned(t *testing.T, body []byte, timestamp, signature, retryNum, retryReason string) *http.Response {
+// deliverAs signs with a CALLER-CHOSEN secret, so a cross-tenant proof can present a body a different
+// workspace binding's secret MACs.
+func (f *slackFixture) deliverAs(t *testing.T, secret, body []byte, at time.Time, retryNum, retryReason string) *http.Response {
 	t.Helper()
+	timestamp, signature := signSlack(secret, body, at)
+	return f.deliverSigned(t, body, timestamp, signature, retryNum, retryReason)
+}
+
+// signSlack builds the v0 MAC longhand from the published base string (see deliver's CONTRACT note).
+func signSlack(secret, body []byte, at time.Time) (timestamp, signature string) {
+	timestamp = strconv.FormatInt(at.Unix(), 10)
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte("v0:" + timestamp + ":"))
+	mac.Write(body)
+	return timestamp, "v0=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// send is the transport, error-returning: a concurrent test drives it from a goroutine, where calling
+// t.Fatalf would be illegal.
+func (f *slackFixture) send(body []byte, timestamp, signature, retryNum, retryReason string) (*http.Response, error) {
 	req, err := http.NewRequest(http.MethodPost, f.url+"/v1/slack/events", strings.NewReader(string(body)))
 	if err != nil {
-		t.Fatalf("build request: %v", err)
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// CONTRACT: same page — the two headers Slack signs with.
@@ -145,7 +167,12 @@ func (f *slackFixture) deliverSigned(t *testing.T, body []byte, timestamp, signa
 	if retryReason != "" {
 		req.Header.Set("X-Slack-Retry-Reason", retryReason)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	return http.DefaultClient.Do(req)
+}
+
+func (f *slackFixture) deliverSigned(t *testing.T, body []byte, timestamp, signature, retryNum, retryReason string) *http.Response {
+	t.Helper()
+	resp, err := f.send(body, timestamp, signature, retryNum, retryReason)
 	if err != nil {
 		t.Fatalf("POST /v1/slack/events: %v", err)
 	}
@@ -506,6 +533,215 @@ func TestSlackTenantIsNeverPayloadSelectable(t *testing.T) {
 	}
 	if revision != f.revision {
 		t.Fatalf("run pinned %q, want the connection's %q — the payload's agent_revision_id must not select a target", revision, f.revision)
+	}
+}
+
+// TestSlackWorkspaceCannotBeSquattedByAnotherTenant is the REGISTRATION-side half of the tenant boundary, and
+// it is the one the payload-side proof above cannot reach: TestSlackTenantIsNeverPayloadSelectable seeds its
+// second tenant with NO Slack row, so resolve-then-verify never runs against a competing connection.
+//
+// The hole three facts compose into: 000035's uniqueness is (organization_id, project_id, team_id,
+// enterprise_id) — PER TENANT, not global; the resolve is keyed by team_id alone and runs system-scoped; so an
+// ordinary project admin in ANY other org can register the victim's team_id with a secret it controls. The
+// resolve then picks a row by chance, and whichever it picks is the one whose secret must verify: the victim's
+// own signed events answer 401 WITH the suppress header, which cancels all three Slack retries and turns the
+// hijack into permanent silent data loss of another tenant's event stream.
+//
+// It also bites with no attacker at all — two projects in one org legitimately connecting one workspace
+// produce the same nondeterminism. Slack posts to ONE Request URL per app, so two tenants sharing a workspace
+// is never legitimate: the registration refuses it.
+func TestSlackWorkspaceCannotBeSquattedByAnotherTenant(t *testing.T) {
+	f := newSlackFixture(t)
+	ctx := context.Background()
+
+	// A second tenant with an ordinary project admin's powers and nothing more.
+	squatOrg, squatProject := newID("org"), newID("prj")
+	exec(t, f.pool, `INSERT INTO organizations (id) VALUES ($1)`, squatOrg)
+	exec(t, f.pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, squatProject, squatOrg)
+	squatPrincipal := newID("prin")
+	exec(t, f.pool, `INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1,$2,$3,'service')`,
+		squatPrincipal, squatOrg, squatProject)
+	const squatRef = "slack/squatter/signing"
+	squatSecret := []byte("the-squatter-signs-with-its-own-secret-not-the-victims")
+	f.secrets[squatOrg+"/"+squatRef] = squatSecret
+
+	// It registers the VICTIM's workspace under its own tenant, with a signing secret it controls.
+	_, err := extensions.New(f.pool).CreateSlackConnection(ctx, squatOrg, squatProject, []byte(fmt.Sprintf(
+		`{"team_id":%q,"signing_secret_ref":%q,"default_policy":{"agent_revision_id":"arev_squat","principal_id":%q}}`,
+		f.team, squatRef, squatPrincipal)))
+	if !errors.Is(err, extensions.ErrSlackWorkspaceBoundElsewhere) {
+		t.Fatalf("registering another tenant's workspace: err = %v, want ErrSlackWorkspaceBoundElsewhere — a team_id already bound in a DIFFERENT org/project must be refused, or the squatter owns the victim's event stream", err)
+	}
+
+	// The victim's stream is untouched: its own signed event still admits, under its own tenant.
+	resp := f.deliver(t, f.event("EvSquat1", "app_mention", "Umapped", "C20", "1700000020.000100", ""), time.Now(), "", "")
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("the victim's OWN signed event = %d, want a 2xx ack — a squatted registration must not be able to 401 another tenant's traffic", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if n := f.runCount(t); n != 1 {
+		t.Fatalf("the victim's tenant holds %d runs, want 1", n)
+	}
+
+	// And the squatter's own signature buys it nothing: there is no connection of its own to verify against.
+	f.terminateRuns(t)
+	squatted := f.deliverAs(t, squatSecret, f.event("EvSquat2", "app_mention", "Usquat", "C20", "1700000021.000100", ""), time.Now(), "", "")
+	defer squatted.Body.Close()
+	if squatted.StatusCode/100 == 2 {
+		t.Fatalf("a body signed by the SQUATTER's secret was accepted (%d) — the workspace resolves to the victim's connection, whose secret the squatter does not hold", squatted.StatusCode)
+	}
+	var stolen int
+	if err := f.pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM runs WHERE organization_id=$1`, squatOrg).Scan(&stolen); err != nil {
+		t.Fatalf("count squatter runs: %v", err)
+	}
+	if stolen != 0 {
+		t.Fatalf("%d runs landed in the squatter's tenant, want 0", stolen)
+	}
+}
+
+// TestSlackAmbiguousWorkspaceBindingIsRefusedRepairably is the BELT behind the registration guard above. The
+// guard is a check-then-insert, so two concurrent registrations in different tenants can still both pass it,
+// and a deployment upgraded from before the guard may already hold the rows. Whatever the cause, the resolve
+// must never pick one row by chance: pgx's QueryRow calls rows.Next() ONCE and closes, so a second row is
+// silently ignored and the winner can flip between requests.
+//
+// The answer is 503 WITHOUT the suppress header, and the asymmetry is deliberate: an operator can repair a
+// 503 (Slack keeps retrying while they delete the wrong row), but a suppressed retry cannot be un-suppressed.
+func TestSlackAmbiguousWorkspaceBindingIsRefusedRepairably(t *testing.T) {
+	f := newSlackFixture(t)
+
+	otherOrg, otherProject := newID("org"), newID("prj")
+	exec(t, f.pool, `INSERT INTO organizations (id) VALUES ($1)`, otherOrg)
+	exec(t, f.pool, `INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, otherProject, otherOrg)
+	// Written with raw SQL ON PURPOSE: these are the rows the database already accepts (the unique index is
+	// per-tenant), i.e. exactly what a pre-guard deployment can be holding right now.
+	exec(t, f.pool, `INSERT INTO slack_connections (id, organization_id, project_id, team_id, signing_secret_ref)
+	                 VALUES ($1,$2,$3,$4,$5)`,
+		newID("slkc"), otherOrg, otherProject, f.team, "slack/other/signing")
+
+	resp := f.deliver(t, f.event("EvAmb1", "app_mention", "Umapped", "C21", "1700000022.000100", ""), time.Now(), "", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("an AMBIGUOUS workspace binding = %d, want 503 — the receiver must refuse rather than pick one of two tenants by chance", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Slack-No-Retry"); got != "" {
+		t.Fatalf("the ambiguity answer carried X-Slack-No-Retry=%q; an operator can repair a 503, but a suppressed retry is a dropped event nobody can recover", got)
+	}
+	if n := f.runCount(t); n != 0 {
+		t.Fatalf("%d runs were born while the binding was ambiguous, want 0 — neither tenant may be guessed", n)
+	}
+}
+
+// TestSlackConcurrentFirstEventsNeverSplitAThread is SLK-003's race. Two FIRST events in one thread each read
+// "no correlation yet" and each mint their own session; the unique index collapses only the thread ROW, so
+// both admissions succeed (different sessions ⇒ the one-active-root index never fires) and the losing run
+// ends up in a session the thread does not point at — a conversation silently split in two.
+func TestSlackConcurrentFirstEventsNeverSplitAThread(t *testing.T) {
+	f := newSlackFixture(t)
+	const root = "1700000023.000100"
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	codes, errs := make([]int, 2), make([]error, 2)
+	for i := range codes {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := f.event(fmt.Sprintf("EvRace%d", i), "message", "Umapped", "C22",
+				fmt.Sprintf("17000000%d.000100", 24+i), root)
+			timestamp, signature := signSlack(f.secret, body, time.Now())
+			<-start
+			resp, err := f.send(body, timestamp, signature, "", "")
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			codes[i] = resp.StatusCode
+			resp.Body.Close()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent delivery %d: %v", i, err)
+		}
+	}
+	t.Logf("concurrent first events answered %v", codes)
+
+	if n := f.sessionCount(t); n != 1 {
+		t.Fatalf("%d thread↔session rows for one thread, want 1", n)
+	}
+	var sessions int
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT count(DISTINCT session_id) FROM runs WHERE organization_id=$1 AND project_id=$2`,
+		f.org, f.project).Scan(&sessions); err != nil {
+		t.Fatalf("count distinct run sessions: %v", err)
+	}
+	if sessions > 1 {
+		t.Fatalf("two concurrent FIRST events in one thread produced runs across %d sessions, want 1 — the thread row collapses but the SESSIONS do not, so the losing run lives in a session the thread does not point at (SLK-003)", sessions)
+	}
+	// And the surviving run really is in the session the thread points at.
+	var correlated, ran string
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT (SELECT session_id FROM slack_thread_sessions WHERE organization_id=$1 AND thread_ts=$2),
+		        (SELECT DISTINCT session_id FROM runs WHERE organization_id=$1)`, f.org, root).Scan(&correlated, &ran); err != nil {
+		t.Fatalf("compare the correlated session to the run's: %v", err)
+	}
+	if correlated != ran {
+		t.Fatalf("the thread points at session %q but its run is in %q", correlated, ran)
+	}
+}
+
+// TestSlackClosedSessionDoesNotBrickTheThread covers the failure a correlation row can outlive: the session it
+// points at is closed (a T4 close_session command, an operator, a reap). Every later event in that thread
+// chains onto a dead session, and a chained admission onto a non-active session is a typed SessionConflict.
+// Classified as terminal it would answer 422 + the suppress header FOREVER, with nothing in the tree that
+// repairs the correlation row — one closed session would silently retire a Slack thread for good.
+//
+// A dead correlation is repairable, so the receiver repairs it: the stale row is dropped and the refusal is
+// retryable, so Slack's next attempt opens a fresh session in the same thread.
+func TestSlackClosedSessionDoesNotBrickTheThread(t *testing.T) {
+	f := newSlackFixture(t)
+	const root = "1700000026.000100"
+
+	f.deliver(t, f.event("EvDead1", "app_mention", "Umapped", "C23", root, ""), time.Now(), "", "").Body.Close()
+	if n := f.sessionCount(t); n != 1 {
+		t.Fatalf("the first event correlated %d threads, want 1", n)
+	}
+	f.terminateRuns(t)
+	exec(t, f.pool, `UPDATE sessions SET state='closed' WHERE organization_id=$1 AND project_id=$2`, f.org, f.project)
+
+	body := f.event("EvDead2", "message", "Umapped", "C23", "1700000027.000100", root)
+	resp := f.deliver(t, body, time.Now(), "", "")
+	if got := resp.Header.Get("X-Slack-No-Retry"); got == "1" {
+		t.Fatalf("an event on a thread whose session is CLOSED answered %d with X-Slack-No-Retry=1 — the thread is then bricked forever: nothing repairs the correlation row, so every future message in it is refused",
+			resp.StatusCode)
+	}
+	resp.Body.Close()
+	if n := f.sessionCount(t); n != 0 {
+		t.Fatalf("%d thread↔session rows survive, want 0 — a correlation pointing at a dead session must be dropped so the thread can open a new one", n)
+	}
+
+	// Slack's redelivery of the SAME event now opens a fresh session and admits: one delayed message rather
+	// than a retired thread.
+	retry := f.deliver(t, body, time.Now(), "1", "http_error")
+	defer retry.Body.Close()
+	if retry.StatusCode/100 != 2 {
+		t.Fatalf("the redelivery after the repair = %d, want a 2xx ack", retry.StatusCode)
+	}
+	if n := f.runCount(t); n != 2 {
+		t.Fatalf("%d runs, want 2 — the repaired thread must admit the message the dead session refused", n)
+	}
+	var state string
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT s.state FROM slack_thread_sessions t JOIN sessions s ON s.id = t.session_id
+		  WHERE t.organization_id=$1 AND t.thread_ts=$2`, f.org, root).Scan(&state); err != nil {
+		t.Fatalf("read the repaired correlation: %v", err)
+	}
+	if state != "active" {
+		t.Fatalf("the thread was re-correlated to a %q session, want an active one", state)
 	}
 }
 

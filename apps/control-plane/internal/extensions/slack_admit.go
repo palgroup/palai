@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +16,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/packages/contracts"
+	statemachines "github.com/palgroup/palai/packages/state-machines"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -95,8 +97,8 @@ func (a *SlackAdmitter) VerifySignature(_ context.Context, conn api.SlackConnect
 
 // Admit reserves the source-event dedupe and births the run. Order inside one call:
 //
-//	run target from default_policy → thread↔session lookup → the REAL admission (which IS the reservation)
-//	→ thread↔session claim for a freshly minted session.
+//	run target from default_policy → thread↔session lookup → (first event only: the thread lock, then the
+//	lookup again) → the REAL admission (which IS the reservation) → thread↔session claim.
 //
 // The thread claim runs AFTER the admission because the session the thread correlates to is the one the
 // admission resolved. A crash in between is self-healing: the redelivery replays the SAME idempotency record
@@ -119,14 +121,38 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	// other caller, CorrelateThreadSession, scopes before calling), and slack_thread_sessions is FORCE-RLS.
 	// An unscoped connection sees NO rows — which would not error, it would silently report every thread as
 	// new and mint a second session for every reply in a thread.
-	var requested *string
 	scoped := storage.ScopeToTenant(ctx, conn.Org, conn.Project)
-	existing, _, err := a.store.threadSession(scoped, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS)
-	switch {
-	case err == nil && existing != "":
-		requested = &existing
-	case err != nil && !errors.Is(err, ErrSlackThreadSessionNotFound):
+	requested, err := a.threadSessionOrNil(scoped, conn, ev)
+	if err != nil {
 		return api.SlackAdmitOutcome{}, err
+	}
+
+	// The FIRST event in a thread has to be serialized, and the thread row's unique index is NOT enough to do
+	// it: two concurrent first events each read "no correlation yet", each mint their own session, and BOTH
+	// admit (different sessions, so the one-active-root index never fires). Only the row collapses — the
+	// loser's run then lives in a session the thread does not point at, silently splitting the conversation.
+	//
+	// So the first-event window is held under a Postgres advisory lock keyed on the thread, the withGateLock
+	// idiom from the automation trigger gate. NON-BLOCKING for the same reason it is there: the holder needs
+	// a SECOND connection to run the admission, so a blocking acquire would let N waiters exhaust the pool
+	// and deadlock. Contention answers RETRYABLE, and the retry is not a special path — by then the winner's
+	// correlation exists, so the redelivery simply chains onto it like any other follow-up message.
+	//
+	// An already-correlated thread takes no lock at all: a chained admission is already single-winner at the
+	// one-active-root index, and locking it would hold a pooled connection for every message.
+	if requested == nil {
+		release, locked, err := a.lockThread(ctx, slackThreadLockText(conn, ev))
+		if err != nil {
+			return api.SlackAdmitOutcome{}, err
+		}
+		if !locked {
+			return api.SlackAdmitOutcome{Rejected: "another event is opening this thread's session", Retryable: true}, nil
+		}
+		defer release()
+		// Re-read under the lock: the winner of the race may have committed between the probe and the lock.
+		if requested, err = a.threadSessionOrNil(scoped, conn, ev); err != nil {
+			return api.SlackAdmitOutcome{}, err
+		}
 	}
 
 	scope := middleware.Scope{Organization: conn.Org, Project: conn.Project, Principal: target.principal}
@@ -166,6 +192,13 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 		// team_id + event_id: the workspace scopes Slack's own event identity, so the reservation is exactly
 		// "this source event, once". A redelivery presents the same key and REPLAYS — that is the whole of
 		// SLK-001/002, and it commits before the route acks.
+		//
+		// THE PREMISE IS AN ASSUMPTION, NOT A DOCUMENTED FACT (E19 plan §3.5 row D3): Slack's Events API page
+		// says event_id is globally unique and says an unacknowledged delivery is retried, but it never says
+		// the retry repeats the SAME event_id. If it does not, this key does not collapse a redelivery and the
+		// follow-up is a composite key (event_id + event_time + team_id) — deliberately not built now. The
+		// assumption is stated at slack.HeaderRetryNum and ASSERTED against a real workspace by
+		// tests/live/slack (TestLiveSlackRetryCarriesTheSameEventID). Read that before trusting this line.
 		IdempotencyKey:     ev.TeamID + ":" + ev.SourceEventID,
 		Method:             "POST",
 		Route:              slackAdmitRoute,
@@ -185,6 +218,12 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 		return api.SlackAdmitOutcome{}, err
 	}
 	if rejected, retryable := slackAdmitRejection(out); rejected != "" {
+		// A refusal ABOUT THE CHAINED SESSION is the one kind that would otherwise be permanent: the thread
+		// points at a session that is gone or closed, and nothing in the tree repairs a correlation row. Left
+		// terminal it answers 422 + the suppress header on every future message, retiring the thread for good.
+		if (out.SessionNotFound || out.SessionConflict) && requested != nil {
+			return a.repairDeadCorrelation(scoped, conn, ev, *requested, rejected)
+		}
 		return api.SlackAdmitOutcome{Rejected: rejected, Retryable: retryable}, nil
 	}
 
@@ -194,16 +233,105 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 		session = sessionID
 	}
 	if requested == nil {
-		// First event in this thread: claim the correlation. A concurrent claim collapses at the unique index
-		// and the loser reads the winner, so a thread never ends up with two sessions (SLK-003).
-		if _, _, err := a.store.CorrelateThreadSession(ctx, conn.Org, conn.Project, conn.ID,
-			ev.TeamID, ev.ChannelID, ev.ThreadTS, session); err != nil {
+		// First event in this thread, and we still hold the thread lock, so this claim cannot lose. The winner
+		// is READ rather than discarded: if it were ever not ours, the run we just admitted would be sitting in
+		// a session the thread does not point at, and that is a fact an operator has to be able to see.
+		canonical, created, err := a.store.CorrelateThreadSession(ctx, conn.Org, conn.Project, conn.ID,
+			ev.TeamID, ev.ChannelID, ev.ThreadTS, session)
+		if err != nil {
 			// The run is already durable and the reservation is committed; failing the ack here would earn a
 			// redelivery that REPLAYS onto the same response and can re-attempt the claim.
 			return api.SlackAdmitOutcome{}, fmt.Errorf("correlate slack thread session: %w", err)
 		}
+		if !created && canonical != session {
+			log.Printf("slack: thread claim lost under the thread lock — run admitted into session %s but the thread points at %s (connection %s, event %s)",
+				session, canonical, conn.ID, ev.SourceEventID)
+		}
 	}
 	return api.SlackAdmitOutcome{ResponseID: out.ResponseID, SessionID: session, Replayed: out.Replayed}, nil
+}
+
+// threadSessionOrNil reads the thread's canonical session, mapping "no correlation yet" to nil rather than to
+// an error — the shape RequestedSessionID wants. ctx must already be tenant-scoped (threadSession is not).
+func (a *SlackAdmitter) threadSessionOrNil(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) (*string, error) {
+	existing, _, err := a.store.threadSession(ctx, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS)
+	switch {
+	case err == nil && existing != "":
+		return &existing, nil
+	case err != nil && !errors.Is(err, ErrSlackThreadSessionNotFound):
+		return nil, err
+	}
+	return nil, nil
+}
+
+// repairDeadCorrelation answers an admission that a thread's CHAINED session refused. Two cases, and the
+// difference matters:
+//
+//   - The session is PAUSED. That is resumable, so the correlation is still correct: refuse retryably and
+//     leave the row alone. Deleting it would fork the conversation the moment someone resumes.
+//   - The session is closed, closing, or gone. The correlation is dead. Drop it (guarded on the session id,
+//     so a concurrent re-correlation is not undone) and refuse retryably, so Slack's next attempt opens a
+//     fresh session in the same thread.
+//
+// Either way the answer is RETRYABLE: the cost of being wrong is one message delivered a minute late, while
+// the cost of the terminal classification is a Slack thread that can never be used again. ctx must already
+// be tenant-scoped.
+func (a *SlackAdmitter) repairDeadCorrelation(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event, session, rejected string) (api.SlackAdmitOutcome, error) {
+	var id, state string
+	switch err := a.store.pool.QueryRow(ctx, storage.Query("SessionForCreate"), session, conn.Org, conn.Project).
+		Scan(&id, &state); {
+	case err == nil && state == string(statemachines.SessionPaused):
+		return api.SlackAdmitOutcome{Rejected: rejected + " (paused; the thread keeps its session)", Retryable: true}, nil
+	case err != nil && !errors.Is(err, pgx.ErrNoRows):
+		return api.SlackAdmitOutcome{}, fmt.Errorf("read correlated session state: %w", err)
+	}
+	if _, err := a.store.pool.Exec(ctx, storage.Query("DeleteThreadSession"),
+		conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS, session); err != nil {
+		return api.SlackAdmitOutcome{}, fmt.Errorf("clear dead slack thread correlation: %w", err)
+	}
+	log.Printf("slack: cleared a thread correlation pointing at unusable session %s (connection %s); the next event opens a new one",
+		session, conn.ID)
+	return api.SlackAdmitOutcome{Rejected: rejected + " (correlation cleared; the redelivery opens a new session)", Retryable: true}, nil
+}
+
+// slackThreadLockText is the advisory-lock key for one thread's first-event window. hashtext() runs on this
+// text, so it must be valid UTF-8 with no NUL (the gateLockText constraint); ':' separates the parts.
+//
+// ponytail: hashtext() is 32-bit, so unrelated threads can collide and over-serialize each other. Harmless —
+// a collision costs one retryable refusal, never a wrong session — and the alternative is a wider key type
+// nothing needs yet.
+func slackThreadLockText(conn api.SlackConnectionRef, ev slack.Event) string {
+	return "slack-thread:" + conn.Org + ":" + conn.Project + ":" + ev.TeamID + ":" + ev.ChannelID + ":" + ev.ThreadTS
+}
+
+// lockThread takes the thread's advisory lock on a dedicated connection and returns the release. locked=false
+// means another event holds it right now — the caller refuses RETRYABLY rather than waiting, because the
+// waiter would be holding a pool connection while the holder needs one to admit.
+//
+// CEILING: the lock connection is held across the admission, so the pool (MaxConns 8) bounds how many FIRST
+// events of DIFFERENT threads can be in flight at once. Beyond that the admissions queue behind the pool and
+// the 2s ack budget turns them into retryable 503s, which Slack redelivers. Per-thread traffic is unaffected
+// — only a burst of brand-new threads reaches it.
+func (a *SlackAdmitter) lockThread(ctx context.Context, key string) (release func(), locked bool, err error) {
+	conn, err := a.store.pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("acquire slack thread-lock conn: %w", err)
+	}
+	var got bool
+	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock(hashtext($1)::bigint)", key).Scan(&got); err != nil {
+		conn.Release()
+		return nil, false, fmt.Errorf("try slack thread lock: %w", err)
+	}
+	if !got {
+		conn.Release()
+		return nil, false, nil
+	}
+	return func() {
+		// context.Background(): the unlock MUST run even when the request's ack budget has already expired, or
+		// the lock rides back into the pool on a connection whose next borrower cannot clear it.
+		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock(hashtext($1)::bigint)", key)
+		conn.Release()
+	}, true, nil
 }
 
 // slackRunTarget is what a connection's default_policy says to run and as whom. Both come from the CONNECTION
@@ -303,6 +431,10 @@ func slackAdmitRejection(out api.AdmitResult) (reason string, retryable bool) {
 	case out.LimitExceeded != nil:
 		return "a durable budget or quota is exhausted", true
 	case out.SessionNotFound:
+		// Terminal AS CLASSIFIED HERE, and deliberately intercepted before it is used: a chained refusal about
+		// the correlated session goes to repairDeadCorrelation, which clears the dead row and makes the answer
+		// retryable. Reaching this classification means the refusal was NOT about a correlation this bridge
+		// can repair.
 		return "the correlated session no longer exists", false
 	case out.SessionConflict:
 		return "the correlated session is not active", false

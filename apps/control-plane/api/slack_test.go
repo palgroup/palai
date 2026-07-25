@@ -192,6 +192,63 @@ func TestSlackURLVerificationEchoesTheChallengeBeforeAnyLookup(t *testing.T) {
 	}
 }
 
+// TestSlackChallengeEchoIsBoundedAndNotSniffable hardens the ONE surface that renders caller-chosen bytes on
+// this deployment's own origin. The handshake is unauthenticated by construction (it carries no team_id, so
+// there is no secret to verify against) and it echoes the challenge verbatim, so without a bound it reflects
+// up to the whole body limit of attacker-chosen content back as a document the browser may sniff. It cannot
+// bypass verification — but it is the same class as the console-relay finding, and the fix is three lines.
+//
+// CONTRACT: https://docs.slack.dev/apis/events-api/ (checked 2026-07-25) — the challenge is a short random
+// token (the documented example is 50-odd alphanumerics), echoed back to confirm the Request URL.
+func TestSlackChallengeEchoIsBoundedAndNotSniffable(t *testing.T) {
+	secret := []byte("test-signing-secret")
+
+	t.Run("a real challenge is served as inert text", func(t *testing.T) {
+		bridge := newSlackBridge(secret)
+		peer, done := slackPeerAgainst(t, bridge, secret)
+		defer done()
+		challenge := "3eZbrw1aBm2rZgRNFdxV2595E9CY3gmdALWMmHkvFXO7tYXAYM8P"
+		resp := peer.post(t, []byte(`{"token":"deprecated","challenge":"`+challenge+`","type":"url_verification"}`), time.Now(), "", "")
+		defer resp.Body.Close()
+		if got, want := resp.Header.Get("Content-Type"), "text/plain; charset=utf-8"; got != want {
+			t.Fatalf("Content-Type = %q, want %q — an unqualified text/plain leaves the encoding to the browser", got, want)
+		}
+		if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("X-Content-Type-Options = %q, want \"nosniff\" — without it a browser may sniff the echoed bytes into a document on our own origin", got)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		if string(body) != challenge {
+			t.Fatalf("challenge echo = %q, want %q", body, challenge)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		challenge string
+	}{
+		{"markup", `<script>alert(document.domain)</script>`},
+		{"an oversized reflection", strings.Repeat("A", 1025)},
+		{"an empty challenge", ""},
+	} {
+		t.Run(tc.name+" is refused", func(t *testing.T) {
+			bridge := newSlackBridge(secret)
+			peer, done := slackPeerAgainst(t, bridge, secret)
+			defer done()
+			body, _ := json.Marshal(map[string]any{"type": "url_verification", "challenge": tc.challenge})
+			resp := peer.post(t, body, time.Now(), "", "")
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				echoed, _ := io.ReadAll(resp.Body)
+				t.Fatalf("challenge %q answered %d (%q), want 400 — a real handshake carries a short alphanumeric token, so anything else is a reflection surface, not a handshake",
+					tc.challenge, resp.StatusCode, echoed)
+			}
+			if len(bridge.calls) != 0 {
+				t.Fatalf("the refused handshake touched the bridge (%v)", bridge.calls)
+			}
+		})
+	}
+}
+
 // TestSlackEventAdmitsThroughTheBridgeInContractOrder is the happy path AND the order pin: resolve (to learn
 // the secret) → verify → admit. Mapping strictly after authentication is the whole security posture of this
 // route, so the recorded call order is asserted rather than assumed.

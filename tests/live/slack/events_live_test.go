@@ -188,9 +188,10 @@ func TestLiveSlackRetryCarriesTheSameEventID(t *testing.T) {
 	}
 }
 
-// TestLiveSlackMentionBirthsExactlyOneRun is the wiring half of §6 leg 2: with the Request URL pointed at a
-// RUNNING control plane (not at this test), one real @-mention must produce exactly one run — including
-// through any redelivery Slack decides to send.
+// TestLiveSlackMentionBirthsExactlyOneRun is the wiring half of §6 leg 1 (slack — a REAL workspace external
+// receipt; leg 2 is the foreign A2A peer, see CapabilityOperatorLegs in tests/uat/evidence.go): with the
+// Request URL pointed at a RUNNING control plane (not at this test), one real @-mention must produce exactly
+// one run — including through any redelivery Slack decides to send.
 //
 // It observes the running stack's DATABASE rather than standing up its own server, because the thing under
 // test is the deployed route, not a copy of it. The operator registers the workspace through the normal
@@ -217,24 +218,13 @@ func TestLiveSlackMentionBirthsExactlyOneRun(t *testing.T) {
 	deadline := time.Now().Add(liveWindow(t))
 	byEvent := map[string][]string{}
 	for time.Now().Before(deadline) {
-		rows, err := pool.Query(ctx, bornSince, team, start)
-		if err != nil {
-			t.Fatalf("poll for Slack-born runs: %v", err)
-		}
-		byEvent = map[string][]string{}
-		for rows.Next() {
-			var eventID, respID string
-			if err := rows.Scan(&eventID, &respID); err != nil {
-				rows.Close()
-				t.Fatalf("scan: %v", err)
-			}
-			byEvent[eventID] = append(byEvent[eventID], respID)
-		}
-		rows.Close()
+		byEvent = pollSlackBornRuns(t, ctx, pool, bornSince, team, start)
 		if len(byEvent) > 0 {
-			// Give any redelivery its first window (Slack's immediate retry) before concluding.
+			// Give any redelivery its first window (Slack's immediate retry) before concluding, then re-read
+			// ONCE and stop. Polling on after a hit would burn the whole three-minute window on a clean pass.
 			time.Sleep(10 * time.Second)
-			continue
+			byEvent = pollSlackBornRuns(t, ctx, pool, bornSince, team, start)
+			break
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -246,5 +236,27 @@ func TestLiveSlackMentionBirthsExactlyOneRun(t *testing.T) {
 			t.Fatalf("source event %s produced %d responses (%v), want exactly 1 — one effect per source event is SLK-001/002, and a real workspace is where it counts", eventID, len(responses), responses)
 		}
 	}
-	t.Logf("%d real Slack event(s) each produced exactly one run. §6 leg 2's HTTP-transport half has a receipt; the remaining Slack legs (interactivity, Socket Mode) belong to T2/T3.", len(byEvent))
+	t.Logf("%d real Slack event(s) each produced exactly one run. §6 leg 1's HTTP-transport half has a receipt; the remaining Slack legs (interactivity, Socket Mode) belong to T2/T3.", len(byEvent))
+}
+
+// pollSlackBornRuns reads the Slack-born responses since `start`, grouped by source event id.
+func pollSlackBornRuns(t *testing.T, ctx context.Context, pool *pgxpool.Pool, query, team string, start time.Time) map[string][]string {
+	t.Helper()
+	rows, err := pool.Query(ctx, query, team, start)
+	if err != nil {
+		t.Fatalf("poll for Slack-born runs: %v", err)
+	}
+	defer rows.Close()
+	byEvent := map[string][]string{}
+	for rows.Next() {
+		var eventID, respID string
+		if err := rows.Scan(&eventID, &respID); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		byEvent[eventID] = append(byEvent[eventID], respID)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("poll for Slack-born runs: %v", err)
+	}
+	return byEvent
 }

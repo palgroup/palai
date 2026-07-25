@@ -40,6 +40,23 @@ WHERE organization_id = $1 AND project_id = $2
 ORDER BY created_at DESC, id DESC
 LIMIT $7;
 
+-- SlackWorkspaceBoundElsewhere reports whether a (team_id, enterprise_id) is already bound in a DIFFERENT
+-- org/project. It exists because this table's uniqueness is (organization_id, project_id, team_id,
+-- enterprise_id) — PER TENANT, not global — while ResolveSlackConnectionByTeam below is keyed by team_id
+-- ALONE and runs system-scoped. Without this check any project admin in any org could register another
+-- tenant's team_id with a secret it controls, and the resolve would then pick one of the two rows: the
+-- victim's own signed events start failing verification and (carrying x-slack-no-retry) are dropped for good.
+-- Slack posts to ONE Request URL per app, so two tenants legitimately sharing a workspace does not exist.
+-- System-scoped by necessity: the whole point is to see rows OUTSIDE the caller's tenant.
+-- Only the id is selected: the caller must NOT learn which tenant holds the workspace, and a column it
+-- never reads is a column that cannot be logged by accident.
+-- name: SlackWorkspaceBoundElsewhere
+SELECT id
+FROM slack_connections
+WHERE team_id = $1 AND enterprise_id = $2 AND (organization_id <> $3 OR project_id <> $4)
+ORDER BY id
+LIMIT 1;
+
 -- ResolveSlackConnectionByTeam establishes the tenant for a signed inbound callback, keyed by the Slack
 -- team + enterprise id. System-scoped (there is no tenant to scope by yet); the signature over the returned
 -- signing_secret_ref is the auth. A disabled connection still resolves so the caller can reject explicitly.
@@ -50,11 +67,17 @@ LIMIT $7;
 -- agent_revision_id the admission pins and the principal the run belongs to. Reading it here keeps the whole
 -- unauthenticated resolve at ONE query, and it is the column's stated purpose ("default run policy for events
 -- on this connection") rather than a new column — E19 takes no migration.
+-- ORDER BY id LIMIT 2 is load-bearing, not tidiness: the predicate is NOT unique (see the per-tenant index
+-- above), and a QueryRow over an unordered multi-row result silently takes whichever row came first and can
+-- flip between requests. The caller reads BOTH rows and refuses the ambiguity outright — deciding which of
+-- two tenants an event belongs to is not a decision this query is allowed to make by accident.
 -- name: ResolveSlackConnectionByTeam
 SELECT id, organization_id, project_id, signing_secret_ref, bot_token_ref, app_token_ref, bot_user_id, disabled,
        default_policy
 FROM slack_connections
-WHERE team_id = $1 AND enterprise_id = $2;
+WHERE team_id = $1 AND enterprise_id = $2
+ORDER BY id
+LIMIT 2;
 
 -- SlackRunPrincipalInScope confirms the principal named by default_policy belongs to the connection's OWN
 -- org/project. Without it a project admin could name a FOREIGN principal and have Slack-born runs booked
@@ -81,6 +104,16 @@ RETURNING id;
 SELECT session_id, last_bot_message_ts
 FROM slack_thread_sessions
 WHERE organization_id = $1 AND project_id = $2 AND team_id = $3 AND channel_id = $4 AND thread_ts = $5;
+
+-- DeleteThreadSession drops a correlation whose session is no longer usable (closed/reaped), so the thread
+-- can open a fresh one on the next event. session_id is in the predicate on purpose: by the time the repair
+-- runs, another event may already have re-correlated the thread, and deleting THAT row would undo a healthy
+-- correlation. Without this the failure is permanent — a chained admission onto a dead session is refused
+-- every time, and nothing else in the tree ever clears the row.
+-- name: DeleteThreadSession
+DELETE FROM slack_thread_sessions
+WHERE organization_id = $1 AND project_id = $2 AND team_id = $3 AND channel_id = $4 AND thread_ts = $5
+  AND session_id = $6;
 
 -- UpdateThreadMessageTS records the visible bot message ts the rate-limited live-output repair edits
 -- (message-ts reconciliation, SLK-006). Idempotent — it just overwrites the handle.

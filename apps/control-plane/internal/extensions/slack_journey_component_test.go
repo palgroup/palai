@@ -155,8 +155,11 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	cs, store, triggers, pool := journeySpine(t)
 	ctx := context.Background()
 
+	// team is generated, not a literal: a workspace binds to exactly ONE tenant installation-wide
+	// (CreateSlackConnection refuses the rest), so a fixed id collides with any other run against this
+	// database. The rest are per-journey literals and stay readable.
+	team := testID("T63300")
 	const (
-		team     = "T63300"
 		channel  = "C63300"
 		threadTS = "1700000000.000100"
 		botUser  = "Ubot63300"

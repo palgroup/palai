@@ -32,6 +32,12 @@ var (
 	ErrIgnored = errors.New("slack: event ignored (bot/self — loop guard)")
 	// ErrNotAnEvent is a payload whose outer type is not event_callback (e.g. url_verification, which the
 	// caller handles via ParseChallenge before verifying a normal event, or an unknown outer type).
+	//
+	// KNOWN MEMBER OF THIS SET, so T2 does not rediscover it: `app_rate_limited` arrives as an OUTER type,
+	// not as an event_callback (https://docs.slack.dev/apis/web-api/rate-limits/, checked 2026-07-25 — a
+	// workspace/app exceeding 30,000 deliveries per 60 minutes is told so with that payload). It therefore
+	// lands here and the Events route answers 400 + x-slack-no-retry, i.e. the notification that we are being
+	// throttled is discarded. Handling it (log + counter) is E19 plan §3.5 row D10, owned by T2.
 	ErrNotAnEvent = errors.New("slack: payload is not an event_callback")
 	// ErrMalformed is a structurally unusable envelope — non-JSON, or missing the team/event identity that
 	// anchors dedupe and tenant correlation. The caller maps it to a 400 (authenticated client error), the
