@@ -114,6 +114,11 @@ with open(index_path, encoding="utf-8") as fh:
     index = json.load(fh)
 
 # --- subjects: RECOMPUTED from the artifact bytes, cross-checked against the index --------------
+# The subject list is EXACTLY the release index's artifact set. The other files in the dir — the
+# host CLI convenience copy `palai` (a byte copy of an indexed artifact), release-manifest.json, the
+# staged verifiers — are release plumbing, not released artifacts; they are bound by the signed
+# sha256sums root below rather than by a subject entry, and the verifier enforces that the two sets
+# match exactly (an invented subject fails just as a missing one does).
 subjects = []
 for art in index["artifacts"]:
     path = os.path.join(rel, art["file"])

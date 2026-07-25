@@ -196,6 +196,9 @@ DOCKERFILES = [
 ]
 FROM_RE = re.compile(r"^FROM\s+(.*)$", re.IGNORECASE)
 
+# Compared as a SET of (role, algorithm, digest). Two Dockerfiles pinning the SAME base image
+# therefore collapse to one expectation: what is checked is that every input the source pins is
+# declared and nothing else is, not how many times an input is annotated.
 declared = set()
 for d in build_def.get("resolvedDependencies") or []:
     for alg, value in (d.get("digest") or {}).items():
