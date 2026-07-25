@@ -392,7 +392,9 @@ func TestReleaseVerifyTamperMatrix(t *testing.T) {
 		tamper: func(t *testing.T, _, sdk, _ string) {
 			flipByte(t, filepath.Join(sdk, goPackage))
 		},
-		want: goPackage,
+		// The SDK family has its OWN signed root, so its own verifier is what must say no — and it must
+		// name the package. A bare mention of the path is also printed when the file passes.
+		want: goPackage + ": FAILED",
 	}, {
 		arm: "SBOM — one byte in an SPDX document",
 		tamper: func(t *testing.T, dir, _, key string) {
