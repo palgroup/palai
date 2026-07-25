@@ -69,8 +69,16 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	}
 	// The E17 extensions bundle carries BOTH the capability-tier anchor and the eval-gate claim; the tier
 	// anchor is the more specific policy and COMPOSES the eval gate, so it is checked first.
+	//
+	// Crucially the family is recognized by ANY E17 area claim, NOT by the tier claim itself. Dispatching on
+	// the tier claim alone would let a release DROP its tier table and fall through to the weaker eval gate,
+	// which would then pass it — the tier table would be optional in practice. Recognizing the family first and
+	// REFUSING the missing table inside ExtensionsPromoteGate is what makes "no tag without the tier table"
+	// actually hold.
 	for _, c := range m.Cases {
-		if c.CapabilityTierClaim != "" {
+		if c.CapabilityTierClaim != "" || c.SlackMappingClaim != "" || c.A2AConformanceClaim != "" ||
+			c.KnowledgeACLClaim != "" || c.QueueDeliveryClaim != "" || c.WorkerFenceClaim != "" ||
+			c.ConsoleClaim != "" {
 			return ExtensionsPromoteGate(raw, target)
 		}
 	}

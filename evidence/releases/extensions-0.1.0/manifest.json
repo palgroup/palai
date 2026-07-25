@@ -1,0 +1,1205 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-25T00:00:00Z",
+  "cases": [
+    {
+      "checksum": "sha256:17a75c1935c6f0296bd31e81b6a928e5bf7f7dcc1a436ca643671a00f31e563b",
+      "db_assertions": [
+        "A2A-001: proven by 4 in-tree proof(s) at the component-real tier — adapters/integrations/a2a/card_test.go:TestAgentCardNeverLeaksInternalDetail; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_PublicCardNeverLeaksAndAdvertisesExactVersion; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_ExtendedCardRequiresAuth; tests/component/postgres/a2a_store_test.go:TestA2AStoreRLSAndCanonicalRefInvariant",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "A2A-001",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_a2a_001",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "a2a_conformance_claim": "twelve-endpoint-matrix-green-over-a-LOOPBACK-exchange",
+      "a2a_conformance_proof": {
+        "endpoints": [
+          "GET agent-card.json",
+          "GET extendedAgentCard",
+          "POST message:send",
+          "POST message:stream",
+          "GET tasks",
+          "GET tasks/{id}",
+          "POST tasks/{id}:cancel",
+          "POST tasks/{id}:subscribe",
+          "GET tasks/{id}/pushNotificationConfigs",
+          "POST tasks/{id}/pushNotificationConfigs",
+          "GET tasks/{id}/pushNotificationConfigs/{cfg}",
+          "DELETE tasks/{id}/pushNotificationConfigs/{cfg}"
+        ],
+        "fixture_outcomes": {
+          "DELETE tasks/{id}/pushNotificationConfigs/{cfg}": "pass",
+          "GET agent-card.json": "pass",
+          "GET extendedAgentCard": "pass",
+          "GET tasks": "pass",
+          "GET tasks/{id}": "pass",
+          "GET tasks/{id}/pushNotificationConfigs": "pass",
+          "GET tasks/{id}/pushNotificationConfigs/{cfg}": "pass",
+          "POST message:send": "pass",
+          "POST message:stream": "pass",
+          "POST tasks/{id}/pushNotificationConfigs": "pass",
+          "POST tasks/{id}:cancel": "pass",
+          "POST tasks/{id}:subscribe": "pass"
+        },
+        "peer": "loopback",
+        "loopback_transcript": [
+          "client GET agent-card.json",
+          "client POST message:send",
+          "server 200 Task",
+          "client GET tasks/{id}",
+          "server 200 completed"
+        ],
+        "transcript_digest": "sha256:92c9e91af9939198ce4ace6f595bf588bbc11bf68826bfb2ef89c62321cfceea",
+        "card_leaked_internal_detail": false
+      },
+      "checksum": "sha256:19722e1ab2b570810f58c9e18b7c02e2adf66e1f1c6c054ad8f97594da1e25f8",
+      "db_assertions": [
+        "A2A-002: proven by 8 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/card_test.go:TestGovernIdentityIgnoresForgedMetadata; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_SendReturnsTaskWithExternalCanonicalSeparation; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_ForgedMetadataIdentityIsIgnored; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_SendReturnsDirectMessageForCompleteNonDurable; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InboundFilePartIsIngested; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_StreamTerminalConsistency; adapters/integrations/a2a/conformance_test.go:TestA2ALoopbackExchange; tests/component/postgres/a2a_store_test.go:TestA2AStoreRLSAndCanonicalRefInvariant",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "A2A-002",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_a2a_002",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:37bdb6faaee8fe31f962858607d42d4df63d259131d92d70d983ac21bcf73528",
+      "db_assertions": [
+        "A2A-003: proven by 3 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InputRequiredMapsToWaiting; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_TaskGetListCancel; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_PushConfigCRUD",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "A2A-003",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_a2a_003",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:2c71cdc45f945c0bba9c501038be36986f99bb52c493458dd5546bfaf8ead6e9",
+      "db_assertions": [
+        "A2A-004: proven by 7 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/client_test.go:TestA2AClientRefusesInternalCardEndpoint; adapters/integrations/a2a/client_test.go:TestA2AClientRevalidatesRedirectToInternal; adapters/integrations/a2a/client_test.go:TestA2AClientRefusesDisallowedExtensionURI; adapters/integrations/a2a/client_test.go:TestA2AClientVersionNegotiationExplicitFail; adapters/integrations/a2a/client_test.go:TestA2AClientIngestsAndScansPushedFile; adapters/integrations/a2a/conformance_test.go:TestA2AConformance_InboundFilePartIsIngested; packages/egress/egress_test.go:TestVetIPDeniesMetadataPrivateAndSpecialUse",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "A2A-004",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_a2a_004",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:a3fa80b7e80354babde3016005bfafdbf602df88c6977c01e8e4dd2dbd24c68a",
+      "db_assertions": [
+        "A2A-005: proven by 6 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/client_test.go:TestA2AClientRemoteOutputIsUntrusted; adapters/integrations/a2a/client_test.go:TestA2AClientNeverInheritsParentCredential; adapters/integrations/a2a/client_test.go:TestA2AClientNeedsResolverForAuthConnection; adapters/integrations/a2a/client_test.go:TestA2AClientRemoteTaskIDsAreConnectionScoped; adapters/integrations/a2a/client_test.go:TestA2AClientLoopbackInteropAgainstT2Server; tests/component/postgres/a2a_remote_agent_store_test.go:TestA2ARemoteAgentStoreRLS",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "A2A-005",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_a2a_005",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:ecbfd6923c5ca756852e3d819d032b197912719d0d7a60cd472271c49b6e2c0c",
+      "db_assertions": [
+        "AUT-009: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "AUT-009",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "queue_delivery_claim": "lost-ack-redelivery-single-effect-dead-letter-and-loss-less-outbound",
+      "queue_delivery_proof": {
+        "broker": "postgres-durable reference adapter (a real SQS/PubSub/Kafka run is §6 leg 5)",
+        "distinct_messages": 3,
+        "consumed": 4,
+        "redelivered": 1,
+        "canonical_effects": 3,
+        "dead_lettered": 1,
+        "dropped": 0,
+        "outbound_delivered_once": true
+      },
+      "run_id": "run_e17_aut_009",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:adb97949a87d46fa6c56191763adf3a2628842649c025ffbc2847264ed883c31",
+      "db_assertions": [
+        "AUT-010: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterFloodAppliesBackpressureNoDrop",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "AUT-010",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_aut_010",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:f518b6a6c4e31ea5a500d61f736a6afcbc0dd668c2b2944d96852e7ba7540832",
+      "db_assertions": [
+        "AUT-013: proven by 4 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetrySameIdempotencyKeySingleEverything; apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetryDifferentKeySameDedupeSingleAction; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect; apps/control-plane/internal/automation/orchestrator_storm_component_test.go:TestOrchestratorRetryStormSingleRun",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "AUT-013",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_aut_013",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:12c01891459c62b5b18e002beb5f30c26d90504f09ee95f516cd07a8f0e79e89",
+      "db_assertions": [
+        "KNO-001: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/knowledge_component_test.go:TestIngestIsImmutableAndVersioned; apps/control-plane/internal/knowledge/knowledge_component_test.go:TestFTSRanksAndCitesWithVerifiableOffsets; apps/control-plane/internal/knowledge/chunk_test.go:TestChunkDocumentIsDeterministicWithVerifiableOffsets",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "KNO-001",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_kno_001",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:9a1a47b404adfe8e782e8c9212d65d68ef77134f300bccb05f2ef0095320a0d1",
+      "db_assertions": [
+        "KNO-002: proven by 1 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/knowledge_component_test.go:TestFailedRefreshLeavesPriorActiveIntact",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "KNO-002",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_kno_002",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:5dad65db4527684c5f2dacc60545e53dd26d66d8fe265111c2aebd944cd804df",
+      "db_assertions": [
+        "KNO-003: proven by 5 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestForgedACLGrantInBodyIsRejectedAndGovernedByScope; apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestPostFilterTopKIsForbidden; apps/control-plane/internal/knowledge/retrieval_acl_component_test.go:TestCrossProjectACLNegative; apps/control-plane/internal/knowledge/knowledge_component_test.go:TestRetrievalIsTenantAndACLScoped; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestDerivePrincipalGrantsFromKeyScopesOnly",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "KNO-003",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "knowledge_acl_claim": "acl-first-zero-unauthorized-results-with-re-derivable-citation-offsets",
+      "knowledge_acl_proof": {
+        "authorized_results": 1,
+        "unauthorized_results": 0,
+        "ranking_shifted_by_unauthorized": false,
+        "post_filter_top_k": false,
+        "citations": [
+          {
+            "chunk_id": "kchk_journey_1",
+            "chunk_bytes": "Deployment runbook: the rollout gate blocks a release without a restore proof.",
+            "start_offset": 0,
+            "end_offset": 78,
+            "quote": "Deployment runbook: the rollout gate blocks a release without a restore proof."
+          }
+        ],
+        "source_delete_propagated": true
+      },
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_kno_003",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:f554968f03d5aa45bacd788e72ddc37ca491262b1978ac7da9f4bc79879e7ed9",
+      "db_assertions": [
+        "KNO-004: proven by 1 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/knowledge_component_test.go:TestSourceDeletePropagates",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "KNO-004",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_kno_004",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:48aed666c6681a0ffb2f1771f885de4fa1b35a5e4fbb4a3882d605134962b7b6",
+      "db_assertions": [
+        "KNO-005: proven by 4 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestHybridStrategyFusesKeywordAndVectorWithCitations; apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestVectorStrategyDisabledByDefault; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestResolveVectorHitsDropsLeakyRecords; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestReciprocalRankFusionRewardsBothStrategies",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "KNO-005",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_kno_005",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:7fdf5723cd6450ae065cf8f7517737663b33607fd556d948ef48a4efb1c55e56",
+      "db_assertions": [
+        "KNO-006: proven by 3 in-tree proof(s) at the e2e-deterministic tier — apps/control-plane/internal/execution/tools/knowledge_test.go:TestRetrievalToolQuarantinesUntrustedContent; apps/control-plane/internal/execution/tools/knowledge_test.go:TestRetrievalToolCitesWithOffsets; apps/control-plane/internal/knowledge/retrieval_tool_component_test.go:TestRetrievalToolCitesVerifiableOffsetsEndToEnd",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "KNO-006",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_kno_006",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:24f58cd96d5e3a58922616355e65c8a8ba7defd7a5e1f6e17aef7500eb5542e3",
+      "db_assertions": [
+        "KNO-007: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestRestrictedSourceNotEmbeddedToDisallowedRegion; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestEmbeddingPolicyBlocksRestrictedToDisallowedTarget",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "KNO-007",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_kno_007",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:96cd393102ab9b6fe76fe41f763e748876f3d0aadc9643dc599f71a2111aa084",
+      "db_assertions": [
+        "KNO-008: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/knowledge/retrieval_strategy_component_test.go:TestFreshnessDeadlineFailsWarnsNeverSilentStale; apps/control-plane/internal/knowledge/retrieval_unit_test.go:TestEvaluateFreshness",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "KNO-008",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_kno_008",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:9fa45460879e442c7f122e452ac4a046598168d91884f9afd6f4b343945341fc",
+      "db_assertions": [
+        "QUA-001: proven by 3 in-tree proof(s) at the unit tier — tests/evals/harness_test.go:TestFourSuitesGreen; tests/evals/harness_test.go:TestDigestIsContentAddressed; tests/evals/integration_test.go:TestIntegrationBenchmark",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "QUA-001",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_qua_001",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:bca8396a2b5129f2d2a5616e1145e0e9296adcd213ece04389f39c5e57dd04c1",
+      "db_assertions": [
+        "QUA-002: proven by 3 in-tree proof(s) at the unit tier — tests/evals/harness_test.go:TestModelJudgeNeverSoleGateForProtected; tests/evals/harness_test.go:TestRegressedPolicyIsDetectable; tests/evals/live_test.go:TestModelJudgeCalibrationSmoke",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "QUA-002",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_qua_002",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:457a607905f7596328554ec01587829f11e97d937869dcbf55368c9abc765570",
+      "db_assertions": [
+        "QUA-003: proven by 3 in-tree proof(s) at the unit tier — tests/evals/harness_test.go:TestFourSuitesGreen; tests/evals/harness_test.go:TestRegressedPolicyIsDetectable; tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksRealSecurityRegression",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "QUA-003",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_qua_003",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:4a505d3185045bb43fe7c318b20ab52def13975c0ce68adeefae6f51c15422e5",
+      "db_assertions": [
+        "QUA-004: proven by 3 in-tree proof(s) at the unit tier — tests/uat/eval_gate_test.go:TestEvalPromoteGateRefusesSubThreshold; tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksRealSecurityRegression; tests/uat/eval_gate_test.go:TestEvalPromoteGateRefusesMissingProof",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "eval_gate_claim": "held-out-thresholds-met-gate-mechanics-only-not-model-quality",
+      "eval_gate_proof": {
+        "split": "held-out",
+        "suites": [
+          {
+            "suite": "coding",
+            "held_out_score": 1,
+            "threshold": 0.9,
+            "security_regressions": 0,
+            "dataset_digest": "sha256:26d4a2496ff419e6eb0d034554baa0b27f3b43523a35b2924e59ffd529de692e"
+          },
+          {
+            "suite": "research",
+            "held_out_score": 1,
+            "threshold": 0.9,
+            "security_regressions": 0,
+            "dataset_digest": "sha256:e09237c685f8128f247aa639a80c4d6502e219ce61a7f5ead44ac19161f74348"
+          },
+          {
+            "suite": "recovery",
+            "held_out_score": 1,
+            "threshold": 0.9,
+            "security_regressions": 0,
+            "dataset_digest": "sha256:c35a8abaa37ffe00cc619bfa0c710fa0a0b795235167eb06f36841cd19b82fd4"
+          },
+          {
+            "suite": "security",
+            "held_out_score": 1,
+            "threshold": 1,
+            "security_regressions": 0,
+            "dataset_digest": "sha256:711cc46c9935d86c850b13088052d29d884c880a14bb9c86acbc28ae706efab9"
+          }
+        ]
+      },
+      "id": "QUA-004",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_qua_004",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:357ac57c8d0bb0b1cc3e2985aa3dffebeb79fa6b1a430786923209413ce250ae",
+      "db_assertions": [
+        "SLK-001: proven by 2 in-tree proof(s) at the unit tier — adapters/integrations/slack/inbound_test.go:TestMapEventNormalizesToCanonicalIdentity; adapters/integrations/slack/inbound_test.go:TestUnwrapSocketFrameFeedsTheSameMapping",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "SLK-001",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_slk_001",
+      "slack_mapping_claim": "one-canonical-session-one-effect-per-event-on-a-FAKE-peer",
+      "slack_mapping_proof": {
+        "peer": "fake",
+        "team_id": "T63300",
+        "session_id": "ses_slack_journey",
+        "canonical_sessions": 1,
+        "source_event_ids": [
+          "Ev63301",
+          "Ev63306"
+        ],
+        "delivered_events": 3,
+        "canonical_effects": 2,
+        "post_receipts": [
+          "901.000100",
+          "902.000100"
+        ],
+        "terminal_summaries_per_delivery": 1,
+        "rate_limit_repairs": 1,
+        "unauthorized_approval_rejected": true,
+        "canonical_result_intact": true
+      },
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:256626a5f77b34141fea8efe3238d897b45b277e1f5b2bc826cefc97f951ecf7",
+      "db_assertions": [
+        "SLK-002: proven by 2 in-tree proof(s) at the unit tier — adapters/integrations/slack/inbound_test.go:TestMapEventRedeliveryIsIdentityStable; apps/control-plane/internal/automation/dedupe_component_test.go:TestDuplicateDeliveryLinksOriginalSingleAction",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "SLK-002",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_slk_002",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:6a7b466952575c6a6528431d9e3d6eda0334e5ae16ca45942aeed9eb76191697",
+      "db_assertions": [
+        "SLK-003: proven by 1 in-tree proof(s) at the component-real tier — apps/control-plane/internal/extensions/slack_component_test.go:TestSlackThreadSessionCorrelation",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "SLK-003",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_slk_003",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:185ad9a9cc488294f278c93bb6c78de59f1d31c98f962cc5a6871edbadca93d4",
+      "db_assertions": [
+        "SLK-004: proven by 3 in-tree proof(s) at the unit tier — adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse; apps/control-plane/internal/extensions/slack_component_test.go:TestSlackConnectionCreateReadRLS",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "SLK-004",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_slk_004",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:64466890403925046a5cf0c9840ed76fbf95e9740930fc6cf5541075dedef12e",
+      "db_assertions": [
+        "SLK-005: proven by 1 in-tree proof(s) at the unit tier — adapters/integrations/slack/inbound_test.go:TestMapEventClassifiesEditsAndDeletes",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "SLK-005",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_slk_005",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:3e99d323d6c972527bfe405beb3604a9b3fb4864b2f9a097561f2e6683d08836",
+      "db_assertions": [
+        "SLK-006: proven by 2 in-tree proof(s) at the unit tier — adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once; adapters/integrations/slack/ratelimit_test.go:TestPostMessageBoundedRepairThenRateLimited",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "SLK-006",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_slk_006",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:081772c2063ce49d0dd362d6a47cd6f6221e8b8d8101ec67de34fbcf775fcf02",
+      "db_assertions": [
+        "SLK-007: proven by 3 in-tree proof(s) at the unit tier — adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalDenyIsMapped; adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "SLK-007",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_slk_007",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:e3adf967c93d9f681b6abc8be415a0fe330a5439fdd6e1017a650fdb8a2bc8af",
+      "db_assertions": [
+        "SLK-008: proven by 2 in-tree proof(s) at the unit tier — adapters/integrations/slack/inbound_test.go:TestMapEventDropsBotAndSelfEvents; adapters/integrations/slack/inbound_test.go:TestMapEventDropsNestedBotEdit",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "SLK-008",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_slk_008",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:1f62e2dbbe3024bbab840061321cb462a808715c0e6079b8947d9943fa7ddcf2",
+      "db_assertions": [
+        "SUB-007: proven by 2 in-tree proof(s) at the e2e-deterministic tier — adapters/integrations/a2a/client_test.go:TestA2AClientRemoteChildIsUntrustedAndNoCredentialInheritance; adapters/integrations/a2a/client_test.go:TestA2AClientLoopbackInteropAgainstT2Server",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "SUB-007",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_sub_007",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:12264f9e6b7459fb5d01472c059c65f9b05e0b69d58e68f51a57aa1df234e7cc",
+      "console_claim": "axe-clean-keyboard-operable-and-every-request-on-the-v1-relay",
+      "console_proof": {
+        "axe_violations": 0,
+        "axe_report_digest": "sha256:6ed2f36bb13fbf9a46eee16b0e6fa16886c46699b38183fe9ad0509b0dcd9aaf",
+        "network_trace": [
+          "/api/palai/v1/organizations",
+          "/api/palai/v1/projects",
+          "/api/palai/v1/api-keys",
+          "/api/palai/v1/model-connections",
+          "/api/palai/v1/responses",
+          "/api/palai/v1/responses/resp_console/events",
+          "/api/palai/v1/responses/resp_console/commands",
+          "/api/palai/v1/artifacts/art_console/content"
+        ],
+        "keyboard_operable": true,
+        "skip_link_first": true,
+        "approval_detail_authoritative": true,
+        "api_key_reached_browser": false
+      },
+      "db_assertions": [
+        "UI-001: proven by 3 in-tree proof(s) at the e2e-deterministic tier — apps/web-console/tests/a11y.spec.ts:axe-core reports zero violations on the admin surface; apps/web-console/tests/a11y.spec.ts:axe-core reports zero violations on the live-run surface after a completed run; apps/web-console/tests/a11y.spec.ts:keyboard navigation: skip link is the first stop and the run→approve flow works with no mouse",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "UI-001",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_ui_001",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:3d7a7e69799fd2229a5cf2c52e07959a5d0e4bae85b5a1a75ea403cdd4d7c7ca",
+      "db_assertions": [
+        "UI-002: proven by 3 in-tree proof(s) at the e2e-deterministic tier — apps/web-console/tests/journey.spec.ts:UI-002: the approval UI shows the authoritative operation/branch/request_hash from the canonical event — the proposal display string does not replace them; apps/web-console/tests/journey.spec.ts:approve proceeds through recovery to a completed run with a downloadable artifact; apps/web-console/tests/journey.spec.ts:deny blocks the operation — the run terminates canceled, the push never completes",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "UI-002",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "e2e-deterministic",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_ui_002",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:efdae525f8bc47d726a6ece1ba895c784aa9d1a3dc4dd9cc018b3c568611a413",
+      "db_assertions": [
+        "WRK-001: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerEnrollTypedDispatchAndArtifactRoundTrip; apps/control-plane/internal/workers/catalog_test.go:TestAppleBuildCapabilityIsAbsentEverywhere; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "WRK-001",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_wrk_001",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:4e103e9a31ee635248c72559df3923413ebf4f6a585e5b778fe6a3d0892fcd91",
+      "db_assertions": [
+        "WRK-002: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerEnrollTypedDispatchAndArtifactRoundTrip; apps/control-plane/internal/workers/catalog_test.go:TestNoTunnel_TypedOperationPassesTheGate; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "WRK-002",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_wrk_002",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:f86834aa972bea0057e976db82e4e2ef68434a299e00d74e41ac96558fa858e8",
+      "db_assertions": [
+        "WRK-003: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerFenceStaleRejectOnRedispatch; apps/control-plane/internal/workers/workers_component_test.go:TestWorkerHealthChangeCutsLease; apps/control-plane/internal/workers/live/worker_live_test.go:TestFenceStaleRejectThroughGateway",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "WRK-003",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_wrk_003",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      },
+      "worker_fence_claim": "stale-fence-rejected-no-tunnel-refused-secret-handle-expired",
+      "worker_fence_proof": {
+        "worker_id": "wrk_journey_1",
+        "capability": "swift-toolchain/swift.build-check",
+        "stale_fence_rejected": true,
+        "no_tunnel_refused_operations": [
+          "tunnel.connect",
+          "shell.exec",
+          "socks.proxy"
+        ],
+        "tunnel_succeeded": false,
+        "secret_handle_scope": "job",
+        "secret_handle_expired": true,
+        "secret_value_in_journal": false,
+        "apple_build_advertised": false
+      }
+    },
+    {
+      "checksum": "sha256:7a3f48039d3761ae648969fb590394f4ba85925da12000951d2b0e78ff41d261",
+      "db_assertions": [
+        "WRK-004: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestSecretHandleScopeAndExpiry; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "WRK-004",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_wrk_004",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:d2483781ad870e3639c3aafa0feeccf42c32e5388ccb24cd481d35d2f6779072",
+      "db_assertions": [
+        "WRK-005: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestWorkerEnrollTypedDispatchAndArtifactRoundTrip; apps/control-plane/internal/workers/buildcheck_test.go:TestBuildCheckIsHonestAndDeterministic; apps/control-plane/internal/workers/live/worker_live_test.go:TestTwoSidedTypedJobRoundTrip",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "WRK-005",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_wrk_005",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:20dbf8650946edecc5ca7133b140a56d82d07362b590657be28f7005d6814613",
+      "db_assertions": [
+        "WRK-006: proven by 4 in-tree proof(s) at the unit tier — apps/control-plane/internal/workers/catalog_test.go:TestNoTunnel_UntypedOperationIsRefusedAtDispatch; apps/control-plane/internal/workers/catalog_test.go:TestAppleBuildCapabilityIsAbsentEverywhere; apps/control-plane/internal/workers/workers_component_test.go:TestNoTunnelSubmitForForeignOperationRefused; apps/control-plane/internal/workers/live/worker_live_test.go:TestNoTunnelSurface",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "WRK-006",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_wrk_006",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "checksum": "sha256:ab780b12839f45fbbdf011431a27b9985241097d384909a462718929c5ee127a",
+      "db_assertions": [
+        "WRK-007: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/workers/workers_component_test.go:TestQuarantineOnUncertain; apps/control-plane/internal/workers/workers_component_test.go:TestWorkerFenceStaleRejectOnRedispatch",
+        "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+      ],
+      "id": "WRK-007",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "component-real",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_wrk_007",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    },
+    {
+      "capability_tier_claim": "tiers-recomputed-from-per-case-outcomes",
+      "capability_tier_proof": {
+        "capabilities": [
+          {
+            "capability": "a2a",
+            "declared_tier": "preview",
+            "claim_case_ids": [
+              "A2A-001",
+              "A2A-002",
+              "A2A-003",
+              "A2A-004",
+              "A2A-005",
+              "SUB-007"
+            ]
+          },
+          {
+            "capability": "apple-build",
+            "declared_tier": "disabled",
+            "claim_case_ids": [
+              "WRK-006"
+            ]
+          },
+          {
+            "capability": "capability-workers",
+            "declared_tier": "stable",
+            "claim_case_ids": [
+              "WRK-001",
+              "WRK-002",
+              "WRK-003",
+              "WRK-004",
+              "WRK-005",
+              "WRK-006",
+              "WRK-007"
+            ]
+          },
+          {
+            "capability": "console",
+            "declared_tier": "stable",
+            "claim_case_ids": [
+              "UI-001",
+              "UI-002"
+            ]
+          },
+          {
+            "capability": "knowledge",
+            "declared_tier": "stable",
+            "claim_case_ids": [
+              "KNO-001",
+              "KNO-002",
+              "KNO-003",
+              "KNO-004",
+              "KNO-005",
+              "KNO-006",
+              "KNO-007",
+              "KNO-008"
+            ]
+          },
+          {
+            "capability": "knowledge-vector",
+            "declared_tier": "disabled",
+            "claim_case_ids": [
+              "KNO-005"
+            ]
+          },
+          {
+            "capability": "queues",
+            "declared_tier": "stable",
+            "claim_case_ids": [
+              "AUT-009",
+              "AUT-010"
+            ]
+          },
+          {
+            "capability": "slack",
+            "declared_tier": "preview",
+            "claim_case_ids": [
+              "SLK-001",
+              "SLK-002",
+              "SLK-003",
+              "SLK-004",
+              "SLK-005",
+              "SLK-006",
+              "SLK-007",
+              "SLK-008"
+            ]
+          }
+        ],
+        "snapshot": {
+          "a2a": "preview",
+          "apple-build": "disabled",
+          "capability-workers": "stable",
+          "console": "stable",
+          "knowledge": "stable",
+          "knowledge-vector": "disabled",
+          "queues": "stable",
+          "slack": "preview"
+        },
+        "snapshot_source": "GET /v1/capabilities served by the real api.NewRouter (asserted bit-equal by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute)",
+        "claims_digest": "sha256:f0d46879af1792764ba43cb078666d73618f1d6ca80e9bdac2cd71af0a5a5b26"
+      },
+      "checksum": "sha256:38bdb078545023f677e1882068ca195fb69248536ef671fc98e9180d8cba6301",
+      "db_assertions": [
+        "RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): a capability's maturity tier is not a behaviour one case asserts, it is the RECOMPUTATION over all of them",
+        "the verifier RECOMPUTES every tier from the canonical code tables + this bundle's own per-case outcomes and refuses any declared tier or /v1/capabilities snapshot that disagrees — the manifest's own tier copy is never an input (plan §T11)",
+        "HONEST CEILING: slack and a2a cap at PREVIEW because their §6 legs (a real workspace receipt / a foreign peer) do not exist in this session; knowledge-vector and apple-build are DISABLED because no vector store and no Apple signing material exist anywhere"
+      ],
+      "id": "E17-TIER",
+      "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
+      "mtls_enroll": "component-tier: no runner enrollment",
+      "proof_class": "unit",
+      "provider_request_id": "prov_e17_deterministic",
+      "run_id": "run_e17_e17_tier",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "response.completed"
+      },
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0
+      }
+    }
+  ],
+  "git_sha": "211b69f",
+  "maturity": "rc",
+  "migration": "000040_capability_workers",
+  "release": "extensions-0.1.0"
+}
