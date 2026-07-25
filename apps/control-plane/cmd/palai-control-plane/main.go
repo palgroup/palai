@@ -198,11 +198,12 @@ func main() {
 	// is what makes discovery advertise `a2a` (capabilities derives the tier from the live mount, never a
 	// static claim — §2). PALAI_PUBLIC_BASE_URL is the public origin the Agent Card advertises its exact
 	// interface URLs under (empty ⇒ relative). Push DELIVERY and inbound file ingest stay unwired honest
-	// ceilings (§5/§6): the card advertises push only when a Pusher exists, so it reads false here.
+	// ceilings (§5/§6): the card advertises push only when a Pusher exists.
+	a2aPusher := a2aPusherFromEnv()
 	a2aStore := a2a.NewStore(repo.Spine().Pool(), middleware.NewID)
 	a2aServer := api.NewA2AServer(repo, a2aStore, a2aStore,
 		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns},
-		os.Getenv("PALAI_PUBLIC_BASE_URL"))
+		os.Getenv("PALAI_PUBLIC_BASE_URL"), a2aPusher)
 	routerOpts = append(routerOpts, api.WithA2A(a2aServer, a2aServer.PublicCardHandler()))
 	// Discovery advertises `capability-workers` ONLY where the gateway above actually BOUND its listener —
 	// the option is passed off the returned value, never off the env var, so the claim cannot outlive the
@@ -1181,6 +1182,49 @@ func sseConfigFromEnv() api.SSEConfig {
 // defaults to zero = disabled, so a stack that sets none keeps the pre-E13-T7 behaviour (no
 // request-rate limiter, no per-project run caps). Operators (and the live smoke) enable them
 // without a rebuild.
+// a2aPusherFromEnv builds the A2A push pusher, or nil to leave push UNMOUNTED (E19 T4, §3.5 D12/D13).
+//
+// Push POSTs to a URL the CLIENT registered, so it is off unless a deployment explicitly says where
+// deliveries may go. PALAI_A2A_PUSH_ALLOWED_HOSTS is that single fail-closed switch:
+//
+//	unset/empty  -> no pusher. The card advertises pushNotifications:false and the CRUD 404s (D13).
+//	"a.example,b.example" -> push on, restricted to those hosts (normalized whole-host equality).
+//	"*"          -> push on with NO host allowlist: any public https destination a client names will be
+//	                POSTed to, with only packages/egress standing between us and it. This is the weaker
+//	                posture the A2A security guidance warns about ("SHOULD NOT blindly trust ... any URL
+//	                provided by a client"), so it must be typed out on purpose — it is never the default.
+//
+// PALAI_A2A_PUSH_ALLOW_PRIVATE=1 additionally opens loopback/RFC1918 receivers for a self-host deployment;
+// the metadata and special-use ranges stay denied even then (egress.VetIP).
+//
+// The pusher rides a webhook.Sender — the SAME egress-vetted, IP-pinned signed sender the §21.6 delivery
+// pump uses.
+func a2aPusherFromEnv() *a2a.WebhookPusher {
+	raw := strings.TrimSpace(os.Getenv("PALAI_A2A_PUSH_ALLOWED_HOSTS"))
+	if raw == "" {
+		return nil
+	}
+	policy := a2a.PushPolicy{AllowPrivate: os.Getenv("PALAI_A2A_PUSH_ALLOW_PRIVATE") == "1"}
+	if raw != "*" {
+		for _, host := range strings.Split(raw, ",") {
+			if h := strings.TrimSpace(host); h != "" {
+				policy.AllowedHosts = append(policy.AllowedHosts, h)
+			}
+		}
+		// A list that parsed to nothing (e.g. ",,") must not silently become the "*" posture.
+		if len(policy.AllowedHosts) == 0 {
+			return nil
+		}
+	}
+	pusher := a2a.NewWebhookPusher(webhook.NewSender(), policy)
+	pusher.DeadLetter = func(_ context.Context, f a2a.PushFailure) {
+		// A dead-lettered push is an operator signal, never a run failure: the canonical task result is
+		// already durable and untouched. PushFailure carries no destination URL and no token.
+		log.Printf("a2a: %s", f)
+	}
+	return pusher
+}
+
 func edgeLimitsFromEnv() api.EdgeLimits {
 	return api.EdgeLimits{
 		RequestRatePerSec: envFloat("PALAI_REQUEST_RATE_PER_SEC"),
