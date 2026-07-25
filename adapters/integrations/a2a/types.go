@@ -14,6 +14,8 @@
 // the §6 operator leg, so the capability stays "preview" and this package never claims otherwise.
 package a2a
 
+import "fmt"
+
 // The A2A 1.0 protocol version this server speaks, advertised on every Agent Card interface and checked on
 // version-negotiation. It is an EXACT advertisement (A2A-001) — the card names the version and binding it
 // actually serves, never a superset.
@@ -122,28 +124,59 @@ type Task struct {
 // StatusUpdateEvent / ArtifactUpdateEvent are the streaming frames (spec §11 current 1.0 representation: the
 // member name is the discriminator). Final marks the terminal frame (A2A-002 terminal consistency).
 type StatusUpdateEvent struct {
-	StatusUpdate statusUpdate `json:"statusUpdate"`
+	StatusUpdate StatusUpdate `json:"statusUpdate"`
 }
-type statusUpdate struct {
+type StatusUpdate struct {
 	TaskID    string     `json:"taskId"`
 	ContextID string     `json:"contextId"`
 	Status    TaskStatus `json:"status"`
 	Final     bool       `json:"final"`
 }
 type ArtifactUpdateEvent struct {
-	ArtifactUpdate artifactUpdate `json:"artifactUpdate"`
+	ArtifactUpdate ArtifactUpdate `json:"artifactUpdate"`
 }
-type artifactUpdate struct {
+type ArtifactUpdate struct {
 	TaskID   string   `json:"taskId"`
 	Artifact Artifact `json:"artifact"`
 }
 
 // NewStatusUpdate / NewArtifactUpdate build the discriminated stream frames.
 func NewStatusUpdate(taskID, contextID string, status TaskStatus, final bool) StatusUpdateEvent {
-	return StatusUpdateEvent{statusUpdate{TaskID: taskID, ContextID: contextID, Status: status, Final: final}}
+	return StatusUpdateEvent{StatusUpdate{TaskID: taskID, ContextID: contextID, Status: status, Final: final}}
 }
 func NewArtifactUpdate(taskID string, a Artifact) ArtifactUpdateEvent {
-	return ArtifactUpdateEvent{artifactUpdate{TaskID: taskID, Artifact: a}}
+	return ArtifactUpdateEvent{ArtifactUpdate{TaskID: taskID, Artifact: a}}
+}
+
+// StreamResponse is the body an asynchronous push notification POSTs.
+//
+// CONTRACT (fetched 2026-07-25, https://a2a-protocol.org/latest/topics/streaming-and-async/): "The A2A
+// protocol defines the HTTP body payload as a `StreamResponse` object, matching the format used in
+// streaming operations" — one of task | message | statusUpdate | artifactUpdate. It is NOT a bare Task, and
+// the member NAME is the discriminator, so exactly one field is ever set (Validate enforces it). §3.5 D11:
+// pinning this to a type is the whole point — the seam used to take an opaque []byte, so nothing held the
+// wire shape to the published contract.
+type StreamResponse struct {
+	Task           *Task           `json:"task,omitempty"`
+	Message        *Message        `json:"message,omitempty"`
+	StatusUpdate   *StatusUpdate   `json:"statusUpdate,omitempty"`
+	ArtifactUpdate *ArtifactUpdate `json:"artifactUpdate,omitempty"`
+}
+
+// Validate enforces the discriminated-union invariant: exactly one member. Zero members is not a
+// notification; two members is not discriminated, and a receiver switching on the member name would pick
+// whichever it happened to check first.
+func (s StreamResponse) Validate() error {
+	n := 0
+	for _, set := range []bool{s.Task != nil, s.Message != nil, s.StatusUpdate != nil, s.ArtifactUpdate != nil} {
+		if set {
+			n++
+		}
+	}
+	if n != 1 {
+		return fmt.Errorf("%w: a StreamResponse carries exactly one of task|message|statusUpdate|artifactUpdate, got %d", ErrPushRefused, n)
+	}
+	return nil
 }
 
 // PushNotificationConfig is an A2A push-notification target for a task's asynchronous updates: URL is the

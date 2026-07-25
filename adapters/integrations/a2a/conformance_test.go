@@ -520,3 +520,31 @@ func parseSSE(t *testing.T, body []byte) []map[string]any {
 	}
 	return out
 }
+
+// TestA2APushCRUDIsUnmountedWithoutAPusher is the D13 RED guard: the Agent Card says pushNotifications:false
+// when no Pusher is wired, so the pushNotificationConfigs CRUD must be UNMOUNTED too. Today it is mounted
+// unconditionally, so a client registers a target with a 200 against a card that says the surface does not
+// exist — and nothing ever fires. A silent-drop surface is worse than a missing one.
+func TestA2APushCRUDIsUnmountedWithoutAPusher(t *testing.T) {
+	srv, _, _, _ := newServer(completedDurable())
+	srv.Pusher = nil
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	msg := map[string]any{"message": map[string]any{"role": "user", "parts": []Part{{Kind: "text", Text: "p"}}, "messageId": "mgate"}}
+	_, body := loopback(t, ts.URL, http.MethodPost, ifacePath("message:send"), true, msg, nil)
+	var task Task
+	_ = json.Unmarshal(body, &task)
+	base := "tasks/" + task.ID + "/pushNotificationConfigs"
+
+	cfg := PushNotificationConfig{ID: "pc1", URL: "https://sink.example.test/hook", Token: "SECRET_TOKEN"}
+	if status, sb := loopback(t, ts.URL, http.MethodPost, ifacePath(base), true, cfg, nil); status != http.StatusNotFound {
+		t.Fatalf("set push with no Pusher = %d, want 404 (D13: the card advertises no push, so the CRUD must not accept a target); %s", status, sb)
+	}
+	if status, _ := loopback(t, ts.URL, http.MethodGet, ifacePath(base), true, nil, nil); status != http.StatusNotFound {
+		t.Fatalf("list push with no Pusher = %d, want 404", status)
+	}
+	if status, _ := loopback(t, ts.URL, http.MethodGet, ifacePath(base+"/pc1"), true, nil, nil); status != http.StatusNotFound {
+		t.Fatalf("get push item with no Pusher = %d, want 404", status)
+	}
+}
