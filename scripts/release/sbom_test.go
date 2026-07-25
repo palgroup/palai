@@ -191,6 +191,11 @@ func TestVulnGateRefusesMalformedExceptions(t *testing.T) {
 		{"no expiry", policyWith(t, 1, 30, func(e *exception) { e.Expires = "" }), "has no expires"},
 		{"open-ended", policyWith(t, 1, 400, nil), "the ceiling is 90"},
 		{"expires before it opened", policyWith(t, 1, -30, nil), "on or before it opened"},
+		// A window entirely in the FUTURE is short enough to clear the 90-day ceiling measured
+		// against itself, and `expires < today` is false — so a ceiling that never looks at the
+		// evaluation date lets it apply TODAY, and for the next seventy-three years. That is the
+		// open-ended acceptance the ceiling exists to forbid, wearing a well-formed window.
+		{"opens in the future", policyWith(t, -3650, 3700, nil), "opens in the future"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -246,11 +251,13 @@ func TestShippedPolicyBlocksCritical(t *testing.T) {
 
 // --- 2. index verification is fail-closed -----------------------------------------------------
 
-// stageDir builds a populated release directory around the REAL fixture SBOMs and scanner report
-// by running the REAL rollup (so every digest in the index is computed by the code under test, not
-// by the test). `pass` picks a policy that excepts the fixture's criticals, which is how the clean
-// baseline is reached without a second, artificially clean scanner report.
-func stageDir(t *testing.T, pass bool) string {
+// stageDir builds a populated release directory around the REAL fixture SBOMs by running the REAL
+// rollup (so every digest in the index is computed by the code under test, not by the test).
+//
+//	"pass":    scanned, with a policy that excepts the fixture's criticals — the clean baseline,
+//	           reached without a second, artificially clean scanner report.
+//	"no-scan": what `sbom.sh --no-scan` produces — SBOMs, no scanner report, no decision.
+func stageDir(t *testing.T, mode string) string {
 	t.Helper()
 	root := repoRoot(t)
 	dir := t.TempDir()
@@ -261,11 +268,12 @@ func stageDir(t *testing.T, pass bool) string {
 	if err := os.WriteFile(filepath.Join(dir, "art.bin"), []byte("release artifact bytes\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for src, dst := range map[string]string{
-		fixtureSPDX:   "art.bin.spdx.json",
-		fixtureCDX:    "art.bin.cdx.json",
-		fixtureReport: "art.bin.grype.json",
-	} {
+	scanned := mode != "no-scan"
+	copies := map[string]string{fixtureSPDX: "art.bin.spdx.json", fixtureCDX: "art.bin.cdx.json"}
+	if scanned {
+		copies[fixtureReport] = "art.bin.grype.json"
+	}
+	for src, dst := range copies {
 		b, err := os.ReadFile(filepath.Join(root, src))
 		if err != nil {
 			t.Fatal(err)
@@ -274,16 +282,16 @@ func stageDir(t *testing.T, pass bool) string {
 			t.Fatal(err)
 		}
 	}
-	policy := filepath.Join(root, "scripts/release/vuln-policy.json")
-	if pass {
-		policy = policyWith(t, 1, 30, nil)
-	}
-	b, err := os.ReadFile(policy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sbomDir, "vuln-policy.json"), b, 0o644); err != nil {
-		t.Fatal(err)
+	policy := ""
+	if scanned {
+		policy = filepath.Join(sbomDir, "vuln-policy.json")
+		b, err := os.ReadFile(policyWith(t, 1, 30, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(policy, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	writeJSON(t, filepath.Join(dir, "release-index.json"), map[string]any{
@@ -297,16 +305,12 @@ func stageDir(t *testing.T, pass bool) string {
 
 	cmd := exec.Command("python3", filepath.Join(root, "scripts/release/sbom-tool.py"), "rollup")
 	cmd.Env = append(os.Environ(),
-		"DIR="+dir, "MANIFEST=release-index.json", "SDK=0", "SCANNED=1", "TSV="+tsv,
+		"DIR="+dir, "MANIFEST=release-index.json", "SDK=0", "TSV="+tsv,
+		"SCANNED="+map[bool]string{true: "1", false: "0"}[scanned],
 		"LOCK="+filepath.Join(root, "scripts/release/vulndb.lock.json"),
-		"POLICY="+filepath.Join(sbomDir, "vuln-policy.json"),
-		"SYFT_IMAGE=test", "GRYPE_IMAGE=test")
-	out, err := cmd.CombinedOutput()
-	if pass && err != nil {
-		t.Fatalf("rollup: %v\n%s", err, out)
-	}
-	if !pass && err == nil {
-		t.Fatalf("rollup did NOT block on the fixture's criticals:\n%s", out)
+		"POLICY="+policy, "SYFT_IMAGE=test", "GRYPE_IMAGE=test")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("rollup (%s): %v\n%s", mode, err, out)
 	}
 	return dir
 }
@@ -317,7 +321,7 @@ func verifyDir(t *testing.T, dir string) (string, int) {
 }
 
 func TestSBOMVerifyAcceptsAWellFormedDir(t *testing.T) {
-	out, code := verifyDir(t, stageDir(t, true))
+	out, code := verifyDir(t, stageDir(t, "pass"))
 	if code != 0 {
 		t.Fatalf("a well-formed dir failed verification (exit %d):\n%s", code, out)
 	}
@@ -327,7 +331,7 @@ func TestSBOMVerifyAcceptsAWellFormedDir(t *testing.T) {
 }
 
 func TestSBOMVerifyRefusesAnArtifactWithNoSBOM(t *testing.T) {
-	dir := stageDir(t, true)
+	dir := stageDir(t, "pass")
 	index := filepath.Join(dir, "release-index.json")
 	var doc map[string]any
 	readJSON(t, index, &doc)
@@ -344,7 +348,7 @@ func TestSBOMVerifyRefusesAnArtifactWithNoSBOM(t *testing.T) {
 }
 
 func TestSBOMVerifyRefusesAOneByteTamper(t *testing.T) {
-	dir := stageDir(t, true)
+	dir := stageDir(t, "pass")
 	// One byte, in a place that keeps the document valid JSON: the point is that the DIGEST moves,
 	// not that the file stops parsing.
 	path := filepath.Join(dir, "sbom/art.bin.spdx.json")
@@ -370,7 +374,7 @@ func TestSBOMVerifyRefusesAOneByteTamper(t *testing.T) {
 }
 
 func TestSBOMVerifyRefusesAnUnindexedRider(t *testing.T) {
-	dir := stageDir(t, true)
+	dir := stageDir(t, "pass")
 	// The sibling of T3's "every file must be in the signed sha256sums" hardening: an SBOM no
 	// indexed artifact claims must not be able to ride along and look official.
 	if err := os.WriteFile(filepath.Join(dir, "sbom/rider.spdx.json"), []byte("{}\n"), 0o644); err != nil {
@@ -385,7 +389,7 @@ func TestSBOMVerifyRefusesAnUnindexedRider(t *testing.T) {
 func TestSBOMVerifyRederivesTheDecisionRatherThanReadingIt(t *testing.T) {
 	// Flip the RECORDED verdict to "pass" while the raw findings still carry four criticals. A
 	// verifier that trusted the manifest's own copy would go green here (§2 recompute-over-copy).
-	dir := stageDir(t, true)
+	dir := stageDir(t, "pass")
 	sbomDir := filepath.Join(dir, "sbom")
 	shipped, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts/release/vuln-policy.json"))
 	if err != nil {
@@ -401,6 +405,105 @@ func TestSBOMVerifyRederivesTheDecisionRatherThanReadingIt(t *testing.T) {
 	if !strings.Contains(out, "re-deriving it from the raw findings") &&
 		!strings.Contains(out, "blocking finding") {
 		t.Errorf("refusal does not name the re-derivation:\n%s", out)
+	}
+}
+
+// An unscanned dir must not report an assurance it does not have. The JSON note was already honest;
+// the terminal line an operator actually reads said the decision had been "re-derived from the raw
+// findings" — of which there were none, because nothing ran.
+func TestSBOMVerifySaysNoScanRanRatherThanClaimingADecision(t *testing.T) {
+	dir := stageDir(t, "no-scan")
+	out, code := verifyDir(t, dir)
+	if code != 0 {
+		t.Fatalf("a well-formed --no-scan dir failed verification (exit %d):\n%s", code, out)
+	}
+	if strings.Contains(out, "re-derived") {
+		t.Errorf("verify claims a re-derived decision for a dir NOTHING was scanned in:\n%s", out)
+	}
+	if !strings.Contains(out, "NO SCAN RAN") {
+		t.Errorf("verify does not say plainly that no scan ran:\n%s", out)
+	}
+	// And the note must NAME who enforces "a release run never passes --no-scan" rather than assert
+	// a rule nothing checks — this tool cannot know it is a release run; T4's verifier can.
+	var index struct {
+		SBOM struct {
+			VulnerabilityScan struct{ Note string } `json:"vulnerability_scan"`
+		} `json:"sbom"`
+	}
+	readJSON(t, filepath.Join(dir, "release-index.json"), &index)
+	for _, want := range []string{"NOT a clean result", "release-verify.sh"} {
+		if !strings.Contains(index.SBOM.VulnerabilityScan.Note, want) {
+			t.Errorf("the not-scanned note does not say %q: %s", want, index.SBOM.VulnerabilityScan.Note)
+		}
+	}
+}
+
+// The honest ceilings are the only place the output says what the scan does NOT cover. Prose with
+// no gate rots silently, so pin it where the rollup writes it.
+func TestRollupWritesTheHonestCeilings(t *testing.T) {
+	dir := stageDir(t, "pass")
+	var index struct {
+		SBOM struct {
+			CoverageCeiling string `json:"coverage_ceiling"`
+			SBOMBytesNote   string `json:"sbom_bytes_note"`
+		} `json:"sbom"`
+	}
+	readJSON(t, filepath.Join(dir, "release-index.json"), &index)
+	var report struct {
+		CoverageCeiling string `json:"coverage_ceiling"`
+		DB              struct {
+			HonestCeiling string `json:"honest_ceiling"`
+		} `json:"db"`
+	}
+	readJSON(t, filepath.Join(dir, "sbom/vuln-report.json"), &report)
+	var inventory struct{ Note string }
+	readJSON(t, filepath.Join(dir, "sbom/license-inventory.json"), &inventory)
+
+	for _, c := range []struct {
+		what, got string
+		want      []string
+	}{
+		{"the index's coverage_ceiling", index.SBOM.CoverageCeiling,
+			[]string{"EXACTLY what the SBOM sees", "a clean scan does not speak for it"}},
+		{"the index's sbom_bytes_note", index.SBOM.SBOMBytesNote,
+			[]string{"NOT reproducible", "T1's binary-level reproducibility claim is unaffected"}},
+		{"vuln-report.json's coverage_ceiling", report.CoverageCeiling,
+			[]string{"EXACTLY what the SBOM sees"}},
+		{"vuln-report.json's db.honest_ceiling", report.DB.HonestCeiling,
+			[]string{"PINNED OFFLINE SNAPSHOT", "--network none", "invisible to this result", "plan §6"}},
+		{"license-inventory.json's note", inventory.Note,
+			[]string{"NOT a claim that the package is unlicensed"}},
+	} {
+		for _, want := range c.want {
+			if !strings.Contains(c.got, want) {
+				t.Errorf("%s does not say %q:\n  %s", c.what, want, c.got)
+			}
+		}
+	}
+}
+
+// ORDER — build.sh → sbom.sh → provenance.sh. Running it the other way round fails closed anyway
+// (the index digest moves and the SBOMs become unsigned riders), but as a confusing failure two
+// steps downstream. Refuse at the top, where the operator can read why.
+func TestSBOMRefusesToRunOverAnAlreadyAttestedDir(t *testing.T) {
+	dir := t.TempDir()
+	writeJSON(t, filepath.Join(dir, "release-index.json"), map[string]any{
+		"schema":    "palai.release-index/v1",
+		"artifacts": []map[string]any{{"kind": "cli", "file": "art.bin"}},
+	})
+	if err := os.WriteFile(filepath.Join(dir, "sha256sums.sig"), []byte("signature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runSBOM(t, "--dir", dir)
+	if code == 0 {
+		t.Fatalf("sbom.sh ran over an ALREADY-ATTESTED dir — everything it writes is an unsigned rider:\n%s", out)
+	}
+	if !strings.Contains(out, "already ATTESTED") {
+		t.Errorf("the refusal does not name the ordering:\n%s", out)
+	}
+	// --verify must still work on an attested dir: that is exactly when you verify one.
+	if _, code := verifyDir(t, dir); code == 0 {
+		t.Error("verify passed a dir with no sbom block")
 	}
 }
 

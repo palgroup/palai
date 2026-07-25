@@ -51,9 +51,16 @@ def dump(path, doc):
 
 # --- the §51.3 policy gate ------------------------------------------------------------------------
 
-def _validate_exception(exc, idx):
+def _validate_exception(exc, idx, on_date):
     """A malformed exception REFUSES the policy file. It is never silently dropped (which would let
-    a critical through) and never silently applied (which would make `expires` decorative)."""
+    a critical through) and never silently applied (which would make `expires` decorative).
+
+    The window is bounded against `on_date`, the date the gate is being evaluated at — NOT against
+    itself. A window measured only against itself lets a FUTURE-dated one through: `expires-opened`
+    is small enough to clear the ceiling, `expires < on_date` is false so it has not lapsed, and the
+    exception therefore applies today and for as long as the far-off `expires` says. That is exactly
+    the open-ended acceptance the ceiling exists to forbid. `opened <= on_date` plus the window
+    ceiling together imply `expires <= on_date + MAX_EXCEPTION_DAYS`, so no third check is needed."""
     for field in ("id", "owner", "reason", "opened", "expires"):
         if not str(exc.get(field) or "").strip():
             raise Refused("vuln-policy exception #%d has no %s — an exception is only ever "
@@ -66,6 +73,11 @@ def _validate_exception(exc, idx):
     if expires <= opened:
         raise Refused("vuln-policy exception %s expires (%s) on or before it opened (%s)"
                       % (exc["id"], exc["expires"], exc["opened"]))
+    if opened > on_date:
+        raise Refused("vuln-policy exception %s opens in the future (%s, evaluating on %s) — a "
+                      "deferral that has not started cannot suppress a finding today, and dating it "
+                      "forward is how a %d-day ceiling becomes an open-ended acceptance"
+                      % (exc["id"], exc["opened"], on_date.isoformat(), MAX_EXCEPTION_DAYS))
     if (expires - opened).days > MAX_EXCEPTION_DAYS:
         raise Refused("vuln-policy exception %s runs %d days; the ceiling is %d — an open-ended "
                       "exception is a silent acceptance, not a deferral"
@@ -88,7 +100,7 @@ def evaluate(policy, reports, on_date):
         raise Refused("vuln-policy exceptions must be a list")
     parsed = []
     for i, exc in enumerate(exceptions):
-        _opened, expires = _validate_exception(exc, i)
+        _opened, expires = _validate_exception(exc, i, on_date)
         parsed.append((exc, expires))
 
     blocking, excepted, severities = [], [], collections.Counter()
@@ -339,8 +351,13 @@ def cmd_rollup():
             "scanned": False,
             "reason": os.environ.get("SBOM_NO_SCAN_REASON", "--no-scan: this run produced SBOMs only"),
             "result": "not-scanned",
+            # This tool cannot tell a release run from a local one, so it does not claim to enforce
+            # the rule — it names who does. T4's release-verify.sh is the gate the release chain runs
+            # over a finished dir, and `scanned: false` is the flag it reads.
             "note": ("NOT a clean result — the absence of one. No vulnerability claim may be made "
-                     "for this directory; a release run never passes --no-scan."),
+                     "for this directory. A RELEASE run must never pass --no-scan; the check that "
+                     "REFUSES an unscanned release dir is scripts/release/release-verify.sh (T4), "
+                     "which reads this `scanned: false`."),
         }
 
     manifest_path = os.path.join(directory, os.environ["MANIFEST"])
@@ -459,8 +476,16 @@ def cmd_verify():
     elif scan.get("result") != "not-scanned":
         raise Refused("the sbom block claims %r without a scan" % scan.get("result"))
 
-    print("sbom-tool: OK — %d artifact(s), %d SBOM file(s) re-hashed, decision %r re-derived from "
-          "the raw findings" % (len(doc[key]), len(expected), scan.get("result")), file=sys.stderr)
+    if scan.get("scanned"):
+        print("sbom-tool: OK — %d artifact(s), %d SBOM file(s) re-hashed, decision %r re-derived "
+              "from the raw findings" % (len(doc[key]), len(expected), scan["result"]), file=sys.stderr)
+    else:
+        # Nothing was re-derived, because there were no findings to re-derive from. Saying so is the
+        # whole point: an unscanned dir must not read as an assurance it does not have.
+        print("sbom-tool: OK — %d artifact(s), %d SBOM file(s) re-hashed. NO SCAN RAN: there is no "
+              "vulnerability decision here to re-derive, and this directory carries NO vulnerability "
+              "claim (%s)" % (len(doc[key]), len(expected), scan.get("reason", "--no-scan")),
+              file=sys.stderr)
     return 0
 
 
