@@ -46,11 +46,6 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 			// discovery derives it from PALAI_WORKSPACE_ROOT the same way it reads the retention TTL — a
 			// deployment with no coding stack never advertises a capability it cannot serve.
 			"workspaces": workspacesCapability(),
-			// The Slack integration (E17 T1) is PREVIEW and the T11 exit gate KEPT it there: every SLK-001..008
-			// claim is green, but the stable flip awaits §6 leg 1 — an external receipt from a REAL Slack
-			// workspace. The local proof is a FAKE peer, so preview is the honest tier, and no amount of local
-			// evidence moves it (uat.CapabilityOperatorLegs caps it mechanically).
-			"slack": "preview",
 			// Knowledge spine (E17 Task 4): the FTS ingestion/index/retrieval core. FLIPPED to stable by the
 			// T11 exit gate — all eight KNO claims closed green and the capability has no §6 leg its core
 			// depends on. The flip came THROUGH the verification: the tier below must equal
@@ -101,6 +96,18 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 		// is stable") and mounting does NOT raise it — the mount only makes the claim advertisABLE.
 		if cfg.capabilityWorkers {
 			caps["capability-workers"] = "stable"
+		}
+		// The Slack integration (E17 T1 adapter + E19 T1 Events API route): advertised ONLY where WithSlack
+		// actually mounted the receiver, so a binary that serves no Slack surface does not claim `slack` while
+		// POST /v1/slack/events 404s. Until E19 T1 this was a static string — the same §2 defect D14 named for
+		// capability-workers, one tier quieter.
+		//
+		// It enters as PREVIEW and the wiring does NOT move it: every SLK claim is green, but the stable flip
+		// awaits §6 leg 1 — an external receipt from a REAL Slack workspace. The local proof is a FAKE peer
+		// built to the published contract, and uat.CapabilityOperatorLegs caps the tier mechanically, so the
+		// T11 CapabilityTierProof recompute — not this line — decides the word.
+		if cfg.slack != nil {
+			caps["slack"] = "preview"
 		}
 		body := capabilitiesBody{
 			Object:       "capabilities",

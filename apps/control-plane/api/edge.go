@@ -49,8 +49,9 @@ type routerConfig struct {
 	modelRoutes ModelRouteAPI
 	knowledge   KnowledgeAPI
 	metrics     http.Handler
-	a2a         http.Handler // the authed A2A 1.0 surface (E17 T2)
-	a2aCard     http.Handler // the unauthenticated public Agent Card handler
+	a2a         http.Handler   // the authed A2A 1.0 surface (E17 T2)
+	a2aCard     http.Handler   // the unauthenticated public Agent Card handler
+	slack       SlackEventsAPI // the Slack Events API admission bridge (E19 T1); nil ⇒ route unmounted
 	// capabilityWorkers records that this binary SERVES the capability-worker gateway (E17 T9) — on its own
 	// listener, not on this router (see WithCapabilityWorkers). It carries no handler because there is
 	// nothing for the router to mount; it exists so discovery derives the claim from the live mount.
@@ -123,6 +124,16 @@ func WithA2A(authed, publicCard http.Handler) RouterOption {
 // recomputes its maturity from the WRK claim outcomes.
 func WithCapabilityWorkers() RouterOption {
 	return func(c *routerConfig) { c.capabilityWorkers = true }
+}
+
+// WithSlack mounts the Slack Events API receiver (E19 T1, spec §36) on the UNAUTHENTICATED top mux — its
+// auth is the per-request v0 signature, the inbound-webhook posture (see slack.go). A trailing option like
+// the rest: a stack that registers no Slack connections leaves the route unmounted, and discovery then does
+// not advertise `slack` at all (§2 — the a2a/capability-workers posture). Mounting makes the capability
+// advertisABLE; the tier stays whatever the E17 T11 recompute says it is (preview — §6 leg 1 is untouched
+// by wiring).
+func WithSlack(events SlackEventsAPI) RouterOption {
+	return func(c *routerConfig) { c.slack = events }
 }
 
 // WithMetrics mounts the Prometheus text-exposition surface (E14 Task 6) at GET /metrics on the
