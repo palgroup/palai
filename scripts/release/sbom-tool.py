@@ -156,7 +156,13 @@ def print_decision(decision, where=sys.stderr):
 def db_record(reports, lock):
     """The pinned-snapshot record, RECOMPUTED from what the scanner itself wrote into every report,
     then cross-checked against the lock. Two reports disagreeing means two DBs were used in one run."""
-    seen = {json.dumps(r["descriptor"]["db"], sort_keys=True) for r in reports.values()}
+    # grype nests the DB record under descriptor.db.status; older shapes put it flat. Take whichever
+    # is there rather than assuming, and let the `valid`/`from` checks below decide.
+    def status(report):
+        db = report["descriptor"]["db"]
+        return db.get("status", db)
+
+    seen = {json.dumps(status(r), sort_keys=True) for r in reports.values()}
     if len(seen) != 1:
         raise Refused("the scanner reports name %d different vulnerability DBs — one release run "
                       "must use ONE pinned snapshot" % len(seen))

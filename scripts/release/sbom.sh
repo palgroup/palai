@@ -248,7 +248,8 @@ while IFS=$'\t' read -r kind file base; do
     -o "spdx-json=/out/$base.spdx.json" -o "cyclonedx-json=/out/$base.cdx.json" >&2
 
   if [ "$scan" -eq 1 ]; then
-    echo "sbom.sh: scan $file against the pinned snapshot ${validate_hash:+(re-hashing the DB)}" >&2
+    [ "$validate_hash" = true ] && note=" (re-hashing the ~2GB DB once for this run)" || note=""
+    echo "sbom.sh: scan $file against the pinned snapshot$note" >&2
     # The scan input is the SBOM, not the artifact: that is what makes the honest ceiling above
     # literally true — the scanner's coverage IS the SBOM's coverage, with nothing added.
     #
