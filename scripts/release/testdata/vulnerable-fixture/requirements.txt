@@ -1,0 +1,3 @@
+# E18 T2 RED fixture: a DELIBERATELY OLD package with real Critical advisories.
+# Nothing in the product depends on it — it exists so the §51.3 policy gate can be proven to BLOCK.
+Django==1.11.0

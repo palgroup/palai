@@ -5,8 +5,10 @@
 // and that a tampered artifact FAILS closed. The full three-package build (npm pack + uv build) is a
 // hand/CI gate, not this unit test — this proves the provenance discipline, not the package contents.
 //
-// Honest naming is pinned here too: sbom/provenance manifest fields are DEFINED but null, the
-// manifest SAYS publish is E18, and NO publish step exists.
+// Honest naming is pinned here too. Since E18 T2 that means: `provenance` names the build-input
+// record + the openssl-signed root this script really produces (only `attestation` stays null, and
+// the note says why), `sbom` is a real block or an EXPLAINED null, the manifest SAYS publish is
+// E18, and NO publish step exists.
 package release
 
 import (
@@ -153,7 +155,10 @@ func TestBundleBuildsAndVerifies(t *testing.T) {
 		t.Fatalf("runner-verify.sh is not the E14 T5 verifier verbatim (%s != %s)", a, b)
 	}
 
-	// Honest naming: sbom/provenance null + notes name E18, and no publish is claimed.
+	// Honest naming. E18 T2 retired the "sbom/provenance are intentionally null" placeholders:
+	// `provenance` now names the record this script really produces, and `sbom` is either a real
+	// block (generator available) or null WITH a note saying an absent SBOM is not a clean result.
+	// Neither may be a bare null with no explanation, which is what the E16 T7 shape allowed.
 	var man map[string]any
 	b, err := os.ReadFile(filepath.Join(bundle, "manifest.json"))
 	if err != nil {
@@ -162,15 +167,43 @@ func TestBundleBuildsAndVerifies(t *testing.T) {
 	if err := json.Unmarshal(b, &man); err != nil {
 		t.Fatalf("manifest.json is not valid JSON: %v", err)
 	}
-	for _, f := range []string{"sbom", "provenance"} {
-		if v, ok := man[f]; !ok || v != nil {
-			t.Fatalf("manifest.%s must be present and null (got %v, present=%v)", f, v, ok)
+	prov, ok := man["provenance"].(map[string]any)
+	if !ok {
+		t.Fatalf("manifest.provenance must name the build-input record + signed root (got %v)", man["provenance"])
+	}
+	for _, f := range []string{"build_input", "signed_root", "signature", "signer"} {
+		if prov[f] == nil {
+			t.Fatalf("manifest.provenance.%s is missing", f)
 		}
 	}
-	for _, f := range []string{"sbom_note", "provenance_note", "note"} {
-		if s, _ := man[f].(string); !strings.Contains(s, "E18") {
-			t.Fatalf("manifest.%s must name E18 as where publish/attestation lives (got %q)", f, s)
+	if prov["attestation"] != nil {
+		t.Fatalf("manifest.provenance.attestation must stay null here — the in-toto statement is "+
+			"provenance.sh's, over a release dir (got %v)", prov["attestation"])
+	}
+	if s, _ := man["provenance_note"].(string); !strings.Contains(s, "provenance.sh") ||
+		!strings.Contains(s, "No Sigstore") {
+		t.Fatalf("provenance_note must say where the attestation lives and claim no Sigstore (got %q)", s)
+	}
+	sbomNote, _ := man["sbom_note"].(string)
+	switch sbom := man["sbom"].(type) {
+	case map[string]any:
+		formats, _ := sbom["formats"].([]any)
+		if len(formats) != 2 {
+			t.Fatalf("manifest.sbom must name both formats, got %v", sbom["formats"])
 		}
+		if !strings.Contains(sbomNote, "--verify") {
+			t.Fatalf("sbom_note must say how to re-check the SBOMs offline (got %q)", sbomNote)
+		}
+	case nil:
+		// The generator could not run. That must READ as an absence, never as a clean result.
+		if !strings.Contains(sbomNote, "not a clean result") {
+			t.Fatalf("a null sbom must be explained as an absence, not left bare (got %q)", sbomNote)
+		}
+	default:
+		t.Fatalf("manifest.sbom is neither a block nor null: %T", sbom)
+	}
+	if s, _ := man["note"].(string); !strings.Contains(s, "E18") {
+		t.Fatalf("manifest.note must name E18 as where publish lives (got %q)", s)
 	}
 	// The go package is recorded with a matching sha256 (provenance = the built artifact's digest).
 	pkgs, _ := man["packages"].([]any)
@@ -239,6 +272,27 @@ func TestVerifyRejectsReshaTamper(t *testing.T) {
 	}
 	if ok, o := verify(t, bundle, pub); ok {
 		t.Fatalf("sdk-verify.sh PASSED a re-sha'd tampered root — the signature must catch it:\n%s", o)
+	}
+}
+
+// TestVerifyRejectsATruncatedRiderName: an unsigned file whose path is a strict PREFIX of a signed
+// path. `sha256sum -c` never looks at it (it is not listed), so the no-unsigned-rider check is the
+// only thing that can catch it — and an UNANCHORED `grep -F "  $f"` finds the prefix inside the
+// longer signed line and waves the file through. Anchoring the match to a whole line is the fix,
+// and this is the case that separates the two.
+func TestVerifyRejectsATruncatedRiderName(t *testing.T) {
+	bundle := buildBundle(t)
+	pub := filepath.Join(bundle, "palai-sdk-signing.pub")
+	if ok, o := verify(t, bundle, pub); !ok {
+		t.Fatalf("baseline verify failed:\n%s", o)
+	}
+	rider := filepath.Join(bundle, strings.TrimSuffix(goPackage, "z")) // …tar.gz → …tar.g
+	if err := os.WriteFile(rider, []byte("unsigned rider\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, o := verify(t, bundle, pub); ok {
+		t.Fatalf("sdk-verify.sh ACCEPTED %s — an unsigned file whose name is a prefix of a signed one:\n%s",
+			rider, o)
 	}
 }
 

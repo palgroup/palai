@@ -2,8 +2,13 @@
 # E16 T7 — build the three Palai SDK packages LOCALLY with provenance: per-package artifacts +
 # a sha256 manifest + an openssl P-256 DETACHED signature over the signed root `sha256sums` +
 # a build-input record (git ref + toolchain versions). This BUILDS + CHECKSUMS + SIGNS only —
-# it does NOT PUBLISH (npm/PyPI/Go proxy is E18 supply-chain work; §T7/§5/§6). The manifest SAYS
-# so (sbom/provenance-attestation fields DEFINED but null — honest naming, airgap-build.sh emsali).
+# it does NOT PUBLISH (npm/PyPI/Go proxy is E18 §T5/§6 work). The manifest SAYS so.
+#
+# E18 T2 retired the "sbom/provenance are intentionally null" placeholders: `sbom` now carries REAL
+# SPDX + CycloneDX documents (scripts/release/sbom.sh, digest-pinned generator) and `provenance`
+# names the build-input record + the openssl-signed root that this script has always produced. The
+# one field still null is `provenance.attestation` — the in-toto/SLSA statement belongs to
+# scripts/release/provenance.sh over a release DIRECTORY, and the manifest says exactly that.
 #
 #   packages/palai-sdk-<v>.tgz              @palai/sdk  (npm pack — no install, no network)
 #   packages/palai-<v>-py3-none-any.whl     python wheel  }  uv build (hatchling backend)
@@ -13,7 +18,9 @@
 #                                           build artifact); this tarball is the source PROVENANCE,
 #                                           the published unit is the git tag (E18). Honest note.
 #   build-input.json   git ref/commit + toolchain versions (node/npm, python/uv, go) + built_at.
-#   manifest.json      schema, version, per-package {file, sha256, status}, sbom:null/provenance:null (E18).
+#   sbom/              SPDX + CycloneDX per package, the license inventory, and the scanner report
+#                      when the pinned DB snapshot is hydrated (scripts/release/sbom.sh).
+#   manifest.json      schema, version, per-package {file, sha256, status, sbom}, sbom + provenance.
 #   sha256sums         the SIGNED ROOT: sha256 of every file above.
 #   sha256sums.sha256 / sha256sums.sig / palai-sdk-signing.pub   the signature ENVELOPE.
 #   sdk-verify.sh      the offline verifier (copy of scripts/release/sdk-verify.sh).
@@ -136,8 +143,12 @@ cat > "$OUT/build-input.json" <<JSON
 }
 JSON
 
-# --- manifest.json (sbom/provenance DEFINED but null — E18) ---------------------------------
-step "write manifest.json (sbom/provenance fields null — production is E18)"
+# --- manifest.json ---------------------------------------------------------------------------
+# E18 T2 retires the "sbom/provenance are intentionally null" note: `provenance` now names the
+# record this script has always actually produced, and `sbom` is filled in below by
+# scripts/release/sbom.sh with REAL SPDX + CycloneDX documents (it rewrites both `sbom` and
+# `sbom_note`). The placeholder written here is what survives only when the generator is absent.
+step "write manifest.json"
 cat > "$OUT/manifest.json" <<JSON
 {
   "schema": "palai-sdk-manifest/v1",
@@ -151,11 +162,54 @@ cat > "$OUT/manifest.json" <<JSON
 $pkgs_json
   ],
   "sbom": null,
-  "sbom_note": "SBOM production is E18; this field is intentionally null in the RC bundle.",
-  "provenance": null,
-  "provenance_note": "Provenance/SLSA attestation production is E18; this field is intentionally null in the RC bundle."
+  "sbom_note": "not yet produced — scripts/release/sbom.sh runs below and replaces this",
+  "provenance": {
+    "build_input": "build-input.json",
+    "signed_root": "sha256sums",
+    "signature": ["sha256sums.sha256", "sha256sums.sig"],
+    "signer": "openssl ECDSA P-256 detached (E14 T5 tool, VERBATIM — the one signing tool in this repo)",
+    "verify": "sdk-verify.sh <bundle> <out-of-band-pubkey>",
+    "attestation": null
+  },
+  "provenance_note": "REAL and offline-verifiable: build-input.json records the git ref and the toolchain versions this bundle was built from, and sha256sums is signed with the repo's one signing tool. \`attestation\` stays null because the in-toto/SLSA v1 statement is written by scripts/release/provenance.sh (E18 T3) over a release DIRECTORY, and an SDK bundle is not one — carrying the SDK packages into the release index is release-orchestration work (plan §T5). No Sigstore, Fulcio or transparency-log claim is made here or anywhere."
 }
 JSON
+
+# --- SBOM + license inventory (+ vulnerability scan when the pinned DB is hydrated) ------------
+# BEFORE the sha256sums root below, so the signature covers every SBOM file. The generator runs in
+# a digest-pinned container; when it cannot run, the manifest says SO rather than looking scanned.
+sbom_skip=""
+if [ "${PALAI_SDK_SBOM:-auto}" = "off" ]; then
+	sbom_skip="disabled by PALAI_SDK_SBOM=off"
+elif ! command -v docker >/dev/null 2>&1; then
+	sbom_skip="docker absent — the SBOM generator is a digest-pinned container"
+fi
+if [ -z "$sbom_skip" ]; then
+	db_dir="${PALAI_VULN_DB_DIR:-$root/dist/vulndb}"
+	db_schema="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["db_schema"])' \
+		"$root/scripts/release/vulndb.lock.json")"
+	scan_args=""
+	if [ ! -f "$db_dir/$db_schema/import.json" ]; then
+		scan_args="--no-scan"
+		step "the pinned vulnerability DB is not hydrated at $db_dir — SBOMs only, recorded as unscanned"
+	fi
+	# shellcheck disable=SC2086  # intentional word-split of a 0-or-1 flag
+	SBOM_NO_SCAN_REASON="the pinned vulnerability DB snapshot is not hydrated on this host" \
+		"$root/scripts/release/sbom.sh" --dir "$OUT" --sdk $scan_args
+else
+	step "SBOM skipped ($sbom_skip) — recording it honestly in manifest.json"
+	SKIP="$sbom_skip" python3 - "$OUT/manifest.json" <<'PY'
+import json, os, sys
+p = sys.argv[1]
+doc = json.load(open(p, encoding="utf-8"))
+doc["sbom"] = None
+doc["sbom_note"] = ("NO SBOM in this bundle: %s. A null sbom is not a clean result — it is the "
+                    "absence of one, and a release bundle never ships this way." % os.environ["SKIP"])
+with open(p, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2, ensure_ascii=False)
+    fh.write("\n")
+PY
+fi
 
 # --- ship the verifier (E14 T5 verbatim + the SDK offline wrapper) --------------------------
 step "stage verifiers (runner-verify.sh = E14 T5 VERBATIM; sdk-verify.sh = offline wrapper)"
