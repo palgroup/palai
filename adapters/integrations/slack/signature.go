@@ -23,10 +23,21 @@ import (
 const (
 	HeaderTimestamp = "X-Slack-Request-Timestamp"
 	HeaderSignature = "X-Slack-Signature"
-	// HeaderRetryNum is set (1..) when Slack REDELIVERS an Events API callback whose 3s ack it did not
-	// observe. The retry carries the SAME event_id, so it collapses onto the canonical source-dedupe — the
-	// header is advisory (a redelivery hint), never the dedupe key.
+	// HeaderRetryNum is set (1..3) when Slack REDELIVERS an Events API callback whose 3s ack it did not
+	// observe. It is advisory (a redelivery hint), never the dedupe key.
+	//
+	// ASSUMPTION, NOT A DOCUMENTED FACT (E19 plan §3.5 row D3, checked 2026-07-25 against
+	// https://docs.slack.dev/apis/events-api/): the page states that event_id is "globally unique across all
+	// workspaces", and it states that an unacknowledged delivery is retried three times — but it does NOT
+	// state anywhere that the retry carries the SAME event_id. Our whole dedupe rests on that, so it is named
+	// here as an assumption rather than asserted as a fact. It is ASSERTED by the credential-gated live smoke
+	// (tests/live/slack). If it turns out false, the follow-up is a composite dedupe key
+	// (event_id + event_time + team_id); it is deliberately NOT built now (YAGNI — no evidence of the problem).
 	HeaderRetryNum = "X-Slack-Retry-Num"
+	// HeaderRetryReason names WHY Slack redelivered (E19 plan §3.5 row D2). It is the difference between "we
+	// were too slow" and "we answered with an error", and the tree previously knew only the retry NUMBER —
+	// which cannot tell those apart.
+	HeaderRetryReason = "X-Slack-Retry-Reason"
 
 	// sigVersion is the versioned scheme prefix bound INTO the signed base string, so a receiver cannot be
 	// tricked into verifying a different scheme's MAC. Slack has only ever shipped v0.
@@ -36,6 +47,38 @@ const (
 	// minutes from local time is treated as a possible replay and refused.
 	DefaultTolerance = 5 * time.Minute
 )
+
+// The six redelivery reasons Slack documents (https://docs.slack.dev/apis/events-api/, checked 2026-07-25).
+// RetryReasonHTTPTimeout is the one that matters operationally: it is the ONLY honest indicator that the
+// 3-second ack budget is not holding — every other reason says the receiver answered in time and answered
+// badly. A counter that lumps them together cannot tell a slow ack from a broken handler.
+const (
+	RetryReasonHTTPTimeout      = "http_timeout"
+	RetryReasonHTTPError        = "http_error"
+	RetryReasonConnectionFailed = "connection_failed"
+	RetryReasonSSLError         = "ssl_error"
+	RetryReasonTooManyRedirects = "too_many_redirects"
+	RetryReasonUnknownError     = "unknown_error"
+)
+
+// RetryReason narrows the X-Slack-Retry-Reason header to the documented set. An empty header is not a retry
+// and stays empty; anything else outside the set folds onto unknown_error (itself a documented member).
+//
+// The fold is deliberate: request HEADERS are not covered by the v0 signature — only the timestamp and the
+// raw body are (https://docs.slack.dev/authentication/verifying-requests-from-slack/) — so this value must
+// never reach a counter or a log label unbounded, even though a caller has to hold the signing secret to get
+// this far.
+func RetryReason(header string) string {
+	switch header {
+	case "":
+		return ""
+	case RetryReasonHTTPTimeout, RetryReasonHTTPError, RetryReasonConnectionFailed,
+		RetryReasonSSLError, RetryReasonTooManyRedirects, RetryReasonUnknownError:
+		return header
+	default:
+		return RetryReasonUnknownError
+	}
+}
 
 var (
 	// ErrBadSignature is a MAC mismatch (wrong/rotated signing secret, or a tampered body/timestamp).
