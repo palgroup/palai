@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # scripts/release/boot-smoke.sh — E18 T1: boot one release control-plane image tar from the matrix
 # and prove the container COMES UP and serves /healthz. For a foreign-arch image on this host that
-# runs the binary under qemu (Docker Desktop's binfmt), which is exactly the point: the cross-
-# compiled amd64 binary in the amd64 image is a real, runnable amd64 program — not just a file with
-# the right ELF header.
+# runs the binary under EMULATION — qemu or Rosetta, whichever this Docker Desktop's binfmt is set to
+# (the run prints which) — which is exactly the point: the cross-compiled amd64 binary in the amd64
+# image is a real, runnable amd64 program, not just a file with the right ELF header.
 #
 # HONEST CEILING (plan §T1 / §6 leg 3): a boot-smoke is NOT a full UAT run on that architecture and
 # is NOT accepted as a substitute for one. It proves boot + migration + liveness under emulation.
