@@ -67,6 +67,13 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
 	}
+	// The E17 extensions bundle carries BOTH the capability-tier anchor and the eval-gate claim; the tier
+	// anchor is the more specific policy and COMPOSES the eval gate, so it is checked first.
+	for _, c := range m.Cases {
+		if c.CapabilityTierClaim != "" {
+			return ExtensionsPromoteGate(raw, target)
+		}
+	}
 	for _, c := range m.Cases {
 		if c.EvalGateClaim != "" {
 			return EvalPromoteGate(raw, target)
@@ -83,6 +90,66 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 		}
 	}
 	return []Refusal{{Detail: "no promote policy for this release: it carries neither the E16 SDK-parity nor the E15 upgrade nor the E17 eval-gate claims a promote gate recognizes"}}
+}
+
+// ExtensionsPromoteGate is the mechanical form of the E17 exit-gate sentence (plan §T11, §7): a release cannot
+// be tagged WITHOUT the capability tier table, and not while the eval SECURITY suite (QUA-003) is red — the
+// precondition for any capability's stable flip. It has three clauses:
+//
+//  1. the bundle must carry a COMPLETE CapabilityTierProof, and every declared tier AND the running stack's
+//     `/v1/capabilities` snapshot must equal RecomputeCapabilityTier over the bundle's OWN per-case outcomes.
+//     The recompute lives here as well as in VerifyManifest deliberately: the gate that flips discovery must
+//     do its own recompute, never inherit a verdict (the E15 SF-4 shape);
+//  2. QUA-003 must be present and PASS;
+//  3. the E17 T6 eval gate must pass — REUSED verbatim via EvalPromoteGate, which RE-RUNS the canonical
+//     held-out suites under the shipped reference engine. Composing it (rather than re-deriving thresholds
+//     here) keeps ONE owner of the eval numbers.
+//
+// A promote BEYOND rc inherits EvalPromoteGate's operator_attestation requirement (§6 leg 7 → E18 RC) and, on
+// top of it, the extension legs: no amount of local evidence promotes this release to stable, because `slack`
+// and `a2a` cap at preview by construction and `apple-build` at disabled.
+func ExtensionsPromoteGate(raw []byte, target string) []Refusal {
+	var m evidenceManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
+	}
+
+	var refusals []Refusal
+
+	var tier *CapabilityTierProof
+	for _, c := range m.Cases {
+		if c.CapabilityTierClaim != "" && c.CapabilityTierProof != nil {
+			tier = c.CapabilityTierProof
+			break
+		}
+	}
+	switch {
+	case tier == nil || !tier.Complete():
+		refusals = append(refusals, Refusal{Detail: "no COMPLETE CapabilityTierProof (the per-capability declared tier + its canonical claim ledger + the running stack's /v1/capabilities snapshot) — a release without the tier table cannot be tagged (plan §T11, §7 exit gate)"})
+	default:
+		for _, problem := range verifyCapabilityTiers(tier, m.Cases) {
+			refusals = append(refusals, Refusal{Detail: problem})
+		}
+	}
+
+	securityStatus := ""
+	for _, c := range m.Cases {
+		if c.ID == CapabilitySecurityPrecondition {
+			securityStatus = c.Status
+			break
+		}
+	}
+	if securityStatus != "PASS" {
+		detail := "is not in the bundle"
+		if securityStatus != "" {
+			detail = "is " + securityStatus
+		}
+		refusals = append(refusals, Refusal{Detail: fmt.Sprintf(
+			"the eval security suite case %s %s — it is the PRECONDITION for every capability's stable flip, so a tag without it green is REFUSED (plan §T6, §T11, §57.13)",
+			CapabilitySecurityPrecondition, detail)})
+	}
+
+	return append(refusals, EvalPromoteGate(raw, target)...)
 }
 
 // EvalThresholds is the CANONICAL held-out release threshold per suite (plan §T6, QUA-004) — the gate's OWN
