@@ -66,15 +66,24 @@ const (
 )
 
 // SlackConnectionRef is what an inbound callback resolves to before it has a tenant: the registered
-// workspace binding's identity and the two fields the route itself needs. It deliberately carries NO secret
-// material — the signing-secret bytes never cross this seam, they stay inside the bridge that resolves them.
+// workspace binding's identity, the two fields the route itself reads, and the material the bridge needs on
+// the later calls. It carries NO secret VALUES — SigningSecretRef is a handle into secret_refs, and the bytes
+// behind it are redeemed inside the bridge, used, and dropped. Carrying the handle (rather than re-resolving
+// the row per step) is deliberate: this route is UNAUTHENTICATED, so one callback must cost exactly ONE
+// connection read or the resolve itself becomes an amplification surface (storage/queries/slack.sql says so).
 type SlackConnectionRef struct {
-	ID        string
-	Org       string
-	Project   string
-	TeamID    string
-	BotUserID string // the app's own bot user — the SLK-008 self-loop guard
-	Disabled  bool
+	ID           string
+	Org          string
+	Project      string
+	TeamID       string
+	EnterpriseID string
+	BotUserID    string // the app's own bot user — the SLK-008 self-loop guard
+	Disabled     bool
+	// SigningSecretRef is the secret_refs HANDLE the v0 verify redeems. A handle, never a value.
+	SigningSecretRef string
+	// RunPolicy is the connection's default_policy JSONB, opaque to this package: the route hands it back to
+	// the bridge, which reads the run target out of it. Nothing here interprets it.
+	RunPolicy []byte
 }
 
 // SlackAdmitOutcome is one event's admission result. Rejected names a TYPED admission refusal ("" when the

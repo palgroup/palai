@@ -204,6 +204,16 @@ func main() {
 		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns},
 		os.Getenv("PALAI_PUBLIC_BASE_URL"))
 	routerOpts = append(routerOpts, api.WithA2A(a2aServer, a2aServer.PublicCardHandler()))
+	// The Slack Events API receiver (E19 T1, spec §36): the 000035 connection/thread store over the same spine
+	// pool, wired behind the SAME api.Admitter the A2A surface and POST /v1/responses use, so a Slack event
+	// admits through the one §20.9 path under the one set of per-project caps — no parallel admission. The
+	// tenant comes ONLY from the resolved slack_connections row (no bearer exists on this route; the v0
+	// signature is the auth), and the run target from that row's default_policy. Unconditional like WithUsage:
+	// it needs no external key material, and a stack with no registered workspace simply gets no traffic —
+	// mounting is also what lets discovery advertise `slack` at all, at the tier T11 recomputes (preview).
+	routerOpts = append(routerOpts, api.WithSlack(extensions.NewSlackAdmitter(
+		extensions.New(repo.Spine().Pool()), repo, slackSecretResolver,
+		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns})))
 	// Discovery advertises `capability-workers` ONLY where the gateway above actually BOUND its listener —
 	// the option is passed off the returned value, never off the env var, so the claim cannot outlive the
 	// mount (§2; E19 T8a closed the static "stable" that a binary not importing internal/workers was serving).
@@ -876,6 +886,35 @@ func remoteToolSecretResolver(org, ref string) ([]byte, error) {
 	path := os.Getenv("PALAI_REMOTE_TOOL_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
 	if path == "" {
 		return nil, fmt.Errorf("no secret bridge configured for remote tool ref under org %q", org)
+	}
+	return os.ReadFile(path)
+}
+
+// slackSecretResolver is the fourth sibling of webhook/inbound/remoteToolSecretResolver (E19 T1): it bridges
+// a slack_connections.signing_secret_ref handle to the v0 signing-secret bytes via
+// PALAI_SLACK_SECRET_FILE_<ORG>__<REF> (a FILE PATH, never inline). The org prefix is a server-minted hard
+// tenant boundary, so a tenant's ref can only name a secret provisioned under its OWN org — and the Slack
+// namespace is DISTINCT from the webhook/inbound/remote-tool ones, so the four secret sets are
+// non-interchangeable. An unresolved ref fails VERIFICATION (a generic 401 upstream), never an unsigned
+// accept: a receiver that cannot check a signature refuses. The same bridge will resolve bot_token_ref /
+// app_token_ref when T2/T3 wire the outbound and Socket Mode legs.
+func slackSecretResolver(org, ref string) ([]byte, error) {
+	if org == "" || ref == "" {
+		return nil, errors.New("empty slack secret org/ref")
+	}
+	if v, ok, err := dbSecret(org, ref); err != nil {
+		return nil, err
+	} else if ok {
+		return v, nil
+	}
+	// Belt-and-braces, as in the sibling resolvers: a normalized org key carrying the "__" delimiter is
+	// ambiguous; reject it rather than resolve a colliding key.
+	if strings.Contains(secretEnvKey(org), "__") {
+		return nil, fmt.Errorf("ambiguous slack secret org key %q", org)
+	}
+	path := os.Getenv("PALAI_SLACK_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	if path == "" {
+		return nil, fmt.Errorf("no secret bridge configured for slack ref under org %q", org)
 	}
 	return os.ReadFile(path)
 }

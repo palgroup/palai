@@ -46,10 +46,23 @@ LIMIT $7;
 -- Note for the future webhook receiver: this resolve is UNAUTHENTICATED (one DB query per request), so the
 -- caller must bound the request body size BEFORE the HMAC verify and treat the pre-parse team_id as a lookup
 -- key ONLY — never as trust — or it is an edge rate-limit / amplification hole.
+-- default_policy rides along because it carries the RUN TARGET for events on this connection (E19 T1): the
+-- agent_revision_id the admission pins and the principal the run belongs to. Reading it here keeps the whole
+-- unauthenticated resolve at ONE query, and it is the column's stated purpose ("default run policy for events
+-- on this connection") rather than a new column — E19 takes no migration.
 -- name: ResolveSlackConnectionByTeam
-SELECT id, organization_id, project_id, signing_secret_ref, bot_token_ref, app_token_ref, bot_user_id, disabled
+SELECT id, organization_id, project_id, signing_secret_ref, bot_token_ref, app_token_ref, bot_user_id, disabled,
+       default_policy
 FROM slack_connections
 WHERE team_id = $1 AND enterprise_id = $2;
+
+-- SlackRunPrincipalInScope confirms the principal named by default_policy belongs to the connection's OWN
+-- org/project. Without it a project admin could name a FOREIGN principal and have Slack-born runs booked
+-- against another tenant's identity: idempotency_records.principal_id is a bare FK to principals(id), so the
+-- database would accept it. System-scoped like the resolve above (the caller has no tenant yet) and therefore
+-- explicit about org AND project in the predicate.
+-- name: SlackRunPrincipalInScope
+SELECT 1 FROM principals WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- CorrelateThreadSession claims the (team, channel, thread) -> session mapping single-winner. A first event
 -- inserts its session; a later event in the SAME thread hits the unique index (23505) and inserts nothing,

@@ -161,6 +161,9 @@ type ResolvedSlackConnection struct {
 	AppTokenRef      string
 	BotUserID        string
 	Disabled         bool
+	// DefaultPolicy is the connection's default run policy (the 000035 JSONB). It carries the RUN TARGET the
+	// E19 T1 admission bridge pins — see slackRunTarget — and nothing a Slack payload can influence.
+	DefaultPolicy []byte
 }
 
 // ResolveSlackConnectionByTeam establishes the tenant for a signed inbound Slack callback, keyed by the
@@ -171,7 +174,8 @@ func (s *Store) ResolveSlackConnectionByTeam(ctx context.Context, teamID, enterp
 	ctx = storage.WithSystemScope(ctx)
 	var r ResolvedSlackConnection
 	switch err := s.pool.QueryRow(ctx, storage.Query("ResolveSlackConnectionByTeam"), teamID, enterpriseID).
-		Scan(&r.ID, &r.Org, &r.Project, &r.SigningSecretRef, &r.BotTokenRef, &r.AppTokenRef, &r.BotUserID, &r.Disabled); {
+		Scan(&r.ID, &r.Org, &r.Project, &r.SigningSecretRef, &r.BotTokenRef, &r.AppTokenRef, &r.BotUserID, &r.Disabled,
+			&r.DefaultPolicy); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return ResolvedSlackConnection{}, false, nil
 	case err != nil:
