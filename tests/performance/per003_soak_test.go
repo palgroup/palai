@@ -5,9 +5,13 @@
 // One session is kept alive for a BOUNDED WINDOW (default 90s) with a client attached to its stream the
 // whole time, while new responses chain onto it. Four things are measured on the running binary:
 //
-//   - MEMORY: the control-plane process's RSS is sampled through the window; total growth must stay
-//     inside a budget. A soak whose only claim is "it did not crash" is not a measurement.
-//   - JOURNAL: bytes per event must stay flat — growth linear in events, not in session length.
+//   - MEMORY: the control-plane process's RSS is sampled through the window, and the gated growth is the
+//     PEAK minus the first reading — the endpoint difference would report 0 for a process that grew
+//     11 MB and handed 1 MB back before the last sample. A soak whose only claim is "it did not crash"
+//     is not a measurement.
+//   - JOURNAL: mean payload bytes per event, sampled on every RSS tick, must stay under a per-event
+//     budget. That bounds the SIZE of an event; it is NOT a proof that growth is linear in events rather
+//     than in session length, which would need a gate on the slope and not on the mean.
 //   - COMPACTION: the REAL §8.3/§22.2 retention sweep reclaims the payload bytes of terminal
 //     store=false responses in this session, and the rows survive. The journal is navigable AND bounded.
 //   - RECONNECT: the stream is reconnected repeatedly with after_sequence; each resume must continue at
@@ -56,10 +60,16 @@ func TestPER003LongSessionSoak(t *testing.T) {
 	run.Gate("sse_reconnect_resume", 95, float64(time.Second), "ns",
 		"case budget mirroring §54.3's first-SSE-event objective (§54.2 lists SSE reconnect as an availability SLI, not a latency one)")
 	run.Gate("sse_reconnect_gaps", 100, 0, "events", "invariant (resume at exactly last+1: no gap, no duplicate)")
-	// Observed on this profile: a fraction of a MiB over the window. 64 MiB is far above the noise and
-	// far below a real leak — a budget that only a genuine regression can breach.
-	run.Gate("control_plane_rss_growth_bytes", 100, 64*1024*1024, "bytes", "case budget (bounded growth over the window)")
-	run.Gate("journal_bytes_per_event", 100, 4096, "bytes", "case budget (growth linear in events, not in session length)")
+	// Observed on this profile: tens of MiB of peak growth over the window (16 MB -> 27 MB is a normal
+	// series). 64 MiB is above that noise and far below a real leak — a budget only a genuine regression
+	// breaches — and it is measured against the PEAK, so a process that gives memory back before the last
+	// reading cannot report zero.
+	run.Gate("control_plane_rss_growth_bytes", 100, 64*1024*1024, "bytes",
+		"case budget (PEAK RSS minus the first reading over the window, not the endpoint difference)")
+	run.Gate("journal_bytes_per_event", 100, 4096, "bytes", fmt.Sprintf(
+		"case budget (MEAN journal payload bytes per event stays under 4 KiB, sampled every %s through the "+
+			"window plus pre/post-compaction) — a bound on event SIZE; flat growth over session length is NOT "+
+			"established by it", per003RSSTick))
 	run.MaxErrorRate(0)
 
 	sessionID, _ := s.openSoakSession(t)
@@ -81,6 +91,7 @@ func TestPER003LongSessionSoak(t *testing.T) {
 	reader := s.attachReader(t, sessionID)
 
 	rssStart := residentBytes(t)
+	rssPeak := rssStart
 	run.Observe("control_plane_rss_bytes", "start", rssStart, "bytes", true)
 
 	deadline := time.Now().Add(window)
@@ -93,7 +104,16 @@ func TestPER003LongSessionSoak(t *testing.T) {
 		appends++
 
 		if time.Now().After(nextRSS) {
-			run.Observe("control_plane_rss_bytes", "soak", residentBytes(t), "bytes", true)
+			rss := residentBytes(t)
+			if rss > rssPeak {
+				rssPeak = rss
+			}
+			run.Observe("control_plane_rss_bytes", "soak", rss, "bytes", true)
+			// Bytes per event on the SAME tick: two endpoint readings are not a series, and this metric
+			// is gated at p100 over whatever samples exist.
+			run.Observe("journal_bytes_per_event", "soak", float64(s.queryInt(
+				`SELECT COALESCE(sum(pg_column_size(payload)), 0) / GREATEST(count(*), 1)
+				   FROM events WHERE session_id=$1`, sessionID)), "bytes", true)
 			nextRSS = time.Now().Add(per003RSSTick)
 		}
 		if time.Now().After(nextReconnect) {
@@ -107,12 +127,14 @@ func TestPER003LongSessionSoak(t *testing.T) {
 	s.measureReconnect(t, run, sessionID)
 
 	rssEnd := residentBytes(t)
-	run.Observe("control_plane_rss_bytes", "end", rssEnd, "bytes", true)
-	growth := rssEnd - rssStart
-	if growth < 0 {
-		growth = 0 // the process gave memory back; that is not growth
+	if rssEnd > rssPeak {
+		rssPeak = rssEnd
 	}
-	run.Observe("control_plane_rss_growth_bytes", "window", growth, "bytes", true)
+	run.Observe("control_plane_rss_bytes", "end", rssEnd, "bytes", true)
+	// The PEAK over the raw series, not rssEnd-rssStart: the endpoint difference clamps to 0 whenever the
+	// process hands memory back before the last reading, and then the gated number understates the very
+	// series sitting next to it in samples.jsonl.
+	run.Observe("control_plane_rss_growth_bytes", "window", rssPeak-rssStart, "bytes", true)
 
 	seen := reader.stop()
 	if seen.gaps > 0 {

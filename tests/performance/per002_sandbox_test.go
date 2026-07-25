@@ -11,16 +11,24 @@
 //	                                                  timestamped when engine.ready reaches the sink)
 //	assign_to_ready    the sum: what §54.3 calls assignment-to-engine-ready
 //
-// §54.3 budgets warm at p95 < 10s and cold at < 90s, and the two are measured as separate metrics
-// because the spec budgets them separately. COLD here means the first attempt in this process (unwarmed
-// daemon and database caches); WARM means every attempt after it.
+// §54.3 budgets warm at p95 < 10s and cold at < 90s, and the two are recorded as separate metrics
+// because the spec budgets them separately. But "COLD" HERE IS A POSITION, NOT A TEMPERATURE: it is the
+// first attempt in this process, and nothing around it is cold. The tier script built the fixture image
+// immediately before, Postgres is already migrated, and the OCI driver is constructed in requireSandbox
+// before attempt 1 ever runs. The numbers refute the label outright — on this profile the "cold" attempt
+// is routinely the FASTEST of the six (n=1 at ~505ms against a warm p95 of ~2.0s), because the warm
+// attempts are the ones contending with the daemon this run just filled. WARM means every attempt after
+// the first.
+//
+// So: §54.3's cold-start budget is NOT established here, and the cold metric's "p95" is a SINGLE
+// observation. A real cold-host/cold-daemon measurement is E18 §6 operator leg 3.
 //
 // HONEST CEILING: macOS + Docker Desktop, NO SLO and NO reference-hardware claim. The fixture image is
-// already local, so the cold number EXCLUDES image pull — which is what §54.3's own "excluding large
-// user image pull" says, and it is stated here rather than implied. The engine is the deterministic
-// fixture (E08 rule: no tools to a real provider), so this measures allocation + container start +
-// handshake, never model work. Capacity behaviour under concurrent allocation pressure is NOT measured:
-// attempts run one at a time, so no capacity or saturation claim is made.
+// already local, so the number excludes image pull — which is what §54.3's own "excluding large user
+// image pull" says, and it is stated here rather than implied. The engine is the deterministic fixture
+// (E08 rule: no tools to a real provider), so this measures allocation + container start + handshake,
+// never model work. Capacity behaviour under concurrent allocation pressure is NOT measured: attempts
+// run one at a time, so no capacity or saturation claim is made.
 package performance
 
 import (
@@ -37,10 +45,15 @@ import (
 	"github.com/palgroup/palai/storage"
 )
 
-const per002Ceiling = "macOS + Docker Desktop profile; NO SLO and NO reference-hardware claim. The fixture " +
-	"image is LOCAL, so the cold number excludes image pull (§54.3's own carve-out). The engine is the " +
-	"deterministic fixture per the E08 rule — allocation + container start + §25.6 handshake, never model " +
-	"work. Attempts are sequential: no capacity or saturation behaviour is measured or claimed."
+const per002Ceiling = "macOS + Docker Desktop profile; NO SLO and NO reference-hardware claim. 'COLD' HERE " +
+	"MEANS ONLY 'the first attempt in this process': the fixture image was just built LOCALLY (so the number " +
+	"excludes image pull, §54.3's own carve-out), Postgres is already migrated, and the OCI driver is " +
+	"constructed before attempt 1 — the daemon and the DB are WARM. The cold metric is therefore n=1 and its " +
+	"'p95' is that single observation; on this profile it is typically the FASTEST attempt of the run, which " +
+	"is why it must not be read as a cold start. §54.3's cold-start budget is NOT established here — E18 §6 " +
+	"operator leg 3 measures it. The engine is the deterministic fixture per the E08 rule — allocation + " +
+	"container start + §25.6 handshake, never model work. Attempts are sequential: no capacity or saturation " +
+	"behaviour is measured or claimed."
 
 // per002Attempts is deliberately small: this tier shares an 8GB Docker Desktop with other work, and the
 // phase budget is a per-attempt figure, not a throughput one.
@@ -49,12 +62,18 @@ const per002Attempts = 6
 func TestPER002ColdWarmSandboxPhases(t *testing.T) {
 	sb := requireSandbox(t)
 	run := mustRun(t, "PER-002", fmt.Sprintf(
-		"%d sequential attempts (attempt 1 = cold, %d warm): real workspace row + allocation + writer "+
-			"lease against Postgres, then a real digest-pinned fixture-engine container to engine.ready",
+		"%d sequential attempts (attempt 1 labelled 'cold' = first in this process, on an already-warm "+
+			"daemon and DB; %d warm): real workspace row + allocation + writer lease against Postgres, then "+
+			"a real digest-pinned fixture-engine container to engine.ready",
 		per002Attempts, per002Attempts-1), per002Ceiling)
 
+	// The cold gate's source says what it is AT THE POINT IT IS READ: §54.3's ceiling applied to one
+	// warm-daemon observation is not a §54.3 cold-start result, and "pass" here means only that the first
+	// attempt stayed under a very loose bound.
 	run.Gate("assign_to_ready_cold", 95, float64(90*time.Second), "ns",
-		"spec §54.3 (cold assignment-to-engine-ready p95 < 90s, excluding large user image pull)")
+		"spec §54.3's cold CEILING (p95 < 90s, excl. large image pull) applied to n=1 — the first "+
+			"in-process attempt on an already-warm daemon and DB, NOT a cold-host measurement and NOT a "+
+			"§54.3 cold-start result (see the profile ceiling; E18 §6 leg 3 measures it)")
 	run.Gate("assign_to_ready_warm", 95, float64(10*time.Second), "ns",
 		"spec §54.3 (warm assignment-to-engine-ready p95 < 10s)")
 	run.MaxErrorRate(0)
@@ -62,7 +81,7 @@ func TestPER002ColdWarmSandboxPhases(t *testing.T) {
 	for i := 0; i < per002Attempts; i++ {
 		phase := "warm"
 		if i == 0 {
-			phase = "cold"
+			phase = "cold" // attempt 1's POSITION, not its temperature — see the package comment
 		}
 		sb.measureAssignment(t, run, phase, "fastexit", nil)
 	}
