@@ -48,6 +48,8 @@ func dispatch(args []string) error {
 		return restore(args[1:])
 	case "upgrade":
 		return upgrade(args[1:])
+	case "audit":
+		return auditCmd(args[1:])
 	case "version":
 		fmt.Println(version.Resolve())
 		return nil
@@ -211,6 +213,41 @@ func upgrade(args []string) error {
 	})
 }
 
+// auditCmd is the SEC-103 audit-integrity surface (E18 T7). `checkpoint` cuts a signed anchor over
+// the events journal; `verify` recomputes the chain from the rows and exits non-zero on any alert.
+func auditCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: palai audit <checkpoint|verify>")
+	}
+	switch args[0] {
+	case "checkpoint":
+		fs := flag.NewFlagSet("audit checkpoint", flag.ContinueOnError)
+		out := fs.String("out", ".", "directory to write the signed checkpoint envelope into")
+		key := fs.String("signing-key", "", "release signing key (default PALAI_AUDIT_SIGNING_KEY)")
+		allowEmpty := fs.Bool("allow-empty", false,
+			"sign a checkpoint over ZERO rows (refused by default: it would anchor the empty prefix and verify green against any journal)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		return stack.AuditCheckpoint(*out, *key, *allowEmpty)
+	case "verify":
+		fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
+		cp := fs.String("checkpoint", "", "path to a signed audit-checkpoint.json")
+		pub := fs.String("pubkey", "", "trusted public key, obtained OUT OF BAND (default PALAI_AUDIT_PUBKEY)")
+		notOlderThan := fs.Duration("not-older-than", 0,
+			"raise a `stale` alert when the checkpoint is older than this (rollback: an OLD signed checkpoint still verifies its own prefix)")
+		minAnchored := fs.Int("min-anchored", 0,
+			"raise a `stale` alert when the checkpoint anchors fewer rows than this (catches a rollback without trusting the clock)")
+		jsonOut := fs.Bool("json", false, "emit the typed report as JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		return stack.AuditVerify(*cp, *pub, *notOlderThan, *minAnchored, *jsonOut)
+	default:
+		return fmt.Errorf("usage: palai audit <checkpoint|verify> (got %q)", args[0])
+	}
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `palai — local stack lifecycle
 
@@ -237,6 +274,12 @@ upgrade (E15 T2; N->N+1 control-plane swap + runner drain + engine-alias roll):
   palai version                            print this binary's build version stamp
   palai upgrade --manifest <n1.json>       backup -> compat verify -> swap -> drain -> engine roll -> smoke
   palai upgrade rollback --to <n.json>     app image back to N (schema stays expanded)
+
+audit integrity (E18 T7 SEC-103; the chain is recomputed FROM THE ROWS, the anchor lives outside the DB):
+  palai audit checkpoint --out <dir> [--signing-key <p>]
+                                           sign a chain anchor over the events journal (openssl P-256)
+  palai audit verify --checkpoint <p> --pubkey <out-of-band p> [--json]
+                                           recompute + compare; a gap or tamper alert exits non-zero
 
 admin (thin client over the E13 APIs; base URL + key from flags, env, or .palai):
   palai org create --display-name <n> | list | get <org_id>

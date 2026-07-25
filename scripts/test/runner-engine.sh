@@ -66,8 +66,10 @@ run_runner_suite() {
   containers_before="$(count_containers)"
 
   set +e
+  # PALAI_SUITE_RUN narrows the suite to named tests. The E18 T7 escape suite uses it to run ONE
+  # SAN proof out of a tier without paying for the whole tier; unset it runs everything, as before.
   PALAI_RUNNER_ENGINE_IMAGE_ID="$image_id" \
-    go test -tags="$build_tag" -count="${COUNT:-1}" -v "$test_dir"
+    go test -tags="$build_tag" -count="${COUNT:-1}" -run "${PALAI_SUITE_RUN:-.}" -v "$test_dir"
   local status=$?
   set -e
 

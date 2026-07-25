@@ -6,7 +6,7 @@ SHELL := /bin/bash
 	test-fault test-security test-performance test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
-	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity evidence-verify promote migration-resume-drill upgrade-drill \
+	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
 	release-matrix-smoke provenance-offline-verify
 
 bootstrap:
@@ -125,6 +125,11 @@ test-live-second-tenant:
 verify: lint check-generated test-unit test-spikes check-spike-reports
 	@bash scripts/verify/repository-boundary.sh
 	@bash scripts/verify/foundation.sh
+# The Docker-FREE half of the SEC-102 escape suite (E18 T7): the SAN coverage guard, the report
+# redactor, and the not-attempted gate. `make verify` never compiles the `security` tag otherwise, so
+# a new SAN case or a renamed proof broke no routine gate until someone ran `make uat-escape`.
+# TestSandboxEscapeSuite skips itself without PALAI_ESCAPE_SUITE=1, so this stays Docker-free.
+	@go test -tags=security -count=1 ./tests/uat/escape/
 
 local-up:
 	@test -x scripts/local/up || { echo "local stack not implemented" >&2; exit 2; }
@@ -276,6 +281,14 @@ PROVENANCE_TOOL_IMAGE ?= palai/reference-engine:local
 provenance-offline-verify:
 	@docker image inspect '$(PROVENANCE_TOOL_IMAGE)' >/dev/null 2>&1 || { echo "provenance-offline-verify: load $(PROVENANCE_TOOL_IMAGE) first, or set PROVENANCE_TOOL_IMAGE=<an openssl+python3 image>" >&2; exit 2; }
 	@PALAI_PROVENANCE_TOOL_IMAGE='$(PROVENANCE_TOOL_IMAGE)' go test -count=1 -run TestProvenanceOfflineVerifyNetworkNone ./scripts/release/...
+
+# E18 T7 SEC-102 escape suite (Docker-bound, so NOT in `make verify` — like release-matrix-smoke): runs the
+# EXISTING SAN corpus (SAN-001..008 + the SAN-011 negatives) as ONE pass with ONE report, plus the added
+# finding->quarantine behaviour arm. It invents no escape class. HONEST CEILING (also written into the
+# report): this is the LOCAL OCI seam — the microVM / managed high-isolation path is managed-scope, not
+# claimed, and kernel-exploit research is out of scope; the suite proves DENIAL + QUARANTINE mechanics.
+uat-escape:
+	@PALAI_ESCAPE_SUITE=1 go test -tags=security -count=1 -timeout 40m -v ./tests/uat/escape/
 
 # E15 T6 promote gate: refuse to tag a release without a rollback + restore proof (plan §7). Default target rc;
 # `make promote RELEASE=<name> TO=stable` gates a stable promote (awaits the E14 §6 operator-leg attestation).
