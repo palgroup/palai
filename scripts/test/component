@@ -162,10 +162,14 @@ run_postgres() {
   fi
   # The E17 Task 2 A2A wiring drives this same real spine: an A2A message:send through the production
   # WithA2A Admitter (NewA2AServer's a2aRuns over store.Store) births a genuine run under the auth scope
-  # and resolves through the real GetResponse — the real-Admitter admission the review requires.
+  # and resolves through the real GetResponse — the real-Admitter admission the review requires. The E19
+  # Task 1 Slack Events route joins it: the SHIPPED POST /v1/slack/events, over the production router and
+  # the same real Admitter, against a fake Slack peer built to the published contract (one run per source
+  # event through a retry storm, one session per thread, bot-self births nothing, and a rejected delivery
+  # writes nothing at all).
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
-      go test -tags=component -count=1 -v -run 'TestA2ARealAdmitterBirthsRun' ./apps/control-plane/internal/store
+      go test -tags=component -count=1 -v -run 'TestA2ARealAdmitterBirthsRun|TestSlack' ./apps/control-plane/internal/store
     status=$?
   fi
   set -e
