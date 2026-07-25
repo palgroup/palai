@@ -105,12 +105,18 @@ fi
 # a file that was ADDED after signing. Since E18 T2 the bundle carries a globbed sbom/ directory, so
 # an unlisted file could otherwise sit there looking official. Enumerate and REFUSE (the same
 # hardening scripts/release/provenance-verify.sh applies to a release dir).
+#
+# The match must be WHOLE-LINE (`grep -qxF` over the path column, exactly as provenance-verify.sh
+# does it). An unanchored substring match accepts any rider whose path is a PREFIX of a signed path
+# — `./packages/x.tar.g` is found inside the line for `./packages/x.tar.gz` — i.e. a verifier that
+# accepts an unsigned file, which is the one thing this check exists to prevent.
 echo "verify: (3) no unsigned file in the bundle ..." >&2
+listed="$(sed 's/^[0-9a-f]*[ *]*//' sha256sums)"
 riders="$(find . -type f \
 	! -name 'sha256sums' ! -name 'sha256sums.sha256' ! -name 'sha256sums.sig' \
 	! -name 'palai-sdk-signing.pub' \
 	| LC_ALL=C sort | while IFS= read -r f; do
-		grep -qF "  $f" sha256sums || echo "$f"
+		printf '%s\n' "$listed" | grep -qxF -- "$f" || printf '%s\n' "$f"
 	done)"
 if [ -n "$riders" ]; then
 	echo "verify: REFUSING — these files are in the bundle but NOT in the signed sha256sums:" >&2

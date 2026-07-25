@@ -253,6 +253,27 @@ func TestVerifyRejectsReshaTamper(t *testing.T) {
 	}
 }
 
+// TestVerifyRejectsATruncatedRiderName: an unsigned file whose path is a strict PREFIX of a signed
+// path. `sha256sum -c` never looks at it (it is not listed), so the no-unsigned-rider check is the
+// only thing that can catch it — and an UNANCHORED `grep -F "  $f"` finds the prefix inside the
+// longer signed line and waves the file through. Anchoring the match to a whole line is the fix,
+// and this is the case that separates the two.
+func TestVerifyRejectsATruncatedRiderName(t *testing.T) {
+	bundle := buildBundle(t)
+	pub := filepath.Join(bundle, "palai-sdk-signing.pub")
+	if ok, o := verify(t, bundle, pub); !ok {
+		t.Fatalf("baseline verify failed:\n%s", o)
+	}
+	rider := filepath.Join(bundle, strings.TrimSuffix(goPackage, "z")) // …tar.gz → …tar.g
+	if err := os.WriteFile(rider, []byte("unsigned rider\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, o := verify(t, bundle, pub); ok {
+		t.Fatalf("sdk-verify.sh ACCEPTED %s — an unsigned file whose name is a prefix of a signed one:\n%s",
+			rider, o)
+	}
+}
+
 // TestVerifyRejectsWrongKey: the signature must bind to a SPECIFIC key — a different P-256 pubkey
 // must FAIL, or the signature is just a second checksum.
 func TestVerifyRejectsWrongKey(t *testing.T) {
