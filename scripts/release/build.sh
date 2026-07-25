@@ -178,19 +178,20 @@ if [ "$build_images" -eq 1 ]; then
     ref="palai/${name}:${tag}-${goarch}"
     tarball="images/${name}-${goos}-${goarch}.tar"
     echo "build.sh: image $ref ($platform)" >&2
-    # type=docker,dest=… writes the loadable/shippable tar (the same artifact form the air-gap
-    # bundle ships) with the ref baked in. The Dockerfiles cross-compile from $BUILDPLATFORM, so a
-    # foreign-arch image builds without emulation.
-    docker buildx build --platform "$platform" \
-      --output "type=docker,dest=$out/$tarball,name=$ref" \
+    # --load then `docker save`: the tar is the shippable artifact form (the same one the air-gap
+    # bundle ships). `--output type=docker,dest=…` would do it in one step, but the `docker` driver
+    # that ships with Docker Desktop rejects the docker exporter to a file ("Docker exporter feature
+    # is currently not supported for docker driver") — and load+save works on BOTH drivers without
+    # asking the operator to create a builder. The Dockerfiles cross-compile from $BUILDPLATFORM, so
+    # a foreign-arch image builds without emulation.
+    docker buildx build --platform "$platform" --load -t "$ref" \
       "$@" -f "$dockerfile" "$context" >&2
+    docker save -o "$out/$tarball" "$ref" >&2
     add_artifact image "$tarball" "$goos" "$goarch" \
       "$(printf ', "ref": "%s", "image_id": "%s"' "$ref" "$(image_id_from_tar "$out/$tarball")")"
-    # The daemon-native image (Docker Desktop's VM is linux/<host arch>) is loaded into the local
-    # daemon and ALSO carries the plain palai/<name>:<tag> ref, which the compose stack, the upgrade
-    # drill and the boot smoke resolve.
+    # The daemon-native image (Docker Desktop's VM is linux/<host arch>) ALSO carries the plain
+    # palai/<name>:<tag> ref, which the compose stack, the upgrade drill and the boot smoke resolve.
     if [ "$platform" = "linux/${host_arch}" ]; then
-      docker load -i "$out/$tarball" >&2
       docker tag "$ref" "palai/${name}:${tag}" >&2
       host_ref="palai/${name}:${tag}"
     fi
