@@ -167,8 +167,22 @@ commit timestamp) does not touch the binaries — what it buys is a stable `buil
 the *index* byte-stable across rebuilds. Image *layers* are not byte-identical and reproducibility is not
 claimed for them. Every compile is hermetic — `GOPROXY=off -mod=readonly` against the go.sum-pinned
 module cache, for the host legs (CLI, runner package) as well as the in-image ones; warm the cache with
-`make bootstrap`. The index's `sbom` and `provenance` fields are defined and empty — they are produced by
-E18 T2/T3.
+`make bootstrap`. The index's `sbom` field is defined and empty — it is produced by E18 T2.
+
+`scripts/release/provenance.sh --dir <release-dir>` then attests the build: an **in-toto Statement with a
+SLSA provenance v1 predicate** (`provenance.intoto.json`) whose subjects are the indexed artifacts —
+every subject digest recomputed from the artifact's bytes — and whose materials are the git commit, each
+release Dockerfile with its pinned base-image digests, and `go.mod`/`go.sum`. It fills the index's
+`provenance` slots and signs a `sha256sums` root that binds the index, the attestation, the SBOMs and the
+artifacts into ONE signature. `scripts/release/provenance-verify.sh <release-dir> <pubkey>` re-verifies
+all four legs with no network (`--network-none <dir> <pubkey> <tool-image>` proves it inside a container
+with no network device); the public key must come from **out of band**, and the verifier refuses to fall
+back to the release dir's own copy of itself.
+
+**Honest ceiling.** The signature is `openssl` ECDSA P-256 — the E14 T5 tool, verbatim; it is not a
+keyless-identity signature and there is no transparency-log entry for it. `builder.id` is
+`local-macos-session`, so this is an **L2-shaped mechanism** and no SLSA level is claimed; a hosted CI run
+is what would fill the attestation's empty `ci_workflow_identity` slot.
 
 ## The §48.2 support window (OPS-008)
 

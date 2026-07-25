@@ -24,6 +24,11 @@ const goPackage = "packages/palai-go-sdk-0.1.0-src.tar.gz"
 
 var pristineBundle string
 
+// pristineRelease is one scripts/release/build.sh output (E18 T3's provenance_test.go stages copies
+// of it). Built ONCE here because every provenance case needs a real, complete release dir and the
+// build is the slow part; the cases copy it so each tampers its own tree.
+var pristineRelease string
+
 func TestMain(m *testing.M) {
 	root := mustRoot()
 	out, err := os.MkdirTemp("", "sdk-bundle-pristine")
@@ -37,8 +42,25 @@ func TestMain(m *testing.M) {
 		panic("sdk-package.sh: " + err.Error() + "\n" + string(combined))
 	}
 	pristineBundle = out
+
+	rel, err := os.MkdirTemp("", "release-pristine")
+	if err != nil {
+		panic(err)
+	}
+	build := exec.Command("/usr/bin/env", append([]string{"bash",
+		filepath.Join(root, "scripts/release/build.sh"),
+		"--out", rel, "--no-images", "--version", "18.0.0"}, reducedMatrix...)...)
+	build.Dir = root
+	if combined, err := build.CombinedOutput(); err != nil {
+		os.RemoveAll(out)
+		os.RemoveAll(rel)
+		panic("build.sh: " + err.Error() + "\n" + string(combined))
+	}
+	pristineRelease = rel
+
 	code := m.Run()
 	os.RemoveAll(out)
+	os.RemoveAll(rel)
 	os.Exit(code)
 }
 
