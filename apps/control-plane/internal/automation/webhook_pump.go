@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -301,83 +300,28 @@ func (p *WebhookPump) emit(ctx context.Context, d dueDelivery, eventType string,
 	}
 }
 
-// --- pure decision functions (unit-tested, no I/O) ---
+// --- delivery policy ---
 
-type outcome int
+// The retry / dead-letter discipline now lives beside the Sender whose Result it classifies
+// (adapters/integrations/webhook/retry.go), so the A2A push pusher inherits the SAME terminal rules and the
+// SAME backoff curve instead of growing a second copy (E19 T4). These aliases keep every call site and unit
+// test in this package pointing at one implementation.
+type outcome = webhook.Outcome
 
 const (
-	outcomeComplete outcome = iota
-	outcomeRetry
-	outcomeDead
+	outcomeComplete = webhook.OutcomeComplete
+	outcomeRetry    = webhook.OutcomeRetry
+	outcomeDead     = webhook.OutcomeDead
 )
 
-// classify maps one attempt's Result to the delivery outcome (spec §21.6): 2xx completes; a terminal
-// egress/redirect deny is dead; network errors, 408/409/425/429, and 5xx retry; every other 4xx is
-// terminal.
-func classify(res webhook.Result) outcome {
-	if res.Terminal {
-		return outcomeDead
-	}
-	switch {
-	case res.StatusCode >= 200 && res.StatusCode < 300:
-		return outcomeComplete
-	case res.StatusCode == 0: // no HTTP response — a transport error
-		return outcomeRetry
-	case res.StatusCode == 408, res.StatusCode == 409, res.StatusCode == 425, res.StatusCode == 429:
-		return outcomeRetry
-	case res.StatusCode >= 500:
-		return outcomeRetry
-	default: // other 4xx
-		return outcomeDead
-	}
-}
+type deliveryPolicy = webhook.DeliveryPolicy
 
-// backoffCeiling is the deterministic upper bound for a given attempt: base * 2^(attempt-1), capped at
-// max. Exposed so the schedule is testable without observing jitter.
-func backoffCeiling(attempt int, base, max time.Duration) time.Duration {
-	if attempt < 1 {
-		attempt = 1
-	}
-	ceil := base
-	for i := 1; i < attempt; i++ {
-		ceil *= 2
-		if ceil >= max || ceil <= 0 { // cap, and guard the doubling overflow
-			return max
-		}
-	}
-	if ceil > max {
-		return max
-	}
-	return ceil
-}
-
-// nextBackoff is the jittered delay before the next attempt: a full-jitter sample in [0, ceiling],
-// which decorrelates a thundering herd of retries against one recovering receiver.
-func nextBackoff(attempt int, base, max time.Duration) time.Duration {
-	ceil := backoffCeiling(attempt, base, max)
-	if ceil <= 0 {
-		return 0
-	}
-	return time.Duration(rand.Int64N(int64(ceil) + 1))
-}
-
-// deliveryPolicy is a delivery's dead-letter bound (spec §21.6: 72h / 20 attempts by default).
-type deliveryPolicy struct {
-	MaxAttempts int
-	RetryWindow time.Duration
-}
-
-// retryExhausted reports whether a delivery has hit its dead-letter cutoff: the attempt count reached
-// the cap, or the elapsed time since the first attempt exceeded the retry window.
-func retryExhausted(attemptCount int, firstAt, now time.Time, policy deliveryPolicy) bool {
-	if policy.MaxAttempts > 0 && attemptCount >= policy.MaxAttempts {
-		return true
-	}
-	if policy.RetryWindow > 0 && now.Sub(firstAt) >= policy.RetryWindow {
-		return true
-	}
-	return false
-}
+var (
+	classify       = webhook.Classify
+	backoffCeiling = webhook.BackoffCeiling
+	nextBackoff    = webhook.NextBackoff
+	retryExhausted = webhook.RetryExhausted
+)
 
 // buildEnvelope produces the exact body a delivery signs and sends — a minimal CloudEvents-compatible
 // envelope (spec §20) captured at fan-out and stored immutably, so a redelivery replays it byte-for-byte.
