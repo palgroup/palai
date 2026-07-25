@@ -19,6 +19,15 @@ SELECT id, team_id, enterprise_id, bot_user_id, signing_secret_ref, bot_token_re
 FROM slack_connections
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- GetSlackAuthorizationPolicy is the AUTHORIZATION read (SLK-004, E17 T11): the allow-lists a decision is
+-- checked against before any approve/deny command is enqueued. It is deliberately SEPARATE from
+-- GetSlackConnection — an authorization check needs only these two lists, never the secret-ref handles, so the
+-- enforcement path never handles credential metadata it has no use for. Tenant-scoped like every other read.
+-- name: GetSlackAuthorizationPolicy
+SELECT allowed_channels, allowed_users
+FROM slack_connections
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
 -- ListSlackConnections pages a project's connections newest-first (the admin ListView envelope). Tenant
 -- scoped by RLS; the org/project predicate is defence-in-depth. The secret refs are omitted from a list.
 -- name: ListSlackConnections

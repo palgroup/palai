@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -103,6 +104,50 @@ func (s *Store) GetSlackConnection(ctx context.Context, org, project, id string)
 		return SlackConnection{}, fmt.Errorf("read slack connection: %w", err)
 	}
 	return c, nil
+}
+
+// SlackAuthorizationPolicy is a connection's decision allow-lists (§36.2, SLK-004): which Slack users may
+// authorize a high-risk operation and which channels the integration acts in. A user absent from AllowedUsers
+// is a CONSTRAINED integration actor — its click carries an identity but authorizes nothing. Empty lists mean
+// "nothing is allow-listed", i.e. no Slack user may approve; the enforcement is deny-by-default, never
+// allow-by-default (an unconfigured connection must not silently authorize a workspace).
+type SlackAuthorizationPolicy struct {
+	AllowedChannels []string
+	AllowedUsers    []string
+}
+
+// ApproverAuthorized reports whether a Slack user may authorize a decision in this connection. This is the
+// control-plane half of SLK-004: the adapter's ApprovalIntent carries WHO clicked and in WHICH workspace, and
+// this decides. Deny-by-default — an empty allow-list authorizes nobody.
+func (p SlackAuthorizationPolicy) ApproverAuthorized(userID string) bool {
+	if userID == "" {
+		return false
+	}
+	return slices.Contains(p.AllowedUsers, userID)
+}
+
+// SlackAuthorizationPolicyFor reads the connection's decision allow-lists within scope, so an approve/deny
+// command can be refused BEFORE it is enqueued when the clicking user is not a mapped approver (SLK-004). It
+// reads only the two lists — never the secret-ref handles — so the enforcement path never touches credential
+// metadata it has no use for.
+func (s *Store) SlackAuthorizationPolicyFor(ctx context.Context, org, project, id string) (SlackAuthorizationPolicy, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	var channels, users []byte
+	err := s.pool.QueryRow(ctx, storage.Query("GetSlackAuthorizationPolicy"), id, org, project).Scan(&channels, &users)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SlackAuthorizationPolicy{}, ErrSlackConnectionNotFound
+	}
+	if err != nil {
+		return SlackAuthorizationPolicy{}, fmt.Errorf("read slack authorization policy: %w", err)
+	}
+	var policy SlackAuthorizationPolicy
+	if err := json.Unmarshal(channels, &policy.AllowedChannels); err != nil {
+		return SlackAuthorizationPolicy{}, fmt.Errorf("decode allowed_channels: %w", err)
+	}
+	if err := json.Unmarshal(users, &policy.AllowedUsers); err != nil {
+		return SlackAuthorizationPolicy{}, fmt.Errorf("decode allowed_users: %w", err)
+	}
+	return policy, nil
 }
 
 // ResolvedSlackConnection is what the UNAUTHENTICATED inbound path learns from a Slack team id before it has
