@@ -6,7 +6,8 @@ SHELL := /bin/bash
 	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
-	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity evidence-verify promote migration-resume-drill upgrade-drill
+	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity evidence-verify promote migration-resume-drill upgrade-drill \
+	release-matrix-smoke
 
 bootstrap:
 	go mod download
@@ -249,6 +250,14 @@ uat-sdk-parity:
 uat-extensions:
 	@test -x scripts/uat/extensions || { echo "extensions UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/extensions
+
+# E18 T1 image half of the release matrix (Docker-bound, so NOT in `make verify` — like uat-kind): builds
+# linux/amd64 + linux/arm64 for all three images, asserts each indexed tar's digest/image_id/arch against the
+# artifact's own bytes, and boot-smokes the amd64 tar (emulated on an arm64 host). The binary half is covered
+# Docker-free by `go test ./scripts/release/...`. Everything it tags is removed on exit; the build cache is
+# left intact. HONEST CEILING: a boot-smoke is not a full UAT run on amd64 (plan §6 leg 3).
+release-matrix-smoke:
+	@bash scripts/release/matrix-smoke.sh
 
 # E15 T6 promote gate: refuse to tag a release without a rollback + restore proof (plan §7). Default target rc;
 # `make promote RELEASE=<name> TO=stable` gates a stable promote (awaits the E14 §6 operator-leg attestation).

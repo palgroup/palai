@@ -8,5 +8,8 @@
 **/node_modules
 spikes
 docs
+# Release output (`scripts/release/build.sh --out dist/release`): the image tars it just saved would
+# otherwise be fed back into the next image build's context.
+dist
 .superpowers
 *.log

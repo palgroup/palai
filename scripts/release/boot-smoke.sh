@@ -29,8 +29,10 @@ cp_cid=""
 pg_cid=""
 
 cleanup() {
-  [ -z "$cp_cid" ] || docker rm -f "$cp_cid" >/dev/null 2>&1 || true
-  [ -z "$pg_cid" ] || docker rm -f "$pg_cid" >/dev/null 2>&1 || true
+  # -v as well as -f: `docker rm -f` leaves the postgres image's ANONYMOUS data volume behind, so a
+  # run without it leaks ~100MB of shared disk every time (measured: 55→57 volumes over two runs).
+  [ -z "$cp_cid" ] || docker rm -f -v "$cp_cid" >/dev/null 2>&1 || true
+  [ -z "$pg_cid" ] || docker rm -f -v "$pg_cid" >/dev/null 2>&1 || true
   docker network rm "$net" >/dev/null 2>&1 || true
   rm -rf "$tmp"
 }
@@ -60,11 +62,16 @@ step "starting $pg_ref"
 pg_cid="$(docker run -d --name "$id-pg" --network "$net" --network-alias postgres \
   -e POSTGRES_USER=palai -e POSTGRES_DB=palai -e "POSTGRES_PASSWORD=$pgpass" \
   "$pg_ref")"
-for _ in $(seq 1 60); do
+# 120s, not 60: measured a readiness timeout when this runs straight after the six-image matrix build
+# (`make release-matrix-smoke`) — the daemon is still flushing layers. A flaky check gets ignored.
+for _ in $(seq 1 120); do
   docker exec "$pg_cid" pg_isready -U palai -d palai >/dev/null 2>&1 && break
   sleep 1
 done
-docker exec "$pg_cid" pg_isready -U palai -d palai >/dev/null 2>&1 || fail "postgres never became ready"
+docker exec "$pg_cid" pg_isready -U palai -d palai >/dev/null 2>&1 || {
+  docker logs "$pg_cid" >&2 || true
+  fail "postgres never became ready in 120s (its log is above; the image under test never got booted)"
+}
 
 # The image's OWN entrypoint runs (it assembles PALAI_DATABASE_URL from the file secret), so this
 # exercises the shipped entrypoint too, not just the binary.
@@ -109,7 +116,7 @@ if [ -n "$want_uname" ]; then
   if [ "$arch" = "$(docker info --format '{{.Architecture}}' | sed 's/x86_64/amd64/;s/aarch64/arm64/')" ]; then
     step "container uname -m = $got (NATIVE on this daemon — no emulation involved)"
   else
-    step "container uname -m = $got (the $arch binary executed under qemu emulation)"
+    step "container uname -m = $got (the $arch binary executed under emulation — qemu or Rosetta, per this Docker Desktop's setting)"
   fi
 fi
 img_arch="$(docker image inspect "$ref" --format '{{.Architecture}}')"
