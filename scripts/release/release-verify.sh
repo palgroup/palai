@@ -33,7 +33,10 @@
 # and runner-verify.sh — and REFUSES if it is itself running from inside the release dir, or if a
 # sibling is missing, unless PALAI_RELEASE_ALLOW_BUNDLED_VERIFIER=1 opts in for a same-session local
 # proof. Nothing is ever resolved out of the release dir. (provenance.sh deliberately does NOT stage a
-# copy of this script into a release: obtain scripts/release/ out of band with the key.)
+# copy of this script into a release: obtain scripts/release/ out of band with the key.) "Inside" is
+# decided by DEVICE+INODE, never by comparing path strings — a copy one directory down, a symlinked
+# release, macOS's /tmp -> /private/tmp alias and an APFS case respelling are all the SAME location
+# under another name, and sibling completeness is no fence at all (a release already ships two of them).
 #
 # HONEST NAMING — what this proves and nothing more: an openssl ECDSA P-256 signature over a
 # SLSA-SHAPED attestation, a set of digests that match bytes, and a policy decision that re-derives.
@@ -59,10 +62,10 @@ if [ "${1:-}" = "--network-none" ]; then
 	pub="${2:?usage: release-verify.sh --network-none <release-dir> <pubkey> [tool-image]}"
 	tool="${3:-${PALAI_RELEASE_TOOL_IMAGE:-}}"
 	[ -n "$tool" ] || { echo "verify: a tool image is REQUIRED (arg 3 or PALAI_RELEASE_TOOL_IMAGE) — an already-loaded image with openssl + python3 (the project's own reference-engine image qualifies)" >&2; exit 2; }
-	rel_abs="$(cd "$rel" && pwd)"
-	pub_dir="$(cd "$(dirname "$pub")" && pwd)"
+	rel_abs="$(cd "$rel" && pwd -P)"
+	pub_dir="$(cd "$(dirname "$pub")" && pwd -P)"
 	pub_base="$(basename "$pub")"
-	repo="$(cd "$(dirname "$0")/../.." && pwd)"
+	repo="$(cd "$(dirname "$0")/../.." && pwd -P)"
 	# --network none: the container has NO network device. The repo is mounted read-only, so the
 	# verifying code AND the canonical materials source both come from OUTSIDE the release dir — the
 	# fail-closed resolution is satisfied structurally, with no opt-in. CEILINGS, both loud in the
@@ -71,11 +74,23 @@ if [ "${1:-}" = "--network-none" ]; then
 	# and leg (4) is NOT carried into the container — an SDK bundle is a second directory with a second
 	# out-of-band key, and the run says the SDK packages are UNVERIFIED rather than implying otherwise.
 	# Its verifier is the same openssl + sha256 primitives leg (1) just proved need no network.
-	exec docker run --rm --network none \
+	#
+	# The REVOCATION list is carried in, because dropping it would make the offline run PASS what the
+	# host run DENIES: an operator who adds --network-none to be more careful must not get a weaker
+	# answer than the one their own environment asked for. (The other env this branch does not forward
+	# is fail-CLOSED — an unset PALAI_RELEASE_EXPECTED_BUILDER_ID or _ALLOW_UNSOURCED_MATERIALS makes
+	# the run stricter, never laxer.)
+	set -- --rm --network none \
 		-v "$repo:/repo:ro" \
 		-v "$rel_abs:/release:ro" \
-		-v "$pub_dir/$pub_base:/pub:ro" \
-		--entrypoint /bin/sh "$tool" /repo/scripts/release/release-verify.sh /release /pub
+		-v "$pub_dir/$pub_base:/pub:ro"
+	if [ -n "${PALAI_RELEASE_REVOCATIONS:-}" ]; then
+		[ -f "$PALAI_RELEASE_REVOCATIONS" ] || { echo "verify: REFUSING — PALAI_RELEASE_REVOCATIONS=$PALAI_RELEASE_REVOCATIONS is not a file; a revocation list that cannot be read is not an absence of revocations" >&2; exit 2; }
+		rev_dir="$(cd "$(dirname "$PALAI_RELEASE_REVOCATIONS")" && pwd -P)"
+		set -- "$@" -e PALAI_RELEASE_REVOCATIONS=/revocations \
+			-v "${rev_dir%/}/$(basename "$PALAI_RELEASE_REVOCATIONS"):/revocations:ro"
+	fi
+	exec docker run "$@" --entrypoint /bin/sh "$tool" /repo/scripts/release/release-verify.sh /release /pub
 fi
 
 rel="${1:?usage: release-verify.sh <release-dir> <pubkey>}"
@@ -85,24 +100,40 @@ if [ -z "$pub" ]; then
 	echo "verify: obtain it OUT OF BAND — never from the release dir — then re-run." >&2
 	exit 2
 fi
-case "$pub" in
-	/*) : ;;
-	*) pub="$(cd "$(dirname "$pub")" && pwd)/$(basename "$pub")" ;;
-esac
+pub_dir="$(cd "$(dirname "$pub")" && pwd -P)"
+pub="${pub_dir%/}/$(basename "$pub")"
 
-self_dir="$(cd "$(dirname "$0")" && pwd)"
-rel_abs="$(cd "$rel" && pwd)"
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+rel_abs="$(cd "$rel" && pwd -P)"
+
+# inside <path> <dir> — TRUE when <path> IS <dir> or anything under it, decided by DEVICE+INODE
+# identity rather than by spelling. Every string comparison here is defeated by a second NAME for the
+# same directory: one level down (`tools/`), a symlinked release, macOS's everyday /tmp -> /private/tmp,
+# or an APFS case respelling. The rule is the location, not how the path is written.
+[ / -ef / ] 2>/dev/null || { echo "verify: REFUSING — this shell's \`test\` has no -ef, so the location fence cannot be decided." >&2; exit 3; }
+inside() {
+	_p="$1"
+	while :; do
+		[ "$_p" -ef "$2" ] && return 0
+		case "$_p" in /|//|.|"") return 1 ;; esac
+		_p="$(dirname "$_p")"
+	done
+}
 
 # --- fail-closed verifier resolution -------------------------------------------------------------
 missing=""
 for sibling in provenance-verify.sh sbom-tool.py runner-verify.sh; do
 	[ -f "$self_dir/$sibling" ] || missing="$missing $sibling"
 done
-if [ -n "$missing" ] || [ "$self_dir" = "$rel_abs" ]; then
+# Sibling COMPLETENESS is NOT the fence: a release already ships provenance-verify.sh and
+# runner-verify.sh, so completing the set costs an attacker two files. The LOCATION is the fence.
+in_release=0
+inside "$self_dir" "$rel_abs" && in_release=1
+if [ -n "$missing" ] || [ "$in_release" = 1 ]; then
 	if [ "${PALAI_RELEASE_ALLOW_BUNDLED_VERIFIER:-}" = "1" ]; then
 		echo "verify: WARNING — the verifying code is incomplete or comes from the release dir itself (PALAI_RELEASE_ALLOW_BUNDLED_VERIFIER=1;${missing:+ missing:$missing;} same-session local proof only, NOT channel-attack safe)" >&2
 	else
-		[ "$self_dir" = "$rel_abs" ] && echo "verify: REFUSING — this script is running from INSIDE the release dir it would verify; a channel attacker can neuter it." >&2
+		[ "$in_release" = 1 ] && echo "verify: REFUSING — this script ($self_dir) is running from INSIDE the release dir it would verify ($rel_abs); a channel attacker can neuter it." >&2
 		[ -n "$missing" ] && echo "verify: REFUSING — the verifying code is incomplete: no$missing beside this script." >&2
 		echo "verify: run the git-tracked scripts/release/release-verify.sh (or obtain scripts/release/ out of band with the key), or set PALAI_RELEASE_ALLOW_BUNDLED_VERIFIER=1 for a same-session local proof." >&2
 		exit 2
@@ -232,15 +263,20 @@ else:
                         " §51.3 policy decision this release was gated on (declared byproducts: %s)"
                         % (statement_file, sorted({b.get("name") for b in byproducts}) or "none"))
     for b in byproducts:
-        path = os.path.join(rel, b["uri"].removeprefix("file://"))
+        uri = b.get("uri") or ""
+        if not uri.startswith("file://"):
+            failures.append("the declared %s byproduct has no file:// uri (%r) — a byproduct nothing"
+                            " can resolve cannot be recomputed" % (b.get("name"), uri))
+            continue
+        path = os.path.join(rel, uri.removeprefix("file://"))
         if not os.path.isfile(path):
             failures.append("the declared %s byproduct %s is not in the release dir"
-                            % (b.get("name"), b["uri"]))
+                            % (b.get("name"), uri))
             continue
         got = sha256_file(path)
         if (b.get("digest") or {}).get("sha256") != got:
             failures.append("the declared %s byproduct %s is sha256:%s, the attestation says sha256:%s"
-                            % (b.get("name"), b["uri"], got, (b.get("digest") or {}).get("sha256")))
+                            % (b.get("name"), uri, got, (b.get("digest") or {}).get("sha256")))
 
 # (e) REVOCATION — an OUT-OF-BAND list only. The index defines the shape (see build.sh) and
 # deliberately carries no pointer to a list: an attacker who can swap these artifacts could drop a
@@ -282,6 +318,13 @@ print("release-verify: (3) %d artifact digest(s) recomputed from bytes, %d image
       % (len(artifacts), len(images), len(byproducts), scan.get("result"), statement_file,
          ", %d revocation entry(ies) checked" % revoked_names if revocations else
          ", NO revocation list supplied (PALAI_RELEASE_REVOCATIONS)"), file=sys.stderr)
+# ...and the index's OWN `revocations` block is not a second opinion on that. It is a shape
+# declaration with a deliberately null pointer; this run neither resolves it nor requires it, and
+# saying so is the difference between an honest field and a decorative one.
+print("release-verify: (3) NOTE — release-index.revocations is a SHAPE declaration only (%s): this"
+      " verifier neither resolves it nor requires it, because a revocation list reached THROUGH the"
+      " release is no check at all." % ("present" if index.get("revocations") else "absent"),
+      file=sys.stderr)
 PY
 
 # --- (4) the SDK bundle, when one is named -------------------------------------------------------
