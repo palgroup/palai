@@ -1,0 +1,209 @@
+//go:build performance
+
+// Shared plumbing for the PER cases that drive the RUNNING control-plane binary: a seeded tenant, an
+// authenticated HTTP client, and the durable spine for the write-side/read-back steps. It mirrors
+// tests/e2e/sse's harness — a separate build target cannot import another package's test helpers, so the
+// small scaffolding is duplicated rather than shared.
+//
+// Everything a PER case measures goes through the real binary over real HTTP. The database handle exists
+// only for the steps a client cannot perform (seeding a tenant, terminating a queued run so a gate
+// opens) and for reading back what the API does not expose.
+package performance
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/palgroup/palai/packages/coordinator"
+	"github.com/palgroup/palai/storage"
+)
+
+// stack is the running control plane plus the durable spine behind it.
+type stack struct {
+	t      *testing.T
+	base   string
+	spine  *coordinator.Store
+	tenant coordinator.Tenant
+	token  string
+	client *http.Client
+}
+
+// loadClient is the measuring client. http.DefaultClient keeps 2 idle connections per host, so a
+// concurrent load shape would spend its time in Go's own connection pool and the harness would publish
+// client-side queuing as server latency. The pool is sized above every load shape in this package.
+func loadClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 256
+	transport.MaxIdleConnsPerHost = 256
+	return &http.Client{Transport: transport, Timeout: 60 * time.Second}
+}
+
+// requireStack skips when the tier's stack is absent: `make test-performance TEST=service` provides it.
+// A skip is the honest outcome for a case whose seam is not running — never a silent pass.
+func requireStack(t *testing.T) *stack {
+	t.Helper()
+	base := strings.TrimRight(os.Getenv("PALAI_PERF_BASE_URL"), "/")
+	pgURL := os.Getenv("PALAI_PERF_POSTGRES_URL")
+	if base == "" || pgURL == "" {
+		t.Skip("PALAI_PERF_BASE_URL + PALAI_PERF_POSTGRES_URL are required; run make test-performance TEST=service")
+	}
+	ctx := context.Background()
+	spine, err := coordinator.Open(ctx, pgURL)
+	if err != nil {
+		t.Fatalf("coordinator.Open() error = %v", err)
+	}
+	t.Cleanup(spine.Close)
+	if err := spine.Migrate(ctx); err != nil { // idempotent; the binary already migrated
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	token := newID("perf-tok")
+	return &stack{t: t, base: base, spine: spine, tenant: seedTenantWithKey(t, spine.Pool(), token),
+		token: token, client: loadClient()}
+}
+
+func newID(prefix string) string {
+	var raw [8]byte
+	_, _ = rand.Read(raw[:])
+	return prefix + "_" + hex.EncodeToString(raw[:])
+}
+
+// seedTenantWithKey creates org -> project -> principal -> api_key; the stored verifier is the hash of
+// token, never token itself.
+func seedTenantWithKey(t *testing.T, pool *pgxpool.Pool, token string) coordinator.Tenant {
+	t.Helper()
+	ctx := context.Background()
+	tenant := coordinator.Tenant{Organization: newID("org"), Project: newID("prj")}
+	principalID := newID("prin")
+	exec := func(sql string, args ...any) {
+		if _, err := pool.Exec(storage.WithSystemScope(ctx), sql, args...); err != nil {
+			t.Fatalf("seed exec %q error = %v", sql, err)
+		}
+	}
+	exec(`INSERT INTO organizations (id) VALUES ($1)`, tenant.Organization)
+	exec(`INSERT INTO projects (id, organization_id) VALUES ($1, $2)`, tenant.Project, tenant.Organization)
+	exec(`INSERT INTO principals (id, organization_id, project_id, kind) VALUES ($1, $2, $3, 'service')`,
+		principalID, tenant.Organization, tenant.Project)
+	exec(`INSERT INTO api_keys (id, organization_id, project_id, principal_id, key_hash) VALUES ($1, $2, $3, $4, $5)`,
+		newID("key"), tenant.Organization, tenant.Project, principalID, coordinator.HashAPIKey(token))
+	return tenant
+}
+
+// do issues one authenticated request and returns the status, the decoded body and the elapsed wall
+// time. The timing brackets the whole round trip, which is what a caller experiences.
+func (s *stack) do(method, path, body string, headers map[string]string) (int, map[string]any, time.Duration) {
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, s.base+path, reader)
+	if err != nil {
+		s.t.Fatalf("build %s %s error = %v", method, path, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	start := time.Now()
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return 0, nil, time.Since(start)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	elapsed := time.Since(start)
+	var decoded map[string]any
+	_ = json.Unmarshal(raw, &decoded)
+	return resp.StatusCode, decoded, elapsed
+}
+
+// mustPost fails the test unless the status matches want.
+func (s *stack) mustPost(path, body string, want int, headers map[string]string) map[string]any {
+	s.t.Helper()
+	status, decoded, _ := s.do(http.MethodPost, path, body, headers)
+	if status != want {
+		s.t.Fatalf("POST %s status = %d, want %d (%v)", path, status, want, decoded)
+	}
+	return decoded
+}
+
+// exec runs one statement on the durable spine under system scope, for the steps a client cannot do.
+func (s *stack) exec(sql string, args ...any) {
+	s.t.Helper()
+	if _, err := s.spine.Pool().Exec(storage.WithSystemScope(context.Background()), sql, args...); err != nil {
+		s.t.Fatalf("exec %q error = %v", sql, err)
+	}
+}
+
+// queryInt reads a single integer (a count, a byte total) under system scope.
+func (s *stack) queryInt(sql string, args ...any) int64 {
+	s.t.Helper()
+	var v int64
+	if err := s.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()), sql, args...).Scan(&v); err != nil {
+		s.t.Fatalf("query %q error = %v", sql, err)
+	}
+	return v
+}
+
+// complete writes the run's artifacts and reports where they landed, so a reader of the test log can
+// find the profile behind every number.
+func complete(t *testing.T, run *Run, caseID string) Summary {
+	t.Helper()
+	dir := OutputDir(caseID)
+	sum, err := run.Complete(dir)
+	if err != nil {
+		t.Fatalf("%s gate FAILED (artifacts in %s): %v", caseID, dir, err)
+	}
+	p := run.Profile()
+	t.Logf("%s PASS — artifacts=%s profile=%q %d cores / %.1f GiB / %s / load=%q",
+		caseID, dir, p.Machine, p.Cores, float64(p.MemoryBytes)/(1<<30), p.Docker, p.LoadShape)
+	for _, st := range sum.Stats {
+		t.Logf("  %-32s n=%-4d p50=%-12s p95=%-12s p99=%-12s errors=%d", st.Metric, st.Count,
+			format(st.P50, st.Unit), format(st.P95, st.Unit), format(st.P99, st.Unit), st.Errors)
+	}
+	return sum
+}
+
+// mustFailGate is the shape every RED fixture asserts: the run completes, writes its evidence, and the
+// gate REFUSES it. A fixture that merely errors out proves nothing about the gate.
+func mustFailGate(t *testing.T, run *Run, caseID, wantMetric string) {
+	t.Helper()
+	sum, err := run.Complete(OutputDir(caseID))
+	if err == nil {
+		t.Fatalf("%s: the deliberately-bad fixture PASSED the gate; the gate has no teeth", caseID)
+	}
+	if !strings.Contains(err.Error(), "threshold gate failed") {
+		t.Fatalf("%s: want a threshold-gate failure, got %v", caseID, err)
+	}
+	found := false
+	for _, f := range sum.Failures {
+		if strings.HasPrefix(f, wantMetric) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("%s: gate failed but not on %s: %v", caseID, wantMetric, sum.Failures)
+	}
+	t.Logf("%s RED fixture correctly REFUSED: %s", caseID, strings.Join(sum.Failures, "; "))
+}
+
+func jsonBody(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("encode body: %v", err))
+	}
+	return string(raw)
+}

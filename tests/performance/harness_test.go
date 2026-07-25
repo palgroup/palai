@@ -11,14 +11,15 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-// TestNewRunRefusesWhenTheMachineCannotBeStamped drives the REAL detection path with no executables on
+// TestHarnessRefusesAnUnstampableMachine drives the REAL detection path with no executables on
 // PATH: uname/sysctl/docker cannot answer, so the run never opens. This is the profile rule at its
 // source — not a flag a caller may forget to set.
-func TestNewRunRefusesWhenTheMachineCannotBeStamped(t *testing.T) {
+func TestHarnessRefusesAnUnstampableMachine(t *testing.T) {
 	t.Setenv("PATH", "")
 	run, err := NewRun("PER-000", "no load", "test fixture")
 	if !errors.Is(err, ErrNoProfile) {
@@ -29,10 +30,10 @@ func TestNewRunRefusesWhenTheMachineCannotBeStamped(t *testing.T) {
 	}
 }
 
-// TestCompleteWritesNothingWithoutAProfile is the negative in its strong form: a run that HAS samples
+// TestHarnessWritesNothingWithoutAProfile is the negative in its strong form: a run that HAS samples
 // but whose profile lost one required field must produce zero artifacts. A harness that wrote the
 // samples anyway would leak an unattributable number into evidence.
-func TestCompleteWritesNothingWithoutAProfile(t *testing.T) {
+func TestHarnessWritesNothingWithoutAProfile(t *testing.T) {
 	run := stampedRun(t, "PER-000-noprofile")
 	run.Latency("fixture_op", "warm", 5*time.Millisecond, true)
 
@@ -75,15 +76,15 @@ func TestCompleteWritesNothingWithoutAProfile(t *testing.T) {
 	}
 }
 
-// TestSummaryPercentilesRecomputeFromTheRawSamples is the recompute-over-copy property E18 T10's
+// TestHarnessPercentilesRecomputeFromTheRawSamples is the recompute-over-copy property E18 T10's
 // verifier depends on: re-parsing samples.jsonl from disk and re-deriving must reproduce summary.json's
 // percentiles exactly, and the summary's samples digest must match those bytes.
-func TestSummaryPercentilesRecomputeFromTheRawSamples(t *testing.T) {
+func TestHarnessPercentilesRecomputeFromTheRawSamples(t *testing.T) {
 	run := stampedRun(t, "PER-000-recompute")
 	for i := 1; i <= 100; i++ {
 		run.Latency("fixture_op", "warm", time.Duration(i)*time.Millisecond, true)
 	}
-	run.Gate("fixture_op", 95, float64(200*time.Millisecond), "ns")
+	run.Gate("fixture_op", 95, float64(200*time.Millisecond), "ns", "test fixture budget")
 
 	dir := filepath.Join(t.TempDir(), "out")
 	written, err := run.Complete(dir)
@@ -144,14 +145,14 @@ func TestSummaryPercentilesRecomputeFromTheRawSamples(t *testing.T) {
 	}
 }
 
-// TestGateFailsAndStillWritesTheEvidence: a breached threshold fails the run but keeps the artifacts —
+// TestHarnessGateFailsAndStillWritesTheEvidence: a breached threshold fails the run but keeps the artifacts —
 // a failed measurement is evidence, and the RED fixtures read it back.
-func TestGateFailsAndStillWritesTheEvidence(t *testing.T) {
+func TestHarnessGateFailsAndStillWritesTheEvidence(t *testing.T) {
 	run := stampedRun(t, "PER-000-gate")
 	for i := 0; i < 10; i++ {
 		run.Latency("fixture_op", "warm", 900*time.Millisecond, true)
 	}
-	run.Gate("fixture_op", 95, float64(100*time.Millisecond), "ns")
+	run.Gate("fixture_op", 95, float64(100*time.Millisecond), "ns", "test fixture budget")
 
 	dir := filepath.Join(t.TempDir(), "out")
 	sum, err := run.Complete(dir)
@@ -166,32 +167,31 @@ func TestGateFailsAndStillWritesTheEvidence(t *testing.T) {
 	}
 }
 
-// TestVacuousGateFails closes the hole where a harness "passes" because it measured nothing: a gate on a
+// TestHarnessVacuousGateFails closes the hole where a harness "passes" because it measured nothing: a gate on a
 // metric with zero samples is a failure, not a pass.
-func TestVacuousGateFails(t *testing.T) {
+func TestHarnessVacuousGateFails(t *testing.T) {
 	run := stampedRun(t, "PER-000-vacuous")
 	run.Latency("measured", "warm", time.Millisecond, true)
-	run.Gate("never_measured", 95, 1, "ns")
+	run.Gate("never_measured", 95, 1, "ns", "test fixture budget")
 
 	if _, err := run.Complete(filepath.Join(t.TempDir(), "out")); !errors.Is(err, ErrThreshold) {
 		t.Fatalf("Complete error = %v, want ErrThreshold for a gate with no samples", err)
 	}
 }
 
-// TestThresholdOverrideIsRecorded proves the thresholds are configurable AND that a loosened run says so
+// TestHarnessThresholdOverrideIsRecorded proves the thresholds are configurable AND that a loosened run says so
 // in its own evidence — an override that hid itself would let a number pass by editing the gate.
-func TestThresholdOverrideIsRecorded(t *testing.T) {
+func TestHarnessThresholdOverrideIsRecorded(t *testing.T) {
 	t.Setenv("PALAI_PERF_MAX_FIXTURE_OP", "2s")
 	run := stampedRun(t, "PER-000-override")
 	run.Latency("fixture_op", "warm", time.Second, true)
-	run.Gate("fixture_op", 95, float64(100*time.Millisecond), "ns")
+	run.Gate("fixture_op", 95, float64(100*time.Millisecond), "ns", "test fixture budget")
 
 	sum, err := run.Complete(filepath.Join(t.TempDir(), "out"))
 	if err != nil {
 		t.Fatalf("Complete error = %v, want the override to admit a 1s sample", err)
 	}
-	if sum.Stats[0].Gate == nil || sum.Stats[0].Gate.Source == "" ||
-		sum.Stats[0].Gate.Source == "default (spec §54.3 / case budget)" {
+	if sum.Stats[0].Gate == nil || !strings.HasPrefix(sum.Stats[0].Gate.Source, "env PALAI_PERF_MAX_FIXTURE_OP=") {
 		t.Fatalf("gate source = %+v, want the environment override recorded", sum.Stats[0].Gate)
 	}
 }

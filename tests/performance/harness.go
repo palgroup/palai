@@ -37,6 +37,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -156,8 +157,11 @@ type Summary struct {
 // stated in every summary so a re-computation cannot silently use a different interpolation.
 const percentileMethod = "nearest-rank: sort ascending, index = ceil(p/100*n)-1 clamped to [0,n-1]"
 
-// Run accumulates one PER case's samples behind a stamped profile.
+// Run accumulates one PER case's samples behind a stamped profile. Recording is mutex-guarded because a
+// load harness is concurrent by definition: the alternative is every case re-inventing its own lock, and
+// forgetting once is a `fatal error: concurrent map writes` in the middle of a measurement.
 type Run struct {
+	mu           sync.Mutex
 	profile      Profile
 	samples      []Sample
 	gates        map[string]Threshold
@@ -189,20 +193,26 @@ func (r *Run) Latency(metric, phase string, d time.Duration, ok bool) {
 
 // Observe records one raw observation in its own unit (a queue depth, an RSS reading, a byte count).
 func (r *Run) Observe(metric, phase string, value float64, unit string, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.samples = append(r.samples, Sample{Metric: metric, Phase: phase, Value: value, Unit: unit, OK: ok, At: time.Now().UTC()})
 	r.units[metric] = unit
 }
 
 // Gate configures the threshold for a metric: percentile pct (100 = max) must stay at or under max.
-// The default is §54.3's target; PALAI_PERF_MAX_<METRIC> overrides it (a Go duration for ns metrics, a
-// bare number otherwise) and the override is recorded in the summary.
-func (r *Run) Gate(metric string, pct int, max float64, unit string) {
-	g := Threshold{Percentile: pct, Max: max, Unit: unit, Source: "default (spec §54.3 / case budget)"}
+// source states where the number CAME FROM — a §54.3 target, or a case budget this harness invented —
+// because a budget the harness chose for itself must never read as a spec target in the evidence.
+// PALAI_PERF_MAX_<METRIC> overrides the value (a Go duration for ns metrics, a bare number otherwise)
+// and the override replaces the source string, so a loosened run says so.
+func (r *Run) Gate(metric string, pct int, max float64, unit, source string) {
+	g := Threshold{Percentile: pct, Max: max, Unit: unit, Source: source}
 	if raw := os.Getenv(thresholdEnv(metric)); raw != "" {
 		if v, ok := parseThreshold(raw, unit); ok {
 			g.Max, g.Source = v, "env "+thresholdEnv(metric)+"="+raw
 		}
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.gates[metric] = g
 }
 
