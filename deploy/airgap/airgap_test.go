@@ -65,13 +65,31 @@ func buildBundle(t *testing.T) string {
 	return out
 }
 
-// verify runs the bundle's verify.sh in host mode (no --network-none, so no Docker) and reports
-// whether it exited zero.
+// verify runs the GIT-TRACKED deploy/airgap/verify.sh in host mode (no --network-none, so no Docker)
+// and reports whether it exited zero. That is the realistic operator workflow AND the fail-closed one:
+// the git-tracked script resolves the ONE signer from the checkout, never from the bundle it is
+// verifying (E18 T4; the bundle's own copy now REFUSES unless the caller opts in explicitly).
 func verify(t *testing.T, bundle, pubkey string) (ok bool, output string) {
 	t.Helper()
-	cmd := exec.Command("/bin/sh", filepath.Join(bundle, "verify.sh"), bundle, pubkey)
+	cmd := exec.Command("/bin/sh", filepath.Join(repoRoot(t), "deploy/airgap/verify.sh"), bundle, pubkey)
 	out, err := cmd.CombinedOutput()
 	return err == nil, string(out)
+}
+
+// verifyWith runs a SPECIFIC verify.sh copy against the bundle and returns its exit code, so a case
+// can pin which copy (out-of-band or the bundle's own) refused and with which code.
+func verifyWith(t *testing.T, script, bundle, pubkey string, env ...string) (int, string) {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", script, bundle, pubkey)
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatalf("run %s: %v\n%s", script, err, out)
+	}
+	return code, string(out)
 }
 
 func sha256File(t *testing.T, p string) string {
@@ -265,31 +283,80 @@ func TestBuildFailsOnDirtyTree(t *testing.T) {
 	}
 }
 
-// TestVerifyPrefersOutOfBandVerifier (SF1): if the bundle's runner-verify.sh is swapped for a no-op
-// and the sums are re-generated, a bundle-relative verify would pass — but an out-of-band verify.sh
-// with the REAL runner-verify.sh beside it must still FAIL closed on the bad signature.
-func TestVerifyPrefersOutOfBandVerifier(t *testing.T) {
+// TestVerifierSwapFailsClosed (SF1, closed in E18 T4 — the E16 T7 e4aeb6f pattern applied here).
+//
+// The exploit: a channel attacker with NO signing key swaps a payload, replaces the bundle's
+// runner-verify.sh with `exit 0`, and REGENERATES the whole digest chain over their own files. Every
+// listed digest then matches; only the openssl signature over the original sha256sums can catch it —
+// and it never runs, because the neutered verifier is the one that would have run it.
+//
+// Three postures isolate the fix, so the exploit lands ONLY under an explicit trust-the-bundle opt-in:
+//
+//	(a) the git-tracked deploy/airgap/verify.sh — resolves the ONE signer from the checkout: FAILS (1)
+//	(b) the BUNDLE's own verify.sh, no opt-in — REFUSES fail-closed (2), the signature never consulted
+//	(c) the BUNDLE's own verify.sh + PALAI_AIRGAP_ALLOW_BUNDLED_VERIFIER=1 — PASSES, having warned
+//
+// Before the fix (b) exited 0: the bundled fallback (`[ -f "$verifier" ] || verifier="$(pwd)/runner-verify.sh"`)
+// silently trusted the attacker's copy.
+func TestVerifierSwapFailsClosed(t *testing.T) {
 	bundle := buildBundle(t)
 	pub := filepath.Join(bundle, "palai-airgap-signing.pub")
 
-	// The channel attacker: swap a payload, neuter the bundle's verifier, and REGENERATE the chain.
 	if err := os.WriteFile(filepath.Join(bundle, "install.sh"), []byte("#!/bin/sh\n# malicious payload\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(bundle, "runner-verify.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	regenSums(t, bundle) // the .sig is NOT regenerated (attacker lacks the key) — only it can catch this
-	// Sanity: with the neutered bundle-relative verifier, verify PASSES — the attack is real.
-	if ok, o := verify(t, bundle, pub); !ok {
-		t.Skipf("digest chain already caught the tamper; attack not isolated to the signature:\n%s", o)
+	regenSums(t, bundle) // the .sig is NOT regenerated (the attacker lacks the key)
+
+	// (a) out of band: the git-tracked script, whose ONE signer comes from the checkout.
+	if code, out := verifyWith(t, filepath.Join(repoRoot(t), "deploy/airgap/verify.sh"), bundle, pub); code != 1 {
+		t.Fatalf("out-of-band verify.sh exit = %d, want 1 (the bad signature): %s", code, out)
 	}
-	// An out-of-band verify.sh + REAL runner-verify.sh sitting together must FAIL closed.
-	oob := t.TempDir()
-	copyFile(t, filepath.Join(repoRoot(t), "deploy/airgap/verify.sh"), filepath.Join(oob, "verify.sh"))
-	copyFile(t, filepath.Join(repoRoot(t), "scripts/package/runner/verify.sh"), filepath.Join(oob, "runner-verify.sh"))
-	out, err := exec.Command("/bin/sh", filepath.Join(oob, "verify.sh"), bundle, pub).CombinedOutput()
-	if err == nil {
-		t.Fatalf("out-of-band verify.sh PASSED a bundle whose verifier was neutered — the OOB verifier must be preferred:\n%s", out)
+	// (b) the bundle's own copy, no opt-in: fail-CLOSED before the signature is even attempted.
+	code, out := verifyWith(t, filepath.Join(bundle, "verify.sh"), bundle, pub)
+	if code != 2 {
+		t.Fatalf("the BUNDLE's verify.sh exit = %d, want 2 (a refusal). It must not resolve a verifier"+
+			" from inside the bundle it verifies:\n%s", code, out)
+	}
+	if !strings.Contains(out, "REFUSING") {
+		t.Errorf("the refusal does not say it is refusing an in-bundle verifier:\n%s", out)
+	}
+	// (c) the same copy WITH the explicit same-session opt-in: the exploit lands, having warned.
+	code, out = verifyWith(t, filepath.Join(bundle, "verify.sh"), bundle, pub,
+		"PALAI_AIRGAP_ALLOW_BUNDLED_VERIFIER=1")
+	if code != 0 {
+		t.Fatalf("the explicit opt-in did not work (exit %d):\n%s", code, out)
+	}
+	if !strings.Contains(out, "WARNING") {
+		t.Errorf("the opt-in did not warn that a bundled verifier is not channel-attack safe:\n%s", out)
+	}
+}
+
+// TestVerifierResolutionRefusesWithNoOutOfBandSigner is the other half of the fail-closed rule: a
+// verify.sh with NO out-of-band signer reachable at all (no sibling runner-verify.sh, no checkout two
+// levels up) must REFUSE rather than reach into the bundle — even when the bundle is perfectly clean.
+// A clean bundle is the harder case: there is no tamper to catch, so only the resolution rule can fail
+// this, and a fallback re-introduced later turns it RED.
+func TestVerifierResolutionRefusesWithNoOutOfBandSigner(t *testing.T) {
+	bundle := buildBundle(t)
+	pub := filepath.Join(bundle, "palai-airgap-signing.pub")
+
+	// A verify.sh alone in a directory that is NOT a checkout: nothing out of band to resolve.
+	orphan := filepath.Join(t.TempDir(), "a", "b", "c")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(orphan, "verify.sh")
+	copyFile(t, filepath.Join(repoRoot(t), "deploy/airgap/verify.sh"), script)
+
+	code, out := verifyWith(t, script, bundle, pub)
+	if code != 2 {
+		t.Fatalf("verify.sh with no out-of-band signer exit = %d, want 2 (a refusal) even on a CLEAN"+
+			" bundle:\n%s", code, out)
+	}
+	if code, out := verifyWith(t, script, bundle, pub, "PALAI_AIRGAP_ALLOW_BUNDLED_VERIFIER=1"); code != 0 {
+		t.Fatalf("the same-session opt-in must still verify a clean bundle (exit %d):\n%s", code, out)
 	}
 }
