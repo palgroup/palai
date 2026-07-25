@@ -62,15 +62,26 @@ platforms="linux/amd64,linux/arm64"
 cli_targets="darwin/amd64,darwin/arm64,linux/amd64,linux/arm64"
 runner_archs="amd64,arm64"
 
+# invocation_args records THIS invocation for the release index, which is what E18 T3's provenance
+# attestation names as the build command's parameters. --out is deliberately NOT recorded: it is a
+# destination, not a build input, and recording it would make the index differ between two runs that
+# built the identical release into different directories.
+invocation_args=""
+record_arg() { # json-escape and append
+  local esc
+  esc="$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  invocation_args="${invocation_args:+$invocation_args, }\"$esc\""
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --tag) tag="$2"; shift 2;;
+    --tag) tag="$2"; record_arg "$1"; record_arg "$2"; shift 2;;
     --out) out="$2"; shift 2;;
-    --version) version_override="$2"; shift 2;;
-    --no-images) build_images=0; shift;;
-    --platforms) platforms="$2"; shift 2;;
-    --cli-targets) cli_targets="$2"; shift 2;;
-    --runner-archs) runner_archs="$2"; shift 2;;
+    --version) version_override="$2"; record_arg "$1"; record_arg "$2"; shift 2;;
+    --no-images) build_images=0; record_arg "$1"; shift;;
+    --platforms) platforms="$2"; record_arg "$1"; record_arg "$2"; shift 2;;
+    --cli-targets) cli_targets="$2"; record_arg "$1"; record_arg "$2"; shift 2;;
+    --runner-archs) runner_archs="$2"; record_arg "$1"; record_arg "$2"; shift 2;;
     *) echo "build.sh: unknown argument $1" >&2; exit 2;;
   esac
 done
@@ -285,6 +296,7 @@ cat > "$index" <<EOF
   "commit": "${commit}",
   "source_date_epoch": "${SOURCE_DATE_EPOCH}",
   "built_at": "${built_at}",
+  "invocation": { "command": "scripts/release/build.sh", "args": [${invocation_args}] },
   "reproducibility": {
     "claimed": "binary-level: two builds of this commit produce bit-identical binaries and host packages",
     "not_claimed": "image-layer-level: docker image tars carry layer timestamps and are not byte-identical",

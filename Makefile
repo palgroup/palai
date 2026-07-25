@@ -7,7 +7,7 @@ SHELL := /bin/bash
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
 	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity evidence-verify promote migration-resume-drill upgrade-drill \
-	release-matrix-smoke
+	release-matrix-smoke provenance-offline-verify
 
 bootstrap:
 	go mod download
@@ -258,6 +258,16 @@ uat-extensions:
 # left intact. HONEST CEILING: a boot-smoke is not a full UAT run on amd64 (plan §6 leg 3).
 release-matrix-smoke:
 	@bash scripts/release/matrix-smoke.sh
+
+# E18 T3 offline half (Docker-bound, so NOT in `make verify` — like release-matrix-smoke): runs all four
+# provenance-verify legs inside a container with NO network device. `go test ./scripts/release/...` SKIPS
+# that leg, so without this target the offline claim is UNPROVEN. Needs an already-loaded openssl+python3
+# image; the reference engine qualifies. That image has no git, so it also exercises leg (4)'s loud
+# GIT ABSENT degradation.
+PROVENANCE_TOOL_IMAGE ?= palai/reference-engine:local
+provenance-offline-verify:
+	@docker image inspect '$(PROVENANCE_TOOL_IMAGE)' >/dev/null 2>&1 || { echo "provenance-offline-verify: load $(PROVENANCE_TOOL_IMAGE) first, or set PROVENANCE_TOOL_IMAGE=<an openssl+python3 image>" >&2; exit 2; }
+	@PALAI_PROVENANCE_TOOL_IMAGE='$(PROVENANCE_TOOL_IMAGE)' go test -count=1 -run TestProvenanceOfflineVerifyNetworkNone ./scripts/release/...
 
 # E15 T6 promote gate: refuse to tag a release without a rollback + restore proof (plan §7). Default target rc;
 # `make promote RELEASE=<name> TO=stable` gates a stable promote (awaits the E14 §6 operator-leg attestation).
