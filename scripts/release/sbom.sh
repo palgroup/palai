@@ -172,6 +172,20 @@ if [ "$mode" = "verify" ]; then
     python3 "$self_dir/sbom-tool.py" verify
 fi
 
+# --- ORDER: sbom.sh runs BEFORE provenance.sh ---------------------------------------------------
+# Generating into an already-attested dir fails closed downstream anyway — provenance.sh has already
+# hashed release-index.json into the signed root, so patching it moves the digest and the new sbom/
+# files are unsigned riders — but as a confusing failure two steps later. Refuse here, where the
+# operator can read why. (--verify is deliberately NOT gated: an attested dir is exactly what you
+# verify.)
+if [ -e "$dir/sha256sums.sig" ]; then
+  echo "sbom.sh: $dir is already ATTESTED (sha256sums.sig is present) — sbom.sh MUST run BEFORE" >&2
+  echo "sbom.sh: provenance.sh. Anything written now is outside the signature: the patched index no" >&2
+  echo "sbom.sh: longer matches its signed digest and every sbom/ file is an unsigned rider the" >&2
+  echo "sbom.sh: verifier rejects. Re-build the release dir and run build.sh → sbom.sh → provenance.sh." >&2
+  exit 2
+fi
+
 command -v docker >/dev/null 2>&1 || { echo "sbom.sh: docker not found" >&2; exit 3; }
 
 # --- the pinned DB must BE the pinned DB --------------------------------------------------------
