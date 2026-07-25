@@ -51,6 +51,54 @@ type arm struct {
 	What    string   `json:"what"`
 	Command []string `json:"command"`
 	Env     []string `json:"env,omitempty"`
+	// Proved is filled in by the run: the tests whose `--- PASS:` line was actually seen. It is what
+	// separates "denied" from "not attempted" in the report.
+	Proved []string `json:"proved,omitempty"`
+}
+
+// requiredTests is the set of test names an arm's -run regex NAMES, derived from the regex itself
+// rather than from a hand-kept second list that can drift away from it. Every arm binds to a plain
+// alternation of literal Go test names, either as a `-run` argument or as PALAI_SUITE_RUN.
+//
+// This exists because `go test -run TestNoSuchThing ./pkg/` prints "ok ... [no tests to run]" and
+// EXITS 0. Passed was `err == nil`, so the day someone renamed a test the suite would report
+// no_escape=true quarantine_works=true having run absolutely nothing — the single value proposition
+// of an aggregation harness, hollowed out silently.
+func (a arm) requiredTests() []string {
+	var pattern string
+	for i, arg := range a.Command {
+		if arg == "-run" && i+1 < len(a.Command) {
+			pattern = a.Command[i+1]
+		}
+	}
+	for _, e := range a.Env {
+		if rest, ok := strings.CutPrefix(e, "PALAI_SUITE_RUN="); ok {
+			pattern = rest
+		}
+	}
+	if pattern == "" {
+		return nil
+	}
+	return strings.Split(pattern, "|")
+}
+
+// missingProofs returns the tests an arm named but whose PASS line never appeared in its output, plus
+// a note when go test reported it had nothing to run at all.
+func (a arm) missingProofs(output string) (proved, missing []string) {
+	for _, name := range a.requiredTests() {
+		switch {
+		case strings.Contains(output, "--- SKIP: "+name+" "):
+			missing = append(missing, name+" (SKIPPED — a skip is not a denial)")
+		case strings.Contains(output, "--- PASS: "+name+" "):
+			proved = append(proved, name)
+		default:
+			missing = append(missing, name+" (no `--- PASS:` line — renamed, filtered out, or never compiled)")
+		}
+	}
+	if strings.Contains(output, "no tests to run") {
+		missing = append(missing, "go test reported `no tests to run` — the -run regex matched nothing and still exited 0")
+	}
+	return proved, missing
 }
 
 // suite is the whole corpus. Adding a SAN case without adding it here fails
@@ -60,7 +108,7 @@ var suite = []arm{
 		Name:  "file-tool-confinement",
 		Cases: []string{"SAN-001"},
 		What:  "path traversal, an absolute path and an escaping symlink are all denied outside the allocation root",
-		Command: []string{"go", "test", "-count=1", "-run", "TestFileToolDeniesWorkspaceEscape",
+		Command: []string{"go", "test", "-count=1", "-v", "-run", "TestFileToolDeniesWorkspaceEscape",
 			"./apps/control-plane/internal/execution/tools"},
 	},
 	{
@@ -82,7 +130,7 @@ var suite = []arm{
 		Name:  "snapshot-integrity-and-secret-exclusion",
 		Cases: []string{"SAN-005"},
 		What:  "a snapshot restore reproduces the create-side checksums byte for byte and the secret/credential never enter the archive bytes",
-		Command: []string{"go", "test", "-count=1", "-run", "TestSnapshotRestoreChecksumsMatchCreate",
+		Command: []string{"go", "test", "-count=1", "-v", "-run", "TestSnapshotRestoreChecksumsMatchCreate",
 			"./adapters/sandboxes/oci/snapshot"},
 	},
 	{
@@ -107,7 +155,7 @@ var suite = []arm{
 		Name:  "runner-cordon-drain-revoke",
 		Cases: []string{"SAN-011"},
 		What:  "the runner gateway refuses new leases when cordoned, drains in-flight work, and a revoked runner's connect AND its in-flight session frames are both refused",
-		Command: []string{"go", "test", "-count=1", "-run",
+		Command: []string{"go", "test", "-count=1", "-v", "-run",
 			"TestGatewayDialRefusesWhenCordoned|TestGatewayDrainWaitsForInFlightLease|TestGatewayRevokeRefusesConnectAndDial|TestGatewayRevokeDropsInFlightSessionFrames",
 			"./apps/control-plane/internal/execution"},
 	},
@@ -225,12 +273,24 @@ func TestSandboxEscapeSuite(t *testing.T) {
 			cmd.Dir = root
 			cmd.Env = append(os.Environ(), a.Env...)
 			out, err := cmd.CombinedOutput()
-			res := result{arm: a, Passed: err == nil, DurationMS: time.Since(started).Milliseconds()}
-			if err != nil {
+
+			// An arm passes only when every test it NAMED actually reported PASS. Exit 0 alone is not
+			// evidence of a denial: a -run regex that matches nothing exits 0 too, and so does a skip.
+			proved, missing := a.missingProofs(string(out))
+			a.Proved = proved
+			res := result{arm: a, Passed: err == nil && len(missing) == 0, DurationMS: time.Since(started).Milliseconds()}
+			if !res.Passed {
 				res.Output = redact(tail(string(out), 4000))
-				rep.Failures = append(rep.Failures, fmt.Sprintf("%s (%s): %v", a.Name, strings.Join(a.Cases, ","), err))
-				t.Errorf("escape arm %s FAILED (%v)\ncases: %v\ncommand: %v %v\n%s",
-					a.Name, err, a.Cases, a.Env, a.Command, res.Output)
+				why := fmt.Sprintf("%v", err)
+				if len(missing) > 0 {
+					why = "NOT ATTEMPTED: " + strings.Join(missing, "; ")
+					if err != nil {
+						why = fmt.Sprintf("%v; %s", err, why)
+					}
+				}
+				rep.Failures = append(rep.Failures, fmt.Sprintf("%s (%s): %s", a.Name, strings.Join(a.Cases, ","), why))
+				t.Errorf("escape arm %s FAILED (%s)\ncases: %v\ncommand: %v %v\n%s",
+					a.Name, why, a.Cases, a.Env, a.Command, res.Output)
 			}
 			rep.Arms = append(rep.Arms, res)
 		})
@@ -270,6 +330,19 @@ func TestSandboxEscapeSuite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal report: %v", err)
 	}
+	// The gate is over the MARSHALLED BODY, not over the strings redact() happened to be handed: this
+	// report is a T10 evidence input, and the hardening commit's own premise is that a credential WAS
+	// reaching it. Asserting here means a new field, a new arm, or a credential shape redact() does
+	// not know fails the run instead of landing in the file.
+	//
+	// The gate is "redacting again changes nothing", NOT "the pattern does not match": the pattern
+	// still matches its OWN output (`://user:REDACTED@`), so a MatchString gate would fire on every
+	// correctly redacted failure report. redact is idempotent, so equality is the honest form — it is
+	// false exactly when some credential got past on the way in.
+	if redacted := redact(string(body)); redacted != string(body) {
+		t.Fatalf("the escape report carries a scheme://user:PASSWORD@ credential that redact() did not "+
+			"strip on the way in — a new field or arm is bypassing it. Report NOT written to %s", out)
+	}
 	if err := os.WriteFile(out, append(body, '\n'), 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
@@ -308,4 +381,93 @@ func repoRoot(t *testing.T) string {
 		t.Fatalf("locate repo root: %v", err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// TestRedactStripsEveryCredentialShapeTheTiersEmit is the test the hardening commit shipped without.
+// redact() exists because a throwaway database credential WAS reaching a report file; a redactor with
+// no test is a redactor nobody has checked, and the shapes below are the ones the tier scripts
+// actually build (scripts/test/{component,fault,security} compose postgres://user:pw@host/db, and the
+// artifacts tier adds an S3 endpoint).
+func TestRedactStripsEveryCredentialShapeTheTiersEmit(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		{
+			name: "postgres component url",
+			in:   "PALAI_COMPONENT_POSTGRES_URL=postgres://postgres:palai-component-1234567@127.0.0.1:55123/palai?sslmode=disable",
+			want: "PALAI_COMPONENT_POSTGRES_URL=postgres://postgres:REDACTED@127.0.0.1:55123/palai?sslmode=disable",
+		},
+		{
+			name: "fault url inside prose",
+			in:   "dial postgres://postgres:palai-fault-987@127.0.0.1:5432/palai failed",
+			want: "dial postgres://postgres:REDACTED@127.0.0.1:5432/palai failed",
+		},
+		{
+			name: "two credentials on one line",
+			in:   "a=postgres://u:p1@h/db b=http://k:p2@s3/bucket",
+			want: "a=postgres://u:REDACTED@h/db b=http://k:REDACTED@s3/bucket",
+		},
+		{
+			name: "no credential is left alone",
+			in:   "postgres://127.0.0.1:5432/palai and http://127.0.0.1:8333/",
+			want: "postgres://127.0.0.1:5432/palai and http://127.0.0.1:8333/",
+		},
+		{
+			name: "a bare colon in prose is not a credential",
+			in:   "note: the run took 3:04 and reached user@example.com",
+			want: "note: the run took 3:04 and reached user@example.com",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redact(tc.in); got != tc.want {
+				t.Fatalf("redact(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+			}
+			// IDEMPOTENCE is what the pre-write gate rests on: it asserts redact(body) == body, which
+			// is only a credential detector if a second pass over clean text is a no-op. (The naive
+			// gate — throwawayCred.MatchString(body) — is NOT usable here: the pattern matches its own
+			// `://user:REDACTED@` output, so it would fire on every correctly redacted failure.)
+			if again := redact(redact(tc.in)); again != redact(tc.in) {
+				t.Fatalf("redact() is not idempotent: %q -> %q -> %q", tc.in, redact(tc.in), again)
+			}
+		})
+	}
+}
+
+// TestAnArmThatRanNothingIsNotAPass pins the discrimination the suite is FOR. `go test -run
+// TestNoSuchThing ./pkg/` prints "ok ... [no tests to run]" and exits 0, so an arm scored on `err ==
+// nil` reports a denial it never attempted. All 13 names exist today; this is the gate that notices
+// the day one is renamed.
+func TestAnArmThatRanNothingIsNotAPass(t *testing.T) {
+	a := arm{
+		Name:    "probe",
+		Command: []string{"go", "test", "-count=1", "-v", "-run", "TestAlpha|TestBeta", "./pkg"},
+	}
+	if got := a.requiredTests(); len(got) != 2 || got[0] != "TestAlpha" || got[1] != "TestBeta" {
+		t.Fatalf("requiredTests() = %v, want the two names the -run regex spells out", got)
+	}
+
+	// The exact output of a -run regex that matched nothing. It exits 0.
+	if _, missing := a.missingProofs("testing: warning: no tests to run\nPASS\nok  \t./pkg\t0.1s [no tests to run]\n"); len(missing) == 0 {
+		t.Fatalf("an arm that ran NOTHING was scored as a pass")
+	}
+	// A skip is not a denial either.
+	if _, missing := a.missingProofs("--- PASS: TestAlpha (0.01s)\n--- SKIP: TestBeta (0.00s)\nPASS\nok\n"); len(missing) != 1 {
+		t.Fatalf("a SKIPPED test was accepted as proof: missing=%v", missing)
+	}
+	// A subtest PASS is not its parent's PASS.
+	if _, missing := a.missingProofs("--- PASS: TestAlpha (0.01s)\n    --- PASS: TestBeta/sub (0.00s)\nPASS\nok\n"); len(missing) != 1 {
+		t.Fatalf("a subtest line was mistaken for the parent's proof: missing=%v", missing)
+	}
+	// Both really passed.
+	proved, missing := a.missingProofs("--- PASS: TestAlpha (0.01s)\n--- PASS: TestBeta (0.02s)\nPASS\nok\n")
+	if len(missing) != 0 || len(proved) != 2 {
+		t.Fatalf("two genuine passes scored proved=%v missing=%v", proved, missing)
+	}
+
+	// Every arm in the real suite must name at least one test, or its PASS means nothing at all.
+	for _, s := range suite {
+		if len(s.requiredTests()) == 0 {
+			t.Fatalf("arm %q binds to no -run regex, so an empty run would score it green", s.Name)
+		}
+	}
 }
