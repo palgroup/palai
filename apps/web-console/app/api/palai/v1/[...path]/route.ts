@@ -29,6 +29,53 @@ function isArtifactDownload(path: string): boolean {
   return /^\/v1\/artifacts\/[^/]+\/content(\?|$)/.test(path);
 }
 
+// artifactID pulls the id out of the download path — the fallback filename when an upstream name is
+// missing or sanitizes away to nothing.
+function artifactID(path: string): string {
+  return path.match(/^\/v1\/artifacts\/([^/]+)\/content/)?.[1] ?? "artifact";
+}
+
+// activeTypePattern matches the content types a browser RENDERS as a document or script. Artifact bytes are
+// UNTRUSTED (a run's own output, an ingested source, an A2A-pushed file, a worker result) and they are served
+// from the console's OWN origin — the origin that holds the operator session and can drive this relay, which
+// carries the server-side Bearer. So an artifact allowed to render here is stored XSS with full public-API
+// reach: exactly the privileged backchannel §47.6 exists to deny. These types are coerced, never served.
+const activeTypePattern = /^(?:text\/html|application\/xhtml\+xml|image\/svg\+xml|application\/xml|text\/xml)\b/i;
+
+// safeFilename reduces an upstream filename to a bare token: last path segment only (no traversal), and only
+// characters that cannot break out of the quoted header value or inject a new header. An upstream name is a
+// convenience for the operator, never something the relay trusts verbatim.
+function safeFilename(disposition: string | null, fallback: string): string {
+  const raw = disposition?.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i)?.[1] ?? "";
+  const base = raw.split(/[\\/]/).pop() ?? "";
+  const cleaned = base
+    .replace(/[^A-Za-z0-9._-]/g, "")
+    .replace(/^\.+/, "")
+    .slice(0, 128);
+  return cleaned === "" ? fallback : cleaned;
+}
+
+// downloadHeaders hardens the one response that carries untrusted bytes on a trusted origin, REGARDLESS of
+// what the upstream said: the type is coerced away from active content, sniffing is off (so the coercion
+// cannot be second-guessed), the disposition always DOWNLOADS instead of rendering, the filename is
+// sanitized, and the response denies every content source as defense in depth. Only the integrity/length
+// headers an operator actually verifies against are passed through.
+function downloadHeaders(upstream: Headers, path: string): Headers {
+  const upstreamType = upstream.get("Content-Type") ?? "application/octet-stream";
+  const headers = new Headers({
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+    "Content-Type": activeTypePattern.test(upstreamType) ? "application/octet-stream" : upstreamType,
+    "Content-Disposition": `attachment; filename="${safeFilename(upstream.get("Content-Disposition"), artifactID(path))}"`,
+  });
+  for (const h of ["Content-Length", "Content-Digest"]) {
+    const v = upstream.get(h);
+    if (v !== null) headers.set(h, v);
+  }
+  return headers;
+}
+
 async function relayJSON(method: string, path: string, body: unknown): Promise<Response> {
   try {
     const result = await getPalaiClient().request<unknown>(method, path, body === undefined ? {} : { body });
@@ -48,14 +95,10 @@ export async function GET(request: Request, ctx: { params: Promise<{ path: strin
   if (isArtifactDownload(path)) {
     try {
       const upstream = await getPalaiClient().openDownload(path);
-      // Stream the object's bytes straight back; preserve the integrity + type headers the browser needs
-      // to verify + name the download. No key, no upstream URL — just the object body.
-      const headers = new Headers({ "Cache-Control": "no-store" });
-      for (const h of ["Content-Type", "Content-Length", "Content-Digest", "Content-Disposition"]) {
-        const v = upstream.headers.get(h);
-        if (v !== null) headers.set(h, v);
-      }
-      return new Response(upstream.body, { status: upstream.status, headers });
+      // Stream the object's bytes straight back (never buffered here) under HARDENED headers: the bytes are
+      // untrusted and this is the console's own origin, so the relay decides how they are labelled — see
+      // downloadHeaders. No key, no upstream URL — just the object body.
+      return new Response(upstream.body, { status: upstream.status, headers: downloadHeaders(upstream.headers, path) });
     } catch (err) {
       return relayError(err);
     }

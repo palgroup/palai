@@ -275,6 +275,26 @@ const server = createServer((request, response) => {
     return sendJSON(response, 200, listView([{ id: "art_1", object: "artifact", filename: "release-notes.txt", byte_size: 24 }]));
   }
 
+  // --- Artifact byte download: the HOSTILE artifact ---
+  // Artifact bytes are UNTRUSTED (a run's own output, an ingested source, an A2A-pushed file, a worker
+  // result), and so are the headers the object store replays for them. This fixture is the attacker's
+  // artifact: active content type, `inline` disposition, and a filename carrying traversal + CRLF. If the
+  // relay passed these through, the artifact would RENDER as script on the console's own origin — stored
+  // XSS that could drive the relay (and therefore the whole API) as the signed-in operator.
+  if (method === "GET" && /^\/v1\/artifacts\/art_evil\/content$/.test(pathname)) {
+    const bytes = Buffer.from("<script>window.__xss_executed = true</script>");
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": String(bytes.length),
+      // Traversal in the filename; a literal CR/LF is NOT used here because Node's own header validation
+      // rejects it at write time (so does any compliant upstream) — the relay's sanitizer still refuses
+      // CR/LF, which the spec asserts, but the reachable attack is the traversal + the inline rendering.
+      "content-disposition": 'inline; filename="../../etc/passwd.html"',
+      "cache-control": "no-store",
+    });
+    return response.end(bytes);
+  }
+
   // --- Artifact byte download ---
   if (method === "GET" && /^\/v1\/artifacts\/[^/]+\/content$/.test(pathname)) {
     const bytes = Buffer.from("release notes: v0.1.1\n");
