@@ -20,10 +20,11 @@
 #           KNO-001..008, QUA-001..004, UI-001..002, WRK-001..007 + the AUT-009/010/013 queue/orchestrator
 #           LEGS) are materialized, resolve to in-tree proofs (Go funcs AND playwright titles), declare a
 #           class their proofs support, and NAME both their local seam and their §6 operator leg;
-#        b. the CapabilityTierProof ANTI-FABRICATION ANCHOR: eight negatives, each handing the verifier a
+#        b. the CapabilityTierProof ANTI-FABRICATION ANCHOR: nine negatives, each handing the verifier a
 #           shape-consistent manifest that hand-writes a tier it did not earn (a FAILED claim, an ABSENT
 #           claim, a §6-legged capability, an unservable capability, a diverging /v1/capabilities snapshot,
-#           a red QUA-003 precondition, a shrunken claim ledger) and asserting it is REFUSED;
+#           a red QUA-003 precondition, a shrunken claim ledger, a DROPPED tier-claim marker that would
+#           switch the whole recompute off, two tier tables in one manifest) and asserting it is REFUSED;
 #        c. the committed extensions-0.1.0 bundle: byte-identical to its generator, verifying clean through
 #           the SHIPPED verifier with every E17 rule exercised, its eval numbers equal to a fresh canonical
 #           held-out run, and the honest-ceiling guards green (no preview/disabled capability's evidence
@@ -86,8 +87,13 @@ go test -count=1 ./tests/uat/automation/...
 go test -tags=security -count=1 ./tests/security/tenancy/...
 
 # ---- the journey tier: real PostgreSQL, no credential -------------------------------------------------------
+journeys="the knowledge/workers/automation backing suites + three journeys CO-RUN green"
 if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
-  echo "uat-extensions: journeys SKIPPED (SKIP_JOURNEYS=1)" >&2
+  # Said plainly, because the closing line must never imply a tier that did not run: SKIP_JOURNEYS drops the
+  # Postgres-backed co-run, so this invocation blesses the bundle's authored status for the KNO/WRK/AUT cases.
+  echo "uat-extensions: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — the knowledge/workers/automation" >&2
+  echo "  backing suites and the three journeys did NOT run; this invocation does not back their authored PASS" >&2
+  journeys="Docker-bound backing suites + journeys NOT RUN (SKIP_JOURNEYS=1)"
 else
   if ! command -v docker >/dev/null 2>&1; then
     echo "uat-extensions: docker is not available; the three journeys need a throwaway Postgres" >&2
@@ -180,4 +186,4 @@ if [ "${PROVIDER:-fake}" = "provider-one" ]; then
   go test -tags=live -count=1 -run TestModelJudgeCalibrationSmoke ./tests/evals/
 fi
 
-echo "uat-extensions=PASS (E17 exit gate: tier table recomputed, bundle 0/0/0/0, the knowledge/workers/automation backing suites + Slack/A2A packages + console specs CO-RUN green, three journeys green)" >&2
+echo "uat-extensions=PASS (E17 exit gate: tier table recomputed, bundle 0/0/0/0, Slack/A2A packages + console specs CO-RUN green, $journeys)" >&2

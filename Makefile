@@ -233,14 +233,19 @@ uat-sdk-parity:
 	@PROVIDER='$(PROVIDER)' scripts/uat/sdk-parity
 
 # E17 EXIT gate (stable extensions, plan §T11 — the crown): the Docker-free CORE (the E17 catalog gate over all
-# 38 cases, the CapabilityTierProof anti-fabrication anchor's eight negatives, the committed extensions-0.1.0
+# 38 cases, the CapabilityTierProof anti-fabrication anchor's nine negatives, the committed extensions-0.1.0
 # bundle through the shipped verifier, the promote gate's rc-PASS / no-tier-table-REFUSED / QUA-003-red-REFUSED /
 # beyond-rc-REFUSED, and the SHIPPED /v1/capabilities map asserted BIT-EQUAL to the tier recompute) plus the
-# three §T11 journeys against a throwaway Postgres (the spec §63.3 Slack journey on a FAKE peer, knowledge, and
-# worker) and a PROVIDER-gated single-step live smoke. SKIP_JOURNEYS=1 runs the Docker-free core alone.
-# HONEST CEILING (plan §6): there is NO real Slack workspace, NO foreign A2A peer, NO Apple signing material and
-# NO vector store here — slack + a2a close PREVIEW and knowledge-vector + apple-build close DISABLED, computed
-# from the claim outcomes rather than declared. This target claims none of those legs.
+# CO-RUN of the suites that BACK the capabilities it flips (Slack + A2A packages and the console playwright specs
+# with no Docker; the knowledge / workers / automation component suites IN FULL against a throwaway Postgres,
+# which is where the three §T11 journeys live) and a PROVIDER-gated single-step live smoke. The co-run is what
+# makes the bundle's AUTHORED per-case status honest: a red backing suite fails this target (proven by
+# tests/uat/extensions TestARedBackingSuiteFailsTheGate). SKIP_JOURNEYS=1 runs the Docker-free core alone.
+# HONEST CEILING (plan §6): there is NO real Slack workspace, NO foreign A2A peer, NO broker PRODUCT, NO real
+# control-plane upstream behind the console, NO Apple signing material and NO vector store here — slack, a2a,
+# queues and console close PREVIEW; knowledge-vector + apple-build close DISABLED; only knowledge and
+# capability-workers close STABLE, computed from the claim outcomes rather than declared. This target claims none
+# of those legs.
 uat-extensions:
 	@test -x scripts/uat/extensions || { echo "extensions UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/extensions
