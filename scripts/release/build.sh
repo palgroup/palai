@@ -308,6 +308,11 @@ ${artifacts_json}
   ],
   "sbom": null,
   "provenance": null,
+  "revocations": {
+    "schema": "palai.release-revocations/v1",
+    "list": null,
+    "note": "SHAPE ONLY, and deliberately WITHOUT a pointer: a revocation list reached THROUGH the release is no check at all (whoever can swap these artifacts can swap the pointer). scripts/release/release-verify.sh takes the list OUT OF BAND via PALAI_RELEASE_REVOCATIONS and matches it against this index's stamp/version/commit and every artifact digest/image_id. The advisory process that produces such a list is docs/security (plan §T9) and a real feed is an operator leg (plan §6)."
+  },
   "notes": "sbom is produced by E18 T2 and provenance/signature by E18 T3; a qemu boot-smoke of a foreign-arch image is not a full UAT run on that arch (plan §6 leg 3)."
 }
 EOF

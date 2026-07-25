@@ -53,6 +53,17 @@ Offline bundles carry the required public trust roots, transparency material or
 equivalent verification bundle, revocation metadata, and exact verification
 commands. Offline verification never requires a telemetry or license heartbeat.
 
+As implemented (E18 T3/T4), a trust root that TRAVELS WITH the bundle is not a
+trust root: an attacker who can swap the artifacts can swap the key beside them,
+and the signature becomes a second checksum. So `scripts/release/release-verify.sh`
+REFUSES a public key — and a verifying script — that resolves from inside the
+release it is checking, and delivery of the root out of band is operator
+ceremony (the E14 T5 model). Revocation metadata is likewise read from an
+out-of-band list (`PALAI_RELEASE_REVOCATIONS`); `release-index.json` defines its
+shape and deliberately carries no pointer to one. The signature is openssl
+ECDSA P-256 over a SLSA-SHAPED in-toto attestation: there is no transparency
+log entry, no identity service, and no SLSA level to claim.
+
 ## Revocation and rebuilds
 
 A compromised signer, workflow, dependency, or artifact triggers publication
