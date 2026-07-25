@@ -8,9 +8,21 @@
 # (uat.PromoteGate), unit-pinned by TestPromoteGateRefusesWithoutRollbackAndRestore, so this script is a thin,
 # testable wrapper. Exits non-zero on any refusal.
 #
+#
+# E18 T4 adds the SUPPLY-CHAIN half (SEC-101's promotion arm): when a release ARTIFACT directory is named,
+# scripts/release/release-verify.sh must verify it OFFLINE and clean before any tag is blessed — a tampered
+# byte anywhere in the index, an artifact, an SBOM, the attestation or the signature stops the promote here.
+# That is ALL it adds. Whether a release family must ALWAYS carry a verified artifact set — including the
+# SH-3 stable flip — is E18 T10's SupplyChainProof, NOT this wrapper's rule: a fence here that refused an
+# unnamed dir would run BEFORE the evidence gate and shadow the E15 T6 operator-leg refusal that
+# scripts/uat/sh2 and scripts/uat/sdk-parity both grep for (pinned by TestPromoteReachesTheEvidenceGate).
+#
 # Usage:
 #   RELEASE=self-host-0.2.0 scripts/release/promote.sh            # gate an rc promote
 #   scripts/release/promote.sh self-host-0.2.0 stable            # gate a stable promote (awaits operator legs)
+# Env:
+#   PALAI_RELEASE_DIR      a built release directory to verify offline before promoting (when named)
+#   PALAI_RELEASE_PUBKEY   the OUT-OF-BAND trust root for it (never taken from inside the release dir)
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
@@ -25,5 +37,12 @@ fi
 if [ -z "$release" ]; then
   echo "usage: RELEASE=<name> scripts/release/promote.sh [rc|stable]  (or: promote.sh <name> [rc|stable])" >&2
   exit 2
+fi
+if [ -n "${PALAI_RELEASE_DIR:-}" ]; then
+  echo "promote: verifying the release artifacts offline before the evidence gate ..." >&2
+  if ! scripts/release/release-verify.sh "$PALAI_RELEASE_DIR" "${PALAI_RELEASE_PUBKEY:-}"; then
+    echo "promote REFUSED: $PALAI_RELEASE_DIR did not verify — a release whose artifacts do not verify cannot be tagged" >&2
+    exit 1
+  fi
 fi
 exec go run ./tests/uat/cmd/promote --release "$release" --to "$to"
