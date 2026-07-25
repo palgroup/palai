@@ -1,0 +1,45 @@
+# Backup and restore-verify
+#
+# Recorded by scripts/ops/record-runbook-transcripts.sh against a live `palai local up`
+# stack (compose project $PROJECT), NOT the production overlay.
+#   commit:   a140979
+#   recorded: 2026-07-25T19:41:30Z
+#   platform: Darwin arm64, Docker 24.0.2
+#
+# Absolute paths are rewritten to $WORK (a scratch dir) and $REPO (the worktree).
+# API key values are redacted; they are printed exactly once by design.
+
+# Take the backup. It reaches the stack by docker-exec on the container NAME, so no host port has
+# to be published — this is safe on a production install.
+
+$ palai backup --out "$WORK/palai-backup.tar.gz"
+backup: dumping Postgres (pg_dump -Fc)…
+backup: copying the object-store volume…
+backup written: migration v40, 1 org(s), 44 object-file(s)
+$WORK/palai-backup.tar.gz
+
+$ ls -l "$WORK/palai-backup.tar.gz"
+-rw-r--r--@ 1 salih  staff  48458 Jul 25 22:41 $WORK/palai-backup.tar.gz
+
+# Verify the archive WITHOUT restoring it. Six checks; every one is recomputed from the archive.
+
+$ palai restore verify --archive "$WORK/palai-backup.tar.gz"
+archive_checksum       ok    db+object-store members match manifest (44 object-file(s))
+migration_version      ok    v40 matches manifest
+tenant_ids             ok    all 1 manifest org id(s) present in restored data
+run_retrieval          ok    response resp_4a181bb12a9ac98803f9188301c2f703 retrievable from restored data
+rls_isolation          ok    82 org-bearing tables FORCE RLS, 82 tenant_isolation policies
+secret_decrypt         ok    no secret_refs to verify
+restore verify: all checks green
+
+# The restore itself refuses a non-empty target — proven here against THIS stack, which has data.
+
+$ palai restore --archive "$WORK/palai-backup.tar.gz"
+restore: stopping writers (control-plane, runner)…
+palai-809a2dc0-control-plane-1
+palai-809a2dc0-runner-1
+palai-809a2dc0-control-plane-1
+palai-809a2dc0-runner-1
+palai: refusing to restore: target is not empty — holds tenant data [api_keys=1, attempts=3, durable_jobs=3, events=18, idempotency_records=3, job_attempts=3, model_requests=3, outbox=15, principals=1, responses=3, runs=3, sessions=3, usage_ledger=3]; restore only into a fresh install
+[exit 1]
+

@@ -1,0 +1,125 @@
+# Key compromise — revoke, rotate, re-verify
+#
+# Recorded by scripts/ops/record-runbook-transcripts.sh against a live `palai local up`
+# stack (compose project $PROJECT), NOT the production overlay.
+#   commit:   a140979
+#   recorded: 2026-07-25T19:41:20Z
+#   platform: Darwin arm64, Docker 24.0.2
+#
+# Absolute paths are rewritten to $WORK (a scratch dir) and $REPO (the worktree).
+# API key values are redacted; they are printed exactly once by design.
+
+# A. API key: revoke bites immediately. Mint the replacement FIRST so the operator is not locked out.
+
+$ palai apikey list
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "key_local",
+      "object": "api_key",
+      "organization_id": "org_local",
+      "project_id": "prj_local",
+      "principal_id": "prin_local",
+      "scopes": [],
+      "created_at": "2026-07-25T19:40:50.853405Z"
+    }
+  ]
+}
+
+$ palai apikey create --project prj_local --scope provision
+{
+  "id": "key_de1cc74df17633a56a4e64053f908418",
+  "object": "api_key",
+  "organization_id": "org_local",
+  "project_id": "prj_local",
+  "principal_id": "prin_943cec66f0a749298357574cfa3245f8",
+  "scopes": [
+    "provision"
+  ],
+  "key": "sk_<redacted>"
+}
+
+# The new key works. This is the BEFORE half of the revocation proof.
+
+$ curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"
+200
+
+$ palai apikey revoke "$NEWKEY"
+{
+  "id": "key_de1cc74df17633a56a4e64053f908418",
+  "object": "api_key",
+  "organization_id": "org_local",
+  "project_id": "prj_local",
+  "principal_id": "prin_943cec66f0a749298357574cfa3245f8",
+  "scopes": [
+    "provision"
+  ],
+  "created_at": "2026-07-25T19:41:20.287387Z",
+  "revoked_at": "2026-07-25T19:41:20.492957Z"
+}
+
+# The SAME key, immediately after. Revocation is enforced at the request, not merely recorded.
+
+$ curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"
+401
+
+$ palai apikey get "$NEWKEY"
+{
+  "id": "key_de1cc74df17633a56a4e64053f908418",
+  "object": "api_key",
+  "organization_id": "org_local",
+  "project_id": "prj_local",
+  "principal_id": "prin_943cec66f0a749298357574cfa3245f8",
+  "scopes": [
+    "provision"
+  ],
+  "created_at": "2026-07-25T19:41:20.287387Z",
+  "revoked_at": "2026-07-25T19:41:20.492957Z"
+}
+
+# B. Runner enrollment credential: `palai local up` mints a FRESH one-use token every time, so
+# re-running it rotates the runner's enrollment secret. The digests below are of the token file
+# before and after.
+
+$ shasum -a 256 "$PALAI_HOME/runner-token"
+2ca958fd6087df977d1625678fb7402066a1761025d4e38a66193c7b04ef6beb  $REPO/.palai/runner-token
+
+$ palai local up >/dev/null 2>&1
+
+$ shasum -a 256 "$PALAI_HOME/runner-token"
+1fdea0a67ae623730e87456b9d2343c6e7c83c2835ac62709647d81ce0df4768  $REPO/.palai/runner-token
+
+# C. Provider/integration secrets. The secret-ref surface is mounted only where a master key is
+# configured — i.e. the production overlay. On this local stack it is NOT mounted, and the CLI says so
+# with a 404 rather than pretending to rotate something. On a production install, follow
+# docs/operations/admin-cli.md (Secrets).
+
+$ printf %s throwaway | palai secret create --name incident-demo
+palai: request failed (HTTP 404): 404 page not found
+[exit 1]
+
+# D. Signing key: verification is fail-closed against an out-of-band public key. A signature that
+# does not verify against the key you were handed is an ALERT, never a warning.
+
+$ openssl ecparam -genkey -name prime256v1 -noout -out "$WORK/wrong.key"
+
+$ openssl pkey -in "$WORK/wrong.key" -pubout -out "$WORK/oob/wrong.pub"
+
+$ palai audit verify --checkpoint "$WORK/ir-anchor/audit-checkpoint.json" --pubkey "$WORK/oob/wrong.pub"
+audit verify: checkpoint $WORK/ir-anchor/audit-checkpoint.json
+audit verify: signature   (none)
+audit verify: generated   (none) ((none) ago)
+audit verify: anchored    0 row(s) recomputed to (none)
+audit verify: checkpoint  head (none)
+audit verify: unanchored  0 row(s) written after this checkpoint (cadence is operator policy — they are reported, not vouched for)
+audit verify: CEILING     This chains the `events` session journal, NOT `audit_events` (§50.3, protected by a REVOKE of UPDATE/DELETE instead). Neither control substitutes for the other.
+audit verify: CEILING     A checkpoint anchors a PREFIX. Everything written since the last cut is unanchored and only as protected as the next cut makes it; cadence is operator policy.
+audit verify: CEILING     ROLLBACK: an OLD checkpoint is still validly signed. Its own prefix verifies green and everything after it is merely 'unanchored', so swapping in a stale signed copy hides every later edit. Pass --not-older-than (and --min-anchored) to make that a `stale` alert, and keep the checkpoint somewhere a restore of the database cannot roll back with it.
+audit verify: CEILING     AN AUTHORISED RETENTION PURGE LOOKS EXACTLY LIKE TAMPERING: §22.2 scrub_events UPDATEs an anchored row's payload to {"purged": true} — same rows, same seq, different bytes — which is precisely the `tamper` signature. RE-CUT THE CHECKPOINT AFTER A PURGE; until you do, this alert cannot tell the reaper from an attacker.
+audit verify: CEILING     Continuous live verification wired to alerting is a plan §6 operator leg. This command is the mechanism, not a running watchdog.
+audit verify: ALERT [signature]  the checkpoint signature does not verify against /private$WORK/oob/wrong.pub: 8070080302000000:error:030000EA:digital envelope routines:EVP_DigestVerifyFinal:provider signature failure:crypto/evp/m_sigver.c:707:ECDSA digest_verify_final:
+Verification failure
+palai: audit verify: 1 integrity alert(s) — the journal does not match its signed checkpoint
+[exit 1]
+
