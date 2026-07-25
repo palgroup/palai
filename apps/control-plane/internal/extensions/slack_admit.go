@@ -116,8 +116,14 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	// SLK-003: a thread that already has a canonical session CHAINS onto it, so a second message in the
 	// thread continues the conversation instead of opening a parallel one. The session id is looked up
 	// server-side from (team, channel, thread) — never taken from the payload.
+	//
+	// The read MUST be tenant-scoped explicitly: threadSession does not scope its own context (its only
+	// other caller, CorrelateThreadSession, scopes before calling), and slack_thread_sessions is FORCE-RLS.
+	// An unscoped connection sees NO rows — which would not error, it would silently report every thread as
+	// new and mint a second session for every reply in a thread.
 	var requested *string
-	existing, _, err := a.store.threadSession(ctx, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS)
+	scoped := storage.ScopeToTenant(ctx, conn.Org, conn.Project)
+	existing, _, err := a.store.threadSession(scoped, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS)
 	switch {
 	case err == nil && existing != "":
 		requested = &existing
@@ -231,8 +237,8 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 		return slackRunTarget{}, fmt.Errorf("%w: default_policy.agent_revision_id is required", ErrSlackNoRunTarget)
 	}
 	// The principal must live in the connection's OWN tenant — see SlackRunPrincipalInScope.
-	switch err := a.store.pool.QueryRow(storage.WithSystemScope(ctx), storage.Query("SlackRunPrincipalInScope"),
-		policy.PrincipalID, conn.Org, conn.Project).Scan(new(int)); {
+	switch err := a.store.pool.QueryRow(storage.ScopeToTenant(ctx, conn.Org, conn.Project),
+		storage.Query("SlackRunPrincipalInScope"), policy.PrincipalID, conn.Org, conn.Project).Scan(new(int)); {
 	case errors.Is(err, pgx.ErrNoRows):
 		return slackRunTarget{}, ErrSlackForeignPrincipal
 	case err != nil:

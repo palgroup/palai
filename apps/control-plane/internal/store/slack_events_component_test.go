@@ -286,11 +286,42 @@ func TestSlackThreadCorrelatesToOneSession(t *testing.T) {
 	if n := f.sessionCount(t); n != 1 {
 		t.Fatalf("after the first thread event there are %d thread↔session rows, want 1", n)
 	}
+	// The first run reaches a terminal before the follow-up arrives. That is not decoration: a session holds
+	// ONE active root run (000006), so a second event while the first is still live is a different case
+	// entirely — see TestSlackMessageDuringALiveRunNeverBirthsASecondRun, which owns it.
+	f.terminateRuns(t)
 	// A second event in the SAME thread. It chains onto the thread's session rather than claiming a new one.
 	resp := f.deliver(t, f.event("Ev4", "message", "Umapped", "C3", "1700000003.000100", root), time.Now(), "", "")
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("the follow-up in the thread = %d, want a 2xx ack", resp.StatusCode)
+	}
 	resp.Body.Close()
 	if n := f.sessionCount(t); n != 1 {
 		t.Fatalf("a second event in the same thread produced %d thread↔session rows, want 1 canonical session (SLK-003)", n)
+	}
+	// The row count alone does NOT prove correlation, and this is where an earlier bug hid: the thread claim
+	// is ON CONFLICT DO NOTHING, so a second event that FAILED to find the existing row still leaves exactly
+	// one row — while its RUN lands in a brand-new session the thread does not point at. Assert the runs.
+	if n := f.runCount(t); n != 2 {
+		t.Fatalf("two events in one thread birthed %d runs, want 2 (each source event is its own effect)", n)
+	}
+	var sessions int
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT count(DISTINCT session_id) FROM runs WHERE organization_id=$1 AND project_id=$2`,
+		f.org, f.project).Scan(&sessions); err != nil {
+		t.Fatalf("count distinct run sessions: %v", err)
+	}
+	if sessions != 1 {
+		t.Fatalf("two events in one thread produced runs across %d sessions, want 1 — the second event must CHAIN onto the thread's canonical session, not open a parallel conversation (SLK-003)", sessions)
+	}
+	var correlated, ran string
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT (SELECT session_id FROM slack_thread_sessions WHERE organization_id=$1 AND thread_ts=$2),
+		        (SELECT DISTINCT session_id FROM runs WHERE organization_id=$1)`, f.org, root).Scan(&correlated, &ran); err != nil {
+		t.Fatalf("compare the correlated session to the run's: %v", err)
+	}
+	if correlated != ran {
+		t.Fatalf("the thread points at session %q but its runs are in %q — the correlation row and the conversation must be the same session", correlated, ran)
 	}
 	// A different thread gets its own correlation.
 	f.deliver(t, f.event("Ev5", "app_mention", "Umapped", "C3", "1700000004.000100", ""), time.Now(), "", "").Body.Close()
@@ -319,7 +350,10 @@ func TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind(t *testing.T) {
 		"event": map[string]any{"type": "message", "subtype": "message_deleted", "channel": "C4",
 			"previous_message": map[string]any{"user": "Umapped", "ts": root, "thread_ts": root, "text": "gone"}},
 	})
-	for _, body := range [][]byte{edit, del} {
+	for i, body := range [][]byte{edit, del} {
+		if i > 0 {
+			f.terminateRuns(t) // one active root run per session; the previous one has to finish first
+		}
 		resp := f.deliver(t, body, time.Now(), "", "")
 		if resp.StatusCode/100 != 2 {
 			t.Fatalf("edit/delete = %d, want a 2xx ack", resp.StatusCode)
@@ -473,6 +507,64 @@ func TestSlackTenantIsNeverPayloadSelectable(t *testing.T) {
 	if revision != f.revision {
 		t.Fatalf("run pinned %q, want the connection's %q — the payload's agent_revision_id must not select a target", revision, f.revision)
 	}
+}
+
+// TestSlackMessageDuringALiveRunNeverBirthsASecondRun documents, with a test rather than a comment, the ONE
+// place where the shipped route is narrower than the §63.3 journey — because a reader deserves to find this
+// as a green assertion of what actually happens, not as a surprise in production.
+//
+// What HOLDS (SLK-001's hard half): a Slack message arriving while the thread's run is live never opens a
+// second run. The session's one-active-root index (000006) refuses it, the admission rolls back whole, and
+// the route reports a RETRYABLE 429 with no suppress header — so Slack's +1min/+5min attempts get a second
+// and third chance, which land if the run has finished by then.
+//
+// What is NOT wired by T1, stated plainly: the journey's richer behaviour, where such a message becomes a
+// QUEUED send_message on the LIVE run instead of waiting for a new one. That path goes through the
+// coordinator's command surface, not through admission, and the E17 T11 journey reaches it via the trigger
+// pipeline's named_session correlation. Wiring it here would mean giving this bridge a command seam it does
+// not have. Consequence, so nobody has to infer it: a follow-up message sent while the agent is still
+// working is delivered late (on a retry) or, if all three attempts fall inside the run, dropped.
+func TestSlackMessageDuringALiveRunNeverBirthsASecondRun(t *testing.T) {
+	f := newSlackFixture(t)
+	const root = "1700000009.000100"
+
+	f.deliver(t, f.event("Ev12", "app_mention", "Umapped", "C8", root, ""), time.Now(), "", "").Body.Close()
+	if n := f.runCount(t); n != 1 {
+		t.Fatalf("the first event birthed %d runs, want 1", n)
+	}
+	// The run is still queued/live. A follow-up arrives in the same thread.
+	resp := f.deliver(t, f.event("Ev13", "message", "Umapped", "C8", "1700000010.000100", root), time.Now(), "", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("a message during a live run = %d, want 429 — the one-active-root rule refuses it as LOAD, not as poison", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Slack-No-Retry"); got != "" {
+		t.Fatalf("the 429 carried X-Slack-No-Retry=%q; suppressing the retry here would DROP the message outright rather than give the finishing run a chance", got)
+	}
+	if got := resp.Header.Get("Retry-After"); got == "" {
+		t.Fatal("a 429 must pair with Retry-After (§20.12)")
+	}
+	if n := f.runCount(t); n != 1 {
+		t.Fatalf("%d runs after the follow-up, want still 1 — a message during a live run must never open a second run (SLK-001)", n)
+	}
+	// And nothing partial was left behind: the refused admission rolled back whole.
+	var reservations int
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT count(*) FROM idempotency_records WHERE organization_id=$1 AND project_id=$2`, f.org, f.project).Scan(&reservations); err != nil {
+		t.Fatalf("count reservations: %v", err)
+	}
+	if reservations != 1 {
+		t.Fatalf("%d reservations, want 1 — the refused admission must leave no record, so the retry is free to succeed", reservations)
+	}
+}
+
+// terminateRuns drives every run in the fixture's tenant to a terminal state, so the next event in a thread
+// can admit. A session holds ONE active root run (000006, spec §22.3) and this suite starts no dispatcher, so
+// a run stays queued forever unless a test finishes it. This is a HARNESS shortcut, not a claim about
+// execution: it writes the terminal state directly rather than driving a run to completion.
+func (f *slackFixture) terminateRuns(t *testing.T) {
+	t.Helper()
+	exec(t, f.pool, `UPDATE runs SET state='completed' WHERE organization_id=$1 AND project_id=$2`, f.org, f.project)
 }
 
 func assertNoRetry(t *testing.T, resp *http.Response, want int, what string) {
