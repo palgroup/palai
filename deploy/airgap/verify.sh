@@ -69,15 +69,26 @@ if [ -z "$pub" ]; then
 	exit 2
 fi
 # Resolve the pubkey to an absolute path BEFORE we cd into the bundle.
-case "$pub" in
-	/*) : ;;
-	*) pub="$(cd "$(dirname "$pub")" && pwd)/$(basename "$pub")" ;;
-esac
+pub_dir="$(cd "$(dirname "$pub")" && pwd -P)"
+pub="${pub_dir%/}/$(basename "$pub")"
 
-self_dir="$(cd "$(dirname "$0")" && pwd)"
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
 
 cd "$bundle"
-bundle_abs="$(pwd)"
+bundle_abs="$(pwd -P)"
+
+# inside <path> <dir> — TRUE when <path> IS <dir> or anything under it, decided by DEVICE+INODE
+# identity rather than by spelling: one level down, a symlinked bundle, macOS's /tmp -> /private/tmp
+# and an APFS case respelling are all the same location under another name.
+[ / -ef / ] 2>/dev/null || { echo "verify: REFUSING — this shell's \`test\` has no -ef, so the location fence cannot be decided." >&2; exit 3; }
+inside() {
+	_p="$1"
+	while :; do
+		[ "$_p" -ef "$2" ] && return 0
+		case "$_p" in /|//|.|"") return 1 ;; esac
+		_p="$(dirname "$_p")"
+	done
+}
 
 for f in sha256sums sha256sums.sig sha256sums.sha256 runner-verify.sh manifest.json; do
 	[ -f "$f" ] || { echo "verify: bundle missing $f" >&2; exit 2; }
@@ -87,7 +98,7 @@ done
 # run refuses. When THIS script is the bundle's own copy, nothing beside it is out of band — not even
 # "two levels up", which from inside a bundle is just wherever the attacker's tarball was unpacked.
 verifier=""
-if [ "$self_dir" != "$bundle_abs" ]; then
+if ! inside "$self_dir" "$bundle_abs"; then
 	if [ -f "$self_dir/runner-verify.sh" ]; then
 		verifier="$self_dir/runner-verify.sh"
 	elif [ -f "$self_dir/../../scripts/package/runner/verify.sh" ]; then
@@ -95,10 +106,8 @@ if [ "$self_dir" != "$bundle_abs" ]; then
 	fi
 	# ...and whatever that resolved to must still not live inside the bundle (a symlink, a checkout
 	# unpacked under the bundle dir): the rule is the location, not the spelling of the path.
-	if [ -n "$verifier" ]; then
-		case "$(cd "$(dirname "$verifier")" && pwd)" in
-			"$bundle_abs"|"$bundle_abs"/*) verifier="" ;;
-		esac
+	if [ -n "$verifier" ] && inside "$(cd "$(dirname "$verifier")" && pwd -P)" "$bundle_abs"; then
+		verifier=""
 	fi
 fi
 if [ -z "$verifier" ]; then
