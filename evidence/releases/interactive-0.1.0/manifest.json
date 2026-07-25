@@ -4,6 +4,7 @@
   "cases": [
     {
       "checksum": "sha256:254c3d04bd7d2a35b92ec75d340f85480c7f6ab5c26ae8a992d7e2de8fd8cca2",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed on the real provider (chaining root)",
         "model_requests.result.model=gpt-4o-mini-2024-07-18 (deployment default, the OLD model)",
@@ -25,6 +26,7 @@
     },
     {
       "checksum": "sha256:4faff7f96c3ccc5005eb115d85b71f018a91ee93ec6289b24e2bed01c0e10ab7",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed on the switched NEW model",
         "model_requests.result.model=gpt-4o-2024-08-06 — the consecutive row after gpt-4o-mini-2024-07-18 proves the normal switch old→new (§9.3)",
@@ -46,6 +48,7 @@
     },
     {
       "checksum": "sha256:70140ae3c799510da465f48b52f10a4b9227f734de6a835fb30c7f2c99fce100",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed after a real in-flight abort (model_step.interrupted.v1 journaled)",
         "command.applied.v1 applied_sequence=22 lands BETWEEN two real model_step.created.v1 events (§22.4, §25.11)",
@@ -67,6 +70,7 @@
     },
     {
       "checksum": "sha256:fb9b57c0e52b1ef2afc96a127278d70fdb06b07e9b681515f6de4f14724d0afc",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "parent runs.state=completed on the switched NEW model; provider_request_id is a chatcmpl",
         "the parent required-delegated a child and its terminal links the child run id (§25.19)",
@@ -87,6 +91,7 @@
     },
     {
       "checksum": "sha256:564b7f57e64ccd29a832cccd8fd6f6ec0048b326ca9c0d442cb70243e3ce618b",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "child runs.state=completed as its OWN run on the real provider (SUB-002)",
         "child provider_request_id is a genuine chatcmpl, DISTINCT from the parent's",
@@ -107,6 +112,7 @@
     },
     {
       "checksum": "sha256:254c3d04bd7d2a35b92ec75d340f85480c7f6ab5c26ae8a992d7e2de8fd8cca2",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "two authorized clients attached to the session and saw the identical ordered journal",
         "both computed the identical journal hash sha256:90a23a1b4252cda9daf8ec0b51b0a710fbd1fb36cf80af31c07cb42d835d9c5d over 6 frames (SES-001)",
@@ -127,6 +133,7 @@
     },
     {
       "checksum": "sha256:49409a3e3f662a599b186e7ad129b7756bf06a2fd9ded5e12fbec2828fd01c39",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "a chained long generation was canceled after its real model call started",
         "run.state=canceled; run.canceled.v1 is the single terminal for the response (§22.3)",
@@ -147,6 +154,7 @@
     },
     {
       "checksum": "sha256:01557ac5b2e0ab750c9ac53c6a50bcea2a2f766c28fd167ea1401de9cd7816fb",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "fork_session applied; the child session is active (a reference copy of the pre-fork history, §22.8)",
         "the fork ran its OWN real response-3 to completion; provider_request_id is its own chatcmpl",
@@ -167,6 +175,7 @@
     },
     {
       "checksum": "sha256:70140ae3c799510da465f48b52f10a4b9227f734de6a835fb30c7f2c99fce100",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "close_session applied; session state=closed (§22.1)",
         "the closed session rejects a new response (409 session_not_active) and a new command (typed rejection)",
@@ -186,6 +195,7 @@
       "usage": {}
     }
   ],
+  "checksum_note": "E18 T8: every case in this bundle carries checksum_surface = \"legacy shape-only\". WHAT THAT MEANS: this bundle's writer hashed RUNTIME bytes the manifest does not commit — hashBundle(run_id, the resolved model id, the chat text) in tests/uat/interactive_journey_test.go — so no verifier can re-derive these checksums and VerifyManifest checks their SHAPE only. History was NOT re-run to produce this label: it records what these checksums do not prove. The load-bearing evidence for these cases is their per-case proofs, terminal events and db_assertions, never the checksum. Because that construction carries no case id and the attach/close cases make no model call, two case pairs here legitimately SHARE a checksum — expected, not a duplication defect.",
   "git_sha": "4bdbaf5",
   "migration": "000007_child_runs",
   "release": "interactive-0.1.0"

@@ -4,6 +4,7 @@
   "cases": [
     {
       "checksum": "sha256:eef0bfa47f088799c278c7aff27460f3dd58c0915fcf00ebd60c763e786664bf",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "parent runs.state=completed on the real provider; provider_request_id is a chatcmpl",
         "the parent required-delegated a child and its terminal links the child run id (§25.19)",
@@ -24,6 +25,7 @@
     },
     {
       "checksum": "sha256:bbc823c87ca15ee144a20aaa079c37b57fbaafec284ac77fb9905135e6036c29",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "child runs.state=completed as its OWN run on the real provider (SUB-002)",
         "child provider_request_id is a genuine chatcmpl, DISTINCT from the parent's",
@@ -44,6 +46,7 @@
     },
     {
       "checksum": "sha256:abaf8ee4362964c0c62088b68957ebd95a04ab1c09183e1021b4abd99ffa3193",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "parent committed a real model step (chatcmpl) then delegated a required child running a long real generation",
         "canceling the parent mid-run propagated to the live child: child run.state=canceled (SUB-005)",
@@ -63,6 +66,7 @@
       "usage": {}
     }
   ],
+  "checksum_note": "E18 T8: every case in this bundle carries checksum_surface = \"legacy shape-only\". WHAT THAT MEANS: this bundle's writer hashed RUNTIME bytes the manifest does not commit — hashBundle(run_id, the resolved model id, the chat text) in tests/uat/command_spine_test.go — so no verifier can re-derive these checksums and VerifyManifest checks their SHAPE only. History was NOT re-run to produce this label: it records what these checksums do not prove. The load-bearing evidence for these cases is their per-case proofs, terminal events and db_assertions, never the checksum.",
   "git_sha": "7c1b004",
   "migration": "000007_child_runs",
   "release": "local-live-0.1.0-subagents"

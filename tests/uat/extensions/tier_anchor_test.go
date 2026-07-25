@@ -38,6 +38,7 @@ type tierCase struct {
 	Terminal            map[string]any           `json:"terminal"`
 	DBAssertions        []string                 `json:"db_assertions"`
 	Checksum            string                   `json:"checksum"`
+	ChecksumSurface     string                   `json:"checksum_surface,omitempty"`
 	CapabilityTierClaim string                   `json:"capability_tier_claim,omitempty"`
 	CapabilityTierProof *uat.CapabilityTierProof `json:"capability_tier_proof,omitempty"`
 	EvalGateClaim       string                   `json:"eval_gate_claim,omitempty"`
@@ -66,6 +67,13 @@ func heldOutEvalProof(t *testing.T) *uat.EvalGateProof {
 }
 
 // greenCase is a clean PASS case carrying no E17 claim — the shape every claim case must also satisfy.
+// anchorFixtureChecksumNote is the note VerifyManifest requires of every shape-only release (E18 T8). This
+// fixture is shape-only for a reason no committed bundle shares — it is synthetic — and saying so keeps the
+// verifier's note rule uniform instead of carving this release a second exemption.
+const anchorFixtureChecksumNote = "synthetic tier-anchor fixture: its case checksums are placeholder bytes " +
+	"over no real run, so every case carries the legacy shape-only label and nothing here is recomputed. " +
+	"This manifest is not a committed bundle and proves only the TIER refusals it drives."
+
 func greenCase(id string) tierCase {
 	return tierCase{
 		ID: id, Status: "PASS", ProofClass: "component-real",
@@ -74,6 +82,10 @@ func greenCase(id string) tierCase {
 		Terminal:     map[string]any{"type": "response.completed", "count": 1},
 		DBAssertions: []string{"one canonical row"},
 		Checksum:     "sha256:" + strings.Repeat("b", 64),
+		// This anchor fixture is not the committed bundle (its release name says so), so it commits no
+		// canonical checksum surface: it carries the E18 T8 legacy shape-only label, keeping every refusal a
+		// TIER refusal rather than a checksum finding.
+		ChecksumSurface: uat.LegacyShapeOnly,
 	}
 }
 
@@ -156,7 +168,8 @@ func tierManifest(t *testing.T, notPass map[string]string, declaredTiers, snapsh
 	raw, err := json.Marshal(map[string]any{
 		"release": "extensions-0.1.0-anchor-fixture", "git_sha": strings.Repeat("c", 40),
 		"api_version": "v1", "migration": "000040", "captured_at": "2026-07-25T00:00:00Z",
-		"cases": cases,
+		"checksum_note": anchorFixtureChecksumNote,
+		"cases":         cases,
 	})
 	if err != nil {
 		t.Fatalf("marshal synthetic manifest: %v", err)
@@ -341,7 +354,8 @@ func TestShrunkenClaimLedgerIsRefused(t *testing.T) {
 	edited, err := json.Marshal(map[string]any{
 		"release": "extensions-0.1.0-anchor-fixture", "git_sha": strings.Repeat("c", 40),
 		"api_version": "v1", "migration": "000040", "captured_at": "2026-07-25T00:00:00Z",
-		"cases": m.Cases,
+		"checksum_note": anchorFixtureChecksumNote,
+		"cases":         m.Cases,
 	})
 	if err != nil {
 		t.Fatalf("marshal edited manifest: %v", err)

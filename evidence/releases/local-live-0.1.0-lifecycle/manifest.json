@@ -4,6 +4,7 @@
   "cases": [
     {
       "checksum": "sha256:bbe6451dc51c87aa8bfe28f8c0fe777486e69cbf84b1804baf95aa14bdfb5a41",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "parent ran a real completed response-1 (the pre-fork history)",
         "fork_session applied; child session active, reference-copied the parent's real pre-fork output (byte-equal, §22.8)",
@@ -26,6 +27,7 @@
     },
     {
       "checksum": "sha256:138b15572762e9e19476323047ca363c9dc4e8c4ffca747a0b2f7ba000512fef",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed (real anchor call)",
         "model_requests.provider_request_id present (chatcmpl)",
@@ -47,6 +49,7 @@
     },
     {
       "checksum": "sha256:1cd6a52f0fe56ff4f71e1fe5fa17666072c47032c38ae59ba48daa340fa00246",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "session anchor response completed on the real provider; provider_request_id is that call's chatcmpl (real-wire proof)",
         "the second chained long generation was canceled after its real model call started",
@@ -67,6 +70,7 @@
       "usage": {}
     }
   ],
+  "checksum_note": "E18 T8: every case in this bundle carries checksum_surface = \"legacy shape-only\". WHAT THAT MEANS: this bundle's writer hashed RUNTIME bytes the manifest does not commit — hashBundle(run_id, the resolved model id, the chat text) in tests/uat/command_spine_test.go — so no verifier can re-derive these checksums and VerifyManifest checks their SHAPE only. History was NOT re-run to produce this label: it records what these checksums do not prove. The load-bearing evidence for these cases is their per-case proofs, terminal events and db_assertions, never the checksum.",
   "git_sha": "eadef84",
   "migration": "000006_one_active_root",
   "release": "local-live-0.1.0-lifecycle"
