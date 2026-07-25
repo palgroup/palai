@@ -13,6 +13,13 @@
 // checkpoint never saw — are UNANCHORED and reported as such, never silently blessed. That is the
 // honest ceiling of the whole mechanism: checkpoint cadence is operator policy (plan §T7), and
 // everything written since the last checkpoint is only as protected as the next one makes it.
+// Continuous live verification (§50 operations — a scheduled verify wired to alerting) is a plan §6
+// operator leg; what ships here is the command and its exit code, not a running watchdog.
+//
+// SCOPE: this chains the `events` session journal, which is what carries run/session history. It does
+// NOT chain `audit_events` (the §50.3 security audit index) — that table has no per-row sequence to
+// chain and is protected differently, by a REVOKE of UPDATE/DELETE from the application role
+// (000001/000029). Neither control substitutes for the other, and this one does not claim to cover it.
 package audit
 
 import (
@@ -37,8 +44,8 @@ var ChainedColumns = []string{
 }
 
 // Row is one `events` row in chain form. Payload is the jsonb TEXT rendering and CreatedAt the UTC
-// microsecond rendering — both produced by the SQL in RowsQuery so the digest does not depend on a
-// client's timezone or on Go's JSON key order.
+// microsecond rendering — both produced by the AuditChainRows query so the digest depends on neither
+// the client's timezone nor Go's JSON key order.
 //
 // ponytail: the jsonb text form is canonical WITHIN a Postgres major version (keys sorted by length
 // then bytes). A major-version upgrade that re-renders jsonb differently invalidates old checkpoints;

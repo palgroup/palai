@@ -25,13 +25,13 @@ import (
 //
 // An alert is never just a log line: `verify` prints a typed report and exits non-zero.
 
-// PgURLForAudit is the connection the audit commands read the journal over. They connect as the
+// pgURLForAudit resolves the connection the audit commands read the journal over. They connect as the
 // stack's Postgres superuser like `doctor` does, so the chain covers the WHOLE installation's journal
-// rather than one tenant's row-level-security view — an integrity check that could not see a row
-// could not notice its deletion.
-// PALAI_AUDIT_POSTGRES_URL points the audit commands at a journal that is not this host's .palai
-// stack — a restored backup being checked before it is trusted, or a throwaway database in the
-// component proof. Without it the commands read the local stack exactly like `doctor`.
+// rather than one tenant's row-level-security view — an integrity check that could not see a row could
+// not notice its deletion.
+//
+// PALAI_AUDIT_POSTGRES_URL points them at a journal that is not this host's .palai stack: a restored
+// backup being checked before it is trusted, or the throwaway database in the component proof.
 func pgURLForAudit() (string, error) {
 	if url := os.Getenv("PALAI_AUDIT_POSTGRES_URL"); url != "" {
 		return url, nil
@@ -143,6 +143,7 @@ func emitAuditReport(rep audit.Report, warn string, jsonOut bool) error {
 		fmt.Printf("audit verify: anchored    %d row(s) recomputed to %s\n", rep.AnchoredRows, orNone(rep.RecomputedHead))
 		fmt.Printf("audit verify: checkpoint  head %s\n", orNone(rep.CheckpointHead))
 		fmt.Printf("audit verify: unanchored  %d row(s) written after this checkpoint (cadence is operator policy — they are reported, not vouched for)\n", rep.UnanchoredRows)
+		fmt.Printf("audit verify: CEILING     this chains the `events` session journal, not `audit_events` (§50.3, protected by REVOKE instead); continuous live verification wired to alerting is a plan §6 operator leg — this command is the mechanism, not a watchdog.\n")
 		for _, a := range rep.Alerts {
 			fmt.Printf("audit verify: ALERT [%s] %s %s\n", a.Kind, a.SessionID, a.Detail)
 			if a.Want != "" {
