@@ -74,16 +74,28 @@ run_postgres() {
   set +e
   # PALAI_SUITE_RUN selects ONE package + test set out of this tier instead of the whole chain below.
   # The E18 T7 escape suite uses it to run a single quarantine proof against a real Postgres without
-  # paying for every component leg; unset, the tier runs exactly as before.
+  # paying for every component leg; unset, the tier runs exactly as before. The leak accounting is the
+  # SAME as the full path's and runs BEFORE the status exit — the escape suite documents that it
+  # inherits each tier's container accounting, and an early return that skipped it made that false.
   if test -n "${PALAI_SUITE_RUN:-}"; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -run "$PALAI_SUITE_RUN" -v "${PALAI_SUITE_PKG:-./tests/component/postgres}"
     local status=$?
     set -e
+    if test "$status" -ne 0; then
+      docker logs "$container" >&2 || true
+    fi
     cleanup
     trap - EXIT
+    local selected_containers_after selected_volumes_after
+    selected_containers_after="$(count_containers)"
+    selected_volumes_after="$(count_volumes)"
+    if test "$selected_containers_after" -ne "$containers_before" || test "$selected_volumes_after" -ne "$volumes_before"; then
+      echo "postgres component suite leaked a container or volume" >&2
+      exit 1
+    fi
     test "$status" -eq 0 || exit "$status"
-    echo "component_postgres=PASS (selected: ${PALAI_SUITE_PKG:-./tests/component/postgres} -run $PALAI_SUITE_RUN)"
+    echo "component_postgres=PASS containers=$selected_containers_after volumes=$selected_volumes_after (selected: ${PALAI_SUITE_PKG:-./tests/component/postgres} -run $PALAI_SUITE_RUN)"
     return 0
   fi
   PALAI_COMPONENT_POSTGRES_URL="$url" \

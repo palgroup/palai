@@ -125,6 +125,11 @@ test-live-second-tenant:
 verify: lint check-generated test-unit test-spikes check-spike-reports
 	@bash scripts/verify/repository-boundary.sh
 	@bash scripts/verify/foundation.sh
+# The Docker-FREE half of the SEC-102 escape suite (E18 T7): the SAN coverage guard, the report
+# redactor, and the not-attempted gate. `make verify` never compiles the `security` tag otherwise, so
+# a new SAN case or a renamed proof broke no routine gate until someone ran `make uat-escape`.
+# TestSandboxEscapeSuite skips itself without PALAI_ESCAPE_SUITE=1, so this stays Docker-free.
+	@go test -tags=security -count=1 ./tests/uat/escape/
 
 local-up:
 	@test -x scripts/local/up || { echo "local stack not implemented" >&2; exit 2; }
