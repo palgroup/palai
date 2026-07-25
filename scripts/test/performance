@@ -59,9 +59,15 @@ start_postgres() {
     --volume "$name:/var/lib/postgresql/data" \
     "$pg_image" >/dev/null
 
+  # --host 127.0.0.1 makes this a TCP probe, and that is load-bearing. The postgres entrypoint runs a
+  # TEMPORARY server for initdb with listen_addresses='' — it answers pg_isready on the unix socket and
+  # then RESTARTS. Measured on a contended Docker Desktop: the socket probe reports ready at 46.9s while
+  # no client can connect until 59.9s, a 12.9s window in which the control plane boots, fails its ping
+  # with "unexpected EOF" and exits, and the tier reports "control-plane did not start listening".
+  # A TCP probe cannot see the temp server, so it reports ready only when a client could actually connect.
   local ready=0
-  for _ in $(seq 1 120); do
-    if docker exec "$name" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then
+  for _ in $(seq 1 480); do
+    if docker exec "$name" pg_isready --host 127.0.0.1 --username postgres --dbname palai >/dev/null 2>&1; then
       ready=1
       break
     fi
@@ -126,8 +132,10 @@ run_service() {
     "$binary" >"$serverlog" 2>&1 &
   server_pid=$!
 
+  # 30s, not 10s: the binary migrates from an empty schema at boot, and this tier shares Docker Desktop
+  # with whatever else is running on the machine.
   local up=0
-  for _ in $(seq 1 80); do
+  for _ in $(seq 1 240); do
     if ! kill -0 "$server_pid" >/dev/null 2>&1; then break; fi
     if (exec 3<>"/dev/tcp/127.0.0.1/$app_port") 2>/dev/null; then
       exec 3>&- 3<&- || true
