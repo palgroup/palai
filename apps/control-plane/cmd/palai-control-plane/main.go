@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -44,6 +45,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/metering"
 	"github.com/palgroup/palai/apps/control-plane/internal/metrics"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
+	"github.com/palgroup/palai/apps/control-plane/internal/workers"
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/coordinator/recovery"
 	modelbroker "github.com/palgroup/palai/packages/model-broker"
@@ -116,6 +118,11 @@ func main() {
 	}
 
 	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"))
+
+	// The capability-worker gateway (E17 T9, spec §31): the outbound-enrolled enroll/claim/redeem/result
+	// surface an out-of-process worker dials. Built here so the secret store above (nil unless a master key
+	// is configured) is the resolver a job-scoped secret handle redeems through.
+	capabilityWorkers := startCapabilityWorkerGateway(os.Getenv("PALAI_CAPABILITY_WORKER_LISTEN_ADDR"), repo, secretStore)
 
 	// The outbound-webhook store is shared by the HTTP surface (endpoint registration + the delivery
 	// view) and the delivery pump (spec §21.4-21.6). It rides the durable spine's pool.
@@ -197,6 +204,12 @@ func main() {
 		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns},
 		os.Getenv("PALAI_PUBLIC_BASE_URL"))
 	routerOpts = append(routerOpts, api.WithA2A(a2aServer, a2aServer.PublicCardHandler()))
+	// Discovery advertises `capability-workers` ONLY where the gateway above actually BOUND its listener —
+	// the option is passed off the returned value, never off the env var, so the claim cannot outlive the
+	// mount (§2; E19 T8a closed the static "stable" that a binary not importing internal/workers was serving).
+	if capabilityWorkers != nil {
+		routerOpts = append(routerOpts, api.WithCapabilityWorkers())
+	}
 	// The Prometheus /metrics exposition (E14 T6): installation-aggregate operational series over the
 	// same spine pool, mounted unauthenticated on the internal top mux beside /healthz. The runner-session
 	// gauge reads the gateway (nil in assignment-only tiers, reported as 0); the object-store up-probe reads
@@ -325,8 +338,8 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			tools.CommitTool(),
 			tools.PushTool(),
 			tools.PullRequestTool(),
-			tools.ResearchFetchTool(),                                          // web-research fetch + citations (E12 T3); code-defined, no registry seed
-			tools.KnowledgeRetrievalTool(knowledge.New(repo.Spine().Pool())),   // ACL-first, cited knowledge retrieval (E17 T5); untrusted result, server-derived scope, KB-wide (fail-closed)
+			tools.ResearchFetchTool(), // web-research fetch + citations (E12 T3); code-defined, no registry seed
+			tools.KnowledgeRetrievalTool(knowledge.New(repo.Spine().Pool())), // ACL-first, cited knowledge retrieval (E17 T5); untrusted result, server-derived scope, KB-wide (fail-closed)
 		)
 		// Wire the E12 per-tenant registry lookup: a tool absent from the static set above is resolved
 		// through the run's pinned tool_sets (control_plane echo binder in T2) and runs the SAME fenced
@@ -1048,6 +1061,68 @@ func startRunnerGateway(addr string) *execution.RunnerGateway {
 		log.Fatalf("bind runner gateway listener: %v", err)
 	}
 	log.Printf("palai runner gateway listening on %s", addr)
+	go func() { log.Fatal(srv.Serve(ln)) }()
+	return gateway
+}
+
+// startCapabilityWorkerGateway serves the capability-worker enroll/claim/redeem/result surface (E17 T9,
+// spec §31) on a SEPARATE listener from the public API, exactly as startRunnerGateway does, and returns nil
+// when PALAI_CAPABILITY_WORKER_LISTEN_ADDR is unset — a deployment that configures no worker surface serves
+// none, and discovery then advertises no `capability-workers`.
+//
+// WHY A SEPARATE LISTENER RATHER THAN THE /v1 EDGE. This is the same CLASS of surface as the runner gateway,
+// and it is deliberately NOT an API surface:
+//   - Its principal is a WORKER, not an API key. A worker presents a one-time enrollment token and then a
+//     short-lived workload identity the /v1 bearer middleware knows nothing about; mounting /capability/* on
+//     the authenticated router would put it behind a verifier that must reject every worker token, and
+//     mounting it on the top mux would publish it wherever the public listener is published.
+//   - The production edge path-matches `reverse_proxy /v1/*` (deploy/compose/production.yml), so the /v1 edge
+//     is precisely the surface reachable from outside. Enrollment is an OPERATOR ceremony over a one-time
+//     token, not a tenant-facing route; a separate listener is what lets an operator bind it to the network
+//     the workers actually live on and nowhere else.
+//   - E17 T9 built and proved this surface as outbound-enrolled with NO inbound port to the worker. Putting
+//     it on the public edge would change the posture the WRK-001..007 proofs were taken under, which is
+//     exactly what §2 forbids: wiring must go through the surface as built.
+//
+// HONEST CEILING — two of them, neither introduced here, both worth the operator knowing:
+//   - Plain HTTP, no TLS on this listener. The worker binary (cmd/palai-capability-worker) dials a base URL
+//     with a stock http.Client and has no CA flag, so a self-signed listener would be undialable and giving
+//     it one means changing the client E17 T9 proved. The operator terminates TLS in front of this address
+//     the same way the public API's listener is fronted; the runner gateway's mTLS is the upgrade path when
+//     a worker fleet needs one.
+//   - NO production path mints an enrollment token yet: Gateway.IssueEnrollmentToken has no operator caller
+//     (the runner's equivalent is PALAI_ENROLLMENT_TOKEN_FILE). The surface is therefore SERVED and enforces
+//     everything T9 proved, but a real worker cannot enroll until that ceremony exists. That is a missing
+//     operator path, not a missing capability — and it is the reason this task mounts what exists rather than
+//     inventing a credential-issuing route on the way past.
+func startCapabilityWorkerGateway(addr string, repo *store.Store, secrets *identity.SecretStore) *workers.Gateway {
+	if strings.TrimSpace(addr) == "" {
+		return nil
+	}
+	// A typed-nil *identity.SecretStore must NOT wrap a non-nil interface (the nil-interface trap
+	// WithSecretRefs guards): the store checks `secrets == nil` to refuse a redeem outright, so an absent
+	// master key has to leave the seam a true nil rather than a live-looking resolver that panics.
+	var resolver workers.SecretResolver
+	if secrets != nil {
+		resolver = secrets
+	}
+	gateway := workers.NewGateway(
+		workers.NewStore(repo.Spine().Pool(), resolver, middleware.NewID, nil),
+		envDuration("PALAI_CAPABILITY_WORKER_IDENTITY_TTL"), // 0 ⇒ the gateway's 10m default
+	)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           gateway.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	// Bind synchronously so a bind failure fails fast, for the same reason the runner listener does: the
+	// public /healthz must not report healthy while a configured worker surface silently never came up —
+	// that would recreate the very lie this wiring closed.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("bind capability worker gateway listener: %v", err)
+	}
+	log.Printf("palai capability worker gateway listening on %s", addr)
 	go func() { log.Fatal(srv.Serve(ln)) }()
 	return gateway
 }

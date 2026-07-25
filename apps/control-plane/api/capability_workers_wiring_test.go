@@ -1,7 +1,11 @@
 package api
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/palgroup/palai/tests/uat"
 )
 
 // TestCapabilityWorkersAdvertisedOnlyWhenMounted is the capability-worker half of the §2 discovery invariant
@@ -22,4 +26,26 @@ func TestCapabilityWorkersAdvertisedOnlyWhenMounted(t *testing.T) {
 		t.Fatalf("without a mounted capability-worker gateway, capability-workers = %q, want absent — a binary that serves no worker surface must not claim the capability (plan §2, §3.5 D14)", got)
 	}
 
+	mounted := NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil,
+		WithCapabilityWorkers())
+	want := recomputedTier(t, "capability-workers")
+	if got := capabilityValue(t, mounted, "capability-workers"); got != want {
+		t.Fatalf("with the capability-worker gateway mounted, capability-workers = %q, want the recomputed tier %q — the mount makes the claim advertisABLE, the evidence decides the tier", got, want)
+	}
+}
+
+// recomputedTier is the tier uat.RecomputeCapabilityTiers derives for one capability from the committed
+// extensions-0.1.0 per-case outcomes — the same source TestServedCapabilityTiersEqualTheRecompute compares
+// the whole map against, so this test cannot drift from the gate by hardcoding a maturity word.
+func recomputedTier(t *testing.T, capability string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(repoRootFromTest(t), "evidence", "releases", "extensions-0.1.0", "manifest.json"))
+	if err != nil {
+		t.Fatalf("read the extensions-0.1.0 bundle (the canonical source of the tier recompute): %v", err)
+	}
+	tiers, err := uat.CapabilityTiersFromBundle(raw)
+	if err != nil {
+		t.Fatalf("recompute the tier table: %v", err)
+	}
+	return tiers[capability]
 }

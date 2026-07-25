@@ -68,14 +68,11 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 			// operator work that flips it (uat.CapabilityOperatorLegs caps it mechanically). The unwritten cloud
 			// adapters are separately NOT advertised here: an unwritten adapter is never discoverable.
 			"queues": "preview",
-			// The CapabilityWorker contract (E17 T9): the outbound-enrolled, lease/fenced typed-operation
-			// surface for out-of-process capability jobs. FLIPPED to stable by the T11 exit gate (WRK-001..007
-			// green — the CONTRACT is what is stable). apple-build stays DISABLED: there is no signing
-			// certificate, provisioning profile or store credential anywhere (§6 leg 3), so discovery never
-			// claims a macOS/iOS BUILD this deployment cannot serve — WRK-006 proves the capability is ABSENT
-			// from the worker catalog rather than merely unadvertised.
-			"capability-workers": "stable",
-			"apple-build":        "disabled",
+			// apple-build stays DISABLED: there is no signing certificate, provisioning profile or store
+			// credential anywhere (§6 leg 3), so discovery never claims a macOS/iOS BUILD this deployment
+			// cannot serve — WRK-006 proves the capability is ABSENT from the worker catalog rather than
+			// merely unadvertised.
+			"apple-build": "disabled",
 			// The open-core console (E17 T10): the public-API-only admin + live-run surface (apps/web-console).
 			// It stays PREVIEW and the T11 exit gate KEPT it there: UI-001/UI-002 are green (axe-clean,
 			// keyboard-operable, the authoritative approval detail, a network trace entirely on the /v1 relay)
@@ -94,6 +91,16 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 		// hardening item — neither is claimed here.
 		if cfg.a2a != nil {
 			caps["a2a"] = "preview"
+		}
+		// The CapabilityWorker contract (E17 T9): the outbound-enrolled, lease/fenced typed-operation surface
+		// for out-of-process capability jobs. Advertised ONLY when this binary actually BOUND the gateway
+		// (WithCapabilityWorkers, set from main.startCapabilityWorkerGateway) — until E19 T8a it was a static
+		// "stable", the heaviest form of the §2 discovery lie: the control-plane binary did not so much as
+		// import internal/workers, so every deployment claimed at the STRONGEST tier a contract that answered
+		// nowhere. The tier below is the T11 recompute over the WRK-001..007 outcomes ("the CONTRACT is what
+		// is stable") and mounting does NOT raise it — the mount only makes the claim advertisABLE.
+		if cfg.capabilityWorkers {
+			caps["capability-workers"] = "stable"
 		}
 		body := capabilitiesBody{
 			Object:       "capabilities",
