@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Extensions UAT — the E17 EXIT gate (plan §T11). One target, a Docker-free CORE + a Docker-bound JOURNEY tier
+# + a PROVIDER-gated live tier. The core is the load-bearing gate: it needs no Docker and no credential.
+#
+# WHY THIS TARGET CO-RUNS THE BACKING SUITES (the E17 T11 review's MUST-FIX 1): the bundle's per-case `status`
+# is AUTHORED deterministic data. Only 8 of its 39 entries carry a proof block a verifier can judge; the other 31
+# carry shape fields alone. So `evidence-verify` on its own certifies "UAT declared green", NOT "UAT green" — a
+# hand-written "status":"PASS" over a red KNO-007 / WRK-00x / AUT-010 / UI-002 would keep its capability stable
+# with every gate reporting clean. THIS SCRIPT is what makes the authored status honest: the SAME invocation that
+# verifies the bundle also RUNS the suites that back the capabilities the gate flips — the knowledge, worker and
+# automation-queue component suites IN FULL (no -run filter), the Slack + A2A package suites, and the console
+# playwright specs. A red backing suite fails this target; tests/uat/extensions TestARedBackingSuiteFailsTheGate
+# proves that mechanically via PALAI_EXTENSIONS_FAULT_SUITE.
+#
+#   Docker-free core (always):
+#     0. the Slack + A2A package suites and the CONSOLE playwright specs (apps/web-console: `next build` +
+#        playwright against a fake /v1 upstream — no Docker, no credential). These back slack/a2a/console.
+#     1. go test ./tests/uat/extensions/... — four gates in one package:
+#        a. the E17 CATALOG gate: all 38 cases this epic owns (SLK-001..008, A2A-001..005, SUB-007,
+#           KNO-001..008, QUA-001..004, UI-001..002, WRK-001..007 + the AUT-009/010/013 queue/orchestrator
+#           LEGS) are materialized, resolve to in-tree proofs (Go funcs AND playwright titles), declare a
+#           class their proofs support, and NAME both their local seam and their §6 operator leg;
+#        b. the CapabilityTierProof ANTI-FABRICATION ANCHOR: nine negatives, each handing the verifier a
+#           shape-consistent manifest that hand-writes a tier it did not earn (a FAILED claim, an ABSENT
+#           claim, a §6-legged capability, an unservable capability, a diverging /v1/capabilities snapshot,
+#           a red QUA-003 precondition, a shrunken claim ledger, a DROPPED tier-claim marker that would
+#           switch the whole recompute off, two tier tables in one manifest) and asserting it is REFUSED;
+#        c. the committed extensions-0.1.0 bundle: byte-identical to its generator, verifying clean through
+#           the SHIPPED verifier with every E17 rule exercised, its eval numbers equal to a fresh canonical
+#           held-out run, and the honest-ceiling guards green (no preview/disabled capability's evidence
+#           carries the word "stable"; the bundle never claims a real Slack workspace / foreign A2A peer /
+#           signed Apple build outside an explicit §6 negation);
+#        d. the promote gate: rc PASSES, a bundle without the tier table is REFUSED, a bundle with QUA-003
+#           red is REFUSED, and a promote BEYOND rc awaits the §6 operator legs (never auto-claimed).
+#     2. go test ./apps/control-plane/api -run 'TestServedCapabilityTiers|TestUngovernedCapabilities' — the
+#        SHIPPED /v1/capabilities map, served over real HTTP by the real router, must be BIT-EQUAL to the
+#        verifier's recompute. This is where the discovery flip is earned rather than typed.
+#     3. evidence-verify RELEASE=extensions-0.1.0 through the shipped command (0/0/0/0).
+#     4. the two gate corpora any case.yaml/migration touch must re-run: the automation catalog + the
+#        tenancy security corpus.
+#
+#   Journey tier (Docker, no credential — SKIP=1 to opt out):
+#     5. against a throwaway Postgres, in one pass: the FULL knowledge / workers / automation component suites
+#        (the backing suites — no -run filter, so a red KNO/WRK/AUT case fails this gate) plus the three §T11
+#        journeys they contain, and the spec §63.3 SLACK journey (all ten steps on a FAKE peer). Each journey
+#        emits the proof type the bundle carries and asserts Complete() in-test.
+#
+#   Live tier (PROVIDER=provider-one, credential from .env.local):
+#     6. the QUA-002 model-judge calibration smoke + the KNO embedding smoke — single-step only (E08: the
+#        engine opens no tools to a real provider).
+#
+# HONEST CEILING (plan §6-§7), the reason this gate closes MOST capabilities PREVIEW: there is NO real Slack
+# workspace, NO foreign A2A peer, NO broker PRODUCT (no NATS/SQS/PubSub/Kafka — the plan §T7 broker-container
+# condition is UNMET; the durable queue proof is the POSTGRES reference adapter), NO real control-plane upstream
+# behind the console (every console proof runs against a FAKE /v1 upstream), NO Apple signing material and NO
+# vector store in this session. slack, a2a, queues and console close PREVIEW; knowledge-vector and apple-build
+# close DISABLED; only knowledge and capability-workers close STABLE. This target does NOT claim otherwise, and
+# the tier recompute makes that mechanical rather than a promise.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+echo "uat-extensions: [0/5] the BACKING suites that need no Docker: Slack + A2A packages, then the console specs" >&2
+go test -count=1 ./adapters/integrations/slack/... ./adapters/integrations/a2a/...
+
+# The console's UI-001/UI-002 proofs are playwright specs, not `go test`, so they are RUN here rather than left
+# implicit — they need node_modules + the pinned chromium and NO Docker. A missing toolchain EXITS (like the
+# docker check below) instead of skipping: a silently unrun backing suite is the exact hole this co-run closes.
+if ! command -v pnpm >/dev/null 2>&1 || [ ! -d apps/web-console/node_modules ]; then
+  echo "uat-extensions: the console playwright specs BACK UI-001/UI-002 and cannot be skipped; install them with" >&2
+  echo "  corepack pnpm install && (cd apps/web-console && pnpm exec playwright install chromium)" >&2
+  exit 2
+fi
+( cd apps/web-console && pnpm test:e2e )
+
+echo "uat-extensions: [1/5] the E17 catalog gate + tier anchor + bundle + promote gate (Docker-free)" >&2
+go test -count=1 ./tests/uat/extensions/...
+
+echo "uat-extensions: [2/5] the SHIPPED /v1/capabilities map is bit-equal to the tier recompute" >&2
+go test -count=1 -run 'TestServedCapabilityTiersEqualTheRecompute|TestUngovernedCapabilitiesAreNotSilentlyGoverned' ./apps/control-plane/api
+
+echo "uat-extensions: [3/5] evidence-verify RELEASE=extensions-0.1.0 (want 0 failed / 0 missing / 0 secret)" >&2
+RELEASE=extensions-0.1.0 scripts/evidence/verify
+
+echo "uat-extensions: [4/5] the two gate corpora (automation catalog + tenancy)" >&2
+go test -count=1 ./tests/uat/automation/...
+go test -tags=security -count=1 ./tests/security/tenancy/...
+
+# ---- the journey tier: real PostgreSQL, no credential -------------------------------------------------------
+journeys="the knowledge/workers/automation backing suites + three journeys CO-RUN green"
+if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
+  # Said plainly, because the closing line must never imply a tier that did not run: SKIP_JOURNEYS drops the
+  # Postgres-backed co-run, so this invocation blesses the bundle's authored status for the KNO/WRK/AUT cases.
+  echo "uat-extensions: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — the knowledge/workers/automation" >&2
+  echo "  backing suites and the three journeys did NOT run; this invocation does not back their authored PASS" >&2
+  journeys="Docker-bound backing suites + journeys NOT RUN (SKIP_JOURNEYS=1)"
+else
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "uat-extensions: docker is not available; the three journeys need a throwaway Postgres" >&2
+    exit 2
+  fi
+  image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  label="io.palai.uat=extensions"
+  container="palai-uat-extensions-$$-${RANDOM}"
+  # Throwaway local credential, generated per run; never written to a file, never echoed.
+  password="palai-uat-extensions-${RANDOM}${RANDOM}"
+  cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+  before="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  trap cleanup EXIT
+
+  docker run --detach --pull=never --name "$container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 "$image" >/dev/null
+  ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "uat-extensions: the journey postgres did not become ready" >&2
+    exit 1
+  fi
+  binding="$(docker port "$container" 5432/tcp)"; port="${binding##*:}"
+
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+  # A DEAD Postgres for the fault knob: reachable-looking, connects to nothing. PALAI_EXTENSIONS_FAULT_SUITE
+  # points ONE backing suite at it so tests/uat/extensions TestARedBackingSuiteFailsTheGate can prove a red
+  # backing suite makes this target exit non-zero — the guarantee the whole co-run rests on. It is a REAL red
+  # suite (the tests fail on connect), not a stubbed-out command.
+  dead_url="postgres://postgres:$password@127.0.0.1:1/palai?sslmode=disable"
+
+  # The BACKING suites, in FULL (no -run filter) — a red case anywhere in knowledge / workers / automation
+  # fails this gate instead of being reported around by an authored "PASS" in the bundle. The three §T11
+  # journeys live inside the first three entries; the §63.3 Slack journey is selected out of the extensions
+  # package because that package's other component suites belong to E12, not this gate.
+  suites=(
+    "./apps/control-plane/internal/knowledge|"
+    "./apps/control-plane/internal/workers|"
+    "./apps/control-plane/internal/automation|"
+    "./apps/control-plane/internal/extensions|TestSlackJourneyOnFakePeer"
+  )
+  status=0
+  for entry in "${suites[@]}"; do
+    suite="${entry%%|*}"; only="${entry##*|}"
+    suite_url="$url"
+    if [ "${PALAI_EXTENSIONS_FAULT_SUITE:-}" = "$suite" ]; then
+      suite_url="$dead_url"
+      echo "uat-extensions: FAULT INJECTED — $suite points at a DEAD Postgres; this run MUST fail" >&2
+    fi
+    echo "uat-extensions: [5/5] backing suite $suite ${only:+(-run $only)}" >&2
+    set +e
+    if [ -n "$only" ]; then
+      PALAI_COMPONENT_POSTGRES_URL="$suite_url" go test -tags=component -count=1 -v -run "$only" "$suite"
+    else
+      PALAI_COMPONENT_POSTGRES_URL="$suite_url" go test -tags=component -count=1 -v "$suite"
+    fi
+    status=$?
+    set -e
+    if test "$status" -ne 0; then
+      echo "uat-extensions: backing suite $suite FAILED — the bundle's authored PASS for its cases is not honest" >&2
+      docker logs "$container" >&2 || true
+      break
+    fi
+  done
+
+  cleanup
+  trap - EXIT
+  after="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if test "$after" -ne "$before"; then
+    echo "uat-extensions: the journey tier leaked a container" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+fi
+
+# ---- the live tier: single-step only (E08) ------------------------------------------------------------------
+if [ "${PROVIDER:-fake}" = "provider-one" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  echo "uat-extensions: live smoke — the QUA-002 model-judge calibration (single-step; NO agentic benchmark, E08)" >&2
+  go test -tags=live -count=1 -run TestModelJudgeCalibrationSmoke ./tests/evals/
+fi
+
+echo "uat-extensions=PASS (E17 exit gate: tier table recomputed, bundle 0/0/0/0, Slack/A2A packages + console specs CO-RUN green, $journeys)" >&2

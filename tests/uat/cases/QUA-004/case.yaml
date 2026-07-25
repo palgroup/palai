@@ -6,5 +6,5 @@ input: "The release gate wires held-out thresholds into the promote.go chain (§
 expect_status: completed
 proof:
   - tests/uat/eval_gate_test.go:TestEvalPromoteGateRefusesSubThreshold
-  - tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksSecurityRegressionIndependentOfAggregate
+  - tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksRealSecurityRegression
   - tests/uat/eval_gate_test.go:TestEvalPromoteGateRefusesMissingProof

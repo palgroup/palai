@@ -46,40 +46,44 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 			// discovery derives it from PALAI_WORKSPACE_ROOT the same way it reads the retention TTL — a
 			// deployment with no coding stack never advertises a capability it cannot serve.
 			"workspaces": workspacesCapability(),
-			// The Slack integration (E17 T1) enters discovery as "preview" and NEVER writes its own tier:
-			// the stable flip belongs to the T11 exit-gate verifier, which recomputes the tier from the
-			// canonical per-case outcomes (a real-workspace external-receipt leg is §6 operator work, so the
-			// local proof — canonical mapping + fake/loopback Slack peer — keeps it preview, not stable).
+			// The Slack integration (E17 T1) is PREVIEW and the T11 exit gate KEPT it there: every SLK-001..008
+			// claim is green, but the stable flip awaits §6 leg 1 — an external receipt from a REAL Slack
+			// workspace. The local proof is a FAKE peer, so preview is the honest tier, and no amount of local
+			// evidence moves it (uat.CapabilityOperatorLegs caps it mechanically).
 			"slack": "preview",
-			// Knowledge spine (E17 Task 4): the FTS ingestion/index/retrieval core. It enters as "preview"
-			// like every new capability — no task writes its own "stable"; the E17 exit gate (T11)
-			// RECOMPUTES the tier from the KNO claim outcomes and flips it to stable only if all are green
-			// (CapabilityTierProof). The vector strategy is a defined-but-disabled adapter (pgvector not
-			// wired — §6 operator leg), so it is advertised disabled and never claims a store it lacks.
-			"knowledge":        "preview",
+			// Knowledge spine (E17 Task 4): the FTS ingestion/index/retrieval core. FLIPPED to stable by the
+			// T11 exit gate — all eight KNO claims closed green and the capability has no §6 leg its core
+			// depends on. The flip came THROUGH the verification: the tier below must equal
+			// uat.RecomputeCapabilityTiers over the extensions-0.1.0 per-case outcomes, asserted by
+			// TestServedCapabilityTiersEqualTheRecompute. The vector strategy stays DISABLED — the adapter
+			// interface exists but no vector store is wired (§6 leg 4), and discovery never claims a store
+			// it lacks.
+			"knowledge":        "stable",
 			"knowledge-vector": "disabled",
 			// The queue adapter (E17 T7): a durable SQS/PubSub/Kafka-class consumer + outbound result-delivery
-			// outbox, proven by the Postgres-durable REFERENCE adapter. It enters as "preview" and is a STABLE
-			// CANDIDATE — NO task writes its own capability as "stable" (§2); only the T11 exit gate flips it,
-			// recomputing the tier from the per-case UAT outcomes. Real SQS/PubSub/Kafka brokers are the
-			// operator leg (§6) and are deliberately NOT advertised here (an unwritten adapter is never
-			// discoverable). Discovery never claims what the deployment cannot serve.
+			// outbox, proven by the Postgres-durable REFERENCE adapter. It stays PREVIEW and the T11 exit gate
+			// KEPT it there: AUT-009/010 are green, but NO broker PRODUCT was ever run — there is no NATS, SQS,
+			// Pub/Sub or Kafka anywhere in this tree, so the T7 plan's own stable-candidacy condition (a real
+			// broker container, NATS JetStream) is UNMET. §6 leg 5, EXTENDED to cover any broker product, is the
+			// operator work that flips it (uat.CapabilityOperatorLegs caps it mechanically). The unwritten cloud
+			// adapters are separately NOT advertised here: an unwritten adapter is never discoverable.
 			"queues": "preview",
 			// The CapabilityWorker contract (E17 T9): the outbound-enrolled, lease/fenced typed-operation
-			// surface for out-of-process capability jobs (the macOS swift.build-check fixture). It enters as
-			// "preview" and is a STABLE CANDIDATE — NO task writes its own tier (§2); only the T11 exit gate
-			// flips it, recomputing from the WRK-001..007 outcomes (CapabilityTierProof). apple-build is
-			// advertised DISABLED and never flipped here: there is no real Xcode + signing proof (no signing
-			// cert / provisioning profile / store credential anywhere — the §6 leg 3 operator work), so
-			// discovery never claims a macOS/iOS BUILD this deployment cannot serve.
-			"capability-workers": "preview",
+			// surface for out-of-process capability jobs. FLIPPED to stable by the T11 exit gate (WRK-001..007
+			// green — the CONTRACT is what is stable). apple-build stays DISABLED: there is no signing
+			// certificate, provisioning profile or store credential anywhere (§6 leg 3), so discovery never
+			// claims a macOS/iOS BUILD this deployment cannot serve — WRK-006 proves the capability is ABSENT
+			// from the worker catalog rather than merely unadvertised.
+			"capability-workers": "stable",
 			"apple-build":        "disabled",
 			// The open-core console (E17 T10): the public-API-only admin + live-run surface (apps/web-console).
-			// It enters as "preview" and NEVER writes its own tier — no task self-declares "stable" (§2); the
-			// T11 exit gate RECOMPUTES it from the UI-001/UI-002 claim outcomes (CapabilityTierProof) and flips
-			// it to stable only if the automated axe/keyboard + exact-approval proofs are all green. A deployed
-			// console + a manual VoiceOver/screen-reader pass is the §6 operator leg above the automated ceiling,
-			// so the local proof keeps it preview, not stable.
+			// It stays PREVIEW and the T11 exit gate KEPT it there: UI-001/UI-002 are green (axe-clean,
+			// keyboard-operable, the authoritative approval detail, a network trace entirely on the /v1 relay)
+			// but EVERY one of those proofs ran against a FAKE /v1 upstream, never a real control plane — and
+			// E17 T10 itself proved a fake upstream can DIVERGE from the real contract (its fixture had invented
+			// an approval event the real approval.requested.v1 does not carry). Green against a fake is not
+			// evidence about the real API, so §6 leg 8 (a DEPLOYED console against a real /v1, plus the manual
+			// VoiceOver/screen-reader pass) caps it — the same class of ceiling that keeps `slack` at preview.
 			"console": "preview",
 		}
 		// The A2A 1.0 server projection (E17 T2): advertised ONLY when WithA2A actually mounted the surface,

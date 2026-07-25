@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/palgroup/palai/packages/coordinator/recovery"
@@ -197,6 +198,32 @@ type evidenceCase struct {
 	// provider, E08), not a model-quality claim; real-model quality numbers are §6 leg 7.
 	EvalGateClaim string         `json:"eval_gate_claim"`
 	EvalGateProof *EvalGateProof `json:"eval_gate_proof"`
+	// The E17 T11 extension claims (plan §T11 — the E17 EXIT gate) extend the same marker-alone-is-NEVER-proof
+	// discipline to the six invariants the four extension areas own: a Slack thread drove ONE canonical session
+	// with one effect per source event and a canonical result that survived a Slack output failure
+	// (SlackMappingClaim, SLK-001..008 — proven against a FAKE peer, honestly named); the A2A 1.0 HTTP binding
+	// passed its endpoint×fixture matrix and a LOOPBACK transcript (A2AConformanceClaim, A2A-001..005 + SUB-007 —
+	// loopback is not interop); retrieval was ACL-FIRST with citation offsets the verifier RECOMPUTES from the
+	// chunk bytes (KnowledgeACLClaim, KNO-001..008); a lost ack redelivered without a duplicate effect and the
+	// outbound result survived a down publisher loss-lessly (QueueDeliveryClaim, AUT-009/010); a stale fence was
+	// rejected, a tunnel was refused and a job-scoped secret handle expired without ever entering the journal
+	// (WorkerFenceClaim, WRK-001..007); and the console was axe-clean, keyboard-operable and reached ONLY /v1
+	// (ConsoleClaim, UI-001/002). CapabilityTierClaim is the EXIT anchor: the per-capability DECLARED tier + the
+	// claim ids it owns, which the verifier RECOMPUTES from the bundle's own per-case outcomes.
+	SlackMappingClaim   string               `json:"slack_mapping_claim"`
+	SlackMappingProof   *SlackMappingProof   `json:"slack_mapping_proof"`
+	A2AConformanceClaim string               `json:"a2a_conformance_claim"`
+	A2AConformanceProof *A2AConformanceProof `json:"a2a_conformance_proof"`
+	KnowledgeACLClaim   string               `json:"knowledge_acl_claim"`
+	KnowledgeACLProof   *KnowledgeACLProof   `json:"knowledge_acl_proof"`
+	QueueDeliveryClaim  string               `json:"queue_delivery_claim"`
+	QueueDeliveryProof  *QueueDeliveryProof  `json:"queue_delivery_proof"`
+	WorkerFenceClaim    string               `json:"worker_fence_claim"`
+	WorkerFenceProof    *WorkerFenceProof    `json:"worker_fence_proof"`
+	ConsoleClaim        string               `json:"console_claim"`
+	ConsoleProof        *ConsoleProof        `json:"console_proof"`
+	CapabilityTierClaim string               `json:"capability_tier_claim"`
+	CapabilityTierProof *CapabilityTierProof `json:"capability_tier_proof"`
 }
 
 type evidenceTerm struct {
@@ -1014,6 +1041,627 @@ func (p EvalGateProof) Complete() bool {
 	return true
 }
 
+// SlackMappingProof is the evidence a slack_mapping_claim requires (plan §T11, the §63.3 journey + SLK-001..008):
+// a Slack thread drove ONE canonical session, each source event produced exactly ONE canonical effect even
+// though a duplicate was redelivered, an unauthorized actor's approval was REJECTED, a 429 repaired the visible
+// message ONCE, the terminal summary surface posted exactly ONCE (never a duplicate), and the canonical result
+// stayed intact when the Slack output update failed (the §63.3 pass sentence).
+//
+// ONE §63.3 criterion is NOT asserted at full strength, named rather than implied: "exactly one terminal summary
+// per delivery id" is a FAN-OUT claim, and the journey has two canonical deliveries against a single terminal
+// surface post — so TerminalSummaryPosts measures what actually happened (the terminal surface was posted once,
+// not duplicated) instead of dividing one post by two deliveries and calling it 1-per-delivery. The per-delivery
+// fan-out would need a shipped Slack outbound worker, which does not exist yet (there is no Slack HTTP route in
+// the tree — see the SLK-001 bundle assertion).
+//
+// HONEST CEILING, MECHANICALLY ENFORCED: Peer must be the literal "fake" — the whole journey runs against a
+// FAKE Slack peer (recorded chat.postMessage receipts, injected 429s, replayed frames). A bundle cannot write
+// Peer="real" and pass: a real-workspace external receipt is the §6 leg 1 operator work that flips `slack` to
+// stable, and this proof is structurally incapable of asserting it.
+type SlackMappingProof struct {
+	Peer                         string   `json:"peer"`
+	TeamID                       string   `json:"team_id"`
+	SessionID                    string   `json:"session_id"`
+	CanonicalSessions            int      `json:"canonical_sessions"`
+	SourceEventIDs               []string `json:"source_event_ids"`
+	DeliveredEvents              int      `json:"delivered_events"`
+	CanonicalEffects             int      `json:"canonical_effects"`
+	PostReceipts                 []string `json:"post_receipts"`
+	TerminalSummaryPosts         int      `json:"terminal_summary_posts"`
+	RateLimitRepairs             int      `json:"rate_limit_repairs"`
+	UnauthorizedApprovalRejected bool     `json:"unauthorized_approval_rejected"`
+	CanonicalResultIntact        bool     `json:"canonical_result_intact"`
+}
+
+// Complete reports the §63.3 pass criteria hold on a FAKE peer: exactly one canonical session, MORE deliveries
+// than distinct source events (a duplicate genuinely arrived) yet exactly one canonical effect per source event,
+// at least one recorded fake-peer post receipt, exactly ONE terminal-summary post (the repaired visible message,
+// never duplicated), exactly one rate-limit repair of the visible message, a rejected unauthorized approval, and
+// a canonical result that survived the Slack output failure. A Peer other than "fake" fails — this proof can
+// never claim a real workspace.
+func (p SlackMappingProof) Complete() bool {
+	return p.Peer == "fake" && p.TeamID != "" && p.SessionID != "" && p.CanonicalSessions == 1 &&
+		len(p.SourceEventIDs) >= 2 && p.DeliveredEvents > len(p.SourceEventIDs) &&
+		p.CanonicalEffects == len(p.SourceEventIDs) && len(p.PostReceipts) >= 1 &&
+		p.TerminalSummaryPosts == 1 && p.RateLimitRepairs == 1 &&
+		p.UnauthorizedApprovalRejected && p.CanonicalResultIntact
+}
+
+// A2AEndpoints is the canonical §38.1 HTTP-binding surface the A2A server projection routes (the 12 endpoints
+// adapters/integrations/a2a/server.go dispatches by hand, because ServeMux cannot express A2A's colon verbs).
+// An A2AConformanceProof's endpoints must equal this list EXACTLY (slices.Equal, the HelmPolicyAsserts anchoring
+// discipline) so a bundle that quietly drops an endpoint from its matrix cannot keep a matching claim.
+var A2AEndpoints = []string{
+	"GET agent-card.json",
+	"GET extendedAgentCard",
+	"POST message:send",
+	"POST message:stream",
+	"GET tasks",
+	"GET tasks/{id}",
+	"POST tasks/{id}:cancel",
+	"POST tasks/{id}:subscribe",
+	"GET tasks/{id}/pushNotificationConfigs",
+	"POST tasks/{id}/pushNotificationConfigs",
+	"GET tasks/{id}/pushNotificationConfigs/{cfg}",
+	"DELETE tasks/{id}/pushNotificationConfigs/{cfg}",
+}
+
+// A2AConformanceProof is the evidence an a2a_conformance_claim requires (plan §T11, A2A-001..005 + SUB-007): the
+// FULL §38.1 endpoint × fixture matrix passed and a real A2A 1.0 exchange completed, with the published Agent
+// Card leaking NO internal detail (provider model name, internal tool, tenant inventory — A2A-001).
+//
+// HONEST CEILING, MECHANICALLY ENFORCED: Peer must be the literal "loopback" — the exchange is this repo's own
+// client against this repo's own server. Loopback is NOT interop; a FOREIGN peer is §6 leg 2, the operator work
+// that flips `a2a` to stable.
+//
+// TranscriptDigest is hashParts of the ordered LoopbackTranscript — a CONSISTENCY check over the proof's own
+// list, NOT an anchor to the run that produced it. It catches a transcript edited without recomputing the
+// digest (and vice versa); an author who rewrites both stays self-consistent. The load-bearing anchor for A2A
+// is the canonical A2AEndpoints table plus the per-endpoint fixture outcomes, which are checked against code.
+type A2AConformanceProof struct {
+	Endpoints                []string          `json:"endpoints"`
+	FixtureOutcomes          map[string]string `json:"fixture_outcomes"`
+	Peer                     string            `json:"peer"`
+	LoopbackTranscript       []string          `json:"loopback_transcript"`
+	TranscriptDigest         string            `json:"transcript_digest"`
+	CardLeakedInternalDetail bool              `json:"card_leaked_internal_detail"`
+}
+
+// Complete reports the CANONICAL endpoint set (anchored in-gate to A2AEndpoints), a "pass" outcome recorded for
+// EVERY one of them, a loopback (never foreign) peer, a transcript of at least two steps whose digest reproduces
+// as hashParts of that list, and a card that leaked nothing. A dropped endpoint, an endpoint with no/failing
+// outcome, a Peer claiming interop, or a hand-edited digest fails.
+func (p A2AConformanceProof) Complete() bool {
+	if !slices.Equal(p.Endpoints, A2AEndpoints) || p.Peer != "loopback" || p.CardLeakedInternalDetail {
+		return false
+	}
+	for _, ep := range A2AEndpoints {
+		if p.FixtureOutcomes[ep] != "pass" {
+			return false
+		}
+	}
+	return len(p.LoopbackTranscript) >= 2 && p.TranscriptDigest == hashParts(p.LoopbackTranscript...)
+}
+
+// KnowledgeCitation is one retrieval citation the verifier RE-DERIVES rather than trusts: ChunkBytes is the
+// chunk's exact text, Start/End are the declared byte offsets, and Quote is what the citation displayed. The
+// gate recomputes ChunkBytes[Start:End] and refuses a citation whose quote does not reproduce — a fabricated
+// offset pair (or a quote invented out of band) is caught by construction, the discipline the plan §T11 spells
+// out as "the verifier recomputes the offsets from the chunk BYTES".
+type KnowledgeCitation struct {
+	ChunkID     string `json:"chunk_id"`
+	ChunkBytes  string `json:"chunk_bytes"`
+	StartOffset int    `json:"start_offset"`
+	EndOffset   int    `json:"end_offset"`
+	Quote       string `json:"quote"`
+}
+
+// offsetsReproduce reports whether the declared offsets are in range for the chunk bytes AND the quote is
+// EXACTLY the slice they name. This is the recompute, not a stored boolean.
+func (c KnowledgeCitation) offsetsReproduce() bool {
+	if c.ChunkID == "" || c.ChunkBytes == "" {
+		return false
+	}
+	if c.StartOffset < 0 || c.EndOffset <= c.StartOffset || c.EndOffset > len(c.ChunkBytes) {
+		return false
+	}
+	return c.Quote == c.ChunkBytes[c.StartOffset:c.EndOffset]
+}
+
+// KnowledgeACLProof is the evidence a knowledge_acl_claim requires (plan §T11, KNO-001..008): retrieval applied
+// authorization BEFORE scoring (§25.15.4 — post-filter top-K is forbidden because it leaks existence and ranking),
+// returned ZERO unauthorized results, cited chunks with offsets the verifier RECOMPUTES from the chunk bytes, and
+// propagated a source delete out of the active index. RankingShiftedByUnauthorized records the ACL-first
+// discriminator: an unauthorized document must not even perturb the authorized ranking (a post-filter would).
+type KnowledgeACLProof struct {
+	AuthorizedResults            int                 `json:"authorized_results"`
+	UnauthorizedResults          int                 `json:"unauthorized_results"`
+	RankingShiftedByUnauthorized bool                `json:"ranking_shifted_by_unauthorized"`
+	PostFilterTopK               bool                `json:"post_filter_top_k"`
+	Citations                    []KnowledgeCitation `json:"citations"`
+	SourceDeletePropagated       bool                `json:"source_delete_propagated"`
+}
+
+// Complete reports authorized hits, ZERO unauthorized hits, an unshifted ranking, no post-filter top-K, a source
+// delete that propagated, and at least one citation whose offsets RE-DERIVE from the chunk bytes. A citation
+// whose quote does not equal ChunkBytes[start:end] fails HERE (the shape verifier), not only in a dedicated test.
+func (p KnowledgeACLProof) Complete() bool {
+	if p.AuthorizedResults < 1 || p.UnauthorizedResults != 0 ||
+		p.RankingShiftedByUnauthorized || p.PostFilterTopK || !p.SourceDeletePropagated ||
+		len(p.Citations) < 1 {
+		return false
+	}
+	for _, c := range p.Citations {
+		if !c.offsetsReproduce() {
+			return false
+		}
+	}
+	return true
+}
+
+// QueueBrokerSeams are the ONLY queue seams this repo has ever RUN, each mapped to what it is. A
+// QueueDeliveryProof's Broker must be one of these keys, so no bundle can name a broker PRODUCT that was never
+// started: `Broker != ""` used to be the whole check, which would have let a future bundle write
+// "AWS SQS us-east-1" and pass every gate. This is the SlackMappingProof.Peer discipline applied to brokers.
+//
+// What is NOT here is the point: there is no NATS, no SQS, no Pub/Sub and no Kafka anywhere in this tree. The
+// plan §T7 condition for `queues` stable candidacy — "gerçek broker container'ıyla component-real yeşilse",
+// naming NATS JetStream — is therefore UNMET, and CapabilityOperatorLegs caps the capability at preview.
+var QueueBrokerSeams = map[string]string{
+	"postgres-durable-reference": "the shipped reference adapter's durable Postgres queue (adapters/integrations/queue + the automation inbound/outbox), driven against a real PostgreSQL",
+	"memory":                     "the in-process deterministic fake used by the unit tier",
+}
+
+// QueueDeliveryProof is the evidence a queue_delivery_claim requires (plan §T11, AUT-009/010 queue legs, §34.2/
+// §34.5): the reference queue adapter redelivered after a LOST ACK without producing a second canonical effect,
+// dead-lettered a poison message instead of blocking the stream, dropped NOTHING under a flood (bounded buffer +
+// backpressure, not silent loss), and delivered the outbound run result EXACTLY ONCE across a publisher outage.
+//
+// HONEST CEILING, MECHANICALLY ENFORCED: Broker must be one of QueueBrokerSeams — a seam that actually ran. A
+// real broker PRODUCT run is §6 leg 5 and this proof cannot claim one.
+type QueueDeliveryProof struct {
+	Broker                string `json:"broker"`
+	DistinctMessages      int    `json:"distinct_messages"`
+	Consumed              int    `json:"consumed"`
+	Redelivered           int    `json:"redelivered"`
+	CanonicalEffects      int    `json:"canonical_effects"`
+	DeadLettered          int    `json:"dead_lettered"`
+	Dropped               int    `json:"dropped"`
+	OutboundDeliveredOnce bool   `json:"outbound_delivered_once"`
+}
+
+// Complete reports a broker naming a seam that ACTUALLY RAN (one of QueueBrokerSeams), at least one distinct
+// message consumed MORE times than it was published (a redelivery genuinely happened) yet exactly one canonical
+// effect per distinct message, at least one dead-letter, ZERO drops, and an outbound result delivered exactly
+// once. Consumed <= DistinctMessages means the lost-ack redelivery was never exercised; a drop, or effects !=
+// distinct messages, is the defect this gate exists for. A Broker naming a cloud/broker product fails.
+func (p QueueDeliveryProof) Complete() bool {
+	if _, ran := QueueBrokerSeams[p.Broker]; !ran {
+		return false
+	}
+	return p.DistinctMessages >= 1 && p.Consumed > p.DistinctMessages &&
+		p.Redelivered >= 1 && p.CanonicalEffects == p.DistinctMessages &&
+		p.DeadLettered >= 1 && p.Dropped == 0 && p.OutboundDeliveredOnce
+}
+
+// WorkerFenceProof is the evidence a worker_fence_claim requires (plan §T11, WRK-001..007, §31.5/§31.6): a
+// SUPERSEDED fence's result was REJECTED, an operation absent from the capability's typed catalog was REFUSED
+// (there is no SOCKS-like passthrough — the §31.5 negative crown), and a job-scoped secret handle EXPIRED with
+// its value never landing in the append-only job journal. AppleBuildAdvertised must be false: no signing
+// material exists anywhere, so the worker surface never advertises a macOS/iOS BUILD capability (§6 leg 3).
+type WorkerFenceProof struct {
+	WorkerID                  string   `json:"worker_id"`
+	Capability                string   `json:"capability"`
+	StaleFenceRejected        bool     `json:"stale_fence_rejected"`
+	NoTunnelRefusedOperations []string `json:"no_tunnel_refused_operations"`
+	TunnelSucceeded           bool     `json:"tunnel_succeeded"`
+	SecretHandleScope         string   `json:"secret_handle_scope"`
+	SecretHandleExpired       bool     `json:"secret_handle_expired"`
+	SecretValueInJournal      bool     `json:"secret_value_in_journal"`
+	AppleBuildAdvertised      bool     `json:"apple_build_advertised"`
+}
+
+// Complete reports the worker + its typed capability, a rejected stale fence, at least one REFUSED untyped
+// operation with no tunnel ever succeeding, a job-scoped secret handle that expired without its value entering
+// the journal, and no advertised apple-build. A tunnel that succeeded, a secret value in the journal, or an
+// advertised apple-build is the opposite of what §31.5 requires and is not proof.
+func (p WorkerFenceProof) Complete() bool {
+	return p.WorkerID != "" && p.Capability != "" && p.StaleFenceRejected &&
+		len(p.NoTunnelRefusedOperations) >= 1 && !p.TunnelSucceeded &&
+		p.SecretHandleScope == "job" && p.SecretHandleExpired && !p.SecretValueInJournal &&
+		!p.AppleBuildAdvertised
+}
+
+// consolePathPrefixes are the ONLY request path prefixes a public-API-only console may issue (§47.6, UI-001/002):
+// the server-side relay mount and the API version prefix it forwards to. Any other path in the network trace is
+// a privileged backchannel by definition, so the gate RECOMPUTES the violation count from the trace itself
+// rather than trusting the proof's own counter.
+var consolePathPrefixes = []string{"/api/palai/v1/", "/v1/"}
+
+// ConsoleProof is the evidence a console_claim requires (plan §T11, UI-001/002, §47.5/§47.6): axe-core reported
+// ZERO WCAG 2 A/AA violations, the core run→approve→terminal flow was operable from the keyboard with the skip
+// link as the first stop, the approval UI showed the AUTHORITATIVE operation/branch/request-hash (a model summary
+// never replaces it), the API key never reached the browser, and EVERY request the browser issued went to the
+// /v1 relay. NetworkTrace is the raw list of request paths the browser made; the gate recomputes the non-/v1
+// count from it, so a proof cannot self-report 0 over a trace that contains a backchannel.
+//
+// HONEST CEILING, MECHANICALLY ENFORCED: Upstream must be the literal "fake" — every console proof runs the
+// built console against a FAKE /v1 control-plane (tests/fake-control-plane.mjs replaying a scripted contract),
+// never a real one. This is the SlackMappingProof.Peer / A2AConformanceProof.Peer discipline applied here,
+// because E17 T10 itself proved a fake upstream can DIVERGE from the real contract (its fixture had invented an
+// approval event that the real approval.requested.v1 does not carry) — so "green against a fake" is not
+// evidence that the console works against the real API. A real control-plane upstream behind a DEPLOYED console
+// is §6 leg 8, the operator work that flips `console` to stable, and this proof is structurally incapable of
+// asserting it: a real-stack run must CHANGE this value, and that change is visible in the bundle.
+//
+// The same leg carries the AUTOMATED accessibility ceiling: a manual VoiceOver/screen-reader pass over a
+// deployed console is never claimed here.
+type ConsoleProof struct {
+	Upstream                    string   `json:"upstream"`
+	AxeViolations               int      `json:"axe_violations"`
+	AxeReportDigest             string   `json:"axe_report_digest"`
+	NetworkTrace                []string `json:"network_trace"`
+	KeyboardOperable            bool     `json:"keyboard_operable"`
+	SkipLinkFirst               bool     `json:"skip_link_first"`
+	ApprovalDetailAuthoritative bool     `json:"approval_detail_authoritative"`
+	APIKeyReachedBrowser        bool     `json:"api_key_reached_browser"`
+}
+
+// Complete reports an honestly-named FAKE upstream, zero axe violations under a well-formed report digest, a
+// keyboard-operable flow with the skip link first, an authoritative approval detail, an API key that never
+// reached the browser, and a non-empty network trace in which EVERY path is under the /v1 relay (recomputed
+// here, not read from a counter). One off-/v1 path fails — that is the privileged backchannel §47.6 forbids.
+// An Upstream other than "fake" fails: this proof can never claim a real control-plane.
+func (p ConsoleProof) Complete() bool {
+	if p.Upstream != "fake" || p.AxeViolations != 0 || !checksumPattern.MatchString(p.AxeReportDigest) ||
+		!p.KeyboardOperable || !p.SkipLinkFirst || !p.ApprovalDetailAuthoritative ||
+		p.APIKeyReachedBrowser || len(p.NetworkTrace) < 1 {
+		return false
+	}
+	for _, path := range p.NetworkTrace {
+		onRelay := false
+		for _, prefix := range consolePathPrefixes {
+			if strings.HasPrefix(path, prefix) {
+				onRelay = true
+				break
+			}
+		}
+		if !onRelay {
+			return false
+		}
+	}
+	return true
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The E17 EXIT anchor: a capability's maturity tier is a FUNCTION of its claim outcomes, never a claim.
+//
+// Three CANONICAL tables below are the gate's OWN copy of the rule (the EvalThresholds / HelmPolicyAsserts
+// discipline). A manifest carries a per-capability DECLARED tier and the claim ids it owns; the verifier
+// RECOMPUTES the tier from these tables plus the bundle's per-case OUTCOMES and refuses any declaration — or
+// any running-stack snapshot — that disagrees. Nothing here reads the manifest's own tier copy, which is the
+// exact hole the E13/E14/E15 MUST-FIX-1 reviews closed for spines, digests and measurements.
+// ---------------------------------------------------------------------------------------------------------
+
+// CapabilityTierOrder is the ordered, canonical set of `/v1/capabilities` entries the E17 exit gate governs. A
+// CapabilityTierProof must declare EXACTLY these (no more, no fewer) so a capability cannot dodge the recompute
+// by being omitted. `responses`/`sessions`/`workspaces` are older entries E17 does not own and are not listed:
+// `workspaces` is derived from deployment configuration at request time, not from claim outcomes.
+var CapabilityTierOrder = []string{
+	"a2a", "apple-build", "capability-workers", "console",
+	"knowledge", "knowledge-vector", "queues", "slack",
+}
+
+// CapabilityClaims maps each governed capability to the UAT claim ids it OWNS — the canonical claim ledger the
+// tier is computed over. A CapabilityTierProof's per-capability claim_case_ids must EQUAL its entry here, so a
+// bundle cannot shrink a capability's claim set to hide a red case and still declare stable. `apple-build`'s
+// single claim is WRK-006, which proves the capability is ABSENT from the worker catalog — the honest claim to
+// own about a capability no signing material exists for.
+var CapabilityClaims = map[string][]string{
+	"a2a":                {"A2A-001", "A2A-002", "A2A-003", "A2A-004", "A2A-005", "SUB-007"},
+	"apple-build":        {"WRK-006"},
+	"capability-workers": {"WRK-001", "WRK-002", "WRK-003", "WRK-004", "WRK-005", "WRK-006", "WRK-007"},
+	"console":            {"UI-001", "UI-002"},
+	"knowledge":          {"KNO-001", "KNO-002", "KNO-003", "KNO-004", "KNO-005", "KNO-006", "KNO-007", "KNO-008"},
+	"knowledge-vector":   {"KNO-005"},
+	"queues":             {"AUT-009", "AUT-010"},
+	"slack":              {"SLK-001", "SLK-002", "SLK-003", "SLK-004", "SLK-005", "SLK-006", "SLK-007", "SLK-008"},
+}
+
+// capabilityUnservable names the capabilities this deployment structurally CANNOT serve, with the reason. Their
+// tier is `disabled` regardless of any claim outcome: discovery never advertises what the deployment cannot
+// serve (the workspacesCapability posture, plan §2). Green claims about an adapter INTERFACE do not make a
+// missing backing store servable.
+var capabilityUnservable = map[string]string{
+	"knowledge-vector": "no vector store is wired (the compose Postgres image is plain — no pgvector); only the adapter interface + a deterministic fake exist",
+	"apple-build":      "no Apple signing material exists anywhere (no certificate, provisioning profile or store credential); WRK-006 proves the capability is ABSENT from the worker catalog",
+}
+
+// CapabilityOperatorLegs maps a capability to the §6 operator leg its stable flip AWAITS. A capability listed
+// here caps at `preview` even with every local claim green — the local seam is real but the load-bearing
+// external receipt does not exist in this session, so calling it stable would be the overclaim this whole gate
+// is built to prevent. Executing a leg (and re-running this verifier) is what flips it, nothing else.
+//
+// All four entries are ONE class of ceiling: the counterpart system was never contacted. `queues` and `console`
+// joined the list at the E17 T11 EXIT review (the owner's call), on exactly the reasoning that keeps `slack`
+// here — their local seams are green and real, and their counterparts are fixtures:
+//
+//   - `queues`: the plan §T7 stable-candidacy condition was "gerçek broker container'ıyla component-real
+//     yeşilse" and named NATS JetStream. NO broker product was ever started — there is no NATS, SQS, Pub/Sub or
+//     Kafka anywhere in this tree (see QueueBrokerSeams). The durable proof is the POSTGRES reference adapter,
+//     which is a real durable queue but not a broker product, so §6 leg 5's scope (SQS/PubSub) does not cover
+//     the deviation and it is named here instead of left implicit.
+//   - `console`: EVERY console proof ran against a FAKE /v1 upstream (the plan §T10 evidence line said "local
+//     stack"), never a real control plane — and E17 T10 itself proved a fake upstream CAN diverge from the real
+//     contract (its fixture had invented an approval event the real approval.requested.v1 does not carry). So
+//     "green against a fake" does not prove "works against the real API"; §6 leg 8's deployed-console half is
+//     the receipt, and the manual screen-reader pass rides the same leg.
+var CapabilityOperatorLegs = map[string]string{
+	"slack":            "§6 leg 1 — a REAL Slack workspace external receipt (the local proof is a FAKE peer)",
+	"a2a":              "§6 leg 2 — a FOREIGN A2A peer (this repo's client against this repo's server is loopback, not interop)",
+	"knowledge-vector": "§6 leg 4 — a real pgvector/external vector store",
+	"apple-build":      "§6 leg 3 — a real Xcode + Apple Developer signing run",
+	"queues":           "§6 leg 5 EXTENDED — a real broker PRODUCT run. No broker product exists in this tree (no NATS/SQS/PubSub/Kafka), so the plan §T7 NATS-JetStream-container condition for stable candidacy is UNMET; the durable proof is the Postgres REFERENCE adapter",
+	"console":          "§6 leg 8 — a DEPLOYED console against a REAL control-plane /v1 (every console proof ran against a FAKE upstream, and E17 T10 proved a fake upstream can diverge from the real contract), plus the manual VoiceOver/screen-reader pass",
+}
+
+// carriesE17AreaClaim reports whether a case carries ANY E17 extension-area claim — the FAMILY marker. It is
+// the single owner of that list, read by both the manifest verifier and PromoteGateFor, so the two can never
+// disagree about what an E17 release is.
+func carriesE17AreaClaim(c evidenceCase) bool {
+	return c.SlackMappingClaim != "" || c.A2AConformanceClaim != "" || c.KnowledgeACLClaim != "" ||
+		c.QueueDeliveryClaim != "" || c.WorkerFenceClaim != "" || c.ConsoleClaim != "" ||
+		c.CapabilityTierClaim != ""
+}
+
+// verifyE17TierTablePresence is what stops the tier recompute from being OPTIONAL. The recompute below only
+// runs for a case whose `capability_tier_claim` marker is non-empty, so a bundle that DROPPED the marker while
+// keeping every area proof (and every fabricated tier in the proof body) would verify 0 findings with the crown
+// anchor silently not running. Mirroring PromoteGateFor's family recognition: a manifest carrying ANY E17 area
+// claim MUST carry EXACTLY ONE capability_tier_claim with its proof.
+//
+// "Exactly one" and not "at least one" because both the verifier and ExtensionsPromoteGate would otherwise
+// disagree about WHICH proof governs — the gate reads the first, the verifier checks all — so a second,
+// fabricated table could ride behind an honest one. Findings are release-level (no case id): VerifyRelease
+// fails the whole bundle on a case-less finding, which is the right blast radius for a missing tier table.
+func verifyE17TierTablePresence(m evidenceManifest) []Finding {
+	family, tierClaims, withProof := false, 0, 0
+	for _, c := range m.Cases {
+		if carriesE17AreaClaim(c) {
+			family = true
+		}
+		if c.CapabilityTierClaim != "" {
+			tierClaims++
+			if c.CapabilityTierProof != nil {
+				withProof++
+			}
+		}
+	}
+	if !family {
+		return nil
+	}
+	switch {
+	case tierClaims == 0:
+		return []Finding{{Kind: "missing", Detail: "capability_tier_claim (this manifest carries E17 extension-area claims, so it is an E17 release and MUST carry the capability tier table; without the claim marker the ENTIRE tier recompute does not run and any declared tier stands unverified — plan §T11)"}}
+	case tierClaims > 1:
+		return []Finding{{Kind: "invalid", Detail: fmt.Sprintf("%d capability_tier_claims (want exactly 1): the promote gate judges the FIRST tier proof while this verifier checks all of them, so a second table could ride behind an honest one — one release, one recomputed tier table (plan §T11)", tierClaims)}}
+	case withProof != tierClaims:
+		return []Finding{{Kind: "missing", Detail: "capability_tier_proof for the manifest's capability_tier_claim (a claim marker with no proof leaves the tier table unrecomputed — plan §T11)"}}
+	}
+	return nil
+}
+
+// CapabilitySecurityPrecondition is the eval security-suite case (plan §T6/§T11): QUA-003 green is a
+// PRECONDITION for ANY capability's stable flip. A red or absent security suite caps every capability at
+// preview — the red-team surface covers all four extension areas, so a regression there invalidates the stable
+// claim of each of them, independent of their own case outcomes.
+const CapabilitySecurityPrecondition = "QUA-003"
+
+// capabilityTiers is the maturity vocabulary a declaration may use.
+var capabilityTiers = map[string]bool{"stable": true, "preview": true, "disabled": true}
+
+// capabilityClaimsParts flattens the canonical capability→claims ledger into hashParts input (capability name
+// followed by its claim ids, in CapabilityTierOrder). CapabilityClaimsDigest over this is re-derivable from the
+// CODE table alone, so a bundle cannot present a self-consistent digest over an edited ledger.
+func capabilityClaimsParts() []string {
+	parts := make([]string, 0, 2*len(CapabilityTierOrder))
+	for _, capability := range CapabilityTierOrder {
+		parts = append(parts, capability)
+		parts = append(parts, CapabilityClaims[capability]...)
+	}
+	return parts
+}
+
+// CapabilityClaimsDigest is hashParts over the CANONICAL capability→claims ledger. A CapabilityTierProof must
+// carry exactly this value.
+func CapabilityClaimsDigest() string { return hashParts(capabilityClaimsParts()...) }
+
+// RecomputeCapabilityTier is THE function the E17 exit sentence names: a capability's tier derived from the
+// canonical tables + the per-case outcomes, with no input from any declared tier. Order matters —
+//
+//  1. structurally unservable ⇒ "disabled" (no claim outcome can advertise a missing backing store);
+//  2. the security precondition (QUA-003) red or absent ⇒ "preview" for everything;
+//  3. ANY owned claim not PASS (red OR absent from the bundle) ⇒ "preview";
+//  4. a §6 operator leg outstanding ⇒ "preview" (the local seam is green, the external receipt is not);
+//  5. otherwise ⇒ "stable".
+func RecomputeCapabilityTier(capability string, caseStatus map[string]string) string {
+	if _, unservable := capabilityUnservable[capability]; unservable {
+		return "disabled"
+	}
+	if caseStatus[CapabilitySecurityPrecondition] != "PASS" {
+		return "preview"
+	}
+	for _, id := range CapabilityClaims[capability] {
+		if caseStatus[id] != "PASS" {
+			return "preview"
+		}
+	}
+	if _, awaits := CapabilityOperatorLegs[capability]; awaits {
+		return "preview"
+	}
+	return "stable"
+}
+
+// RecomputeCapabilityTiers applies RecomputeCapabilityTier across CapabilityTierOrder. This map IS the
+// authoritative tier table: the manifest's declarations and the running stack's `/v1/capabilities` snapshot are
+// both judged against it, and `apps/control-plane/api` ships exactly this table (asserted by its own test) so
+// discovery cannot drift from the verifier.
+func RecomputeCapabilityTiers(caseStatus map[string]string) map[string]string {
+	out := make(map[string]string, len(CapabilityTierOrder))
+	for _, capability := range CapabilityTierOrder {
+		out[capability] = RecomputeCapabilityTier(capability, caseStatus)
+	}
+	return out
+}
+
+// CaseOutcomes extracts the bundle's per-case outcomes — the source the tier recompute reads. It is only ever
+// the manifest's `status` field, and what that field IS matters more than what this function does:
+//
+// PER-CASE STATUS IS AUTHORED DETERMINISTIC DATA. For the 8 entries that carry a proof block (slack / a2a /
+// knowledge / queue / worker / console / eval / tier) a fraudulent "PASS" cannot reach a clean verification —
+// the proof's Complete() and the cross-case recomputes catch it, and any finding fails the case in
+// VerifyRelease. For the OTHER 31 entries the status is simply what the bundle's generator wrote: they carry
+// shape fields alone, so nothing here can distinguish "the suite was green" from "the author typed PASS".
+//
+// What makes those 31 honest is OUT OF BAND, and deliberately so: `scripts/uat/extensions` CO-RUNS the suites
+// that back the capabilities this gate flips (the knowledge / workers / automation component suites in full,
+// the Slack + A2A packages, the console playwright specs) in the SAME invocation that verifies the bundle, so a
+// red backing suite fails the gate. tests/uat/extensions TestARedBackingSuiteFailsTheGate proves that. Running
+// `scripts/evidence/verify` alone does NOT re-run them — standalone, it blesses the authored status.
+func CaseOutcomes(raw []byte) (map[string]string, error) {
+	var m evidenceManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("manifest is not valid JSON: %w", err)
+	}
+	status := make(map[string]string, len(m.Cases))
+	for _, c := range m.Cases {
+		status[c.ID] = c.Status
+	}
+	return status, nil
+}
+
+// CapabilityTiersFromBundle recomputes the authoritative tier table from a bundle manifest's per-case outcomes.
+// It is what `apps/control-plane/api`'s discovery test compares the SERVED `/v1/capabilities` map against, so
+// the shipped surface and the evidence verifier can never disagree about a tier.
+func CapabilityTiersFromBundle(raw []byte) (map[string]string, error) {
+	status, err := CaseOutcomes(raw)
+	if err != nil {
+		return nil, err
+	}
+	return RecomputeCapabilityTiers(status), nil
+}
+
+// CapabilityTierDeclaration is one capability's DECLARED tier plus the claim ids it owns. Both are checked, not
+// trusted: the claim list must equal the canonical ledger and the tier must equal the recompute.
+type CapabilityTierDeclaration struct {
+	Capability   string   `json:"capability"`
+	DeclaredTier string   `json:"declared_tier"`
+	ClaimCaseIDs []string `json:"claim_case_ids"`
+}
+
+// CapabilityTierProof is the evidence a capability_tier_claim requires (plan §T11 — the E17 EXIT anchor, the
+// E13/E14/E15 MUST-FIX-1 shape applied to maturity tiers). Capabilities is the per-capability declaration;
+// Snapshot is the `capabilities` map a GET /v1/capabilities against the RUNNING stack returned; SnapshotSource
+// names how it was taken; ClaimsDigest anchors the claim ledger to the code table.
+//
+// Complete() gates the STRUCTURE (canonical capability set, canonical claim ledger, a tier from the vocabulary,
+// a snapshot covering every governed capability, the anchored ledger digest). The RECOMPUTE — declared tier and
+// snapshot tier must both equal RecomputeCapabilityTier over the bundle's per-case outcomes — needs the sibling
+// cases, so it runs in VerifyManifest (verifyCapabilityTiers) and in ExtensionsPromoteGate. A shape-consistent
+// manifest hand-writing "stable" for a capability with a red or absent claim is REFUSED there, which is the
+// whole point: no task, and no bundle author, can self-declare stable.
+type CapabilityTierProof struct {
+	Capabilities   []CapabilityTierDeclaration `json:"capabilities"`
+	Snapshot       map[string]string           `json:"snapshot"`
+	SnapshotSource string                      `json:"snapshot_source"`
+	ClaimsDigest   string                      `json:"claims_digest"`
+}
+
+// Complete reports the proof is structurally well-formed: EXACTLY the canonical capabilities, each declaring
+// the canonical claim ledger for itself and a tier from the vocabulary, a running-stack snapshot with an entry
+// for every governed capability, a named snapshot source, and the anchored claim-ledger digest. It deliberately
+// does NOT judge the tier VALUES — that is the cross-case recompute in verifyCapabilityTiers, because a tier is
+// a function of outcomes this struct cannot see alone.
+func (p CapabilityTierProof) Complete() bool {
+	if p.SnapshotSource == "" || p.ClaimsDigest != CapabilityClaimsDigest() || len(p.Capabilities) != len(CapabilityTierOrder) {
+		return false
+	}
+	byName := make(map[string]CapabilityTierDeclaration, len(p.Capabilities))
+	for _, d := range p.Capabilities {
+		byName[d.Capability] = d
+	}
+	for _, capability := range CapabilityTierOrder {
+		d, ok := byName[capability]
+		if !ok || !capabilityTiers[d.DeclaredTier] {
+			return false
+		}
+		if !slices.Equal(d.ClaimCaseIDs, CapabilityClaims[capability]) {
+			return false // a shrunken/padded claim ledger cannot be used to dodge a red case
+		}
+		if _, ok := p.Snapshot[capability]; !ok {
+			return false // the running stack did not advertise a governed capability
+		}
+	}
+	return true
+}
+
+// verifyCapabilityTiers is the E17 anti-fabrication RECOMPUTE. For every governed capability it derives the tier
+// from the CANONICAL tables + the bundle's OWN per-case outcomes and refuses when either the manifest's declared
+// tier or the RUNNING stack's `/v1/capabilities` snapshot disagrees — the snapshot must be BIT-EQUAL to the
+// recomputation. It never reads a declared tier as input. Returns one detail string per disagreement.
+func verifyCapabilityTiers(p *CapabilityTierProof, cases []evidenceCase) []string {
+	status := make(map[string]string, len(cases))
+	for _, c := range cases {
+		status[c.ID] = c.Status
+	}
+	byName := make(map[string]CapabilityTierDeclaration, len(p.Capabilities))
+	for _, d := range p.Capabilities {
+		byName[d.Capability] = d
+	}
+
+	var problems []string
+	for _, capability := range CapabilityTierOrder {
+		want := RecomputeCapabilityTier(capability, status)
+		if got := byName[capability].DeclaredTier; got != want {
+			problems = append(problems, fmt.Sprintf(
+				"capability %q declares tier %q but the recompute from the bundle's per-case outcomes is %q — a tier is a FUNCTION of its claim outcomes, never a declaration%s",
+				capability, got, want, tierReason(capability, status)))
+		}
+		if got := p.Snapshot[capability]; got != want {
+			problems = append(problems, fmt.Sprintf(
+				"capability %q: the running stack's /v1/capabilities served %q but the recompute is %q — discovery must be BIT-EQUAL to the recomputed tier table (plan §2, §T11)",
+				capability, got, want))
+		}
+	}
+	// A snapshot entry for a capability the tier table does not govern is fine (responses/sessions/workspaces
+	// predate E17), but a governed capability MISSING from the snapshot means discovery did not advertise what
+	// this gate flips — Complete() already caught that, so nothing more is needed here.
+	return problems
+}
+
+// tierReason explains WHY the recompute landed where it did, so a failing bundle tells the operator which claim
+// or leg is outstanding instead of only that the numbers differ.
+func tierReason(capability string, status map[string]string) string {
+	if why, unservable := capabilityUnservable[capability]; unservable {
+		return " (unservable: " + why + ")"
+	}
+	if status[CapabilitySecurityPrecondition] != "PASS" {
+		return " (the " + CapabilitySecurityPrecondition + " eval security suite is not green — the precondition for ANY stable flip)"
+	}
+	for _, id := range CapabilityClaims[capability] {
+		if s := status[id]; s != "PASS" {
+			if s == "" {
+				return " (claim " + id + " is ABSENT from the bundle)"
+			}
+			return " (claim " + id + " is " + s + ")"
+		}
+	}
+	if leg, awaits := CapabilityOperatorLegs[capability]; awaits {
+		return " (awaits " + leg + ")"
+	}
+	return ""
+}
+
 // secretPattern matches a credential-shaped token (an OpenAI-style sk- key), so a plaintext
 // credential fails the redaction scan even when the exact value is not supplied as a needle.
 var secretPattern = regexp.MustCompile(`sk-[A-Za-z0-9_-]{12,}`)
@@ -1092,6 +1740,10 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	miss(m.APIVersion == "", "api_version", "")
 	miss(m.Migration == "", "migration", "")
 	miss(len(m.Cases) == 0, "cases", "")
+
+	// An E17 release must carry its tier table — recognized by the FAMILY, never by the tier claim itself, so
+	// dropping the marker cannot switch the anchor off (see verifyE17TierTablePresence).
+	findings = append(findings, verifyE17TierTablePresence(m)...)
 
 	for _, c := range m.Cases {
 		// Every case, regardless of tier, carries an id, the run that produced it, its db assertions,
@@ -1353,6 +2005,74 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "eval_gate_proof (an eval-gate claim requires the held-out per-suite score/threshold/regression + dataset digests; a 'thresholds-met' marker is not proof)"})
 			case !c.EvalGateProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "eval_gate_proof is incomplete: not the held-out split, a missing suite, a zero threshold, or a malformed dataset digest (QUA-004)"})
+			}
+		}
+
+		// The E17 T11 extension claims mirror the rule exactly: a non-empty marker with no proof is "missing"; a
+		// proof that fails its Complete() invariant is "invalid" (plan §T11, SLK/A2A/KNO/AUT-queue/WRK/UI).
+		if c.SlackMappingClaim != "" {
+			switch {
+			case c.SlackMappingProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "slack_mapping_proof (a Slack-mapping claim requires the FAKE-peer receipts + the one-session/one-effect-per-event counters + the single terminal summary; a 'mapped' marker is not proof)"})
+			case !c.SlackMappingProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "slack_mapping_proof is incomplete: the peer is not honestly named \"fake\", more than one canonical session, no duplicate delivery to dedupe, effects != source events, no post receipt, not exactly one terminal-summary post, no single rate-limit repair, an accepted unauthorized approval, or a canonical result that did not survive the Slack output failure (SLK-001..008, journey §63.3)"})
+			}
+		}
+		if c.A2AConformanceClaim != "" {
+			switch {
+			case c.A2AConformanceProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "a2a_conformance_proof (an A2A-conformance claim requires the canonical 12-endpoint matrix + the LOOPBACK transcript digest; a 'conformant' marker is not proof)"})
+			case !c.A2AConformanceProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "a2a_conformance_proof is incomplete: a non-canonical endpoint set, an endpoint with no passing fixture outcome, a peer not honestly named \"loopback\", a short transcript, a digest that does not reproduce, or a card that leaked internal detail (A2A-001..005, SUB-007)"})
+			}
+		}
+		if c.KnowledgeACLClaim != "" {
+			switch {
+			case c.KnowledgeACLProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "knowledge_acl_proof (a knowledge-ACL claim requires the ACL-first negative results + citations whose offsets the verifier recomputes from the chunk BYTES; a marker is not proof)"})
+			case !c.KnowledgeACLProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "knowledge_acl_proof is incomplete: an unauthorized result leaked, the ranking shifted (post-filter top-K), the source delete did not propagate, or a citation's quote does not equal chunk_bytes[start:end] — a fabricated offset (KNO-001..008, §25.15.4)"})
+			}
+		}
+		if c.QueueDeliveryClaim != "" {
+			switch {
+			case c.QueueDeliveryProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "queue_delivery_proof (a queue-delivery claim requires the redelivery/dead-letter/loss-less counters + the exactly-once outbound delivery; a marker is not proof)"})
+			case !c.QueueDeliveryProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "queue_delivery_proof is incomplete: the broker names a seam that never ran (it must be one of uat.QueueBrokerSeams — no broker PRODUCT exists in this tree), no redelivery was exercised, effects != distinct messages (a duplicate effect), no dead-letter, a dropped message under backpressure, or an outbound result not delivered exactly once (AUT-009/010, §34.2/§34.5)"})
+			}
+		}
+		if c.WorkerFenceClaim != "" {
+			switch {
+			case c.WorkerFenceProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "worker_fence_proof (a worker-fence claim requires the stale-fence reject + the no-tunnel refusal + the job-scoped secret-handle expiry; a marker is not proof)"})
+			case !c.WorkerFenceProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "worker_fence_proof is incomplete: the stale fence was accepted, no untyped operation was refused, a tunnel succeeded, the secret handle was not job-scoped/expiring, its value reached the journal, or apple-build was advertised without any signing material (WRK-001..007, §31.5/§31.6)"})
+			}
+		}
+		if c.ConsoleClaim != "" {
+			switch {
+			case c.ConsoleProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "console_proof (a console claim requires the axe report digest + the /v1-only network trace + the keyboard/approval-authority facts; a marker is not proof)"})
+			case !c.ConsoleProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "console_proof is incomplete: the upstream is not honestly named \"fake\" (every console proof runs against a FAKE /v1 upstream; a real control plane is §6 leg 8), an axe violation, a malformed report digest, an unoperable keyboard flow, a non-first skip link, a non-authoritative approval detail, an API key that reached the browser, or a network-trace path OUTSIDE the /v1 relay — a privileged backchannel (UI-001/002, §47.6)"})
+			}
+		}
+
+		// The E17 EXIT anchor. Beyond the structural gate, the tier VALUES are RECOMPUTED from the canonical
+		// tables + this bundle's own per-case outcomes, and both the declaration and the running stack's
+		// /v1/capabilities snapshot must equal that recomputation. A shape-consistent manifest hand-writing
+		// "stable" for a capability with a red or absent claim is REFUSED here (plan §T11).
+		if c.CapabilityTierClaim != "" {
+			switch {
+			case c.CapabilityTierProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "capability_tier_proof (a capability-tier claim requires the per-capability declared tier + owned claim ids + the running stack's /v1/capabilities snapshot; a declared tier is not proof)"})
+			case !c.CapabilityTierProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "capability_tier_proof is incomplete: a non-canonical capability set, a shrunken/padded claim ledger, a tier outside stable/preview/disabled, a governed capability missing from the snapshot, an unnamed snapshot source, or a claims_digest that does not equal the canonical ledger digest (plan §T11)"})
+			default:
+				for _, problem := range verifyCapabilityTiers(c.CapabilityTierProof, m.Cases) {
+					findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: problem})
+				}
 			}
 		}
 

@@ -3,6 +3,11 @@
 # provider request id, mTLS enroll, checksum, DB assertions), exactly one terminal per case,
 # and no leaked credential. Backs `make evidence-verify RELEASE=<name>`. Exits non-zero on any
 # finding. The verifier logic is Docker-free Go shared with TestEvidenceVerifier.
+#
+# WHAT THIS DOES NOT DO: it never re-runs the test suites behind a bundle. It judges the manifest — receipt
+# shape, proof-block invariants, cross-case recomputes (digests, measurements, capability tiers) — so for a case
+# carrying only shape fields it blesses the AUTHORED status. Whatever re-runs the backing suites lives in that
+# release's UAT target (for extensions-0.1.0: the co-run inside scripts/uat/extensions).
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 cd "$root"

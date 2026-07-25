@@ -2,7 +2,7 @@ id: AUT-013
 name: orchestrator-retry-canonical-idempotency
 proof_class: component-real
 provider: fake
-input: "an orchestrator retry with the SAME idempotency key yields a single everything (one delivery, one run, one action); a DIFFERENT key with the same dedupe key still yields a single canonical action — idempotency and dedupe compose"
+input: "an orchestrator retry with the SAME idempotency key yields a single everything (one delivery, one run, one action); a DIFFERENT key with the same dedupe key still yields a single canonical action — idempotency and dedupe compose. LOCAL seam: component-real against a real Postgres idempotency spine PLUS a SCRIPTED FAKE orchestrator retry storm over the E17 T8 conformance fixtures — one retry owner, no retry multiplication. §6 leg 6: a real Temporal/Restate instance driving the orchestrator kit is operator work; no native adapter is written or claimed."
 expect_status: completed
 proof:
   - apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetrySameIdempotencyKeySingleEverything
