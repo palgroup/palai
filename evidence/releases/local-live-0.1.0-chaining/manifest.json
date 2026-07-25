@@ -4,6 +4,7 @@
   "cases": [
     {
       "checksum": "sha256:907710e33f10fa4b2489c9c2159262d8c74730b3d6d1652ff86649994e817cb4",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "model_requests.result.model=gpt-4o-mini-2024-07-18",
@@ -24,6 +25,7 @@
     },
     {
       "checksum": "sha256:b8c35b3bb6c847e5adb4fa32729b42f55588cc19250a86c31871bd43162c078f",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "model_requests.result.model=gpt-4o-mini-2024-07-18",

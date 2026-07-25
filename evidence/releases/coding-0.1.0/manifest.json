@@ -4,6 +4,7 @@
   "cases": [
     {
       "checksum": "sha256:9f39c62dec39b73899abb9b417ec51573ee4f429908eac6152be9144c8915331",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "the approved push landed the agent branch at exactly the committed head",
         "the remote ref agent/ses_4447747b155f3b55b4b36e470c9ce7c0/run_a357451d6be9b0192a50ee55a7a04df6 = 40a6df052a0d2b6a333c127b64474d38baeeac47 (a genuine external receipt, not a fake remote)",

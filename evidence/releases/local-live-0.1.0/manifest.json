@@ -4,6 +4,7 @@
   "cases": [
     {
       "checksum": "sha256:38bd21e8f7bdc9fa798cdb6d0a5c982fa452e2fe952ce113b7bdee9b97ceb2d6",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -28,6 +29,7 @@
     },
     {
       "checksum": "sha256:9663a13e990663b99e4df591c622ae8a0af66d5d7cfee082e14c0fc1864cf1b5",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -52,6 +54,7 @@
     },
     {
       "checksum": "sha256:7bc5f1de622db8a7015d5d4e16daca23bf9771e6949ff582ecbe771047f8e787",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -76,6 +79,7 @@
     },
     {
       "checksum": "sha256:b73dce94c1c90a7d3badc0b7f1a7a49ab70116b18764c37d45faf3f26e842153",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -100,6 +104,7 @@
     },
     {
       "checksum": "sha256:bff20a5dbd0a44581ff1f4889add15b896c8e5f50971a35b78085a05c0bc93c9",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -124,6 +129,7 @@
     },
     {
       "checksum": "sha256:b1e732f47b6fea75cbf62f7b851527ff99a7382270b56302147675596cbacce2",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -148,6 +154,7 @@
     },
     {
       "checksum": "sha256:4109bc9dce13e706f7a632c0cd9bc73dc3c30bcf4b901c135d73a38ac6f9ddbd",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -172,6 +179,7 @@
     },
     {
       "checksum": "sha256:8bd1d36570ac62c2671fcab6f15c7b3b406fd357f9c1924fdf3a63bd7d7deae0",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -196,6 +204,7 @@
     },
     {
       "checksum": "sha256:ef815b36994f8d1ca3e277b38dff5f6efa586883c4d4705fcbd1ae4132e6f34c",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -220,6 +229,7 @@
     },
     {
       "checksum": "sha256:6cb862c33f4f0101fad88da7557b230f1d2f8fa327602d96bf3da7dbeb1a24d7",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -244,6 +254,7 @@
     },
     {
       "checksum": "sha256:42f629fc7415ab7655a4e7c0853be4b1bea5571b0c0ab7bc7b933cc802fcf0d9",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -268,6 +279,7 @@
     },
     {
       "checksum": "sha256:839359c60bcd2803ae9bc1d54d3c4ac4de3270a77ce6f2db9e780e336d586886",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -292,6 +304,7 @@
     },
     {
       "checksum": "sha256:1239a1fc376351ba46aa35f4cf4baceda36bcb783d95378d72394de598acb9d6",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -316,6 +329,7 @@
     },
     {
       "checksum": "sha256:d553384628a6c23076042a9c16cdaed1355a7b57d8ad404bd5b0aedbe8795299",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",
@@ -340,6 +354,7 @@
     },
     {
       "checksum": "sha256:2de6caab20047d6f334b6fd58e7b816fb5ac1df6dce0df3a6207026061266585",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "responses.state=completed",

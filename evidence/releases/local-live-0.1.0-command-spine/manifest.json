@@ -4,6 +4,7 @@
   "cases": [
     {
       "checksum": "sha256:04e45463bb08accfd5fbcd6e356dbfe55f0f8b1a28f2e477a6e604c2520e579a",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "model_requests.result.model=gpt-4o-mini-2024-07-18",
@@ -26,6 +27,7 @@
     },
     {
       "checksum": "sha256:b851b9dd98938fafd108ae91ff6ad53091623a17ad851da14df0c0f6fa0b63cf",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "model_requests.result.model=gpt-4o-mini-2024-07-18",
@@ -48,6 +50,7 @@
     },
     {
       "checksum": "sha256:a86fac37a3ad2242899e5581c61ca2b87da9c42059deff26f6103ad4f7e2462d",
+      "checksum_surface": "legacy shape-only",
       "db_assertions": [
         "runs.state=completed",
         "model_requests.provider_request_id present (chatcmpl)",

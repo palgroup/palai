@@ -3,7 +3,7 @@
   "captured_at": "2026-07-21T19:30:00Z",
   "cases": [
     {
-      "checksum": "sha256:01a774771a585ff2dc16f99ddeaf675bbb280c5f0fcdc1dcaf87a593d539e181",
+      "checksum": "sha256:91e96454d2eeb0840f56d7da1b6cabbe9c64d4ba2d8a4a713bc800856239fa28",
       "db_assertions": [
         "a real SIGKILL after the boundary checkpoint was durable recovered on a new attempt via the compatible_checkpoint ladder",
         "the completed tool was NOT replayed after restore (a single tool_call row for the run)",
@@ -45,9 +45,9 @@
       }
     },
     {
-      "checksum": "sha256:e1ed06ce2809f80b43a852435deb18589d7055e9a8aa05da2a1630b75b4c52f4",
+      "checksum": "sha256:71b68f51a2c08d8384c0c9f881ffb1444df2974b11df6c9b1c4a3e2de9ff2497",
       "db_assertions": [
-        "the approved branch push landed exactly the committed head \u2014 the remote ref is a genuine external receipt",
+        "the approved branch push landed exactly the committed head — the remote ref is a genuine external receipt",
         "a kill between the run and the publication pump did NOT duplicate the push: a re-driven pump republished nothing",
         "the draft PR was opened exactly once (find-before-create); duplicate external effect (push/PR) = 0",
         "the scoped push credential was destroyed after the operation; absent from every surface including the checkpoint bytes"
@@ -61,5 +61,6 @@
   ],
   "git_sha": "e15e47c",
   "migration": "000018_tool_call_ledger",
-  "release": "recovery-0.1.0"
+  "release": "recovery-0.1.0",
+  "checksum_note": "E18 T8 anti-fabrication sweep: the ENG-004 and REP-006 checksums were RE-DERIVED from this bundle's own committed canonical surface — hashParts(run_id, \"recovery\") and hashParts(run_id, external_receipt, \"push-once\"), the constructions the E10 kill-recovery journey writer uses (apps/control-plane/e2e/responses/coding_kill_recovery_journey_test.go). The values they replaced were shape-valid but reproduced nothing — the same fabrication class the sweep caught in automation-0.1.0. No claim, proof, run id or assertion changed."
 }
