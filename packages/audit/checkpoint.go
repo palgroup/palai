@@ -64,9 +64,24 @@ func NewCheckpoint(rows []Row, now time.Time) Checkpoint {
 // set VERBATIM (scripts/package/runner/build.sh). This adds no second signing tool and no second
 // keyring: it is the same binary, the same command, and the same key format the release signer uses,
 // and scripts/release/runner-verify.sh verifies these bytes unchanged.
-func WriteSigned(dir string, cp Checkpoint, signingKey string) error {
+//
+// A ZERO-ROW CHECKPOINT IS REFUSED unless allowEmpty says otherwise, and the refusal lives HERE, at
+// the write boundary every caller routes through, rather than in the one command that happens to have
+// noticed. A checkpoint cut from a read that returned nothing anchors the empty prefix: it verifies
+// green against ANY journal forever, because every row is merely "unanchored". Nothing about the read
+// has to be malicious to produce it — every tenant table is FORCE ROW LEVEL SECURITY (000029), so a
+// connection without palai.org_id returns zero rows AND NO ERROR. That is the E14 T7 vacuous-scan
+// lesson: a claim over a surface that can be empty can never fail. ReadRows refuses the scoped
+// connection; this refuses the empty result whatever produced it.
+func WriteSigned(dir string, cp Checkpoint, signingKey string, allowEmpty bool) error {
 	if signingKey == "" {
 		return errors.New("audit: a signing key is required to cut a checkpoint (an unsigned anchor is not an anchor)")
+	}
+	if cp.Count == 0 && !allowEmpty {
+		return errors.New("audit: REFUSING to sign a checkpoint over ZERO rows — it would anchor the empty prefix and " +
+			"verify green against any journal forever. Either the journal really is empty (pass --allow-empty to say so " +
+			"out loud) or the connection could not see it (a non-superuser read under FORCE ROW LEVEL SECURITY returns " +
+			"no rows and no error)")
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -106,23 +121,58 @@ func ResolvePubkey(checkpointPath, pubkey string) (string, string, error) {
 	if pubkey == "" {
 		return "", "", errors.New("audit: a trusted public key is REQUIRED (--pubkey or PALAI_AUDIT_PUBKEY); obtain it out of band, never from beside the checkpoint")
 	}
-	abs, err := filepath.Abs(pubkey)
-	if err != nil {
-		return "", "", err
-	}
-	dir, err := filepath.Abs(filepath.Dir(checkpointPath))
-	if err != nil {
-		return "", "", err
-	}
-	// Prefix match, not a same-directory match: a key tucked in a SUBDIRECTORY of the checkpoint dir is
-	// just as much under the attacker's control (the provenance-verify.sh `"$rel_abs"/*` rule).
-	if abs == dir || strings.HasPrefix(abs, dir+string(filepath.Separator)) {
+	abs := realPath(pubkey)
+	dir := realPath(filepath.Dir(checkpointPath))
+	// Containment is decided on RESOLVED paths and by INODE, not by string prefix, because both string
+	// forms are trivially defeated: a symlink outside the dir pointing at the bundled key reads as
+	// "elsewhere", and reaching the checkpoint through a symlinked directory makes the real key path
+	// read as "elsewhere" too. Both were accepted before, and the report then printed "key supplied
+	// out of band" — asserting the exact property it did not have. os.SameFile also settles macOS
+	// APFS case-insensitivity (/tmp/CP vs /tmp/cp), which no string compare gets right.
+	//
+	// Containment, not equality: a key tucked in a SUBDIRECTORY of the checkpoint dir is just as much
+	// under the attacker's control (the provenance-verify.sh `"$rel_abs"/*` rule).
+	if under(abs, dir) {
 		if os.Getenv(AllowBundledPubkeyEnv) != "1" {
-			return "", "", fmt.Errorf("audit: REFUSING — the public key %s lives under the checkpoint directory it would verify, so it is not a trust anchor; pass an out-of-band key or set %s=1 for a same-session local proof", abs, AllowBundledPubkeyEnv)
+			return "", "", fmt.Errorf("audit: REFUSING — the public key %s resolves under the checkpoint directory %s it would verify, so it is not a trust anchor; pass an out-of-band key or set %s=1 for a same-session local proof", abs, dir, AllowBundledPubkeyEnv)
 		}
 		return abs, "WARNING: the public key came from beside the checkpoint (" + AllowBundledPubkeyEnv + "=1) — the signature proves only self-consistency; same-session local proof only", nil
 	}
 	return abs, "", nil
+}
+
+// realPath is the absolute, symlink-free form of p. A path that does not exist (a --pubkey typo) has
+// no resolved form, and its absolute form is then the honest answer — openssl will produce the real
+// error a moment later.
+func realPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs
+	}
+	return resolved
+}
+
+// under reports whether path is dir or lives below it, walking up path's parents and comparing by
+// inode. Both arguments must already be realPath'd.
+func under(path, dir string) bool {
+	target, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	for p := path; ; {
+		if fi, err := os.Stat(p); err == nil && os.SameFile(fi, target) {
+			return true
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		p = parent
+	}
 }
 
 // LoadSigned verifies the checkpoint envelope and returns the parsed checkpoint. Signature FIRST:

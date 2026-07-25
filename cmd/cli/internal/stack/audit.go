@@ -46,21 +46,20 @@ func pgURLForAudit() (string, error) {
 // AuditCheckpoint reads the journal, folds it into a checkpoint, and writes the signed envelope into
 // dir. signingKey is the release signing key (PALAI_AUDIT_SIGNING_KEY when the flag is empty); there
 // is no unsigned mode, because an unsigned anchor anyone can regenerate is not an anchor.
-func AuditCheckpoint(dir, signingKey string) error {
+//
+// allowEmpty (--allow-empty) is the explicit opt-in for genuinely empty journals. Without it a
+// zero-row read is REFUSED rather than blessed with a signature — see WriteSigned.
+func AuditCheckpoint(dir, signingKey string, allowEmpty bool) error {
 	if signingKey == "" {
 		signingKey = os.Getenv("PALAI_AUDIT_SIGNING_KEY")
 	}
 	if signingKey == "" {
 		return errors.New("audit checkpoint: --signing-key (or PALAI_AUDIT_SIGNING_KEY) is required — the release signing key that anchors the journal")
 	}
-	url, err := pgURLForAudit()
+	ctx := context.Background()
+	conn, err := connectForAudit(ctx, "checkpoint")
 	if err != nil {
 		return err
-	}
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, url)
-	if err != nil {
-		return fmt.Errorf("audit checkpoint: connect Postgres: %w", err)
 	}
 	defer conn.Close(ctx)
 
@@ -69,7 +68,7 @@ func AuditCheckpoint(dir, signingKey string) error {
 		return err
 	}
 	cp := audit.NewCheckpoint(rows, time.Now().UTC())
-	if err := audit.WriteSigned(dir, cp, signingKey); err != nil {
+	if err := audit.WriteSigned(dir, cp, signingKey, allowEmpty); err != nil {
 		return err
 	}
 	fmt.Printf("audit checkpoint: anchored %d event(s) across %d session(s) at %s\n", cp.Count, len(cp.Sessions), cp.Head)
@@ -81,7 +80,12 @@ func AuditCheckpoint(dir, signingKey string) error {
 
 // AuditVerify recomputes the chain from the journal rows and compares it to the signed checkpoint.
 // It returns a non-nil error — and therefore a non-zero exit — on any alert.
-func AuditVerify(checkpointPath, pubkey string, jsonOut bool) error {
+//
+// notOlderThan / minAnchored are the operator's ROLLBACK policy. Compare can only say "this
+// checkpoint's own prefix is intact", which an attacker's older-but-validly-signed copy satisfies
+// perfectly; only the operator knows their cadence, so only they can declare the window. The report
+// carries the checkpoint's age whether or not one is declared.
+func AuditVerify(checkpointPath, pubkey string, notOlderThan time.Duration, minAnchored int, jsonOut bool) error {
 	if checkpointPath == "" {
 		return errors.New("audit verify: --checkpoint <path to " + audit.CheckpointFile + "> is required")
 	}
@@ -103,14 +107,10 @@ func AuditVerify(checkpointPath, pubkey string, jsonOut bool) error {
 		report.Signature = "verified against a bundled key — " + warn
 	}
 
-	url, err := pgURLForAudit()
+	ctx := context.Background()
+	conn, err := connectForAudit(ctx, "verify")
 	if err != nil {
 		return err
-	}
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, url)
-	if err != nil {
-		return fmt.Errorf("audit verify: connect Postgres: %w", err)
 	}
 	defer conn.Close(ctx)
 
@@ -121,13 +121,34 @@ func AuditVerify(checkpointPath, pubkey string, jsonOut bool) error {
 	compared := audit.Compare(cp, rows)
 	compared.CheckpointPath = checkpointPath
 	compared.Signature = report.Signature
+	now := time.Now().UTC()
+	compared.CheckpointAge = audit.Age(cp, now)
+	compared.Alerts = append(compared.Alerts, audit.Freshness(cp, notOlderThan, minAnchored, now)...)
 	return emitAuditReport(compared, warn, jsonOut)
+}
+
+// connectForAudit opens the journal connection both commands use. One helper, so the visibility
+// posture cannot hold on one path and quietly lapse on the other.
+func connectForAudit(ctx context.Context, command string) (*pgx.Conn, error) {
+	url, err := pgURLForAudit()
+	if err != nil {
+		return nil, err
+	}
+	conn, err := pgx.Connect(ctx, url)
+	if err != nil {
+		return nil, fmt.Errorf("audit %s: connect Postgres: %w", command, err)
+	}
+	return conn, nil
 }
 
 // emitAuditReport prints the typed report and returns a non-nil error when it carries any alert, so
 // an integrity failure is a non-zero exit and not something an operator has to spot in a log.
 func emitAuditReport(rep audit.Report, warn string, jsonOut bool) error {
 	rep.OK = len(rep.Alerts) == 0
+	// The ceiling rides in the report itself, JSON included: T10 consumes --json, and a limit only a
+	// human on a terminal ever sees is a limit the evidence bundle does not carry (SEC-102 does this
+	// right; this used to print it and then drop it).
+	rep.Ceiling = audit.Ceilings
 	if jsonOut {
 		raw, err := json.Marshal(rep)
 		if err != nil {
@@ -140,10 +161,13 @@ func emitAuditReport(rep audit.Report, warn string, jsonOut bool) error {
 		}
 		fmt.Printf("audit verify: checkpoint %s\n", rep.CheckpointPath)
 		fmt.Printf("audit verify: signature   %s\n", orNone(rep.Signature))
+		fmt.Printf("audit verify: generated   %s (%s ago)\n", orNone(rep.CheckpointGeneratedAt), orNone(rep.CheckpointAge))
 		fmt.Printf("audit verify: anchored    %d row(s) recomputed to %s\n", rep.AnchoredRows, orNone(rep.RecomputedHead))
 		fmt.Printf("audit verify: checkpoint  head %s\n", orNone(rep.CheckpointHead))
 		fmt.Printf("audit verify: unanchored  %d row(s) written after this checkpoint (cadence is operator policy — they are reported, not vouched for)\n", rep.UnanchoredRows)
-		fmt.Printf("audit verify: CEILING     this chains the `events` session journal, not `audit_events` (§50.3, protected by REVOKE instead); continuous live verification wired to alerting is a plan §6 operator leg — this command is the mechanism, not a watchdog.\n")
+		for _, c := range rep.Ceiling {
+			fmt.Printf("audit verify: CEILING     %s\n", c)
+		}
 		for _, a := range rep.Alerts {
 			fmt.Printf("audit verify: ALERT [%s] %s %s\n", a.Kind, a.SessionID, a.Detail)
 			if a.Want != "" {

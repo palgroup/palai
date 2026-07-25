@@ -224,19 +224,25 @@ func auditCmd(args []string) error {
 		fs := flag.NewFlagSet("audit checkpoint", flag.ContinueOnError)
 		out := fs.String("out", ".", "directory to write the signed checkpoint envelope into")
 		key := fs.String("signing-key", "", "release signing key (default PALAI_AUDIT_SIGNING_KEY)")
+		allowEmpty := fs.Bool("allow-empty", false,
+			"sign a checkpoint over ZERO rows (refused by default: it would anchor the empty prefix and verify green against any journal)")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		return stack.AuditCheckpoint(*out, *key)
+		return stack.AuditCheckpoint(*out, *key, *allowEmpty)
 	case "verify":
 		fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
 		cp := fs.String("checkpoint", "", "path to a signed audit-checkpoint.json")
 		pub := fs.String("pubkey", "", "trusted public key, obtained OUT OF BAND (default PALAI_AUDIT_PUBKEY)")
+		notOlderThan := fs.Duration("not-older-than", 0,
+			"raise a `stale` alert when the checkpoint is older than this (rollback: an OLD signed checkpoint still verifies its own prefix)")
+		minAnchored := fs.Int("min-anchored", 0,
+			"raise a `stale` alert when the checkpoint anchors fewer rows than this (catches a rollback without trusting the clock)")
 		jsonOut := fs.Bool("json", false, "emit the typed report as JSON")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		return stack.AuditVerify(*cp, *pub, *jsonOut)
+		return stack.AuditVerify(*cp, *pub, *notOlderThan, *minAnchored, *jsonOut)
 	default:
 		return fmt.Errorf("usage: palai audit <checkpoint|verify> (got %q)", args[0])
 	}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
@@ -15,9 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/packages/audit"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -97,7 +100,7 @@ func TestAuditIntegrityFourArms(t *testing.T) {
 	mintKey(t, wrongKey, wrongPub)
 
 	cp := audit.NewCheckpoint(readJournal(t, ctx, pool), time.Now())
-	if err := audit.WriteSigned(dir, cp, signing); err != nil {
+	if err := audit.WriteSigned(dir, cp, signing, false); err != nil {
 		t.Fatalf("WriteSigned() error = %v", err)
 	}
 	cpPath := filepath.Join(dir, audit.CheckpointFile)
@@ -117,7 +120,7 @@ func TestAuditIntegrityFourArms(t *testing.T) {
 	// ---- ARM 4 (FAIL-CLOSED): a checkpoint signed with the WRONG key. The forged file's CONTENT is
 	// byte-identical to the real one and internally consistent, so only the trust anchor can reject it.
 	forged := t.TempDir()
-	if err := audit.WriteSigned(forged, cp, wrongKey); err != nil {
+	if err := audit.WriteSigned(forged, cp, wrongKey, false); err != nil {
 		t.Fatalf("WriteSigned(wrong key) error = %v", err)
 	}
 	if _, _, alert := audit.LoadSigned(filepath.Join(forged, audit.CheckpointFile), pubkey); alert == nil || alert.Kind != audit.AlertSignature {
@@ -286,4 +289,229 @@ func firstLine(out string) string {
 		}
 	}
 	return strings.TrimSpace(out)
+}
+
+// TestAuditReadRefusesARowLevelScopedConnection is the VACUOUS-CHECKPOINT arm against real RLS.
+//
+// The commands SAY they connect as the stack's Postgres superuser; the documented second path
+// (PALAI_AUDIT_POSTGRES_URL) carries no such guarantee. Every tenant table is FORCE ROW LEVEL
+// SECURITY (000029), so a connection holding only the runtime role and no palai.org_id reads the
+// journal as ZERO ROWS WITH NO ERROR — and a checkpoint cut from that anchors the empty prefix and
+// verifies green against any journal forever. This drives a REAL restricted login against the REAL
+// policies: first showing the silent-empty read is real, then that ReadRows now refuses it.
+func TestAuditReadRefusesARowLevelScopedConnection(t *testing.T) {
+	cs := openHarness(t)
+	pool := cs.Pool()
+	ctx := storage.WithSystemScope(context.Background())
+	tenant, sessionID, _ := seedRun(t, pool)
+	for seq := 1; seq <= 4; seq++ {
+		exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
+		               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			newID("evt"), tenant.Organization, tenant.Project, sessionID, seq, "run.step.v1", `{"rls": true}`)
+	}
+	// The superuser read the commands are documented to use sees them.
+	if full := readJournal(t, ctx, pool); len(full) == 0 {
+		t.Fatalf("the superuser read saw no rows; the fixture never landed")
+	}
+
+	// A real restricted login: LOGIN + the runtime role's grants, nothing more. Dropped on cleanup.
+	role, password := "palai_audit_scoped_test", "throwaway-"+newID("pw")
+	execAsOwner(t, pool, fmt.Sprintf(`DROP ROLE IF EXISTS %s`, role))
+	execAsOwner(t, pool, fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD %s IN ROLE %s`,
+		role, quoteLiteral(password), storage.RuntimeRole))
+	t.Cleanup(func() { execAsOwner(t, pool, fmt.Sprintf(`DROP ROLE IF EXISTS %s`, role)) })
+
+	scopedURL := withCredentials(t, componentURL(t), role, password)
+	scoped, err := pgx.Connect(context.Background(), scopedURL)
+	if err != nil {
+		t.Fatalf("connect as %s: %v", role, err)
+	}
+	defer scoped.Close(context.Background())
+
+	// THE HOLE, shown against real policies: the query itself succeeds and returns nothing at all.
+	raw, err := scoped.Query(context.Background(), storage.Query("AuditChainRows"))
+	if err != nil {
+		t.Fatalf("the scoped query errored rather than returning empty (%v) — if Postgres now refuses "+
+			"outright, the silent-empty premise below is stale", err)
+	}
+	var silent int
+	for raw.Next() {
+		silent++
+	}
+	raw.Close()
+	if err := raw.Err(); err != nil {
+		t.Fatalf("iterate scoped query: %v", err)
+	}
+	if silent != 0 {
+		t.Fatalf("the row-level-security-scoped connection saw %d row(s); this arm's premise is that it "+
+			"sees zero WITHOUT an error", silent)
+	}
+
+	// ... and ReadRows now refuses instead of handing that emptiness back as the journal.
+	rows, err := audit.ReadRows(context.Background(), scoped)
+	if err == nil {
+		t.Fatalf("audit.ReadRows returned %d row(s) and no error over a row-level-security-scoped "+
+			"connection; a checkpoint cut from it would anchor nothing and verify green forever", len(rows))
+	}
+	if !strings.Contains(err.Error(), "REFUSING") {
+		t.Fatalf("ReadRows error = %q, want it to name the refusal", err)
+	}
+}
+
+// quoteLiteral wraps a throwaway password for a role-creation statement. The value is generated in
+// this test and dies with the container; it can carry no quote, but escaping is free.
+func quoteLiteral(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+// withCredentials re-points the component URL at another role.
+func withCredentials(t *testing.T, raw, user, password string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse component URL: %v", err)
+	}
+	u.User = url.UserPassword(user, password)
+	return u.String()
+}
+
+// TestAuditVerifyReportsCheckpointAgeAndAlertsOnRollback is the ROLLBACK arm at the CLI boundary: the
+// operator surface must SHOW the checkpoint's age and turn an out-of-window one into a typed alert
+// and a non-zero exit. An older validly-signed checkpoint verifies its own prefix perfectly, so
+// without this a swapped-in stale copy is indistinguishable from a fresh one.
+func TestAuditVerifyReportsCheckpointAgeAndAlertsOnRollback(t *testing.T) {
+	if _, err := osexec.LookPath("openssl"); err != nil {
+		t.Skip("openssl not on PATH — the checkpoint signature is the E14 T5 openssl signer")
+	}
+	cs := openHarness(t)
+	pool := cs.Pool()
+	tenant, sessionID, _ := seedRun(t, pool)
+	for seq := 1; seq <= 3; seq++ {
+		exec(t, pool, `INSERT INTO events (id, organization_id, project_id, session_id, seq, type, payload)
+		               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			newID("evt"), tenant.Organization, tenant.Project, sessionID, seq, "run.step.v1",
+			fmt.Sprintf(`{"age": %d}`, seq))
+	}
+
+	bin := filepath.Join(t.TempDir(), "palai")
+	if out, err := osexec.Command("go", "build", "-o", bin, "github.com/palgroup/palai/cmd/cli").CombinedOutput(); err != nil {
+		t.Fatalf("build palai: %v: %s", err, out)
+	}
+	dir, keyDir := t.TempDir(), t.TempDir()
+	signing, pubkey := filepath.Join(keyDir, "k.key"), filepath.Join(keyDir, "k.pub")
+	mintKey(t, signing, pubkey)
+
+	env := append(os.Environ(), "PALAI_AUDIT_POSTGRES_URL="+componentURL(t))
+	run := func(args ...string) (string, int) {
+		cmd := osexec.Command(bin, args...)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		code := 0
+		var ee *osexec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else if err != nil {
+			t.Fatalf("run %v: %v", args, err)
+		}
+		return string(out), code
+	}
+
+	if out, code := run("audit", "checkpoint", "--out", dir, "--signing-key", signing); code != 0 {
+		t.Fatalf("audit checkpoint exited %d: %s", code, out)
+	}
+	cpPath := filepath.Join(dir, audit.CheckpointFile)
+
+	// The report CARRIES the age, and the ceiling, in --json (T10 reads --json, not the terminal).
+	out, code := run("audit", "verify", "--checkpoint", cpPath, "--pubkey", pubkey, "--json")
+	if code != 0 {
+		t.Fatalf("verify exited %d: %s", code, out)
+	}
+	var rep audit.Report
+	if err := json.Unmarshal([]byte(firstLine(out)), &rep); err != nil {
+		t.Fatalf("verify --json is not a typed report (%v): %s", err, out)
+	}
+	if rep.CheckpointGeneratedAt == "" || rep.CheckpointAge == "" {
+		t.Fatalf("the report carries no checkpoint age (%+v); an operator cannot tell a fresh anchor from "+
+			"a 90-day-old one", rep)
+	}
+	if len(rep.Ceiling) == 0 {
+		t.Fatalf("the --json report carries no ceiling; SEC-103's limits reached only the terminal")
+	}
+
+	// A window this checkpoint cannot possibly satisfy: it was cut seconds ago, so ask for nanoseconds.
+	// This is the rollback detector, exercised where it will actually be used.
+	out, code = run("audit", "verify", "--checkpoint", cpPath, "--pubkey", pubkey,
+		"--not-older-than", "1ns", "--json")
+	if code == 0 {
+		t.Fatalf("an out-of-window checkpoint exited 0: %s", out)
+	}
+	if err := json.Unmarshal([]byte(firstLine(out)), &rep); err != nil {
+		t.Fatalf("stale verify emitted no typed report (%v): %s", err, out)
+	}
+	if rep.OK || !rep.Has(audit.AlertStale) {
+		t.Fatalf("stale verify report = %+v, want ok:false with a %q alert", rep, audit.AlertStale)
+	}
+
+	// The coverage floor is the clock-free half of the same detector.
+	out, code = run("audit", "verify", "--checkpoint", cpPath, "--pubkey", pubkey,
+		"--min-anchored", "100000", "--json")
+	if code == 0 {
+		t.Fatalf("a checkpoint far under the --min-anchored floor exited 0: %s", out)
+	}
+	if err := json.Unmarshal([]byte(firstLine(out)), &rep); err != nil || !rep.Has(audit.AlertStale) {
+		t.Fatalf("under-floor verify report = %+v (err=%v), want a %q alert", rep, err, audit.AlertStale)
+	}
+
+	// A generous window is green again — the arm is not just "always alerts".
+	if out, code := run("audit", "verify", "--checkpoint", cpPath, "--pubkey", pubkey,
+		"--not-older-than", "24h", "--min-anchored", "1", "--json"); code != 0 {
+		t.Fatalf("a fresh, adequately covered checkpoint exited %d: %s", code, out)
+	}
+}
+
+// TestAuditCheckpointRefusesAVacuousJournal is the vacuous arm at the CLI boundary: `audit checkpoint`
+// over a journal with no rows used to print "anchored 0 event(s)" and write a perfectly valid signed
+// file. It must refuse, and --allow-empty must be the only way past.
+func TestAuditCheckpointRefusesAVacuousJournal(t *testing.T) {
+	if _, err := osexec.LookPath("openssl"); err != nil {
+		t.Skip("openssl not on PATH — the checkpoint signature is the E14 T5 openssl signer")
+	}
+	// A database of its own, migrated but never written to (the E15 T1 helper). Emptying the shared
+	// one would pull the journal out from under every other arm in this tier.
+	emptyURL := freshDatabase(t)
+	empty, err := coordinator.Open(context.Background(), emptyURL)
+	if err != nil {
+		t.Fatalf("open the empty database: %v", err)
+	}
+	defer empty.Close()
+	if err := empty.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate the empty database: %v", err)
+	}
+
+	bin := filepath.Join(t.TempDir(), "palai")
+	if out, err := osexec.Command("go", "build", "-o", bin, "github.com/palgroup/palai/cmd/cli").CombinedOutput(); err != nil {
+		t.Fatalf("build palai: %v: %s", err, out)
+	}
+	dir, keyDir := t.TempDir(), t.TempDir()
+	signing := filepath.Join(keyDir, "k.key")
+	mintKey(t, signing, filepath.Join(keyDir, "k.pub"))
+
+	env := append(os.Environ(), "PALAI_AUDIT_POSTGRES_URL="+emptyURL)
+	cmd := osexec.Command(bin, "audit", "checkpoint", "--out", dir, "--signing-key", signing)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("audit checkpoint signed an anchor over ZERO rows: %s", out)
+	}
+	if !strings.Contains(string(out), "REFUSING") {
+		t.Fatalf("the refusal does not name itself: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, audit.CheckpointFile)); !os.IsNotExist(err) {
+		t.Fatalf("a refused checkpoint still left a file behind (stat err = %v)", err)
+	}
+
+	// --allow-empty is the explicit opt-in for a journal that really is empty.
+	cmd = osexec.Command(bin, "audit", "checkpoint", "--out", dir, "--signing-key", signing, "--allow-empty")
+	cmd.Env = env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("--allow-empty was still refused: %v: %s", err, out)
+	}
 }
