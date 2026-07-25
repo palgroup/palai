@@ -172,7 +172,9 @@ func main() {
 	// non-nil repo the positional seams use, so it is unconditional.
 	// WithKnowledge mounts the knowledge spine (E17 T4): the FTS ingestion/index/retrieval store over the
 	// same spine pool. Unconditional like WithUsage — it needs no external key material, and a stack that
-	// serves no knowledge simply gets no traffic on the routes (discovery reports "knowledge":"preview").
+	// serves no knowledge simply gets no traffic on the routes. Its discovery TIER is not decided here: the
+	// E17 T11 exit gate recomputes it from the KNO claim outcomes (it closed "stable"), and
+	// apps/control-plane/api asserts the served map is bit-equal to that recompute.
 	edge := edgeLimitsFromEnv()
 	routerOpts := []api.RouterOption{
 		api.WithEdgeLimits(edge),
