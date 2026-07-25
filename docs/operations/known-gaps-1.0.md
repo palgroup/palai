@@ -4,27 +4,30 @@ Every deferred finding carried into the 1.0 release candidate, with a decision, 
 a P2 waiver applies — an expiry.
 
 **These are decisions, not observations.** They were taken by the repository owner (`salihcnkhy`) in
-the E18 T9 session on **2026-07-25**, against commit `2f68375`, and they read that way on purpose: a
-disposition table with no name on it is a way of not deciding. Where a row disagrees with a later
-finding, the later finding wins and the row is amended — with a new date.
+the E18 T9 session on **2026-07-25**, first against commit `2f68375` and **re-scanned in full against
+`803f293`** (the E18 T4 merge) the same day, and they read that way on purpose: a disposition table
+with no name on it is a way of not deciding. Where a row disagrees with a later finding, the later
+finding wins and the row is amended — with a new date.
 
 ```
-RC-BLOCKERS: 1
+RC-BLOCKERS: 0
 ```
 
 That line is machine-read by the E18 T10 stable-release gate
 (`TestKnownGapsRCBlockerCountIsAccurate`, `tests/docs/ops_docs_test.go`, keeps it equal to the number
 of `RC-blocker` rows below). **A gate cannot close while it is non-zero.**
 
-## The one RC-blocker
+## No RC-blockers
 
-> **`SUP-1` — `deploy/airgap/verify.sh` still falls back to the bundle's own verifier.** Line 75 reads
-> `[ -f "$verifier" ] || verifier="$(pwd)/runner-verify.sh"`. An operator who does not supply the
-> out-of-band verifier silently gets the one the *bundle* shipped, so a tampered bundle can verify
-> itself. E16 T7 already closed exactly this hole in the SDK path (fail-closed plus an explicit
-> `ALLOW_BUNDLED_VERIFIER=1` opt-in for same-session local proof, commit `e4aeb6f`); the fix was never
-> applied here. **E18 T4 owns it and is in flight.** Until that lands and this row flips to
-> `closed-verified`, the T10 gate must refuse.
+There is **one** thing this table ever called an RC-blocker, and it is closed: `SUP-1`, the air-gap
+verifier's fall-back to the bundle's own copy. E18 T4 landed the fail-closed resolution and the row
+below carries the two tests that prove it. The count is zero because a row moved on evidence, not
+because a decision column was edited — `TestKnownGapsClosedRowsCiteRealEvidence` will not let it be
+the latter.
+
+Zero blockers is **not** zero risk. Everything below is still carried into 1.0 on purpose: read
+`SUP-2` (the fail-closed resolution class) and `AUD-1` (a retention purge reads as tampering) before
+treating this number as an all-clear.
 
 ## Decisions
 
@@ -69,7 +72,9 @@ promised there. Most are SaaS-scope, consistent with the master plan §9 split.
 
 | ID | Finding | Decision | Owner | Expiry | Evidence / where it goes |
 |---|---|---|---|---|---|
-| `SUP-1` | **Air-gap verifier falls back to the bundle's own copy** (fail-open) | **RC-blocker** | E18 T4 | — | See the box at the top. The fail-closed pattern already exists in the SDK path; it has to be applied to `deploy/airgap/verify.sh` and proven RED-first |
+| `SUP-1` | **Air-gap verifier fell back to the bundle's own copy** (fail-open), so a tampered bundle could verify itself | closed-verified | E18 T4 | — | `TestVerifierSwapFailsClosed` `TestVerifierResolutionRefusesWithNoOutOfBandSigner` — `deploy/airgap/verify.sh` now resolves the signer from **outside** the bundle (a sibling `runner-verify.sh`, else the git-tracked `scripts/package/runner/verify.sh` from a checkout) and **exits 2** if neither is reachable. `PALAI_AIRGAP_ALLOW_BUNDLED_VERIFIER=1` is the explicit same-session opt-in and prints a WARNING naming what it does not prove. Fixed at commit `5796698`, re-scanned green here. **This was the table's only RC-blocker** |
+| `SUP-2` | **Fail-closed path/membership comparisons ship defeated.** Four of them in E18 alone, each shipped believing it was a fence: an unlisted-file check blind to what it was not told about (T3), an unanchored `grep -qF` where `grep -qxF` was needed (T2), a string-prefix containment rule an ordinary symlink walked through in both directions (T7), and a path-equality fence broken **four** ways — a `tools/` subdirectory, a symlinked release, APFS case-respelling, and plain macOS `/tmp` → `/private/tmp` **with no attacker action at all** (T4) | post-1.0 hardening | E18 T10 | — | Recorded as a **class**, not four rows, because four rows would read as four unlucky bugs. All four are fixed and each has the attack as its RED test: `TestProvenanceRejectsUnlistedFile` `TestVerifyRejectsATruncatedRiderName` `TestPubkeyContainmentSurvivesSymlinks` `TestReleaseVerifyRefusesAVerifierInsideTheRelease` `TestReleaseVerifyRefusesABundledKeyByAnySpelling`. **The standing rule: a comparison a security decision rests on is guilty until a RED test proves otherwise** — and the `/tmp` case is why "no attacker in the threat model" is not a defence, since an everyday alias defeated it. Two shapes are now known-good and should be reused rather than re-derived: containment is **device+inode** (`inside()` in `provenance-verify.sh` / `verify.sh`, `EvalSymlinks`+`os.SameFile` in `packages/audit`), and set membership is **whole-line** (`grep -qxF`). The residual is that no gate enumerates these comparisons repo-wide — a reviewer finds them, which is how all four were found. E18 T10 owns deciding whether an RC needs that sweep |
+| `SUP-3` | **A promote with no `PALAI_RELEASE_DIR` verifies no artifacts at all.** `scripts/release/promote.sh` runs the offline release verifier only when the env var names a directory; unset, the tag is blessed on the evidence gate alone | post-1.0 | E18 T10 | — | Deliberate, and the script says so in its own header: a fence refusing an unnamed dir would run **before** the evidence gate and shadow the E15 T6 operator-leg refusal that `scripts/uat/sh2` and `scripts/uat/sdk-parity` both grep for — pinned by `TestPromoteReachesTheEvidenceGate`. Whether a release family must **always** carry a verified artifact set (including the SH-3 stable flip) is **E18 T10's `SupplyChainProof`**, not this wrapper's rule. The half that does ship is the real SEC-101 promotion arm: with the dir named, a tampered byte anywhere stops the promote (`SEC-101`). **T10 dependency:** if T10 does not take this rule, no rule enforces it |
 | `EVD-1` | `automation-0.1.0`'s `AUT-001` (and three sibling) checksums were **fabricated** — shape-valid, reproducing nothing | closed-verified | E18 T8 | — | `TestCommittedBundleChecksumSweep` `TestCorrectedChecksumsRecompute` `TestSweepCatchesFabricatedChecksum` `TestPreCorrectionChecksumConstructionSearch` — corrected and re-derived from the bundle's own committed canonical surface, with the correction and its ceiling written into the manifest's `checksum_note`; the case checksum is now **recomputed** in `VerifyManifest` rather than shape-checked. E18 T8's own review follow-ups were still landing at this commit; further corrections belong to that task, not to a new row |
 | `PER-1` | **The performance profile stamps the machine but not the concurrent load.** The same code measured **229 ms, 7.5 s and 32.4 s** for `trigger_delivery_accept` depending only on what else was running on the laptop | post-1.0 | E18 T6 | — | The `Profile` stamp (`tests/performance/harness.go`) carries machine, cores, memory, OS, Docker version and the harness's **own** `load_shape` — but nothing about co-tenant load, so two runs 100× apart look equally well-stamped. Two consequences, both already true and both stated: **(a)** no number from this harness carries an SLO, and the profile's own `ceiling` field says so; **(b)** a threshold gate tuned on a quiet machine will flap on a busy one, which is why the PER gates are configurable thresholds proving the *mechanism*. Disclosing contention in the stamp is the fix; reference-hardware numbers are E18 §6 leg 3 |
 | `AUD-1` | **A retention purge is indistinguishable from tampering.** `scrub_events` UPDATEs an anchored row's payload to `{"purged": true}` rather than deleting it, so on a stack with `PALAI_RETENTION_STORE_FALSE_TTL` set the reaper raises the **highest-severity** alert during routine maintenance — and an attacker who edits a row inherits "the reaper did it" as cover | post-1.0 hardening | E18 T7 | — | Pinned by `TestARetentionPurgeIsIndistinguishableFromTamper` (`packages/audit/chain_test.go`), which fails if the behaviour ever silently changes. **Correct and unavoidable at this design point** — the chain covers payload bytes, and an authorised rewrite of payload bytes is a payload-byte change. What is *not* acceptable is an operator meeting the alert without knowing: the caveat is in the alert text itself, in `audit.Ceilings`, in `runbooks/audit-integrity-alert.md`, and in the transcript where arms 1 and 2 print byte-for-byte the same alert. **Operational rule: re-cut the checkpoint immediately after any purge.** A real fix is a purge-aware chain (a tombstone the chain understands, or excluding payload from the digest and losing payload integrity) — a design change, not a patch, and 1.0 ships the documented trap instead of a rushed one |
@@ -79,7 +84,7 @@ promised there. Most are SaaS-scope, consistent with the master plan §9 split.
 | ID | Finding | Decision | Owner | Expiry | Evidence / where it goes |
 |---|---|---|---|---|---|
 | `EXT-1` | The `extensions-0.1.0` bundle's `CapabilityTierProof.SnapshotSource` says the snapshot came from *"GET /v1/capabilities served by the real api.NewRouter"* — but the map it describes is produced only by the test's `fullyMountedRouter()` (A2A **and** the capability-worker gateway both mounted). **No shipped deployment config sets `PALAI_CAPABILITY_WORKER_LISTEN_ADDR`**, so no deployed binary serves that map | post-1.0 | E19 T8 | — | The sentence is defensible as written (the named test really does assert bit-equality against a real `NewRouter`), but it invites the reading that a *deployed* binary serves it, and it does not. E19 T8 owns the wording and the mount derivation. **T10 dependency:** `AggregateTierProof` rests on the same seam — it must name the fully-mounted router explicitly and must not claim a deployed binary serves the map |
-| `WRK-1` | The capability-worker gateway listens over **plain HTTP**. The worker binary dials with a stock `http.Client` and has no CA flag, so TLS here would mean changing the client E17 T9 proved | post-1.0 hardening | E19 T8a | — | Recorded at the mount in `apps/control-plane/cmd/palai-capability-worker/main.go`'s counterpart, `startCapabilityWorkerGateway`. The listener is separate from `/v1` and the production edge path-matches `/v1/*` only, so it is not edge-reachable; the operator terminates TLS in front of it. **The runner gateway's mTLS is the upgrade path**, and until it is taken, binding this listener anywhere but a trusted network is an operator error the product does not prevent |
+| `WRK-1` | The capability-worker gateway listens over **plain HTTP**. The worker binary dials with a stock `http.Client` and has no CA flag, so TLS here would mean changing the client E17 T9 proved | post-1.0 hardening | E19 T8a | — | Recorded at the mount, `startCapabilityWorkerGateway` in `apps/control-plane/cmd/palai-control-plane/main.go`. The listener is separate from `/v1` and the production edge path-matches `/v1/*` only, so it is not edge-reachable; the operator terminates TLS in front of it. **The runner gateway's mTLS is the upgrade path.** Stated exactly, because the comfortable version of this row is wrong: there is **no loopback guard** — the mount is a plain `net.Listen("tcp", addr)` over `PALAI_CAPABILITY_WORKER_LISTEN_ADDR`, so it binds whatever the operator names, `0.0.0.0` included. Binding it anywhere but a trusted network is an operator error the product does not prevent, and in practice `WRK-2` is what keeps it harmless today |
 | `WRK-2` | The capability-worker surface is **dormant in three ways**: no production path mints an enrollment token (`Gateway.IssueEnrollmentToken` has no caller outside tests), nothing calls `DispatchJob`, and nothing calls `SetWorkerHealth` or `RedispatchForRetry` | post-1.0 | E19 T8 | — | Verified against the tree at this commit: the gateway is **served and enforcing** everything `WRK-001`..`WRK-007` proved, and a real worker still cannot enroll because the operator ceremony does not exist. That is a missing operator path, not a missing capability — and it is why `capability-workers` being advertised at all depends on a listener nobody configures (`EXT-1`) |
 
 ## 5. Operator legs inherited from earlier epics

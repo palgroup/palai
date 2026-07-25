@@ -90,7 +90,12 @@ When the **release** signing identity is compromised, this runbook stops and
 advisory, new version, never overwrite a released tag or artifact. Then:
 
 1. Re-verify every artifact an operator may hold, offline, so the advisory can state which digests are
-   known-good: [`../airgap.md`](../airgap.md) §1.
+   known-good: `scripts/release/release-verify.sh` for a whole release directory (E18 T4 — recomputes
+   every artifact digest, the SBOM digests, the provenance binding and the signed root, and runs under
+   `--network none`), [`../airgap.md`](../airgap.md) §1 for an air-gap bundle. Both resolve the trust
+   root and the verifying code from **outside** what they are checking, and refuse rather than fall
+   back to a copy that travelled with the artifacts — which is the whole point when the signer is the
+   thing that was compromised.
 2. Re-cut the audit anchor under the new key and keep the old public key: a checkpoint signed by the
    compromised key is no longer evidence of anything.
 3. Verify the audit chain across the incident window:
