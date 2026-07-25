@@ -156,6 +156,15 @@ an operator pin or a drill; it is a compatibility identifier, never a secret.
 The build also emits a **release manifest** (`release-manifest.json`): the target version and the
 control-plane / runner / engine image digests. `palai upgrade` reads it to know what to pin.
 
+Alongside it the build emits **`release-index.json`** — every artifact of the release matrix (CLI for
+darwin/linux × amd64/arm64, the runner host package per arch, and one image tar per
+`linux/amd64`+`linux/arm64` image) with its `kind`, `arch` and its **sha256 digest recomputed from the
+artifact's bytes**. Restrict the matrix with `--platforms`, `--cli-targets` and `--runner-archs` (an
+upgrade drill wants host-only). Binaries are **bit-reproducible**: the same commit rebuilds to the same
+digests (`SOURCE_DATE_EPOCH` defaults to the commit timestamp; `-trimpath -buildvcs=false -ldflags "-s -w
+-buildid="`). Image *layers* are not byte-identical and reproducibility is not claimed for them. The
+index's `sbom` and `provenance` fields are defined and empty — they are produced by E18 T2/T3.
+
 ## The §48.2 support window (OPS-008)
 
 A control-plane serves its **current minor and the previous two** (current + previous two minors). The
