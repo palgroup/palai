@@ -1,0 +1,15 @@
+{
+  "schema": "palai.vuln-policy/v1",
+  "blocks": ["Critical"],
+  "policy": "§51.3 — a finding at a blocking severity BLOCKS promotion. scripts/release/sbom.sh exits non-zero, so every caller in the release chain stops.",
+  "exception_contract": "§62.2 P2 discipline. An exception is ONLY ever time-bound and owner-attributed: id, owner, reason, opened and expires are all REQUIRED, expires must be after opened and no more than 90 days later, and a malformed exception REFUSES this whole file rather than being silently ignored. An expired exception does not apply — the finding blocks again. Add `artifact` to scope an exception to one release artifact; omit it to cover every artifact.",
+  "exception_example": {
+    "id": "CVE-2026-0000",
+    "artifact": "cli/palai-linux-amd64",
+    "owner": "release-owner <owner@example.com>",
+    "opened": "2026-07-25",
+    "expires": "2026-08-24",
+    "reason": "not reachable from any shipped code path; upstream fix lands in <release>"
+  },
+  "exceptions": []
+}

@@ -1,0 +1,11 @@
+{
+  "schema": "palai.vulndb-lock/v1",
+  "scanner_image": "anchore/grype@sha256:fd4ab4d1042b522c896e73bdf09ab8bf384fa417df99d6dd0d6e1008c7e7c821",
+  "db_schema": "6",
+  "db_version": "v6.1.9",
+  "snapshot_date": "2026-07-25T00:39:09Z",
+  "archive_sha256": "b52522866b6988df8030979af541735f52663d53e5b1de197766e1ce1eabf842",
+  "archive_url": "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-07-25T00:39:09Z_1784962778.tar.zst",
+  "local_digest": "xxh64:c104422ee2fafd12",
+  "note": "A PINNED OFFLINE SNAPSHOT of the grype vulnerability DB, not a live CVE feed. Every scan runs --network none against this snapshot; a CVE published after snapshot_date is invisible to it, and rescanning shipped artifacts against a newer snapshot is an operator leg (plan §6). The DB itself is ~2GB and is NOT committed: hydrate it with `scripts/release/sbom.sh --hydrate-db` into $PALAI_VULN_DB_DIR (default dist/vulndb)."
+}
