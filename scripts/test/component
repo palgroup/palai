@@ -72,6 +72,20 @@ run_postgres() {
   url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
 
   set +e
+  # PALAI_SUITE_RUN selects ONE package + test set out of this tier instead of the whole chain below.
+  # The E18 T7 escape suite uses it to run a single quarantine proof against a real Postgres without
+  # paying for every component leg; unset, the tier runs exactly as before.
+  if test -n "${PALAI_SUITE_RUN:-}"; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -run "$PALAI_SUITE_RUN" -v "${PALAI_SUITE_PKG:-./tests/component/postgres}"
+    local status=$?
+    set -e
+    cleanup
+    trap - EXIT
+    test "$status" -eq 0 || exit "$status"
+    echo "component_postgres=PASS (selected: ${PALAI_SUITE_PKG:-./tests/component/postgres} -run $PALAI_SUITE_RUN)"
+    return 0
+  fi
   PALAI_COMPONENT_POSTGRES_URL="$url" \
     go test -tags=component -count=1 -v ./tests/component/postgres
   local status=$?
@@ -249,7 +263,7 @@ run_artifacts() {
     PALAI_S3_BUCKET="palai-artifacts-component" \
     PALAI_S3_ACCESS_KEY="palai" \
     PALAI_S3_SECRET_KEY="palai" \
-    go test -tags=component -count=1 -v ./apps/control-plane/internal/artifacts
+    go test -tags=component -count=1 -run "${PALAI_SUITE_RUN:-.}" -v ./apps/control-plane/internal/artifacts
   local status=$?
   set -e
   if test "$status" -ne 0; then
