@@ -379,6 +379,11 @@ def cmd_verify():
         raise Refused("%s carries no sbom block — the SBOMs were never produced (or were dropped)"
                       % os.environ["MANIFEST"])
 
+    if not os.path.isdir(sbom_dir):
+        raise Refused("%s claims an sbom block but there is no sbom/ directory" % os.environ["MANIFEST"])
+    if not [i for i in doc[key] if i.get("file")]:
+        raise Refused("the manifest names no artifact — verifying an empty set proves nothing")
+
     expected, reports = set(), {}
     for item in doc[key]:
         artifact = item.get("file")
