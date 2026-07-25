@@ -70,9 +70,24 @@ func repoRootFromTest(t *testing.T) string {
 	}
 }
 
-// TestServedCapabilityTiersEqualTheRecompute is the bit-equality assert. It builds the router with the A2A
-// surface MOUNTED (so every governed capability is advertised), serves the real discovery body, and compares
-// it to uat.RecomputeCapabilityTiers over the committed extensions-0.1.0 bundle's per-case outcomes.
+// fullyMountedRouter builds the router with EVERY optional surface a governed capability derives from
+// mounted — A2A (E17 T2) and the capability-worker gateway (E17 T9, E19 T8a) — so the served map contains
+// every governed capability and the bit-equality assert below has something to compare for each.
+//
+// This is the honest reconciliation of mount-gated discovery with the tier recompute, and the two halves are
+// tested separately so neither can hide the other: TestA2ACapabilityAdvertisedOnlyWhenMounted and
+// TestCapabilityWorkersAdvertisedOnlyWhenMounted prove the capability DISAPPEARS when its surface is not
+// mounted, and this file proves that when everything IS mounted the tiers equal the recompute exactly. What
+// stays forbidden is the shortcut: exempting a capability from the assert because a router did not mount it.
+func fullyMountedRouter() http.Handler {
+	srv := &a2a.Server{Interfaces: stubIfaceStore{iface: a2a.PublishedInterface{ID: "if_tier"}}, ScopeFunc: a2aScopeFunc}
+	return NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		SSEConfig{}, nil, nil, WithA2A(srv, srv.PublicCardHandler()), WithCapabilityWorkers())
+}
+
+// TestServedCapabilityTiersEqualTheRecompute is the bit-equality assert. It builds the router with every
+// optional surface MOUNTED (so every governed capability is advertised), serves the real discovery body, and
+// compares it to uat.RecomputeCapabilityTiers over the committed extensions-0.1.0 bundle's per-case outcomes.
 func TestServedCapabilityTiersEqualTheRecompute(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(repoRootFromTest(t), "evidence", "releases", "extensions-0.1.0", "manifest.json"))
 	if err != nil {
@@ -83,10 +98,7 @@ func TestServedCapabilityTiersEqualTheRecompute(t *testing.T) {
 		t.Fatalf("recompute the tier table: %v", err)
 	}
 
-	srv := &a2a.Server{Interfaces: stubIfaceStore{iface: a2a.PublishedInterface{ID: "if_tier"}}, ScopeFunc: a2aScopeFunc}
-	router := NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		SSEConfig{}, nil, nil, WithA2A(srv, srv.PublicCardHandler()))
-	got := servedCapabilities(t, router)
+	got := servedCapabilities(t, fullyMountedRouter())
 
 	for _, capability := range uat.CapabilityTierOrder {
 		served, advertised := got[capability]
@@ -113,12 +125,8 @@ func TestUngovernedCapabilitiesAreNotSilentlyGoverned(t *testing.T) {
 		governed[c] = true
 	}
 
-	srv := &a2a.Server{Interfaces: stubIfaceStore{iface: a2a.PublishedInterface{ID: "if_tier"}}, ScopeFunc: a2aScopeFunc}
-	router := NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		SSEConfig{}, nil, nil, WithA2A(srv, srv.PublicCardHandler()))
-
 	var ungoverned []string
-	for name := range servedCapabilities(t, router) {
+	for name := range servedCapabilities(t, fullyMountedRouter()) {
 		if !governed[name] && !exempt[name] {
 			ungoverned = append(ungoverned, name)
 		}

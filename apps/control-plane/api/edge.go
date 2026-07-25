@@ -51,6 +51,10 @@ type routerConfig struct {
 	metrics     http.Handler
 	a2a         http.Handler // the authed A2A 1.0 surface (E17 T2)
 	a2aCard     http.Handler // the unauthenticated public Agent Card handler
+	// capabilityWorkers records that this binary SERVES the capability-worker gateway (E17 T9) — on its own
+	// listener, not on this router (see WithCapabilityWorkers). It carries no handler because there is
+	// nothing for the router to mount; it exists so discovery derives the claim from the live mount.
+	capabilityWorkers bool
 }
 
 // WithEdgeLimits supplies the §20.12 request-rate limiter and per-project admission caps.
@@ -102,6 +106,23 @@ func WithKnowledge(knowledge KnowledgeAPI) RouterOption {
 // (capabilities.go); the tier is the T11 exit gate's to recompute, never this task's.
 func WithA2A(authed, publicCard http.Handler) RouterOption {
 	return func(c *routerConfig) { c.a2a = authed; c.a2aCard = publicCard }
+}
+
+// WithCapabilityWorkers declares that this binary SERVES the capability-worker gateway (E17 T9, spec §31):
+// the outbound-enrolled enroll/claim/redeem/result surface for out-of-process capability jobs. It takes no
+// handler because the gateway is NOT served by this router — it binds its OWN listener, the runner-gateway
+// posture, for the reason written at startCapabilityWorkerGateway (main.go): it is the same CLASS of surface
+// as the runner (a worker dials in with a one-time enrollment token and carries a short-lived workload
+// identity that the /v1 bearer middleware knows nothing about), so putting /capability/* on the public /v1
+// edge would be a DIFFERENT security posture than the one E17 T9 built and proved.
+//
+// So this option is a discovery fact, nothing else: main.go passes it ONLY where
+// startCapabilityWorkerGateway returned a bound gateway, which is what makes `capability-workers` derive from
+// the live mount rather than a static string (§2, plan §3.5 D14 — the a2a/workspacesCapability posture). It
+// does NOT decide the tier: mounting makes a capability advertisABLE, and the E17 T11 CapabilityTierProof
+// recomputes its maturity from the WRK claim outcomes.
+func WithCapabilityWorkers() RouterOption {
+	return func(c *routerConfig) { c.capabilityWorkers = true }
 }
 
 // WithMetrics mounts the Prometheus text-exposition surface (E14 Task 6) at GET /metrics on the
