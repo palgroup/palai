@@ -220,7 +220,13 @@ func buildManifest(t *testing.T, release string, specs []caseSpec, receipts map[
 		"api_version": "v1",
 		"migration":   latestMigration(t),
 		"captured_at": time.Now().UTC().Format(time.RFC3339),
-		"cases":       cases,
+		// A shape-only bundle must SAY what its checksums do not prove, in the manifest a reader opens —
+		// VerifyManifest requires the note for every release declared shape-only or corrected (E18 T8).
+		"checksum_note": "E18 T8: every case carries checksum_surface = \"legacy shape-only\". This writer " +
+			"hashes RUNTIME bytes the manifest does not commit (hashBundle's parts: the resolved model id, " +
+			"the raw response body), so these checksums are SHAPE-checked only and never recomputed. The " +
+			"load-bearing evidence is the per-case proofs, terminal events and db_assertions.",
+		"cases": cases,
 	}
 }
 

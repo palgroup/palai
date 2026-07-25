@@ -18,6 +18,7 @@
       "status": "PASS"
     }
   ],
+  "checksum_note": "E18 T8: every case in this bundle carries checksum_surface = \"legacy shape-only\". WHAT THAT MEANS: this bundle's writer hashed RUNTIME bytes the manifest does not commit — hashCoding(run_id, the push remote SHA, the work BRANCH) in apps/control-plane/e2e/responses/coding_journey_test.go and liveHash(run_id, the push remote SHA / the PR URL) in coding_live_journey_test.go, where the work branch appears only inside a prose db_assertion and never as a field — so no verifier can re-derive these checksums and VerifyManifest checks their SHAPE only. History was NOT re-run to produce this label: it records what these checksums do not prove. The load-bearing evidence for these cases is their per-case proofs, terminal events and db_assertions, never the checksum.",
   "git_sha": "d6012b3",
   "migration": "000013_approvals_publications",
   "release": "coding-0.1.0"

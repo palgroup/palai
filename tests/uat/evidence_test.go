@@ -15,6 +15,9 @@ func baseManifest() map[string]any {
 		"api_version": "v1",
 		"migration":   "000002_retention",
 		"captured_at": "2026-07-18T10:00:00Z",
+		// local-live-0.1.0 is declared shape-only, and a shape-only release owes the note that says what its
+		// checksums do not prove (E18 T8) — see TestChecksumNoteIsRequiredWhereHistoryIsClaimed.
+		"checksum_note": "shape-only: the live writer hashes runtime bytes this manifest does not commit",
 		"cases": []any{
 			map[string]any{
 				"id":                  "LP-003",
@@ -1166,6 +1169,8 @@ func TestExternalReceiptProofClass(t *testing.T) {
 		return map[string]any{
 			"release": "coding-0.1.0", "git_sha": "abc1234", "api_version": "v1",
 			"migration": "000013_approvals_publications", "captured_at": "2026-07-20T10:00:00Z",
+			// coding-0.1.0 is declared shape-only, so it owes the note (E18 T8).
+			"checksum_note": "shape-only: the coding writer hashes the work branch, which is not a committed field",
 			"cases": []any{map[string]any{
 				"id": "REP-006", "status": "PASS", "proof_class": "external-receipt",
 				"run_id":           "run_push",

@@ -884,26 +884,36 @@ type ThreeLanguageEqualityProof struct {
 // (not from a stored "equal" boolean): divergent outputs, a missing/extra client, a non-JSON output, or a digest
 // that does not reproduce all fail — a fabricated cross-language "equality" cannot pass.
 func (p ThreeLanguageEqualityProof) Complete() bool {
+	agreed, ok := p.agreedCanonicalOutput()
+	return ok && p.EqualityDigest == hashParts(agreed)
+}
+
+// agreedCanonicalOutput RE-CANONICALIZES every canonical client's raw output and returns the single form they
+// all agree on. ok is false for a missing run id, a missing/extra client, a non-JSON output, or any divergence.
+// It never consults EqualityDigest, so callers that derive an anchor from it (caseChecksumParts, via
+// equalityAnchor) cannot be satisfied by a hand-written digest. One copy of the rule, two callers: Complete()
+// compares the stored digest against it, the checksum anchor IS it.
+func (p ThreeLanguageEqualityProof) agreedCanonicalOutput() (string, bool) {
 	if p.RunID == "" || len(p.ClientOutputs) != len(EqualityClients) {
-		return false
+		return "", false
 	}
 	var agreed string
 	for i, client := range EqualityClients {
 		raw, ok := p.ClientOutputs[client]
 		if !ok {
-			return false
+			return "", false
 		}
 		canon, ok := canonicalJSON(raw)
 		if !ok || canon == "" {
-			return false
+			return "", false
 		}
 		if i == 0 {
 			agreed = canon
 		} else if canon != agreed {
-			return false // a client's decode diverged — not semantically equal
+			return "", false // a client's decode diverged — not semantically equal
 		}
 	}
-	return p.EqualityDigest == hashParts(agreed)
+	return agreed, true
 }
 
 // GatewayOffProof is the evidence a gateway_off_claim requires (plan §T8, MOD-003 direct-path half — the exit
@@ -1707,6 +1717,68 @@ var checksumPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 // shape-only checksum from passing SILENTLY, and the release index reports every labelled case.
 const LegacyShapeOnly = "legacy shape-only"
 
+// The two recompute states a release can declare in committedBundleSurfaces. Both mean every case RE-DERIVES;
+// SurfaceCorrected additionally records that E18 T8 rewrote checksums in that bundle, so it owes a
+// checksum_note explaining what changed (LegacyShapeOnly owes one too — see checksumNoteRequired).
+const (
+	SurfaceRecomputed = "recomputed"
+	SurfaceCorrected  = "corrected"
+)
+
+// committedBundleSurfaces is the CODE-side declaration of what every committed bundle's checksum surface is
+// (plan §T8). It lives here, not in the sweep test, because VerifyManifest is the layer `make evidence-verify`,
+// cmd/promote and every in-process journey writer go through — and the E18 T10 release index will rest on it.
+//
+// Keying the decision here is the whole point: `caseChecksumParts` switches on m.Release and on proof-block
+// presence, both MANIFEST-controlled, so without this table a manifest decides for itself whether it has a
+// surface to recompute. That is the "ledger must not be shrinkable" defect: a bundle could delete a case's
+// proof block (surface vanishes, label it legacy) or rename its own release (no family matches, label
+// everything legacy) and verify clean with fabricated checksums. Both are refused because the release's state
+// is read from THIS table, never from the bundle.
+//
+// HONEST CEILING: the raw evidence of the historical runs is NOT re-produced — those runs are history and
+// nothing here re-runs them. What is proven is recompute over the COMMITTED surface plus honest labelling of
+// what cannot be recomputed.
+var committedBundleSurfaces = map[string]string{
+	// Recomputed, never corrected: the surface is committed and the checksums always reproduced.
+	"extensibility-0.1.0":       SurfaceRecomputed,
+	"managed-cloud-0.1.0":       SurfaceRecomputed,
+	"self-host-0.1.0":           SurfaceRecomputed,
+	"self-host-0.2.0":           SurfaceRecomputed,
+	"sdk-provider-parity-0.1.0": SurfaceRecomputed,
+	"extensions-0.1.0":          SurfaceRecomputed,
+	// Corrected by E18 T8 — each owes a checksum_note stating what its committed values were and why they
+	// were renormalized (automation: fabricated, 0 hits over the declared search; recovery: a REAL but
+	// foreign construction). See TestPreCorrectionChecksumConstructionSearch.
+	"automation-0.1.0": SurfaceCorrected,
+	"recovery-0.1.0":   SurfaceCorrected,
+	// Legacy shape-only: the generator hashed uncommitted runtime bytes. Each owes a checksum_note naming
+	// that ceiling, so a reader who opens the manifest meets it there and not only in this file.
+	"coding-0.1.0":                   LegacyShapeOnly,
+	"interactive-0.1.0":              LegacyShapeOnly,
+	"local-live-0.1.0":               LegacyShapeOnly,
+	"local-live-0.1.0-chaining":      LegacyShapeOnly,
+	"local-live-0.1.0-command-spine": LegacyShapeOnly,
+	"local-live-0.1.0-config-switch": LegacyShapeOnly,
+	"local-live-0.1.0-lifecycle":     LegacyShapeOnly,
+	"local-live-0.1.0-subagents":     LegacyShapeOnly,
+}
+
+// anchorFixtureRelease is the ONE release name outside committedBundleSurfaces the verifier tolerates: the
+// synthetic anchor fixture in tests/uat/extensions/tier_anchor_test.go, which drives the tier refusals over a
+// hand-built manifest that is deliberately NOT a committed bundle. It is treated as shape-only (its cases
+// carry the label). Narrow on purpose — every other unknown release is refused, because a real bundle that is
+// not in the table has not declared its surface.
+const anchorFixtureRelease = "extensions-0.1.0-anchor-fixture"
+
+// checksumNoteRequired reports whether a release owes a manifest-level checksum_note: every bundle whose
+// checksums were CORRECTED and every bundle that is shape-only. Both are statements about history a reader
+// must meet in the manifest itself — ChecksumNote is otherwise optional metadata, which is exactly how the
+// NEXT correction could land silently.
+func checksumNoteRequired(surface string) bool {
+	return surface == SurfaceCorrected || surface == LegacyShapeOnly
+}
+
 // caseChecksumParts returns the CANONICAL parts a case's checksum is hashParts() of, or nil when this bundle's
 // checksum surface is not committed (a legacy shape-only case). This is the definition the E18 T8 sweep
 // enforces: each branch mirrors, per release family, the GENERATOR that wrote the bundle.
@@ -1771,44 +1843,66 @@ func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 // never consulted, so the anchor cannot be hand-written.
 func equalityAnchor(m evidenceManifest) string {
 	for _, c := range m.Cases {
-		p := c.ThreeLanguageEqualityProof
-		if p == nil || len(p.ClientOutputs) != len(EqualityClients) {
+		if c.ThreeLanguageEqualityProof == nil {
 			continue
 		}
-		agreed := ""
-		for i, client := range EqualityClients {
-			canon, ok := canonicalJSON(p.ClientOutputs[client])
-			if !ok || canon == "" {
-				return ""
-			}
-			if i == 0 {
-				agreed = canon
-			} else if canon != agreed {
-				return ""
-			}
+		if agreed, ok := c.ThreeLanguageEqualityProof.agreedCanonicalOutput(); ok {
+			return hashParts(agreed)
 		}
-		return hashParts(agreed)
 	}
 	return ""
 }
 
-// verifyCaseChecksum is the E18 T8 recompute mechanism (plan §T8): where the canonical surface is committed
-// the checksum is RECOMPUTED and a mismatch is a finding — a shape-valid value that reproduces nothing is a
-// FABRICATED checksum, which the old shape-only check could never see. Where the surface is not committed the
-// case must carry the explicit LegacyShapeOnly label, and a case that carries it despite having a committed
-// surface is refused: the label admits history, it does not opt out of recompute.
+// releaseChecksumSurface resolves the release's declared state from the CODE-side table. ok is false for a
+// release that declared nothing — refused, never defaulted: defaulting an unknown release to shape-only is
+// precisely how a bundle would rename itself out of recompute.
+func releaseChecksumSurface(release string) (surface string, ok bool) {
+	if s, declared := committedBundleSurfaces[release]; declared {
+		return s, true
+	}
+	if release == anchorFixtureRelease {
+		return LegacyShapeOnly, true
+	}
+	return "", false
+}
+
+// verifyCaseChecksum is the E18 T8 recompute mechanism (plan §T8): where the release's DECLARED surface is
+// recomputable the checksum is RECOMPUTED and a mismatch is a finding — a shape-valid value that reproduces
+// nothing is a FABRICATED checksum, which the old shape-only check could never see. Where the release is
+// declared shape-only the case must carry the explicit LegacyShapeOnly label.
+//
+// Every branch keys off committedBundleSurfaces, so the manifest cannot vote on its own state. That closes the
+// two shrink paths: a case that DROPS its proof block (no parts resolve) fails on a release the table marks
+// recomputable instead of quietly becoming legacy, and a bundle that RENAMES its release is refused outright.
 func verifyCaseChecksum(m evidenceManifest, c evidenceCase) []Finding {
-	parts := caseChecksumParts(m, c)
-	switch {
-	case parts == nil && c.ChecksumSurface == LegacyShapeOnly:
-		return nil
-	case parts == nil:
-		return []Finding{{Case: c.ID, Kind: "missing", Detail: fmt.Sprintf(
-			"checksum_surface (release %q commits no canonical checksum surface for this case, so the checksum cannot be recomputed: it must carry the explicit %q label — an unlabelled shape-only checksum is not evidence)",
-			m.Release, LegacyShapeOnly)}}
-	case c.ChecksumSurface != "":
+	surface, ok := releaseChecksumSurface(m.Release)
+	if !ok {
 		return []Finding{{Case: c.ID, Kind: "invalid", Detail: fmt.Sprintf(
-			"checksum_surface = %q on a case whose canonical surface IS committed — the checksum must be RECOMPUTED, not labelled", c.ChecksumSurface)}}
+			"release %q declares no checksum surface: a manifest may not decide for itself whether its checksums are recomputable — declare the release in committedBundleSurfaces (tests/uat/evidence.go)",
+			m.Release)}}
+	}
+	parts := caseChecksumParts(m, c)
+	if surface == LegacyShapeOnly {
+		if parts != nil {
+			return []Finding{{Case: c.ID, Kind: "invalid", Detail: fmt.Sprintf(
+				"release %q is declared %q but this case's canonical surface IS committed — recompute it instead of labelling it", m.Release, LegacyShapeOnly)}}
+		}
+		if c.ChecksumSurface != LegacyShapeOnly {
+			return []Finding{{Case: c.ID, Kind: "missing", Detail: fmt.Sprintf(
+				"checksum_surface (release %q commits no canonical checksum surface for this case, so the checksum cannot be recomputed: it must carry the explicit %q label — an unlabelled shape-only checksum is not evidence)",
+				m.Release, LegacyShapeOnly)}}
+		}
+		return nil
+	}
+	if c.ChecksumSurface != "" {
+		return []Finding{{Case: c.ID, Kind: "invalid", Detail: fmt.Sprintf(
+			"checksum_surface = %q on release %q, whose surface IS committed (declared %q) — the checksum must be RECOMPUTED, not labelled",
+			c.ChecksumSurface, m.Release, surface)}}
+	}
+	if parts == nil {
+		return []Finding{{Case: c.ID, Kind: "invalid", Detail: fmt.Sprintf(
+			"release %q is declared %q but NO canonical surface resolves for this case — a case may not shrink away the surface it is checksummed over (a dropped claim/proof block does not make the checksum shape-only)",
+			m.Release, surface)}}
 	}
 	if want := hashParts(parts...); c.Checksum != want {
 		return []Finding{{Case: c.ID, Kind: "invalid", Detail: fmt.Sprintf(
@@ -1874,6 +1968,16 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	// An E17 release must carry its tier table — recognized by the FAMILY, never by the tier claim itself, so
 	// dropping the marker cannot switch the anchor off (see verifyE17TierTablePresence).
 	findings = append(findings, verifyE17TierTablePresence(m)...)
+
+	// A bundle whose checksums were CORRECTED, or that is shape-only, must SAY SO in the manifest (plan §2
+	// honest-naming): the note is where a reader who opens this file meets the correction or the ceiling.
+	// Enforcing it is the point — an optional note is how the next correction lands silently.
+	if surface, ok := releaseChecksumSurface(m.Release); ok && checksumNoteRequired(surface) &&
+		strings.TrimSpace(m.ChecksumNote) == "" {
+		findings = append(findings, Finding{Kind: "missing", Detail: fmt.Sprintf(
+			"checksum_note (release %q is declared %q — a corrected or shape-only bundle must state what changed, or what its checksums do NOT prove, in the manifest itself)",
+			m.Release, surface)})
+	}
 
 	for _, c := range m.Cases {
 		// Every case, regardless of tier, carries an id, the run that produced it, its db assertions,

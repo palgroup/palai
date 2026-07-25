@@ -378,6 +378,7 @@
       }
     }
   ],
+  "checksum_note": "E18 T8: every case in this bundle carries checksum_surface = \"legacy shape-only\". WHAT THAT MEANS: this bundle's writer hashed RUNTIME bytes the manifest does not commit — hashBundle(run_id, the RAW response body, provider_request_id) in tests/uat/stack_uat_test.go — so no verifier can re-derive these checksums and VerifyManifest checks their SHAPE only. History was NOT re-run to produce this label: it records what these checksums do not prove. The load-bearing evidence for these cases is their per-case proofs, terminal events and db_assertions, never the checksum.",
   "git_sha": "43f7333",
   "migration": "000002_retention",
   "release": "local-live-0.1.0"
