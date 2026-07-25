@@ -15,16 +15,21 @@ of the surface you need to mint the replacement with.
 ```sh
 palai apikey list
 palai apikey create --project prj_local --scope provision
+curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"
 palai apikey revoke "$NEWKEY"
+curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"
 palai apikey get "$NEWKEY"
 ```
 
-`create` prints the key value **exactly once** — it is never retrievable again, and the transcript
-redacts it. Give the replacement the **narrowest scope that works** (`--scope provision` above), not
-the empty scope set that means full capability. After `revoke`, `get` still returns the row with
-`revoked_at` set: the record is kept, the credential is dead. Revocation takes effect on the next
-request — a live check of that is `MCI-003`/`TEN-001`, and in the transcript it is the `revoked_at`
-stamp. Reference: [`../admin-cli.md`](../admin-cli.md).
+The two `curl`s are the point, and the transcript pins them: **200 before the revoke, 401 immediately
+after, same key**. Revocation is enforced at the request, not merely recorded — a `revoked_at`
+timestamp in a JSON body would prove only that a row changed.
+
+`create` prints the key value **exactly once**; it is never retrievable again, and the recorder
+redacts it out of the transcript while still using it for the two probes above. Give the replacement
+the **narrowest scope that works** (`--scope provision`), not the empty scope set that means full
+capability. After the revoke, `get` still returns the row with `revoked_at` set: the record is kept,
+the credential is dead. Reference: [`../admin-cli.md`](../admin-cli.md).
 
 **Blast radius.** A key is scoped to one project. Enumerate what it could reach with
 `palai apikey get`, and list the runs it made from the journal before you decide the incident is over.

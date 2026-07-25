@@ -2,8 +2,8 @@
 #
 # Recorded by scripts/ops/record-runbook-transcripts.sh against a live `palai local up`
 # stack (compose project $PROJECT), NOT the production overlay.
-#   commit:   2017c9e
-#   recorded: 2026-07-25T19:21:45Z
+#   commit:   a140979
+#   recorded: 2026-07-25T19:41:20Z
 #   platform: Darwin arm64, Docker 24.0.2
 #
 # Absolute paths are rewritten to $WORK (a scratch dir) and $REPO (the worktree).
@@ -22,50 +22,60 @@ $ palai apikey list
       "project_id": "prj_local",
       "principal_id": "prin_local",
       "scopes": [],
-      "created_at": "2026-07-25T19:21:16.660139Z"
+      "created_at": "2026-07-25T19:40:50.853405Z"
     }
   ]
 }
 
 $ palai apikey create --project prj_local --scope provision
 {
-  "id": "key_e30dfcf1deb797f8659cc18302879aba",
+  "id": "key_de1cc74df17633a56a4e64053f908418",
   "object": "api_key",
   "organization_id": "org_local",
   "project_id": "prj_local",
-  "principal_id": "prin_20877af299ea2ab467c6807c016ee3dc",
+  "principal_id": "prin_943cec66f0a749298357574cfa3245f8",
   "scopes": [
     "provision"
   ],
   "key": "sk_<redacted>"
 }
 
+# The new key works. This is the BEFORE half of the revocation proof.
+
+$ curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"
+200
+
 $ palai apikey revoke "$NEWKEY"
 {
-  "id": "key_e30dfcf1deb797f8659cc18302879aba",
+  "id": "key_de1cc74df17633a56a4e64053f908418",
   "object": "api_key",
   "organization_id": "org_local",
   "project_id": "prj_local",
-  "principal_id": "prin_20877af299ea2ab467c6807c016ee3dc",
+  "principal_id": "prin_943cec66f0a749298357574cfa3245f8",
   "scopes": [
     "provision"
   ],
-  "created_at": "2026-07-25T19:21:45.731133Z",
-  "revoked_at": "2026-07-25T19:21:45.797874Z"
+  "created_at": "2026-07-25T19:41:20.287387Z",
+  "revoked_at": "2026-07-25T19:41:20.492957Z"
 }
+
+# The SAME key, immediately after. Revocation is enforced at the request, not merely recorded.
+
+$ curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"
+401
 
 $ palai apikey get "$NEWKEY"
 {
-  "id": "key_e30dfcf1deb797f8659cc18302879aba",
+  "id": "key_de1cc74df17633a56a4e64053f908418",
   "object": "api_key",
   "organization_id": "org_local",
   "project_id": "prj_local",
-  "principal_id": "prin_20877af299ea2ab467c6807c016ee3dc",
+  "principal_id": "prin_943cec66f0a749298357574cfa3245f8",
   "scopes": [
     "provision"
   ],
-  "created_at": "2026-07-25T19:21:45.731133Z",
-  "revoked_at": "2026-07-25T19:21:45.797874Z"
+  "created_at": "2026-07-25T19:41:20.287387Z",
+  "revoked_at": "2026-07-25T19:41:20.492957Z"
 }
 
 # B. Runner enrollment credential: `palai local up` mints a FRESH one-use token every time, so
@@ -73,12 +83,12 @@ $ palai apikey get "$NEWKEY"
 # before and after.
 
 $ shasum -a 256 "$PALAI_HOME/runner-token"
-40ce2b3b24caa72ba8cc9aedf69947d8ba8d1afd4bcecfae08187204e27d1a8c  $REPO/.palai/runner-token
+2ca958fd6087df977d1625678fb7402066a1761025d4e38a66193c7b04ef6beb  $REPO/.palai/runner-token
 
 $ palai local up >/dev/null 2>&1
 
 $ shasum -a 256 "$PALAI_HOME/runner-token"
-946ab8de1c225ce0d8c6fe78fd791a37670e8ef0dc81a8170ca7eae606e42f25  $REPO/.palai/runner-token
+1fdea0a67ae623730e87456b9d2343c6e7c83c2835ac62709647d81ce0df4768  $REPO/.palai/runner-token
 
 # C. Provider/integration secrets. The secret-ref surface is mounted only where a master key is
 # configured — i.e. the production overlay. On this local stack it is NOT mounted, and the CLI says so

@@ -2,8 +2,8 @@
 #
 # Recorded by scripts/ops/record-runbook-transcripts.sh against a live `palai local up`
 # stack (compose project $PROJECT), NOT the production overlay.
-#   commit:   2017c9e
-#   recorded: 2026-07-25T19:22:00Z
+#   commit:   a140979
+#   recorded: 2026-07-25T19:41:33Z
 #   platform: Darwin arm64, Docker 24.0.2
 #
 # Absolute paths are rewritten to $WORK (a scratch dir) and $REPO (the worktree).
@@ -24,11 +24,11 @@ $ docker exec "$PG" psql -U palai -d palai -c "SELECT max(version) AS chain_head
 $ docker exec "$PG" psql -U palai -d palai -c "SELECT version, applied_at, applied_by, left(checksum,12) FROM schema_revisions ORDER BY version DESC LIMIT 5;"
  version |          applied_at           | applied_by |     left     
 ---------+-------------------------------+------------+--------------
-      40 | 2026-07-25 19:21:16.656082+00 | dev        | e8ce6edf03ab
-      39 | 2026-07-25 19:21:16.642996+00 | dev        | f88282ddbf99
-      38 | 2026-07-25 19:21:16.637004+00 | dev        | 8104197aff2f
-      37 | 2026-07-25 19:21:16.628831+00 | dev        | 6fb119a9af8a
-      36 | 2026-07-25 19:21:16.610658+00 | dev        | 89e89e21bef3
+      40 | 2026-07-25 19:40:50.848202+00 | dev        | e8ce6edf03ab
+      39 | 2026-07-25 19:40:50.833265+00 | dev        | f88282ddbf99
+      38 | 2026-07-25 19:40:50.826587+00 | dev        | 8104197aff2f
+      37 | 2026-07-25 19:40:50.814575+00 | dev        | 6fb119a9af8a
+      36 | 2026-07-25 19:40:50.793335+00 | dev        | 89e89e21bef3
 (5 rows)
 
 

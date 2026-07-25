@@ -118,10 +118,22 @@ run 'palai config validate'
 open_transcript key-compromise.txt "Key compromise — revoke, rotate, re-verify"
 note "# A. API key: revoke bites immediately. Mint the replacement FIRST so the operator is not locked out."
 run 'palai apikey list'
-run 'palai apikey create --project prj_local --scope provision'
-NEWKEY="$("$bin" apikey list --json | python3 -c 'import json,sys; print([k["id"] for k in json.load(sys.stdin)["data"] if k["id"]!="key_local"][0])')"
-export NEWKEY
+# `create` prints the key value exactly once, so it is captured HERE rather than re-run: the value is
+# needed to prove revocation at the REQUEST level (200 -> revoke -> 401), which is the claim that
+# matters. It never reaches the transcript — redact() strips it, and the echoed command shows $KEYVAL.
+create_out="$("$bin" apikey create --project prj_local --scope provision 2>&1)"
+{
+	echo '$ palai apikey create --project prj_local --scope provision'
+	printf '%s\n\n' "$create_out" | redact
+} >>"$current"
+NEWKEY="$(printf %s "$create_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+KEYVAL="$(printf %s "$create_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')"
+export NEWKEY KEYVAL
+note "# The new key works. This is the BEFORE half of the revocation proof."
+run 'curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"'
 run 'palai apikey revoke "$NEWKEY"'
+note "# The SAME key, immediately after. Revocation is enforced at the request, not merely recorded."
+run 'curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"'
 run 'palai apikey get "$NEWKEY"'
 note "# B. Runner enrollment credential: \`palai local up\` mints a FRESH one-use token every time, so
 # re-running it rotates the runner's enrollment secret. The digests below are of the token file
