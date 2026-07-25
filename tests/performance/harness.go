@@ -76,16 +76,20 @@ func (p Profile) validate() error {
 			missing = append(missing, name)
 		}
 	}
-	check("case", p.Case == "")
-	check("load_shape", p.LoadShape == "")
-	check("machine", p.Machine == "")
-	check("os", p.OS == "")
-	check("arch", p.Arch == "")
+	// Blank means BLANK, not empty: the caller-supplied strings arrive unmodified, and a stamp of spaces
+	// is not a stamp. load_shape is named verbatim in the §2 invariant and ceiling is the only carrier of
+	// the no-SLO text, so whitespace there would defeat the rule exactly where it matters most.
+	blank := func(s string) bool { return strings.TrimSpace(s) == "" }
+	check("case", blank(p.Case))
+	check("load_shape", blank(p.LoadShape))
+	check("machine", blank(p.Machine))
+	check("os", blank(p.OS))
+	check("arch", blank(p.Arch))
 	check("cores", p.Cores <= 0)
 	check("memory_bytes", p.MemoryBytes <= 0)
-	check("docker", p.Docker == "")
-	check("go", p.Go == "")
-	check("ceiling", p.Ceiling == "")
+	check("docker", blank(p.Docker))
+	check("go", blank(p.Go))
+	check("ceiling", blank(p.Ceiling))
 	check("started_at", p.StartedAt.IsZero())
 	if len(missing) > 0 {
 		return fmt.Errorf("%w (missing: %s)", ErrNoProfile, strings.Join(missing, ", "))
@@ -129,14 +133,21 @@ type Stat struct {
 	P99       float64    `json:"p99"`
 	Max       float64    `json:"max"`
 	Gate      *Threshold `json:"gate,omitempty"`
-	GateValue float64    `json:"gate_value,omitempty"`
-	Pass      bool       `json:"pass"`
+	// GateValue carries no omitempty on purpose: the strongest claims in this tier are the ZEROES (no
+	// delivery lost, no producer starved), and omitempty deletes exactly those from the evidence.
+	GateValue float64 `json:"gate_value"`
+	Pass      bool    `json:"pass"`
 }
 
 // Summary is summary.json: the derived view plus the provenance a re-computing verifier needs
 // (the samples file, its digest, and the exact percentile method).
 type Summary struct {
-	Case              string   `json:"case"`
+	Case string `json:"case"`
+	// Ceiling is the run's honest-ceiling text, copied from the profile. It is a run INPUT (profile.json
+	// is the original and profile_sha256 below pins it), carried here because summary.json is where the
+	// numbers and the §54.3 gate sources are actually READ — a ceiling that only exists in a sibling file
+	// is not next to the number it qualifies.
+	Ceiling           string   `json:"ceiling"`
 	PercentileMethod  string   `json:"percentile_method"`
 	SamplesFile       string   `json:"samples_file"`
 	SamplesSHA256     string   `json:"samples_sha256"`
@@ -217,10 +228,18 @@ func (r *Run) Gate(metric string, pct int, max float64, unit, source string) {
 }
 
 // MaxErrorRate sets the run-wide error ceiling (default 0: any failed sample fails the run).
-func (r *Run) MaxErrorRate(x float64) { r.maxErrorRate = x }
+func (r *Run) MaxErrorRate(x float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.maxErrorRate = x
+}
 
 // Profile exposes the stamp for a caller that wants to log it. It is a copy.
-func (r *Run) Profile() Profile { return r.profile }
+func (r *Run) Profile() Profile {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.profile
+}
 
 func thresholdEnv(metric string) string {
 	var b strings.Builder
@@ -251,7 +270,12 @@ func parseThreshold(raw, unit string) (float64, bool) {
 // incomplete (ErrNoProfile, zero artifacts). Percentiles are then derived from the samples that were
 // just written, and the summary carries the samples digest so the derivation can be re-run against the
 // bytes on disk.
+// It takes the same lock every recorder does. Every caller today completes after its load has joined, so
+// this is not load-bearing — but "the writers happen to be done" is an assumption a future case would
+// break silently, and the tier deliberately runs without -race.
 func (r *Run) Complete(dir string) (Summary, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.profile.FinishedAt = time.Now().UTC()
 	if err := r.profile.validate(); err != nil {
 		return Summary{}, err
@@ -296,7 +320,7 @@ func (r *Run) Complete(dir string) (Summary, error) {
 		return Summary{}, err
 	}
 	sum := Summarize(parsed, r.gates, r.maxErrorRate)
-	sum.Case = r.profile.Case
+	sum.Case, sum.Ceiling = r.profile.Case, r.profile.Ceiling
 	sum.SamplesFile = "samples.jsonl"
 	sum.SamplesSHA256 = digest(raw)
 	sum.ProfileFile = "profile.json"
@@ -390,7 +414,18 @@ func Summarize(samples []Sample, gates map[string]Threshold, maxErrorRate float6
 		if g, ok := gates[metric]; ok {
 			gv := percentile(values, g.Percentile)
 			st.Gate, st.GateValue = &g, gv
-			if gv > g.Max {
+			switch {
+			case g.Unit != "" && g.Unit != st.Unit:
+				// The DECLARED unit is part of the threshold. Comparing across units silently rescales
+				// the gate: "100 ms" against ns samples becomes 100ns (harmlessly strict), and a ceiling
+				// in ns against a gauge in seconds admits anything (the dangerous mirror). Neither is a
+				// conversion this harness may guess at, so a mismatch fails the stat instead of being
+				// reinterpreted. parseThreshold trusts the same declared unit for env overrides, so an
+				// override in the wrong unit lands here too.
+				st.Pass = false
+				sum.Failures = append(sum.Failures, fmt.Sprintf("%s gate declares unit %q but the samples are %q (unit mismatch)",
+					metric, g.Unit, st.Unit))
+			case gv > g.Max:
 				st.Pass = false
 				sum.Failures = append(sum.Failures, fmt.Sprintf("%s p%d = %s exceeds %s",
 					metric, g.Percentile, format(gv, st.Unit), format(g.Max, st.Unit)))
@@ -408,12 +443,24 @@ func Summarize(samples []Sample, gates map[string]Threshold, maxErrorRate float6
 	}
 	// A gate configured for a metric that produced NO samples is a silently vacuous gate — the exact
 	// shape of a harness that "passes" because it measured nothing.
-	for metric, g := range gates {
+	//
+	// It is recorded as a FAILING zero-count Stat, not only as free text, because Stats[].gate is the
+	// only place the artifact carries a gate at all: a gate that vanished from the evidence would
+	// re-derive to pass=true from those same artifacts, and the summary must stay a function of
+	// (samples.jsonl, the gates the summary itself records) in BOTH directions.
+	vacuous := make([]string, 0, len(gates))
+	for metric := range gates {
 		if _, ok := byMetric[metric]; !ok {
-			sum.Pass = false
-			sum.Failures = append(sum.Failures,
-				fmt.Sprintf("%s has a p%d gate but produced no samples (vacuous gate)", metric, g.Percentile))
+			vacuous = append(vacuous, metric)
 		}
+	}
+	sort.Strings(vacuous) // map order must not reach the artifact
+	for _, metric := range vacuous {
+		g := gates[metric]
+		sum.Pass = false
+		sum.Stats = append(sum.Stats, Stat{Metric: metric, Unit: g.Unit, Gate: &g, Pass: false})
+		sum.Failures = append(sum.Failures,
+			fmt.Sprintf("%s has a p%d gate but produced no samples (vacuous gate)", metric, g.Percentile))
 	}
 	sort.Strings(sum.Failures)
 	return sum

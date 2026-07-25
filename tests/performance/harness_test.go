@@ -47,6 +47,13 @@ func TestHarnessWritesNothingWithoutAProfile(t *testing.T) {
 		{"memory_bytes", func(p *Profile) { p.MemoryBytes = 0 }},
 		{"load_shape", func(p *Profile) { p.LoadShape = "" }},
 		{"ceiling", func(p *Profile) { p.Ceiling = "" }},
+		// Whitespace is the same hole with a nicer costume: load_shape is named verbatim in the §2
+		// invariant and ceiling is the ONLY carrier of the no-SLO text, so a blank-looking stamp must
+		// refuse exactly like an empty one.
+		{"whitespace case", func(p *Profile) { p.Case = "   " }},
+		{"whitespace load_shape", func(p *Profile) { p.LoadShape = "\t\n " }},
+		{"whitespace ceiling", func(p *Profile) { p.Ceiling = " " }},
+		{"whitespace machine", func(p *Profile) { p.Machine = "  " }},
 	} {
 		t.Run(blank.field, func(t *testing.T) {
 			saved := run.profile
@@ -73,6 +80,19 @@ func TestHarnessWritesNothingWithoutAProfile(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Fatalf("stat %s: %v", name, err)
 		}
+	}
+}
+
+// TestHarnessRefusesAWhitespaceProfile closes the door NewRun itself left open: the three
+// caller-supplied strings were assigned unmodified, so a run stamped with blanks opened and wrote a
+// full artifact set. A profile made of spaces is not a profile.
+func TestHarnessRefusesAWhitespaceProfile(t *testing.T) {
+	run, err := NewRun("   ", "   ", "   ")
+	if !errors.Is(err, ErrNoProfile) {
+		t.Fatalf("NewRun error = %v, want ErrNoProfile for a whitespace-only stamp", err)
+	}
+	if run != nil {
+		t.Fatal("NewRun returned a usable run for a whitespace-only profile")
 	}
 }
 
@@ -177,6 +197,127 @@ func TestHarnessVacuousGateFails(t *testing.T) {
 	if _, err := run.Complete(filepath.Join(t.TempDir(), "out")); !errors.Is(err, ErrThreshold) {
 		t.Fatalf("Complete error = %v, want ErrThreshold for a gate with no samples", err)
 	}
+}
+
+// TestHarnessVacuousGateSurvivesIntoTheArtifact is the recompute property applied to the FAILURE
+// direction. A gate is carried in the artifact only inside Stats[].gate, so a gate whose metric produced
+// no samples used to vanish from the evidence: the run FAILED in process, and the identical derivation
+// re-run from its own artifacts came back pass=true. E18 T10's verifier is built on the summary being a
+// function of (samples.jsonl, the gates the summary records), so a FAIL that re-derives to PASS is the
+// one divergence that must not exist.
+func TestHarnessVacuousGateSurvivesIntoTheArtifact(t *testing.T) {
+	run := stampedRun(t, "PER-000-vacuous-artifact")
+	run.Latency("measured", "warm", time.Millisecond, true)
+	run.Gate("measured", 95, float64(time.Second), "ns", "test fixture budget")
+	run.Gate("never_measured", 95, 1, "ns", "test fixture budget")
+
+	dir := filepath.Join(t.TempDir(), "out")
+	inProcess, err := run.Complete(dir)
+	if !errors.Is(err, ErrThreshold) {
+		t.Fatalf("Complete error = %v, want ErrThreshold for a gate with no samples", err)
+	}
+
+	// Re-derive from the ARTIFACTS ALONE, the way T10's verifier does: the raw samples file plus the
+	// gates recovered from summary.json's own stats. Nothing in-process is consulted.
+	var onDisk Summary
+	if err := json.Unmarshal(mustReadArtifact(t, dir, "summary.json"), &onDisk); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	gates := map[string]Threshold{}
+	for _, st := range onDisk.Stats {
+		if st.Gate != nil {
+			gates[st.Metric] = *st.Gate
+		}
+	}
+	if _, ok := gates["never_measured"]; !ok {
+		t.Fatal("the configured gate on an unmeasured metric is absent from the artifact; a FAIL re-derives to PASS")
+	}
+	samples, err := ParseSamples(mustReadArtifact(t, dir, "samples.jsonl"))
+	if err != nil {
+		t.Fatalf("ParseSamples error = %v", err)
+	}
+	rederived := Summarize(samples, gates, onDisk.MaxErrorRate)
+	if rederived.Pass {
+		t.Fatalf("re-derived pass=true from the artifacts of a run the harness FAILED: %+v", rederived)
+	}
+	if got, want := strings.Join(rederived.Failures, "; "), strings.Join(onDisk.Failures, "; "); got != want {
+		t.Fatalf("re-derived failures = %q, artifact says %q", got, want)
+	}
+	if onDisk.Pass != inProcess.Pass {
+		t.Fatalf("on-disk pass = %v, in-process pass = %v", onDisk.Pass, inProcess.Pass)
+	}
+}
+
+// TestHarnessGateUnitMismatchFails: a gate's declared unit is part of the threshold. Reinterpreting it as
+// the samples' unit silently rescales the ceiling — harmlessly strict one way ("100 ms" read as 100 ns),
+// and vacuously permissive the other (a nanosecond ceiling against a gauge in seconds passes anything).
+func TestHarnessGateUnitMismatchFails(t *testing.T) {
+	t.Run("declared ms against ns samples", func(t *testing.T) {
+		run := stampedRun(t, "PER-000-unit-strict")
+		run.Latency("fixture_op", "warm", 900*time.Millisecond, true)
+		run.Gate("fixture_op", 100, 100, "ms", "test fixture budget")
+
+		sum, err := run.Complete(filepath.Join(t.TempDir(), "out"))
+		if !errors.Is(err, ErrThreshold) {
+			t.Fatalf("Complete error = %v, want ErrThreshold", err)
+		}
+		if !strings.Contains(strings.Join(sum.Failures, "; "), "unit mismatch") {
+			t.Fatalf("failures = %v, want the unit mismatch named (not a rescaled threshold)", sum.Failures)
+		}
+	})
+	t.Run("declared ns against a seconds gauge", func(t *testing.T) {
+		run := stampedRun(t, "PER-000-unit-permissive")
+		run.Observe("fixture_gauge", "warm", 3600, "seconds", true) // an hour
+		run.Gate("fixture_gauge", 100, float64(time.Second), "ns", "test fixture budget")
+
+		sum, err := run.Complete(filepath.Join(t.TempDir(), "out"))
+		if !errors.Is(err, ErrThreshold) {
+			t.Fatalf("Complete error = %v, want ErrThreshold: a 1s-in-ns ceiling admitted an hour", err)
+		}
+		if !strings.Contains(strings.Join(sum.Failures, "; "), "unit mismatch") {
+			t.Fatalf("failures = %v, want the unit mismatch named", sum.Failures)
+		}
+	})
+}
+
+// TestHarnessRecordsZeroGateValuesAndTheCeiling guards the two strongest claim shapes in this tier from
+// being deleted by JSON encoding: an invariant whose whole point is proving ZERO (PER-004's lost
+// deliveries, starved producers) has gate_value 0, and `omitempty` dropped exactly those. The run's
+// ceiling must also reach summary.json, which is where the numbers are actually read.
+func TestHarnessRecordsZeroGateValuesAndTheCeiling(t *testing.T) {
+	run := stampedRun(t, "PER-000-zero")
+	run.Observe("deliveries_lost", "burst", 0, "deliveries", true)
+	run.Gate("deliveries_lost", 100, 0, "deliveries", "invariant (nothing is lost)")
+
+	dir := filepath.Join(t.TempDir(), "out")
+	if _, err := run.Complete(dir); err != nil {
+		t.Fatalf("Complete error = %v (0 must satisfy a max of 0)", err)
+	}
+	var loose struct {
+		Ceiling string           `json:"ceiling"`
+		Stats   []map[string]any `json:"stats"`
+	}
+	if err := json.Unmarshal(mustReadArtifact(t, dir, "summary.json"), &loose); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if len(loose.Stats) != 1 {
+		t.Fatalf("summary carries %d stats, want 1", len(loose.Stats))
+	}
+	if _, ok := loose.Stats[0]["gate_value"]; !ok {
+		t.Fatalf("the gated value of a zero-invariant is MISSING from the artifact: %v", loose.Stats[0])
+	}
+	if loose.Ceiling != run.Profile().Ceiling {
+		t.Fatalf("summary ceiling = %q, want the run's ceiling %q", loose.Ceiling, run.Profile().Ceiling)
+	}
+}
+
+func mustReadArtifact(t *testing.T, dir, name string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return raw
 }
 
 // TestHarnessThresholdOverrideIsRecorded proves the thresholds are configurable AND that a loosened run says so

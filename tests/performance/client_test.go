@@ -174,6 +174,10 @@ func complete(t *testing.T, run *Run, caseID string) Summary {
 	p := run.Profile()
 	t.Logf("%s PASS — artifacts=%s profile=%q %d cores / %.1f GiB / %s / load=%q",
 		caseID, dir, p.Machine, p.Cores, float64(p.MemoryBytes)/(1<<30), p.Docker, p.LoadShape)
+	// The ceiling goes where the numbers are READ. A log line of §54.3-shaped percentiles with the
+	// qualification in a sibling file reads as a result; with the ceiling next to it, it reads as a
+	// profile number.
+	t.Logf("  CEILING: %s", p.Ceiling)
 	for _, st := range sum.Stats {
 		t.Logf("  %-32s n=%-4d p50=%-12s p95=%-12s p99=%-12s errors=%d", st.Metric, st.Count,
 			format(st.P50, st.Unit), format(st.P95, st.Unit), format(st.P99, st.Unit), st.Errors)
@@ -189,7 +193,7 @@ func mustFailGate(t *testing.T, run *Run, caseID, wantMetric string) {
 	if err == nil {
 		t.Fatalf("%s: the deliberately-bad fixture PASSED the gate; the gate has no teeth", caseID)
 	}
-	if !strings.Contains(err.Error(), "threshold gate failed") {
+	if !errors.Is(err, ErrThreshold) { // the sentinel, not its message text
 		t.Fatalf("%s: want a threshold-gate failure, got %v", caseID, err)
 	}
 	found := false
