@@ -535,6 +535,7 @@ func TestSBOMPipelineLive(t *testing.T) {
 	if b, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build.sh: %v\n%s", err, b)
 	}
+	before := listFiles(t, out)
 
 	if got, code := runSBOM(t, "--dir", out); code != 0 {
 		t.Fatalf("the live SBOM run failed (exit %d):\n%s", code, got)
@@ -574,6 +575,27 @@ func TestSBOMPipelineLive(t *testing.T) {
 	}
 	if !index.SBOM.VulnerabilityScan.Scanned || index.SBOM.VulnerabilityScan.DB.SnapshotDate == "" {
 		t.Fatalf("the live run recorded no dated DB snapshot: %+v", index.SBOM.VulnerabilityScan)
+	}
+
+	// CONTAINMENT — the contract with T3/T4. sbom.sh must add files ONLY under sbom/ (and patch
+	// release-index.json in place). Everything it writes therefore lands before the attestation in
+	// a directory provenance.sh globs for byproducts and hashes into the signed sha256sums root; a
+	// stray file anywhere else would become an unsigned rider the hardened verifier rejects.
+	for f := range listFiles(t, out) {
+		if before[f] || strings.HasPrefix(f, "sbom/") || f == "release-index.json" {
+			continue
+		}
+		t.Errorf("sbom.sh wrote %s outside sbom/ — T3 binds the release dir as it finds it", f)
+	}
+
+	// The secret-scan gate covers the surfaces this run created, and it decompresses first
+	// (TestSecretScanIsNotVacuous proves the walk is not a no-op on compressed members).
+	hits, scanned := scanForSecrets(t, out, secretNeedles(t))
+	if len(hits) > 0 {
+		t.Fatalf("secret material in the release dir: %v", hits)
+	}
+	if scanned < len(index.Artifacts) {
+		t.Fatalf("the secret scan only looked at %d files", scanned)
 	}
 	fmt.Fprintf(os.Stderr, "live: %d artifacts, scan %s against snapshot %s\n",
 		len(index.Artifacts), index.SBOM.VulnerabilityScan.Result,
@@ -700,4 +722,25 @@ func TestSecretScanIsNotVacuous(t *testing.T) {
 		t.Fatalf("scanForSecrets found %d hits inside the gzip member, want 1 — the scan is vacuous: %v",
 			len(hits), hits)
 	}
+}
+
+// listFiles returns every file under dir as a set of slash-separated relative paths.
+func listFiles(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+	found := map[string]bool{}
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		found[filepath.ToSlash(rel)] = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return found
 }
