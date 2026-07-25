@@ -214,8 +214,8 @@ labels and a per-asset retention/processor register are `not claimed`** — see 
 | DNS + resolved-IP policy; private/link-local/metadata denial | Enforced — denial happens **after** resolution, so a rebind does not slip through | `AUT-012` `SAN-004` `EXT-004` |
 | Redirect revalidation | Enforced — the A2A client revalidates each hop rather than blanket-denying | `A2A-004` `AUT-012` |
 | Response size/time limits | Enforced — bounded stdout/stderr and bounded fetch | `TestStderrIsBoundedSeparatelyFromStdout` `EXT-004` |
-| TLS validation | Enforced on the runner gateway (mTLS) and on outbound HTTPS | `LP-007` |
-| Audit destination | Enforced — egress destinations land in the journal | `TestAuditChainCoversEveryEventColumn` |
+| TLS validation | Enforced — the runner gateway is mutually authenticated against the local CA; outbound HTTPS uses the platform TLS stack with no custom verifier and no skip-verify path | `LP-007` |
+| Audit destination | Partial — a tool-mediated fetch binds its destination into the signed execution ledger; platform-internal fetches (webhook delivery, MCP metadata, card fetch) log their destination but have no durable audit row | `TOL-016` |
 | User-controlled Host/forwarding headers cannot change target policy | Enforced — the policy reads the resolved target, not the header | `AUT-012` |
 
 ### 3.7 Sandbox escape (§49.12)
@@ -248,7 +248,7 @@ labels and a per-asset retention/processor register are `not claimed`** — see 
 | Decompression/archive bombs blocked | Enforced for skill archives | `TOL-011` |
 | Per-operation deadlines | Enforced — a hook that times out fails closed | `TOL-012` |
 | Slow-consumer / connection limits | Partial — SSE reconnect and bounded buffers are measured by the performance harness under a **macOS + Docker Desktop** profile with no SLO claim | `TestPER003LongSessionSoak` `TestPER004BurstTriggerQueue` |
-| Size/depth/schema limits before expensive parsing | Enforced at admission | `MCI-005` `MOD-004` |
+| Size/depth/schema limits before expensive parsing | Partial — authentication, rate and concurrency admission run before compute, and the model capability filter runs before admission; a separate request-body size/depth ceiling ahead of parsing is not separately proven | `MCI-005` `MOD-004` |
 
 ### 3.9 Model output handling (§49.14)
 
