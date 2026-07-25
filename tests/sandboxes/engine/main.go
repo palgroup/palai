@@ -1,6 +1,6 @@
 // Command engine is the fixture engine image the runner Docker suites supervise.
 // It is not a real engine: it emits one canonical engine.v1 frame (or deliberately
-// bad output) selected by PALAI_ENGINE_MODE so the fault and security tiers can
+// bad output) selected by PALAI_ENGINE_MODE so the fault, security and performance tiers can
 // prove kill classification, JSONL bounds, and container isolation against a real
 // Docker daemon. It reads only the allowlisted PALAI_* environment the supervisor
 // injects and inspects its own sandbox for authority it must never receive.
@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -61,6 +62,19 @@ func main() {
 	case "interactive":
 		interactive(runID, attemptID)
 	case "fastexit":
+		fastExit(runID, attemptID)
+	case "slowready":
+		// E18 Task 6 (PER-002) RED fixture: a deliberately SLOW engine.ready. It sleeps
+		// PALAI_FIXTURE_READY_DELAY_MS before behaving exactly like fastexit, so the
+		// assignment→engine-ready phase budget is breached by a real container that really is slow —
+		// not by an edited number. Anything but a positive delay is a misconfigured fixture, and a
+		// fixture that silently ran fast would turn its own negative proof green.
+		delay, err := strconv.Atoi(os.Getenv("PALAI_FIXTURE_READY_DELAY_MS"))
+		if err != nil || delay <= 0 {
+			fmt.Fprintln(os.Stderr, "slowready needs a positive PALAI_FIXTURE_READY_DELAY_MS")
+			os.Exit(2)
+		}
+		time.Sleep(time.Duration(delay) * time.Millisecond)
 		fastExit(runID, attemptID)
 	case "hang":
 		time.Sleep(30 * time.Second)

@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+# Performance tier (E18 Task 6, PER-001..004). Selected with `make test-performance TEST=<suite>`;
+# defaults to the whole set. Kept out of `make verify`/`make test-unit` (Docker- and server-bound).
+#
+#   negatives  the harness's own gate mechanics, including the RED proof the tier rests on: a run with
+#              no hardware/load profile produces NO result. Needs no stack (but does need a Docker
+#              daemon to stamp a profile at all — that is the rule, not an accident).
+#   service    PER-001 (single-shot + SSE load), PER-003 (bounded-window soak) and PER-004 (burst
+#              trigger/queue) against a throwaway PostgreSQL + the REAL palai-control-plane binary.
+#   sandbox    PER-002 (cold/warm assignment→engine-ready phase budgets) over the REAL E09
+#              workspace/lease spine and the REAL digest-pinned fixture engine container, plus the
+#              deliberately-slow-engine RED fixture that must FAIL the phase-budget gate.
+#
+# HONEST CEILING: every number here is a macOS + Docker-Desktop number from a shared developer laptop.
+# It carries NO SLO and NO reference-hardware claim (§54's targets are product goals; their real
+# measurement is E18 §6 operator leg 3), and PER-003's "soak" is a bounded window of MINUTES — a real
+# long soak is §6 leg 7. Artifacts (profile.json + samples.jsonl + summary.json per case) land in
+# PALAI_PERF_OUT; the path is printed at the end for E18 T10 to consume.
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# shellcheck source=scripts/test/runner-engine.sh
+source "$root/scripts/test/runner-engine.sh"
+
+suite="${TEST:-all}"
+
+# Pinned Postgres (matches the postgres-coordinator spike / ADR-0001 — the same immutable image every
+# other Docker tier uses, so the storage layer under measurement is the storage layer under test).
+pg_image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+
+export PALAI_PERF_OUT="${PALAI_PERF_OUT:-$(mktemp -d "${TMPDIR:-/tmp}/palai-perf.XXXXXX")}"
+
+pick_port() {
+  python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+
+# start_postgres <label> <name> exports PERF_PG_URL and sets PERF_PG_CONTAINER/PERF_PG_VOLUME for the
+# caller's cleanup. The credential is generated per run and never written to a file.
+start_postgres() {
+  local label="$1" name="$2"
+  local password="palai-perf-${RANDOM}${RANDOM}"
+  PERF_PG_CONTAINER="$name"
+  PERF_PG_VOLUME="$name"
+  docker volume create --label "$label" "$name" >/dev/null
+  docker run --detach --pull=never \
+    --name "$name" \
+    --label "$label" \
+    --env POSTGRES_DB=palai \
+    --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 \
+    --volume "$name:/var/lib/postgresql/data" \
+    "$pg_image" >/dev/null
+
+  # --host 127.0.0.1 makes this a TCP probe, and that is load-bearing. The postgres entrypoint runs a
+  # TEMPORARY server for initdb with listen_addresses='' — it answers pg_isready on the unix socket and
+  # then RESTARTS. Measured on a contended Docker Desktop: the socket probe reports ready at 46.9s while
+  # no client can connect until 59.9s, a 12.9s window in which the control plane boots, fails its ping
+  # with "unexpected EOF" and exits, and the tier reports "control-plane did not start listening".
+  # A TCP probe cannot see the temp server, so it reports ready only when a client could actually connect.
+  local ready=0
+  for _ in $(seq 1 480); do
+    if docker exec "$name" pg_isready --host 127.0.0.1 --username postgres --dbname palai >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$name" >&2 || true
+    echo "postgres performance container did not become ready" >&2
+    exit 1
+  fi
+  local binding port
+  binding="$(docker port "$name" 5432/tcp)"
+  port="${binding##*:}"
+  PERF_PG_URL="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+}
+
+count_containers() { docker ps -aq --filter "label=$1" | sed '/^$/d' | wc -l | tr -d ' '; }
+count_volumes() { docker volume ls -q --filter "label=$1" | sed '/^$/d' | wc -l | tr -d ' '; }
+
+run_negatives() {
+  go test -tags=performance -count=1 -run 'TestHarness' -v ./tests/performance
+  echo "performance_negatives=PASS"
+}
+
+# run_service boots a throwaway Postgres + the REAL control-plane binary and runs PER-001/003/004
+# against it over real HTTP. Dispatch is disabled (PALAI_DISPATCH_WORKERS=0): per the E08 rule the
+# engine opens no tool to a real provider, and these three cases measure the API/journal/admission
+# spine, not model behaviour — a background dispatcher would only race the measured transitions.
+run_service() {
+  local label="io.palai.performance=service"
+  local run_id="$$-${RANDOM}"
+  local workdir binary serverlog server_pid=""
+  workdir="$(mktemp -d)"
+  binary="$workdir/palai-control-plane"
+  serverlog="$workdir/server.log"
+
+  local containers_before volumes_before
+  containers_before="$(count_containers "$label")"
+  volumes_before="$(count_volumes "$label")"
+
+  cleanup() {
+    if test -n "$server_pid"; then kill "$server_pid" >/dev/null 2>&1 || true; wait "$server_pid" 2>/dev/null || true; fi
+    # -v so the anonymous volume goes with the container: a leaked volume on an 8GB Docker Desktop is
+    # somebody else's failed run tomorrow.
+    docker rm -f -v "${PERF_PG_CONTAINER:-}" >/dev/null 2>&1 || true
+    docker volume rm -f "${PERF_PG_VOLUME:-}" >/dev/null 2>&1 || true
+    rm -rf "$workdir"
+  }
+  trap cleanup EXIT
+
+  start_postgres "$label" "palai-perf-service-$run_id"
+
+  go build -o "$binary" ./apps/control-plane/cmd/palai-control-plane
+  local app_port
+  app_port="$(pick_port)"
+  PALAI_DATABASE_URL="$PERF_PG_URL" PALAI_LISTEN_ADDR="127.0.0.1:$app_port" \
+    PALAI_DISPATCH_WORKERS=0 \
+    PALAI_SSE_POLL_INTERVAL="${PALAI_SSE_POLL_INTERVAL:-10ms}" \
+    PALAI_SSE_HEARTBEAT="${PALAI_SSE_HEARTBEAT:-5s}" \
+    PALAI_TRIGGER_RECONCILE_TICK="${PALAI_TRIGGER_RECONCILE_TICK:-200ms}" \
+    PALAI_RETENTION_STORE_FALSE_TTL="${PALAI_RETENTION_STORE_FALSE_TTL:-1s}" \
+    "$binary" >"$serverlog" 2>&1 &
+  server_pid=$!
+
+  # 30s, not 10s: the binary migrates from an empty schema at boot, and this tier shares Docker Desktop
+  # with whatever else is running on the machine.
+  local up=0
+  for _ in $(seq 1 240); do
+    if ! kill -0 "$server_pid" >/dev/null 2>&1; then break; fi
+    if (exec 3<>"/dev/tcp/127.0.0.1/$app_port") 2>/dev/null; then
+      exec 3>&- 3<&- || true
+      up=1
+      break
+    fi
+    sleep 0.125
+  done
+  if test "$up" -ne 1; then
+    cat "$serverlog" >&2 || true
+    echo "control-plane did not start listening on 127.0.0.1:$app_port" >&2
+    exit 1
+  fi
+
+  set +e
+  PALAI_PERF_BASE_URL="http://127.0.0.1:$app_port" \
+    PALAI_PERF_POSTGRES_URL="$PERF_PG_URL" \
+    PALAI_PERF_SERVER_PID="$server_pid" \
+    go test -tags=performance -count=1 -timeout=30m -run "${PERF_RUN:-TestPER001|TestPER003|TestPER004}" -v ./tests/performance
+  local status=$?
+  set -e
+  if test "$status" -ne 0; then
+    echo "----- control-plane server log -----" >&2
+    tail -50 "$serverlog" >&2 || true
+  fi
+
+  cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers "$label")"
+  volumes_after="$(count_volumes "$label")"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "service performance suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then
+    exit "$status"
+  fi
+  echo "performance_service=PASS containers=$containers_after volumes=$volumes_after"
+}
+
+# run_sandbox measures the E09 assignment→engine-ready phase chain: the real workspace/allocation/lease
+# rows against a throwaway Postgres, then the real digest-pinned fixture engine in a real container.
+# It needs BOTH, so it starts Postgres and then hands off to the shared fixture-engine harness (which
+# builds the image, exports its immutable ID, and asserts zero leaked sandbox containers).
+run_sandbox() {
+  local label="io.palai.performance=sandbox"
+  local run_id="$$-${RANDOM}"
+
+  local containers_before volumes_before
+  containers_before="$(count_containers "$label")"
+  volumes_before="$(count_volumes "$label")"
+
+  pg_cleanup() {
+    docker rm -f -v "${PERF_PG_CONTAINER:-}" >/dev/null 2>&1 || true
+    docker volume rm -f "${PERF_PG_VOLUME:-}" >/dev/null 2>&1 || true
+  }
+  trap pg_cleanup EXIT
+
+  start_postgres "$label" "palai-perf-sandbox-$run_id"
+  export PALAI_PERF_POSTGRES_URL="$PERF_PG_URL"
+
+  set +e
+  # run_runner_suite builds the fixture engine, exports PALAI_RUNNER_ENGINE_IMAGE_ID, runs the tagged
+  # package and asserts zero leaked sandbox containers. It takes no -run, so the service cases run too
+  # and SKIP (their base URL is unset) — a skip is the honest outcome for a case whose stack is absent.
+  # The subshell keeps its EXIT trap from clobbering the Postgres cleanup above.
+  ( run_runner_suite performance ./tests/performance )
+  local status=$?
+  set -e
+
+  pg_cleanup
+  trap - EXIT
+  local containers_after volumes_after
+  containers_after="$(count_containers "$label")"
+  volumes_after="$(count_volumes "$label")"
+  if test "$containers_after" -ne "$containers_before" || test "$volumes_after" -ne "$volumes_before"; then
+    echo "sandbox performance suite leaked a container or volume" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then
+    exit "$status"
+  fi
+  echo "performance_sandbox=PASS containers=$containers_after volumes=$volumes_after"
+}
+
+report_out() { echo "performance_artifacts=$PALAI_PERF_OUT"; }
+
+case "$suite" in
+  negatives) run_negatives ;;
+  service) run_service ;;
+  sandbox) run_sandbox ;;
+  all)
+    run_negatives
+    run_service
+    run_sandbox
+    ;;
+  *)
+    echo "unknown performance suite: $suite (known: negatives, service, sandbox, all)" >&2
+    exit 2
+    ;;
+esac
+report_out

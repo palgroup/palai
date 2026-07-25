@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 .PHONY: \
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
-	test-fault test-security test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
+	test-fault test-security test-performance test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
 	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity evidence-verify promote migration-resume-drill upgrade-drill \
@@ -81,6 +81,14 @@ test-fault:
 test-security:
 	@test -x scripts/test/security || { echo "security suite not implemented" >&2; exit 2; }
 	@scripts/test/security
+
+# E18 Task 6 performance tier (PER-001..004). Docker- and server-bound, so it is out of `verify`.
+# Select with `make test-performance TEST=<negatives|service|sandbox|all>`. Every number is a
+# macOS + Docker-Desktop number with NO SLO or reference-hardware claim; a run that cannot stamp its
+# hardware/load profile produces no result at all.
+test-performance:
+	@test -x scripts/test/performance || { echo "performance suite not implemented" >&2; exit 2; }
+	@scripts/test/performance
 
 # Most protected tier: real provider over the network, credential loaded from the
 # git-ignored .env.local at runtime. Not part of verify. Select the case with
