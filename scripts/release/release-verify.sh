@@ -65,9 +65,12 @@ if [ "${1:-}" = "--network-none" ]; then
 	repo="$(cd "$(dirname "$0")/../.." && pwd)"
 	# --network none: the container has NO network device. The repo is mounted read-only, so the
 	# verifying code AND the canonical materials source both come from OUTSIDE the release dir — the
-	# fail-closed resolution is satisfied structurally, with no opt-in. CEILING: a minimal tool image
-	# has openssl+python3 but no git, so provenance-verify's commit recomputation says GIT ABSENT out
-	# loud; every other input is still recomputed from that read-only mount.
+	# fail-closed resolution is satisfied structurally, with no opt-in. CEILINGS, both loud in the
+	# transcript: a minimal tool image has openssl+python3 but no git, so provenance-verify's commit
+	# recomputation says GIT ABSENT (every other input is still recomputed from that read-only mount);
+	# and leg (4) is NOT carried into the container — an SDK bundle is a second directory with a second
+	# out-of-band key, and the run says the SDK packages are UNVERIFIED rather than implying otherwise.
+	# Its verifier is the same openssl + sha256 primitives leg (1) just proved need no network.
 	exec docker run --rm --network none \
 		-v "$repo:/repo:ro" \
 		-v "$rel_abs:/release:ro" \

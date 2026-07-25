@@ -724,4 +724,5 @@ func TestReleaseVerifyOfflineNetworkNone(t *testing.T) {
 			t.Errorf("the offline run is missing %q — it did not do the work:\n%s", want, out)
 		}
 	}
+	t.Logf("--network none transcript:\n%s", out) // the evidence an operator repeats and reads
 }
