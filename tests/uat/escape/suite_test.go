@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -226,7 +227,7 @@ func TestSandboxEscapeSuite(t *testing.T) {
 			out, err := cmd.CombinedOutput()
 			res := result{arm: a, Passed: err == nil, DurationMS: time.Since(started).Milliseconds()}
 			if err != nil {
-				res.Output = tail(string(out), 4000)
+				res.Output = redact(tail(string(out), 4000))
 				rep.Failures = append(rep.Failures, fmt.Sprintf("%s (%s): %v", a.Name, strings.Join(a.Cases, ","), err))
 				t.Errorf("escape arm %s FAILED (%v)\ncases: %v\ncommand: %v %v\n%s",
 					a.Name, err, a.Cases, a.Env, a.Command, res.Output)
@@ -283,6 +284,14 @@ func TestSandboxEscapeSuite(t *testing.T) {
 			rep.NoEscape, rep.QuarantineOK, rep.Failures)
 	}
 }
+
+// throwawayCred matches the per-run database credential the tier scripts mint. Those die with their
+// container and are never a real secret, but a failed arm's output goes into a FILE, so it is redacted
+// on the way in rather than argued about afterwards (plan §2: the secret-scan gate covers every new
+// output surface).
+var throwawayCred = regexp.MustCompile(`(://[^:/@\s]+):[^@/\s]+@`)
+
+func redact(s string) string { return throwawayCred.ReplaceAllString(s, "$1:REDACTED@") }
 
 // tail keeps the last n bytes of a failed arm's output so the report stays readable.
 func tail(s string, n int) string {

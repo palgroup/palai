@@ -114,9 +114,11 @@ func ResolvePubkey(checkpointPath, pubkey string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	if filepath.Dir(abs) == dir {
+	// Prefix match, not a same-directory match: a key tucked in a SUBDIRECTORY of the checkpoint dir is
+	// just as much under the attacker's control (the provenance-verify.sh `"$rel_abs"/*` rule).
+	if abs == dir || strings.HasPrefix(abs, dir+string(filepath.Separator)) {
 		if os.Getenv(AllowBundledPubkeyEnv) != "1" {
-			return "", "", fmt.Errorf("audit: REFUSING — the public key %s sits beside the checkpoint it would verify, so it is not a trust anchor; pass an out-of-band key or set %s=1 for a same-session local proof", abs, AllowBundledPubkeyEnv)
+			return "", "", fmt.Errorf("audit: REFUSING — the public key %s lives under the checkpoint directory it would verify, so it is not a trust anchor; pass an out-of-band key or set %s=1 for a same-session local proof", abs, AllowBundledPubkeyEnv)
 		}
 		return abs, "WARNING: the public key came from beside the checkpoint (" + AllowBundledPubkeyEnv + "=1) — the signature proves only self-consistency; same-session local proof only", nil
 	}
