@@ -17,8 +17,12 @@
 package release
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -574,4 +578,126 @@ func TestSBOMPipelineLive(t *testing.T) {
 	fmt.Fprintf(os.Stderr, "live: %d artifacts, scan %s against snapshot %s\n",
 		len(index.Artifacts), index.SBOM.VulnerabilityScan.Result,
 		index.SBOM.VulnerabilityScan.DB.SnapshotDate)
+}
+
+// --- the secret-scan gate over the new surfaces -------------------------------------------------
+
+// secretNeedles is what must never appear in an SBOM, a scanner report or a license inventory: the
+// live provider credentials from .env.local (when present) plus the generic shapes a leaked key
+// takes. SBOM generation walks INSIDE our artifacts, so a credential that ever got packaged would
+// surface here as a file path, a package name, or a captured string.
+func secretNeedles(t *testing.T) [][]byte {
+	t.Helper()
+	needles := [][]byte{
+		[]byte("BEGIN EC PRIVATE KEY"), []byte("BEGIN PRIVATE KEY"),
+		[]byte("sk-ant-"), []byte("sk-proj-"), []byte("AKIA"),
+	}
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".env.local"))
+	if err != nil {
+		return needles
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || len(v) < 20 || !strings.ContainsAny(k, "KEYTOKENSECRET") {
+			continue
+		}
+		needles = append(needles, []byte(strings.Trim(v, `"'`)))
+	}
+	return needles
+}
+
+// scanForSecrets walks every file under dir and RETURNS the hits (so a test can assert either that
+// there are none, or — for the vacuity guard below — that there is one). A compressed member is
+// scanned AFTER decompression: a raw-byte scan of a gzip stream can never fail, because deflate
+// bit-packs literals and a plaintext secret does not survive as a substring (E14 T7's lesson).
+func scanForSecrets(t *testing.T, dir string, needles [][]byte) (hits []string, scanned int) {
+	t.Helper()
+	check := func(where string, body []byte) {
+		for _, n := range needles {
+			if bytes.Contains(body, n) {
+				hits = append(hits, fmt.Sprintf("%s (needle %q…)", where, string(n[:min(8, len(n))])))
+			}
+		}
+	}
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		scanned++
+		if !strings.HasSuffix(path, ".gz") && !strings.HasSuffix(path, ".tgz") {
+			check(path, body)
+			return nil
+		}
+		gz, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			check(path, body)
+			return nil
+		}
+		defer gz.Close()
+		tr := tar.NewReader(gz)
+		for {
+			h, err := tr.Next()
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil { // not a tar inside the gzip — scan the inflated bytes whole
+				inflated, _ := io.ReadAll(gz)
+				check(path+" (inflated)", inflated)
+				return nil
+			}
+			member, err := io.ReadAll(tr)
+			if err != nil {
+				return err
+			}
+			scanned++
+			check(path+"!"+h.Name, member)
+		}
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return hits, scanned
+}
+
+// TestSecretScanIsNotVacuous is the guard on the guard: it plants a canary inside a gzip'd tar and
+// proves the RAW bytes do not contain it (so a naive scan would pass) while scanForSecrets does.
+func TestSecretScanIsNotVacuous(t *testing.T) {
+	canary := []byte("sk-ant-CANARY-000000000000000000")
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(zw)
+	body := append(append([]byte("token: "), canary...), '\n')
+	if err := tw.WriteHeader(&tar.Header{Name: "leaked.txt", Mode: 0o644, Size: int64(len(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	tw.Close()
+	zw.Close()
+	if bytes.Contains(buf.Bytes(), canary) {
+		t.Skip("this gzip stream happens to keep the canary as a literal substring; the point of " +
+			"the test is the case where it does not")
+	}
+	path := filepath.Join(dir, "packed.tar.gz")
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A raw scan of the compressed bytes finds nothing — that is the vacuous scan.
+	raw, _ := os.ReadFile(path)
+	if bytes.Contains(raw, canary) {
+		t.Fatal("precondition failed: the canary survived compression as a literal")
+	}
+	// scanForSecrets decompresses first, so it must catch exactly what the raw scan missed.
+	hits, _ := scanForSecrets(t, dir, [][]byte{canary})
+	if len(hits) != 1 {
+		t.Fatalf("scanForSecrets found %d hits inside the gzip member, want 1 — the scan is vacuous: %v",
+			len(hits), hits)
+	}
 }

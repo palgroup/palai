@@ -337,10 +337,10 @@ def cmd_rollup():
     else:
         block["vulnerability_scan"] = {
             "scanned": False,
-            "reason": "--no-scan: this run produced SBOMs only",
+            "reason": os.environ.get("SBOM_NO_SCAN_REASON", "--no-scan: this run produced SBOMs only"),
             "result": "not-scanned",
-            "note": ("NOT a clean result. No vulnerability claim may be made for this directory; a "
-                     "release run never passes --no-scan."),
+            "note": ("NOT a clean result — the absence of one. No vulnerability claim may be made "
+                     "for this directory; a release run never passes --no-scan."),
         }
 
     manifest_path = os.path.join(directory, os.environ["MANIFEST"])
@@ -353,7 +353,10 @@ def cmd_rollup():
                     if k not in ("artifact", "kind")}
             item["sbom"] = slot
     doc["sbom"] = block
-    doc.pop("sbom_note", None)  # the E16 T7 "intentionally null" note is retired by real values
+    # Replaces the E16 T7 "intentionally null in the RC bundle" placeholder with what is now true.
+    doc["sbom_note"] = ("REAL SPDX + CycloneDX documents under sbom/, one pair per artifact, each "
+                        "named by a digest recomputed from its bytes. Re-check the whole set "
+                        "offline with `scripts/release/sbom.sh --dir <this dir> --verify`.")
     dump(manifest_path, doc)
 
     print("sbom-tool: %d artifact(s) → %d SBOM files in %s; patched %s"
