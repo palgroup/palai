@@ -116,7 +116,6 @@ type SlackEventsAPI interface {
 type slackHandler struct {
 	slack   SlackEventsAPI
 	retries slackRetryLedger
-	budget  time.Duration
 	logf    func(string, ...any)
 }
 
@@ -126,13 +125,6 @@ func (h *slackHandler) log(format string, args ...any) {
 		return
 	}
 	log.Printf(format, args...)
-}
-
-func (h *slackHandler) ackBudget() time.Duration {
-	if h.budget > 0 {
-		return h.budget
-	}
-	return slackAckBudget
 }
 
 // receive ingests one Events API callback in the order documented at the top of this file.
@@ -155,7 +147,7 @@ func (h *slackHandler) receive(w http.ResponseWriter, r *http.Request) {
 
 	// Everything from here is bounded by the ack budget, so a slow dependency answers Slack in time with a
 	// retryable status instead of silently blowing the three-second window.
-	ctx, cancel := context.WithTimeout(r.Context(), h.ackBudget())
+	ctx, cancel := context.WithTimeout(r.Context(), slackAckBudget)
 	defer cancel()
 
 	// 3. The lookup key. No team id ⇒ no connection ⇒ no secret ⇒ nothing can ever authenticate this body:
@@ -228,6 +220,10 @@ func (h *slackHandler) receive(w http.ResponseWriter, r *http.Request) {
 		slackTerminal(w, r, http.StatusUnprocessableEntity, "invalid_request", out.Rejected)
 		return
 	}
+	// The ack is earned: the reservation is committed and the run is queued for the dispatch workers. Logged
+	// with the outcome so an operator can tell a fresh admission from a redelivery that replayed onto it.
+	h.log("slack events: admitted connection=%s event=%s response=%s session=%s replayed=%t",
+		conn.ID, ev.SourceEventID, out.ResponseID, out.SessionID, out.Replayed)
 	w.WriteHeader(http.StatusOK)
 }
 

@@ -52,12 +52,10 @@ var (
 // SlackAdmitter wires the Slack Events route to the durable spine. It is the api.SlackEventsAPI production
 // implementation.
 type SlackAdmitter struct {
-	store     *Store
-	admitter  api.Admitter
-	secrets   SecretResolver
-	limits    api.AdmissionLimits
-	tolerance time.Duration
-	now       func() time.Time
+	store    *Store
+	admitter api.Admitter
+	secrets  SecretResolver
+	limits   api.AdmissionLimits
 }
 
 // NewSlackAdmitter builds the bridge. secrets redeems a signing_secret_ref to bytes at verification time (the
@@ -92,7 +90,7 @@ func (a *SlackAdmitter) VerifySignature(_ context.Context, conn api.SlackConnect
 		// Logged by the caller as a typed reject; the ref name is NOT echoed to the sender (no config oracle).
 		return slack.ErrBadSignature
 	}
-	return slack.VerifySignature(secret, timestamp, signature, body, a.clock(), a.replayWindow())
+	return slack.VerifySignature(secret, timestamp, signature, body, time.Now(), slack.DefaultTolerance)
 }
 
 // Admit reserves the source-event dedupe and births the run. Order inside one call:
@@ -147,7 +145,7 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 		ID:             contracts.ResponseID(responseID),
 		Object:         "response",
 		Status:         "queued",
-		CreatedAt:      a.clock().UTC().Format(time.RFC3339Nano),
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339Nano),
 		Output:         []contracts.ContentItem{},
 		Usage:          contracts.Usage{},
 		SessionID:      contracts.SessionID(sessionID),
@@ -251,9 +249,11 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 // event stays opaque here exactly as the adapter left it — turning a Slack message into a prompt is the
 // pinned agent revision's job, not the transport's.
 //
-// actor_mapped records SLK-004's event half: whether the Slack user who caused this event is on the
-// connection's approver allow-list. It is a FACT ABOUT the actor carried as data — an unmapped user still
-// gets a run, that run simply belongs to the connection's principal and its Slack actor authorizes nothing.
+// slack_user_id is SLK-004's event half, and the guarantee is STRUCTURAL rather than a flag: a Slack user
+// never becomes a principal. Whoever caused the event — allow-listed or not — travels as DATA beside the run,
+// while the run's identity is the connection's configured principal. So an unmapped user still gets a run and
+// their Slack identity authorizes exactly nothing, because there is no code path by which it could. (The
+// allow-list itself is read on the DECISION path, SlackAuthorizationPolicyFor, which E19 T2 wires.)
 func slackRunInput(ev slack.Event, conn api.SlackConnectionRef, target slackRunTarget) map[string]any {
 	return map[string]any{
 		"source":        slack.Source,
@@ -332,18 +332,4 @@ func sessionIDFromProjection(body []byte) string {
 		return ""
 	}
 	return proj.SessionID
-}
-
-func (a *SlackAdmitter) clock() time.Time {
-	if a.now != nil {
-		return a.now()
-	}
-	return time.Now()
-}
-
-func (a *SlackAdmitter) replayWindow() time.Duration {
-	if a.tolerance > 0 {
-		return a.tolerance
-	}
-	return slack.DefaultTolerance
 }
