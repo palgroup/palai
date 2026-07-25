@@ -32,7 +32,9 @@ import (
 const (
 	statementFile = "provenance.intoto.json"
 	// The builder identity this session can honestly claim (plan §T3): NOT a CI workflow identity.
-	honestBuilderID = "local-macos-session"
+	// SLSA provenance v1 types RunDetails.builder.id as a TypeURI and consumers key their roots of
+	// trust on it, so the honest local identity is spelled as a URI — same true statement, right shape.
+	honestBuilderID = "https://palai.dev/builders/local-macos-session"
 )
 
 // The Dockerfiles scripts/release/build.sh actually builds — the provenance materials must name
@@ -223,6 +225,10 @@ func TestProvenanceBindsRecomputedSubjectsAndMaterials(t *testing.T) {
 	if got := st.Predicate.RunDetails.Builder.ID; got != honestBuilderID {
 		t.Errorf("builder.id = %q, want the honest %q (a CI workflow identity is plan §6 leg 1)", got, honestBuilderID)
 	}
+	if got := st.Predicate.RunDetails.Builder.ID; !strings.Contains(got, "://") {
+		t.Errorf("builder.id = %q is not a TypeURI — SLSA provenance v1 REQUIRES a URI here (L1+) and it"+
+			" is the lookup key a consumer matches against its roots of trust", got)
+	}
 	// The CI workflow-identity slot must EXIST and be empty — T5's real run fills it (§6).
 	ip := st.Predicate.BuildDefinition.InternalParameters
 	if v, ok := ip["ci_workflow_identity"]; !ok || v != nil {
@@ -293,8 +299,19 @@ func TestProvenanceBindsRecomputedSubjectsAndMaterials(t *testing.T) {
 		sha256File(t, filepath.Join(repoRoot(t), "scripts/package/runner/verify.sh")); a != b {
 		t.Errorf("the staged runner-verify.sh is not the E14 T5 verifier VERBATIM (%s != %s)", a, b)
 	}
-	if ok, out := verifyProvenance(t, dir, pub); !ok {
+	ok, out := verifyProvenance(t, dir, pub)
+	if !ok {
 		t.Fatalf("provenance-verify.sh rejected a freshly attested release:\n%s", out)
+	}
+	// The success line is the surface an operator actually reads: it must name WHO built this and the
+	// ceiling of what was established, or a clean "OK" reads as more than it is.
+	if !strings.Contains(out, honestBuilderID) {
+		t.Errorf("the success output never says who built the release (%q):\n%s", honestBuilderID, out)
+	}
+	for _, want := range []string{"no transparency log", "no SLSA level"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the success output does not state the ceiling (%q):\n%s", want, out)
+		}
 	}
 	// A signing key must NEVER be left in the release dir (the PEM header is matched whole; the
 	// released Go binaries legitimately contain the words "PRIVATE KEY" from crypto/x509).
@@ -515,13 +532,246 @@ func TestProvenanceHonestNaming(t *testing.T) {
 	}
 }
 
+// TestProvenanceRejectsUnlistedFile — `sha256sum -c` verifies every file it is TOLD about and says
+// nothing about files it was not told about. An attacker who DROPS IN an unsigned artifact (a second
+// CLI binary, or an SBOM that T2's own glob and T4 would then pick up) leaves a cleanly-verifying
+// release. The digest chain must also assert the dir contains NOTHING ELSE.
+func TestProvenanceRejectsUnlistedFile(t *testing.T) {
+	dir := stageRelease(t)
+	key, pub := mintKey(t)
+	attest(t, dir, key)
+	if ok, out := verifyProvenance(t, dir, pub); !ok {
+		t.Fatalf("precondition: the clean release must verify:\n%s", out)
+	}
+
+	// Neither file is in sha256sums, so neither is covered by the signature.
+	if err := os.WriteFile(filepath.Join(dir, "sbom.spdx.json"), []byte(`{"spdxVersion":"SPDX-2.3"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "cli"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(dir, "cli", "palai-linux-amd64-next")
+	if err := os.WriteFile(planted, []byte("#!/bin/sh\necho pwned\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, out := verifyProvenance(t, dir, pub)
+	if ok {
+		t.Fatalf("verification passed over a release dir carrying UNSIGNED planted files:\n%s", out)
+	}
+	for _, want := range []string{"sbom.spdx.json", "palai-linux-amd64-next"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the failure does not name the unlisted file %s:\n%s", want, out)
+		}
+	}
+}
+
+// forkedSourceTree builds a git checkout whose MATERIAL FILES are byte-identical to this repo's but
+// whose HEAD is a different commit — the reviewer's attack shape: every recomputed material matches,
+// only the one material nothing recomputes (the commit) is a lie.
+func forkedSourceTree(t *testing.T) string {
+	t.Helper()
+	src := t.TempDir()
+	for _, rel := range append([]string{"go.mod", "go.sum"}, releaseDockerfiles...) {
+		b, err := os.ReadFile(filepath.Join(repoRoot(t), rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(src, filepath.Dir(rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(src, rel), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := []string{"-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false"}
+	for _, args := range [][]string{{"init", "-q"}, append(id, "add", "."), append(id, "commit", "-qm", "forked")} {
+		if out, err := exec.Command("git", append([]string{"-C", src}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return src
+}
+
+// TestProvenanceRejectsSourceTreeAtAnotherCommit — leg (4) must RECOMPUTE the commit, not copy it out
+// of the same index the attestation was generated from. Reading the expected commit from the index is
+// exactly the copy-over-recompute the whole design forbids, and the commit is the one material a
+// lying builder would forge.
+func TestProvenanceRejectsSourceTreeAtAnotherCommit(t *testing.T) {
+	dir := stageRelease(t)
+	key, pub := mintKey(t)
+	attest(t, dir, key)
+	if ok, out := verifyProvenance(t, dir, pub); !ok {
+		t.Fatalf("precondition: the clean release must verify:\n%s", out)
+	}
+
+	forked := forkedSourceTree(t)
+	head := strings.TrimSpace(mustOutput(t, "git", "-C", forked, "rev-parse", "HEAD"))
+	if head == strings.TrimSpace(mustOutput(t, "git", "rev-parse", "HEAD")) {
+		t.Fatal("the forked tree is at the same commit — the negative would be vacuous")
+	}
+	ok, out := verifyProvenance(t, dir, pub, "PALAI_RELEASE_SOURCE_ROOT="+forked)
+	if ok {
+		t.Fatalf("a release attested at this repo's HEAD verified against a source tree at %s:\n%s", head, out)
+	}
+	if !strings.Contains(out, "commit") {
+		t.Errorf("the failure does not name the commit material:\n%s", out)
+	}
+}
+
+// pathWithout returns a PATH directory that mirrors the host's /bin and /usr/bin MINUS one tool.
+func pathWithout(t *testing.T, missing string) string {
+	t.Helper()
+	bin := t.TempDir()
+	for _, dir := range []string{"/bin", "/usr/bin"} {
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if e.Name() == missing {
+				continue
+			}
+			_ = os.Symlink(filepath.Join(dir, e.Name()), filepath.Join(bin, e.Name()))
+		}
+	}
+	for _, need := range []string{"openssl", "python3", "sh"} {
+		if _, err := os.Stat(filepath.Join(bin, need)); err != nil {
+			t.Skipf("host /bin:/usr/bin has no %s, cannot build a git-free PATH for the verifier", need)
+		}
+	}
+	return bin
+}
+
+// TestProvenanceGitAbsenceDegradesLoudly — the offline container the --network none proof ships in has
+// openssl and python3 but NO git, so the commit recomputation cannot run there. That must be a NAMED
+// warning, never a silent skip, or the leg (4) hole re-opens in exactly the mode we advertise.
+func TestProvenanceGitAbsenceDegradesLoudly(t *testing.T) {
+	bin := pathWithout(t, "git")
+	dir := stageRelease(t)
+	key, pub := mintKey(t)
+	attest(t, dir, key)
+
+	ok, out := verifyProvenance(t, dir, pub, "PATH="+bin)
+	if !ok {
+		t.Fatalf("a clean release must still verify without git (the offline shape):\n%s", out)
+	}
+	if !strings.Contains(out, "GIT ABSENT") {
+		t.Errorf("git-absence was silent — leg (4) took the attested commit on the attestation's own word"+
+			" and said nothing:\n%s", out)
+	}
+}
+
+// TestProvenanceRejectsFabricatedBuilderIdentity — a verifier that accepts ANY builder.id will bless a
+// release claiming to come from a hosted CI workflow that never ran. That is the precise false belief
+// §T3's honest ceiling exists to prevent, and no test over a freshly generated file can catch it.
+func TestProvenanceRejectsFabricatedBuilderIdentity(t *testing.T) {
+	dir := stageRelease(t)
+	key, pub := mintKey(t)
+	attest(t, dir, key)
+
+	const fabricated = "https://github.com/palgroup/palai/.github/workflows/release.yml@refs/tags/v1"
+	rewriteStatement(t, dir, func(raw map[string]any) {
+		rd := raw["predicate"].(map[string]any)["runDetails"].(map[string]any)
+		rd["builder"].(map[string]any)["id"] = fabricated
+	})
+	resign(t, dir, key)
+
+	ok, out := verifyProvenance(t, dir, pub)
+	if ok {
+		t.Fatalf("a re-signed attestation claiming the CI identity %q verified:\n%s", fabricated, out)
+	}
+	if !strings.Contains(strings.ToLower(out), "builder") {
+		t.Errorf("the failure does not name the builder identity:\n%s", out)
+	}
+}
+
+// TestProvenanceRefusesInBundlePublicKey — the trust anchor gets the same fail-closed treatment as the
+// verifying code. provenance.sh deliberately leaves palai-release-signing.pub OUT of the signed root,
+// so an attacker who swaps the artifacts + sha256sums + .sig + .pub produces a fully self-consistent
+// "OK". Taking the key from inside the thing it verifies must refuse, not quietly pass.
+func TestProvenanceRefusesInBundlePublicKey(t *testing.T) {
+	dir := stageRelease(t)
+	key, _ := mintKey(t)
+	attest(t, dir, key)
+
+	bundled := filepath.Join(dir, "palai-release-signing.pub")
+	ok, out := verifyProvenance(t, dir, bundled)
+	if ok {
+		t.Fatalf("verification passed with the key taken from INSIDE the release dir:\n%s", out)
+	}
+	if !strings.Contains(out, "REFUS") {
+		t.Errorf("the refusal does not say it is refusing an in-bundle trust anchor:\n%s", out)
+	}
+	if ok, out := verifyProvenance(t, dir, bundled, "PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY=1"); !ok {
+		t.Fatalf("the explicit same-session opt-in did not work:\n%s", out)
+	} else if !strings.Contains(out, "WARNING") {
+		t.Errorf("the opt-in did not warn that the signature is then just a second checksum:\n%s", out)
+	}
+}
+
+// The release Dockerfile list lives in three non-canonical copies while scripts/release/build.sh is
+// what actually decides. A fourth release image must not be able to land with no materials.
+var (
+	buildImageDockerfile = regexp.MustCompile(`(?m)^\s*build_image\s+\S+\s+(\S+)`)
+	dockerfilesLiteral   = regexp.MustCompile(`(?s)DOCKERFILES\s*=\s*\[(.*?)\]`)
+	quotedPath           = regexp.MustCompile(`"([^"]+)"`)
+)
+
+func TestReleaseDockerfileListMatchesBuildScript(t *testing.T) {
+	root := repoRoot(t)
+	read := func(rel string) string {
+		b, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	want := map[string]bool{}
+	for _, m := range buildImageDockerfile.FindAllStringSubmatch(read("scripts/release/build.sh"), -1) {
+		want[m[1]] = true
+	}
+	if len(want) == 0 {
+		t.Fatal("no build_image lines in scripts/release/build.sh — the guard would be vacuous")
+	}
+	check := func(where string, got []string) {
+		have := map[string]bool{}
+		for _, g := range got {
+			have[g] = true
+			if !want[g] {
+				t.Errorf("%s lists %s, which scripts/release/build.sh does not build", where, g)
+			}
+		}
+		for w := range want {
+			if !have[w] {
+				t.Errorf("%s is MISSING %s, which scripts/release/build.sh builds — it would get no materials", where, w)
+			}
+		}
+	}
+	check("provenance_test.go releaseDockerfiles", releaseDockerfiles)
+	for _, script := range []string{"scripts/release/provenance.sh", "scripts/release/provenance-verify.sh"} {
+		m := dockerfilesLiteral.FindStringSubmatch(read(script))
+		if m == nil {
+			t.Fatalf("%s has no DOCKERFILES list to check", script)
+		}
+		var got []string
+		for _, q := range quotedPath.FindAllStringSubmatch(m[1], -1) {
+			got = append(got, q[1])
+		}
+		check(script, got)
+	}
+}
+
 // TestProvenanceOfflineVerifyNetworkNone proves the verify needs NO network by running it inside a
 // container with no network device. It needs an already-loaded openssl+python3 image, so it is
 // operator-gated (PALAI_PROVENANCE_TOOL_IMAGE=palai/reference-engine:local go test ...).
 func TestProvenanceOfflineVerifyNetworkNone(t *testing.T) {
 	image := os.Getenv("PALAI_PROVENANCE_TOOL_IMAGE")
 	if image == "" {
-		t.Skip("set PALAI_PROVENANCE_TOOL_IMAGE to an already-loaded openssl+python3 image to run the --network none leg")
+		t.Skip("UNPROVEN IN THIS RUN: the --network none (offline) claim was NOT exercised. Set" +
+			" PALAI_PROVENANCE_TOOL_IMAGE to an already-loaded openssl+python3 image (e.g." +
+			" palai/reference-engine:local) to run it; a green package WITHOUT it does not prove offline verify")
 	}
 	dir := stageRelease(t)
 	key, pub := mintKey(t)
@@ -535,5 +785,12 @@ func TestProvenanceOfflineVerifyNetworkNone(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "OK") {
 		t.Errorf("offline verify did not report OK:\n%s", out)
+	}
+	// This is also the proof that leg (4)'s commit degradation is LOUD in the very mode we ship: an
+	// offline tool image has openssl and python3 but typically no git.
+	gitInImage := exec.Command("docker", "run", "--rm", "--entrypoint", "/bin/sh", image, "-c", "command -v git").Run() == nil
+	if !gitInImage && !strings.Contains(string(out), "GIT ABSENT") {
+		t.Errorf("%s has no git and the offline run said nothing about it — leg (4) silently took the"+
+			" attested commit on the attestation's own word:\n%s", image, out)
 	}
 }

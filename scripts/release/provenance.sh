@@ -36,8 +36,10 @@
 #
 # HONEST CEILING (plan §2 honest naming, §T3): the predicate is written in the standard, widely
 # consumable SLSA shape, but the signature is openssl and the builder is a local developer session
-# (`builder.id: local-macos-session`). No keyless-identity, no transparency-log entry, and no SLSA
-# level is claimed — the attestation says so itself, in internalParameters.honest_ceiling.
+# (`builder.id: https://palai.dev/builders/local-macos-session` — a TypeURI because SLSA requires one
+# there, saying the same true thing). No keyless-identity, no transparency-log entry, and no SLSA
+# level is claimed — the attestation says so itself, in internalParameters.honest_ceiling. The
+# recorded toolchain versions are a RECORD, not an attested input: nothing recomputes them.
 #
 # Usage: provenance.sh --dir <release-out-dir> [--key <p256-key.pem>] [--source-root <repo>]
 set -euo pipefail
@@ -84,7 +86,7 @@ chmod 0755 "$dir/runner-verify.sh" "$dir/provenance-verify.sh"
 tool_ver() { command -v "$1" >/dev/null 2>&1 && { "$@" 2>&1 | head -1; } || echo "absent"; }
 
 REL_DIR="$dir" SRC_ROOT="$source_root" STATEMENT="provenance.intoto.json" \
-BUILDER_ID="local-macos-session" \
+BUILDER_ID="https://palai.dev/builders/local-macos-session" \
 TC_GO="$(tool_ver go version)" \
 TC_OPENSSL="$(tool_ver openssl version)" \
 TC_DOCKER="$(tool_ver docker --version)" \
@@ -149,18 +151,24 @@ DOCKERFILES = [
 FROM_RE = re.compile(r"^FROM\s+(.*)$", re.IGNORECASE)
 
 commit = index["commit"]
+source_uri = "git+https://github.com/palgroup/palai@" + commit
 materials = [{
-    "uri": "git+https://github.com/palgroup/palai@" + commit,
+    "uri": source_uri,
     "digest": {"gitCommit": commit},
     "name": "source",
 }]
+
+# In-repo files are addressed as a fragment of the SOURCE uri: `file://deploy/…` would parse as
+# host=deploy per RFC 8089, and points nowhere a consumer can resolve.
+def in_repo_uri(rel_path):
+    return "%s#%s" % (source_uri, rel_path)
 
 for rel_df in DOCKERFILES:
     path = os.path.join(src, rel_df)
     if not os.path.isfile(path):
         die("release Dockerfile %s is missing from %s" % (rel_df, src))
     materials.append({
-        "uri": "file://" + rel_df,
+        "uri": in_repo_uri(rel_df),
         "digest": {"sha256": sha256_file(path)},
         "name": "dockerfile",
     })
@@ -184,8 +192,14 @@ for rel_df in DOCKERFILES:
             if not re.fullmatch(r"[0-9a-f]{64}", digest):
                 die("%s: base image %s has a malformed digest" % (rel_df, ref))
             pinned += 1
+            # Canonical purl for a docker image: the version component is the digest, the tag is a
+            # qualifier (`pkg:docker/golang@sha256:…?tag=1.26.4`).
+            name_part, sep, tag_part = tag.rpartition(":")
+            if not sep or "/" in tag_part:
+                name_part, tag_part = tag, ""
             materials.append({
-                "uri": "pkg:docker/%s?digest=sha256:%s" % (tag, digest),
+                "uri": "pkg:docker/%s@sha256:%s%s" % (name_part, digest,
+                                                      "?tag=" + tag_part if tag_part else ""),
                 "digest": {"sha256": digest},
                 "name": "base-image",
                 "annotations": {"dockerfile": rel_df, "ref": ref},
@@ -198,7 +212,7 @@ for rel_mod in ("go.mod", "go.sum"):
     if not os.path.isfile(path):
         die("%s is missing from %s" % (rel_mod, src))
     materials.append({
-        "uri": "file://" + rel_mod,
+        "uri": in_repo_uri(rel_mod),
         "digest": {"sha256": sha256_file(path)},
         "name": "module-pin",
     })
@@ -229,10 +243,11 @@ now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00
 honest_ceiling = (
     "The signature over this release is an openssl ECDSA P-256 detached signature on the sha256sums"
     " root (the E14 T5 tool, verbatim) — it is NOT a Sigstore/Fulcio keyless signature and no Rekor"
-    " transparency log entry exists for it. builder.id is local-macos-session: the run happened in a"
-    " local developer session, not on a hosted isolated builder, so this is an L2-shaped mechanism"
-    " only. An actual SLSA L2 claim requires the real CI run (plan §6 leg 1), which is also what"
-    " fills internalParameters.ci_workflow_identity."
+    " transparency log entry exists for it. builder.id is"
+    " https://palai.dev/builders/local-macos-session: a URI because SLSA provenance v1 requires one"
+    " there, but it names a local developer session, not a hosted isolated builder, so this is an"
+    " L2-shaped mechanism only. An actual SLSA L2 claim requires the real CI run (plan §6 leg 1),"
+    " which is also what fills internalParameters.ci_workflow_identity."
 )
 
 statement = {
@@ -260,6 +275,12 @@ statement = {
                     "docker": os.environ["TC_DOCKER"],
                     "host": os.environ["TC_HOST"],
                 },
+                "toolchains_note": (
+                    "RECORDED, NOT ATTESTED. These are what the build host reported; they are not in"
+                    " resolvedDependencies and no verifier recomputes them, so they must never be"
+                    " described as verified inputs. The inputs that ARE recomputed on verify are the"
+                    " ones in buildDefinition.resolvedDependencies."
+                ),
                 "ci_workflow_identity": None,
                 "ci_workflow_identity_note": (
                     "Defined and empty. A hosted workflow run (plan §T5) fills this with its own"

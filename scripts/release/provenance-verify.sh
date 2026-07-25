@@ -7,21 +7,31 @@
 #   (1) SIGNATURE   the openssl P-256 detached signature over the signed root `sha256sums`. This
 #                   EXECS the E14 T5 verifier VERBATIM (scripts/package/runner/verify.sh) — there is
 #                   exactly ONE signing tool in this repo and this script does not add a second.
-#   (2) DIGEST CHAIN  `sha256sum -c sha256sums`: every file in the release dir — the index, the
-#                   attestation, the SBOMs, every artifact — matches its signed digest.
+#   (2) DIGEST CHAIN  `sha256sum -c sha256sums`: every file the signed root names — the index, the
+#                   attestation, the SBOMs, every artifact — matches its signed digest, AND the
+#                   release dir contains NOTHING ELSE. `sha256sum -c` alone only checks the files it
+#                   is TOLD about; an unsigned drop-in (a second CLI binary, or an SBOM that T2's
+#                   glob and T4 would go on to consume) is invisible to it, so the file set is
+#                   compared both ways. Only the signature envelope itself is exempt, by construction.
 #   (3) BINDING     every subject digest in the attestation is RECOMPUTED from the artifact's bytes,
-#                   and the subject set is exactly the release index's artifact set. (1)+(2) already
-#                   prove nobody edited the files; (3) proves the attestation DESCRIBES them — a
-#                   builder that copied a digest out of a log instead of hashing the bytes produces a
-#                   perfectly signed attestation that fails here.
+#                   the subject set is exactly the release index's artifact set, and builder.id is the
+#                   EXPECTED one. (1)+(2) already prove nobody edited the files; (3) proves the
+#                   attestation DESCRIBES them and names a builder we accept — a builder that copied a
+#                   digest out of a log instead of hashing the bytes, or that claims a CI workflow
+#                   identity that never ran, produces a perfectly signed attestation that fails here.
 #   (4) MATERIALS   the resolved dependencies are RECOMPUTED from the canonical source: the git
-#                   commit, each release Dockerfile's own digest, every base image those Dockerfiles
-#                   pin, and go.mod/go.sum. A dropped or invented input fails here even when the
-#                   attestation was re-signed with the real key.
+#                   commit (asked of the source tree itself, never read back out of the index), each
+#                   release Dockerfile's own digest, every base image those Dockerfiles pin, and
+#                   go.mod/go.sum. A dropped or invented input fails here even when the attestation
+#                   was re-signed with the real key. With no `git` on PATH the commit cannot be
+#                   recomputed; that degrades LOUDLY (a named GIT ABSENT warning), never silently.
 #
 # TRUST MODEL (E14 T5, unchanged): the public key MUST come from OUT OF BAND — arg 2 or
 # PALAI_RELEASE_PUBKEY — never from the release dir. A channel attacker can swap the artifacts, the
-# signature AND a sibling key at once; then the signature is just a second checksum.
+# signature AND a sibling key at once; then the signature is just a second checksum. So a key that
+# resolves INSIDE the release dir is refused unless PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY=1 says out
+# loud that this is a same-session local proof. Pin the key out of band with
+# PALAI_RUNNER_PUBKEY_FINGERPRINT (the E14 T5 verifier honours it and refuses a key that misses).
 #
 # FAIL-CLOSED VERIFIER RESOLUTION (plan §2, the E16 T7 pattern): the VERIFYING CODE must also come
 # from outside the thing it verifies. This script PREFERS the runner-verify.sh sitting beside it (in
@@ -54,7 +64,9 @@ if [ "${1:-}" = "--network-none" ]; then
 	repo="$(cd "$(dirname "$0")/../.." && pwd)"
 	# --network none: the container has NO network device. The repo is mounted read-only so BOTH the
 	# verifying code and the canonical materials source come from OUTSIDE the release dir — the
-	# fail-closed resolution below is satisfied naturally, with no opt-in.
+	# fail-closed resolution below is satisfied naturally, with no opt-in. CEILING: a minimal tool
+	# image has openssl+python3 but no git, so leg (4) cannot ask /repo what commit it is at and says
+	# GIT ABSENT out loud; every other material is still recomputed from that read-only mount.
 	exec docker run --rm --network none \
 		-v "$repo:/repo:ro" \
 		-v "$rel_abs:/release:ro" \
@@ -77,6 +89,21 @@ esac
 self_dir="$(cd "$(dirname "$0")" && pwd)"
 cd "$rel"
 rel_abs="$(pwd)"
+
+# The trust ANCHOR gets the same fail-closed treatment as the verifying code below: provenance.sh
+# leaves palai-release-signing.pub out of the signed root on purpose, so a key taken from inside the
+# release dir turns the signature into a second checksum an attacker controls end to end.
+case "$pub" in
+	"$rel_abs"/*)
+		if [ "${PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY:-}" = "1" ]; then
+			echo "verify: WARNING — the public key comes from INSIDE the release dir (PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY=1): an attacker who swapped the artifacts could have swapped this key too, so the signature proves only self-consistency. Same-session local proof only." >&2
+		else
+			echo "verify: REFUSING — the public key $pub is INSIDE the release dir it would verify; it is not a trust anchor (it is not even covered by the signed root)." >&2
+			echo "verify: obtain the key OUT OF BAND and pass it, optionally pinning PALAI_RUNNER_PUBKEY_FINGERPRINT, or set PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY=1 for a same-session local proof." >&2
+			exit 2
+		fi
+		;;
+esac
 
 for f in sha256sums sha256sums.sig sha256sums.sha256 runner-verify.sh release-index.json provenance.intoto.json; do
 	[ -f "$f" ] || { echo "verify: release dir is missing $f" >&2; exit 2; }
@@ -118,14 +145,36 @@ else
 	exit 3
 fi
 
+# ... and NOTHING ELSE is here. The check above is one-directional: it verifies the files the signed
+# root names and is blind to files it does not. The four excluded names are the signature envelope,
+# which cannot sign itself (provenance.sh excludes exactly these when it builds the root).
+# ponytail: O(n*m) grep over a release dir's few dozen paths; sort+comm if a release ever gets big.
+listed="$(sed 's/^[0-9a-f]*[ *]*//' sha256sums)"
+unlisted="$(find . -type f \
+	! -name 'sha256sums' ! -name 'sha256sums.sha256' ! -name 'sha256sums.sig' \
+	! -name 'palai-release-signing.pub' \
+	| LC_ALL=C sort | while IFS= read -r f; do
+		printf '%s\n' "$listed" | grep -qxF -- "$f" || printf '%s\n' "$f"
+	done)"
+if [ -n "$unlisted" ]; then
+	echo "verify: FAIL — the release dir carries file(s) the signed sha256sums root does NOT list, so nothing vouches for their bytes:" >&2
+	printf '%s\n' "$unlisted" | sed 's/^/  /' >&2
+	exit 1
+fi
+
 echo "verify: (3) subject binding + (4) materials ..." >&2
 REL_DIR="$rel_abs" SRC_ROOT="$src" python3 - <<'PY'
-import hashlib, json, os, re, sys
+import hashlib, json, os, re, shutil, subprocess, sys
 
 rel = os.environ["REL_DIR"]
 src = os.environ["SRC_ROOT"]
 allow_unsourced = os.environ.get("PALAI_RELEASE_ALLOW_UNSOURCED_MATERIALS") == "1"
 statement_file = "provenance.intoto.json"
+# The builder identity this verifier accepts. A verifier that takes ANY builder.id blesses a
+# fabricated CI identity — the one belief the honest ceiling exists to prevent. A release built
+# somewhere else is verified by naming that builder explicitly, never by not looking.
+expected_builder = (os.environ.get("PALAI_RELEASE_EXPECTED_BUILDER_ID")
+                    or "https://palai.dev/builders/local-macos-session")
 failures = []
 
 def sha256_file(path):
@@ -150,8 +199,10 @@ predicate = st.get("predicate") or {}
 build_def = predicate.get("buildDefinition") or {}
 run_details = predicate.get("runDetails") or {}
 builder_id = ((run_details.get("builder") or {}).get("id") or "")
-if not builder_id:
-    failures.append("runDetails.builder.id is empty — an attestation must name who built it")
+if builder_id != expected_builder:
+    failures.append("runDetails.builder.id is %r, not the expected %r — this verifier does not bless an"
+                    " unrecognised builder identity (set PALAI_RELEASE_EXPECTED_BUILDER_ID to verify a"
+                    " release from a different builder you trust)" % (builder_id, expected_builder))
 
 if index.get("provenance") != statement_file:
     failures.append("release-index.provenance is %r, not %r" % (index.get("provenance"), statement_file))
@@ -213,7 +264,27 @@ if not src:
     else:
         failures.append("REFUSING — " + msg + ", and PALAI_RELEASE_ALLOW_UNSOURCED_MATERIALS is not set")
 else:
-    expected = {("source", "gitCommit", index["commit"])}
+    # The commit is RECOMPUTED like every other material: ask the source tree what it is at. Reading
+    # it back out of the same index the attestation was generated from would be copy-over-recompute —
+    # and the commit is precisely the material a lying builder forges.
+    commit = index["commit"]
+    git = shutil.which("git")
+    if git:
+        head = subprocess.run([git, "-C", src, "rev-parse", "HEAD"],
+                              capture_output=True, text=True)
+        if head.returncode != 0 or not head.stdout.strip():
+            failures.append("materials: %s is not a git checkout, so the attested commit %s cannot be"
+                            " recomputed" % (src, commit))
+        else:
+            commit = head.stdout.strip()
+            if commit != index["commit"]:
+                failures.append("materials: the release index says the build is at commit %s but the"
+                                " source tree at %s is at %s" % (index["commit"], src, commit))
+    else:
+        print("verify: WARNING — GIT ABSENT: no git on PATH, so leg (4) cannot ask %s what commit it is"
+              " at; the attested commit %s is taken on the ATTESTATION'S OWN WORD (every other material"
+              " is still recomputed from the source tree)" % (src, commit), file=sys.stderr)
+    expected = {("source", "gitCommit", commit)}
     for rel_df in DOCKERFILES:
         path = os.path.join(src, rel_df)
         if not os.path.isfile(path):
@@ -261,4 +332,6 @@ print("verify: (3) %d subjects bound to recomputed bytes; (4) %d materials recom
       % (len(artifacts), len(build_def.get("resolvedDependencies") or [])), file=sys.stderr)
 PY
 
-echo "provenance-verify: OK — signature, digest chain, subject binding and materials verified for $rel_abs"
+builder="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["predicate"]["runDetails"]["builder"]["id"])' provenance.intoto.json)"
+echo "provenance-verify: OK — signature, digest chain (nothing unlisted), subject binding and materials verified for $rel_abs"
+echo "provenance-verify: BUILT BY $builder — CEILING: an openssl ECDSA P-256 signature over a SLSA-SHAPED attestation. No identity service was consulted, no transparency log entry exists, and no SLSA level is established."

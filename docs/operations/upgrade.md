@@ -176,13 +176,26 @@ release Dockerfile with its pinned base-image digests, and `go.mod`/`go.sum`. It
 `provenance` slots and signs a `sha256sums` root that binds the index, the attestation, the SBOMs and the
 artifacts into ONE signature. `scripts/release/provenance-verify.sh <release-dir> <pubkey>` re-verifies
 all four legs with no network (`--network-none <dir> <pubkey> <tool-image>` proves it inside a container
-with no network device); the public key must come from **out of band**, and the verifier refuses to fall
-back to the release dir's own copy of itself.
+with no network device; `make provenance-offline-verify` runs exactly that). Leg (2) also fails on any
+file the signed root does **not** list, so an unsigned drop-in cannot ride along; leg (3) requires the
+**expected** `builder.id` (`PALAI_RELEASE_EXPECTED_BUILDER_ID` to accept another builder), so a fabricated
+CI identity is refused; leg (4) asks the **source tree** what commit it is at rather than reading it back
+out of the index, and with no `git` available it says `GIT ABSENT` out loud instead of skipping quietly.
+
+Both trust roots come from outside the thing they verify, and both fail closed: the **verifying code**
+(the release dir's own `provenance-verify.sh` is refused unless `PALAI_RELEASE_ALLOW_BUNDLED_VERIFIER=1`)
+and the **key** (a key that resolves inside the release dir is refused unless
+`PALAI_RELEASE_ALLOW_BUNDLED_PUBKEY=1`; the bundled `palai-release-signing.pub` is a convenience copy, not
+a trust anchor). Obtain the key out of band and pin it with **`PALAI_RUNNER_PUBKEY_FINGERPRINT`** — the
+E14 T5 verifier this script execs refuses a key whose sha256 does not match.
 
 **Honest ceiling.** The signature is `openssl` ECDSA P-256 — the E14 T5 tool, verbatim; it is not a
 keyless-identity signature and there is no transparency-log entry for it. `builder.id` is
-`local-macos-session`, so this is an **L2-shaped mechanism** and no SLSA level is claimed; a hosted CI run
-is what would fill the attestation's empty `ci_workflow_identity` slot.
+`https://palai.dev/builders/local-macos-session` (a URI because SLSA provenance v1 requires one there),
+so this is an **L2-shaped mechanism** and no SLSA level is claimed; a hosted CI run is what would fill the
+attestation's empty `ci_workflow_identity` slot. The recorded toolchain versions
+(`internalParameters.toolchains`) are a **record, not an attested input** — they are not in
+`resolvedDependencies` and nothing recomputes them on verify.
 
 ## The §48.2 support window (OPS-008)
 
