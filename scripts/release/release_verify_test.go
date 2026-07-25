@@ -522,19 +522,6 @@ func promoteWith(t *testing.T, dir, pub string, env ...string) (bool, string) {
 	return err != nil && strings.Contains(string(out), "did not verify"), string(out)
 }
 
-// TestPromoteRefusesAnUnnamedReleaseBeyondRC — the SH-3 half of the promotion gate: a stable flip may not
-// bless artifacts nobody verified, so the artifact dir is REQUIRED past rc rather than merely honoured.
-func TestPromoteRefusesAnUnnamedReleaseBeyondRC(t *testing.T) {
-	cmd := exec.Command("/usr/bin/env", "bash",
-		filepath.Join(repoRoot(t), "scripts/release/promote.sh"), "no-such-release", "stable")
-	cmd.Dir = repoRoot(t)
-	cmd.Env = append(os.Environ(), "RELEASE=", "PALAI_RELEASE_DIR=", "PALAI_RELEASE_PUBKEY=")
-	out, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "must name the release artifact directory") {
-		t.Fatalf("promote.sh did not refuse a stable promote with no release dir (err=%v):\n%s", err, out)
-	}
-}
-
 // --- SEC-101, the execution half ------------------------------------------------------------------
 
 // TestTamperedImageIsUnreachableUnderItsPinnedDigest is SEC-101's EXECUTION half, against the digest-pin
@@ -554,11 +541,11 @@ func TestPromoteRefusesAnUnnamedReleaseBeyondRC(t *testing.T) {
 // that would otherwise silently accept "run whatever this tag points at today".
 func TestTamperedImageIsUnreachableUnderItsPinnedDigest(t *testing.T) {
 	dir := stageFullRelease(t)
-	var pinned, arch string
+	var pinned, tag string
 	for _, art := range indexArtifacts(t, dir) {
 		if art["file"] == fixtureImage {
 			pinned, _ = art["image_id"].(string)
-			arch, _ = art["ref"].(string)
+			tag, _ = art["ref"].(string) // the MUTABLE reference beside the pin — never dispatchable
 		}
 	}
 	if pinned == "" {
@@ -598,7 +585,7 @@ func TestTamperedImageIsUnreachableUnderItsPinnedDigest(t *testing.T) {
 		t.Fatal("a lease pinned to the release digest resolved the TAMPERED image")
 	}
 	// And the only route to bytes with no pinned identity — a mutable reference — is refused outright.
-	for _, mutable := range []string{arch, "sha256:" + strings.Repeat("z", 64), "sha256:short", ""} {
+	for _, mutable := range []string{tag, "sha256:" + strings.Repeat("z", 64), "sha256:short", ""} {
 		if _, err := runner.ParseLeaseOffer(offer(mutable)); !errors.Is(err, runner.ErrMutableLeaseImage) {
 			t.Errorf("ParseLeaseOffer(%q) error = %v, want ErrMutableLeaseImage — a run named by anything"+
 				" but an immutable digest can be repointed at tampered bytes", mutable, err)
@@ -608,11 +595,10 @@ func TestTamperedImageIsUnreachableUnderItsPinnedDigest(t *testing.T) {
 
 // --- fail-closed resolution, scan coverage, revocations, offline ----------------------------------
 
-// TestReleaseVerifyResolutionIsFailClosed — plan §2, both halves at once: the trust ROOT and the
-// verifying CODE must come from outside the thing they verify, or the run refuses. A verifier resolved
-// out of the release dir is a verifier a channel attacker replaced with `exit 0`.
+// TestReleaseVerifyResolutionIsFailClosed — plan §2: the trust ROOT must come from outside the thing
+// it verifies, or the run refuses. (The verifying CODE's half is the matrix below.)
 func TestReleaseVerifyResolutionIsFailClosed(t *testing.T) {
-	dir, _, pub := attestedRelease(t)
+	dir, _, _ := attestedRelease(t)
 
 	// (a) no key at all.
 	cmd := exec.Command("/bin/sh", filepath.Join(repoRoot(t), "scripts/release/release-verify.sh"), dir)
@@ -623,9 +609,8 @@ func TestReleaseVerifyResolutionIsFailClosed(t *testing.T) {
 		t.Errorf("the refusal does not say where the key must come from:\n%s", out)
 	}
 
-	// (b) the verifying code taken FROM the release dir. A copy of this script beside the artifacts —
-	// the exact shape sdk-verify.sh's SF-1 fix closed — refuses, and says so, unless the same-session
-	// opt-in is set. Copy the script alone: with no siblings it is both "incomplete" and "in-bundle".
+	// (b) the verifying code taken FROM the release dir, with NO siblings beside it: incomplete AND
+	// in-release, the shape sdk-verify.sh's SF-1 fix closed.
 	inBundle := filepath.Join(dir, "release-verify.sh")
 	b, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts/release/release-verify.sh"))
 	if err != nil {
@@ -634,7 +619,7 @@ func TestReleaseVerifyResolutionIsFailClosed(t *testing.T) {
 	if err := os.WriteFile(inBundle, b, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	swapped := exec.Command("/bin/sh", inBundle, dir, pub)
+	swapped := exec.Command("/bin/sh", inBundle, dir, filepath.Join(t.TempDir(), "absent.pub"))
 	swapped.Env = os.Environ()
 	out, err := swapped.CombinedOutput()
 	if err == nil {
@@ -642,6 +627,270 @@ func TestReleaseVerifyResolutionIsFailClosed(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "REFUSING") {
 		t.Errorf("the in-bundle verifier did not refuse for the right reason:\n%s", out)
+	}
+}
+
+// neuteredSiblings writes exit-0 stand-ins for the three siblings release-verify.sh resolves beside
+// itself. Every arm below plants them, because "are the siblings there?" is NOT the fence: a release
+// already ships provenance-verify.sh and runner-verify.sh, so completing the set costs an attacker two
+// files. What has to refuse is the LOCATION — and with the siblings neutered, a run that does not
+// refuse says "OK" over a release nothing checked.
+func neuteredSiblings(t *testing.T, dir string) {
+	t.Helper()
+	for name, body := range map[string]string{
+		"provenance-verify.sh": "#!/bin/sh\necho 'neutered provenance-verify' >&2\nexit 0\n",
+		"runner-verify.sh":     "#!/bin/sh\nexit 0\n",
+		"sbom-tool.py":         "import sys\nsys.exit(0)\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// plantVerifier drops a copy of the REAL release-verify.sh into `at`, beside neutered siblings, and
+// returns its path.
+func plantVerifier(t *testing.T, at string) string {
+	t.Helper()
+	if err := os.MkdirAll(at, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts/release/release-verify.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(at, "release-verify.sh")
+	if err := os.WriteFile(script, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	neuteredSiblings(t, at)
+	return script
+}
+
+// copyTree is `cp -R src/. dst`, for arms that need the release to live at a chosen path.
+func copyTree(t *testing.T, src, dst string) {
+	t.Helper()
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("cp", "-R", src+"/.", dst).CombinedOutput(); err != nil {
+		t.Fatalf("cp -R %s %s: %v\n%s", src, dst, err, out)
+	}
+}
+
+// TestReleaseVerifyRefusesAVerifierInsideTheRelease — the fail-closed fence is about WHERE the
+// verifying code lives, not how the path is spelled. An exact-equality test over logical paths is
+// defeated four ways, and each one ends with a neutered verifier printing OK over a release nothing
+// checked: put the copy one directory down; name the release through a symlink; let macOS's everyday
+// /tmp -> /private/tmp alias do it with no attacker artefact at all; respell the case on APFS.
+func TestReleaseVerifyRefusesAVerifierInsideTheRelease(t *testing.T) {
+	for _, tc := range []struct {
+		arm string
+		// stage plants the verifier and returns (script path, the release as the run names it).
+		stage func(t *testing.T, dir string) (string, string)
+	}{{
+		arm: "at the release root — the only shape exact equality ever saw",
+		stage: func(t *testing.T, dir string) (string, string) { return plantVerifier(t, dir), dir },
+	}, {
+		arm: "one directory down: tools/, every sibling present and neutered",
+		stage: func(t *testing.T, dir string) (string, string) {
+			return plantVerifier(t, filepath.Join(dir, "tools")), dir
+		},
+	}, {
+		arm: "the release named through a symlink",
+		stage: func(t *testing.T, dir string) (string, string) {
+			link := filepath.Join(t.TempDir(), "release-link")
+			if err := os.Symlink(dir, link); err != nil {
+				t.Fatal(err)
+			}
+			return plantVerifier(t, dir), link
+		},
+	}, {
+		arm: "macOS's everyday /tmp -> /private/tmp alias — no attacker artefact at all",
+		stage: func(t *testing.T, dir string) (string, string) {
+			at, err := os.MkdirTemp("/tmp", "palai-t4-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(at) })
+			copyTree(t, dir, at)
+			real, err := filepath.EvalSymlinks(at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if real == at {
+				t.Skip("/tmp is not a symlink on this platform — the alias arm needs macOS")
+			}
+			return plantVerifier(t, at), real
+		},
+	}, {
+		arm: "an APFS case respelling of the same directory",
+		stage: func(t *testing.T, dir string) (string, string) {
+			at := filepath.Join(t.TempDir(), "probe")
+			copyTree(t, dir, at)
+			respelled := filepath.Join(filepath.Dir(at), "PROBE")
+			if _, err := os.Stat(respelled); err != nil {
+				t.Skip("case-sensitive filesystem — the APFS respelling arm does not apply")
+			}
+			return plantVerifier(t, at), respelled
+		},
+	}} {
+		t.Run(tc.arm, func(t *testing.T) {
+			dir, _, pub := attestedRelease(t)
+			script, named := tc.stage(t, dir)
+
+			cmd := exec.Command("/bin/sh", script, named, pub)
+			cmd.Env = os.Environ()
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("a NEUTERED verifier running from inside the release printed a pass:\n%s", out)
+			}
+			if !strings.Contains(string(out), "INSIDE the release dir") {
+				t.Errorf("the run failed, but not on the location fence:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestReleaseVerifyRefusesABundledKeyByAnySpelling — the same defeat against the trust ANCHOR, which
+// is the channel attack the fence exists for: swap the artifacts, the signature AND the bundled
+// palai-release-signing.pub provenance.sh leaves beside them, and the signature is a second checksum
+// the attacker controls end to end. The direct spelling refuses; so must every alias of it.
+func TestReleaseVerifyRefusesABundledKeyByAnySpelling(t *testing.T) {
+	dir, _, _ := attestedRelease(t)
+	bundled := filepath.Join(dir, "palai-release-signing.pub")
+	if _, err := os.Stat(bundled); err != nil {
+		t.Fatalf("provenance.sh no longer leaves a convenience key in the release: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "release-link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct{ arm, rel, pub string }{
+		{"both named directly", dir, bundled},
+		{"the release named through a symlink, the key directly", link, bundled},
+		{"the key named through a symlinked release", dir, filepath.Join(link, "palai-release-signing.pub")},
+	} {
+		t.Run(tc.arm, func(t *testing.T) {
+			ok, out := releaseVerify(t, tc.rel, tc.pub)
+			if ok {
+				t.Fatalf("a release verified clean against its OWN bundled key:\n%s", out)
+			}
+			if !strings.Contains(out, "INSIDE the release dir it would verify") {
+				t.Errorf("the run failed, but not on the trust-anchor fence:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestReleaseVerifyRefusesAnUnsignedSymlinkRider — `find . -type f` does not list symlinks, so a
+// release carrying `rider.link -> /etc/hosts` printed "nothing unlisted" and exited 0 while the file
+// the link resolves to is signed by nothing. The guarantee both verifiers state is that NOTHING rides
+// along unvouched-for, and an extracted symlink is the classic traversal vector for whatever consumes
+// the tree next.
+func TestReleaseVerifyRefusesAnUnsignedSymlinkRider(t *testing.T) {
+	t.Run("release", func(t *testing.T) {
+		dir, _, pub := attestedRelease(t)
+		if err := os.Symlink("/etc/hosts", filepath.Join(dir, "rider.link")); err != nil {
+			t.Fatal(err)
+		}
+		ok, out := releaseVerify(t, dir, pub)
+		if ok {
+			t.Fatalf("release-verify.sh PASSED a release carrying an unsigned symlink:\n%s", out)
+		}
+		if !strings.Contains(out, "rider.link") {
+			t.Errorf("the refusal does not name the rider:\n%s", out)
+		}
+	})
+	t.Run("sdk bundle", func(t *testing.T) {
+		sdk := buildBundle(t)
+		if err := os.Symlink("/etc/hosts", filepath.Join(sdk, "rider.link")); err != nil {
+			t.Fatal(err)
+		}
+		ok, out := verify(t, sdk, filepath.Join(sdk, "palai-sdk-signing.pub"))
+		if ok {
+			t.Fatalf("sdk-verify.sh PASSED a bundle carrying an unsigned symlink:\n%s", out)
+		}
+		if !strings.Contains(out, "rider.link") {
+			t.Errorf("the refusal does not name the rider:\n%s", out)
+		}
+	})
+}
+
+// legThreeOnly runs the REAL release-verify.sh with legs (1) and (2) neutered, from a directory
+// OUTSIDE the release (so the location fence is satisfied and nothing is opted out of).
+//
+// It is a TEST HARNESS, not a supported run. It exists because two of leg (3)'s refusals are SHADOWED
+// in a full run — provenance-verify.sh reaches the index-digest mismatch first, and sbom-tool.py
+// refuses a blocked release before the §51.3 line here is reached — so both could be deleted and the
+// suite would stay green. This is also exactly the shape of a partially-neutered verifier: what it
+// pins is what still speaks when the composed verifiers do not.
+func legThreeOnly(t *testing.T, dir, pub string) (bool, string) {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", plantVerifier(t, t.TempDir()), dir, pub)
+	cmd.Env = os.Environ()
+	out, err := cmd.CombinedOutput()
+	return err == nil, string(out)
+}
+
+func TestReleaseVerifyLegThreeStandsAlone(t *testing.T) {
+	// The harness itself must pass a clean release, or the arms below prove the stubs, not the leg.
+	clean, _, cleanPub := attestedRelease(t)
+	if ok, out := legThreeOnly(t, clean, cleanPub); !ok {
+		t.Fatalf("the leg-(3)-only harness failed on a CLEAN release:\n%s", out)
+	}
+
+	t.Run("the index's own digest column, recomputed from bytes", func(t *testing.T) {
+		dir, key, pub := attestedRelease(t)
+		editJSON(t, filepath.Join(dir, "release-index.json"), func(doc map[string]any) {
+			art := doc["artifacts"].([]any)[0].(map[string]any)
+			art["digest"] = flipHex(art["digest"].(string))
+		})
+		resignWith(t, dir, key)
+		ok, out := legThreeOnly(t, dir, pub)
+		if ok {
+			t.Fatalf("leg (3) passed an index whose digest is not the file's bytes:\n%s", out)
+		}
+		if !strings.Contains(out, "but the bytes are sha256:") {
+			t.Errorf("the refusal is not the index-digest recompute:\n%s", out)
+		}
+	})
+
+	t.Run("the §51.3 blocked-promotion refusal", func(t *testing.T) {
+		dir, key, pub := attestedRelease(t)
+		editJSON(t, filepath.Join(dir, "release-index.json"), func(doc map[string]any) {
+			scan := doc["sbom"].(map[string]any)["vulnerability_scan"].(map[string]any)
+			scan["result"] = "blocked"
+			scan["blocking"] = 3
+		})
+		resignWith(t, dir, key)
+		ok, out := legThreeOnly(t, dir, pub)
+		if ok {
+			t.Fatalf("leg (3) passed a release the §51.3 policy BLOCKED:\n%s", out)
+		}
+		if !strings.Contains(out, "the §51.3 policy BLOCKED this release") {
+			t.Errorf("the refusal is not the blocked-promotion leg:\n%s", out)
+		}
+	})
+}
+
+// TestPromoteReachesTheEvidenceGate — the supply-chain half must not SHADOW the E15 T6 operator-leg
+// refusal. scripts/uat/sh2 and scripts/uat/sdk-parity both grep for that exact refusal and `go test`
+// cannot see either of them, which is the gate-corpora class of slip we already have a rule about —
+// so the grep gets a unit here.
+func TestPromoteReachesTheEvidenceGate(t *testing.T) {
+	cmd := exec.Command("/usr/bin/env", "bash",
+		filepath.Join(repoRoot(t), "scripts/release/promote.sh"), "self-host-0.2.0", "stable")
+	cmd.Dir = repoRoot(t)
+	cmd.Env = append(os.Environ(), "RELEASE=", "PALAI_RELEASE_DIR=", "PALAI_RELEASE_PUBKEY=")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("promote.sh blessed a stable promote whose operator legs have not run:\n%s", out)
+	}
+	if !strings.Contains(string(out), "awaits the E14 §6 operator legs") {
+		t.Fatalf("the stable promote did not reach the E15 T6 evidence gate (scripts/uat/sh2 and"+
+			" scripts/uat/sdk-parity grep for this exact refusal):\n%s", out)
 	}
 }
 
@@ -721,10 +970,54 @@ func TestReleaseVerifyOfflineNetworkNone(t *testing.T) {
 		"release-verify: OK",
 		"artifact digest(s) recomputed from bytes",
 		"declared byproduct(s) recomputed",
+		// ...and the two CEILINGS the container really has. Both are printed and both are true; a
+		// regression that quietly drops either one turns an honest transcript into an overclaim, so
+		// they are asserted rather than left to the reader.
+		"GIT ABSENT",
+		"UNVERIFIED by this run",
 	} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("the offline run is missing %q — it did not do the work:\n%s", want, out)
 		}
 	}
 	t.Logf("--network none transcript:\n%s", out) // the evidence an operator repeats and reads
+}
+
+// TestReleaseVerifyOfflineHonoursTheRevocationList — `--network-none` must DENY exactly what the host
+// run denies. It passed no -e at all, so PALAI_RELEASE_REVOCATIONS was silently dropped and the same
+// env, release and key gave HOST exit=1 "REVOKED: …" and OFFLINE exit=0 "NO revocation list supplied":
+// an operator who added --network-none to be MORE careful got a pass on a revoked release, and the
+// transcript contradicted their own environment.
+func TestReleaseVerifyOfflineHonoursTheRevocationList(t *testing.T) {
+	image := os.Getenv("PALAI_RELEASE_TOOL_IMAGE")
+	if image == "" {
+		t.Skip("UNPROVEN IN THIS RUN: set PALAI_RELEASE_TOOL_IMAGE to an already-loaded" +
+			" openssl+python3 image to exercise the offline revocation leg")
+	}
+	dir, _, pub := attestedRelease(t)
+	revoked := indexArtifacts(t, dir)[0]["digest"].(string)
+	list := filepath.Join(t.TempDir(), "revocations.json")
+	writeJSON(t, list, map[string]any{
+		"schema":  "palai.release-revocations/v1",
+		"revoked": []any{map[string]any{"id": revoked, "reason": "T4 test: known-bad artifact"}},
+	})
+
+	// The host run is the reference: whatever it says, the offline run says too.
+	hostOK, hostOut := releaseVerify(t, dir, pub, "PALAI_RELEASE_REVOCATIONS="+list)
+	if hostOK || !strings.Contains(hostOut, "REVOKED: "+revoked) {
+		t.Fatalf("the host run did not deny the revoked release (ok=%v):\n%s", hostOK, hostOut)
+	}
+
+	cmd := exec.Command("/bin/sh", filepath.Join(repoRoot(t), "scripts/release/release-verify.sh"),
+		"--network-none", dir, pub, image)
+	cmd.Env = append(os.Environ(), "PALAI_RELEASE_REVOCATIONS="+list)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("the OFFLINE run PASSED a release the HOST run denies — --network-none dropped the"+
+			" revocation list:\n%s", out)
+	}
+	if !strings.Contains(string(out), "REVOKED: "+revoked) {
+		t.Errorf("the offline refusal does not name the revoked id:\n%s", out)
+	}
+	t.Logf("--network none, revoked transcript:\n%s", out)
 }
