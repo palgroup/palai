@@ -161,9 +161,14 @@ darwin/linux × amd64/arm64, the runner host package per arch, and one image tar
 `linux/amd64`+`linux/arm64` image) with its `kind`, `arch` and its **sha256 digest recomputed from the
 artifact's bytes**. Restrict the matrix with `--platforms`, `--cli-targets` and `--runner-archs` (an
 upgrade drill wants host-only). Binaries are **bit-reproducible**: the same commit rebuilds to the same
-digests (`SOURCE_DATE_EPOCH` defaults to the commit timestamp; `-trimpath -buildvcs=false -ldflags "-s -w
--buildid="`). Image *layers* are not byte-identical and reproducibility is not claimed for them. The
-index's `sbom` and `provenance` fields are defined and empty — they are produced by E18 T2/T3.
+digests, from `-trimpath -buildvcs=false -ldflags "-s -w -buildid="` (a Go binary embeds no build
+timestamp) plus the fixed tar mtime the runner packager already stamps. `SOURCE_DATE_EPOCH` (default: the
+commit timestamp) does not touch the binaries — what it buys is a stable `built_at`, which is what keeps
+the *index* byte-stable across rebuilds. Image *layers* are not byte-identical and reproducibility is not
+claimed for them. Every compile is hermetic — `GOPROXY=off -mod=readonly` against the go.sum-pinned
+module cache, for the host legs (CLI, runner package) as well as the in-image ones; warm the cache with
+`make bootstrap`. The index's `sbom` and `provenance` fields are defined and empty — they are produced by
+E18 T2/T3.
 
 ## The §48.2 support window (OPS-008)
 

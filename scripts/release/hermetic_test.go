@@ -171,6 +171,65 @@ func TestGolangBaseMatchesGoModToolchain(t *testing.T) {
 	}
 }
 
+// TestHostCompileLegsRefuseTheProxy is the hermeticity guard for the legs no Dockerfile covers: the
+// CLI matrix and the runner host package compile on the HOST, and release-index.json states as a
+// release property that "the compile runs GOPROXY=off against that warmed cache". That string is only
+// honest if the host legs are pinned too.
+//
+// Proven the one way that cannot rot (the repro_test doctrine — never grep the script, a grep passes a
+// build that silently lost a flag): RUN each host leg with a COLD GOMODCACHE and an ambient GOPROXY
+// that WOULD work, and require it to FAIL with "module lookup disabled by GOPROXY=off". An unpinned leg
+// turns this RED either way — it downloads and succeeds, or (behind a firewall) it fails with a network
+// error instead. "go: downloading …" is deliberately NOT the discriminator: the go command logs that
+// line before it consults the proxy list, so it appears in the pinned case too.
+//
+// BOTH legs are invoked separately on purpose: build.sh aborts at the first leg that fails, so running
+// it alone would leave the runner packager's own pinning unproven.
+func TestHostCompileLegsRefuseTheProxy(t *testing.T) {
+	root := repoRoot(t)
+	legs := map[string]struct {
+		argv []string
+		env  []string
+	}{
+		"cli matrix (scripts/release/build.sh)": {
+			argv: []string{filepath.Join(root, "scripts/release/build.sh"),
+				"--out", t.TempDir(), "--no-images", "--version", "18.0.0",
+				"--cli-targets", "darwin/arm64", "--runner-archs", "arm64"},
+		},
+		"runner host package (scripts/package/runner/build.sh)": {
+			argv: []string{filepath.Join(root, "scripts/package/runner/build.sh")},
+			env:  []string{"VERSION=18.0.0", "ARCH=arm64", "OUT=" + t.TempDir()},
+		},
+	}
+	for name, leg := range legs {
+		t.Run(name, func(t *testing.T) {
+			cold := filepath.Join(t.TempDir(), "cold")
+			// A leg that has LOST its pinning downloads into this cache, and module cache dirs are
+			// 0555 — so make them writable before t.TempDir's own cleanup runs (LIFO), else a RED run
+			// leaves ~100MB of undeletable litter in $TMPDIR.
+			t.Cleanup(func() { _ = exec.Command("chmod", "-R", "u+w", cold).Run() })
+			cmd := exec.Command("/usr/bin/env", append([]string{"bash"}, leg.argv...)...)
+			cmd.Dir = root
+			// Cold cache + the DEFAULT proxy + no ambient GOFLAGS: the only thing that can stop a
+			// download is the script's own pinning, so this cannot pass for the wrong reason.
+			cmd.Env = append(append(os.Environ(),
+				"GOMODCACHE="+cold,
+				"GOPROXY=https://proxy.golang.org,direct",
+				"GOFLAGS=",
+			), leg.env...)
+			o, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("SUCCEEDED with a COLD module cache — this leg resolved through the module proxy,"+
+					" so the release index's `hermetic` string is FALSE for its artifacts:\n%s", o)
+			}
+			if !strings.Contains(string(o), "module lookup disabled by GOPROXY=off") {
+				t.Errorf("failed on a cold cache, but not because the module lookup was DISABLED — any"+
+					" other failure proves nothing about GOPROXY=off:\n%s", o)
+			}
+		})
+	}
+}
+
 // TestToolchainGuardRejectsDriftFixture — the RED half of the toolchain check.
 func TestToolchainGuardRejectsDriftFixture(t *testing.T) {
 	const drifted = "FROM golang:1.25.0@sha256:" + "0000000000000000000000000000000000000000000000000000000000000000" + " AS build\n"

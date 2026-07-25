@@ -15,18 +15,23 @@
 #     qemu is needed), the CLI for darwin/linux × amd64/arm64, and the runner host package per arch;
 #   * release-index.json — every artifact with its RECOMPUTED sha256 digest, arch and kind, plus
 #     sbom/provenance fields that are DEFINED but EMPTY (T2 and T3 fill them);
-#   * BINARY-level reproducibility — SOURCE_DATE_EPOCH (default: the commit timestamp, so it is a
-#     function of the commit, not of the clock) + -trimpath -buildvcs=false -ldflags "-s -w -buildid=".
-#     Two runs from the same commit yield BIT-IDENTICAL binaries, host packages and index
-#     (scripts/release/repro_test.go asserts it by re-running this script twice).
+#   * BINARY-level reproducibility — from -trimpath -buildvcs=false -ldflags "-s -w -buildid=" (a Go
+#     binary embeds no build timestamp) plus the E14 T5 packager's FIXED tar mtime, so two runs from the
+#     same commit yield BIT-IDENTICAL binaries and host packages. What SOURCE_DATE_EPOCH (default: the
+#     commit timestamp, so it is a function of the commit, not of the clock) buys is a stable built_at,
+#     which is what keeps the INDEX byte-stable across those runs — not the binaries.
+#     (scripts/release/repro_test.go asserts both by re-running this script twice.)
 #
 # HONEST CEILINGS (design invariant §2 "honest naming"):
 #   * Reproducibility is BINARY-level. Image-LAYER reproducibility is NOT claimed: `docker save`
 #     tars carry layer/config timestamps, so two image builds are equivalent, not byte-identical.
 #     That is why the index's `reproducibility` block names both halves explicitly.
 #   * Hermeticity is "offline compile against a warmed, go.sum-pinned cache": `go mod download` is
-#     the ONLY step allowed to reach the module proxy, and the compile runs GOPROXY=off. A fully
-#     network-free build from a cold cache is the operator/CI leg (plan §6 leg 1).
+#     the ONLY step allowed to reach the module proxy, and EVERY compile runs GOPROXY=off — the two
+#     in-Dockerfile stages AND the host legs (CLI matrix + runner host packages), so the claim holds
+#     for all 12 artifacts and not just the images (scripts/release/hermetic_test.go proves the host
+#     legs REFUSE to dial, by running this script with a COLD module cache). A fully network-free
+#     build from a cold cache is the operator/CI leg (plan §6 leg 1).
 #   * Every digest in the index is RECOMPUTED from the artifact's bytes (§2 recompute-over-copy) —
 #     nothing is scraped from a build log. For images that is the sha256 of the shipped tar, and the
 #     image id is read out of the tar's own manifest.json, not from `docker image inspect`.
@@ -104,12 +109,30 @@ built_at="$(date -u -r "$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 host_os="$(go env GOOS)"
 host_arch="$(go env GOARCH)"
 
+# A cross-ONLY image matrix cannot produce release-manifest.json: that file (the E15 T2 upgrade
+# contract) names HOST-platform refs + daemon image ids, and a foreign-arch-only build has none.
+# Refuse HERE rather than after paying for three image builds and then dying at `docker image
+# inspect ""` with neither the manifest nor the index written.
+if [ "$build_images" -eq 1 ] && ! echo ",$platforms," | grep -q ",linux/${host_arch},"; then
+  echo "build.sh: --platforms '$platforms' omits the host platform linux/${host_arch}, but" >&2
+  echo "  release-manifest.json pins host-platform image refs — add linux/${host_arch} or pass --no-images" >&2
+  exit 2
+fi
+
 mkdir -p "$out" "$out/cli"
 
 # The ONE reproducible Go flag set for every release binary (the same set scripts/package/runner
 # uses): -trimpath drops the build path, -buildvcs=false keeps git state out of the bytes,
 # -buildid= zeroes the toolchain build id, -s -w strip symbols/DWARF.
 release_ldflags="-s -w -buildid= -X github.com/palgroup/palai/packages/version.Stamp=${stamp}"
+
+# Hermeticity for the HOST legs, so the index's `hermetic` string is true for every artifact and not
+# only for the two in-Dockerfile compiles: the CLI matrix compiles offline against the warmed,
+# go.sum-pinned module cache, exactly like the Dockerfile stages do. A cold cache FAILS the build
+# ("module lookup disabled by GOPROXY=off") instead of quietly resolving through the ambient proxy —
+# warm it with `make bootstrap` (go mod download). Exported, so nothing downstream can lose it; the
+# runner packager pins the same pair on its own compile for callers that invoke it directly.
+export GOPROXY=off GOFLAGS=-mod=readonly
 
 # artifacts_json accumulates one release-index entry per built artifact, in emission order (which is
 # deterministic: the matrix lists are walked in the order given).
@@ -163,9 +186,12 @@ if [ "$build_images" -eq 1 ]; then
   mkdir -p "$out/images"
   # image_id_from_tar reads the image config digest out of the SHIPPED tar (docker's manifest.json
   # names the config blob), so the id — like the tar digest — comes from artifact bytes.
+  # `|| true`: with `set -o pipefail` an unreadable manifest (or a grep that matches nothing) would
+  # abort the whole script from the ASSIGNMENT below, with no diagnostic at all. Return empty instead
+  # and let the caller's guard say what went wrong.
   image_id_from_tar() {
     tar -xOf "$1" manifest.json 2>/dev/null \
-      | grep -oE '"[Cc]onfig":[^,]*' | grep -oE '[0-9a-f]{64}' | head -1 | sed 's/^/sha256:/'
+      | grep -oE '"[Cc]onfig":[^,]*' | grep -oE '[0-9a-f]{64}' | head -1 | sed 's/^/sha256:/' || true
   }
 
   # build_image publishes the host-platform ref in $host_ref (a global, NOT stdout: add_artifact
@@ -173,7 +199,7 @@ if [ "$build_images" -eq 1 ]; then
   host_ref=""
   build_image() { # name dockerfile context platform extra-build-args...
     local name="$1" dockerfile="$2" context="$3" platform="$4"; shift 4
-    local goarch="${platform##*/}" goos="${platform%%/*}" ref tarball
+    local goarch="${platform##*/}" goos="${platform%%/*}" ref tarball image_id
     host_ref=""
     ref="palai/${name}:${tag}-${goarch}"
     tarball="images/${name}-${goos}-${goarch}.tar"
@@ -187,8 +213,16 @@ if [ "$build_images" -eq 1 ]; then
     docker buildx build --platform "$platform" --load -t "$ref" \
       "$@" -f "$dockerfile" "$context" >&2
     docker save -o "$out/$tarball" "$ref" >&2
+    # An unreadable manifest.json would make image_id_from_tar print NOTHING and the index would then
+    # carry "image_id": "" — an EMPTY identity that T3 would bake into provenance. Fail instead.
+    image_id="$(image_id_from_tar "$out/$tarball")"
+    case "$image_id" in
+      sha256:????????????????????????????????????????????????????????????????) ;;
+      *) echo "build.sh: no image id in $tarball's manifest.json (got '$image_id') — refusing to index an empty digest" >&2
+         exit 1;;
+    esac
     add_artifact image "$tarball" "$goos" "$goarch" \
-      "$(printf ', "ref": "%s", "image_id": "%s"' "$ref" "$(image_id_from_tar "$out/$tarball")")"
+      "$(printf ', "ref": "%s", "image_id": "%s"' "$ref" "$image_id")"
     # The daemon-native image (Docker Desktop's VM is linux/<host arch>) ALSO carries the plain
     # palai/<name>:<tag> ref, which the compose stack, the upgrade drill and the boot smoke resolve.
     if [ "$platform" = "linux/${host_arch}" ]; then
@@ -237,6 +271,11 @@ EOF
 # release-index.json — the skeleton of release-policy.md's "Required release artifacts" list. Every
 # artifact is identified ONLY by its digest (§2: mutable tags are not release inputs); sbom and
 # provenance are DEFINED and EMPTY here and are filled by T2/T3.
+#
+# An image entry's "ref" is INFORMATIONAL ONLY — the local tag this build loaded, kept so a human can
+# see which image a tar came from. §2 is categorical that a manifest names artifacts by digest, so T4's
+# verifier MUST resolve an image by its "digest" (the tar's bytes) or "image_id" and must NEVER resolve
+# "ref": a tag move would silently repoint it.
 index="$out/release-index.json"
 cat > "$index" <<EOF
 {
@@ -250,7 +289,7 @@ cat > "$index" <<EOF
     "claimed": "binary-level: two builds of this commit produce bit-identical binaries and host packages",
     "not_claimed": "image-layer-level: docker image tars carry layer timestamps and are not byte-identical",
     "go_flags": "-trimpath -buildvcs=false -ldflags \"${release_ldflags}\"",
-    "hermetic": "go mod download is the only proxy access (go.sum-pinned); the compile runs GOPROXY=off against that warmed cache"
+    "hermetic": "go mod download is the only proxy access (go.sum-pinned); EVERY compile — the in-image stages AND the host legs (cli, runner host package) — runs GOPROXY=off -mod=readonly against that warmed cache"
   },
   "artifacts": [
 ${artifacts_json}
@@ -260,6 +299,14 @@ ${artifacts_json}
   "notes": "sbom is produced by E18 T2 and provenance/signature by E18 T3; a qemu boot-smoke of a foreign-arch image is not a full UAT run on that arch (plan §6 leg 3)."
 }
 EOF
+
+# Both files are consumed as JSON (T2/T3/T4 and `palai upgrade`), and both are written by heredoc from
+# operator-supplied strings — so validate the BYTES before claiming success. Without this a
+# `--version 'x"}'` exits 0 having written an index that no consumer can parse.
+for f in "$manifest" "$index"; do
+  python3 -m json.tool "$f" >/dev/null \
+    || { echo "build.sh: $f is not valid JSON — check --version/--tag for shell/JSON metacharacters" >&2; exit 1; }
+done
 
 echo "build.sh: wrote $manifest (version $version, stamp $stamp)" >&2
 echo "build.sh: wrote $index (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)" >&2

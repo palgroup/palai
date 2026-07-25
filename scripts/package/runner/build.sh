@@ -34,8 +34,11 @@ mkdir -p "$out"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 
+# GOPROXY=off + -mod=readonly (E18 T1): the compile is offline against the warmed, go.sum-pinned
+# module cache, which is what lets the release index claim hermeticity for the host package too. A
+# cold cache fails here ("module lookup disabled by GOPROXY=off") rather than fetching.
 echo "build: cross-compiling cmd/runner (linux/${ARCH})" >&2
-( cd "$root" && CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" \
+( cd "$root" && CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" GOPROXY=off GOFLAGS=-mod=readonly \
 	go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$stage/palai-runner" ./cmd/runner )
 
 # Stage the package members FLAT (no subdirs, so tar member order is fully controlled).

@@ -5,7 +5,7 @@
 FROM --platform=$BUILDPLATFORM golang:1.26.4@sha256:f96cc555eb8db430159a3aa6797cd5bae561945b7b0fe7d0e284c63a3b291609 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download && go mod verify
 COPY . .
 # The release version stamp (E15 T2): build.sh passes it so the runner advertises its git-describe stamp
 # in the enroll handshake for the §48.2 window (OPS-008). Empty leaves it unstamped (VCS/"dev") — a plain

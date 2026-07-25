@@ -14,11 +14,13 @@
 FROM --platform=$BUILDPLATFORM golang:1.26.4@sha256:f96cc555eb8db430159a3aa6797cd5bae561945b7b0fe7d0e284c63a3b291609 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-# The ONLY step allowed to reach the module proxy. Inputs are pinned by go.sum, and the compile
-# step below runs with GOPROXY=off against this warmed cache — so a missing/changed module fails
-# the build instead of being fetched. (Vendoring is the other lever; a warmed cache keeps the tree
-# free of a vendor/ copy.)
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+# The ONLY step allowed to reach the module proxy. Inputs are pinned by go.sum, and the compile step
+# below runs with GOPROXY=off against this warmed cache — so a MISSING module fails the build instead
+# of being fetched. `go mod verify` then re-hashes what the (shared, long-lived) cache mount already
+# holds against the recorded hashes, because GOPROXY=off alone would trust an already-extracted
+# module directory that had been altered in place. (Vendoring is the other lever; a warmed cache
+# keeps the tree free of a vendor/ copy.)
+RUN --mount=type=cache,target=/go/pkg/mod go mod download && go mod verify
 COPY . .
 # The release version stamp (E15 T2): scripts/release/build.sh passes it as a build arg so the image's
 # binary reports the git-describe stamp for the §48.2 support window + schema_revisions.applied_by. Empty
