@@ -2,7 +2,7 @@ id: KNO-004
 name: source-delete-excludes-deleted-content-from-the-active-index-on-rebuild
 proof_class: component-real
 provider: fake
-input: "deleting a knowledge source and rebuilding the index excludes the deleted source's content from retrieval — its immutable document revisions are retained as history but drop out of the active index membership (the rebuild's active-document snapshot inner-joins surviving sources), so the latest index excludes deleted content and its derivative chunks; deterministic against a real Postgres FTS index (make test-component TEST=postgres)"
+input: "deleting a knowledge source and rebuilding the index excludes the deleted source's content from retrieval — its immutable document revisions are retained as history but drop out of the active index membership (the rebuild's active-document snapshot inner-joins surviving sources), so the latest index excludes deleted content and its derivative chunks; deterministic against a real Postgres FTS index (make test-component TEST=postgres). §6 leg 4: real vector/hybrid retrieval in a REAL vector store (pgvector or external) is operator work — this case's local seam is the deterministic FTS core against a real Postgres index, and `knowledge-vector` stays DISABLED in discovery."
 expect_status: completed
 proof:
   - apps/control-plane/internal/knowledge/knowledge_component_test.go:TestSourceDeletePropagates

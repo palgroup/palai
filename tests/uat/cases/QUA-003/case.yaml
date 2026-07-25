@@ -7,4 +7,4 @@ expect_status: completed
 proof:
   - tests/evals/harness_test.go:TestFourSuitesGreen
   - tests/evals/harness_test.go:TestRegressedPolicyIsDetectable
-  - tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksSecurityRegressionIndependentOfAggregate
+  - tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksRealSecurityRegression

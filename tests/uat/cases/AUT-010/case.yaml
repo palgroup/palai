@@ -2,7 +2,7 @@ id: AUT-010
 name: flood-bounded-memory-429-depth-visible
 proof_class: component-real
 provider: fake
-input: "an inbound flood is bounded — in-flight memory stays capped, per-trigger backlog depth is visible, and excess is rejected with a 429 rather than admitted or OOM'd"
+input: "an inbound flood is bounded — in-flight memory stays capped, per-trigger backlog depth is visible, and excess is rejected with a 429 rather than admitted or OOM'd. LOCAL seam: component-real against a real Postgres inbound pipeline PLUS the reference QUEUE adapter's bounded-buffer backpressure leg (E17 T7) — consumption pauses at the threshold and NOTHING is dropped. §6 leg 5: a real SQS/PubSub flood run is operator work; the cloud adapters are unwritten and deliberately NOT advertised in discovery."
 expect_status: throttled
 proof:
   - apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429

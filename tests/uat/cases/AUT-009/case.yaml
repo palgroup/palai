@@ -2,7 +2,7 @@ id: AUT-009
 name: redelivery-after-lost-ack-no-duplicate
 proof_class: component-real
 provider: fake
-input: "an upstream redelivery after a lost ack (the receiver committed but the ack never reached the sender) does NOT duplicate the action — the durable source-event dedupe absorbs the retry"
+input: "an upstream redelivery after a lost ack (the receiver committed but the ack never reached the sender) does NOT duplicate the action — the durable source-event dedupe absorbs the retry. LOCAL seam: component-real against a real Postgres inbound pipeline PLUS the reference QUEUE adapter's lost-ack redelivery leg (E17 T7) — the canonical dedupe is one seam, not a per-source reinvention. §6 leg 5: a real SQS/PubSub conformance run is operator work; the cloud adapters are unwritten and deliberately NOT advertised in discovery."
 expect_status: completed
 proof:
   - apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate
