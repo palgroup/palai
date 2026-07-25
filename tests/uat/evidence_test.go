@@ -28,6 +28,9 @@ func baseManifest() map[string]any {
 				"usage":               map[string]any{"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
 				"db_assertions":       []any{"runs.state=completed"},
 				"checksum":            "sha256:" + strings.Repeat("b", 64),
+				// local-live-0.1.0 is a legacy shape-only release (E18 T8): its live writer hashes runtime
+				// bytes the manifest does not commit, so every case must carry the explicit label.
+				"checksum_surface": LegacyShapeOnly,
 			},
 		},
 	}
@@ -1169,6 +1172,7 @@ func TestExternalReceiptProofClass(t *testing.T) {
 				"external_receipt": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
 				"db_assertions":    []any{"remote ref == approved head", "scoped token destroyed"},
 				"checksum":         "sha256:" + strings.Repeat("c", 64),
+				"checksum_surface": LegacyShapeOnly, // coding-0.1.0 is legacy shape-only (E18 T8)
 			}},
 		}
 	}

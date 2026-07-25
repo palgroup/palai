@@ -208,6 +208,10 @@ func buildManifest(t *testing.T, release string, specs []caseSpec, receipts map[
 			"usage":               r.Usage,
 			"db_assertions":       r.DBAssertions,
 			"checksum":            r.Checksum,
+			// The live-smoke checksum hashes RUNTIME bytes this manifest does not commit (the resolved model
+			// id, the raw response body — hashBundle's call sites), so it can only be shape-checked. E18 T8
+			// requires that to be SAID, not left silent: the label rides every case this writer produces.
+			"checksum_surface": LegacyShapeOnly,
 		})
 	}
 	return map[string]any{

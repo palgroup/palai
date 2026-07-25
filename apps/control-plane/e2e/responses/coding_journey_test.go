@@ -319,6 +319,10 @@ func (h *harness) writeAndVerifyCodingEvidence(t *testing.T, r codingReceipt) {
 					"the push credential was destroyed after the operation; absent from every surface",
 				},
 				"checksum": hashCoding(r.runID, r.pushRemoteSHA, r.workBranch),
+				// The third part is the run's WORK BRANCH, which the manifest records only inside a prose
+				// db_assertion — not as a field — so no verifier can re-derive this checksum (E18 T8): the
+				// case carries the explicit legacy shape-only label instead of passing silently.
+				"checksum_surface": uat.LegacyShapeOnly,
 			},
 		},
 	}

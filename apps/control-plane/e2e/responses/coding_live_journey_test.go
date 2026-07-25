@@ -249,14 +249,19 @@ func (h *harness) writeAndVerifyLiveCodingEvidence(t *testing.T, secret string, 
 				"CEILING: coding journey proven live AT THE SEAM; production HTTP-run auto-provisioning is E09 T10",
 			},
 			"checksum": liveHash(r.runID, r.pushRemoteSHA),
+			// coding-0.1.0 is a legacy shape-only release (E18 T8): its two writers hash DIFFERENT surfaces
+			// (this live one over run+receipt, the deterministic one over run+receipt+work branch), so the
+			// release has no single canonical surface a verifier can recompute. The label says so.
+			"checksum_surface": uat.LegacyShapeOnly,
 		},
 	}
 	if r.prURL != "" {
 		cases = append(cases, map[string]any{
 			"id": "REP-008", "status": "PASS", "proof_class": "external-receipt",
 			"run_id": r.runID, "external_receipt": r.prURL,
-			"db_assertions": []string{"a real draft pull request opened once at " + r.prURL + " (stable external receipt)"},
-			"checksum":      liveHash(r.runID, r.prURL),
+			"db_assertions":    []string{"a real draft pull request opened once at " + r.prURL + " (stable external receipt)"},
+			"checksum":         liveHash(r.runID, r.prURL),
+			"checksum_surface": uat.LegacyShapeOnly,
 		})
 	}
 	manifest := map[string]any{

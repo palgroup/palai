@@ -38,6 +38,7 @@ type tierCase struct {
 	Terminal            map[string]any           `json:"terminal"`
 	DBAssertions        []string                 `json:"db_assertions"`
 	Checksum            string                   `json:"checksum"`
+	ChecksumSurface     string                   `json:"checksum_surface,omitempty"`
 	CapabilityTierClaim string                   `json:"capability_tier_claim,omitempty"`
 	CapabilityTierProof *uat.CapabilityTierProof `json:"capability_tier_proof,omitempty"`
 	EvalGateClaim       string                   `json:"eval_gate_claim,omitempty"`
@@ -74,6 +75,10 @@ func greenCase(id string) tierCase {
 		Terminal:     map[string]any{"type": "response.completed", "count": 1},
 		DBAssertions: []string{"one canonical row"},
 		Checksum:     "sha256:" + strings.Repeat("b", 64),
+		// This anchor fixture is not the committed bundle (its release name says so), so it commits no
+		// canonical checksum surface: it carries the E18 T8 legacy shape-only label, keeping every refusal a
+		// TIER refusal rather than a checksum finding.
+		ChecksumSurface: uat.LegacyShapeOnly,
 	}
 }
 
