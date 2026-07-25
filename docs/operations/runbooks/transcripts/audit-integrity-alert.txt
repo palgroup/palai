@@ -1,0 +1,72 @@
+# Audit integrity — what each alert actually looks like
+#
+# Recorded by scripts/ops/record-runbook-transcripts.sh against a live `palai local up`
+# stack (compose project $PROJECT), NOT the production overlay.
+#   commit:   2017c9e
+#   recorded: 2026-07-25T19:22:01Z
+#   platform: Darwin arm64, Docker 24.0.2
+#
+# Absolute paths are rewritten to $WORK (a scratch dir) and $REPO (the worktree).
+# API key values are redacted; they are printed exactly once by design.
+
+# Cut an anchor over the current journal and keep the public key OUT of the checkpoint directory.
+
+$ palai audit checkpoint --out "$WORK/anchor" --signing-key "$WORK/anchor.key"
+audit checkpoint: anchored 18 event(s) across 3 session(s) at sha256:bd25b5dd40cc912c384326679e93b6c949b96169d6f3f3b0b155756c0504ffa8
+audit checkpoint: wrote $WORK/anchor/audit-checkpoint.json (+ .sha256, .sig) and the public key $WORK/anchor/palai-audit-checkpoint.pub
+audit checkpoint: KEEP THIS OUTSIDE THE DATABASE and deliver the public key OUT OF BAND — verifying against a key stored beside the checkpoint proves only self-consistency.
+
+$ mkdir -p "$WORK/oob2" && cp "$WORK/anchor/palai-audit-checkpoint.pub" "$WORK/oob2/"
+
+# GREEN: an intact journal.
+
+$ palai audit verify --checkpoint "$WORK/anchor/audit-checkpoint.json" --pubkey "$WORK/oob2/palai-audit-checkpoint.pub"
+audit verify: checkpoint $WORK/anchor/audit-checkpoint.json
+audit verify: signature   verified (openssl ECDSA P-256, E14 T5 signer; key supplied out of band)
+audit verify: generated   2026-07-25T19:22:01.275866Z (0s ago)
+audit verify: anchored    18 row(s) recomputed to sha256:bd25b5dd40cc912c384326679e93b6c949b96169d6f3f3b0b155756c0504ffa8
+audit verify: checkpoint  head sha256:bd25b5dd40cc912c384326679e93b6c949b96169d6f3f3b0b155756c0504ffa8
+audit verify: unanchored  0 row(s) written after this checkpoint (cadence is operator policy — they are reported, not vouched for)
+audit verify: CEILING     This chains the `events` session journal, NOT `audit_events` (§50.3, protected by a REVOKE of UPDATE/DELETE instead). Neither control substitutes for the other.
+audit verify: CEILING     A checkpoint anchors a PREFIX. Everything written since the last cut is unanchored and only as protected as the next cut makes it; cadence is operator policy.
+audit verify: CEILING     ROLLBACK: an OLD checkpoint is still validly signed. Its own prefix verifies green and everything after it is merely 'unanchored', so swapping in a stale signed copy hides every later edit. Pass --not-older-than (and --min-anchored) to make that a `stale` alert, and keep the checkpoint somewhere a restore of the database cannot roll back with it.
+audit verify: CEILING     AN AUTHORISED RETENTION PURGE LOOKS EXACTLY LIKE TAMPERING: §22.2 scrub_events UPDATEs an anchored row's payload to {"purged": true} — same rows, same seq, different bytes — which is precisely the `tamper` signature. RE-CUT THE CHECKPOINT AFTER A PURGE; until you do, this alert cannot tell the reaper from an attacker.
+audit verify: CEILING     Continuous live verification wired to alerting is a plan §6 operator leg. This command is the mechanism, not a running watchdog.
+
+# ---- DRILL (destructive; throwaway stack only) -------------------------------------------------
+# The three arms below deliberately corrupt the journal so an operator has seen the alert BEFORE the
+# night it fires for real.
+
+# ARM 1 — an edited payload: [tamper].
+
+$ docker exec "$PG" psql -U palai -d palai -c "$EDIT_SQL"
+UPDATE 1
+
+$ palai audit verify --checkpoint "$WORK/anchor/audit-checkpoint.json" --pubkey "$WORK/oob2/palai-audit-checkpoint.pub" 2>&1 | grep -E "ALERT|integrity alert"
+audit verify: ALERT [tamper] ses_d0581f15531f12aaebad4330a8d65929 every anchored row is present (6 rows up to seq 6) but their bytes no longer chain to the anchored head. CAVEAT: an AUTHORISED §22.2 retention purge produces this exact signature — scrub_events rewrites an anchored payload to {"purged": true} without removing the row. If a purge ran since the checkpoint was cut, re-cut it (`palai audit checkpoint`) and re-verify; if none did, this is an edit nobody in the retention path made.
+palai: audit verify: 1 integrity alert(s) — the journal does not match its signed checkpoint
+[exit 1]
+
+# ARM 2 — an AUTHORISED §22.2 retention purge writes {"purged": true} over the same anchored row.
+# The alert below is BYTE-FOR-BYTE the one above. This is the trap: on a stack with
+# PALAI_RETENTION_STORE_FALSE_TTL set, routine maintenance raises the highest-severity alert, and an
+# attacker gets "the reaper did it" for free.
+
+$ docker exec "$PG" psql -U palai -d palai -c "$PURGE_SQL"
+UPDATE 1
+
+$ palai audit verify --checkpoint "$WORK/anchor/audit-checkpoint.json" --pubkey "$WORK/oob2/palai-audit-checkpoint.pub" 2>&1 | grep -E "ALERT|integrity alert"
+audit verify: ALERT [tamper] ses_d0581f15531f12aaebad4330a8d65929 every anchored row is present (6 rows up to seq 6) but their bytes no longer chain to the anchored head. CAVEAT: an AUTHORISED §22.2 retention purge produces this exact signature — scrub_events rewrites an anchored payload to {"purged": true} without removing the row. If a purge ran since the checkpoint was cut, re-cut it (`palai audit checkpoint`) and re-verify; if none did, this is an edit nobody in the retention path made.
+palai: audit verify: 1 integrity alert(s) — the journal does not match its signed checkpoint
+[exit 1]
+
+# ARM 3 — a removed row: [gap], a different alert with a different meaning.
+
+$ docker exec "$PG" psql -U palai -d palai -c "$DELETE_SQL"
+DELETE 1
+
+$ palai audit verify --checkpoint "$WORK/anchor/audit-checkpoint.json" --pubkey "$WORK/oob2/palai-audit-checkpoint.pub" 2>&1 | grep -E "ALERT|integrity alert"
+audit verify: ALERT [gap] ses_d0581f15531f12aaebad4330a8d65929 the checkpoint anchored 6 row(s) up to seq 6; 5 row(s) up to seq 6 are present — anchored rows have been removed
+palai: audit verify: 1 integrity alert(s) — the journal does not match its signed checkpoint
+[exit 1]
+

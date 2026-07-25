@@ -1,0 +1,93 @@
+# Incident response — triage commands
+#
+# Recorded by scripts/ops/record-runbook-transcripts.sh against a live `palai local up`
+# stack (compose project $PROJECT), NOT the production overlay.
+#   commit:   2017c9e
+#   recorded: 2026-07-25T19:21:44Z
+#   platform: Darwin arm64, Docker 24.0.2
+#
+# Absolute paths are rewritten to $WORK (a scratch dir) and $REPO (the worktree).
+# API key values are redacted; they are printed exactly once by design.
+
+# Step 1: is the stack healthy, and which check is not?
+
+$ palai local doctor
+callback           ok       0 pending, 0 dead-lettered
+api                ok       GET /v1/capabilities 200 at http://127.0.0.1:58300
+provider           ok       provider-one configured (0600)
+clock              ok       db clock within 2ms of host
+retention_ttl      ok       store:false retention disabled (ttl=0)
+host_quarantine    ok       no quarantined hosts
+disk               fail     data dir 3.0% free (14.0GiB of 460.4GiB) — under the 10% floor (PalaiDiskLow)
+queue              ok       0 claimable queued, oldest ready 0s
+migration          ok       schema at version 40 (current)
+object_store       ok       S3 endpoint reachable at http://127.0.0.1:58303 (0 buckets)
+runner             ok       runner gateway TLS listener up at :58301 (server cert verified)
+image_digests      ok       postgres+object-store pinned; control-plane/runner/engine locally-built
+runner_tls_reject  ok       certless /v1/runner/connect rejected (401)
+supervisor         ok       background loops supervised (0 restarts)
+palai: doctor: one or more checks are not green
+[exit 1]
+
+# Step 2: what is this stack running?
+
+$ palai version
+2f683752ad6e
+
+$ docker exec "$PG" psql -U palai -d palai -c "SELECT max(version) AS chain_head FROM schema_revisions;"
+ chain_head 
+------------
+         40
+(1 row)
+
+
+# Step 3: capture redacted diagnostics BEFORE changing anything.
+
+$ palai support-bundle --out "$WORK/support-bundle.tar.gz" --tail 200
+support bundle written to $WORK/support-bundle.tar.gz (5 parts, redacted)
+
+$ tar tzf "$WORK/support-bundle.tar.gz"
+doctor.json
+stack-config.json
+compose-ps.txt
+compose-config.yaml
+compose-logs.txt
+
+# Step 4: has anything touched the audit journal? (full drill: audit-integrity-alert.txt)
+
+$ openssl ecparam -genkey -name prime256v1 -noout -out "$WORK/anchor.key"
+
+$ palai audit checkpoint --out "$WORK/ir-anchor" --signing-key "$WORK/anchor.key"
+audit checkpoint: anchored 18 event(s) across 3 session(s) at sha256:bd25b5dd40cc912c384326679e93b6c949b96169d6f3f3b0b155756c0504ffa8
+audit checkpoint: wrote $WORK/ir-anchor/audit-checkpoint.json (+ .sha256, .sig) and the public key $WORK/ir-anchor/palai-audit-checkpoint.pub
+audit checkpoint: KEEP THIS OUTSIDE THE DATABASE and deliver the public key OUT OF BAND — verifying against a key stored beside the checkpoint proves only self-consistency.
+
+$ mkdir -p "$WORK/oob" && cp "$WORK/ir-anchor/palai-audit-checkpoint.pub" "$WORK/oob/"
+
+$ palai audit verify --checkpoint "$WORK/ir-anchor/audit-checkpoint.json" --pubkey "$WORK/oob/palai-audit-checkpoint.pub"
+audit verify: checkpoint $WORK/ir-anchor/audit-checkpoint.json
+audit verify: signature   verified (openssl ECDSA P-256, E14 T5 signer; key supplied out of band)
+audit verify: generated   2026-07-25T19:21:45.615135Z (0s ago)
+audit verify: anchored    18 row(s) recomputed to sha256:bd25b5dd40cc912c384326679e93b6c949b96169d6f3f3b0b155756c0504ffa8
+audit verify: checkpoint  head sha256:bd25b5dd40cc912c384326679e93b6c949b96169d6f3f3b0b155756c0504ffa8
+audit verify: unanchored  0 row(s) written after this checkpoint (cadence is operator policy — they are reported, not vouched for)
+audit verify: CEILING     This chains the `events` session journal, NOT `audit_events` (§50.3, protected by a REVOKE of UPDATE/DELETE instead). Neither control substitutes for the other.
+audit verify: CEILING     A checkpoint anchors a PREFIX. Everything written since the last cut is unanchored and only as protected as the next cut makes it; cadence is operator policy.
+audit verify: CEILING     ROLLBACK: an OLD checkpoint is still validly signed. Its own prefix verifies green and everything after it is merely 'unanchored', so swapping in a stale signed copy hides every later edit. Pass --not-older-than (and --min-anchored) to make that a `stale` alert, and keep the checkpoint somewhere a restore of the database cannot roll back with it.
+audit verify: CEILING     AN AUTHORISED RETENTION PURGE LOOKS EXACTLY LIKE TAMPERING: §22.2 scrub_events UPDATEs an anchored row's payload to {"purged": true} — same rows, same seq, different bytes — which is precisely the `tamper` signature. RE-CUT THE CHECKPOINT AFTER A PURGE; until you do, this alert cannot tell the reaper from an attacker.
+audit verify: CEILING     Continuous live verification wired to alerting is a plan §6 operator leg. This command is the mechanism, not a running watchdog.
+
+# Step 5: production posture. On a local stack this AUDITS THE PRODUCTION OVERLAY and therefore
+# fails — deploy/compose/production.env does not exist here. That is the honest output, not a defect;
+# on a production install every row is green (docs/operations/install.md step 4).
+
+$ palai config validate
+master_key         fail     PALAI_HOME unset in the env file — cannot locate the master key
+bootstrap_key      fail     PALAI_HOME unset in the env file
+cert_pair          fail     PALAI_HOME unset in the env file
+dispatch_workers   fail     PALAI_DISPATCH_WORKERS unset (production needs >= 1)
+edge_only_surface  ok       edge is the only host-published surface; Caddyfile proxies only /v1/* (/metrics + /healthz not edge-reachable)
+env_contract       fail     read env file: open deploy/compose/production.env: no such file or directory
+palai: config validate: production posture is not safe to bring up
+[exit 1]
+

@@ -1,0 +1,52 @@
+# Upgrade and rollback — the read-and-refuse half
+#
+# Recorded by scripts/ops/record-runbook-transcripts.sh against a live `palai local up`
+# stack (compose project $PROJECT), NOT the production overlay.
+#   commit:   2017c9e
+#   recorded: 2026-07-25T19:22:00Z
+#   platform: Darwin arm64, Docker 24.0.2
+#
+# Absolute paths are rewritten to $WORK (a scratch dir) and $REPO (the worktree).
+# API key values are redacted; they are printed exactly once by design.
+
+# Before any swap: what is running, and where is the schema chain?
+
+$ palai version
+2f683752ad6e
+
+$ docker exec "$PG" psql -U palai -d palai -c "SELECT max(version) AS chain_head FROM schema_revisions;"
+ chain_head 
+------------
+         40
+(1 row)
+
+
+$ docker exec "$PG" psql -U palai -d palai -c "SELECT version, applied_at, applied_by, left(checksum,12) FROM schema_revisions ORDER BY version DESC LIMIT 5;"
+ version |          applied_at           | applied_by |     left     
+---------+-------------------------------+------------+--------------
+      40 | 2026-07-25 19:21:16.656082+00 | dev        | e8ce6edf03ab
+      39 | 2026-07-25 19:21:16.642996+00 | dev        | f88282ddbf99
+      38 | 2026-07-25 19:21:16.637004+00 | dev        | 8104197aff2f
+      37 | 2026-07-25 19:21:16.628831+00 | dev        | 6fb119a9af8a
+      36 | 2026-07-25 19:21:16.610658+00 | dev        | 89e89e21bef3
+(5 rows)
+
+
+# The command refuses to guess. There is no default manifest and no default rollback target.
+
+$ palai upgrade
+palai: usage: palai upgrade --manifest <n+1-release-manifest.json> [--from <ver>] [--drain-run <id>] [--skip-backup]
+[exit 1]
+
+$ palai upgrade rollback
+palai: usage: palai upgrade rollback --to <n-release-manifest.json>
+[exit 1]
+
+# ... and it refuses a manifest that does not carry the images it would swap in.
+
+$ cat "$WORK/bogus.json"
+{"release":"n1","version":"deadbeef"}
+$ palai upgrade --manifest "$WORK/bogus.json"
+palai: release manifest $WORK/bogus.json has no control-plane image (rebuild with build.sh, not --no-images)
+[exit 1]
+
