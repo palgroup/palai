@@ -219,6 +219,13 @@ Her biri için KOD/harness bu fazda hazırdır ve parametriktir; İCRA operator-
 7. **Real-model eval benchmark koşumu** (quality numbers) — E18 RC girdisi.
 8. **Deployed console + manuel VoiceOver/screen-reader pass** — UI-001'in otomatik-kanıt tavanının üstü.
 
+**T11 EXIT'te kaydedilen İKİ SAPMA (owner kararı, `uat.CapabilityOperatorLegs`'te mekanik):** T7 ve T10, `queues` ve `console`'u stable ADAYI olarak planlamıştı; T11 exit review'u ikisini de **preview**'de tuttu — ikisi de slack/a2a ile AYNI sınıf tavan (karşı taraftaki sistemle hiç temas edilmedi):
+
+- **`queues` → leg 5 GENİŞLETİLDİ (herhangi bir broker ÜRÜNÜ):** T7'nin stable-adaylık şartı "gerçek broker container'ıyla component-real yeşilse" idi ve NATS JetStream'i adlandırıyordu. Bu ağaçta **hiçbir broker ürünü yok** (NATS/SQS/PubSub/Kafka yok — `uat.QueueBrokerSeams`); durable kanıt **Postgres referans adapter'ıdır**. Leg 5'in kapsamı yalnız SQS/PubSub olduğu için sapma burada AÇIKÇA adlandırılır.
+- **`console` → leg 8 (deployed-console yarısı):** UI-001/UI-002 yeşil ama HER console kanıtı **FAKE bir `/v1` upstream'e** karşı koştu (T10'un evidence satırı "local stack" diyordu), gerçek control plane'e karşı değil — ve T10'un kendisi fake upstream'in gerçek kontrattan SAPABİLDİĞİNİ kanıtladı (fixture'ı, gerçek `approval.requested.v1`'de olmayan bir approval event'i icat etmişti). "Fake'e karşı yeşil", "gerçek API'ye karşı çalışıyor" demek değildir.
+
+**Local kapanış tablosu (T11 verifier'ının YENİDEN HESAPLADIĞI):** knowledge = **stable**, capability-workers = **stable**, queues/console/slack/a2a = **preview**, knowledge-vector/apple-build = **disabled**.
+
 ## 7. Master plan §8 için önerilen özet blok (owner paste eder)
 
 **UAT ownership:** SLK-001..008; A2A-001..005; SUB-007; KNO-001..008; QUA-001..004 (harness+gate yarıları; real-model quality §6→E18); UI-001..002; AUT-009..010, AUT-013 (queue/orchestrator legleri mevcut case'lere eklenir); WRK-001..007 (§31 worker conformance, authored); §57.10 integration benchmark — tamamı `tests/uat/cases/` altında materialize, kanıt seam'i (fake-peer/loopback/deterministic/live) case metninde adlandırılır.

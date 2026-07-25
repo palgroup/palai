@@ -1514,11 +1514,20 @@ func RecomputeCapabilityTiers(caseStatus map[string]string) map[string]string {
 	return out
 }
 
-// CaseOutcomes extracts the bundle's per-case outcomes — the CANONICAL source the tier recompute reads. It is
-// only ever the manifest's `status` field because a bundle whose case carries ANY finding is already failed by
-// VerifyRelease (summary.OK() is false), so a fraudulent "PASS" on a case with a broken proof block cannot
-// reach a clean verification. The two mechanisms compose: this one refuses fabricated TIERS, that one refuses
-// fabricated case outcomes.
+// CaseOutcomes extracts the bundle's per-case outcomes — the source the tier recompute reads. It is only ever
+// the manifest's `status` field, and what that field IS matters more than what this function does:
+//
+// PER-CASE STATUS IS AUTHORED DETERMINISTIC DATA. For the 8 entries that carry a proof block (slack / a2a /
+// knowledge / queue / worker / console / eval / tier) a fraudulent "PASS" cannot reach a clean verification —
+// the proof's Complete() and the cross-case recomputes catch it, and any finding fails the case in
+// VerifyRelease. For the OTHER 31 entries the status is simply what the bundle's generator wrote: they carry
+// shape fields alone, so nothing here can distinguish "the suite was green" from "the author typed PASS".
+//
+// What makes those 31 honest is OUT OF BAND, and deliberately so: `scripts/uat/extensions` CO-RUNS the suites
+// that back the capabilities this gate flips (the knowledge / workers / automation component suites in full,
+// the Slack + A2A packages, the console playwright specs) in the SAME invocation that verifies the bundle, so a
+// red backing suite fails the gate. tests/uat/extensions TestARedBackingSuiteFailsTheGate proves that. Running
+// `scripts/evidence/verify` alone does NOT re-run them — standalone, it blesses the authored status.
 func CaseOutcomes(raw []byte) (map[string]string, error) {
 	var m evidenceManifest
 	if err := json.Unmarshal(raw, &m); err != nil {

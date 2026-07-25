@@ -365,15 +365,13 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 		t.Fatalf("step 7c: approved publications = %+v (%v), want exactly %s", approved, err, pub.ID)
 	}
 
-	// ---- 8-9. the model route changes, then the run is interrupted ----------------------------------
+	// ---- 8. the model route changes ----------------------------------------------------------------
 	//
-	// CEILING, STATED: steps 8 and 9 are COMMAND-ACCEPTANCE steps here, and the assertions say exactly that —
-	// each command is read BACK off the session's durable command rows (state + payload + the session it
-	// landed on), so a no-op accept that dropped the change or an interrupt that never persisted fails. What
-	// they deliberately do NOT assert is APPLICATION: a change_config applies at a model-step boundary and an
-	// interrupt drives a run to canceled, both of which need a running engine (command_pump / model_dispatch).
-	// This journey starts no engine — those are E08 execution-tier proofs living beside that code, and claiming
-	// them here would be the overclaim the whole gate exists to prevent.
+	// CEILING, STATED: this is a command-ACCEPTANCE step, and the assertion says exactly that — the command is
+	// read BACK off the session's durable command rows (state + payload + the session it landed on), so an
+	// accept that dropped the change is caught. It deliberately does NOT assert APPLICATION: a change_config
+	// applies at a model-step boundary, which needs a running engine (execution/command_pump). This journey
+	// starts no engine, so that is an E08 execution-tier proof living beside that code.
 	routeCmd := coordinator.CommandInput{CommandID: testID("cmd"), Kind: "change_config",
 		Payload: []byte(`{"model":"journey-model-b"}`)}
 	route, err := cs.AcceptCommand(ctx, tenant, sessionID, routeCmd)
@@ -389,13 +387,36 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 			gotSession, gotState, gotPayload, sessionID)
 	}
 
-	cancelCmd := coordinator.CommandInput{CommandID: testID("cmd"), Kind: "interrupt", Payload: []byte(`{}`)}
-	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, cancelCmd); err != nil {
-		t.Fatalf("step 9: accept interrupt: %v", err)
+	// ---- 9. cancellation and follow-up work --------------------------------------------------------
+	//
+	// A DEFECT THIS ASSERTION CAUGHT: the interrupt was posted as Kind:"interrupt", which is not a command
+	// kind at all (§9.2's interrupt is a send_message DELIVERY mode). The coordinator durably REJECTED it with
+	// `unsupported_command` on every run, and the old step-9 assertion — "AcceptCommand returned no error" —
+	// passed over that rejection. So the interrupt is now the real §9.2 one, and it is read back QUEUED for
+	// the pump; a rejection fails here.
+	interruptCmd := coordinator.CommandInput{CommandID: testID("cmd"), Kind: "send_message",
+		Delivery: "interrupt", Payload: []byte(`{"message":"stop and summarize"}`)}
+	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, interruptCmd); err != nil {
+		t.Fatalf("step 9: accept the §9.2 interrupt-delivery message: %v", err)
 	}
-	if gotSession, gotState, _ := commandRow(t, pool, cancelCmd.CommandID); gotSession != sessionID || gotState != "queued" {
-		t.Fatalf("step 9: the interrupt did not read back on the session: (session %q, state %q), want (%q, queued) — an interrupt that never persisted could never reach the run",
+	if gotSession, gotState, _ := commandRow(t, pool, interruptCmd.CommandID); gotSession != sessionID || gotState != "queued" {
+		t.Fatalf("step 9: the interrupt did not read back QUEUED on the session: (session %q, state %q), want (%q, queued) — a rejected or dropped interrupt could never reach the run",
 			gotSession, gotState, sessionID)
+	}
+
+	// The cancellation itself is NOT acceptance-only: CancelRunReconciled is the single production cancel path
+	// (CancelResponse routes here, spec §26.10/SES-010) and it drives the run to a terminal without an engine.
+	// The journey asserts the run genuinely REACHES `canceled` — a cancel that left the run running would pass
+	// an "err == nil" check and fail this one.
+	terminal, err := cs.CancelRunReconciled(ctx, tenant, respID, runID, canceledProjectionForJourney(t), canceledProjectionForJourney(t))
+	if err != nil {
+		t.Fatalf("step 9: cancel the run: %v", err)
+	}
+	if terminal != "canceled" {
+		t.Fatalf("step 9: the run's terminal = %q, want canceled", terminal)
+	}
+	if state := runState(t, pool, runID); state != "canceled" {
+		t.Fatalf("step 9: the run row is %q after the cancel, want canceled — an interrupt/cancel that does not reach a terminal is not cancellation", state)
 	}
 
 	// ---- 10. a Slack rate limit / network interruption occurs ---------------------------------------
@@ -454,12 +475,12 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	}
 	t.Logf("§63.3 journey PASS on a FAKE peer: one canonical session (%d), one effect per source event (%d effects / %d deliveries), unauthorized approval rejected, canonical result intact through a Slack delivery failure. A real workspace receipt is §6 leg 1 — NOT claimed.",
 		proof.CanonicalSessions, proof.CanonicalEffects, proof.DeliveredEvents)
-	t.Log("§63.3 journey CEILINGS, so no reader has to infer them: (1) the SLK-004 approver allow-list is enforced at the POLICY-PRIMITIVE level — SlackAuthorizationPolicyFor/ApproverAuthorized have no non-test caller and there is no Slack HTTP route, so this journey hand-composes the inbound leg a shipped handler would; (2) steps 8-9 are command-ACCEPTANCE (each command read back durable+queued on the session), NOT application — a boundary config change and an interrupt-to-canceled need a running engine (E08 execution tier); (3) terminal_summary_posts counts the single non-duplicated terminal surface post, not a per-delivery-id fan-out.")
+	t.Log("§63.3 journey CEILINGS, so no reader has to infer them: (1) the SLK-004 approver allow-list is enforced at the POLICY-PRIMITIVE level — SlackAuthorizationPolicyFor/ApproverAuthorized have no non-test caller and there is no Slack HTTP route, so this journey hand-composes the inbound leg a shipped handler would; (2) step 8 is command-ACCEPTANCE (read back durable+queued with its payload), NOT application — a boundary config change needs a running engine (E08 execution tier); step 9's cancellation IS asserted to a real terminal through the production CancelRunReconciled path; (3) terminal_summary_posts counts the single non-duplicated terminal surface post, not a per-delivery-id fan-out.")
 }
 
 // commandRow reads a durable command back off the session: the session it landed on, its state and its raw
 // payload. Steps 8-9 assert the accept was DURABLE rather than trusting the returned state alone — a no-op
-// accept that dropped the payload, or an interrupt that never persisted, fails here.
+// accept that dropped the payload, or a command the coordinator durably REJECTED, fails here.
 func commandRow(t *testing.T, pool *pgxpool.Pool, commandID string) (session, state, payload string) {
 	t.Helper()
 	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
@@ -468,6 +489,32 @@ func commandRow(t *testing.T, pool *pgxpool.Pool, commandID string) (session, st
 		t.Fatalf("read command %s: %v", commandID, err)
 	}
 	return session, state, payload
+}
+
+// runState reads a run's durable state, so step 9's cancel is asserted on the row rather than on a return value.
+func runState(t *testing.T, pool *pgxpool.Pool, runID string) string {
+	t.Helper()
+	var state string
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT state FROM runs WHERE id=$1`, runID).Scan(&state); err != nil {
+		t.Fatalf("read run %s: %v", runID, err)
+	}
+	return state
+}
+
+// canceledProjectionForJourney is the terminal Response projection the production cancel path hands
+// CancelRunReconciled (store.canceledProjection's shape). The journey builds it here rather than importing the
+// store package, which would be an import cycle for a component test in this package.
+func canceledProjectionForJourney(t *testing.T) []byte {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"output": []any{}, "usage": map[string]any{}, "model": "",
+		"error": map[string]any{"type": "canceled", "title": "run canceled"},
+	})
+	if err != nil {
+		t.Fatalf("marshal canceled projection: %v", err)
+	}
+	return raw
 }
 
 func threadSessionRows(t *testing.T, pool *pgxpool.Pool, connID, team, channel, thread string) int {
