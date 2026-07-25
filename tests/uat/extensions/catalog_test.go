@@ -348,6 +348,44 @@ func TestEveryCapabilityClaimIsACatalogedCase(t *testing.T) {
 	}
 }
 
+// ledgerExemptCases are the E17 cases that legitimately belong to NO capability's claim ledger, each with the
+// reason. Everything else must be governed: the two sides are checked in BOTH directions, so a capability
+// deleted from the tier table AND its cases quietly dropped from the catalog cannot vanish without a failure.
+var ledgerExemptCases = map[string]string{
+	"AUT-013": "the orchestrator KIT leg (plan §T8) — SDK + conformance fixtures + a scripted fake orchestrator; §T8 states it is explicitly NOT a discovery capability, so no tier is computed over it",
+	"QUA-001": "eval-harness machinery (plan §T6): release gating, not a discovery capability",
+	"QUA-002": "eval-harness machinery (plan §T6): the model-judge calibration smoke, not a discovery capability",
+	"QUA-004": "the eval GATE half (plan §T6) — carried by EvalGateProof through EvalPromoteGate, not by a capability tier",
+}
+
+// TestEveryCatalogedCaseIsGovernedOrExempt is the REVERSE of TestEveryCapabilityClaimIsACatalogedCase. That one
+// stops a tier being computed over a claim nobody proves; this one stops a proven case drifting OUT of every
+// capability's ledger. Without it, deleting a capability from CapabilityTierOrder + CapabilityClaims and
+// leaving its cases in the catalog would silently ungovern them — both sides would agree, and nothing would
+// fail. QUA-003 is governed as the security PRECONDITION rather than by ownership, so allClaimCases covers it.
+func TestEveryCatalogedCaseIsGovernedOrExempt(t *testing.T) {
+	governed := map[string]bool{}
+	for _, id := range allClaimCases() {
+		governed[id] = true
+	}
+	for id := range expectedExtensionsCatalog {
+		if governed[id] {
+			if why, exempt := ledgerExemptCases[id]; exempt {
+				t.Errorf("%s is BOTH in a capability's claim ledger and on the exempt list (%q) — the exemption is stale, drop it", id, why)
+			}
+			continue
+		}
+		if _, exempt := ledgerExemptCases[id]; !exempt {
+			t.Errorf("%s is a cataloged E17 case but NO capability's claim ledger governs it and it is not on the explicit exempt list — a capability deleted from both sides must not vanish silently (add it to uat.CapabilityClaims, or to ledgerExemptCases with the reason)", id)
+		}
+	}
+	for id := range ledgerExemptCases {
+		if _, cataloged := expectedExtensionsCatalog[id]; !cataloged {
+			t.Errorf("%s is on the ledger-exempt list but is not a cataloged E17 case — a stale exemption hides a deletion", id)
+		}
+	}
+}
+
 // buildClass maps a proof file's //go:build tag to its master-plan §10.2 proof class. A file with no build tag
 // runs in make verify / test-unit, so it is the "unit" tier. A .ts file is a playwright spec: the
 // e2e-deterministic tier (it is driven by the console's own runner, not `go test`).

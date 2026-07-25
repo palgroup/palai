@@ -15,6 +15,7 @@ package extensions
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -232,11 +233,16 @@ func TestFabricatedStableWithAbsentClaimIsRefused(t *testing.T) {
 	}
 }
 
-// TestFabricatedStableForAnOperatorLegCapabilityIsRefused pins the §6 honesty rule mechanically: `slack`
-// and `a2a` have every LOCAL claim green, yet their stable flip awaits a real workspace / a foreign peer.
-// Declaring them stable off green local claims is the precise overclaim this epic's honest ceiling forbids.
+// TestFabricatedStableForAnOperatorLegCapabilityIsRefused pins the §6 honesty rule mechanically: all four
+// capped capabilities have every LOCAL claim green, yet their stable flip awaits an external receipt that
+// does not exist in this session — a real Slack workspace (slack), a foreign peer (a2a), a real broker
+// PRODUCT (queues: the plan §T7 NATS-container condition is unmet; the durable proof is the Postgres
+// reference adapter) and a real control-plane /v1 upstream behind a DEPLOYED console (console: every console
+// proof ran against a FAKE upstream). Declaring any of them stable off green local claims is the precise
+// overclaim this epic's honest ceiling forbids, and it is the SAME class of ceiling in all four cases: the
+// counterpart system was never contacted.
 func TestFabricatedStableForAnOperatorLegCapabilityIsRefused(t *testing.T) {
-	for _, capability := range []string{"slack", "a2a"} {
+	for _, capability := range []string{"slack", "a2a", "queues", "console"} {
 		raw := tierManifest(t, nil,
 			map[string]string{capability: "stable"},
 			map[string]string{capability: "stable"})
@@ -343,6 +349,103 @@ func TestShrunkenClaimLedgerIsRefused(t *testing.T) {
 	if findings := tierFindings(edited); len(findings) == 0 {
 		t.Fatal("a SHRUNKEN claim ledger (dropping the red claim so the remainder is green) was ACCEPTED — the ledger must be anchored to the canonical code table (plan §T11)")
 	}
+}
+
+// committedBundle reads the shipped extensions-0.1.0 manifest — the real release data the family-recognition
+// negatives below mutate, because the hole they close is specific to a bundle that carries E17 AREA proofs.
+func committedBundle(t *testing.T) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(bundleDir(t), "manifest.json"))
+	if err != nil {
+		t.Fatalf("read the committed bundle: %v", err)
+	}
+	return raw
+}
+
+// TestDroppingTheTierClaimMarkerIsRefused closes the hole that BYPASSES the whole crown anchor: the tier
+// recompute only runs for a case whose `capability_tier_claim` marker is non-empty. Drop the marker (keep the
+// proof, keep every area proof) and the recompute silently does not run — the bundle verifies 0/0/0/0 with
+// fabricated tiers intact. The fix mirrors PromoteGateFor's family recognition: a manifest carrying ANY E17
+// area claim MUST carry exactly one capability_tier_claim + proof.
+func TestDroppingTheTierClaimMarkerIsRefused(t *testing.T) {
+	raw := committedBundle(t)
+
+	// The fabrication the missing marker would hide: `queues` hand-written stable while its §6 leg 5 (a real
+	// broker PRODUCT) is outstanding. With the marker present this is REFUSED by the recompute.
+	fabricated := setDeclaredTier(t, raw, "queues", "stable")
+	if findings := tierFindings(fabricated); len(findings) == 0 {
+		t.Fatal("baseline: a fabricated queues=stable must be refused while the marker is present")
+	}
+
+	noMarker := stripField(t, fabricated, "capability_tier_claim")
+	findings := uat.VerifyManifest(noMarker, nil)
+	if len(findings) == 0 {
+		t.Fatal("a bundle carrying every E17 AREA proof but NO capability_tier_claim marker verified CLEAN with a fabricated queues=stable — dropping one marker bypasses the entire tier recompute (the crown anchor becomes optional)")
+	}
+	if joined := renderFindings(findings); !strings.Contains(joined, "capability_tier_claim") {
+		t.Errorf("the finding must name the missing capability_tier_claim so an operator knows the anchor did not run, got: %s", joined)
+	}
+	if refusals := uat.PromoteGateFor(noMarker, "rc"); len(refusals) == 0 {
+		t.Fatal("the promote gate ACCEPTED an E17 bundle with no tier claim marker")
+	}
+}
+
+// TestTwoTierClaimsAreRefused: ExtensionsPromoteGate takes the FIRST tier proof it finds while VerifyManifest
+// checks every one, so a bundle could carry an honest proof first and a fabricated one after it and be judged
+// on the honest one at promote time. Both surfaces must refuse a manifest with more than one tier claim.
+func TestTwoTierClaimsAreRefused(t *testing.T) {
+	raw := committedBundle(t)
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	cases := m["cases"].([]any)
+	var anchor map[string]any
+	for _, c := range cases {
+		if entry := c.(map[string]any); entry["capability_tier_claim"] != nil {
+			anchor = entry
+		}
+	}
+	if anchor == nil {
+		t.Fatal("the committed bundle carries no tier anchor")
+	}
+	second := map[string]any{}
+	for k, v := range anchor {
+		second[k] = v
+	}
+	second["id"] = "E17-TIER-SECOND"
+	m["cases"] = append(cases, second)
+	twice := mustMarshal(t, m)
+
+	if findings := uat.VerifyManifest(twice, nil); len(findings) == 0 {
+		t.Fatal("a manifest with TWO capability_tier_claims verified clean — the gate must refuse it, or the promote gate's first-proof-wins read is exploitable")
+	}
+	if refusals := uat.PromoteGateFor(twice, "rc"); len(refusals) == 0 {
+		t.Fatal("the promote gate ACCEPTED a manifest with two tier claims while judging only the first (MINOR 13)")
+	}
+}
+
+// setDeclaredTier rewrites one capability's DECLARED tier (and its snapshot entry) in a manifest, modelling a
+// hand-written tier in an otherwise canonical bundle.
+func setDeclaredTier(t *testing.T, raw []byte, capability, tier string) []byte {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, c := range m["cases"].([]any) {
+		proof, ok := c.(map[string]any)["capability_tier_proof"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, d := range proof["capabilities"].([]any) {
+			if decl := d.(map[string]any); decl["capability"] == capability {
+				decl["declared_tier"] = tier
+			}
+		}
+		proof["snapshot"].(map[string]any)[capability] = tier
+	}
+	return mustMarshal(t, m)
 }
 
 // renderFindings joins findings for a readable assertion message.

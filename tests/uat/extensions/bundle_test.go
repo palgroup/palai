@@ -80,6 +80,25 @@ var consoleNetworkTrace = []string{
 	"/api/palai/v1/artifacts/art_console/content",
 }
 
+// caseCeilings are per-case honesty clauses the generic assertion lines cannot express: what a case's proof
+// does NOT reach. They are recorded IN the bundle (not only in a code comment) because the bundle is what a
+// reader outside this repo sees, and the E17 T11 review found each of these implied more than it proved.
+var caseCeilings = map[string][]string{
+	"SLK-001": {
+		"UNWIRED DECISION PATH: the SLK-004 approver allow-list is proven at the POLICY-PRIMITIVE level. Store.SlackAuthorizationPolicyFor + SlackAuthorizationPolicy.ApproverAuthorized (the GetSlackAuthorizationPolicy query) have NO non-test caller and there is NO Slack HTTP route in the tree, so the §63.3 journey hand-composes the inbound leg (verify -> map -> policy -> coordinator) that a shipped handler would compose. What is proven: an unauthorized actor's approval is REJECTED by the enforcement primitive over real Postgres. What is NOT proven: that a deployed inbound handler calls it — wiring the route is follow-up work, not a §6 operator leg",
+		"TERMINAL-SUMMARY MEASUREMENT: the proof's terminal_summary_posts counts the terminal SURFACE posts (exactly one repaired chat.update, never duplicated). The §63.3 fan-out form — one terminal summary per delivery id, with two canonical deliveries — is NOT asserted: there is no shipped Slack outbound worker to fan out, so a second post would be fixture theatre rather than evidence",
+		"JOURNEY STEPS 8-9 ARE COMMAND-ACCEPTANCE ONLY: the change_config route switch and the interrupt are asserted DURABLE (the row reads back queued with its payload on the session), not APPLIED. Applying a boundary config change and driving an interrupt to a canceled terminal needs a running engine, which this journey does not start — those are E08 execution-tier proofs (apps/control-plane/internal/execution), not Slack-mapping proofs",
+	},
+	"UI-001": {
+		"FAKE UPSTREAM, MECHANICALLY LABELLED: every console proof drives the built console against tests/fake-control-plane.mjs, never a real control plane (console_proof.upstream is structurally \"fake\"). E17 T10 itself proved a fake upstream CAN diverge from the real contract — its fixture had invented an approval event the real approval.requested.v1 does not carry — so green against a fake is not evidence about the real API. A DEPLOYED console against a real /v1 is §6 leg 8 and caps `console` at preview",
+	},
+	"AUT-009": {
+		// The word "stable" is deliberately absent: the honest-ceiling guard forbids it in a preview
+		// capability's evidence, so the unmet condition is named without borrowing the tier word.
+		"NO BROKER PRODUCT: queue_delivery_proof.broker is \"postgres-durable-reference\" — one of the seams that actually ran. No NATS, SQS, Pub/Sub or Kafka exists anywhere in this tree, so the plan §T7 tier-promotion condition for `queues` (a real broker container, NATS JetStream) is UNMET and §6 leg 5 (EXTENDED to cover any broker PRODUCT) caps the capability at preview",
+	},
+}
+
 // buildExtensionsManifest assembles the bundle. Everything is derived; nothing is typed twice.
 func buildExtensionsManifest(t *testing.T) []byte {
 	t.Helper()
@@ -100,11 +119,13 @@ func buildExtensionsManifest(t *testing.T) []byte {
 			"the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
 			"AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran",
 		}
+		assertions = append(assertions, caseCeilings[id]...)
 		if id == tierAnchorCaseID {
 			assertions = []string{
 				"RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): a capability's maturity tier is not a behaviour one case asserts, it is the RECOMPUTATION over all of them",
 				"the verifier RECOMPUTES every tier from the canonical code tables + this bundle's own per-case outcomes and refuses any declared tier or /v1/capabilities snapshot that disagrees — the manifest's own tier copy is never an input (plan §T11)",
-				"HONEST CEILING: slack and a2a cap at PREVIEW because their §6 legs (a real workspace receipt / a foreign peer) do not exist in this session; knowledge-vector and apple-build are DISABLED because no vector store and no Apple signing material exist anywhere",
+				"PER-CASE STATUS IS AUTHORED DETERMINISTIC DATA, and what backs it is the CO-RUN in scripts/uat/extensions: the same invocation that verifies this bundle also runs the knowledge, worker and automation-queue component suites, the Slack/A2A package suites and the console playwright specs against the throwaway Postgres it stood up. A red backing suite fails the gate rather than being reported around it (proven by tests/uat/extensions TestARedBackingSuiteFailsTheGate); the shipped scripts/evidence/verify alone does NOT re-run them",
+				"HONEST CEILING — four capabilities cap at PREVIEW for ONE reason, that the counterpart system was never contacted: slack (no real workspace, §6 leg 1), a2a (no foreign peer, §6 leg 2), queues (no broker PRODUCT was ever run — the plan §T7 NATS-JetStream-container condition is UNMET and the durable proof is the Postgres reference adapter, §6 leg 5 EXTENDED) and console (every console proof ran against a FAKE /v1 upstream, never a real control plane, §6 leg 8). knowledge-vector and apple-build are DISABLED because no vector store and no Apple signing material exist anywhere. Only knowledge and capability-workers close STABLE",
 			}
 		}
 		return map[string]any{
@@ -146,7 +167,7 @@ func buildExtensionsManifest(t *testing.T) []byte {
 			SourceEventIDs:    []string{"Ev63301", "Ev63306"},
 			DeliveredEvents:   3, CanonicalEffects: 2,
 			PostReceipts:                 []string{"901.000100", "902.000100"},
-			TerminalSummariesPerDelivery: 1, RateLimitRepairs: 1,
+			TerminalSummaryPosts:         1, RateLimitRepairs: 1,
 			UnauthorizedApprovalRejected: true, CanonicalResultIntact: true,
 		},
 	})
@@ -183,10 +204,12 @@ func buildExtensionsManifest(t *testing.T) []byte {
 		},
 	})
 
+	// Broker is one of uat.QueueBrokerSeams — a seam that ACTUALLY RAN. No broker product exists in this tree,
+	// which is why `queues` caps at preview (the plan §T7 NATS-container condition is unmet).
 	attach("AUT-009", map[string]any{
 		"queue_delivery_claim": "lost-ack-redelivery-single-effect-dead-letter-and-loss-less-outbound",
 		"queue_delivery_proof": uat.QueueDeliveryProof{
-			Broker: "postgres-durable reference adapter (a real SQS/PubSub/Kafka run is §6 leg 5)",
+			Broker: "postgres-durable-reference",
 			DistinctMessages: 3, Consumed: 4, Redelivered: 1, CanonicalEffects: 3,
 			DeadLettered: 1, Dropped: 0, OutboundDeliveredOnce: true,
 		},
@@ -204,9 +227,12 @@ func buildExtensionsManifest(t *testing.T) []byte {
 		},
 	})
 
+	// Upstream is structurally "fake": the playwright specs drive the built console against
+	// tests/fake-control-plane.mjs, never a real control plane. That is why `console` caps at preview.
 	attach("UI-001", map[string]any{
-		"console_claim": "axe-clean-keyboard-operable-and-every-request-on-the-v1-relay",
+		"console_claim": "axe-clean-keyboard-operable-and-every-request-on-the-v1-relay-over-a-FAKE-upstream",
 		"console_proof": uat.ConsoleProof{
+			Upstream:      "fake",
 			AxeViolations: 0, AxeReportDigest: digestOf(axeReportSummary),
 			NetworkTrace: consoleNetworkTrace,
 			KeyboardOperable: true, SkipLinkFirst: true,
@@ -463,6 +489,48 @@ func TestBundleEvalNumbersAreTheCanonicalHeldOutRun(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("the bundle carries no eval_gate_proof")
+	}
+}
+
+// TestTheTwoUnlabelledSeamsCannotBeFabricated is MUST-FIX 2's mechanical half. The two proofs backing the
+// capabilities that were CANDIDATES for stable are the only ones that had no structurally-required seam label,
+// unlike SlackMappingProof.Peer=="fake" and A2AConformanceProof.Peer=="loopback":
+//
+//	ConsoleProof carried NO upstream field though every console proof ran against a FAKE /v1 upstream;
+//	QueueDeliveryProof.Broker only had to be non-empty, so a bundle could write "AWS SQS us-east-1".
+//
+// Both now carry the Peer discipline: a value naming a seam that was never run fails Complete(), so a future
+// real-stack run must CHANGE the value and that change is visible in the bundle.
+func TestTheTwoUnlabelledSeamsCannotBeFabricated(t *testing.T) {
+	console := uat.ConsoleProof{
+		Upstream: "fake", AxeViolations: 0, AxeReportDigest: digestOf(axeReportSummary),
+		NetworkTrace: consoleNetworkTrace, KeyboardOperable: true, SkipLinkFirst: true,
+		ApprovalDetailAuthoritative: true, APIKeyReachedBrowser: false,
+	}
+	if !console.Complete() {
+		t.Fatalf("baseline: the fake-upstream console proof must be complete, got %+v", console)
+	}
+	for _, upstream := range []string{"", "real", "local stack", "https://api.palai.example/v1"} {
+		fabricated := console
+		fabricated.Upstream = upstream
+		if fabricated.Complete() {
+			t.Errorf("a ConsoleProof claiming upstream %q was ACCEPTED — every console proof ran against a FAKE /v1 upstream, and E17 T10 itself proved a fake can diverge from the real contract, so the seam label must be structurally \"fake\"", upstream)
+		}
+	}
+
+	queue := uat.QueueDeliveryProof{
+		Broker: "postgres-durable-reference", DistinctMessages: 3, Consumed: 4, Redelivered: 1,
+		CanonicalEffects: 3, DeadLettered: 1, Dropped: 0, OutboundDeliveredOnce: true,
+	}
+	if !queue.Complete() {
+		t.Fatalf("baseline: the reference-adapter queue proof must be complete, got %+v", queue)
+	}
+	for _, broker := range []string{"", "AWS SQS us-east-1", "NATS JetStream", "Google Pub/Sub", "kafka"} {
+		fabricated := queue
+		fabricated.Broker = broker
+		if fabricated.Complete() {
+			t.Errorf("a QueueDeliveryProof naming broker %q was ACCEPTED — no broker PRODUCT was ever run in this tree (there is no NATS anywhere), so Broker must be one of the seams that actually ran", broker)
+		}
 	}
 }
 

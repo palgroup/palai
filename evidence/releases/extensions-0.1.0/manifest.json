@@ -168,7 +168,8 @@
       "db_assertions": [
         "AUT-009: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
-        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran",
+        "NO BROKER PRODUCT: queue_delivery_proof.broker is \"postgres-durable-reference\" — one of the seams that actually ran. No NATS, SQS, Pub/Sub or Kafka exists anywhere in this tree, so the plan §T7 tier-promotion condition for `queues` (a real broker container, NATS JetStream) is UNMET and §6 leg 5 (EXTENDED to cover any broker PRODUCT) caps the capability at preview"
       ],
       "id": "AUT-009",
       "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
@@ -177,7 +178,7 @@
       "provider_request_id": "prov_e17_deterministic",
       "queue_delivery_claim": "lost-ack-redelivery-single-effect-dead-letter-and-loss-less-outbound",
       "queue_delivery_proof": {
-        "broker": "postgres-durable reference adapter (a real SQS/PubSub/Kafka run is §6 leg 5)",
+        "broker": "postgres-durable-reference",
         "distinct_messages": 3,
         "consumed": 4,
         "redelivered": 1,
@@ -590,7 +591,10 @@
       "db_assertions": [
         "SLK-001: proven by 2 in-tree proof(s) at the unit tier — adapters/integrations/slack/inbound_test.go:TestMapEventNormalizesToCanonicalIdentity; adapters/integrations/slack/inbound_test.go:TestUnwrapSocketFrameFeedsTheSameMapping",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
-        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran",
+        "UNWIRED DECISION PATH: the SLK-004 approver allow-list is proven at the POLICY-PRIMITIVE level. Store.SlackAuthorizationPolicyFor + SlackAuthorizationPolicy.ApproverAuthorized (the GetSlackAuthorizationPolicy query) have NO non-test caller and there is NO Slack HTTP route in the tree, so the §63.3 journey hand-composes the inbound leg (verify -\u003e map -\u003e policy -\u003e coordinator) that a shipped handler would compose. What is proven: an unauthorized actor's approval is REJECTED by the enforcement primitive over real Postgres. What is NOT proven: that a deployed inbound handler calls it — wiring the route is follow-up work, not a §6 operator leg",
+        "TERMINAL-SUMMARY MEASUREMENT: the proof's terminal_summary_posts counts the terminal SURFACE posts (exactly one repaired chat.update, never duplicated). The §63.3 fan-out form — one terminal summary per delivery id, with two canonical deliveries — is NOT asserted: there is no shipped Slack outbound worker to fan out, so a second post would be fixture theatre rather than evidence",
+        "JOURNEY STEPS 8-9 ARE COMMAND-ACCEPTANCE ONLY: the change_config route switch and the interrupt are asserted DURABLE (the row reads back queued with its payload on the session), not APPLIED. Applying a boundary config change and driving an interrupt to a canceled terminal needs a running engine, which this journey does not start — those are E08 execution-tier proofs (apps/control-plane/internal/execution), not Slack-mapping proofs"
       ],
       "id": "SLK-001",
       "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
@@ -614,7 +618,7 @@
           "901.000100",
           "902.000100"
         ],
-        "terminal_summaries_per_delivery": 1,
+        "terminal_summary_posts": 1,
         "rate_limit_repairs": 1,
         "unauthorized_approval_rejected": true,
         "canonical_result_intact": true
@@ -824,8 +828,9 @@
     },
     {
       "checksum": "sha256:12264f9e6b7459fb5d01472c059c65f9b05e0b69d58e68f51a57aa1df234e7cc",
-      "console_claim": "axe-clean-keyboard-operable-and-every-request-on-the-v1-relay",
+      "console_claim": "axe-clean-keyboard-operable-and-every-request-on-the-v1-relay-over-a-FAKE-upstream",
       "console_proof": {
+        "upstream": "fake",
         "axe_violations": 0,
         "axe_report_digest": "sha256:6ed2f36bb13fbf9a46eee16b0e6fa16886c46699b38183fe9ad0509b0dcd9aaf",
         "network_trace": [
@@ -846,7 +851,8 @@
       "db_assertions": [
         "UI-001: proven by 3 in-tree proof(s) at the e2e-deterministic tier — apps/web-console/tests/a11y.spec.ts:axe-core reports zero violations on the admin surface; apps/web-console/tests/a11y.spec.ts:axe-core reports zero violations on the live-run surface after a completed run; apps/web-console/tests/a11y.spec.ts:keyboard navigation: skip link is the first stop and the run→approve flow works with no mouse",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
-        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
+        "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran",
+        "FAKE UPSTREAM, MECHANICALLY LABELLED: every console proof drives the built console against tests/fake-control-plane.mjs, never a real control plane (console_proof.upstream is structurally \"fake\"). E17 T10 itself proved a fake upstream CAN diverge from the real contract — its fixture had invented an approval event the real approval.requested.v1 does not carry — so green against a fake is not evidence about the real API. A DEPLOYED console against a real /v1 is §6 leg 8 and caps `console` at preview"
       ],
       "id": "UI-001",
       "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",
@@ -1111,7 +1117,7 @@
           },
           {
             "capability": "console",
-            "declared_tier": "stable",
+            "declared_tier": "preview",
             "claim_case_ids": [
               "UI-001",
               "UI-002"
@@ -1140,7 +1146,7 @@
           },
           {
             "capability": "queues",
-            "declared_tier": "stable",
+            "declared_tier": "preview",
             "claim_case_ids": [
               "AUT-009",
               "AUT-010"
@@ -1165,10 +1171,10 @@
           "a2a": "preview",
           "apple-build": "disabled",
           "capability-workers": "stable",
-          "console": "stable",
+          "console": "preview",
           "knowledge": "stable",
           "knowledge-vector": "disabled",
-          "queues": "stable",
+          "queues": "preview",
           "slack": "preview"
         },
         "snapshot_source": "GET /v1/capabilities served by the real api.NewRouter (asserted bit-equal by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute)",
@@ -1178,7 +1184,8 @@
       "db_assertions": [
         "RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): a capability's maturity tier is not a behaviour one case asserts, it is the RECOMPUTATION over all of them",
         "the verifier RECOMPUTES every tier from the canonical code tables + this bundle's own per-case outcomes and refuses any declared tier or /v1/capabilities snapshot that disagrees — the manifest's own tier copy is never an input (plan §T11)",
-        "HONEST CEILING: slack and a2a cap at PREVIEW because their §6 legs (a real workspace receipt / a foreign peer) do not exist in this session; knowledge-vector and apple-build are DISABLED because no vector store and no Apple signing material exist anywhere"
+        "PER-CASE STATUS IS AUTHORED DETERMINISTIC DATA, and what backs it is the CO-RUN in scripts/uat/extensions: the same invocation that verifies this bundle also runs the knowledge, worker and automation-queue component suites, the Slack/A2A package suites and the console playwright specs against the throwaway Postgres it stood up. A red backing suite fails the gate rather than being reported around it (proven by tests/uat/extensions TestARedBackingSuiteFailsTheGate); the shipped scripts/evidence/verify alone does NOT re-run them",
+        "HONEST CEILING — four capabilities cap at PREVIEW for ONE reason, that the counterpart system was never contacted: slack (no real workspace, §6 leg 1), a2a (no foreign peer, §6 leg 2), queues (no broker PRODUCT was ever run — the plan §T7 NATS-JetStream-container condition is UNMET and the durable proof is the Postgres reference adapter, §6 leg 5 EXTENDED) and console (every console proof ran against a FAKE /v1 upstream, never a real control plane, §6 leg 8). knowledge-vector and apple-build are DISABLED because no vector store and no Apple signing material exist anywhere. Only knowledge and capability-workers close STABLE"
       ],
       "id": "E17-TIER",
       "image_digest": "sha256:e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e17e",

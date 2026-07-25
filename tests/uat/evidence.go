@@ -1044,8 +1044,15 @@ func (p EvalGateProof) Complete() bool {
 // SlackMappingProof is the evidence a slack_mapping_claim requires (plan §T11, the §63.3 journey + SLK-001..008):
 // a Slack thread drove ONE canonical session, each source event produced exactly ONE canonical effect even
 // though a duplicate was redelivered, an unauthorized actor's approval was REJECTED, a 429 repaired the visible
-// message ONCE, exactly one terminal summary went out per delivery id, and the canonical result stayed intact
-// when the Slack output update failed (the §63.3 pass sentence, verbatim).
+// message ONCE, the terminal summary surface posted exactly ONCE (never a duplicate), and the canonical result
+// stayed intact when the Slack output update failed (the §63.3 pass sentence).
+//
+// ONE §63.3 criterion is NOT asserted at full strength, named rather than implied: "exactly one terminal summary
+// per delivery id" is a FAN-OUT claim, and the journey has two canonical deliveries against a single terminal
+// surface post — so TerminalSummaryPosts measures what actually happened (the terminal surface was posted once,
+// not duplicated) instead of dividing one post by two deliveries and calling it 1-per-delivery. The per-delivery
+// fan-out would need a shipped Slack outbound worker, which does not exist yet (there is no Slack HTTP route in
+// the tree — see the SLK-001 bundle assertion).
 //
 // HONEST CEILING, MECHANICALLY ENFORCED: Peer must be the literal "fake" — the whole journey runs against a
 // FAKE Slack peer (recorded chat.postMessage receipts, injected 429s, replayed frames). A bundle cannot write
@@ -1060,7 +1067,7 @@ type SlackMappingProof struct {
 	DeliveredEvents              int      `json:"delivered_events"`
 	CanonicalEffects             int      `json:"canonical_effects"`
 	PostReceipts                 []string `json:"post_receipts"`
-	TerminalSummariesPerDelivery int      `json:"terminal_summaries_per_delivery"`
+	TerminalSummaryPosts         int      `json:"terminal_summary_posts"`
 	RateLimitRepairs             int      `json:"rate_limit_repairs"`
 	UnauthorizedApprovalRejected bool     `json:"unauthorized_approval_rejected"`
 	CanonicalResultIntact        bool     `json:"canonical_result_intact"`
@@ -1068,14 +1075,15 @@ type SlackMappingProof struct {
 
 // Complete reports the §63.3 pass criteria hold on a FAKE peer: exactly one canonical session, MORE deliveries
 // than distinct source events (a duplicate genuinely arrived) yet exactly one canonical effect per source event,
-// at least one recorded fake-peer post receipt, exactly one terminal summary per delivery, exactly one rate-limit
-// repair of the visible message, a rejected unauthorized approval, and a canonical result that survived the Slack
-// output failure. A Peer other than "fake" fails — this proof can never claim a real workspace.
+// at least one recorded fake-peer post receipt, exactly ONE terminal-summary post (the repaired visible message,
+// never duplicated), exactly one rate-limit repair of the visible message, a rejected unauthorized approval, and
+// a canonical result that survived the Slack output failure. A Peer other than "fake" fails — this proof can
+// never claim a real workspace.
 func (p SlackMappingProof) Complete() bool {
 	return p.Peer == "fake" && p.TeamID != "" && p.SessionID != "" && p.CanonicalSessions == 1 &&
 		len(p.SourceEventIDs) >= 2 && p.DeliveredEvents > len(p.SourceEventIDs) &&
 		p.CanonicalEffects == len(p.SourceEventIDs) && len(p.PostReceipts) >= 1 &&
-		p.TerminalSummariesPerDelivery == 1 && p.RateLimitRepairs == 1 &&
+		p.TerminalSummaryPosts == 1 && p.RateLimitRepairs == 1 &&
 		p.UnauthorizedApprovalRejected && p.CanonicalResultIntact
 }
 
@@ -1104,8 +1112,12 @@ var A2AEndpoints = []string{
 //
 // HONEST CEILING, MECHANICALLY ENFORCED: Peer must be the literal "loopback" — the exchange is this repo's own
 // client against this repo's own server. Loopback is NOT interop; a FOREIGN peer is §6 leg 2, the operator work
-// that flips `a2a` to stable. TranscriptDigest is hashParts of the ordered LoopbackTranscript, so it is
-// re-derivable from the proof's own step list and cannot be fabricated independently.
+// that flips `a2a` to stable.
+//
+// TranscriptDigest is hashParts of the ordered LoopbackTranscript — a CONSISTENCY check over the proof's own
+// list, NOT an anchor to the run that produced it. It catches a transcript edited without recomputing the
+// digest (and vice versa); an author who rewrites both stays self-consistent. The load-bearing anchor for A2A
+// is the canonical A2AEndpoints table plus the per-endpoint fixture outcomes, which are checked against code.
 type A2AConformanceProof struct {
 	Endpoints                []string          `json:"endpoints"`
 	FixtureOutcomes          map[string]string `json:"fixture_outcomes"`
@@ -1187,12 +1199,26 @@ func (p KnowledgeACLProof) Complete() bool {
 	return true
 }
 
+// QueueBrokerSeams are the ONLY queue seams this repo has ever RUN, each mapped to what it is. A
+// QueueDeliveryProof's Broker must be one of these keys, so no bundle can name a broker PRODUCT that was never
+// started: `Broker != ""` used to be the whole check, which would have let a future bundle write
+// "AWS SQS us-east-1" and pass every gate. This is the SlackMappingProof.Peer discipline applied to brokers.
+//
+// What is NOT here is the point: there is no NATS, no SQS, no Pub/Sub and no Kafka anywhere in this tree. The
+// plan §T7 condition for `queues` stable candidacy — "gerçek broker container'ıyla component-real yeşilse",
+// naming NATS JetStream — is therefore UNMET, and CapabilityOperatorLegs caps the capability at preview.
+var QueueBrokerSeams = map[string]string{
+	"postgres-durable-reference": "the shipped reference adapter's durable Postgres queue (adapters/integrations/queue + the automation inbound/outbox), driven against a real PostgreSQL",
+	"memory":                     "the in-process deterministic fake used by the unit tier",
+}
+
 // QueueDeliveryProof is the evidence a queue_delivery_claim requires (plan §T11, AUT-009/010 queue legs, §34.2/
 // §34.5): the reference queue adapter redelivered after a LOST ACK without producing a second canonical effect,
 // dead-lettered a poison message instead of blocking the stream, dropped NOTHING under a flood (bounded buffer +
 // backpressure, not silent loss), and delivered the outbound run result EXACTLY ONCE across a publisher outage.
-// Broker names the adapter honestly (the reference adapter, not a cloud broker) — real SQS/PubSub/Kafka runs are
-// §6 leg 5 and this proof never claims them.
+//
+// HONEST CEILING, MECHANICALLY ENFORCED: Broker must be one of QueueBrokerSeams — a seam that actually ran. A
+// real broker PRODUCT run is §6 leg 5 and this proof cannot claim one.
 type QueueDeliveryProof struct {
 	Broker                string `json:"broker"`
 	DistinctMessages      int    `json:"distinct_messages"`
@@ -1204,12 +1230,16 @@ type QueueDeliveryProof struct {
 	OutboundDeliveredOnce bool   `json:"outbound_delivered_once"`
 }
 
-// Complete reports a named broker, at least one distinct message consumed MORE times than it was published (a
-// redelivery genuinely happened) yet exactly one canonical effect per distinct message, at least one dead-letter,
-// ZERO drops, and an outbound result delivered exactly once. Consumed <= DistinctMessages means the lost-ack
-// redelivery was never exercised; a drop, or effects != distinct messages, is the defect this gate exists for.
+// Complete reports a broker naming a seam that ACTUALLY RAN (one of QueueBrokerSeams), at least one distinct
+// message consumed MORE times than it was published (a redelivery genuinely happened) yet exactly one canonical
+// effect per distinct message, at least one dead-letter, ZERO drops, and an outbound result delivered exactly
+// once. Consumed <= DistinctMessages means the lost-ack redelivery was never exercised; a drop, or effects !=
+// distinct messages, is the defect this gate exists for. A Broker naming a cloud/broker product fails.
 func (p QueueDeliveryProof) Complete() bool {
-	return p.Broker != "" && p.DistinctMessages >= 1 && p.Consumed > p.DistinctMessages &&
+	if _, ran := QueueBrokerSeams[p.Broker]; !ran {
+		return false
+	}
+	return p.DistinctMessages >= 1 && p.Consumed > p.DistinctMessages &&
 		p.Redelivered >= 1 && p.CanonicalEffects == p.DistinctMessages &&
 		p.DeadLettered >= 1 && p.Dropped == 0 && p.OutboundDeliveredOnce
 }
@@ -1255,9 +1285,19 @@ var consolePathPrefixes = []string{"/api/palai/v1/", "/v1/"}
 // /v1 relay. NetworkTrace is the raw list of request paths the browser made; the gate recomputes the non-/v1
 // count from it, so a proof cannot self-report 0 over a trace that contains a backchannel.
 //
-// HONEST CEILING: this is the AUTOMATED accessibility ceiling. A manual VoiceOver/screen-reader pass over a
-// DEPLOYED console is §6 leg 8 and is never claimed here.
+// HONEST CEILING, MECHANICALLY ENFORCED: Upstream must be the literal "fake" — every console proof runs the
+// built console against a FAKE /v1 control-plane (tests/fake-control-plane.mjs replaying a scripted contract),
+// never a real one. This is the SlackMappingProof.Peer / A2AConformanceProof.Peer discipline applied here,
+// because E17 T10 itself proved a fake upstream can DIVERGE from the real contract (its fixture had invented an
+// approval event that the real approval.requested.v1 does not carry) — so "green against a fake" is not
+// evidence that the console works against the real API. A real control-plane upstream behind a DEPLOYED console
+// is §6 leg 8, the operator work that flips `console` to stable, and this proof is structurally incapable of
+// asserting it: a real-stack run must CHANGE this value, and that change is visible in the bundle.
+//
+// The same leg carries the AUTOMATED accessibility ceiling: a manual VoiceOver/screen-reader pass over a
+// deployed console is never claimed here.
 type ConsoleProof struct {
+	Upstream                    string   `json:"upstream"`
 	AxeViolations               int      `json:"axe_violations"`
 	AxeReportDigest             string   `json:"axe_report_digest"`
 	NetworkTrace                []string `json:"network_trace"`
@@ -1267,12 +1307,13 @@ type ConsoleProof struct {
 	APIKeyReachedBrowser        bool     `json:"api_key_reached_browser"`
 }
 
-// Complete reports zero axe violations under a well-formed report digest, a keyboard-operable flow with the skip
-// link first, an authoritative approval detail, an API key that never reached the browser, and a non-empty
-// network trace in which EVERY path is under the /v1 relay (recomputed here, not read from a counter). One
-// off-/v1 path fails — that is the privileged backchannel §47.6 forbids.
+// Complete reports an honestly-named FAKE upstream, zero axe violations under a well-formed report digest, a
+// keyboard-operable flow with the skip link first, an authoritative approval detail, an API key that never
+// reached the browser, and a non-empty network trace in which EVERY path is under the /v1 relay (recomputed
+// here, not read from a counter). One off-/v1 path fails — that is the privileged backchannel §47.6 forbids.
+// An Upstream other than "fake" fails: this proof can never claim a real control-plane.
 func (p ConsoleProof) Complete() bool {
-	if p.AxeViolations != 0 || !checksumPattern.MatchString(p.AxeReportDigest) ||
+	if p.Upstream != "fake" || p.AxeViolations != 0 || !checksumPattern.MatchString(p.AxeReportDigest) ||
 		!p.KeyboardOperable || !p.SkipLinkFirst || !p.ApprovalDetailAuthoritative ||
 		p.APIKeyReachedBrowser || len(p.NetworkTrace) < 1 {
 		return false
@@ -1340,11 +1381,74 @@ var capabilityUnservable = map[string]string{
 // here caps at `preview` even with every local claim green — the local seam is real but the load-bearing
 // external receipt does not exist in this session, so calling it stable would be the overclaim this whole gate
 // is built to prevent. Executing a leg (and re-running this verifier) is what flips it, nothing else.
+//
+// All four entries are ONE class of ceiling: the counterpart system was never contacted. `queues` and `console`
+// joined the list at the E17 T11 EXIT review (the owner's call), on exactly the reasoning that keeps `slack`
+// here — their local seams are green and real, and their counterparts are fixtures:
+//
+//   - `queues`: the plan §T7 stable-candidacy condition was "gerçek broker container'ıyla component-real
+//     yeşilse" and named NATS JetStream. NO broker product was ever started — there is no NATS, SQS, Pub/Sub or
+//     Kafka anywhere in this tree (see QueueBrokerSeams). The durable proof is the POSTGRES reference adapter,
+//     which is a real durable queue but not a broker product, so §6 leg 5's scope (SQS/PubSub) does not cover
+//     the deviation and it is named here instead of left implicit.
+//   - `console`: EVERY console proof ran against a FAKE /v1 upstream (the plan §T10 evidence line said "local
+//     stack"), never a real control plane — and E17 T10 itself proved a fake upstream CAN diverge from the real
+//     contract (its fixture had invented an approval event the real approval.requested.v1 does not carry). So
+//     "green against a fake" does not prove "works against the real API"; §6 leg 8's deployed-console half is
+//     the receipt, and the manual screen-reader pass rides the same leg.
 var CapabilityOperatorLegs = map[string]string{
 	"slack":            "§6 leg 1 — a REAL Slack workspace external receipt (the local proof is a FAKE peer)",
 	"a2a":              "§6 leg 2 — a FOREIGN A2A peer (this repo's client against this repo's server is loopback, not interop)",
 	"knowledge-vector": "§6 leg 4 — a real pgvector/external vector store",
 	"apple-build":      "§6 leg 3 — a real Xcode + Apple Developer signing run",
+	"queues":           "§6 leg 5 EXTENDED — a real broker PRODUCT run. No broker product exists in this tree (no NATS/SQS/PubSub/Kafka), so the plan §T7 NATS-JetStream-container condition for stable candidacy is UNMET; the durable proof is the Postgres REFERENCE adapter",
+	"console":          "§6 leg 8 — a DEPLOYED console against a REAL control-plane /v1 (every console proof ran against a FAKE upstream, and E17 T10 proved a fake upstream can diverge from the real contract), plus the manual VoiceOver/screen-reader pass",
+}
+
+// carriesE17AreaClaim reports whether a case carries ANY E17 extension-area claim — the FAMILY marker. It is
+// the single owner of that list, read by both the manifest verifier and PromoteGateFor, so the two can never
+// disagree about what an E17 release is.
+func carriesE17AreaClaim(c evidenceCase) bool {
+	return c.SlackMappingClaim != "" || c.A2AConformanceClaim != "" || c.KnowledgeACLClaim != "" ||
+		c.QueueDeliveryClaim != "" || c.WorkerFenceClaim != "" || c.ConsoleClaim != "" ||
+		c.CapabilityTierClaim != ""
+}
+
+// verifyE17TierTablePresence is what stops the tier recompute from being OPTIONAL. The recompute below only
+// runs for a case whose `capability_tier_claim` marker is non-empty, so a bundle that DROPPED the marker while
+// keeping every area proof (and every fabricated tier in the proof body) would verify 0 findings with the crown
+// anchor silently not running. Mirroring PromoteGateFor's family recognition: a manifest carrying ANY E17 area
+// claim MUST carry EXACTLY ONE capability_tier_claim with its proof.
+//
+// "Exactly one" and not "at least one" because both the verifier and ExtensionsPromoteGate would otherwise
+// disagree about WHICH proof governs — the gate reads the first, the verifier checks all — so a second,
+// fabricated table could ride behind an honest one. Findings are release-level (no case id): VerifyRelease
+// fails the whole bundle on a case-less finding, which is the right blast radius for a missing tier table.
+func verifyE17TierTablePresence(m evidenceManifest) []Finding {
+	family, tierClaims, withProof := false, 0, 0
+	for _, c := range m.Cases {
+		if carriesE17AreaClaim(c) {
+			family = true
+		}
+		if c.CapabilityTierClaim != "" {
+			tierClaims++
+			if c.CapabilityTierProof != nil {
+				withProof++
+			}
+		}
+	}
+	if !family {
+		return nil
+	}
+	switch {
+	case tierClaims == 0:
+		return []Finding{{Kind: "missing", Detail: "capability_tier_claim (this manifest carries E17 extension-area claims, so it is an E17 release and MUST carry the capability tier table; without the claim marker the ENTIRE tier recompute does not run and any declared tier stands unverified — plan §T11)"}}
+	case tierClaims > 1:
+		return []Finding{{Kind: "invalid", Detail: fmt.Sprintf("%d capability_tier_claims (want exactly 1): the promote gate judges the FIRST tier proof while this verifier checks all of them, so a second table could ride behind an honest one — one release, one recomputed tier table (plan §T11)", tierClaims)}}
+	case withProof != tierClaims:
+		return []Finding{{Kind: "missing", Detail: "capability_tier_proof for the manifest's capability_tier_claim (a claim marker with no proof leaves the tier table unrecomputed — plan §T11)"}}
+	}
+	return nil
 }
 
 // CapabilitySecurityPrecondition is the eval security-suite case (plan §T6/§T11): QUA-003 green is a
@@ -1628,6 +1732,10 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	miss(m.Migration == "", "migration", "")
 	miss(len(m.Cases) == 0, "cases", "")
 
+	// An E17 release must carry its tier table — recognized by the FAMILY, never by the tier claim itself, so
+	// dropping the marker cannot switch the anchor off (see verifyE17TierTablePresence).
+	findings = append(findings, verifyE17TierTablePresence(m)...)
+
 	for _, c := range m.Cases {
 		// Every case, regardless of tier, carries an id, the run that produced it, its db assertions,
 		// and a well-formed checksum over the captured surface.
@@ -1898,7 +2006,7 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 			case c.SlackMappingProof == nil:
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "slack_mapping_proof (a Slack-mapping claim requires the FAKE-peer receipts + the one-session/one-effect-per-event counters + the single terminal summary; a 'mapped' marker is not proof)"})
 			case !c.SlackMappingProof.Complete():
-				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "slack_mapping_proof is incomplete: the peer is not honestly named \"fake\", more than one canonical session, no duplicate delivery to dedupe, effects != source events, no post receipt, not exactly one terminal summary per delivery, no single rate-limit repair, an accepted unauthorized approval, or a canonical result that did not survive the Slack output failure (SLK-001..008, journey §63.3)"})
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "slack_mapping_proof is incomplete: the peer is not honestly named \"fake\", more than one canonical session, no duplicate delivery to dedupe, effects != source events, no post receipt, not exactly one terminal-summary post, no single rate-limit repair, an accepted unauthorized approval, or a canonical result that did not survive the Slack output failure (SLK-001..008, journey §63.3)"})
 			}
 		}
 		if c.A2AConformanceClaim != "" {
@@ -1922,7 +2030,7 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 			case c.QueueDeliveryProof == nil:
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "queue_delivery_proof (a queue-delivery claim requires the redelivery/dead-letter/loss-less counters + the exactly-once outbound delivery; a marker is not proof)"})
 			case !c.QueueDeliveryProof.Complete():
-				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "queue_delivery_proof is incomplete: no redelivery was exercised, effects != distinct messages (a duplicate effect), no dead-letter, a dropped message under backpressure, or an outbound result not delivered exactly once (AUT-009/010, §34.2/§34.5)"})
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "queue_delivery_proof is incomplete: the broker names a seam that never ran (it must be one of uat.QueueBrokerSeams — no broker PRODUCT exists in this tree), no redelivery was exercised, effects != distinct messages (a duplicate effect), no dead-letter, a dropped message under backpressure, or an outbound result not delivered exactly once (AUT-009/010, §34.2/§34.5)"})
 			}
 		}
 		if c.WorkerFenceClaim != "" {
@@ -1938,7 +2046,7 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 			case c.ConsoleProof == nil:
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "console_proof (a console claim requires the axe report digest + the /v1-only network trace + the keyboard/approval-authority facts; a marker is not proof)"})
 			case !c.ConsoleProof.Complete():
-				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "console_proof is incomplete: an axe violation, a malformed report digest, an unoperable keyboard flow, a non-first skip link, a non-authoritative approval detail, an API key that reached the browser, or a network-trace path OUTSIDE the /v1 relay — a privileged backchannel (UI-001/002, §47.6)"})
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "console_proof is incomplete: the upstream is not honestly named \"fake\" (every console proof runs against a FAKE /v1 upstream; a real control plane is §6 leg 8), an axe violation, a malformed report digest, an unoperable keyboard flow, a non-first skip link, a non-authoritative approval detail, an API key that reached the browser, or a network-trace path OUTSIDE the /v1 relay — a privileged backchannel (UI-001/002, §47.6)"})
 			}
 		}
 

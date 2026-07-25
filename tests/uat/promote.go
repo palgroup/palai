@@ -74,11 +74,10 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	// the tier claim alone would let a release DROP its tier table and fall through to the weaker eval gate,
 	// which would then pass it — the tier table would be optional in practice. Recognizing the family first and
 	// REFUSING the missing table inside ExtensionsPromoteGate is what makes "no tag without the tier table"
-	// actually hold.
+	// actually hold. carriesE17AreaClaim is shared with the manifest verifier so the two surfaces cannot drift
+	// about what an E17 release is.
 	for _, c := range m.Cases {
-		if c.CapabilityTierClaim != "" || c.SlackMappingClaim != "" || c.A2AConformanceClaim != "" ||
-			c.KnowledgeACLClaim != "" || c.QueueDeliveryClaim != "" || c.WorkerFenceClaim != "" ||
-			c.ConsoleClaim != "" {
+		if carriesE17AreaClaim(c) {
 			return ExtensionsPromoteGate(raw, target)
 		}
 	}
@@ -114,8 +113,9 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 //     here) keeps ONE owner of the eval numbers.
 //
 // A promote BEYOND rc inherits EvalPromoteGate's operator_attestation requirement (§6 leg 7 → E18 RC) and, on
-// top of it, the extension legs: no amount of local evidence promotes this release to stable, because `slack`
-// and `a2a` cap at preview by construction and `apple-build` at disabled.
+// top of it, the extension legs: no amount of local evidence promotes this release to stable, because `slack`,
+// `a2a`, `queues` and `console` all cap at preview by construction (CapabilityOperatorLegs) and `apple-build` +
+// `knowledge-vector` at disabled.
 func ExtensionsPromoteGate(raw []byte, target string) []Refusal {
 	var m evidenceManifest
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -124,14 +124,23 @@ func ExtensionsPromoteGate(raw []byte, target string) []Refusal {
 
 	var refusals []Refusal
 
+	// The gate judges ONE tier table. A manifest carrying two would be judged on the first while VerifyManifest
+	// checks all of them, so a fabricated second table could ride behind an honest one — refuse instead of
+	// picking (the same rule verifyE17TierTablePresence applies on the verifier side).
 	var tier *CapabilityTierProof
+	tierClaims := 0
 	for _, c := range m.Cases {
-		if c.CapabilityTierClaim != "" && c.CapabilityTierProof != nil {
+		if c.CapabilityTierClaim == "" {
+			continue
+		}
+		tierClaims++
+		if tier == nil {
 			tier = c.CapabilityTierProof
-			break
 		}
 	}
 	switch {
+	case tierClaims > 1:
+		refusals = append(refusals, Refusal{Detail: fmt.Sprintf("%d capability_tier_claims in one manifest (want exactly 1): this gate judges the FIRST tier proof, so a second table could ride behind an honest one — one release, one recomputed tier table (plan §T11)", tierClaims)})
 	case tier == nil || !tier.Complete():
 		refusals = append(refusals, Refusal{Detail: "no COMPLETE CapabilityTierProof (the per-capability declared tier + its canonical claim ledger + the running stack's /v1/capabilities snapshot) — a release without the tier table cannot be tagged (plan §T11, §7 exit gate)"})
 	default:

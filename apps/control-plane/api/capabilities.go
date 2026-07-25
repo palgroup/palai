@@ -61,12 +61,13 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 			"knowledge":        "stable",
 			"knowledge-vector": "disabled",
 			// The queue adapter (E17 T7): a durable SQS/PubSub/Kafka-class consumer + outbound result-delivery
-			// outbox, proven by the Postgres-durable REFERENCE adapter. FLIPPED to stable by the T11 exit gate
-			// (AUT-009/010 green on a real durable adapter). §6 leg 5 EXTENDS this capability with real
-			// SQS/PubSub brokers rather than substituting for it, which is why it does not cap the tier — but
-			// those unwritten adapters are still deliberately NOT advertised here: an unwritten adapter is
-			// never discoverable.
-			"queues": "stable",
+			// outbox, proven by the Postgres-durable REFERENCE adapter. It stays PREVIEW and the T11 exit gate
+			// KEPT it there: AUT-009/010 are green, but NO broker PRODUCT was ever run — there is no NATS, SQS,
+			// Pub/Sub or Kafka anywhere in this tree, so the T7 plan's own stable-candidacy condition (a real
+			// broker container, NATS JetStream) is UNMET. §6 leg 5, EXTENDED to cover any broker product, is the
+			// operator work that flips it (uat.CapabilityOperatorLegs caps it mechanically). The unwritten cloud
+			// adapters are separately NOT advertised here: an unwritten adapter is never discoverable.
+			"queues": "preview",
 			// The CapabilityWorker contract (E17 T9): the outbound-enrolled, lease/fenced typed-operation
 			// surface for out-of-process capability jobs. FLIPPED to stable by the T11 exit gate (WRK-001..007
 			// green — the CONTRACT is what is stable). apple-build stays DISABLED: there is no signing
@@ -76,12 +77,14 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 			"capability-workers": "stable",
 			"apple-build":        "disabled",
 			// The open-core console (E17 T10): the public-API-only admin + live-run surface (apps/web-console).
-			// FLIPPED to stable by the T11 exit gate (UI-001/UI-002 green: axe-clean, keyboard-operable, the
-			// authoritative approval detail, and a network trace entirely on the /v1 relay). §6 leg 8 (a manual
-			// VoiceOver/screen-reader pass over a DEPLOYED console) sits ABOVE the automated accessibility
-			// ceiling — it extends the evidence rather than substituting for it, so it does not cap the tier;
-			// UI-001's case text states that ceiling explicitly.
-			"console": "stable",
+			// It stays PREVIEW and the T11 exit gate KEPT it there: UI-001/UI-002 are green (axe-clean,
+			// keyboard-operable, the authoritative approval detail, a network trace entirely on the /v1 relay)
+			// but EVERY one of those proofs ran against a FAKE /v1 upstream, never a real control plane — and
+			// E17 T10 itself proved a fake upstream can DIVERGE from the real contract (its fixture had invented
+			// an approval event the real approval.requested.v1 does not carry). Green against a fake is not
+			// evidence about the real API, so §6 leg 8 (a DEPLOYED console against a real /v1, plus the manual
+			// VoiceOver/screen-reader pass) caps it — the same class of ceiling that keeps `slack` at preview.
+			"console": "preview",
 		}
 		// The A2A 1.0 server projection (E17 T2): advertised ONLY when WithA2A actually mounted the surface,
 		// so a binary that wires no A2A store does not claim `a2a` while every A2A route 404s. When mounted it

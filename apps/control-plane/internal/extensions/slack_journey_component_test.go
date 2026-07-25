@@ -365,21 +365,37 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 		t.Fatalf("step 7c: approved publications = %+v (%v), want exactly %s", approved, err, pub.ID)
 	}
 
-	// ---- 8. the model route changes ----------------------------------------------------------------
+	// ---- 8-9. the model route changes, then the run is interrupted ----------------------------------
+	//
+	// CEILING, STATED: steps 8 and 9 are COMMAND-ACCEPTANCE steps here, and the assertions say exactly that —
+	// each command is read BACK off the session's durable command rows (state + payload + the session it
+	// landed on), so a no-op accept that dropped the change or an interrupt that never persisted fails. What
+	// they deliberately do NOT assert is APPLICATION: a change_config applies at a model-step boundary and an
+	// interrupt drives a run to canceled, both of which need a running engine (command_pump / model_dispatch).
+	// This journey starts no engine — those are E08 execution-tier proofs living beside that code, and claiming
+	// them here would be the overclaim the whole gate exists to prevent.
 	routeCmd := coordinator.CommandInput{CommandID: testID("cmd"), Kind: "change_config",
 		Payload: []byte(`{"model":"journey-model-b"}`)}
 	route, err := cs.AcceptCommand(ctx, tenant, sessionID, routeCmd)
 	if err != nil {
 		t.Fatalf("step 8: accept change_config: %v", err)
 	}
-	if route.State == "" {
-		t.Fatalf("step 8: change_config produced no durable command state")
+	if route.State != "queued" {
+		t.Fatalf("step 8: change_config state = %q, want queued", route.State)
+	}
+	gotSession, gotState, gotPayload := commandRow(t, pool, routeCmd.CommandID)
+	if gotSession != sessionID || gotState != "queued" || !strings.Contains(gotPayload, "journey-model-b") {
+		t.Fatalf("step 8: the change_config did not read back on the session: (session %q, state %q, payload %s), want (%q, queued, carrying journey-model-b) — an accepted-but-dropped route change is a no-op",
+			gotSession, gotState, gotPayload, sessionID)
 	}
 
-	// ---- 9. cancellation and follow-up work --------------------------------------------------------
 	cancelCmd := coordinator.CommandInput{CommandID: testID("cmd"), Kind: "interrupt", Payload: []byte(`{}`)}
 	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, cancelCmd); err != nil {
 		t.Fatalf("step 9: accept interrupt: %v", err)
+	}
+	if gotSession, gotState, _ := commandRow(t, pool, cancelCmd.CommandID); gotSession != sessionID || gotState != "queued" {
+		t.Fatalf("step 9: the interrupt did not read back on the session: (session %q, state %q), want (%q, queued) — an interrupt that never persisted could never reach the run",
+			gotSession, gotState, sessionID)
 	}
 
 	// ---- 10. a Slack rate limit / network interruption occurs ---------------------------------------
@@ -415,8 +431,10 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	}
 
 	// ---- the EXIT-gate proof ------------------------------------------------------------------------
-	// TerminalSummariesPerDelivery: each canonical delivery got exactly ONE terminal summary post. The
-	// journey's terminal surface is the single repaired chat.update above (one per delivery id).
+	// TerminalSummaryPosts counts what actually happened: the terminal SURFACE was posted exactly once (the
+	// repaired chat.update above), never duplicated. It is deliberately NOT called "per delivery" — there are
+	// TWO canonical deliveries and one terminal surface, and there is no shipped Slack outbound worker to fan a
+	// summary out per delivery id, so the §63.3 fan-out form is named as unproven rather than divided into 1.
 	proof := uat.SlackMappingProof{
 		Peer:                         "fake",
 		TeamID:                       team,
@@ -426,7 +444,7 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 		DeliveredEvents:              3, // the mention, its redelivery, the socket-mode message
 		CanonicalEffects:             canonicalDeliveryCount(t, pool, triggerID),
 		PostReceipts:                 append(append([]string{}, peer.posts...), repairPeer.posts...),
-		TerminalSummariesPerDelivery: len(repairPeer.posts),
+		TerminalSummaryPosts:         len(repairPeer.posts),
 		RateLimitRepairs:             1,
 		UnauthorizedApprovalRejected: true,
 		CanonicalResultIntact:        true,
@@ -436,6 +454,20 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	}
 	t.Logf("§63.3 journey PASS on a FAKE peer: one canonical session (%d), one effect per source event (%d effects / %d deliveries), unauthorized approval rejected, canonical result intact through a Slack delivery failure. A real workspace receipt is §6 leg 1 — NOT claimed.",
 		proof.CanonicalSessions, proof.CanonicalEffects, proof.DeliveredEvents)
+	t.Log("§63.3 journey CEILINGS, so no reader has to infer them: (1) the SLK-004 approver allow-list is enforced at the POLICY-PRIMITIVE level — SlackAuthorizationPolicyFor/ApproverAuthorized have no non-test caller and there is no Slack HTTP route, so this journey hand-composes the inbound leg a shipped handler would; (2) steps 8-9 are command-ACCEPTANCE (each command read back durable+queued on the session), NOT application — a boundary config change and an interrupt-to-canceled need a running engine (E08 execution tier); (3) terminal_summary_posts counts the single non-duplicated terminal surface post, not a per-delivery-id fan-out.")
+}
+
+// commandRow reads a durable command back off the session: the session it landed on, its state and its raw
+// payload. Steps 8-9 assert the accept was DURABLE rather than trusting the returned state alone — a no-op
+// accept that dropped the payload, or an interrupt that never persisted, fails here.
+func commandRow(t *testing.T, pool *pgxpool.Pool, commandID string) (session, state, payload string) {
+	t.Helper()
+	if err := pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT session_id, state, payload::text FROM commands WHERE id=$1`, commandID).
+		Scan(&session, &state, &payload); err != nil {
+		t.Fatalf("read command %s: %v", commandID, err)
+	}
+	return session, state, payload
 }
 
 func threadSessionRows(t *testing.T, pool *pgxpool.Pool, connID, team, channel, thread string) int {
