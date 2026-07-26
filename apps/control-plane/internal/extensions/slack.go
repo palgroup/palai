@@ -140,11 +140,24 @@ func (s *Store) GetSlackConnection(ctx context.Context, org, project, id string)
 	return c, nil
 }
 
-// SlackAuthorizationPolicy is a connection's decision allow-lists (§36.2, SLK-004): which Slack users may
-// authorize a high-risk operation and which channels the integration acts in. A user absent from AllowedUsers
-// is a CONSTRAINED integration actor — its click carries an identity but authorizes nothing. Empty lists mean
-// "nothing is allow-listed", i.e. no Slack user may approve; the enforcement is deny-by-default, never
-// allow-by-default (an unconfigured connection must not silently authorize a workspace).
+// SlackAuthorizationPolicy is a connection's two scoping allow-lists (§36.2, SLK-004): which Slack users may
+// authorize a high-risk operation, and which channels the integration acts in at all. A user absent from
+// AllowedUsers is a CONSTRAINED integration actor — its click carries an identity but authorizes nothing.
+//
+// THE EMPTINESS OF THE TWO LISTS MEANS OPPOSITE THINGS, and that asymmetry is deliberate rather than an
+// accident of history. It is a trap unless a reader meets the reason here, so:
+//
+//	AllowedUsers    empty ⇒ NOBODY may approve   (deny by default)
+//	AllowedChannels empty ⇒ EVERY channel        (no restriction)
+//
+// The lists sit in front of different boundaries. AllowedChannels NARROWS a gate that already exists: Slack
+// delivers events only from conversations the bot was invited to, so an unconfigured connection is already
+// scoped by whoever did the inviting, and reading empty as "nowhere" would make every freshly registered
+// connection silently inert. AllowedUsers has nothing behind it at all — it is the only thing between "any
+// member of the workspace" and authorizing a privileged operation, so its unconfigured state must be deny.
+// 000035's column comment ("empty = no channel restriction") already committed to this reading.
+//
+// Both are enforced. Neither is advisory: see ApproverAuthorized and ChannelAllowed for the callers.
 type SlackAuthorizationPolicy struct {
 	AllowedChannels []string
 	AllowedUsers    []string
@@ -160,9 +173,25 @@ func (p SlackAuthorizationPolicy) ApproverAuthorized(userID string) bool {
 	return slices.Contains(p.AllowedUsers, userID)
 }
 
-// SlackAuthorizationPolicyFor reads the connection's decision allow-lists within scope, so an approve/deny
-// command can be refused BEFORE it is enqueued when the clicking user is not a mapped approver (SLK-004). It
-// reads only the two lists — never the secret-ref handles — so the enforcement path never touches credential
+// ChannelAllowed reports whether the integration may act in a channel. An EMPTY list means every channel —
+// the opposite of ApproverAuthorized's emptiness, deliberately, for the reason documented at the type. An
+// unknown channel id ("") against a NON-empty list is refused: a scope that cannot be checked is not met.
+//
+// Both callers are on the paths where a channel first becomes actionable — SlackAdmitter.Admit (an inbound
+// event, and so both transports: the Events API route and Socket Mode) and SlackAdmitter.Decide (an
+// interactive click). Decide is not redundant with Admit: an allow-list NARROWED after a thread was
+// correlated must take that thread's in-flight buttons with it.
+func (p SlackAuthorizationPolicy) ChannelAllowed(channelID string) bool {
+	if len(p.AllowedChannels) == 0 {
+		return true
+	}
+	return slices.Contains(p.AllowedChannels, channelID)
+}
+
+// SlackAuthorizationPolicyFor reads the connection's two allow-lists within scope, so a click can be refused
+// BEFORE any command is enqueued when the clicking user is not a mapped approver (SLK-004), and so an event or
+// a click from outside the configured channel scope is refused before anything is written at all. It reads
+// only the two lists — never the secret-ref handles — so the enforcement path never touches credential
 // metadata it has no use for.
 func (s *Store) SlackAuthorizationPolicyFor(ctx context.Context, org, project, id string) (SlackAuthorizationPolicy, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
