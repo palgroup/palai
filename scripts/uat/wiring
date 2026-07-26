@@ -35,8 +35,11 @@
 #        the backing Slack/queue/A2A component suites in FULL.
 #
 #   Console tier (node + pnpm, no Docker unless the REAL profile is asked for):
-#     7. the console specs. `make uat-wiring` runs the FAKE profile; the REAL-upstream profile (E19 T7)
-#        needs a full compose stack and is opt-in with RUN_CONSOLE_REAL=1.
+#     7. the console specs. `make uat-wiring` runs the FAKE profile. The REAL-upstream profile and the D15
+#        fake-vs-real sweep (both E19 T7) are opt-in with RUN_CONSOLE_REAL=1 because they need a RUNNING
+#        control plane — `PALAI_DISPATCH_WORKERS=1 PALAI_MODEL_PROVIDER=fake palai local up`, plus
+#        PALAI_BASE_URL and PALAI_API_KEY in the environment. The sweep REFUSES TO SKIP without them (T7
+#        built it that way on purpose), so it is gated here rather than silently passing on an absent stack.
 #
 #   Live tier (credentials from .env.local — `make uat-wiring-live`):
 #     8. every leg in uat.WiringLiveLegs, unchanged. Each SKIPS with the name of the missing variable and
@@ -155,7 +158,7 @@ if command -v pnpm >/dev/null 2>&1 && [ -d apps/web-console/node_modules ]; then
   console="console specs green (FAKE upstream)"
   if [ "${RUN_CONSOLE_REAL:-0}" = "1" ]; then
     echo "uat-wiring: the console REAL-upstream profile + the fake-vs-real sweep (E19 T7; needs a compose stack)" >&2
-    ( cd apps/web-console && PALAI_CONSOLE_PROFILE=real pnpm test:e2e && pnpm sweep )
+    ( cd apps/web-console && pnpm test:e2e:real && pnpm sweep )
     console="console specs green (FAKE + REAL upstream + the D15 sweep)"
   fi
 else
