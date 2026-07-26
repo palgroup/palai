@@ -1,0 +1,56 @@
+# Palai Slack app manifest (E19 §0.1)
+#
+# Paste this at https://api.slack.com/apps → Create New App → "From a manifest".
+# It sets EXACTLY what the shipped receivers need and nothing more — every scope and
+# event here is claimed by a UAT case, and an event we do not subscribe to is an event
+# we wrote no code for.
+#
+# WHY SOCKET MODE: socket_mode_enabled carries both events AND interactivity payloads
+# over a WebSocket, so no public HTTPS Request URL, tunnel or ngrok is needed. That is
+# the cheapest real proof an owner can run (plan §0.1). The HTTP transport still exists
+# and is tested — it is simply not what this manifest configures.
+#
+# NOT SET ON PURPOSE:
+#   - request_url under event_subscriptions / interactivity: Socket Mode does not use it.
+#     Add one only if you deliberately switch to the HTTP transport, in which case it is
+#     <public-https-base>/v1/slack/events and .../v1/slack/interactions.
+#   - groups:history, im:history: private channels and DMs are out of scope for the first
+#     run. Do not grant them "just in case" — an unused scope is standing read access.
+#
+# LOW-CONFIDENCE, stated rather than assumed (plan §3.5): users:read vs users:profile.read.
+# The scope page we fetched is a navigation index, so which one backs Slack-user → principal
+# mapping is not certain. Start with users:read; if a live run reports missing_scope, add
+# users:profile.read and reinstall. This uncertainty is deliberately NOT baked into the code.
+_metadata:
+  major_version: 1
+  minor_version: 1
+
+display_information:
+  name: Palai
+  description: Palai agent platform — mentions open a run, buttons approve publications.
+  background_color: "#1f2933"
+
+features:
+  bot_user:
+    display_name: Palai
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read   # SLK-001, SLK-003 — the app_mention event
+      - channels:history    # SLK-002, SLK-005 — message events in channels the bot is in
+      - chat:write          # SLK-006, SLK-007 — chat.postMessage AND chat.update
+      - files:read          # SLK-005 — fetch a shared file's content
+      - users:read          # SLK-004 — Slack user id → mapped principal (see note above)
+
+settings:
+  socket_mode_enabled: true
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false      # Enterprise Grid / org-wide install is out of scope
+  token_rotation_enabled: false
