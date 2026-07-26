@@ -328,6 +328,14 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		sh := &slackHandler{slack: cfg.slack}
 		top.Handle("POST /v1/slack/events", middleware.RequestContext(http.HandlerFunc(sh.receive)))
 	}
+	// The Slack interactivity receiver (E19 T2, spec §36): the same unauthenticated posture as the events
+	// route above, and the same v0 signature as its auth — but over a form body rather than JSON, which is
+	// why it is its own handler (slack_interactions.go states the contract and the inference behind the
+	// verify-then-decode order). Separately gated so a stack can mount the inbound half alone.
+	if cfg.slackInteractions != nil {
+		ih := &slackInteractionsHandler{slack: cfg.slackInteractions}
+		top.Handle("POST /v1/slack/interactions", middleware.RequestContext(http.HandlerFunc(ih.receive)))
+	}
 	// The A2A public Agent Card (E17 T2, spec §38.1): a safe published projection carrying no internal detail
 	// (A2A-001), so — like /healthz and the signed inbound receiver — it mounts on the UNAUTHENTICATED top mux
 	// bypassing middleware.Auth (still wrapped in RequestContext for the correlation id). This exact-path route
