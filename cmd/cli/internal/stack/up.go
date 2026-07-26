@@ -154,14 +154,14 @@ func Bootstrap(envFile string) error {
 	}
 
 	// [6/6] Slack, if and only if the workspace values are present. Never fatal.
-	slackFact, slackLine := wireSlack(api, cfg, p, get)
+	slackFact, slackLine, slackWarn := wireSlack(api, cfg, p, get)
 	fmt.Fprintf(os.Stderr, "[6/6] slack     %s\n", slackLine)
 
 	caps, err := api.capabilities()
 	if err != nil {
 		return fmt.Errorf("read /v1/capabilities for the status table: %w", err)
 	}
-	printReport(cfg, rt, caps, observedFacts(rt, slackFact), red)
+	printReport(cfg, rt, caps, observedFacts(rt, slackFact), red, slackWarn)
 	return nil
 }
 
@@ -469,7 +469,17 @@ func slackReport(o slackOutcome) (fact string, line string) {
 // control-plane can redeem them, register the workspace against those handles, and then OBSERVE
 // whether Slack actually opened a socket. It never fails the bring-up — an absent Slack app is a
 // normal state, and a Slack hiccup does not un-prove the live round-trip above.
-func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fact string, line string) {
+//
+// It returns (fact, line, warn). fact is the observed-state string the capability table shows for
+// `slack`, line is the operator-facing step result, and warn is a non-fatal condition the final
+// report must repeat because the operator would otherwise only meet it as silence.
+//
+// warn is a SEPARATE return rather than more prose on line, and that separation is the point: the
+// two carry different truths about the same connection — whether anything can ARRIVE from Slack
+// (the socket, on line) and whether anything can be APPROVED once it does (the allow-list, on
+// warn). Folding one into the other would let a connected socket read as a working integration
+// while every Approve click is silently refused, which is the same over-claiming in a new place.
+func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fact string, line string, warn string) {
 	body, skip := slackRegistration(get)
 	if skip != "" {
 		o := slackOutcome{skip: skip}
@@ -478,7 +488,10 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 			o.existing = n
 			o.connected, o.detail = observeSlackSocket(cfg, p, 0)
 		}
-		return slackReport(o)
+		// No body was sent, so nothing here knows the STORED connection's approver list — and
+		// guessing at it is exactly what slackApproverWarning exists to replace.
+		fact, line = slackReport(o)
+		return fact, line, ""
 	}
 	team, _ := body["team_id"].(string)
 	o := slackOutcome{team: team}
@@ -487,8 +500,10 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 	// the state this task exists to end, so the redemption path is filled before the row names it.
 	for name, value := range slackSecretValues(get) {
 		if err := api.putSecretRef(name, value); err != nil {
+			// No connection row was created, so there is no allow-list to warn about yet.
 			o.problem = "NOT wired: " + err.Error()
-			return slackReport(o)
+			fact, line = slackReport(o)
+			return fact, line, ""
 		}
 		o.stored++
 	}
@@ -497,13 +512,19 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 	switch {
 	case err != nil:
 		o.problem = "NOT registered: " + err.Error()
-		return slackReport(o)
+		fact, line = slackReport(o)
+		return fact, line, ""
 	case status == http.StatusConflict:
 		// The workspace is already bound (possibly from an earlier run). The refs it was bound with
 		// are the same handles — derived from the team id — so the values just stored still apply.
+		// The approver list, though, is the STORED connection's and not this body's: nothing here
+		// changed it and nothing here read it, so no warning is claimed about it either way.
 		o.connectionID = "(already bound)"
 	default:
 		o.connectionID = id
+		// A row was written from THIS body, so what it does and does not authorize is known. Derived
+		// from the body actually sent, never from an assumption about what `palai up` usually does.
+		warn = slackApproverWarning(body)
 	}
 
 	// The connect loop resolves its workspace ONCE, at boot (extensions.SlackSocket's documented
@@ -515,11 +536,16 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 		fmt.Fprintln(os.Stderr, "        the control-plane is restarting to pick up the workspace (Socket Mode resolves it at boot)")
 		if err := recreateControlPlane(cfg, p); err != nil {
 			o.detail = fmt.Sprintf("the control-plane could not be recreated to pick up the registration: %v", err)
-			return slackReport(o)
+			fact, line = slackReport(o)
+			return fact, line, warn
 		}
 		o.connected, o.detail = observeSlackSocket(cfg, p, 45*time.Second)
 	}
-	return slackReport(o)
+	// warn rides alongside whatever the socket turned out to be. A connected socket does not retire
+	// it — that is the case it matters MOST in, because the events now arriving are the ones whose
+	// Approve buttons will be refused.
+	fact, line = slackReport(o)
+	return fact, line, warn
 }
 
 // recreateControlPlane replaces the control-plane container in place, leaving Postgres, the object
@@ -654,10 +680,50 @@ func slackRegistration(get func(string) string) (map[string]any, string) {
 	if v := strings.TrimSpace(get("SLACK_BOT_USER_ID")); v != "" {
 		body["bot_user_id"] = v
 	}
-	if v := strings.TrimSpace(get("SLACK_TEST_CHANNEL")); v != "" {
-		body["allowed_channels"] = []string{v}
+	// The two SCOPES, and both are absent-by-default on purpose.
+	//
+	// SLACK_ALLOWED_CHANNELS, not SLACK_TEST_CHANNEL. The latter belongs to the live test harness
+	// (tests/live/slack) and means "a channel the bot was invited to so a test can post there"; it used
+	// to be written here as allowed_channels, which turned a variable an operator set to make the tests
+	// run into a production security scope confining their bot to their test channel. Unset ⇒ the field
+	// is not sent at all ⇒ NO channel restriction, which is the production default.
+	if v := splitList(get("SLACK_ALLOWED_CHANNELS")); len(v) > 0 {
+		body["allowed_channels"] = v
+	}
+	// allowed_users is deny-by-default server-side, so an unset value really does mean nobody can approve.
+	// That is the correct posture and it is not softened here — it is SAID OUT LOUD instead, by
+	// slackApproverWarning, in the final report.
+	if v := splitList(get("SLACK_APPROVER_IDS")); len(v) > 0 {
+		body["allowed_users"] = v
 	}
 	return body, ""
+}
+
+// splitList parses a comma-separated operator value: trimmed, empties dropped. nil when nothing is left,
+// so a caller can distinguish "not configured" from "configured empty".
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// slackApproverWarning is the line an operator would otherwise only learn from a silently refused Approve
+// click. ApproverAuthorized is deny-by-default — correctly: a connection that has not been told who may
+// approve must not let any member of the workspace authorize a privileged operation. But a `palai up` that
+// registers no approver and says nothing leaves a real operator mentioning the bot, clicking Approve, and
+// getting NOTHING back, with no surface anywhere that explains it.
+//
+// Derived from the body actually sent, never from an assumption about what `palai up` usually does.
+func slackApproverWarning(body map[string]any) string {
+	if users, ok := body["allowed_users"].([]string); ok && len(users) > 0 {
+		return ""
+	}
+	return "slack: registered, but NO approver is allow-listed, so every approve/deny click will be refused; " +
+		"set SLACK_APPROVER_IDS=U… (comma-separated Slack user ids) and re-run"
 }
 
 // --- the final report ------------------------------------------------------------------------
@@ -706,7 +772,7 @@ func capabilityRows(caps map[string]string, facts map[string]string) []capRow {
 
 // printReport writes the operator-facing result to stdout. Every line states what was PROVEN, not
 // what was attempted — "stack up" is not a proof.
-func printReport(cfg Config, rt roundTrip, caps map[string]string, facts map[string]string, red []string) {
+func printReport(cfg Config, rt roundTrip, caps map[string]string, facts map[string]string, red []string, warnings ...string) {
 	out := os.Stdout
 	fmt.Fprintln(out, "\nPROVEN LIVE")
 	fmt.Fprintf(out, "  round-trip   %s -> %s\n", rt.ResponseID, rt.Status)
@@ -720,6 +786,13 @@ func printReport(cfg Config, rt roundTrip, caps map[string]string, facts map[str
 	}
 	if len(red) > 0 {
 		fmt.Fprintf(out, "\nNOT green (doctor, not fatal — the round-trip above still ran): %s\n", strings.Join(red, "; "))
+	}
+	// Registered-but-unusable conditions. They are not failures — the thing was created — but they are
+	// exactly the states an operator discovers as unexplained silence, so they are said here in full.
+	for _, w := range warnings {
+		if w != "" {
+			fmt.Fprintf(out, "\nWARNING %s\n", w)
+		}
 	}
 	fmt.Fprintln(out, "\n  palai local doctor      the full health surface")
 	fmt.Fprintln(out, "  palai local down        stop the stack, keeping its data")

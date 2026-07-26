@@ -2,6 +2,7 @@ package stack
 
 import (
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,4 +332,65 @@ func keysOf(m map[string]string) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestTheReportCarriesTheSocketAndTheApproverTruthAtOnce pins the seam where two independently
+// correct fixes met. They answer DIFFERENT questions about the same connection — the socket answers
+// "can anything ARRIVE from Slack?", the approver allow-list answers "can anything be APPROVED once
+// it does?" — and a merge is exactly where one quietly swallows the other: by folding the warning
+// into the step line, or by gating it on !connected so the happiest path goes silent.
+//
+// The connected case is the one under test on purpose. A socket that came up is where an operator
+// STOPS reading, and it is also precisely when the refused Approve clicks begin.
+func TestTheReportCarriesTheSocketAndTheApproverTruthAtOnce(t *testing.T) {
+	// A registration with no SLACK_APPROVER_IDS: the connection that can receive everything and
+	// authorize nothing.
+	body, skip := slackRegistration(env("SLACK_TEAM_ID", "T0001", "SLACK_AGENT_REVISION_ID", "agr_1",
+		"SLACK_PRINCIPAL_ID", "prn_1", "SLACK_SIGNING_SECRET", "shh"))
+	if skip != "" {
+		t.Fatalf("a complete Slack environment was skipped: %s", skip)
+	}
+	warn := slackApproverWarning(body)
+	if warn == "" {
+		t.Fatal("a connection registered with NO approver produced no warning")
+	}
+
+	// The socket DID come up, and the fact it earns is the one that renders `slack` as live.
+	fact, line := slackReport(slackOutcome{team: "T0001", connectionID: "slkc_1", stored: 3,
+		connected: true, detail: slackSocketConnected + " (hello)"})
+	if fact == "" || !strings.Contains(line, "CONNECTED") {
+		t.Fatalf("an observed `hello` did not earn the live report: fact=%q line=%q", fact, line)
+	}
+
+	rt := roundTrip{ResponseID: "resp_1", Status: "completed", Model: "claude-x", InputTokens: 1, OutputTokens: 2}
+	out := captureStdout(t, func() {
+		printReport(Config{BaseURL: "http://127.0.0.1:8080"}, rt,
+			map[string]string{"slack": "enabled"}, observedFacts(rt, fact), nil, warn)
+	})
+
+	// BOTH truths, in the same report. Neither may displace the other.
+	if !strings.Contains(out, "live") || !strings.Contains(out, slackSocketConnected) {
+		t.Fatalf("the report lost the socket truth — a proven `hello` must still read as live:\n%s", out)
+	}
+	if !strings.Contains(out, "NO approver") || !strings.Contains(out, "SLACK_APPROVER_IDS") {
+		t.Fatalf("the report lost the approver truth: a connected socket suppressed the warning, so every "+
+			"refused Approve click stays unexplained:\n%s", out)
+	}
+}
+
+// captureStdout collects what printReport writes, which is os.Stdout directly.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = saved }()
+	done := make(chan string, 1)
+	go func() { b, _ := io.ReadAll(r); done <- string(b) }()
+	fn()
+	w.Close()
+	return <-done
 }
