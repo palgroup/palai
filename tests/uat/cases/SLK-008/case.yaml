@@ -1,9 +1,11 @@
 id: SLK-008
 name: bot-and-self-events-are-ignored-no-loop
-proof_class: unit
+proof_class: component-real
 provider: fake
-input: "an event carrying a bot_id, or one from the app's OWN bot user, is dropped BEFORE a run can be born — INCLUDING a message_changed/message_deleted whose bot identity is nested (the app's own SLK-006 chat.update edit re-enters as one), so the app never answers its own posted reply or its own repair — the infinite-loop guard (SLK-008). The event is acked (2xx) but produces no run. LOCAL proof: the bot/self drop unit tests over fake Slack peer events (top-level and nested-subtype). §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — the local seam is the FAKE Slack peer, so `slack` closes PREVIEW, not stable."
+input: "an event carrying a bot_id, or one from the app's OWN bot user, is dropped BEFORE a run can be born — INCLUDING a message_changed/message_deleted whose bot identity is nested (the app's own SLK-006 chat.update edit re-enters as one), so the app never answers its own posted reply or its own repair — the infinite-loop guard (SLK-008). The event is acked (2xx) but produces no run. WIRED (E19 T1/T3): the guard is asserted on BOTH shipped transports against real PostgreSQL — a self event over the HTTP callback and one over a Socket Mode envelope each birth zero runs, and the socket envelope is still acknowledged (an unacknowledged envelope is one Slack goes on retrying). LOCAL proof of the mapping itself: the bot/self drop unit tests, top-level and nested-subtype. §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — the local seam is the FAKE Slack peer, so `slack` closes PREVIEW, not stable."
 expect_status: accepted
 proof:
   - adapters/integrations/slack/inbound_test.go:TestMapEventDropsBotAndSelfEvents
   - adapters/integrations/slack/inbound_test.go:TestMapEventDropsNestedBotEdit
+  - apps/control-plane/internal/store/slack_events_component_test.go:TestSlackBotSelfEventBirthsNothing
+  - apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeSelfEventBirthsNothing

@@ -1,9 +1,10 @@
 id: SLK-002
 name: redelivered-event-id-runs-the-effect-once
-proof_class: unit
+proof_class: component-real
 provider: fake
-input: "a redelivered Slack event (X-Slack-Retry-Num set, SAME event_id) maps to the identical canonical dedupe key, so the effect runs ONCE — no parallel Slack dedupe is invented; the durable collapse is the canonical source-dedupe unique index the webhook seam already proves (AUT-001/AUT-009, component-real). LOCAL proof here: the identity-stable mapping unit test (a retry yields the same source_event_id). §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — the local seam is the FAKE Slack peer, so `slack` closes PREVIEW, not stable."
+input: "a redelivered Slack event (X-Slack-Retry-Num set, SAME event_id) maps to the identical canonical dedupe key, so the effect runs ONCE — no parallel Slack dedupe is invented; the durable collapse is the canonical source-dedupe unique index the webhook seam already proves (AUT-001/AUT-009, component-real). WIRED (E19 T1): the SHIPPED handler POST /v1/slack/events takes the retry storm — a real redelivery burst against real PostgreSQL collapses onto ONE canonical reservation through the SAME Admitter POST /v1/responses uses; there is no longer a hand-composed inbound leg here. LOCAL proof of the mapping itself: the identity-stable unit test (a retry yields the same source_event_id). §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — the local seam is the FAKE Slack peer, so `slack` closes PREVIEW, not stable."
 expect_status: completed
 proof:
   - adapters/integrations/slack/inbound_test.go:TestMapEventRedeliveryIsIdentityStable
   - apps/control-plane/internal/automation/dedupe_component_test.go:TestDuplicateDeliveryLinksOriginalSingleAction
+  - apps/control-plane/internal/store/slack_events_component_test.go:TestSlackRetryStormRunsTheEffectOnce
