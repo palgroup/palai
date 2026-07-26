@@ -86,7 +86,8 @@ func (a *SlackAdmitter) ResolveConnection(ctx context.Context, teamID, enterpris
 	return api.SlackConnectionRef{
 		ID: conn.ID, Org: conn.Org, Project: conn.Project,
 		TeamID: teamID, EnterpriseID: enterpriseID, BotUserID: conn.BotUserID, Disabled: conn.Disabled,
-		SigningSecretRef: conn.SigningSecretRef, BotTokenRef: conn.BotTokenRef, RunPolicy: conn.DefaultPolicy,
+		SigningSecretRef: conn.SigningSecretRef, BotTokenRef: conn.BotTokenRef, AppTokenRef: conn.AppTokenRef,
+		RunPolicy: conn.DefaultPolicy,
 	}, true, nil
 }
 
