@@ -43,8 +43,6 @@ type fakeSocketPeer struct {
 	opens int      // apps.connections.open calls
 	auth  []string // the Authorization header each one presented
 	acks  []string // every envelope_id acknowledged, in arrival order, across all sockets
-	// ackedAt records when each acknowledgement ARRIVED — the D4 ordering proof reads it.
-	ackedAt map[string]time.Time
 	// withPayload records the envelope ids whose acknowledgement carried a `payload` key (D6).
 	withPayload map[string]bool
 }
@@ -60,7 +58,6 @@ func newFakeSocketPeer(t *testing.T) *fakeSocketPeer {
 	t.Helper()
 	p := &fakeSocketPeer{
 		sockets:     make(chan *fakeSocket, slack.SocketMaxConnections),
-		ackedAt:     map[string]time.Time{},
 		withPayload: map[string]bool{},
 	}
 	mux := http.NewServeMux()
@@ -107,7 +104,6 @@ func newFakeSocketPeer(t *testing.T) *fakeSocketPeer {
 			_, hasPayload := ack["payload"]
 			p.mu.Lock()
 			p.acks = append(p.acks, id)
-			p.ackedAt[id] = time.Now()
 			p.withPayload[id] = hasPayload
 			p.mu.Unlock()
 		}
@@ -298,13 +294,26 @@ func eventPayload(team, eventID string) string {
 		team, eventID)
 }
 
-// runSocket starts the loop and returns a stop func plus the channel carrying Run's result.
+// runSocket starts the loop and returns a stop func plus the channel carrying Run's result. The cleanup does
+// not merely cancel: it WAITS for Run to return, so a loop that ignored its context cannot go on logging into
+// a finished test (which is how a leaked connect loop would show up in production too).
 func runSocket(t *testing.T, s *SlackSocket) (stop func(), result chan error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	result = make(chan error, 1)
-	go func() { result <- s.Run(ctx) }()
-	t.Cleanup(cancel)
+	finished := make(chan struct{})
+	go func() {
+		result <- s.Run(ctx)
+		close(finished)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("the connect loop did not return within 5s of its context being cancelled")
+		}
+	})
 	return cancel, result
 }
 
@@ -397,12 +406,12 @@ func TestSlackSocketAckShapeMatchesTheDocumentedEnvelope(t *testing.T) {
 // A naive close-then-reconnect DROPS every event Slack delivers in that ten-second window. The sequence
 // below is built so that it cannot pass by accident:
 //
-//	1. socket #1 delivers Ev1, which is acknowledged;
-//	2. socket #1 carries the `warning`;
-//	3. the test WAITS for socket #2 — proof the client reacted to the warning at all;
-//	4. socket #1 (still open, as real Slack leaves it) delivers Ev2 and Ev3 — the window's traffic;
-//	5. socket #2 delivers Ev4;
-//	6. socket #1 is closed by the peer, as Slack would.
+//  1. socket #1 delivers Ev1, which is acknowledged;
+//  2. socket #1 carries the `warning`;
+//  3. the test WAITS for socket #2 — proof the client reacted to the warning at all;
+//  4. socket #1 (still open, as real Slack leaves it) delivers Ev2 and Ev3 — the window's traffic;
+//  5. socket #2 delivers Ev4;
+//  6. socket #1 is closed by the peer, as Slack would.
 //
 // A client that closed at step 2 has no socket to receive Ev2/Ev3 on, so the writes at step 4 land nowhere
 // and the assertion fails naming them.
