@@ -69,6 +69,15 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
 	}
+	// The E18 stable-release family is checked FIRST: it is the most specific policy in the tree and the
+	// only one that governs the whole product rather than one epic. Recognized by ANY E18 area claim, never
+	// by the release index or the aggregate posture themselves — dispatching on the claim the gate enforces
+	// is precisely how a release DROPS it, reroutes to a weaker family and passes.
+	for _, c := range m.Cases {
+		if carriesE18AreaClaim(c) {
+			return StableReleasePromoteGate(raw, target)
+		}
+	}
 	// The E17 extensions bundle carries BOTH the capability-tier anchor and the eval-gate claim; the tier
 	// anchor is the more specific policy and COMPOSES the eval gate, so it is checked first.
 	//
@@ -98,7 +107,7 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 			return PromoteGate(raw, target)
 		}
 	}
-	return []Refusal{{Detail: "no promote policy for this release: it carries neither the E16 SDK-parity nor the E15 upgrade nor the E17 eval-gate claims a promote gate recognizes"}}
+	return []Refusal{{Detail: "no promote policy for this release: it carries none of the E18 stable-release, E17 extensions/eval-gate, E16 SDK-parity or E15 upgrade claims a promote gate recognizes"}}
 }
 
 // --- the two-person promotion gate (E18 T5) -----------------------------------------------------------

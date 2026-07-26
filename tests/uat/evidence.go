@@ -236,6 +236,32 @@ type evidenceCase struct {
 	ConsoleProof        *ConsoleProof        `json:"console_proof"`
 	CapabilityTierClaim string               `json:"capability_tier_claim"`
 	CapabilityTierProof *CapabilityTierProof `json:"capability_tier_proof"`
+	// The E18 T10 stable-release claims (plan §T10 — the FINAL cross-epic EXIT gate) extend the same
+	// marker-alone-is-NEVER-proof discipline to the six invariants the RC sign-off owns: a release artifact
+	// set was verified OFFLINE against a signed root and a six-arm tamper matrix was rejected
+	// (SupplyChainClaim, SEC-101 — and it is where SUP-3's "a release family must ALWAYS carry a verified
+	// artifact set" rule lives); a performance number exists only behind a MANDATORY hardware/load profile
+	// and its percentiles RE-DERIVE from the raw samples carried with it (PerformanceProfileClaim,
+	// PER-001..004); the existing sandbox denial corpus ran as ONE suite reporting no escape + working
+	// quarantine (SandboxEscapeClaim, SEC-102); the events journal chained to a signed out-of-database
+	// checkpoint and all four typed alerts were raised (AuditIntegrityClaim, SEC-103); every exact
+	// Appendix-A UAT id is indexed with its carrying bundle + outcome + disposition and the §64.15 checklist
+	// posture, both RE-GATHERED from the per-bundle manifests (ReleaseIndexClaim); and the PRODUCT-WIDE
+	// capability posture is recomputed from EVERY committed bundle's claim outcomes and asserted bit-equal
+	// to the fully-mounted router's /v1/capabilities (AggregateTierClaim — the final anti-fabrication
+	// anchor: a fabricated cross-epic "stable" is a FAIL). Each requires its proof.
+	SupplyChainClaim        string                   `json:"supply_chain_claim"`
+	SupplyChainProof        *SupplyChainProof        `json:"supply_chain_proof"`
+	PerformanceProfileClaim string                   `json:"performance_profile_claim"`
+	PerformanceProfileProof *PerformanceProfileProof `json:"performance_profile_proof"`
+	SandboxEscapeClaim      string                   `json:"sandbox_escape_claim"`
+	SandboxEscapeProof      *SandboxEscapeProof      `json:"sandbox_escape_proof"`
+	AuditIntegrityClaim     string                   `json:"audit_integrity_claim"`
+	AuditIntegrityProof     *AuditIntegrityProof     `json:"audit_integrity_proof"`
+	ReleaseIndexClaim       string                   `json:"release_index_claim"`
+	ReleaseIndexProof       *ReleaseIndexProof       `json:"release_index_proof"`
+	AggregateTierClaim      string                   `json:"aggregate_tier_claim"`
+	AggregateTierProof      *AggregateTierProof      `json:"aggregate_tier_proof"`
 }
 
 type evidenceTerm struct {
@@ -1747,6 +1773,10 @@ var committedBundleSurfaces = map[string]string{
 	"self-host-0.2.0":           SurfaceRecomputed,
 	"sdk-provider-parity-0.1.0": SurfaceRecomputed,
 	"extensions-0.1.0":          SurfaceRecomputed,
+	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the other fifteen committed
+	// bundles + the materialized case corpus, so a checksum here cannot be hand-written: it moves the
+	// moment any bundle or any case.yaml does.
+	StableReleaseBundle: SurfaceRecomputed,
 	// Corrected by E18 T8 — each owes a checksum_note stating what its committed values were and why they
 	// were renormalized (automation: fabricated, 0 hits over the declared search; recovery: a REAL but
 	// foreign construction). See TestPreCorrectionChecksumConstructionSearch.
@@ -1796,6 +1826,17 @@ func checksumNoteRequired(surface string) bool {
 // Complete() gates, exactly as A2AConformanceProof's TranscriptDigest names its own ceiling.
 func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 	switch m.Release {
+	// The E18 T10 RC bundle: hashParts(id, run_id, the RECOMPUTED release index's anchor). Unlike every
+	// other family's anchor this one is derived from OTHER committed bytes — the fifteen prior bundles and
+	// the case corpus — so it is re-derivable in a clean checkout and unforgeable from inside this manifest.
+	// A recompute that cannot read those bytes returns nil parts and verifyCaseChecksum fails the case:
+	// fail closed, never a shape-only fallback.
+	case StableReleaseBundle: // tests/uat/stable-release/bundle_test.go
+		anchor, err := ReleaseIndexAnchor()
+		if err != nil {
+			return nil
+		}
+		return []string{c.ID, c.RunID, anchor}
 	// E13..E17 authored bundles: hashParts(id, run_id, the release's canonical anchor digest).
 	case "extensions-0.1.0": // tests/uat/extensions/bundle_test.go
 		return []string{c.ID, c.RunID, CapabilityClaimsDigest()}
@@ -1968,6 +2009,11 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	// An E17 release must carry its tier table — recognized by the FAMILY, never by the tier claim itself, so
 	// dropping the marker cannot switch the anchor off (see verifyE17TierTablePresence).
 	findings = append(findings, verifyE17TierTablePresence(m)...)
+
+	// An E18 stable-release bundle must carry its release index AND its product-wide posture — recognized
+	// by the FAMILY, never by those two claims themselves, so dropping a marker cannot switch an anchor off
+	// (see verifyE18AnchorPresence).
+	findings = append(findings, verifyE18AnchorPresence(m)...)
 
 	// A bundle whose checksums were CORRECTED, or that is shape-only, must SAY SO in the manifest (plan §2
 	// honest-naming): the note is where a reader who opens this file meets the correction or the ceiling.
@@ -2309,6 +2355,67 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "capability_tier_proof is incomplete: a non-canonical capability set, a shrunken/padded claim ledger, a tier outside stable/preview/disabled, a governed capability missing from the snapshot, an unnamed snapshot source, or a claims_digest that does not equal the canonical ledger digest (plan §T11)"})
 			default:
 				for _, problem := range verifyCapabilityTiers(c.CapabilityTierProof, m.Cases) {
+					findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: problem})
+				}
+			}
+		}
+
+		// The E18 T10 stable-release claims mirror the rule exactly: a non-empty marker with no proof is
+		// "missing"; a proof that fails its Complete() invariant is "invalid" (plan §T10). The three that
+		// carry a cross-bundle RECOMPUTE (release index, aggregate tier) run it in the default branch —
+		// their values are functions of every committed bundle, which their structs cannot see alone.
+		if c.SupplyChainClaim != "" {
+			switch {
+			case c.SupplyChainProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "supply_chain_proof (a supply-chain claim requires the VERIFIED release directory + the index/artifact digests + the signed root + an offline re-verify + the six-arm tamper matrix; a 'verified' marker is not proof)"})
+			case !c.SupplyChainProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "supply_chain_proof is incomplete: no NAMED release directory (SUP-3 — a release family that carries no verified artifact set has nothing to promote), a malformed index/root/artifact digest, a duplicated artifact digest, a signer that is not the E14 T5 openssl P-256 signer, a builder identity other than local-macos-session, a claimed transparency-log entry, a cosign/Sigstore/Rekor/SLSA-level word this program has not earned, a verify that was not offline, or a tamper matrix that is not the canonical six arms all rejected (SEC-101, plan §T3/§T4/§T10)"})
+			}
+		}
+		if c.PerformanceProfileClaim != "" {
+			switch {
+			case c.PerformanceProfileProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "performance_profile_proof (a performance claim requires the MANDATORY hardware/load profile + the raw samples + the samples digest; a number with no machine behind it is a rumour, not a measurement)"})
+			case !c.PerformanceProfileProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "performance_profile_proof is incomplete: a partial or whitespace profile, a percentile method that is not the harness's documented nearest-rank, a malformed samples digest, a metric with no raw samples behind its gate, a declared sample count that is not the samples carried, a p50/p95/p99 or gate value that does NOT re-derive from the raw samples (a fabricated percentile), a pass verdict that disagrees with the recomputed one, a gate that was exceeded, or a dropped no-SLO / reference-hardware stamp (PER-001..004, plan §2 \"sayı ancak profille\")"})
+			}
+		}
+		if c.SandboxEscapeClaim != "" {
+			switch {
+			case c.SandboxEscapeProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "sandbox_escape_proof (an escape-suite claim requires the arms + the covered/unowned case sets + the quarantine arms; a 'no escape' marker is not proof)"})
+			case !c.SandboxEscapeProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "sandbox_escape_proof is incomplete: the covered set is not every materialized SAN case plus SEC-102 (a shrunken corpus reports 'no escape' over what it did not run), the unowned set does not name SAN-009/010/012 out loud, a quarantine arm is missing from the suite, no_escape or quarantine_works is false, a failure was recorded, an arm was NOT ATTEMPTED (a skipped or filtered-out arm is not a denial — E18 T7's own rule), or local_oci_only is false — the microVM path is managed-scope and is not claimed here (SEC-102)"})
+			}
+		}
+		if c.AuditIntegrityClaim != "" {
+			switch {
+			case c.AuditIntegrityProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "audit_integrity_proof (an audit-integrity claim requires the checkpoint head, the head RECOMPUTED from the rows, and the typed alerts the negatives raised; a 'verified' marker is not proof)"})
+			case !c.AuditIntegrityProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "audit_integrity_proof is incomplete: no algorithm, no anchored rows, a recomputed head that does not equal the checkpoint's, fewer than all four typed alerts (gap/tamper/signature/stale — a verifier that only reports green has not been shown to alert), a checkpoint claimed to live INSIDE the mutable store, or a denial that an authorised retention purge is indistinguishable from tampering (AUD-1, SEC-103)"})
+			}
+		}
+		if c.ReleaseIndexClaim != "" {
+			switch {
+			case c.ReleaseIndexProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "release_index_proof (a release-index claim requires one entry per Appendix-A UAT id + the §64.15 checklist posture + the RC-blocker count; an index is not a summary)"})
+			case !c.ReleaseIndexProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "release_index_proof is incomplete: not one entry per Appendix-A id in Appendix-A order, a disposition outside the vocabulary, a non-carried id naming a carrier, a checklist that is not one status per §64.15 item in order, or a malformed index anchor (plan §T10)"})
+			default:
+				for _, problem := range verifyReleaseIndex(c.ReleaseIndexProof) {
+					findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: problem})
+				}
+			}
+		}
+		if c.AggregateTierClaim != "" {
+			switch {
+			case c.AggregateTierProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "aggregate_tier_proof (a product-wide posture claim requires the per-capability declaration + the fully-mounted router's /v1/capabilities snapshot + the anchored claim ledger; a declared posture is not proof)"})
+			case !c.AggregateTierProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "aggregate_tier_proof is incomplete: a non-canonical capability set, a shrunken/padded claim ledger, a tier outside stable/preview/disabled, a governed capability missing from the snapshot, a claims_digest that does not equal the canonical ledger digest, a snapshot_source that does not NAME the fully-mounted router, a claim that a DEPLOYED config serves that map, or an unmounted_reason that does not name PALAI_CAPABILITY_WORKER_LISTEN_ADDR (EXT-1, plan §T10)"})
+			default:
+				for _, problem := range verifyAggregateTiers(c.AggregateTierProof) {
 					findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: problem})
 				}
 			}

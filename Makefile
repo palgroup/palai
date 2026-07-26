@@ -6,7 +6,7 @@ SHELL := /bin/bash
 	test-fault test-security test-performance test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
-	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
+	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
 	release-matrix-smoke provenance-offline-verify
 
 bootstrap:
@@ -263,6 +263,25 @@ uat-sdk-parity:
 uat-extensions:
 	@test -x scripts/uat/extensions || { echo "extensions UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/extensions
+
+# E18 T10 FINAL cross-epic EXIT gate (plan §T10 — the last gate in the program): the Docker-free CORE (the E18
+# catalog gate over SEC-101..103 + PER-001..004, the ~50 anti-fabrication negatives, the committed
+# release-1.0.0-rc1 bundle through the shipped verifier, the promote gate's rc-PASS / stable-REFUSED /
+# leg-missing-REFUSED / SUP-3-REFUSED, the SHIPPED /v1/capabilities map asserted BIT-EQUAL to the CROSS-EPIC
+# recompute, SEC-101's real tamper matrix, SEC-103's audit chain, and THE CROSS-EPIC RE-VERIFY of every
+# committed bundle) plus a Docker-bound PER smoke with a mandatory profile and the SEC-103 component journey,
+# plus a PROVIDER-gated single-step live run. SKIP_JOURNEYS=1 runs the Docker-free core alone;
+# RUN_ESCAPE_SUITE=1 / RUN_MATRIX_SMOKE=1 add the two heavy opt-in legs.
+#
+# ITS OUTPUT IS AN SH-3 POSTURE REPORT, NOT A BLANKET "STABLE". HONEST CEILING (plan §6): NOT ONE §6 operator
+# leg has been executed — no protected CI environment, no second maintainer, no registry/Sigstore/KMS
+# credential, no reference hardware, no air-gap facility, no real Slack workspace, no foreign A2A peer, no
+# broker product, no Apple signing material, no vector store. The local closure of this gate is an RC; SH-3
+# Stable is the operator attestation the promote gate demands, naming all eleven legs one by one, and this
+# target claims none of them.
+uat-stable-release:
+	@test -x scripts/uat/stable-release || { echo "stable-release UAT not implemented" >&2; exit 2; }
+	@PROVIDER='$(PROVIDER)' SKIP_JOURNEYS='$(SKIP_JOURNEYS)' RUN_ESCAPE_SUITE='$(RUN_ESCAPE_SUITE)' RUN_MATRIX_SMOKE='$(RUN_MATRIX_SMOKE)' scripts/uat/stable-release
 
 # E18 T1 image half of the release matrix (Docker-bound, so NOT in `make verify` — like uat-kind): builds
 # linux/amd64 + linux/arm64 for all three images, asserts each indexed tar's digest/image_id/arch against the

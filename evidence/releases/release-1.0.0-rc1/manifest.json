@@ -1,0 +1,2446 @@
+{
+  "api_version": "v1",
+  "captured_at": "2026-07-26T11:00:00Z",
+  "cases": [
+    {
+      "checksum": "sha256:86f09362d203493021ff9bfc2bb9831c36dba3250482964d18f94acfe2220803",
+      "db_assertions": [
+        "SEC-101: proven by 10 in-tree proof(s) at the unit tier — scripts/release/release_verify_test.go:TestReleaseVerifyAcceptsACleanRelease; scripts/release/release_verify_test.go:TestReleaseVerifyTamperMatrix; scripts/release/release_verify_test.go:TestTamperedImageIsUnreachableUnderItsPinnedDigest; scripts/release/release_verify_test.go:TestReleaseVerifyResolutionIsFailClosed; scripts/release/release_verify_test.go:TestReleaseVerifyRefusesAnUnscannedRelease; scripts/release/release_verify_test.go:TestReleaseVerifyMatchesAnOutOfBandRevocationList; scripts/release/release_verify_test.go:TestReleaseVerifyOfflineNetworkNone; scripts/release/release_verify_test.go:TestPromoteReachesTheEvidenceGate; deploy/airgap/airgap_test.go:TestVerifierSwapFailsClosed; deploy/airgap/airgap_test.go:TestVerifierResolutionRefusesWithNoOutOfBandSigner",
+        "the case text NAMES its local seam and its §6 operator leg; TestE18CatalogMaterialized enforces both mechanically and TestE18CatalogGuardBites proves the enforcement bites",
+        "AUTHORED BUNDLE, script/component tier: no ENGINE image serves these cases, so image_digest / provider_request_id / mtls_enroll carry deliberately unservable placeholder values and are never a claim that a container ran a model",
+        "SIGNED BY openssl, NOT BY SIGSTORE: the signature over the sha256sums root is the E14 T5 openssl P-256 signer reused VERBATIM (the one-signing-tool invariant). The provenance predicate is written in the in-toto Statement / SLSA v1 SHAPE and the builder identity says `local-macos-session` because that is what produced it. NO transparency-log entry, NO identity service and NO SLSA level is claimed anywhere — SupplyChainProof.Complete() REFUSES a proof that says otherwise, including one whose prose merely uses the words cosign/Sigstore/Fulcio/Rekor/keyless/SLSA-level",
+        "SUP-3 IS ENFORCED HERE, NOT AT THE WRAPPER: scripts/release/promote.sh runs the offline verifier only when PALAI_RELEASE_DIR names a directory, and with it unset the tag is blessed on the evidence gate alone. That is deliberate — a fence there would run BEFORE the evidence gate and shadow the E15 T6 operator-leg refusal that scripts/uat/sh2 and scripts/uat/sdk-parity both grep for (TestPromoteReachesTheEvidenceGate). The rule that a release FAMILY must always carry a verified artifact set is this proof's: StableReleasePromoteGate refuses a promote with no COMPLETE SupplyChainProof, and a SupplyChainProof is not complete without a NAMED, offline-verified release directory",
+        "THE ARTIFACT SET IS A SUBSET, NAMED AS ONE: the release directory verified here was built --no-images with one CLI target and one runner arch, plus a docker-save-SHAPED image tar. The full six-image amd64+arm64 matrix is `make release-matrix-smoke` and a boot-smoke of a foreign-arch image is NOT a full UAT run on that arch (§6 operator leg 3)"
+      ],
+      "id": "SEC-101",
+      "image_digest": "sha256:e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e",
+      "mtls_enroll": "e18-no-runner-enrollment",
+      "provider_request_id": "chatcmpl-e18-not-a-live-run",
+      "run_id": "run_e18_sec_101",
+      "status": "PASS",
+      "supply_chain_claim": "verified-offline-and-tamper-denied",
+      "supply_chain_proof": {
+        "artifact_digests": [
+          "sha256:50d4e982894ec109eb4eaa7fed591eb588e0db136fb93e7b7c528d574edda999",
+          "sha256:39fb91e882a671669c0e1563cff2775fec3a6510a5a2e2ddcf61bcd7eace37d1",
+          "sha256:84b142c1275fea19812abc75fced3f5e424296fcb76c00ac5386757066abed17"
+        ],
+        "index_digest": "sha256:acc83d895025a67d95cccd5152360e690f2bc68d4efd55a90ff9ba166e8561db",
+        "offline_evidence": "scripts/release/release_verify_test.go TestReleaseVerifyOfflineNetworkNone — the whole verify re-run inside a container with NO network device, printing `release-verify: OK ... verified OFFLINE` plus the two ceilings the container really has (GIT ABSENT, and the SDK packages UNVERIFIED by that run). The leg is operator-gated on an already-loaded openssl+python3 image (PALAI_RELEASE_TOOL_IMAGE) and SKIPS without one, so scripts/uat/stable-release RESOLVES the image and then asserts `--- PASS: TestReleaseVerifyOfflineNetworkNone` BY NAME, exiting rather than reporting green over a skip",
+        "offline_verified": true,
+        "provenance_builder": "local-macos-session",
+        "release_dir": "scripts/release: build.sh --no-images --version 18.0.0 --cli-targets darwin/arm64 --runner-archs arm64, rolled up by sbom-tool.py and attested + signed by provenance.sh (release_verify_test.go attestedRelease), verified by scripts/release/release-verify.sh",
+        "sbom_formats": [
+          "cyclonedx",
+          "spdx"
+        ],
+        "signature_algorithm": "openssl-ecdsa-p256-sha256",
+        "signed_root": "sha256:c485a9e25696784822c6a1d118792afd8b5b08303df019798f2be24700504ee2",
+        "tamper_arms": [
+          "image",
+          "index",
+          "provenance",
+          "sbom",
+          "sdk-package",
+          "signature"
+        ],
+        "tamper_rejected": 6,
+        "transparency_log": false,
+        "vuln_db_snapshot": "pinned offline grype DB v6.1.9, snapshot 2026-07-25T00:39:09Z (scripts/release/vulndb.lock.json) — a snapshot, never a live CVE feed"
+      },
+      "terminal": {
+        "count": 1,
+        "type": "completed"
+      }
+    },
+    {
+      "audit_integrity_claim": "chain-recomputes-and-all-four-alerts-raise",
+      "audit_integrity_proof": {
+        "alerts_raised": [
+          "gap",
+          "signature",
+          "stale",
+          "tamper"
+        ],
+        "algorithm": "palai-audit-chain-sha256-v1",
+        "anchored_rows": 6,
+        "checkpoint_head": "sha256:8723b40be5acfc750f912aac84bc47ca43ccb4a564c3650e7e5ea7a9f5083875",
+        "checkpoint_outside_store": true,
+        "purge_indistinguishable_from_tamper": true,
+        "recomputed_head": "sha256:8723b40be5acfc750f912aac84bc47ca43ccb4a564c3650e7e5ea7a9f5083875"
+      },
+      "checksum": "sha256:66d2bbfe402d341d91d0c7df3f03d1960d94c382284e5f35f4191933971bce3d",
+      "db_assertions": [
+        "SEC-103: proven by 10 in-tree proof(s) at the component-real tier — packages/audit/chain_test.go:TestIntactJournalVerifiesGreen; packages/audit/chain_test.go:TestDeletedRowRaisesGap; packages/audit/chain_test.go:TestFlippedPayloadByteRaisesTamper; packages/audit/chain_test.go:TestCheckpointSignatureFailClosed; packages/audit/chain_test.go:TestALegitimateHoleIsNotAGap; packages/audit/chain_test.go:TestAnOldValidlySignedCheckpointIsStale; packages/audit/chain_test.go:TestARetentionPurgeIsIndistinguishableFromTamper; packages/audit/chain_test.go:TestEveryRowFieldIsInTheDigest; packages/audit/chain_test.go:TestPubkeyContainmentSurvivesSymlinks; tests/component/postgres/audit_integrity_test.go:TestAuditIntegrityFourArms",
+        "the case text NAMES its local seam and its §6 operator leg; TestE18CatalogMaterialized enforces both mechanically and TestE18CatalogGuardBites proves the enforcement bites",
+        "AUTHORED BUNDLE, script/component tier: no ENGINE image serves these cases, so image_digest / provider_request_id / mtls_enroll carry deliberately unservable placeholder values and are never a claim that a container ran a model",
+        "AN AUTHORISED RETENTION PURGE IS INDISTINGUISHABLE FROM TAMPERING, and the proof DECLARES it rather than hiding it: §22.2 scrub_events UPDATEs an anchored row's payload to {\"purged\": true} — same rows, same seq, different bytes — which is precisely the `tamper` signature, so a routine reaper sweep raises the highest-severity alert and an attacker who edits a row inherits \"the reaper did it\" as cover. Correct and unavoidable at this design point (the chain covers payload bytes); the operational rule is to RE-CUT the checkpoint immediately after any purge, and it is written into the alert text, audit.Ceilings, runbooks/audit-integrity-alert.md and the RC triage as AUD-1",
+        "THIS CHAINS THE `events` SESSION JOURNAL, NOT `audit_events` (§50.3, protected by a REVOKE of UPDATE/DELETE instead). Neither control substitutes for the other. A checkpoint anchors a PREFIX; cadence is operator policy and continuous live verification wired to alerting is a §6 operator leg — this is the mechanism, not a running watchdog",
+        "WHICH TEST RAISES WHICH ALERT, because \"all four alerts raise\" would otherwise read as one test doing it: `gap`, `tamper` and `signature` are raised by TestAuditIntegrityFourArms over ONE seeded real journal (a deleted row, a flipped payload byte, a checkpoint signed with the wrong key AND that forgery re-checked against the key sitting beside it); `stale` is raised by TestAuditVerifyReportsCheckpointAgeAndAlertsOnRollback (an OLD validly-signed checkpoint swapped in, plus the coverage floor) and by packages/audit TestAnOldValidlySignedCheckpointIsStale. scripts/uat/stable-release runs ALL of them in the same invocation that verifies this bundle",
+        "THE GREEN ARM'S HEAD IS A RUN RECEIPT: the arm's six events carry per-run ids, so checkpoint_head moves with every run exactly as a run_id does. What makes it evidence is the co-run, not re-derivability — and checkpoint_head == recomputed_head is the assertion that matters: the chain RECOMPUTED from the rows equalled the anchor"
+      ],
+      "id": "SEC-103",
+      "image_digest": "sha256:e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e",
+      "mtls_enroll": "e18-no-runner-enrollment",
+      "provider_request_id": "chatcmpl-e18-not-a-live-run",
+      "run_id": "run_e18_sec_103",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "completed"
+      }
+    },
+    {
+      "checksum": "sha256:da137ba7b53d8b5a0f4637b6facf6b9b5fab02fa480f6859623f5b08df3840eb",
+      "db_assertions": [
+        "PER-001: proven by 6 in-tree proof(s) at the component-real tier — tests/performance/per001_load_test.go:TestPER001SingleShotAndSSELoad; tests/performance/harness_test.go:TestHarnessWritesNothingWithoutAProfile; tests/performance/harness_test.go:TestHarnessRefusesAWhitespaceProfile; tests/performance/harness_test.go:TestHarnessPercentilesRecomputeFromTheRawSamples; tests/performance/harness_test.go:TestHarnessVacuousGateSurvivesIntoTheArtifact; tests/performance/harness_test.go:TestHarnessThresholdOverrideIsRecorded",
+        "the case text NAMES its local seam and its §6 operator leg; TestE18CatalogMaterialized enforces both mechanically and TestE18CatalogGuardBites proves the enforcement bites",
+        "AUTHORED BUNDLE, script/component tier: no ENGINE image serves these cases, so image_digest / provider_request_id / mtls_enroll carry deliberately unservable placeholder values and are never a claim that a container ran a model",
+        "NO SLO, NO REFERENCE HARDWARE, AND NO CO-TENANT STAMP: these are macOS + Docker-Desktop numbers from a shared laptop. §54.3's targets are PRODUCT GOALS whose real measurement is §6 operator leg 3. Worse than that and stated on purpose (PER-1 in the RC triage): the profile stamps machine/cores/memory/OS/Docker but NOT concurrent load, so the same code measured 229 ms, 7.5 s and 32.4 s for one metric depending only on what else was running. The thresholds are configurable and prove the GATE MECHANISM; the numbers are an input",
+        "DISPATCH IS OFF (E08 rule: the engine opens no tool to a real provider), so these are API + journal spine latencies — admission, read-back and stream start — never model or engine time"
+      ],
+      "id": "PER-001",
+      "image_digest": "sha256:e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e",
+      "mtls_enroll": "e18-no-runner-enrollment",
+      "performance_profile_claim": "profiled-and-percentiles-rederive-from-raw-samples",
+      "performance_profile_proof": {
+        "arch": "arm64",
+        "case": "PER-001",
+        "ceiling": "macOS + Docker Desktop profile on a shared laptop; NO SLO and NO reference-hardware claim (§54.3 targets are product goals — real measurement is E18 §6 leg 3, which also owns the region/tier/environment segmentation §54.3 requires). Dispatch is OFF (E08 rule): these are API + journal spine latencies, never model or engine time. The load shape is the configured one below, not a saturation point.",
+        "cores": 12,
+        "docker": "Docker Desktop 4.21.1 (114176) (engine 24.0.2, linux/arm64)",
+        "load_shape": "4 concurrent clients x 10 iterations = 40 single-shot admissions, 40 metadata reads and 40 SSE stream starts against one control-plane process + one Postgres container",
+        "machine": "Mac14,10",
+        "max_error_rate": 0,
+        "memory_bytes": 17179869184,
+        "metrics": [
+          {
+            "errors": 0,
+            "gate_max": 300000000,
+            "gate_percentile": 95,
+            "gate_source": "spec §54.3 (API metadata read p95 \u003c 300ms)",
+            "gate_value": 2439500,
+            "metric": "api_metadata_read",
+            "p50": 1685500,
+            "p95": 2439500,
+            "p99": 2624000,
+            "pass": true,
+            "samples": [
+              2586084,
+              2439500,
+              2624000,
+              1897708,
+              1632958,
+              1793583,
+              1777250,
+              1370792,
+              1614541,
+              1754000,
+              1758500,
+              1540333,
+              1627500,
+              1747083,
+              1785417,
+              1498750,
+              1623708,
+              1651250,
+              1396666,
+              1722084,
+              1723041,
+              1685500,
+              1846375,
+              1676209,
+              2184542,
+              1763291,
+              1761666,
+              1530042,
+              1925083,
+              1814041,
+              1674292,
+              1845541,
+              1634209,
+              1551542,
+              1657917,
+              1650209,
+              1536417,
+              1547125,
+              1726875,
+              1067083
+            ],
+            "unit": "ns"
+          },
+          {
+            "errors": 0,
+            "gate_max": 500000000,
+            "gate_percentile": 95,
+            "gate_source": "spec §54.3 (accepted mutation p95 \u003c 500ms)",
+            "gate_value": 18662750,
+            "metric": "mutation_accept",
+            "p50": 7480833,
+            "p95": 18662750,
+            "p99": 26668208,
+            "pass": true,
+            "samples": [
+              18428375,
+              18662750,
+              18677042,
+              26668208,
+              7582250,
+              7712500,
+              7770167,
+              7500416,
+              6898250,
+              7131958,
+              7480833,
+              7011459,
+              6961584,
+              7410208,
+              7590125,
+              7698917,
+              7068333,
+              6984542,
+              7173958,
+              7463458,
+              8146500,
+              7770917,
+              7651083,
+              7416292,
+              7362750,
+              7570291,
+              7693250,
+              7525042,
+              7745292,
+              7984833,
+              7904125,
+              7649125,
+              7181708,
+              7209875,
+              7230959,
+              7457750,
+              6868833,
+              7121875,
+              6802750,
+              6213792
+            ],
+            "unit": "ns"
+          },
+          {
+            "errors": 0,
+            "gate_max": 1000000000,
+            "gate_percentile": 95,
+            "gate_source": "spec §54.3 (first SSE event p95 \u003c 1s)",
+            "gate_value": 3359458,
+            "metric": "sse_first_event",
+            "p50": 2572958,
+            "p95": 3359458,
+            "p99": 3612042,
+            "pass": true,
+            "samples": [
+              3535125,
+              3359458,
+              3612042,
+              3310000,
+              2450916,
+              2590125,
+              2584916,
+              2505333,
+              2648209,
+              2572708,
+              2533042,
+              2269917,
+              2422167,
+              2616917,
+              2485625,
+              2124375,
+              2371959,
+              2611125,
+              2629583,
+              2483375,
+              2764000,
+              2776625,
+              2513125,
+              2680334,
+              2466917,
+              2572958,
+              2801791,
+              2658833,
+              2594834,
+              2637250,
+              2764667,
+              2590667,
+              2284542,
+              2479917,
+              2708583,
+              2094208,
+              2346417,
+              2100750,
+              2159917,
+              1484417
+            ],
+            "unit": "ns"
+          }
+        ],
+        "no_slo_claim": true,
+        "os": "Darwin 25.3.0",
+        "percentile_method": "nearest-rank: sort ascending, index = ceil(p/100*n)-1 clamped to [0,n-1]",
+        "reference_hardware": false,
+        "run_sample_count": 120,
+        "sample_count": 120,
+        "samples_sha256": "sha256:7f689a752f602d383e33f1bb69e78d9f46a05a59c1e576f7b775cea9e38510ea"
+      },
+      "provider_request_id": "chatcmpl-e18-not-a-live-run",
+      "run_id": "run_e18_per_001",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "completed"
+      }
+    },
+    {
+      "checksum": "sha256:337d0eecfc891e2d5958a054fcfa25254d95a26a65c76db20b2c8b7daeeb4975",
+      "db_assertions": [
+        "PER-002: proven by 4 in-tree proof(s) at the component-real tier — tests/performance/per002_sandbox_test.go:TestPER002ColdWarmSandboxPhases; tests/performance/per002_sandbox_test.go:TestPER002SlowEngineFixtureFailsThePhaseBudget; tests/performance/harness_test.go:TestHarnessWritesNothingWithoutAProfile; tests/performance/harness_test.go:TestHarnessPercentilesRecomputeFromTheRawSamples",
+        "the case text NAMES its local seam and its §6 operator leg; TestE18CatalogMaterialized enforces both mechanically and TestE18CatalogGuardBites proves the enforcement bites",
+        "AUTHORED BUNDLE, script/component tier: no ENGINE image serves these cases, so image_digest / provider_request_id / mtls_enroll carry deliberately unservable placeholder values and are never a claim that a container ran a model",
+        "'COLD' IS A POSITION, NOT A TEMPERATURE: it is the first attempt in this process, on an already-warm daemon and an already-migrated database, with the fixture image built locally moments before. Its p95 is a SINGLE observation and on this profile it is routinely the FASTEST attempt of the run. §54.3's cold-start budget is NOT established here — §6 operator leg 3 measures it. The number also excludes image pull, which is §54.3's own carve-out",
+        "Attempts run one at a time, so NO capacity or saturation behaviour is measured or claimed"
+      ],
+      "id": "PER-002",
+      "image_digest": "sha256:e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e",
+      "mtls_enroll": "e18-no-runner-enrollment",
+      "performance_profile_claim": "profiled-and-percentiles-rederive-from-raw-samples",
+      "performance_profile_proof": {
+        "arch": "arm64",
+        "case": "PER-002",
+        "ceiling": "macOS + Docker Desktop profile; NO SLO and NO reference-hardware claim. 'COLD' HERE MEANS ONLY 'the first attempt in this process': the fixture image was just built LOCALLY (so the number excludes image pull, §54.3's own carve-out), Postgres is already migrated, and the OCI driver is constructed before attempt 1 — the daemon and the DB are WARM. The cold metric is therefore n=1 and its 'p95' is that single observation; on this profile it is typically the FASTEST attempt of the run, which is why it must not be read as a cold start. §54.3's cold-start budget is NOT established here — E18 §6 operator leg 3 measures it. The engine is the deterministic fixture per the E08 rule — allocation + container start + §25.6 handshake, never model work. Attempts are sequential: no capacity or saturation behaviour is measured or claimed.",
+        "cores": 12,
+        "docker": "Docker Desktop 4.21.1 (114176) (engine 24.0.2, linux/arm64)",
+        "load_shape": "6 sequential attempts (attempt 1 labelled 'cold' = first in this process, on an already-warm daemon and DB; 5 warm): real workspace row + allocation + writer lease against Postgres, then a real digest-pinned fixture-engine container to engine.ready",
+        "machine": "Mac14,10",
+        "max_error_rate": 0,
+        "memory_bytes": 17179869184,
+        "metrics": [
+          {
+            "errors": 0,
+            "gate_max": 90000000000,
+            "gate_percentile": 95,
+            "gate_source": "spec §54.3's cold CEILING (p95 \u003c 90s, excl. large image pull) applied to n=1 — the first in-process attempt on an already-warm daemon and DB, NOT a cold-host measurement and NOT a §54.3 cold-start result (see the profile ceiling; E18 §6 leg 3 measures it)",
+            "gate_value": 128253917,
+            "metric": "assign_to_ready_cold",
+            "p50": 128253917,
+            "p95": 128253917,
+            "p99": 128253917,
+            "pass": true,
+            "samples": [
+              128253917
+            ],
+            "unit": "ns"
+          },
+          {
+            "errors": 0,
+            "gate_max": 10000000000,
+            "gate_percentile": 95,
+            "gate_source": "spec §54.3 (warm assignment-to-engine-ready p95 \u003c 10s)",
+            "gate_value": 87635500,
+            "metric": "assign_to_ready_warm",
+            "p50": 75689375,
+            "p95": 87635500,
+            "p99": 87635500,
+            "pass": true,
+            "samples": [
+              87635500,
+              83368708,
+              70062292,
+              72913083,
+              75689375
+            ],
+            "unit": "ns"
+          }
+        ],
+        "no_slo_claim": true,
+        "os": "Darwin 25.3.0",
+        "percentile_method": "nearest-rank: sort ascending, index = ceil(p/100*n)-1 clamped to [0,n-1]",
+        "reference_hardware": false,
+        "run_sample_count": 30,
+        "sample_count": 6,
+        "samples_sha256": "sha256:40d327ac85073eb5a301acfc30776a46ad89f72b74e3fb22a23367b25cd33b73"
+      },
+      "provider_request_id": "chatcmpl-e18-not-a-live-run",
+      "run_id": "run_e18_per_002",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "completed"
+      }
+    },
+    {
+      "checksum": "sha256:c0effb9f207eb388a672368b261f5c9300dc7f1d1eac25de05de8400eb12445a",
+      "db_assertions": [
+        "PER-003: proven by 4 in-tree proof(s) at the component-real tier — tests/performance/per003_soak_test.go:TestPER003LongSessionSoak; tests/performance/harness_test.go:TestHarnessWritesNothingWithoutAProfile; tests/performance/harness_test.go:TestHarnessPercentilesRecomputeFromTheRawSamples; tests/performance/harness_test.go:TestHarnessRecordsZeroGateValuesAndTheCeiling",
+        "the case text NAMES its local seam and its §6 operator leg; TestE18CatalogMaterialized enforces both mechanically and TestE18CatalogGuardBites proves the enforcement bites",
+        "AUTHORED BUNDLE, script/component tier: no ENGINE image serves these cases, so image_digest / provider_request_id / mtls_enroll carry deliberately unservable placeholder values and are never a claim that a container ran a model",
+        "'SOAK' IS A BOUNDED WINDOW OF MINUTES ON A LAPTOP — the §64.15 RC soak is §6 operator leg 7 and is claimed nowhere here. 'COMPACTION' is the implemented §8.3/§22.2 RETENTION payload scrub, NOT §25.14 context compaction, which is evaluation-gated and needs real model steps: dispatch is off per the E08 rule, so §25.14 is neither exercised nor claimed",
+        "The journal gate bounds the SIZE of an event (mean payload bytes). It is NOT a proof that growth is linear in events rather than in session length — that would need a gate on the slope"
+      ],
+      "id": "PER-003",
+      "image_digest": "sha256:e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e",
+      "mtls_enroll": "e18-no-runner-enrollment",
+      "performance_profile_claim": "profiled-and-percentiles-rederive-from-raw-samples",
+      "performance_profile_proof": {
+        "arch": "arm64",
+        "case": "PER-003",
+        "ceiling": "macOS + Docker Desktop profile; NO SLO and NO reference-hardware claim. 'Soak' is a BOUNDED WINDOW OF MINUTES — the real RC soak is E18 §6 leg 7 and is NOT claimed here. 'Compaction' is the implemented §8.3/§22.2 RETENTION payload scrub, NOT §25.14 context compaction (evaluation-gated, needs real model steps; dispatch is off per the E08 rule, so §25.14 is not exercised or claimed).",
+        "cores": 12,
+        "docker": "Docker Desktop 4.21.1 (114176) (engine 24.0.2, linux/arm64)",
+        "load_shape": "bounded soak window 1m30s: one session with an attached SSE reader for the whole window, one chained response every 100ms, RSS sampled every 2s, stream reconnected every 10s, 40 store=false responses left for the real retention sweep",
+        "machine": "Mac14,10",
+        "max_error_rate": 0,
+        "memory_bytes": 17179869184,
+        "metrics": [
+          {
+            "errors": 0,
+            "gate_max": 67108864,
+            "gate_percentile": 100,
+            "gate_source": "case budget (PEAK RSS minus the first reading over the window, not the endpoint difference)",
+            "gate_value": 0,
+            "metric": "control_plane_rss_growth_bytes",
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "pass": true,
+            "samples": [
+              0
+            ],
+            "unit": "bytes"
+          },
+          {
+            "errors": 0,
+            "gate_max": 4096,
+            "gate_percentile": 100,
+            "gate_source": "case budget (MEAN journal payload bytes per event stays under 4 KiB, sampled every 2s through the window plus pre/post-compaction) — a bound on event SIZE; flat growth over session length is NOT established by it",
+            "gate_value": 74,
+            "metric": "journal_bytes_per_event",
+            "p50": 74,
+            "p95": 74,
+            "p99": 74,
+            "pass": true,
+            "samples": [
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              74,
+              71.26027397260275
+            ],
+            "unit": "bytes"
+          },
+          {
+            "errors": 0,
+            "gate_max": 0,
+            "gate_percentile": 100,
+            "gate_source": "invariant (resume at exactly last+1: no gap, no duplicate)",
+            "gate_value": 0,
+            "metric": "sse_reconnect_gaps",
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "pass": true,
+            "samples": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "unit": "events"
+          },
+          {
+            "errors": 0,
+            "gate_max": 1000000000,
+            "gate_percentile": 95,
+            "gate_source": "case budget mirroring §54.3's first-SSE-event objective (§54.2 lists SSE reconnect as an availability SLI, not a latency one)",
+            "gate_value": 7146167,
+            "metric": "sse_reconnect_resume",
+            "p50": 4278708,
+            "p95": 7146167,
+            "p99": 7146167,
+            "pass": true,
+            "samples": [
+              4558833,
+              5305792,
+              3986209,
+              1870792,
+              4278708,
+              6906500,
+              3168625,
+              3122792,
+              7146167
+            ],
+            "unit": "ns"
+          }
+        ],
+        "no_slo_claim": true,
+        "os": "Darwin 25.3.0",
+        "percentile_method": "nearest-rank: sort ascending, index = ceil(p/100*n)-1 clamped to [0,n-1]",
+        "reference_hardware": false,
+        "run_sample_count": 914,
+        "sample_count": 64,
+        "samples_sha256": "sha256:9bd6dc08c2c85317991fd9fcf99f4fcf21acf24fbe35526c513de001bcd92783"
+      },
+      "provider_request_id": "chatcmpl-e18-not-a-live-run",
+      "run_id": "run_e18_per_003",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "completed"
+      }
+    },
+    {
+      "checksum": "sha256:0f46aade32c4e185889e06bb798934759732172b21ad13890741d12bc6aa25c4",
+      "db_assertions": [
+        "PER-004: proven by 4 in-tree proof(s) at the component-real tier — tests/performance/per004_burst_test.go:TestPER004BurstTriggerQueue; tests/performance/per004_burst_test.go:TestPER004BackpressureDisabledFailsTheBoundedBufferGate; tests/performance/harness_test.go:TestHarnessWritesNothingWithoutAProfile; tests/performance/harness_test.go:TestHarnessVacuousGateFails",
+        "the case text NAMES its local seam and its §6 operator leg; TestE18CatalogMaterialized enforces both mechanically and TestE18CatalogGuardBites proves the enforcement bites",
+        "AUTHORED BUNDLE, script/component tier: no ENGINE image serves these cases, so image_digest / provider_request_id / mtls_enroll carry deliberately unservable placeholder values and are never a claim that a container ran a model",
+        "NO BROKER PRODUCT: the queue leg is the E17 T7 IN-PROCESS reference adapter and the trigger leg is the durable per-key admission gate behind the real API. No NATS, SQS, Pub/Sub or Kafka exists anywhere in this tree, which is the same reason the `queues` capability closes PREVIEW rather than stable"
+      ],
+      "id": "PER-004",
+      "image_digest": "sha256:e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e",
+      "mtls_enroll": "e18-no-runner-enrollment",
+      "performance_profile_claim": "profiled-and-percentiles-rederive-from-raw-samples",
+      "performance_profile_proof": {
+        "arch": "arm64",
+        "case": "PER-004",
+        "ceiling": "macOS + Docker Desktop profile; NO SLO and NO reference-hardware claim (§54 targets are product goals, measured for real in E18 §6 leg 3). The E11 leg is the durable per-key admission gate behind the real API; the queue leg is the E17 T7 in-process reference adapter — a real broker is the §6 operator leg. Dispatch is off (E08 rule), so no number here is run-execution time.",
+        "cores": 12,
+        "docker": "Docker Desktop 4.21.1 (114176) (engine 24.0.2, linux/arm64)",
+        "load_shape": "burst: 4 correlation keys x 12 concurrent trigger deliveries (48 total) under concurrency_policy=queue; queue adapter: 256 messages from 4 concurrent producers into a capacity-64 bounded buffer",
+        "machine": "Mac14,10",
+        "max_error_rate": 0,
+        "memory_bytes": 17179869184,
+        "metrics": [
+          {
+            "errors": 0,
+            "gate_max": 64,
+            "gate_percentile": 100,
+            "gate_source": "invariant (§34.4 bounded buffer = configured capacity)",
+            "gate_value": 64,
+            "metric": "queue_depth",
+            "p50": 64,
+            "p95": 64,
+            "p99": 64,
+            "pass": true,
+            "samples": [
+              1,
+              2,
+              3,
+              4,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              7,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              50,
+              51,
+              52,
+              53,
+              54,
+              55,
+              56,
+              58,
+              59,
+              60,
+              61,
+              62,
+              63,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64,
+              64
+            ],
+            "unit": "messages"
+          },
+          {
+            "errors": 0,
+            "gate_max": 0,
+            "gate_percentile": 100,
+            "gate_source": "invariant (no producer starves)",
+            "gate_value": 0,
+            "metric": "queue_unserved_per_producer",
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "pass": true,
+            "samples": [
+              0,
+              0,
+              0,
+              0
+            ],
+            "unit": "messages"
+          },
+          {
+            "errors": 0,
+            "gate_max": 0,
+            "gate_percentile": 100,
+            "gate_source": "invariant (durable-record-before-ack, §34.2)",
+            "gate_value": 0,
+            "metric": "trigger_deliveries_lost",
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "pass": true,
+            "samples": [
+              0
+            ],
+            "unit": "deliveries"
+          },
+          {
+            "errors": 0,
+            "gate_max": 1,
+            "gate_percentile": 100,
+            "gate_source": "invariant (E11 queue policy: one admitted run per correlation key)",
+            "gate_value": 1,
+            "metric": "trigger_runs_admitted_per_key",
+            "p50": 1,
+            "p95": 1,
+            "p99": 1,
+            "pass": true,
+            "samples": [
+              1,
+              1,
+              1,
+              1
+            ],
+            "unit": "runs"
+          }
+        ],
+        "no_slo_claim": true,
+        "os": "Darwin 25.3.0",
+        "percentile_method": "nearest-rank: sort ascending, index = ceil(p/100*n)-1 clamped to [0,n-1]",
+        "reference_hardware": false,
+        "run_sample_count": 574,
+        "sample_count": 265,
+        "samples_sha256": "sha256:1fbc351a07cef1c6ace1bf1c3cd4937940c8b523f5ee78f55998062283bfc45a"
+      },
+      "provider_request_id": "chatcmpl-e18-not-a-live-run",
+      "run_id": "run_e18_per_004",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "completed"
+      }
+    },
+    {
+      "checksum": "sha256:4e9f727c3db00a9f05b43619ee9fb3e39fb34220c26d09c4a76688a186458411",
+      "db_assertions": [
+        "RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): an index over every exact UAT id is not a behaviour ONE case asserts, it is the recomputation over all of them",
+        "the verifier RE-GATHERS every row from the fifteen OTHER committed bundles' manifests and the materialized case corpus and refuses any row that disagrees — this manifest's own copy of the index is a rendering, never an input (plan §T10)",
+        "SH-3 POSTURE, NOT A BLANKET \"STABLE\": 52 of the 188 Appendix-A ids are carried by a committed evidence bundle; the rest are indexed with the honest disposition the recompute produces (case-materialized / managed-scope / unmaterialized), and the §64.15 checklist reports per-item status rather than a pass mark",
+        "SEC-102 IS ABSENT FROM THIS BUNDLE ON PURPOSE: `make uat-escape` reports no_escape=false at this commit because the SAN-006 arm's test SKIPS for want of PALAI_COMPONENT_POSTGRES_URL, which its harness never supplies (E18 T7's own \"an arm that ran NOTHING is not a denial\" rule catching a real gap). No honest SandboxEscapeProof exists, so none is carried — recorded as `ESC-1` in the RC triage; the index reports SEC-102 case-materialized and §64.15's local-OCI item reports proven-not-bundled",
+        "ZERO OPEN P0/P1 IS READ MECHANICALLY: rc_blockers is 0, re-read by the verifier from docs/operations/known-gaps-1.0.md's `RC-BLOCKERS:` line (kept equal to the table's RC-blocker rows by tests/docs TestKnownGapsRCBlockerCountIsAccurate). A non-zero count REFUSES this gate",
+        "MANAGED-ONLY §64.15 ITEMS ARE MARKED \"managed-scope, not claimed\" AND NOT ROUNDED UP: production-equivalent cell/microVM topology and the managed high-isolation sandbox path close `not-claimed`, which is the honest disposition for a topology this program never had (master plan §2.2)"
+      ],
+      "id": "E18-INDEX",
+      "image_digest": "sha256:e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e",
+      "mtls_enroll": "e18-no-runner-enrollment",
+      "provider_request_id": "chatcmpl-e18-not-a-live-run",
+      "release_index_claim": "every-appendix-a-id-indexed-and-the-64-15-checklist-recomputed",
+      "release_index_proof": {
+        "checklist": [
+          {
+            "item": "every P0/P1 UAT passed on supported local and self-host reference topology",
+            "status": "incomplete",
+            "missing": [
+              "API-001",
+              "API-002",
+              "API-003",
+              "API-004",
+              "API-005",
+              "API-006",
+              "API-007",
+              "API-008",
+              "API-009",
+              "API-010",
+              "API-011",
+              "SES-001",
+              "SES-002",
+              "SES-003",
+              "SES-004",
+              "SES-005",
+              "SES-006",
+              "SES-007",
+              "SES-008",
+              "SES-011",
+              "SES-012",
+              "AGT-003",
+              "SUB-001",
+              "SUB-002",
+              "SUB-003",
+              "SUB-004",
+              "SUB-005",
+              "TOL-005",
+              "TOL-006",
+              "TOL-007",
+              "TOL-013",
+              "TOL-014",
+              "TOL-015",
+              "ENG-001",
+              "ENG-002",
+              "ENG-003",
+              "SAN-010",
+              "SAN-012",
+              "REP-002",
+              "REP-003",
+              "REP-004",
+              "REP-009",
+              "REP-012",
+              "TEN-001",
+              "TEN-002",
+              "TEN-003",
+              "TEN-004",
+              "SEC-001",
+              "SEC-002",
+              "SEC-003",
+              "DAT-001",
+              "DAT-002",
+              "DAT-003",
+              "DAT-004",
+              "DAT-005",
+              "DAT-006",
+              "BIL-001",
+              "BIL-002",
+              "BIL-003",
+              "BIL-004",
+              "BIL-005",
+              "BIL-006",
+              "QUO-001",
+              "OPS-001"
+            ],
+            "note": "the claim set is the WHOLE Appendix-A index; the posture report prints the per-disposition counts rather than a yes/no, because 188 ids do not collapse to one bit"
+          },
+          {
+            "item": "managed-only P0/P1 passed on production-equivalent cell/microVM topology",
+            "status": "not-claimed",
+            "claims": [
+              "SAN-009"
+            ],
+            "note": "managed-scope, not claimed — master plan §2.2 puts the managed cell outside this program entirely"
+          },
+          {
+            "item": "all three SDK conformance suites",
+            "status": "proven-not-bundled",
+            "claims": [
+              "API-012",
+              "API-013",
+              "API-014",
+              "API-015",
+              "TOL-018"
+            ],
+            "missing": [
+              "API-013 (materialized case, no bundle evidence)",
+              "API-014 (materialized case, no bundle evidence)",
+              "API-015 (materialized case, no bundle evidence)",
+              "TOL-018 (materialized case, no bundle evidence)"
+            ]
+          },
+          {
+            "item": "at least two direct model-provider families plus one private/compatible endpoint",
+            "status": "evidenced",
+            "claims": [
+              "MOD-001",
+              "MOD-002",
+              "MOD-003"
+            ]
+          },
+          {
+            "item": "one local OCI sandbox path",
+            "status": "proven-not-bundled",
+            "claims": [
+              "SAN-001",
+              "SAN-002",
+              "SAN-003",
+              "SAN-004",
+              "SAN-005",
+              "SAN-007",
+              "SAN-008",
+              "SEC-102"
+            ],
+            "missing": [
+              "SAN-001 (materialized case, no bundle evidence)",
+              "SAN-002 (materialized case, no bundle evidence)",
+              "SAN-003 (materialized case, no bundle evidence)",
+              "SAN-004 (materialized case, no bundle evidence)",
+              "SAN-005 (materialized case, no bundle evidence)",
+              "SAN-007 (materialized case, no bundle evidence)",
+              "SAN-008 (materialized case, no bundle evidence)",
+              "SEC-102 (materialized case, no bundle evidence)"
+            ],
+            "note": "the first half of §64.15's \"one local OCI and one managed high-isolation sandbox path\" bullet"
+          },
+          {
+            "item": "one managed high-isolation sandbox path",
+            "status": "not-claimed",
+            "claims": [
+              "SAN-009"
+            ],
+            "note": "the second half of the same bullet — managed-scope, not claimed; SEC-102 proves the LOCAL OCI seam and says so"
+          },
+          {
+            "item": "process, container, and host kill/recovery",
+            "status": "proven-not-bundled",
+            "claims": [
+              "ENG-004",
+              "ENG-005",
+              "ENG-006",
+              "SAN-006"
+            ],
+            "missing": [
+              "ENG-005 (materialized case, no bundle evidence)",
+              "ENG-006 (materialized case, no bundle evidence)",
+              "SAN-006 (materialized case, no bundle evidence)"
+            ]
+          },
+          {
+            "item": "pure/idempotent/irreversible tool replay",
+            "status": "proven-not-bundled",
+            "claims": [
+              "TOL-001",
+              "TOL-002",
+              "TOL-003"
+            ],
+            "missing": [
+              "TOL-001 (materialized case, no bundle evidence)",
+              "TOL-002 (materialized case, no bundle evidence)",
+              "TOL-003 (materialized case, no bundle evidence)"
+            ]
+          },
+          {
+            "item": "queued/steer/interrupt messaging",
+            "status": "incomplete",
+            "claims": [
+              "SES-003",
+              "SES-004",
+              "SES-005"
+            ],
+            "missing": [
+              "SES-003 (unmaterialized)",
+              "SES-004 (unmaterialized)",
+              "SES-005 (unmaterialized)"
+            ]
+          },
+          {
+            "item": "secret isolation",
+            "status": "incomplete",
+            "claims": [
+              "SEC-002",
+              "TOL-013",
+              "REP-003"
+            ],
+            "missing": [
+              "SEC-002 (unmaterialized)",
+              "TOL-013 (unmaterialized)",
+              "REP-003 (unmaterialized)"
+            ]
+          },
+          {
+            "item": "repository clone/diff/push/PR",
+            "status": "proven-not-bundled",
+            "claims": [
+              "REP-001",
+              "REP-005",
+              "REP-006",
+              "REP-008"
+            ],
+            "missing": [
+              "REP-001 (materialized case, no bundle evidence)",
+              "REP-005 (materialized case, no bundle evidence)",
+              "REP-008 (materialized case, no bundle evidence)"
+            ]
+          },
+          {
+            "item": "Slack and generic webhook/schedule journey",
+            "status": "proven-not-bundled",
+            "claims": [
+              "SLK-001",
+              "AUT-001",
+              "AUT-007",
+              "AUT-011"
+            ],
+            "missing": [
+              "AUT-011 (materialized case, no bundle evidence)"
+            ]
+          },
+          {
+            "item": "backup/restore/upgrade",
+            "status": "evidenced",
+            "claims": [
+              "DR-002",
+              "DR-004",
+              "OPS-005",
+              "OPS-006"
+            ]
+          },
+          {
+            "item": "tenant isolation and billing reconciliation",
+            "status": "incomplete",
+            "claims": [
+              "TEN-001",
+              "TEN-002",
+              "BIL-001",
+              "BIL-003"
+            ],
+            "missing": [
+              "TEN-001 (unmaterialized)",
+              "TEN-002 (unmaterialized)",
+              "BIL-001 (unmaterialized)",
+              "BIL-003 (unmaterialized)"
+            ]
+          },
+          {
+            "item": "published security model, support policy, and operational runbooks",
+            "status": "evidenced",
+            "note": "a docs obligation, not a UAT one: the guard is that every named document EXISTS and its own tests/docs gates are green (they resolve every mitigation claim to an evidence id)"
+          }
+        ],
+        "entries": [
+          {
+            "id": "API-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "API-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "API-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "API-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "API-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "API-006",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "API-007",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "API-008",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "API-009",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "API-010",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "API-011",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "API-012",
+            "bundle": "sdk-provider-parity-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "API-013",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "API-014",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "API-015",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SES-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SES-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SES-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SES-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SES-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SES-006",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SES-007",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SES-008",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SES-009",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SES-010",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SES-011",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SES-012",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "AGT-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "AGT-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "AGT-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SUB-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SUB-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SUB-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SUB-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SUB-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SUB-006",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SUB-007",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "MOD-001",
+            "bundle": "sdk-provider-parity-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "MOD-002",
+            "bundle": "sdk-provider-parity-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "MOD-003",
+            "bundle": "sdk-provider-parity-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "MOD-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "MOD-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "MOD-006",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "MOD-007",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "MOD-008",
+            "bundle": "sdk-provider-parity-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "MOD-009",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "MOD-010",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "MOD-011",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "MOD-012",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "KNO-001",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "KNO-002",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "KNO-003",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "KNO-004",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "KNO-005",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "KNO-006",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "KNO-007",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "KNO-008",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "TOL-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "TOL-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "TOL-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "TOL-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "TOL-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "TOL-006",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "TOL-007",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "TOL-008",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "TOL-009",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "TOL-010",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "TOL-011",
+            "bundle": "extensibility-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "TOL-012",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "TOL-013",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "TOL-014",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "TOL-015",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "TOL-016",
+            "bundle": "extensibility-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "TOL-017",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "TOL-018",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "ENG-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "ENG-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "ENG-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "ENG-004",
+            "bundle": "automation-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "ENG-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "ENG-006",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "ENG-007",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "ENG-008",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "ENG-009",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "ENG-010",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "ENG-011",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "ENG-012",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "ENG-013",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "ENG-014",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SAN-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SAN-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SAN-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SAN-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SAN-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SAN-006",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SAN-007",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SAN-008",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SAN-009",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "managed-scope"
+          },
+          {
+            "id": "SAN-010",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SAN-011",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SAN-012",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "REP-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "REP-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "REP-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "REP-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "REP-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "REP-006",
+            "bundle": "coding-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried",
+            "checksum_surface": "legacy shape-only"
+          },
+          {
+            "id": "REP-007",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "REP-008",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "REP-009",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "REP-010",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "REP-011",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "REP-012",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "AUT-001",
+            "bundle": "automation-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "AUT-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "AUT-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "AUT-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "AUT-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "AUT-006",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "AUT-007",
+            "bundle": "automation-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "AUT-008",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "AUT-009",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "AUT-010",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "AUT-011",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "AUT-012",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "AUT-013",
+            "bundle": "automation-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "SLK-001",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "SLK-002",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "SLK-003",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "SLK-004",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "SLK-005",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "SLK-006",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "SLK-007",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "SLK-008",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "A2A-001",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "A2A-002",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "A2A-003",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "A2A-004",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "A2A-005",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "TEN-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "TEN-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "TEN-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "TEN-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "TEN-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "managed-scope"
+          },
+          {
+            "id": "SEC-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SEC-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "SEC-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "DAT-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "DAT-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "DAT-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "DAT-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "DAT-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "DAT-006",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "BIL-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "BIL-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "BIL-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "BIL-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "BIL-005",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "BIL-006",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "QUO-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "QUO-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "managed-scope"
+          },
+          {
+            "id": "OPS-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "unmaterialized"
+          },
+          {
+            "id": "OPS-002",
+            "bundle": "self-host-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "OPS-003",
+            "bundle": "self-host-0.2.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "OPS-004",
+            "bundle": "self-host-0.2.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "OPS-005",
+            "bundle": "self-host-0.2.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "OPS-006",
+            "bundle": "self-host-0.2.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "OPS-007",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "OPS-008",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "DR-001",
+            "bundle": "self-host-0.2.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "DR-002",
+            "bundle": "self-host-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "DR-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "managed-scope"
+          },
+          {
+            "id": "DR-004",
+            "bundle": "self-host-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "DR-005",
+            "bundle": "self-host-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "DR-006",
+            "bundle": "self-host-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "QUA-001",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "QUA-002",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "QUA-003",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "QUA-004",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "SEC-101",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SEC-102",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "SEC-103",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "PER-001",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "PER-002",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "PER-003",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "PER-004",
+            "bundle": "",
+            "outcome": "",
+            "disposition": "case-materialized"
+          },
+          {
+            "id": "UI-001",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          },
+          {
+            "id": "UI-002",
+            "bundle": "extensions-0.1.0",
+            "outcome": "PASS",
+            "disposition": "bundle-carried"
+          }
+        ],
+        "index_anchor": "sha256:e1c3f3a20d14dafb4c60e9c8fe9509ad1cc63f898eb2396216335fb7ca550f05",
+        "rc_blockers": 0
+      },
+      "run_id": "run_e18_e18_index",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "completed"
+      }
+    },
+    {
+      "aggregate_tier_claim": "product-wide-posture-recomputed-from-every-bundle",
+      "aggregate_tier_proof": {
+        "capabilities": [
+          {
+            "capability": "a2a",
+            "claim_case_ids": [
+              "A2A-001",
+              "A2A-002",
+              "A2A-003",
+              "A2A-004",
+              "A2A-005",
+              "SUB-007"
+            ],
+            "declared_tier": "preview"
+          },
+          {
+            "capability": "apple-build",
+            "claim_case_ids": [
+              "WRK-006"
+            ],
+            "declared_tier": "disabled"
+          },
+          {
+            "capability": "capability-workers",
+            "claim_case_ids": [
+              "WRK-001",
+              "WRK-002",
+              "WRK-003",
+              "WRK-004",
+              "WRK-005",
+              "WRK-006",
+              "WRK-007"
+            ],
+            "declared_tier": "stable"
+          },
+          {
+            "capability": "console",
+            "claim_case_ids": [
+              "UI-001",
+              "UI-002"
+            ],
+            "declared_tier": "preview"
+          },
+          {
+            "capability": "knowledge",
+            "claim_case_ids": [
+              "KNO-001",
+              "KNO-002",
+              "KNO-003",
+              "KNO-004",
+              "KNO-005",
+              "KNO-006",
+              "KNO-007",
+              "KNO-008"
+            ],
+            "declared_tier": "stable"
+          },
+          {
+            "capability": "knowledge-vector",
+            "claim_case_ids": [
+              "KNO-005"
+            ],
+            "declared_tier": "disabled"
+          },
+          {
+            "capability": "queues",
+            "claim_case_ids": [
+              "AUT-009",
+              "AUT-010"
+            ],
+            "declared_tier": "preview"
+          },
+          {
+            "capability": "slack",
+            "claim_case_ids": [
+              "SLK-001",
+              "SLK-002",
+              "SLK-003",
+              "SLK-004",
+              "SLK-005",
+              "SLK-006",
+              "SLK-007",
+              "SLK-008"
+            ],
+            "declared_tier": "preview"
+          }
+        ],
+        "claims_digest": "sha256:f0d46879af1792764ba43cb078666d73618f1d6ca80e9bdac2cd71af0a5a5b26",
+        "outcome_source": "the union of every committed evidence bundle under evidence/releases/ except this one, re-gathered by uat.CommittedBundleOutcomes",
+        "served_by_deployed_config": false,
+        "snapshot": {
+          "a2a": "preview",
+          "apple-build": "disabled",
+          "capability-workers": "stable",
+          "console": "preview",
+          "knowledge": "stable",
+          "knowledge-vector": "disabled",
+          "queues": "preview",
+          "slack": "preview"
+        },
+        "snapshot_source": "GET /v1/capabilities over real HTTP against the router built by fullyMountedRouter() in apps/control-plane/api (A2A and the capability-worker gateway BOTH mounted). It is a REAL api.NewRouter, and it is NOT a deployed binary's map",
+        "unmounted_reason": "no shipped deployment config sets PALAI_CAPABILITY_WORKER_LISTEN_ADDR (deploy/compose, deploy/helm and the production overlay all leave it unset), so the capability-worker gateway is not mounted in any deployment and no deployed binary serves this map (EXT-1, docs/operations/known-gaps-1.0.md)"
+      },
+      "checksum": "sha256:557b3a0a9b61025357e5da101bc787ef0df4f8e0846ec8224b0f8d4e473f15ef",
+      "db_assertions": [
+        "RELEASE-LEVEL entry, not a UAT case: a product-wide maturity posture is the RECOMPUTATION over every epic's claim outcomes",
+        "the verifier recomputes each tier from the canonical code tables + the union of EVERY committed bundle's per-case outcomes (worst outcome wins when two bundles disagree) and refuses any declared tier or /v1/capabilities snapshot that differs — A FABRICATED CROSS-EPIC \"STABLE\" IS A FAIL (plan §T10)",
+        "EXT-1, TAKEN EXPLICITLY: snapshot_source NAMES the test's fullyMountedRouter() and served_by_deployed_config is FALSE, because NO shipped deployment config sets PALAI_CAPABILITY_WORKER_LISTEN_ADDR — so no deployed binary serves this exact map. The E18 T9 triage recorded that the extensions-0.1.0 wording invited the deployed reading; this proof cannot, and Complete() refuses a proof that flips the flag or drops the reason",
+        "only `knowledge` and `capability-workers` close STABLE. slack / a2a / queues / console close PREVIEW because the counterpart system was never contacted (§6 legs 1, 2, 5-EXTENDED, 8); knowledge-vector and apple-build close DISABLED because no vector store and no Apple signing material exist anywhere. Every one of those is COMPUTED from claim outcomes, not declared"
+      ],
+      "id": "E18-POSTURE",
+      "image_digest": "sha256:e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e",
+      "mtls_enroll": "e18-no-runner-enrollment",
+      "provider_request_id": "chatcmpl-e18-not-a-live-run",
+      "run_id": "run_e18_e18_posture",
+      "status": "PASS",
+      "terminal": {
+        "count": 1,
+        "type": "completed"
+      }
+    }
+  ],
+  "git_sha": "92a3db925607471304227f7a6fc0368cbb1d8762",
+  "maturity": "rc",
+  "migration": "000040",
+  "release": "release-1.0.0-rc1"
+}
