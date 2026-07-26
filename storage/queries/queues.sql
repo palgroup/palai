@@ -43,6 +43,12 @@ SELECT id, name, kind, direction, capacity, visibility_seconds, max_deliveries, 
 -- does not read a query the Slack surface owns). Without it a project admin could name a FOREIGN principal
 -- and have queue-born runs booked against another tenant's identity: idempotency_records.principal_id is a
 -- bare FK to principals(id), so the database alone would accept it.
+--
+-- The PRIMARY enforcement is RLS: the caller runs this under storage.ScopeToTenant, and principals is
+-- FORCE-RLS, so a foreign row is not visible at all. The org/project predicate here is defence in depth —
+-- verified by mutation: removing the predicate ALONE still refuses (RLS holds); removing the predicate AND
+-- the tenant scope is what admits the foreign principal. Both layers are load-bearing together, and the
+-- one that must never be dropped is the caller's scope.
 -- name: QueueRunPrincipalInScope
 SELECT 1 FROM principals WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
