@@ -532,6 +532,16 @@ func verifyReleaseIndex(p *ReleaseIndexProof) []string {
 	if err != nil {
 		return []string{"cannot recompute the release index from the committed bundles — an index that cannot be re-gathered is not evidence (fail closed): " + err.Error()}
 	}
+	blockers, blockersErr := RecomputeRCBlockers()
+	return VerifyReleaseIndexAgainst(p, want, blockers, blockersErr)
+}
+
+// VerifyReleaseIndexAgainst is verifyReleaseIndex's pure core, exported for the same reason
+// EvalPromoteGateAgainst is: it
+// judges the proof against an index and a blocker count already in hand. Splitting it out is what makes the
+// NON-ZERO-blockers branch drivable — a gate whose "an open RC-blocker refuses this release" clause could
+// only be exercised by editing a committed document would be a clause nobody has ever seen fire.
+func VerifyReleaseIndexAgainst(p *ReleaseIndexProof, want []ReleaseIndexEntry, blockers int, blockersErr error) []string {
 	var problems []string
 	byID := make(map[string]ReleaseIndexEntry, len(p.Entries))
 	for _, e := range p.Entries {
@@ -572,10 +582,9 @@ func verifyReleaseIndex(p *ReleaseIndexProof) []string {
 		}
 	}
 
-	blockers, err := RecomputeRCBlockers()
 	switch {
-	case err != nil:
-		problems = append(problems, "cannot read the RC-blocker count from the E18 T9 triage table (fail closed): "+err.Error())
+	case blockersErr != nil:
+		problems = append(problems, "cannot read the RC-blocker count from the E18 T9 triage table (fail closed): "+blockersErr.Error())
 	case p.RCBlockers != blockers:
 		problems = append(problems, fmt.Sprintf(
 			"rc_blockers is %d but docs/operations/known-gaps-1.0.md declares %d — the count is read from the TABLE, never from the release that wants to pass",
@@ -1129,6 +1138,11 @@ func verifyAggregateTiers(p *AggregateTierProof) []string {
 	if err != nil {
 		return []string{"cannot recompute the product-wide capability posture from the committed bundles — a posture that cannot be re-derived is a declaration (fail closed): " + err.Error()}
 	}
+	return verifyAggregateTiersAgainst(p, want)
+}
+
+// verifyAggregateTiersAgainst is verifyAggregateTiers' pure core, split for the same reason.
+func verifyAggregateTiersAgainst(p *AggregateTierProof, want map[string]string) []string {
 	byName := make(map[string]CapabilityTierDeclaration, len(p.Capabilities))
 	for _, d := range p.Capabilities {
 		byName[d.Capability] = d
