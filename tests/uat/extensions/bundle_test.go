@@ -298,7 +298,13 @@ func buildExtensionsManifest(t *testing.T) []byte {
 	anchor["capability_tier_claim"] = "tiers-recomputed-from-per-case-outcomes"
 	anchor["capability_tier_proof"] = uat.CapabilityTierProof{
 		Capabilities: declarations, Snapshot: snapshot,
-		SnapshotSource: "GET /v1/capabilities served by the real api.NewRouter (asserted bit-equal by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute)",
+		// EXT-1 (E18 T9 triage, closed here by E19 T8): the earlier wording — "GET /v1/capabilities served by
+		// the real api.NewRouter" — was defensible but invited the reading that a DEPLOYED binary serves this
+		// map, and none does. The router is the test's fullyMountedRouter(); no shipped deployment config sets
+		// PALAI_CAPABILITY_WORKER_LISTEN_ADDR, so `capability-workers` is advertised by no deployment at all.
+		// This is the same correction release-1.0.0-rc1's AggregateTierProof carries in its own
+		// served_by_deployed_config/unmounted_reason fields, applied to the bundle that first said it.
+		SnapshotSource: "GET /v1/capabilities served by the real api.NewRouter as built by the fullyMountedRouter() test helper — NOT by any deployed config: no shipped deployment sets PALAI_CAPABILITY_WORKER_LISTEN_ADDR, so no deployed binary serves this exact map (asserted bit-equal by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute)",
 		ClaimsDigest:   uat.CapabilityClaimsDigest(),
 	}
 	cases = append(cases, anchor)
