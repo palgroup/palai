@@ -83,15 +83,20 @@ LIMIT 1;
 
 -- PendingBoundaryCommands is the pump's boundary read: a run's queued commands the pump
 -- applies at a safe boundary — send_message (queue/steer, and an interrupt that was not caught
--- in-flight, which degrades to a boundary delivery) and change_config (a normal switch, or an
--- immediate switch whose interrupt missed the in-flight window). A command that has left
+-- in-flight, which degrades to a boundary delivery), change_config (a normal switch, or an
+-- immediate switch whose interrupt missed the in-flight window), and approve/deny (the one-shot
+-- decision on the session's pending publication, spec §22.4-22.5). A command that has left
 -- 'queued' never reappears — the deliver-once guarantee (spec §9.2, §9.3). kind lets the pump
--- branch: deliver a message vs. apply a config revision.
+-- branch: deliver a message vs. apply a config revision vs. apply an approval decision.
+--
+-- EVERY kind the pump branches on must be listed here. approve/deny were not, so command_pump.go's
+-- applyBoundaryApproval was unreachable and the HTTP approve path was dead: the command was accepted,
+-- sat queued, and expired at run terminal — Slack was the only surface that could apply an approval.
 -- name: PendingBoundaryCommands
 SELECT id, kind, delivery, payload
 FROM commands
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
-  AND state = 'queued' AND kind IN ('send_message', 'change_config')
+  AND state = 'queued' AND kind IN ('send_message', 'change_config', 'approve', 'deny')
 ORDER BY created_at;
 
 -- ExpireQueuedCommandsForRun expires a run's still-queued commands when the run terminalizes
@@ -103,6 +108,10 @@ ORDER BY created_at;
 -- change_config never expires (cross-run carry). send_message expires unless $4 is false — a clean
 -- completion leaves it queued to carry (SurvivingQueuedSendMessagesForRun / CarrySessionSendMessages,
 -- E10 T7 fork 3); a canceled/failed terminal ($4 = true) expires it, having no clean next response.
+-- approve/deny expire on EVERY terminal, clean completion included, and deliberately so: an approval is
+-- one human decision about ONE publication, in ONE run, against that run's workspace and head. Carrying
+-- it forward the way a message carries would apply a decision to an operation the approver never saw —
+-- strictly worse than making them click again.
 -- name: ExpireQueuedCommandsForRun
 UPDATE commands
 SET state = 'expired', updated_at = clock_timestamp()

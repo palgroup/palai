@@ -180,6 +180,24 @@ func (s *Store) PendingApprovalForSession(ctx context.Context, tenant Tenant, se
 	return pub, true, nil
 }
 
+// PublicationState reads one publication's current state (found=false for an unknown or foreign id — a
+// cross-tenant id leaks nothing). It is the "did my decision land?" read for a caller whose approve/deny
+// command was settled by another path: the boundary pump applies the SAME command under the SAME one-shot
+// hash, so the decision is durable and the caller must report it — but an expiry sweep settles a queued
+// command having decided nothing, and only the publication's own state tells those apart.
+func (s *Store) PublicationState(ctx context.Context, tenant Tenant, publicationID string) (string, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	var state string
+	switch err := s.pool.QueryRow(ctx, storage.Query("PublicationState"), publicationID, tenant.Organization, tenant.Project).
+		Scan(&state); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("read publication state: %w", err)
+	}
+	return state, true, nil
+}
+
 // ApplyApprovalDecision applies a queued approve/deny command at a safe boundary (spec §22.4-22.5,
 // APV-001). In one transaction it transitions the session's pending publication (approve ->
 // approved, deny -> denied), records who decided, journals approval.approved/denied.v1, and marks the
@@ -206,7 +224,7 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		Scan(&pubID, &pendingHash, &expiresAt); {
 	case errors.Is(err, pgx.ErrNoRows):
 		// No pending approval (already resolved by a racing path): settle the command, transition nothing.
-		return applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
+		return settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID)
 	case err != nil:
 		return 0, fmt.Errorf("lock pending approval: %w", err)
 	}
@@ -220,20 +238,13 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		if _, err := expirePublicationTx(ctx, tx, tenant, sessionID, responseID, pubID, "pending_approval"); err != nil {
 			return 0, err
 		}
-		seq, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
-		if err != nil {
-			return 0, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return 0, fmt.Errorf("commit expired approval: %w", err)
-		}
-		return seq, nil
+		return settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID)
 	}
 
 	// A stale one-shot token (the head moved -> a new pending approval carries a new hash, or the args
 	// were edited) authorizes nothing: settle the command without transitioning the publication.
 	if requestHash != "" && requestHash != pendingHash {
-		return applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
+		return settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID)
 	}
 
 	newState, event := "approved", approvalApprovedEvent
@@ -257,6 +268,22 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit apply approval: %w", err)
+	}
+	return seq, nil
+}
+
+// settleApprovalCommandTx settles an approve/deny that authorizes NOTHING — no pending approval left, a
+// stale one-shot hash, an elapsed approval — and commits. Settling matters as much as not approving: a
+// command that stays queued is re-read by the boundary pump at every subsequent boundary for the life of
+// the run. Two of these three exits shipped as a bare `return applyCommandInTx(...)`, which the deferred
+// rollback undid, so the settle the comments promised never reached the database.
+func settleApprovalCommandTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, responseID, commandID string) (int64, error) {
+	seq, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit settled approval command: %w", err)
 	}
 	return seq, nil
 }
