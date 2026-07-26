@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/palgroup/palai/adapters/integrations/a2a"
+	"github.com/palgroup/palai/adapters/integrations/webhook"
 )
 
 // The PRODUCTION ScopeFunc the A2A server reads its authenticated tenant from lives in a2a.go
@@ -129,4 +130,111 @@ func get(t *testing.T, url, auth string) int {
 	}
 	resp.Body.Close()
 	return resp.StatusCode
+}
+
+// TestA2APushSurfaceStaysUnmountedWithoutAConfiguredPusher is the typed-nil guard on the D13 gate. The whole
+// gate is one `s.Pusher != nil` comparison, and in Go a nil *WebhookPusher assigned into the Pusher
+// interface field makes that comparison TRUE — which would re-mount the CRUD and re-advertise push on a
+// deployment that configured no pusher, i.e. exactly the silent-drop surface D13 exists to abolish. This is
+// the SUP-2 rule applied to an interface comparison.
+func TestA2APushSurfaceStaysUnmountedWithoutAConfiguredPusher(t *testing.T) {
+	iface := a2a.PublishedInterface{
+		ID: "a2aif_wire", Organization: "org_1", Project: "prj_1",
+		Name: "Wired", Version: "1", PushNotifications: true, AuthScheme: "bearer",
+	}
+	srv := NewA2AServer(nil, stubIfaceStore{iface: iface}, nil, AdmissionLimits{}, "https://cp.test", nil)
+
+	ts := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil,
+		WithA2A(srv, srv.PublicCardHandler())))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v1/a2a/interfaces/a2aif_wire/agent-card.json")
+	if err != nil {
+		t.Fatalf("get card: %v", err)
+	}
+	defer resp.Body.Close()
+	var card struct {
+		Capabilities struct {
+			PushNotifications bool `json:"pushNotifications"`
+		} `json:"capabilities"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&card); err != nil {
+		t.Fatalf("decode card: %v", err)
+	}
+	if card.Capabilities.PushNotifications {
+		t.Fatalf("card advertises push with no configured pusher — a typed-nil *WebhookPusher defeated the `Pusher != nil` gate")
+	}
+	if code := get(t, ts.URL+"/v1/a2a/interfaces/a2aif_wire/tasks/t1/pushNotificationConfigs", "Bearer any"); code != http.StatusNotFound {
+		t.Fatalf("pushNotificationConfigs with no configured pusher = %d, want 404", code)
+	}
+}
+
+// TestA2APushMountsOnlyWithAConfiguredPusher pins the other half of the D13 gate: once a pusher IS
+// configured, the card advertises push AND the CRUD is reachable. Card-says-true / CRUD-404s is just as
+// dishonest as the reverse, and both directions now derive from the same condition.
+func TestA2APushMountsOnlyWithAConfiguredPusher(t *testing.T) {
+	iface := a2a.PublishedInterface{
+		ID: "a2aif_wire", Organization: "org_1", Project: "prj_1",
+		Name: "Wired", Version: "1", PushNotifications: true, AuthScheme: "bearer",
+	}
+	pusher := a2a.NewWebhookPusher(webhook.NewSender(), a2a.PushPolicy{AllowedHosts: []string{"sink.example.test"}})
+	srv := NewA2AServer(nil, stubIfaceStore{iface: iface}, stubTasks{}, AdmissionLimits{}, "https://cp.test", pusher)
+
+	ts := httptest.NewServer(NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil,
+		WithA2A(srv, srv.PublicCardHandler())))
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v1/a2a/interfaces/a2aif_wire/agent-card.json")
+	if err != nil {
+		t.Fatalf("get card: %v", err)
+	}
+	defer resp.Body.Close()
+	var card struct {
+		Capabilities struct {
+			PushNotifications bool `json:"pushNotifications"`
+		} `json:"capabilities"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&card); err != nil {
+		t.Fatalf("decode card: %v", err)
+	}
+	if !card.Capabilities.PushNotifications {
+		t.Fatalf("card advertises no push with a pusher configured — the card and the mounted surface disagree")
+	}
+	// Reachable (the task itself does not exist, so 404-for-that-task is fine; what must NOT happen is the
+	// route being absent). An unknown A2A OPERATION and an unknown TASK are distinguished by the body.
+	code := get(t, ts.URL+"/v1/a2a/interfaces/a2aif_wire/tasks/t1/pushNotificationConfigs", "Bearer any")
+	if code == http.StatusNotFound {
+		r2, err := http.NewRequest(http.MethodGet, ts.URL+"/v1/a2a/interfaces/a2aif_wire/tasks/t1/pushNotificationConfigs", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r2.Header.Set("Authorization", "Bearer any")
+		got, err := http.DefaultClient.Do(r2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer got.Body.Close()
+		var body map[string]any
+		_ = json.NewDecoder(got.Body).Decode(&body)
+		if e, ok := body["error"].(map[string]any); ok && e["message"] == "unknown A2A operation" {
+			t.Fatalf("pushNotificationConfigs route is UNMOUNTED with a pusher configured: %v", body)
+		}
+	}
+}
+
+// stubTasks is an empty Tasks store: every lookup misses, which is enough to prove the ROUTE is mounted.
+type stubTasks struct{}
+
+func (stubTasks) Put(context.Context, string, string, a2a.TaskRef) error { return nil }
+func (stubTasks) GetRef(context.Context, string, string, string, string) (a2a.TaskRef, bool, error) {
+	return a2a.TaskRef{}, false, nil
+}
+func (stubTasks) GetRefByRun(context.Context, string, string, string, string) (a2a.TaskRef, bool, error) {
+	return a2a.TaskRef{}, false, nil
+}
+func (stubTasks) List(context.Context, string, string, string, int) ([]a2a.TaskRef, error) {
+	return nil, nil
+}
+func (stubTasks) SetPushConfigs(context.Context, string, string, string, string, []a2a.PushNotificationConfig) error {
+	return nil
 }

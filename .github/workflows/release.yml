@@ -1,0 +1,220 @@
+name: Release
+
+# E18 T5 — the release workflow: pinned hermetic build (T1) -> SBOM + vulnerability gate (T2) ->
+# attestation + openssl signature (T3) -> the unified offline verifier (T4) -> a TWO-PERSON approved,
+# DRY-RUN publication.
+#
+# THIS WORKFLOW HAS NEVER RUN, and nothing here claims otherwise. There is no protected environment, no
+# second maintainer and no OIDC workflow identity in this project yet — those are plan §6 leg 1. What is
+# proven is local: the document parses and every property below is asserted from the parsed document, the
+# chain order matches what the scripts declare for themselves, and that chain runs green end to end on a
+# workstation (scripts/release/release_workflow_test.go). No `act`-class emulation is claimed either.
+# release-policy.md's sentence stays in force: "Until two maintainers and a protected release environment
+# exist, Palai may publish development snapshots but must not publish an RC or stable release."
+#
+# THIN BY RULE: every `run:` is ONE call into scripts/release/*.sh. The logic lives in those scripts so it
+# can be tested without a runner — logic in a `run:` block would be exercisable only here, where nothing
+# runs. TestReleaseWorkflowIsThin enforces it. No input is ever interpolated into a shell (that is script
+# injection, and it would make the line differ from the one that runs locally): inputs travel via `env:`.
+#
+# EPHEMERAL RUNNERS: each job assumes a fresh, disposable runner. Nothing is carried between them except
+# the uploaded artifacts, and the signing identity exists ONLY inside the protected `publish` job
+# (release-policy.md, "Signing and key boundary").
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version to build and stamp (e.g. 1.0.0-rc1)
+        required: true
+        type: string
+      evidence_release:
+        description: Evidence bundle under evidence/releases/ that must verify clean
+        required: true
+        type: string
+      target:
+        description: Promotion target (a stable promote additionally awaits the operator attestation)
+        required: true
+        default: rc
+        type: choice
+        options:
+          - rc
+          - stable
+
+# Least privilege, ci.yml's precedent. Nothing here writes to the repository: the tag is REHEARSED, not
+# pushed, and the publish mechanics are dry runs (plan §6 leg 2).
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel-in-progress: a release interrupted between signing and verification is exactly the state
+  # immutable tags exist to prevent. Two dispatches of one version queue instead.
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  PALAI_RELEASE_VERSION: ${{ inputs.version }}
+  PALAI_RELEASE_EVIDENCE: ${{ inputs.evidence_release }}
+  PALAI_RELEASE_TARGET: ${{ inputs.target }}
+  PALAI_RELEASE_DIR: dist/release
+  PALAI_RELEASE_SDK_DIR: dist/sdk-bundle
+
+jobs:
+  build:
+    name: Build (ephemeral runner, no signing identity)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          # The attestation recomputes its materials from the source tree, including the commit.
+          fetch-depth: 0
+          # A build runner never needs a credential that can write to the repository.
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 1.26.4
+          check-latest: false
+          cache: false
+
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: 3.14.3
+          check-latest: false
+
+      # THE ONLY networked release step, by design (sbom.sh's own rule): the vulnerability DB is a PINNED
+      # OFFLINE SNAPSHOT recorded in scripts/release/vulndb.lock.json, and every scan below runs
+      # --network none against it.
+      - name: Hydrate the pinned vulnerability DB snapshot
+        run: scripts/release/sbom.sh --hydrate-db
+
+      - name: T1 - pinned hermetic build, linux/amd64 + linux/arm64 matrix
+        run: scripts/release/build.sh --tag "$PALAI_RELEASE_VERSION" --out "$PALAI_RELEASE_DIR" --version "$PALAI_RELEASE_VERSION"
+
+      - name: T2 - SBOM (SPDX + CycloneDX), license inventory, vulnerability policy gate
+        run: scripts/release/sbom.sh --dir "$PALAI_RELEASE_DIR"
+
+      # What the second maintainer REVIEWS before approving the protected environment below: the release
+      # index, the SBOMs, the license inventory and the §51.3 vulnerability decision (release-policy.md,
+      # "Two-person promotion"). Uploaded UNSIGNED — the signature is the protected job's act.
+      - name: Upload the unsigned release for review
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ inputs.version }}-unsigned
+          path: dist/release
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: false
+
+  publish:
+    name: Publish (protected environment - two-person approval)
+    needs:
+      - build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # THE TWO-PERSON GATE. A different authorized maintainer must approve this environment before any step
+    # below runs. The environment's protection rules (required reviewers, "prevent self-review", no admin
+    # bypass) are the GitHub half; scripts/release/publish.sh re-judges the SAME rule mechanically against
+    # .github/CODEOWNERS, so a misconfigured environment cannot silently pass a single-person promotion.
+    # Configuring that environment with two maintainers is plan §6 leg 1.
+    environment: release
+    env:
+      # release-policy.md: "CI obtains short-lived signing identity only inside the protected release job.
+      # Long-lived private signing keys are not stored in Git, repository variables, runner images, build
+      # logs, artifacts, or operator documentation." These are PATHS a protected-environment identity step
+      # materializes; the identity itself (a real KMS/Sigstore signer) is plan §6 leg 1. With the path
+      # unset, provenance.sh mints an EPHEMERAL key and the result is a development snapshot, never an RC.
+      PALAI_RELEASE_SIGNING_KEY: ${{ vars.PALAI_RELEASE_SIGNING_KEY_PATH }}
+      # The trust root is delivered OUT OF BAND (the E14 T5 model): a key that travels with the release is
+      # not a trust root, so release-verify.sh refuses one that resolves inside the release directory.
+      PALAI_RELEASE_PUBKEY: ${{ vars.PALAI_RELEASE_PUBKEY_PATH }}
+      # The SDK bundle is a second artifact family with its own signed root; release-verify.sh's leg (4)
+      # verifies it under the same command, with its own out-of-band key.
+      PALAI_SDK_PUBKEY: ${{ vars.PALAI_RELEASE_PUBKEY_PATH }}
+      # Read-only; publish.sh uses it for ONE call: who approved this run's protected deployment.
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 1.26.4
+          check-latest: false
+          cache: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: 11.9.0
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.22.2
+          check-latest: false
+          cache: pnpm
+
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: 3.14.3
+          check-latest: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: 0.8.2
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # An artifact round trip does not preserve the executable bit. Nothing downstream EXECUTES a release
+      # binary — every leg hashes bytes, and the content is what the digests are over — but a step that
+      # ever needs to run one has to restore the mode itself.
+      - name: Download the reviewed release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ inputs.version }}-unsigned
+          path: dist/release
+
+      - name: T3 - in-toto/SLSA-shaped attestation, openssl P-256 signature over the signed root
+        run: scripts/release/provenance.sh --dir "$PALAI_RELEASE_DIR"
+
+      # A separate artifact family with its OWN signed root, so it is built AFTER the release attestation
+      # (nothing may be added to a release directory once it is attested) and verified by leg (4) below.
+      - name: Package the three SDKs
+        run: scripts/release/sdk-package.sh
+        env:
+          VERSION: ${{ inputs.version }}
+          OUT: dist/sdk-bundle
+          PALAI_SDK_SIGNING_KEY: ${{ vars.PALAI_RELEASE_SIGNING_KEY_PATH }}
+
+      - name: T4 - unified offline verify (digests, attestation, SBOM decision, signature, SDK bundle)
+        run: scripts/release/release-verify.sh "$PALAI_RELEASE_DIR" "$PALAI_RELEASE_PUBKEY"
+
+      - name: Two-person approval, evidence checksums, immutable signed tag
+        run: scripts/release/publish.sh
+
+      - name: Publish mechanics - DRY RUN (no credentials, nothing reaches a registry)
+        run: scripts/release/publish-dryrun.sh "$PALAI_RELEASE_SDK_DIR"
+
+      # Immutable assets: a distinct, non-overwritable artifact name per version. A released artifact is
+      # never overwritten (release-policy.md, "Revocation and rebuilds") — a rebuild of the same commit is
+      # a new version with its own provenance. Real immutable GitHub Release assets are plan §6 leg 2.
+      - name: Upload the signed, verified release
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ inputs.version }}-signed
+          path: dist
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: false
