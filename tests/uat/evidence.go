@@ -250,18 +250,18 @@ type evidenceCase struct {
 	// capability posture is recomputed from EVERY committed bundle's claim outcomes and asserted bit-equal
 	// to the fully-mounted router's /v1/capabilities (AggregateTierClaim — the final anti-fabrication
 	// anchor: a fabricated cross-epic "stable" is a FAIL). Each requires its proof.
-	SupplyChainClaim         string                   `json:"supply_chain_claim"`
-	SupplyChainProof         *SupplyChainProof        `json:"supply_chain_proof"`
-	PerformanceProfileClaim  string                   `json:"performance_profile_claim"`
-	PerformanceProfileProof  *PerformanceProfileProof `json:"performance_profile_proof"`
-	SandboxEscapeClaim       string                   `json:"sandbox_escape_claim"`
-	SandboxEscapeProof       *SandboxEscapeProof      `json:"sandbox_escape_proof"`
-	AuditIntegrityClaim      string                   `json:"audit_integrity_claim"`
-	AuditIntegrityProof      *AuditIntegrityProof     `json:"audit_integrity_proof"`
-	ReleaseIndexClaim        string                   `json:"release_index_claim"`
-	ReleaseIndexProof        *ReleaseIndexProof       `json:"release_index_proof"`
-	AggregateTierClaim       string                   `json:"aggregate_tier_claim"`
-	AggregateTierProof       *AggregateTierProof      `json:"aggregate_tier_proof"`
+	SupplyChainClaim        string                   `json:"supply_chain_claim"`
+	SupplyChainProof        *SupplyChainProof        `json:"supply_chain_proof"`
+	PerformanceProfileClaim string                   `json:"performance_profile_claim"`
+	PerformanceProfileProof *PerformanceProfileProof `json:"performance_profile_proof"`
+	SandboxEscapeClaim      string                   `json:"sandbox_escape_claim"`
+	SandboxEscapeProof      *SandboxEscapeProof      `json:"sandbox_escape_proof"`
+	AuditIntegrityClaim     string                   `json:"audit_integrity_claim"`
+	AuditIntegrityProof     *AuditIntegrityProof     `json:"audit_integrity_proof"`
+	ReleaseIndexClaim       string                   `json:"release_index_claim"`
+	ReleaseIndexProof       *ReleaseIndexProof       `json:"release_index_proof"`
+	AggregateTierClaim      string                   `json:"aggregate_tier_claim"`
+	AggregateTierProof      *AggregateTierProof      `json:"aggregate_tier_proof"`
 }
 
 type evidenceTerm struct {

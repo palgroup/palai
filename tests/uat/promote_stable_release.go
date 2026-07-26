@@ -99,7 +99,9 @@ func StableReleasePromoteGate(raw []byte, target string) []Refusal {
 	}
 
 	var refusals []Refusal
-	add := func(format string, args ...any) { refusals = append(refusals, Refusal{Detail: fmt.Sprintf(format, args...)}) }
+	add := func(format string, args ...any) {
+		refusals = append(refusals, Refusal{Detail: fmt.Sprintf(format, args...)})
+	}
 
 	// (1) the release index. The gate judges ONE index; a manifest carrying two would be judged on the
 	// first while VerifyManifest checks all of them, so a fabricated second could ride behind an honest one.
@@ -195,7 +197,9 @@ func StableReleasePromoteGate(raw []byte, target string) []Refusal {
 // eleven legs.
 func stableAttestationRefusals(m evidenceManifest, target string) []Refusal {
 	var refusals []Refusal
-	add := func(format string, args ...any) { refusals = append(refusals, Refusal{Detail: fmt.Sprintf(format, args...)}) }
+	add := func(format string, args ...any) {
+		refusals = append(refusals, Refusal{Detail: fmt.Sprintf(format, args...)})
+	}
 
 	if len(m.OperatorAttestation) == 0 || string(m.OperatorAttestation) == "null" {
 		add("promote to %q awaits the §6 operator legs and there is NO operator_attestation in the manifest. SH-3 Stable IS that attestation, never a mechanical verdict: it must name every leg one by one (%d of them, L-1..L-8d) and this gate never auto-claims one (plan §T10, §6)", target, len(StableAttestationLegs))
