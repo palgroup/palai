@@ -1192,7 +1192,7 @@
           "queues": "preview",
           "slack": "preview"
         },
-        "snapshot_source": "GET /v1/capabilities served by the real api.NewRouter (asserted bit-equal by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute)",
+        "snapshot_source": "GET /v1/capabilities served by the real api.NewRouter as built by the fullyMountedRouter() test helper — NOT by any deployed config: no shipped deployment sets PALAI_CAPABILITY_WORKER_LISTEN_ADDR, so no deployed binary serves this exact map (asserted bit-equal by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute)",
         "claims_digest": "sha256:f0d46879af1792764ba43cb078666d73618f1d6ca80e9bdac2cd71af0a5a5b26"
       },
       "checksum": "sha256:38bdb078545023f677e1882068ca195fb69248536ef671fc98e9180d8cba6301",
