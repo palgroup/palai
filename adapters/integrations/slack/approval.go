@@ -32,9 +32,20 @@ type ApprovalIntent struct {
 	RequestHash string // the one-shot binding minted into the button value
 	Decision    string // "approve" | "deny"
 	ActionID    string
+	// ChannelID + ThreadTS are the thread the button was clicked in — the SLK-003 correlation key. The
+	// decision path resolves the session from them, so a click can only decide the conversation its own
+	// thread owns; the request hash alone would let a hash observed anywhere decide anything.
+	ChannelID string
+	ThreadTS  string
+	// MessageTS is the clicked message itself — the chat.update handle the SLK-006 single repair edits.
+	MessageTS string
 }
 
 // blockActions is the subset of a Slack interactive block_actions payload the approval mapping reads.
+//
+// CONTRACT: https://docs.slack.dev/reference/interaction-payloads/block_actions-payload/ (checked
+// 2026-07-26) — the documented top-level fields include team, user, container, channel, message, actions,
+// response_url and trigger_id. `response_url` is decoded by NOTHING here on purpose; see below.
 type blockActions struct {
 	Type string `json:"type"`
 	User struct {
@@ -44,6 +55,18 @@ type blockActions struct {
 	Team struct {
 		ID string `json:"id"`
 	} `json:"team"`
+	Channel struct {
+		ID string `json:"id"`
+	} `json:"channel"`
+	Container struct {
+		ChannelID string `json:"channel_id"`
+		MessageTS string `json:"message_ts"`
+		ThreadTS  string `json:"thread_ts"`
+	} `json:"container"`
+	Message struct {
+		TS       string `json:"ts"`
+		ThreadTS string `json:"thread_ts"`
+	} `json:"message"`
 	Actions []struct {
 		ActionID string `json:"action_id"`
 		Value    string `json:"value"`
@@ -64,7 +87,16 @@ type blockActions struct {
 // Contract for the caller: Slack's HTTP interactivity transport sends the JSON as a FORM body —
 // `payload=<urlencoded JSON>`, not a raw JSON body. The receiver must therefore verify the v0 signature over
 // the RAW form body (the exact bytes Slack signed) and THEN url-decode + extract `payload` to pass here —
-// never verify over the extracted JSON, which is not what was signed.
+// never verify over the extracted JSON, which is not what was signed. ExtractInteractionPayload does the
+// second half and interactions.go records why the ORDER is forced, with both source pages.
+//
+// WHY `response_url` IS NOT READ, since it is right there in the payload and is the obvious tool: it is
+// usable "up to 5 times within 30 minutes of receiving the payload"
+// (https://docs.slack.dev/interactivity/handling-user-interaction/, checked 2026-07-26). An approval repair
+// is not bounded by either number — the run it authorizes can outlive 30 minutes, and the message may need
+// editing again when the operation finally completes. A window that expires silently would turn a late
+// repair into a no-op nobody notices, so the visible message is edited with chat.update against its ts
+// (SLK-006), which has no expiry and is the same handle a later terminal update uses.
 func MapInteractiveApproval(body []byte) (ApprovalIntent, error) {
 	var p blockActions
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -92,12 +124,33 @@ func MapInteractiveApproval(body []byte) (ApprovalIntent, error) {
 		if team == "" {
 			team = p.User.TeamID
 		}
+		channel := p.Channel.ID
+		if channel == "" {
+			channel = p.Container.ChannelID
+		}
+		messageTS := p.Message.TS
+		if messageTS == "" {
+			messageTS = p.Container.MessageTS
+		}
+		// The thread ROOT, resolved the way MapEvent resolves it: a reply carries thread_ts, and a top-level
+		// message IS its own root. Same rule on both transports, or a click and an event in one conversation
+		// would correlate to two different threads.
+		thread := p.Message.ThreadTS
+		if thread == "" {
+			thread = p.Container.ThreadTS
+		}
+		if thread == "" {
+			thread = messageTS
+		}
 		return ApprovalIntent{
 			TeamID:      team,
 			UserID:      p.User.ID,
 			RequestHash: a.Value,
 			Decision:    decision,
 			ActionID:    a.ActionID,
+			ChannelID:   channel,
+			ThreadTS:    thread,
+			MessageTS:   messageTS,
 		}, nil
 	}
 	return ApprovalIntent{}, ErrNotApproval
