@@ -52,6 +52,8 @@ type routerConfig struct {
 	a2a         http.Handler   // the authed A2A 1.0 surface (E17 T2)
 	a2aCard     http.Handler   // the unauthenticated public Agent Card handler
 	slack       SlackEventsAPI // the Slack Events API admission bridge (E19 T1); nil ⇒ route unmounted
+	// slackInteractions is the Slack interactivity decision bridge (E19 T2); nil ⇒ route unmounted.
+	slackInteractions SlackInteractionsAPI
 	// capabilityWorkers records that this binary SERVES the capability-worker gateway (E17 T9) — on its own
 	// listener, not on this router (see WithCapabilityWorkers). It carries no handler because there is
 	// nothing for the router to mount; it exists so discovery derives the claim from the live mount.
@@ -134,6 +136,17 @@ func WithCapabilityWorkers() RouterOption {
 // by wiring).
 func WithSlack(events SlackEventsAPI) RouterOption {
 	return func(c *routerConfig) { c.slack = events }
+}
+
+// WithSlackInteractions mounts the Slack interactivity receiver (E19 T2, spec §36) beside the events route on
+// the UNAUTHENTICATED top mux — same posture, same v0 signature as its auth (see slack_interactions.go).
+//
+// It is a SEPARATE option from WithSlack on purpose rather than a fourth method on SlackEventsAPI: the two
+// surfaces need different collaborators (the events bridge needs an Admitter; this one needs the coordinator's
+// approval spine and an outbound Slack client), so a stack that wires only the inbound half must be able to
+// mount only the inbound half. An unmounted route answers 404 rather than 500 on a nil seam.
+func WithSlackInteractions(interactions SlackInteractionsAPI) RouterOption {
+	return func(c *routerConfig) { c.slackInteractions = interactions }
 }
 
 // WithMetrics mounts the Prometheus text-exposition surface (E14 Task 6) at GET /metrics on the

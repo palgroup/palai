@@ -196,6 +196,22 @@ func (h *slackHandler) receive(w http.ResponseWriter, r *http.Request) {
 			conn.ID, retryNum, reason, h.retries.record(reason))
 	}
 
+	// 5b. Slack telling us we are being THROTTLED (plan §3.5 D10). It is an OUTER type, not an event_callback,
+	// so MapEvent below refuses it and the route would answer 400 + the suppress header — discarding the one
+	// notification Slack sends about our own delivery budget. It is handled AFTER verification like everything
+	// else: an unauthenticated caller must not be able to write our operational counters.
+	//
+	// CONTRACT: https://docs.slack.dev/apis/web-api/rate-limits/ (checked 2026-07-26) — Events API delivery is
+	// capped at 30,000 per workspace/app per 60 minutes; past that the app receives `app_rate_limited` carrying
+	// team_id and minute_rate_limited. There is nothing to DO about it in-process (the sender is Slack), so the
+	// honest handling is a log + a counter an operator can see, which is what D10 asks for.
+	if _, minute, ok := slack.ParseAppRateLimited(body); ok {
+		h.log("slack events: THROTTLED by Slack — connection=%s minute_rate_limited=%d total=%d (deliveries are being dropped upstream; https://docs.slack.dev/apis/web-api/rate-limits/)",
+			conn.ID, minute, h.retries.count(slackThrottleCounter))
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	// 6. Map — strictly after authentication.
 	ev, err := slack.MapEvent(body, conn.BotUserID, retryNum != "")
 	switch {
@@ -289,6 +305,23 @@ func (l *slackRetryLedger) record(reason string) int {
 	}
 	l.reasons[reason]++
 	return l.reasons[slack.RetryReasonHTTPTimeout]
+}
+
+// slackThrottleCounter is the ledger key for app_rate_limited notices. It shares the retry ledger rather than
+// growing a second map because it is the same class of fact — Slack telling us something about our own
+// delivery health — and it cannot collide: slack.RetryReason narrows a retry reason to six documented values,
+// none of them this one.
+const slackThrottleCounter = "app_rate_limited"
+
+// count increments an arbitrary ledger key and returns its running total.
+func (l *slackRetryLedger) count(key string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.reasons == nil {
+		l.reasons = map[string]int{}
+	}
+	l.reasons[key]++
+	return l.reasons[key]
 }
 
 func (l *slackRetryLedger) snapshot() map[string]int {
