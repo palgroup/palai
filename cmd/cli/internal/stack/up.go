@@ -490,8 +490,13 @@ func (c *apiClient) awaitTerminal(id string, within time.Duration) (roundTrip, e
 		} `json:"usage"`
 	}
 	for {
-		if _, err := c.do(http.MethodGet, "/v1/responses/"+id, nil, &last); err != nil {
+		// A non-200 must not be polled over: an expired key or a purged response would otherwise
+		// read as "still queued" until the deadline and blame dispatch for an auth fault.
+		switch status, err := c.do(http.MethodGet, "/v1/responses/"+id, nil, &last); {
+		case err != nil:
 			return roundTrip{}, err
+		case status != http.StatusOK:
+			return roundTrip{}, fmt.Errorf("GET /v1/responses/%s = %d, want 200", id, status)
 		}
 		switch last.Status {
 		case "completed", "failed", "canceled":
@@ -512,8 +517,12 @@ func (c *apiClient) capabilities() (map[string]string, error) {
 	var body struct {
 		Capabilities map[string]string `json:"capabilities"`
 	}
-	if _, err := c.do(http.MethodGet, "/v1/capabilities", nil, &body); err != nil {
+	status, err := c.do(http.MethodGet, "/v1/capabilities", nil, &body)
+	if err != nil {
 		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("GET /v1/capabilities = %d, want 200", status)
 	}
 	return body.Capabilities, nil
 }
@@ -549,13 +558,26 @@ func (c *apiClient) createSlackConnection(body map[string]any) (string, int, err
 	}
 }
 
-// waitHealthy re-runs DOCTOR'S OWN checks until they are all green or the deadline passes. It
+// waitHealthy re-runs DOCTOR'S OWN checks until they are all green or they stop improving. It
 // invents no check and no threshold — runChecks is the same function `palai local doctor` calls.
+//
+// It gives up early when a round changes nothing, because some checks are never going to go green
+// by waiting: the disk check fails on a host under 10% free, and blocking the live proof behind a
+// full timeout for a condition that is not about readiness would tax every bring-up on such a host.
 func waitHealthy(cfg Config, p paths, within time.Duration) Report {
 	deadline := time.Now().Add(within)
+	previous, stable := "", 0
 	for {
 		report := runChecks(cfg, p)
-		if report.OK || time.Now().After(deadline) {
+		red := strings.Join(redChecks(report), "|")
+		if red == previous {
+			stable++
+		} else {
+			previous, stable = red, 0
+		}
+		// Three identical rounds (~6s): long enough for a runner still finishing its compose-mTLS
+		// enrolment to turn green, short enough that a permanently-red check costs seconds.
+		if report.OK || stable >= 3 || time.Now().After(deadline) {
 			return report
 		}
 		time.Sleep(2 * time.Second)
