@@ -30,6 +30,8 @@ func dispatch(args []string) error {
 	switch args[0] {
 	case "init":
 		return stack.Init()
+	case "up":
+		return up(args[1:])
 	case "local":
 		return local(args[1:])
 	case "provider":
@@ -60,6 +62,21 @@ func dispatch(args []string) error {
 		usage()
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// up is the one-command bring-up: read .env.local, store the provider credential, bring the stack
+// up on the LIVE selector, and prove it with one real round-trip. It is a top-level verb rather
+// than a `local up --verify` flag for two reasons: it does strictly more than compose-up (it writes
+// a secret and refuses a fake selector before Docker is touched), and `local up` is what the e2e
+// harness drives — a flag that silently changed which adapter that command selects would be the
+// same class of surprise this command exists to remove.
+func up(args []string) error {
+	fs := flag.NewFlagSet("up", flag.ContinueOnError)
+	envFile := fs.String("env-file", ".env.local", "dotenv file holding the provider credential (values are never printed or passed in argv)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return stack.Bootstrap(*envFile)
 }
 
 func local(args []string) error {
@@ -251,6 +268,11 @@ func auditCmd(args []string) error {
 func usage() {
 	fmt.Fprint(os.Stderr, `palai — local stack lifecycle
 
+  palai up [--env-file .env.local]
+                                  ONE command: credential -> live stack -> PROVEN real round-trip.
+                                  Refuses an unrecognised model selector instead of silently
+                                  falling back to the deterministic fake adapter, and fails if it
+                                  cannot demonstrate a real provider call.
   palai init                      generate .palai (keys, local CA, ports, config)
   palai local up                  build + start the four-service stack (retains data)
   palai local down                stop the stack, retaining data volumes

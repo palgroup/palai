@@ -13,7 +13,12 @@ import (
 // table, shell history, or the CLI argv the credential-hygiene proof scans. The file is
 // 0600; the next `local up` carries it into the control-plane as a native Docker
 // file-secret (Option B), so the raw value never rides a compose environment value.
-func AddProvider(ref string) error {
+func AddProvider(ref string) error { return addProvider(ref, os.Stdin) }
+
+// addProvider is the ONE secret write-path. `provider add` hands it os.Stdin; `palai up` hands it
+// the value it read from .env.local, so the bring-up gets the same 0600 file, the same mount
+// contract and the same hygiene without a second writer that could drift from this one.
+func addProvider(ref string, src io.Reader) error {
 	if strings.TrimSpace(ref) == "" {
 		return errors.New("usage: palai provider add <ref>")
 	}
@@ -21,7 +26,7 @@ func AddProvider(ref string) error {
 	if err != nil {
 		return err
 	}
-	raw, err := io.ReadAll(io.LimitReader(os.Stdin, 64*1024))
+	raw, err := io.ReadAll(io.LimitReader(src, 64*1024))
 	if err != nil {
 		return fmt.Errorf("read secret from stdin: %w", err)
 	}
