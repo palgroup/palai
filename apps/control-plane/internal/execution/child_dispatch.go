@@ -461,6 +461,15 @@ func (o *Orchestrator) denyChild(ctx context.Context, st *attemptState, spec chi
 // and dispatches to the remote AGAIN (the local path folds a terminal child's committed row instead). This
 // is the same re-execution the inline path already performs for a non-terminal child; closing it needs a
 // durable remote-child result — i.e. exactly the run row a remote child deliberately does not have.
+//
+// Two more named ceilings, so nobody has to infer them:
+//   - DETACH IS IGNORED HERE. detach releases the parent's compute against a DURABLE job that wakes it, and
+//     a remote child has no job and no waker. A frame carrying both runs synchronously; it is not an error,
+//     it is a request this branch cannot honour, and honouring it needs the same durable state as above.
+//   - max_cost_cents IS NOT ENFORCED. The registered agent carries the field and nothing reads it — the
+//     spend happens inside the remote, where this process has no visibility and the reply reports no cost.
+//     The parent's OWN budget is untouched by a remote child (it spends none of our tokens), so a remote
+//     delegation is bounded by depth and fan-out, not by money.
 func (o *Orchestrator) dispatchRemoteChild(ctx context.Context, st *attemptState, spec childSpec, frame contracts.EngineFrame) error {
 	if o.remoteAgents == nil || o.remoteChildren == nil {
 		return o.denyChild(ctx, st, spec, frame, "remote_unavailable")
