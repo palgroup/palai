@@ -27,7 +27,18 @@ Slack app'i https://api.slack.com/apps → **Create New App → From scratch** i
 | `SLACK_BOT_TOKEN` | App → **OAuth & Permissions → Bot User OAuth Token** (workspace'e install sonrası) | `xoxb-…` | T2 live (chat.postMessage / chat.update), T1 live (file fetch) |
 | `SLACK_APP_TOKEN` | App → **Basic Information → App-Level Tokens → Generate**, scope `connections:write` | `xapp-…` | T3 live (Socket Mode `apps.connections.open`) |
 | `SLACK_TEAM_ID` | Workspace admin → about, ya da herhangi bir event payload'ının `team_id`'si | `T…` | Hepsi (`slack_connections` satırının workspace kimliği) |
-| `SLACK_TEST_CHANNEL` | Bot'un davet edildiği bir test kanalının ID'si | `C…` | T2 live (posta/edit round-trip), T1 live (mention) |
+| `SLACK_TEST_CHANNEL` | Bot'un davet edildiği bir test kanalının ID'si | `C…` | **YALNIZCA** live test harness'ı (`tests/live/slack`) — nereye post edip assert edeceğini bilmesi için |
+
+> `SLACK_TEST_CHANNEL` bir **güvenlik kapsamı DEĞİLDİR** ve asla bir kapsama dönüşmez. Bir zamanlar `palai up` onu `allowed_channels` olarak yazıyordu: live test'leri koştursun diye bu değişkeni set eden operatör, farkında olmadan PRODUCTION bot'unu kendi test kanalına hapsediyordu. Kanal kapsamı artık aşağıdaki kendi adıyla anılan değişkendendir.
+
+#### 0.1.1 `palai up`'ın kapsam değişkenleri (Palai tarafı, Slack'ten alınmaz)
+
+| `.env.local` değişkeni | Anlamı | Format | Boş bırakılırsa |
+|---|---|---|---|
+| `SLACK_ALLOWED_CHANNELS` | Entegrasyonun içinde çalışabileceği kanallar — `allowed_channels` | `C1,C2` (virgülle) | **Kanal kısıtı YOK.** Production varsayılanı budur: Slack zaten yalnızca bot'un davet edildiği konuşmalardan event gönderir |
+| `SLACK_APPROVER_IDS` | approve/deny tıklayabilecek Slack kullanıcıları — `allowed_users` | `U1,U2` (virgülle) | **HİÇ KİMSE onaylayamaz.** Deny-by-default doğrudur ve değişmez; `palai up` bu durumu final raporda açıkça UYARI olarak yazar |
+
+Bu iki listenin boşluk anlamı **bilerek terstir** (kanal boş = hepsi, kullanıcı boş = hiçbiri); gerekçe `SlackAuthorizationPolicy` tipinin başında durur: kanal listesi Slack'in davet modelinin üstüne bir DARALTMADIR, kullanıcı listesinin ise arkasında hiçbir kapı yoktur.
 
 **Bot token scopes** (App → OAuth & Permissions → **Bot Token Scopes**; kaynak: https://docs.slack.dev/reference/scopes/):
 
