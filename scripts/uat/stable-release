@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# Stable-release UAT — the E18 FINAL cross-epic EXIT gate (plan §T10), the last gate in the program.
+#
+# ITS OUTPUT IS AN SH-3 POSTURE REPORT, NOT A BLANKET "STABLE". The local closure of this gate is a
+# release CANDIDATE: `release-1.0.0-rc1`. SH-3 Stable is the operator's attested act — `palai promote
+# stable` REFUSES without an operator_attestation naming every §6 leg one by one — and NOTHING this
+# script runs may be read as a claim that a stable release was published, that a real CI run signed
+# anything, that a transparency log holds an entry, that a registry received a package, or that a
+# number was taken on reference hardware.
+#
+#   Docker-free CORE (always; this is the load-bearing tier and it rides `make verify`):
+#     1. go test ./tests/uat/stable-release/... — four gates in one package:
+#        a. the E18 CATALOG gate: SEC-101..103 + PER-001..004 materialized, resolving to in-tree proofs,
+#           declaring a class their proofs' //go:build tier supports, and NAMING both their local seam and
+#           their §6 operator leg. TestE18CatalogGuardBites proves the gate refuses;
+#        b. the ANTI-FABRICATION ANCHORS: ~50 negatives, each handing the SHIPPED verifier the real
+#           committed bundle mutated in exactly one place — a fabricated outcome, an unmaterialized id
+#           upgraded to bundle-carried PASS, a §64.15 item rounded up, a managed-scope item promoted, a
+#           dropped family marker, two index tables in one manifest, a fabricated p95, a five-arm tamper
+#           matrix, "cosign-keyless" as the signer, a claimed transparency-log entry, a CI builder
+#           identity, a microVM claim, a denied AUD-1 admission — and asserting it is REFUSED;
+#        c. the committed release-1.0.0-rc1 bundle: byte-identical to its generator and verifying clean
+#           through the SHIPPED verifier (0/0/0/0);
+#        d. the PROMOTE gate: rc PASSES, `stable` with no attestation is REFUSED, dropping ANY of the
+#           eleven §6 legs is refused BY NAME, and SUP-3's rule (a release family must ALWAYS carry a
+#           VERIFIED artifact set) refuses a release that verifies no artifacts.
+#     2. the SHIPPED /v1/capabilities map, served over real HTTP by the real router, asserted BIT-EQUAL to
+#        the CROSS-EPIC recompute AND to the snapshot the RC bundle commits. This is what stops the
+#        bundle's posture from being a number checking itself.
+#     3. SEC-101: the real release verifier over a real staged release, the six-arm tamper matrix, the
+#        fail-closed resolution, the air-gap verifier-swap negatives, and the OFFLINE (--network none)
+#        verify in a container with no network device. That last leg is operator-gated on a loaded
+#        openssl+python3 image and SKIPS without one, so this target RESOLVES the image and then asserts
+#        the leg reported PASS BY NAME — the bundle declares offline_verified:true and a skipped leg does
+#        not back it. It EXITS rather than reporting green over a skip.
+#     4. SEC-103's Docker-free half: the audit chain, its four typed alerts, the stale-checkpoint rollback
+#        arm and the AUD-1 retention-purge pin (packages/audit).
+#     5. THE CROSS-EPIC RE-VERIFY: every committed bundle through the shipped `scripts/evidence/verify`,
+#        each 0 failed / 0 missing / 0 secret, plus the E18 T8 recompute sweep over all of them.
+#     6. the RC triage guards the gate READS ITS BLOCKER COUNT FROM (tests/docs) and the two gate corpora
+#        any case.yaml touch must re-run (the automation catalog + the tenancy security corpus).
+#
+#   Journey tier (Docker, no credential — SKIP_JOURNEYS=1 to opt out):
+#     7. a PER smoke with a MANDATORY profile: PER-001 + PER-004 against a throwaway Postgres and the real
+#        control-plane binary. PER-002 (a real fixture-engine container) and PER-003 (a bounded soak of
+#        minutes) are the full `make test-performance`, and are named here rather than implied.
+#     8. SEC-103's component half: the four-arm audit-integrity journey against real PostgreSQL.
+#
+#   Live tier (PROVIDER=provider-one, credential from .env.local):
+#     9. ONE real single-step provider run (E08's rule: the engine opens no tool to a real provider, so a
+#        live run is single-step BY CONSTRUCTION). It is the release's anchor that a real run is served.
+#
+#   Opt-in heavy legs, NOT run by default on a shared 8GB Docker Desktop and NOT claimed when skipped:
+#     RUN_ESCAPE_SUITE=1  `make uat-escape` — SEC-102's full suite (real OCI sandboxes, real cgroups,
+#                         real host kills). The Docker-free coverage guard + the arm-that-ran-nothing
+#                         guard run in step 1 regardless, so a corpus drift still fails this target.
+#     RUN_MATRIX_SMOKE=1  `make release-matrix-smoke` — the six-image amd64+arm64 build matrix.
+#
+# HONEST CEILING (plan §6), the reason this gate closes an RC and not a release: NO §6 operator leg has
+# been executed. No protected GitHub environment, no second maintainer, no registry credential, no
+# Sigstore/KMS identity, no reference hardware, no real air-gap facility, no real Slack workspace, no
+# foreign A2A peer, no broker product, no Apple signing material, no vector store. The tier recompute and
+# the promote gate turn every one of those into a mechanical outcome rather than a promise.
+#
+# set -x must NEVER be enabled in this script: it would echo the sourced credential.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+echo "uat-stable-release: [1/6] the E18 catalog gate + anti-fabrication anchors + bundle + promote gate" >&2
+go test -count=1 ./tests/uat/stable-release/...
+
+echo "uat-stable-release: [2/6] the SHIPPED /v1/capabilities map is bit-equal to the CROSS-EPIC recompute" >&2
+go test -count=1 -run 'TestServedCapabilityTiersEqualTheAggregateRecompute|TestRCBundleSnapshotIsWhatTheRouterServes|TestServedCapabilityTiersEqualTheRecompute|TestUngovernedCapabilitiesAreNotSilentlyGoverned' ./apps/control-plane/api
+
+# The OFFLINE (--network none) leg is operator-gated on an already-loaded openssl+python3 image and SKIPS
+# without one. The bundle's SupplyChainProof declares offline_verified:true and NAMES that very test, so a
+# run in which it skipped does NOT back the claim — this target EXITS rather than reporting green over it
+# (the uat-extensions missing-pnpm precedent: a silently unrun backing leg is the hole the co-run closes).
+tool_image="${PALAI_RELEASE_TOOL_IMAGE:-}"
+if [ -z "$tool_image" ]; then
+  for candidate in palai/reference-engine:local 127.0.0.1:28743/palai/reference-engine:0.1.0; do
+    if docker image inspect "$candidate" >/dev/null 2>&1; then tool_image="$candidate"; break; fi
+  done
+fi
+if [ -z "$tool_image" ]; then
+  echo "uat-stable-release: the release-1.0.0-rc1 bundle claims offline_verified:true and names" >&2
+  echo "  TestReleaseVerifyOfflineNetworkNone as its evidence. That test SKIPS without an already-loaded" >&2
+  echo "  openssl+python3 image, and a skipped leg does not back the claim. Load one and set" >&2
+  echo "  PALAI_RELEASE_TOOL_IMAGE=<image> (the reference engine qualifies)." >&2
+  exit 2
+fi
+
+echo "uat-stable-release: [3/6] SEC-101 (release verifier + six-arm tamper matrix + air-gap fail-closed +" >&2
+echo "  the --network none offline verify on $tool_image) and SEC-103's Docker-free half" >&2
+release_log="$(mktemp)"
+trap 'rm -f "$release_log"' EXIT
+PALAI_RELEASE_TOOL_IMAGE="$tool_image" PALAI_PROVENANCE_TOOL_IMAGE="$tool_image" \
+  go test -count=1 -v ./scripts/release/... | tee "$release_log"
+go test -count=1 ./deploy/airgap/... ./packages/audit/...
+
+# ANTI-SKIP: assert by NAME that the legs the bundle's claims rest on actually reported PASS. `ok` on the
+# package is not enough — every one of them skips quietly without its tool image.
+for leg in TestReleaseVerifyOfflineNetworkNone TestReleaseVerifyOfflineHonoursTheRevocationList \
+           TestProvenanceOfflineVerifyNetworkNone TestReleaseVerifyTamperMatrix \
+           TestReleaseVerifyAcceptsACleanRelease TestReleaseVerifyResolutionIsFailClosed; do
+  if ! grep -q -- "--- PASS: $leg" "$release_log"; then
+    echo "uat-stable-release: $leg did not report PASS — a SKIPPED leg is not evidence for the bundle's" >&2
+    echo "  supply-chain claim (grep the transcript above for '--- SKIP: $leg')" >&2
+    exit 1
+  fi
+done
+# The one leg that legitimately does not run here, said out loud rather than left implicit: TestSBOMPipelineLive
+# needs digest-pinned syft+grype images. The staged release above carries T2's COMMITTED scanner fixtures, which
+# is exactly what SEC-101's case text says, and the live SBOM pipeline is `go test -run TestSBOMPipelineLive`.
+if grep -q -- "--- SKIP: TestSBOMPipelineLive" "$release_log"; then
+  echo "uat-stable-release: NOTE — TestSBOMPipelineLive SKIPPED (no syft/grype images loaded): the SBOM" >&2
+  echo "  documents in this run are T2's committed scanner fixtures, not freshly generated ones. SEC-101's" >&2
+  echo "  case text says so; nothing here claims a live scan." >&2
+fi
+
+echo "uat-stable-release: [4/6] THE CROSS-EPIC RE-VERIFY: every committed bundle through the shipped verifier" >&2
+bundles=0
+for release in $(ls "$root/evidence/releases"); do
+  printf '  %-34s ' "$release" >&2
+  RELEASE="$release" scripts/evidence/verify >&2
+  bundles=$((bundles + 1))
+done
+if test "$bundles" -lt 17; then
+  echo "uat-stable-release: only $bundles bundles were re-verified — the corpus shrank" >&2
+  exit 1
+fi
+# The recompute sweep is a SEPARATE assertion from the per-bundle verify: it is what proves each bundle's
+# checksums RE-DERIVE rather than merely being sha256-shaped (E18 T8).
+go test -count=1 -run 'TestCommittedBundleChecksumSweep|TestSweepCatches|TestVerifyManifestRefuses|TestChecksumNote|TestLegacyLabel' ./tests/uat/
+
+echo "uat-stable-release: [5/6] the RC triage guards the gate reads its blocker count from, and the two gate corpora" >&2
+go test -count=1 ./tests/docs/...
+go test -count=1 ./tests/uat/automation/...
+go test -tags=security -count=1 ./tests/security/tenancy/...
+
+echo "uat-stable-release: [6/6] the SH-3 POSTURE REPORT" >&2
+go test -count=1 -run TestPrintSH3PostureReport -v ./tests/uat/stable-release/ | sed -n '/SH-3 POSTURE/,/END POSTURE/p'
+
+# ---- the journey tier: real PostgreSQL + the real control-plane binary, no credential ------------------
+journeys="PER smoke (profiled) + the SEC-103 component journey RAN"
+if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
+  # Said plainly, because the closing line must never imply a tier that did not run.
+  echo "uat-stable-release: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — NO performance number was" >&2
+  echo "  produced in this invocation and the SEC-103 component journey did NOT run; this run does not back" >&2
+  echo "  the bundle's PER-00x or SEC-103 evidence" >&2
+  journeys="Docker-bound PER smoke + SEC-103 component journey NOT RUN (SKIP_JOURNEYS=1)"
+else
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "uat-stable-release: docker is not available; the PER smoke and the SEC-103 journey need it" >&2
+    exit 2
+  fi
+  echo "uat-stable-release: [journey 1/2] the PER smoke — a MANDATORY hardware/load profile, percentiles" >&2
+  echo "  derived from raw samples. PER-002 (real fixture-engine container) and PER-003 (a bounded soak of" >&2
+  echo "  minutes) are the FULL 'make test-performance' and are NOT run here." >&2
+  PALAI_PERF_CONCURRENCY="${PALAI_PERF_CONCURRENCY:-4}" \
+    PALAI_PERF_ITERATIONS="${PALAI_PERF_ITERATIONS:-10}" \
+    PERF_RUN='TestPER001|TestPER004' TEST=service scripts/test/performance
+
+  echo "uat-stable-release: [journey 2/2] SEC-103's component half against real PostgreSQL" >&2
+  PALAI_SUITE_RUN=TestAuditIntegrityFourArms TEST=postgres scripts/test/component
+fi
+
+# ---- the opt-in heavy legs ------------------------------------------------------------------------------
+# SEC-102's full suite is KNOWN RED at this commit (ESC-1 in the RC triage): the SAN-006 arm's test SKIPS
+# for want of PALAI_COMPONENT_POSTGRES_URL, which its harness never supplies, so the aggregate report says
+# no_escape=false. The RC bundle carries NO SandboxEscapeProof for exactly that reason, so this leg is
+# opt-in and its failure does NOT invalidate the bundle — but it is run non-fatally when asked for, and its
+# outcome is reported either way. What must never happen is this target reporting a green SEC-102.
+escape="SEC-102 full suite NOT RUN (RUN_ESCAPE_SUITE=1 to run it); its Docker-free coverage guards DID run"
+if [ "${RUN_ESCAPE_SUITE:-0}" = "1" ]; then
+  echo "uat-stable-release: [opt-in] SEC-102 — the full sandbox-escape suite (KNOWN RED, ESC-1)" >&2
+  if PALAI_ESCAPE_SUITE=1 go test -tags=security -count=1 -timeout 40m ./tests/uat/escape/; then
+    escape="SEC-102 full suite RAN and PASSED — ESC-1 may be closable; re-check before claiming it"
+    echo "uat-stable-release: SEC-102 PASSED. That is NEW: ESC-1 records it red at this commit. Verify the" >&2
+    echo "  SAN-006 arm really ran (grep the transcript for '--- PASS: TestHostKillFencesStaleWriter') before" >&2
+    echo "  adding a SandboxEscapeProof back to the bundle." >&2
+  else
+    escape="SEC-102 full suite RAN and FAILED as ESC-1 records (no_escape=false — an arm was NOT ATTEMPTED, not an escape)"
+    echo "uat-stable-release: SEC-102 FAILED as expected (ESC-1). This does not invalidate the RC bundle," >&2
+    echo "  which carries no SandboxEscapeProof precisely because this suite cannot report no_escape=true here." >&2
+  fi
+fi
+matrix="release matrix smoke NOT RUN (RUN_MATRIX_SMOKE=1 to run it)"
+if [ "${RUN_MATRIX_SMOKE:-0}" = "1" ]; then
+  echo "uat-stable-release: [opt-in] the six-image amd64+arm64 release matrix" >&2
+  bash scripts/release/matrix-smoke.sh
+  matrix="release matrix smoke RAN"
+fi
+
+# ---- the live tier: ONE single-step real provider run (E08) ----------------------------------------------
+live="live run NOT RUN (PROVIDER=provider-one to run it)"
+if [ "${PROVIDER:-fake}" = "provider-one" ]; then
+  echo "uat-stable-release: live anchor — ONE real single-step provider run (E08: the engine opens no tool" >&2
+  echo "  to a real provider, so a live run is single-step BY CONSTRUCTION)" >&2
+  PROVIDER=provider-one CASE=text-stream-tool-schema scripts/test/live-provider
+  live="ONE real single-step provider run SERVED"
+fi
+
+echo "uat-stable-release=PASS (E18 FINAL exit gate — SH-3 POSTURE, an RC and NOT a stable release:" >&2
+echo "  $bundles committed bundles re-verified 0/0/0/0, the Appendix-A index + §64.15 checklist recomputed," >&2
+echo "  the product-wide posture bit-equal to the fully-mounted router, RC-BLOCKERS read from the triage" >&2
+echo "  table, $journeys, $escape, $matrix, $live." >&2
+echo "  SH-3 Stable REMAINS UNCLAIMED: it is the operator attestation the promote gate demands, naming all" >&2
+echo "  eleven §6 legs one by one — none of which has been executed.)" >&2

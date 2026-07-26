@@ -1,0 +1,19 @@
+id: SEC-103
+name: the-event-journal-chains-to-a-signed-out-of-database-checkpoint-and-a-gap-or-a-flipped-byte-raises-a-typed-alert
+proof_class: component-real
+provider: fake
+input: "E13-H's open `audit integrity linkage` closes here (plan §T7). `palai audit checkpoint` cuts a rolling-hash anchor over the `events` journal and signs it with the E14 T5 openssl P-256 signer VERBATIM; `palai audit verify` RECOMPUTES the chain FROM THE ROWS and compares it to that checkpoint. The checkpoint lives OUTSIDE the mutable store (plan §1: anchoring tamper-evidence inside the database an attacker can already write would empty it), which is why this task needs no migration. FOUR TYPED ALERTS, matched on `kind` and never on a substring of prose: `gap` (rows the checkpoint anchored are missing — fewer anchored rows, a top seq below the anchor, or a session gone), `tamper` (the anchored rows are all still there, same count and same top seq, but their BYTES no longer chain), `signature` (bad/absent signature or an untrusted key resolution — raised before any row is read, fail-closed) and `stale` (a validly signed OLD checkpoint, the rollback arm: swapping one in makes every later edit merely `unanchored`, so only an operator freshness window can tell old from fresh). The gap rule is COUNT + TOP-SEQ against the checkpoint, deliberately NOT contiguity: a retention purge leaves legitimate holes and a contiguity rule would alert on routine maintenance (TestALegitimateHoleIsNotAGap). Every row field is in the digest (TestEveryRowFieldIsInTheDigest) and the head is order-independent but row-sensitive. An alert is never a log line someone has to notice: exit is non-zero and the report is typed. LOCAL SEAM: real PostgreSQL under the component tier plus a real openssl key pair minted for the run — the pubkey is resolved OUT OF BAND (device+inode containment, never from beside the checkpoint) and `PALAI_AUDIT_ALLOW_BUNDLED_PUBKEY` is the explicit same-session opt-in. §6 operator legs: CHECKPOINT CADENCE IS OPERATOR POLICY — a checkpoint anchors a PREFIX, so everything written since the last cut is only as protected as the next cut makes it; continuous live verification wired to alerting is the §50 operations leg and this command is the MECHANISM, not a running watchdog; the key ceremony that holds the signing key is §6 leg 6 (KMS). KNOWN AND CARRIED: an authorised retention purge is INDISTINGUISHABLE from tampering — §22.2 scrub_events UPDATEs an anchored row's payload to {\"purged\": true}, which is exactly the `tamper` signature, so arms 1 and 2 print byte-for-byte the same alert. That is correct at this design point and is documented in the alert text, in audit.Ceilings, in runbooks/audit-integrity-alert.md and as `AUD-1` in the RC triage; the operational rule is to RE-CUT the checkpoint immediately after any purge."
+expect_status: completed
+proof:
+  - packages/audit/chain_test.go:TestIntactJournalVerifiesGreen
+  - packages/audit/chain_test.go:TestDeletedRowRaisesGap
+  - packages/audit/chain_test.go:TestFlippedPayloadByteRaisesTamper
+  - packages/audit/chain_test.go:TestCheckpointSignatureFailClosed
+  - packages/audit/chain_test.go:TestALegitimateHoleIsNotAGap
+  - packages/audit/chain_test.go:TestAnOldValidlySignedCheckpointIsStale
+  - packages/audit/chain_test.go:TestARetentionPurgeIsIndistinguishableFromTamper
+  - packages/audit/chain_test.go:TestEveryRowFieldIsInTheDigest
+  - packages/audit/chain_test.go:TestPubkeyContainmentSurvivesSymlinks
+  - tests/component/postgres/audit_integrity_test.go:TestAuditIntegrityFourArms
+# ceiling: this chains the `events` session journal, NOT `audit_events` (§50.3, protected by a REVOKE of
+# UPDATE/DELETE instead). Neither control substitutes for the other, and nothing here claims it does.

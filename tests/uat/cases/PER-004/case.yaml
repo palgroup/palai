@@ -1,0 +1,12 @@
+id: PER-004
+name: a-burst-is-bounded-and-fair-at-the-trigger-admission-gate-and-the-queue-adapter-sheds-instead-of-dropping
+proof_class: component-real
+provider: fake
+input: "PER-004 profiles two REAL backpressure seams in one run. E11 TRIGGER ADMISSION, over real HTTP against the running binary: a burst of deliveries across several correlation keys hits the `queue` concurrency policy — the BOUNDED BUFFER is the per-key admission gate (at most one admitted run per key, every other delivery DEFERRED DURABLY, none dropped) and the DEPTH REPORT is the deferred backlog per key. Fairness is per-key: one key's burst must not starve another key's first delivery. E17 T7 QUEUE ADAPTER, in-process against the public reference implementation: a burst past the configured capacity must SHED with ErrQueueFull — never silently drop, never grow past capacity — the Depth gauge must report the backlog, and every accepted message must eventually be served so no producer starves behind another. THE RED FIXTURE TURNS THE REAL KNOB OFF rather than stubbing anything: concurrency_policy `allow` IS backpressure disabled, the same burst then admits every delivery at once, and the bounded-buffer gate MUST refuse that run (TestPER004BackpressureDisabledFailsTheBoundedBufferGate). Percentiles and gauges are derived from raw samples.jsonl by the documented nearest-rank method behind the mandatory profile stamp, and a gate whose metric produced no samples is a FAILING zero-count stat rather than a silent pass. LOCAL SEAM: the durable per-key admission gate behind the real API over real PostgreSQL, plus the IN-PROCESS reference queue adapter — macOS + Docker Desktop, dispatch disabled per the E08 rule, so an admitted run stays queued and no number here is run-execution time. §6 operator legs: a REAL BROKER PRODUCT (SQS / Pub/Sub / Kafka / NATS) is not measured here and is the E18 §6 operator leg — no broker product exists anywhere in this tree, which is the same reason the `queues` capability closes PREVIEW rather than stable; published numbers on reference hardware are §6 operator leg 3, and nothing here carries an SLO."
+expect_status: completed
+proof:
+  - tests/performance/per004_burst_test.go:TestPER004BurstTriggerQueue
+  - tests/performance/per004_burst_test.go:TestPER004BackpressureDisabledFailsTheBoundedBufferGate
+  - tests/performance/harness_test.go:TestHarnessWritesNothingWithoutAProfile
+  - tests/performance/harness_test.go:TestHarnessVacuousGateFails
+# ceiling: run with `make test-performance TEST=service`. Docker-bound, so NOT in `make verify`.
