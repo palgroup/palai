@@ -54,6 +54,14 @@ WHERE p.session_id = $1 AND p.organization_id = $2 AND p.project_id = $3 AND p.s
 ORDER BY p.created_at, p.id
 LIMIT 1;
 
+-- PublicationState reads one publication's current state, tenant-scoped. It answers "did my decision
+-- land?" for a caller whose approve/deny command was settled by someone else (spec §22.4): the boundary
+-- pump applying the SAME command means the decision is durable, while an expiry sweep settling it means
+-- nothing was decided — and only this state separates the two.
+-- name: PublicationState
+SELECT state FROM publications
+WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
 -- LockPendingApprovalForSession locks the session's oldest pending publication + its approval so an
 -- approve/deny transition sees a stable state (the single-winner gate). It projects the approval's
 -- expires_at so the consume-time guard (ApplyApprovalDecision) can reject an approve that arrives after

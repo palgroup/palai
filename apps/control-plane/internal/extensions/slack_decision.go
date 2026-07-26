@@ -150,8 +150,28 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 	}
 
 	// 5. Apply it — bound to the hash, single-winner, in one transaction with settling the command.
-	if _, err := a.spine.ApplyApprovalDecision(ctx, tenant, session, pub.ResponseID, pub.RunID,
-		cmdID, intent.Decision, intent.RequestHash); err != nil {
+	//
+	// LOSING THE RACE IS NOT FAILING. The command minted above is an ordinary queued command on the run, so
+	// the boundary pump drains it too (it did not, while PendingBoundaryCommands filtered approve/deny out —
+	// that filter is why this was the only working approval path). Whichever side gets there first applies
+	// the SAME command under the SAME one-shot hash; the loser sees ErrCommandNotPending. Reporting that as
+	// an error would 503 the click and tell a human their approval failed while it is durably applied.
+	//
+	// But an EXPIRY sweep settles a queued command too — the run terminalized, or the session closed — and
+	// that one decided NOTHING. The two are indistinguishable from the error alone, so the publication's own
+	// state is what separates them: a click that authorized nothing must never be drawn as approved.
+	switch _, err := a.spine.ApplyApprovalDecision(ctx, tenant, session, pub.ResponseID, pub.RunID,
+		cmdID, intent.Decision, intent.RequestHash); {
+	case errors.Is(err, coordinator.ErrCommandNotPending):
+		state, found, serr := a.spine.PublicationState(ctx, tenant, pub.ID)
+		if serr != nil {
+			return api.SlackDecisionOutcome{}, fmt.Errorf("read the publication after a settled command: %w", serr)
+		}
+		if !found || state != decidedPublicationState(intent.Decision) {
+			return api.SlackDecisionOutcome{SessionID: session, CommandID: cmdID,
+				Rejected: "the command was settled before the decision could be applied"}, nil
+		}
+	case err != nil:
 		return api.SlackDecisionOutcome{}, fmt.Errorf("apply slack approval decision: %w", err)
 	}
 
@@ -162,6 +182,15 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 	}
 	out.Repaired = a.repairDecisionMessage(scoped, conn, intent, lastBotTS, pub)
 	return out, nil
+}
+
+// decidedPublicationState is the publication state a decision produces — what "my decision landed" looks
+// like when some other path settled the command that carried it.
+func decidedPublicationState(decision string) string {
+	if decision == "deny" {
+		return "denied"
+	}
+	return "approved"
 }
 
 // repairDecisionMessage edits the visible approval message in place to reflect the decision, with the bot
