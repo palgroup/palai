@@ -74,7 +74,12 @@ const (
 	supplyChainReleaseDir  = "scripts/release: build.sh --no-images --version 18.0.0 --cli-targets darwin/arm64 --runner-archs arm64, rolled up by sbom-tool.py and attested + signed by provenance.sh (release_verify_test.go attestedRelease), verified by scripts/release/release-verify.sh"
 	supplyChainVulnDB      = "pinned offline grype DB v6.1.9, snapshot 2026-07-25T00:39:09Z (scripts/release/vulndb.lock.json) — a snapshot, never a live CVE feed"
 
-	auditCheckpointHead = "sha256:9a4c04dcbeaf58c1cbee2fa8e3e05a5f8c4bb9f14e5b3ff59a0d02b47c8dc1e2"
+	// Captured from a REAL TestAuditIntegrityFourArms run against real PostgreSQL on 2026-07-26: the head
+	// audit.NewCheckpoint anchored, and the head audit.Compare RECOMPUTED from the rows, printed equal. It is
+	// a run receipt, not a re-derivable constant — the arm's six events carry per-run ids, so the head moves
+	// with every run exactly as a run_id does. What makes it evidence rather than a number is that
+	// scripts/uat/stable-release RE-RUNS that very test in the same invocation that verifies this bundle.
+	auditCheckpointHead = "sha256:8723b40be5acfc750f912aac84bc47ca43ccb4a564c3650e7e5ea7a9f5083875"
 )
 
 var supplyChainArtifactDigests = []string{
@@ -472,6 +477,9 @@ func buildStableReleaseManifest(t *testing.T) []byte {
 
 	// SEC-103 — audit integrity.
 	sec103 := newCase("SEC-103", catalogAssertions("SEC-103"))
+	sec103["db_assertions"] = append(sec103["db_assertions"].([]string),
+		"WHICH TEST RAISES WHICH ALERT, because \"all four alerts raise\" would otherwise read as one test doing it: `gap`, `tamper` and `signature` are raised by TestAuditIntegrityFourArms over ONE seeded real journal (a deleted row, a flipped payload byte, a checkpoint signed with the wrong key AND that forgery re-checked against the key sitting beside it); `stale` is raised by TestAuditVerifyReportsCheckpointAgeAndAlertsOnRollback (an OLD validly-signed checkpoint swapped in, plus the coverage floor) and by packages/audit TestAnOldValidlySignedCheckpointIsStale. scripts/uat/stable-release runs ALL of them in the same invocation that verifies this bundle",
+		"THE GREEN ARM'S HEAD IS A RUN RECEIPT: the arm's six events carry per-run ids, so checkpoint_head moves with every run exactly as a run_id does. What makes it evidence is the co-run, not re-derivability — and checkpoint_head == recomputed_head is the assertion that matters: the chain RECOMPUTED from the rows equalled the anchor")
 	sec103["audit_integrity_claim"] = "chain-recomputes-and-all-four-alerts-raise"
 	sec103["audit_integrity_proof"] = map[string]any{
 		"algorithm":       "palai-audit-chain-sha256-v1",
@@ -562,7 +570,11 @@ func countBundleCarried(index []uat.ReleaseIndexEntry) int {
 // must be byte-deterministic (the E17 precedent): a bundle whose content moved with the clock or the
 // working tree could never be asserted equal to its committed copy.
 const (
-	capturedAt      = "2026-07-26T11:00:00Z"
+	capturedAt = "2026-07-26T11:00:00Z"
+	// committedGitSHA is the commit the SUPPLY-CHAIN evidence above was produced at — the release index
+	// staged by build.sh records exactly this commit in its own `commit` field, so the sha and
+	// supplyChainIndexDigest describe one run rather than two. Later commits in this task changed test and
+	// generator code, not that release directory.
 	committedGitSHA = "92a3db925607471304227f7a6fc0368cbb1d8762"
 )
 

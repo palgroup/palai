@@ -64,10 +64,10 @@
         ],
         "algorithm": "palai-audit-chain-sha256-v1",
         "anchored_rows": 6,
-        "checkpoint_head": "sha256:9a4c04dcbeaf58c1cbee2fa8e3e05a5f8c4bb9f14e5b3ff59a0d02b47c8dc1e2",
+        "checkpoint_head": "sha256:8723b40be5acfc750f912aac84bc47ca43ccb4a564c3650e7e5ea7a9f5083875",
         "checkpoint_outside_store": true,
         "purge_indistinguishable_from_tamper": true,
-        "recomputed_head": "sha256:9a4c04dcbeaf58c1cbee2fa8e3e05a5f8c4bb9f14e5b3ff59a0d02b47c8dc1e2"
+        "recomputed_head": "sha256:8723b40be5acfc750f912aac84bc47ca43ccb4a564c3650e7e5ea7a9f5083875"
       },
       "checksum": "sha256:66d2bbfe402d341d91d0c7df3f03d1960d94c382284e5f35f4191933971bce3d",
       "db_assertions": [
@@ -75,7 +75,9 @@
         "the case text NAMES its local seam and its §6 operator leg; TestE18CatalogMaterialized enforces both mechanically and TestE18CatalogGuardBites proves the enforcement bites",
         "AUTHORED BUNDLE, script/component tier: no ENGINE image serves these cases, so image_digest / provider_request_id / mtls_enroll carry deliberately unservable placeholder values and are never a claim that a container ran a model",
         "AN AUTHORISED RETENTION PURGE IS INDISTINGUISHABLE FROM TAMPERING, and the proof DECLARES it rather than hiding it: §22.2 scrub_events UPDATEs an anchored row's payload to {\"purged\": true} — same rows, same seq, different bytes — which is precisely the `tamper` signature, so a routine reaper sweep raises the highest-severity alert and an attacker who edits a row inherits \"the reaper did it\" as cover. Correct and unavoidable at this design point (the chain covers payload bytes); the operational rule is to RE-CUT the checkpoint immediately after any purge, and it is written into the alert text, audit.Ceilings, runbooks/audit-integrity-alert.md and the RC triage as AUD-1",
-        "THIS CHAINS THE `events` SESSION JOURNAL, NOT `audit_events` (§50.3, protected by a REVOKE of UPDATE/DELETE instead). Neither control substitutes for the other. A checkpoint anchors a PREFIX; cadence is operator policy and continuous live verification wired to alerting is a §6 operator leg — this is the mechanism, not a running watchdog"
+        "THIS CHAINS THE `events` SESSION JOURNAL, NOT `audit_events` (§50.3, protected by a REVOKE of UPDATE/DELETE instead). Neither control substitutes for the other. A checkpoint anchors a PREFIX; cadence is operator policy and continuous live verification wired to alerting is a §6 operator leg — this is the mechanism, not a running watchdog",
+        "WHICH TEST RAISES WHICH ALERT, because \"all four alerts raise\" would otherwise read as one test doing it: `gap`, `tamper` and `signature` are raised by TestAuditIntegrityFourArms over ONE seeded real journal (a deleted row, a flipped payload byte, a checkpoint signed with the wrong key AND that forgery re-checked against the key sitting beside it); `stale` is raised by TestAuditVerifyReportsCheckpointAgeAndAlertsOnRollback (an OLD validly-signed checkpoint swapped in, plus the coverage floor) and by packages/audit TestAnOldValidlySignedCheckpointIsStale. scripts/uat/stable-release runs ALL of them in the same invocation that verifies this bundle",
+        "THE GREEN ARM'S HEAD IS A RUN RECEIPT: the arm's six events carry per-run ids, so checkpoint_head moves with every run exactly as a run_id does. What makes it evidence is the co-run, not re-derivability — and checkpoint_head == recomputed_head is the assertion that matters: the chain RECOMPUTED from the rows equalled the anchor"
       ],
       "id": "SEC-103",
       "image_digest": "sha256:e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e18e",
