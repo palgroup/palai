@@ -1,6 +1,9 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Page } from "@playwright/test";
 
+import { IS_REAL } from "./constants";
+import { announceProfile, runToTerminal } from "./profile";
+
 // tabToTestId genuinely presses Tab until the element carrying data-testid=id holds focus — proving KEYBOARD
 // REACHABILITY. This is stronger than `.focus()`, which succeeds even on a tabindex=-1 element that Tab can
 // never reach; here a control dropped from the tab order would never be reached and this fails.
@@ -15,24 +18,32 @@ async function tabToTestId(page: Page, id: string, max = 30) {
 
 // UI-001 (accessibility). The AUTOMATED ceiling: axe-core finds zero violations on the admin and live-run
 // surfaces (WCAG 2 A/AA rule set), keyboard navigation reaches the skip link first and operates the core
-// run→approve flow with no mouse, and status is conveyed by a glyph + word (never color alone). A manual
-// VoiceOver/screen-reader pass over a DEPLOYED console is the §6 operator leg above this automated ceiling.
+// run flow with no mouse, and status is conveyed by a glyph + word (never color alone).
+//
+// E19 T7 — THIS FILE NOW RUNS ON BOTH PROFILES, AND THAT IS THE POINT. Against the real compose stack these
+// scans cover surfaces the fixture cannot produce: an admin panel rendering a genuinely EMPTY collection,
+// and an ERROR panel for a capability the real stack does not mount (/v1/secret-refs is unregistered there —
+// DIV-RTE-001). Both are states a real operator meets on day one and no fake had ever rendered.
+//
+// What still does NOT narrow: a manual VoiceOver/screen-reader pass over a DEPLOYED console. Compose is not
+// a deployment, and axe is not a screen reader. That remains §6 operator leg 8.
+test.beforeAll(() => announceProfile("a11y.spec.ts"));
 
 test("axe-core reports zero violations on the admin surface", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByTestId("panel-organizations")).toContainText("Local Org", { timeout: 15_000 });
+  // org_local is the id BOTH surfaces carry: the fixture seeds it, and identity/store.go's ProvisionFirstOrg
+  // seeds it on every real bootstrap. Its display NAME is not — the real seed passes no orgName at all
+  // (DIV-SHP-001) — so asserting on the name would be asserting on the fixture.
+  await expect(page.getByTestId("panel-organizations")).toContainText("org_local", { timeout: 15_000 });
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
 });
 
 test("axe-core reports zero violations on the live-run surface after a completed run", async ({ page }) => {
-  await page.goto("/runs");
-  await page.getByTestId("run-button").click();
-  // Render the approval panel (its detail must be a11y-clean too), approve, and reach terminal so every
-  // live panel — timeline, recovery, usage, artifacts — is present for the scan.
-  await expect(page.getByTestId("approval-panel")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId("approve-button").click();
-  await expect(page.getByTestId("terminal-status")).toContainText(/completed/i, { timeout: 15_000 });
+  // Render everything the profile can produce and reach terminal, so every live panel present on this
+  // profile — timeline, recovery, usage, artifacts, and on the fake profile the approval detail — is in the
+  // scan. The real profile's surface is honestly thinner (DIV-UI-002) and is scanned as it actually is.
+  await runToTerminal(page);
   const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
   expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
 });
@@ -51,14 +62,16 @@ test("keyboard navigation: skip link is the first stop and the run→approve flo
   await expect(page.getByTestId("run-button")).toBeFocused();
   await page.keyboard.press("Enter");
 
-  await expect(page.getByTestId("approval-panel")).toBeVisible({ timeout: 15_000 });
-  // Tab through to the approve control the same way, then activate it — the approval detail is reached and
-  // operated with no mouse.
-  await tabToTestId(page, "approve-button");
-  await expect(page.getByTestId("approve-button")).toBeFocused();
-  await page.keyboard.press("Enter");
+  if (!IS_REAL) {
+    // The approve half of the claim. On the real profile no run can reach an approval at all (DIV-UI-001),
+    // so the keyboard-operability claim narrows there to the run flow — stated, not silently dropped.
+    await expect(page.getByTestId("approval-panel")).toBeVisible({ timeout: 15_000 });
+    await tabToTestId(page, "approve-button");
+    await expect(page.getByTestId("approve-button")).toBeFocused();
+    await page.keyboard.press("Enter");
+  }
 
-  await expect(page.getByTestId("terminal-status")).toContainText(/completed/i, { timeout: 15_000 });
+  await expect(page.getByTestId("terminal-status")).toContainText(/completed/i, { timeout: 60_000 });
 
   // Status is NOT color-only: the terminal status carries a visible glyph + the word.
   const glyph = page.getByTestId("terminal-status").locator(".glyph");

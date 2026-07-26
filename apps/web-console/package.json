@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start -p 3200",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "next build && playwright test"
+    "test:e2e": "next build && playwright test",
+    "test:e2e:real": "PALAI_CONSOLE_PROFILE=real next build && PALAI_CONSOLE_PROFILE=real playwright test",
+    "sweep": "node --test tests/conformance.test.mjs"
   },
   "dependencies": {
     "@palai/sdk": "workspace:*",

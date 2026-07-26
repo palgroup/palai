@@ -1,4 +1,4 @@
-import { test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 import { DIVERGENCE_BY_ID } from "./divergences.mjs";
 import { IS_REAL, PROFILE } from "./constants";
@@ -37,4 +37,24 @@ export function skipOnReal(divergenceId: string): void {
 export function announceProfile(file: string): void {
   // eslint-disable-next-line no-console -- see above.
   console.log(`PROFILE=${PROFILE} — ${file}`);
+}
+
+// runToTerminal starts a run on /runs and drives it to a terminal status on EITHER profile.
+//
+// The approval leg is the one genuinely profile-dependent step, and it is asserted in BOTH directions
+// rather than tolerated in either: on the fake profile the approval panel MUST appear (a regression that
+// removed it would fail here, not quietly proceed), and on the real profile it must NOT — because
+// DIV-UI-001 measured that a compose run cannot reach approval.requested.v1, and if one ever did, that row
+// is stale and the conformance sweep says so first. So this is not a branch that hides a difference; it is
+// a branch whose two arms are each pinned.
+export async function runToTerminal(page: Page): Promise<void> {
+  await page.goto("/runs");
+  await page.getByTestId("run-button").click();
+  if (!IS_REAL) {
+    await expect(page.getByTestId("approval-panel")).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId("approve-button").click();
+  } else {
+    await expect(page.getByTestId("approval-panel")).toHaveCount(0);
+  }
+  await expect(page.getByTestId("terminal-status")).toContainText(/completed/i, { timeout: 60_000 });
 }

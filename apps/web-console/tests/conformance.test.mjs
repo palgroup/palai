@@ -325,15 +325,26 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
           sites.length === 0
             ? "and NO production Go file journals this literal — the fixture invented it (the E17 T10 class)"
             : `but it IS journaled by ${sites.join(", ")} — a real event this tier cannot reach`;
-        const row = requireLedgerRow(kind, type, `scripted by the fixture, absent from a real run's stream, ${why}`);
-        // The ledger must agree with the re-derived classification, or its prose is doing work its evidence
-        // does not support — the exact failure mode this whole file exists to prevent.
+        // Look the row up by SUBJECT across BOTH absence kinds, then check the kind separately. Looking it
+        // up by (kind, subject) would make the classification check unreachable — the lookup would already
+        // have enforced it, and a misfiled row would be reported as "unrecorded", which is the wrong
+        // diagnosis for the wrong reason. A misclassification deserves to say so: an invention filed as a
+        // coverage gap is precisely how five real ones stayed hidden behind one known instance.
+        const row = DIVERGENCES.find((d) => (d.kind === "event" || d.kind === "unexercised") && d.subject === type);
+        assert.ok(
+          row !== undefined,
+          `UNRECORDED FAKE-VS-REAL DIVERGENCE [${kind}] ${type}\n  scripted by the fixture, absent from a ` +
+            `real run's stream, ${why}\n\nEvery difference must be written down in tests/divergences.mjs.`,
+        );
         assert.equal(
           row.kind,
           kind,
-          `${type} is filed as "${row.kind}" but the tree says "${kind}": production journaling sites = ` +
-            `[${sites.join(", ") || "none"}]. An invention filed as a coverage gap is how five real ones stayed hidden.`,
+          `${type} is filed in the ledger as "${row.kind}" but the tree says "${kind}". Production journaling ` +
+            `sites = [${sites.join(", ") || "NONE"}]. "event" means the fixture INVENTED the name; ` +
+            '"unexercised" means the name is real and this tier cannot reach it. Filing an invention as a ' +
+            "coverage gap is how the E17 T10 class hides.",
         );
+        observed.add(row.id);
         continue;
       }
       const fixtureOnly = [...fixtureKeys].filter((k) => !realKeys.has(k)).sort();
