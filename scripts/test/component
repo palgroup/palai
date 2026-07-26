@@ -177,6 +177,19 @@ run_postgres() {
       go test -tags=component -count=1 -v -run 'TestA2ARealAdmitterBirthsRun|TestSlack' ./apps/control-plane/internal/store
     status=$?
   fi
+  # The E19 last mile: the three *_ref handles a `palai up` registration writes on a REAL
+  # slack_connections row redeem to the values stored through the E13 T3 secret store, and each is
+  # read off its REAL consumer — a v0 MAC computed longhand, and the two Authorization headers a
+  # fake Slack sees on chat.update and apps.connections.open. Before it, `palai up` registered
+  # handles that resolved NOWHERE and every consumer failed silently by design. The companion
+  # asserts the loop refuses to dial at all on an unredeemable handle.
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v \
+        -run 'TestSlackHandlesRedeemToTheStoredValues|TestSlackSocketRefusesToDialOnAnUnredeemableHandle' \
+        ./apps/control-plane/internal/extensions
+    status=$?
+  fi
   set -e
   if test "$status" -ne 0; then
     docker logs "$container" >&2 || true
