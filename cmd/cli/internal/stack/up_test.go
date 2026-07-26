@@ -269,3 +269,69 @@ func TestRedChecksCarryTheirDetail(t *testing.T) {
 		t.Fatalf("redChecks = %v, want the failing check with its detail", red)
 	}
 }
+
+// TestSlackTestChannelNeverBecomesAProductionScope is Finding 2, and it is a NAMING guarantee with a
+// security consequence rather than a style rule. SLACK_TEST_CHANNEL belongs to the live test harness
+// (tests/live/slack) — it is "the channel the bot was invited to so a test can post there". `palai up`
+// used to copy it into allowed_channels, so an operator who set it to make the live tests run silently
+// confined their PRODUCTION bot to their test channel, and an operator who did not set it got a bot with
+// no scope while the field looked like one.
+func TestSlackTestChannelNeverBecomesAProductionScope(t *testing.T) {
+	base := []string{"SLACK_TEAM_ID", "T0001", "SLACK_AGENT_REVISION_ID", "agr_1", "SLACK_PRINCIPAL_ID", "prn_1"}
+
+	body, skip := slackRegistration(env(append(base, "SLACK_TEST_CHANNEL", "C_TEST")...))
+	if skip != "" {
+		t.Fatalf("a complete Slack environment was skipped: %s", skip)
+	}
+	if got, ok := body["allowed_channels"]; ok {
+		t.Fatalf("SLACK_TEST_CHANNEL became allowed_channels=%v — a variable named 'test channel' must never silently become a production security scope", got)
+	}
+
+	// Unset ⇒ NO channel restriction. That is the production default and it must be the ABSENCE of the
+	// field, not an empty list that a later reader could mistake for "nothing is allowed".
+	bare, _ := slackRegistration(env(base...))
+	if _, ok := bare["allowed_channels"]; ok {
+		t.Fatalf("with no allow-list configured the body still carried allowed_channels=%v; an unconfigured connection must be registered with no channel restriction at all", bare["allowed_channels"])
+	}
+
+	// The honestly-named variable is the one that scopes, and it takes a comma-separated LIST — one channel
+	// was never the right shape for an allow-list.
+	scoped, _ := slackRegistration(env(append(base, "SLACK_ALLOWED_CHANNELS", " C1, C2 ,,C3 ")...))
+	got, ok := scoped["allowed_channels"].([]string)
+	if !ok || len(got) != 3 || got[0] != "C1" || got[1] != "C2" || got[2] != "C3" {
+		t.Fatalf("SLACK_ALLOWED_CHANNELS parsed to %#v, want [C1 C2 C3] — comma-separated, trimmed, empties dropped", scoped["allowed_channels"])
+	}
+}
+
+// TestSlackApproverSetIsRegisteredAndItsAbsenceIsSaidOutLoud is Finding 3. The deny-by-default in
+// ApproverAuthorized is CORRECT and stays; what was broken is that `palai up` registered no approver at
+// all and said nothing, so a real operator's first Approve click was refused with no way to learn why.
+func TestSlackApproverSetIsRegisteredAndItsAbsenceIsSaidOutLoud(t *testing.T) {
+	base := []string{"SLACK_TEAM_ID", "T0001", "SLACK_AGENT_REVISION_ID", "agr_1", "SLACK_PRINCIPAL_ID", "prn_1"}
+
+	with, _ := slackRegistration(env(append(base, "SLACK_APPROVER_IDS", "U1, U2")...))
+	users, ok := with["allowed_users"].([]string)
+	if !ok || len(users) != 2 || users[0] != "U1" || users[1] != "U2" {
+		t.Fatalf("SLACK_APPROVER_IDS parsed to %#v, want [U1 U2]", with["allowed_users"])
+	}
+	if warn := slackApproverWarning(with); warn != "" {
+		t.Fatalf("a connection WITH approvers warned anyway: %q", warn)
+	}
+
+	// The silent case: registered, and every approve/deny click will be refused.
+	bare, _ := slackRegistration(env(base...))
+	if _, ok := bare["allowed_users"]; ok {
+		t.Fatalf("with no SLACK_APPROVER_IDS the body carried allowed_users=%v; it must send nothing rather than guess", bare["allowed_users"])
+	}
+	warn := slackApproverWarning(bare)
+	if warn == "" {
+		t.Fatal("a connection registered with NO approver produced no warning — the operator learns of it as a silently refused Approve click, which is exactly the failure this warning exists to prevent")
+	}
+	// It must name the consequence AND the fix; "no approvers configured" alone tells an operator nothing
+	// about the click that is about to be swallowed.
+	for _, want := range []string{"NO approver", "refused", "SLACK_APPROVER_IDS"} {
+		if !strings.Contains(warn, want) {
+			t.Fatalf("the warning must mention %q, got: %q", want, warn)
+		}
+	}
+}
