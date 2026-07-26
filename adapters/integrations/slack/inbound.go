@@ -227,35 +227,3 @@ func classify(typ, subtype string) Kind {
 		return KindOther
 	}
 }
-
-// socketFrame is the Socket Mode WebSocket envelope: a typed frame wrapping the SAME payload the Events API
-// / interactivity HTTP transports deliver, plus an envelope_id the receiver echoes to acknowledge.
-type socketFrame struct {
-	Type       string          `json:"type"`
-	EnvelopeID string          `json:"envelope_id"`
-	Payload    json.RawMessage `json:"payload"`
-}
-
-// SocketFrame is a decoded Socket Mode frame. Type is "events_api" | "interactive" | "hello" | "disconnect"
-// | ...; Payload (for events_api / interactive) is exactly the body the HTTP transports carry, so it feeds
-// MapEvent / MapInteractiveApproval unchanged — the transport swap does not change correlation identity.
-type SocketFrame struct {
-	Type       string
-	EnvelopeID string
-	Payload    json.RawMessage
-}
-
-// UnwrapSocketFrame decodes a Socket Mode WebSocket frame. Socket Mode frames are authenticated by the
-// app-level token at connect, so they carry NO v0 signature — the caller does not (and must not) run
-// VerifySignature on them; the WS peer identity is the auth. The unwrapped Payload is identical in shape to
-// the Events API / interactivity HTTP body, so identity (event_id / request_hash) is transport-invariant.
-func UnwrapSocketFrame(frame []byte) (SocketFrame, error) {
-	var f socketFrame
-	if err := json.Unmarshal(frame, &f); err != nil {
-		return SocketFrame{}, ErrMalformed
-	}
-	if f.Type == "" {
-		return SocketFrame{}, ErrMalformed
-	}
-	return SocketFrame{Type: f.Type, EnvelopeID: f.EnvelopeID, Payload: f.Payload}, nil
-}
