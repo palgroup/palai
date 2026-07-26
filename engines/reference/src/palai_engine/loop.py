@@ -260,6 +260,13 @@ class Loop:
         # before and the request_hash — role/objective/model only — is unaffected either way.
         if spec.get("detach"):
             data["detach"] = True
+        # Same discipline for the remote EXECUTOR (E19 T5, §38.5): a config-seeded delegation naming a
+        # registered a2a_remote_agents row carries it through, and a local delegation's frame is
+        # unchanged. Without this the controller's remote branch is unreachable through a real engine.
+        # It rides ONLY a config-seeded spec: _agent_call_to_spec does not map it, so a MODEL cannot
+        # choose where a delegation executes by writing an argument — that is a registration decision.
+        if spec.get("remote_agent"):
+            data["remote_agent"] = spec["remote_agent"]
         return self.emitter.build("child.request", data, reply_to=reply_to)
 
     def _on_child_result(self, frame: dict) -> list[dict]:

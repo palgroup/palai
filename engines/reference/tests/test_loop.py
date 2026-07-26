@@ -369,6 +369,37 @@ def test_child_result_folds_as_typed_result_and_resumes_with_next_model_request(
     assert "42" in blob and "run_child" in blob
 
 
+def test_config_seeded_delegation_carries_the_remote_executor_and_a_model_cannot_choose_one() -> None:
+    # E19 T5: a config-seeded delegation naming a REGISTERED remote A2A agent must carry remote_agent
+    # onto its child.request, or the controller's remote branch is unreachable through a real engine —
+    # the frame is where the wiring actually lives. Two halves, both load-bearing:
+    #   * a local delegation's frame stays byte-identical (no new key), as detach did in E10 T8, and the
+    #     request_hash — role/objective/model only — is unchanged either way;
+    #   * a MODEL-driven agent/spawn tool_call can NOT name a remote executor. Choosing where a
+    #     delegation executes is a registration-time decision, not something a model writes into an
+    #     argument, so _agent_call_to_spec deliberately does not map it.
+    loop = make_loop("run_remote")
+    frames = _first_model_result(loop, [
+        {"role": "local", "objective": "here", "model": "m"},
+        {"role": "remote", "objective": "there", "model": "m", "remote_agent": "a2arem_7"},
+    ])
+    local, remote = frames[0]["data"], frames[1]["data"]
+    assert "remote_agent" not in local, f"a LOCAL delegation's frame gained a key: {local}"
+    assert remote["remote_agent"] == "a2arem_7"
+    # The re-emit path is the SAME builder (test_restore pins that for detach), so a restored parent
+    # re-emits the remote delegation naming the same agent rather than a local child.
+
+    modeldriven = make_loop("run_agent_tool")
+    modeldriven.handle(ctrl("run.start", {"input": "go"}, "frm_s"))
+    out = modeldriven.handle(ctrl("model.result", {
+        "model_request_id": protocol.model_request_id("run_agent_tool", 1),
+        "tool_calls": [{"name": "agent", "arguments": {
+            "objective": "o", "model": "m", "remote_agent": "a2arem_7"}}]}, "frm_mr"))
+    child = next(f for f in out if f["type"] == "child.request")
+    assert "remote_agent" not in child["data"], (
+        "a model chose the remote executor by writing an argument: " + repr(child["data"]))
+
+
 def test_required_child_that_cannot_be_served_terminates_the_run_failed() -> None:
     # A required delegation the controller cannot route comes back denied; the parent must NOT
     # fake a parent-only success — it terminates failed (SUB-003, spec §25.18).
