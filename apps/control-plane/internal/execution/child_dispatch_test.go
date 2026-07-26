@@ -110,3 +110,41 @@ func TestAdmitChildCapabilityAndRoutability(t *testing.T) {
 		t.Fatalf("nil parent ceiling (unrestricted) denied = %q, want admitted", got.Reason)
 	}
 }
+
+// TestRemoteAgentRidesTheChildRequestOnlyWhenNamed pins the frame plumbing of the E19 T5 branch: a seeded
+// delegation naming a remote agent renders remote_agent onto its child.request and decodes back, while a
+// LOCAL delegation's frame stays byte-identical to before (no new key) — the same discipline E10 T8 used for
+// detach, so an existing golden frame and its request_hash are untouched.
+func TestRemoteAgentRidesTheChildRequestOnlyWhenNamed(t *testing.T) {
+	frames := runDelegation{Emit: []delegationSpec{
+		{Role: "local", Objective: "here"},
+		{Role: "remote", Objective: "there", RemoteAgent: "a2arem_7"},
+	}}.emitFrames()
+
+	if _, present := frames[0]["remote_agent"]; present {
+		t.Fatalf("a LOCAL delegation's frame gained a remote_agent key: %+v", frames[0])
+	}
+	if got := frames[1]["remote_agent"]; got != "a2arem_7" {
+		t.Fatalf("remote delegation frame remote_agent = %v, want a2arem_7", got)
+	}
+	if got := decodeChildSpec(frames[1]).RemoteAgent; got != "a2arem_7" {
+		t.Fatalf("decoded RemoteAgent = %q, want a2arem_7", got)
+	}
+	if got := decodeChildSpec(frames[0]).RemoteAgent; got != "" {
+		t.Fatalf("decoded RemoteAgent for a local delegation = %q, want empty", got)
+	}
+}
+
+// TestRemoteChildrenCountAgainstFanout proves the bound a remote child would otherwise escape: it has no
+// ChildRun row, so len(childRunIDs) cannot see it. A parent at the fan-out limit through REMOTE children
+// alone must admit no more.
+func TestRemoteChildrenCountAgainstFanout(t *testing.T) {
+	st := &attemptState{childRunIDs: []string{"run_1"}, remoteChildren: maxChildFanout - 1}
+	if got := st.fanoutUsed(); got != maxChildFanout {
+		t.Fatalf("fanoutUsed() = %d, want %d (local + remote)", got, maxChildFanout)
+	}
+	var policy coordinator.ConfigPolicy
+	if got := admitChild(childSpec{Model: "m"}, 0, st.fanoutUsed(), 0, false, policy, nil); !got.Denied || got.Reason != "fanout_exceeded" {
+		t.Fatalf("admission at the fan-out limit reached through remote children = %+v, want denied fanout_exceeded", got)
+	}
+}

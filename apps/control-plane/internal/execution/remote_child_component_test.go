@@ -464,6 +464,15 @@ func TestRemoteChildIsRefusedRatherThanRunLocally(t *testing.T) {
 		assertDenied(t, f, "remote_agent_unknown")
 	})
 
+	// The fan-out bound, through the REAL gate: a remote child has no ChildRun row, so a gate reading
+	// len(childRunIDs) would let a parent spawn remote children without limit.
+	t.Run("at the fan-out limit reached through remote children", func(t *testing.T) {
+		peer := newFakeRemotePeer(t, completedTaskReply("ok"))
+		f := newRemoteChildFixture(t, peer, "conn_remote_child")
+		f.st.remoteChildren = maxChildFanout
+		assertDenied(t, f, "fanout_exceeded")
+	})
+
 	t.Run("disabled agent", func(t *testing.T) {
 		peer := newFakeRemotePeer(t, completedTaskReply("ok"))
 		f := newRemoteChildFixture(t, peer, "conn_remote_child")

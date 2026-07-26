@@ -35,7 +35,12 @@ import (
 //   * Version negotiation (§38.7): a card that no longer advertises the pinned protocol version fails
 //     EXPLICITLY — the client never silently degrades to a version it did not negotiate.
 //   * Pushed file (A2A-004 client half): an inbound remote file part is ingested + scanned into a stored
-//     artifact (never a privileged instruction); a file part with no Files sink is REFUSED, never dropped.
+//     artifact (never a privileged instruction); a file part with no Files sink is REFUSED, never dropped —
+//     on the task branch AND the direct-message branch (E19 T5).
+//
+// LIVE-WIRED since E19 T5: orchestrator.dispatchChild routes a child.request naming a registered
+// a2a_remote_agents row through RemoteChildRun. The control plane wires NO Files sink today, so a remote
+// that returns a file part fails its child honestly rather than losing the file silently.
 //
 // HONEST CEILING (§6): the loopback interop drives this client against the ON-MAIN T2 server in the SAME repo
 // — a real A2A 1.0 exchange, but NOT a foreign-peer interop claim (that is §6 leg 2), so a2a stays "preview".
@@ -271,11 +276,10 @@ func (c *Client) GetTask(ctx context.Context, agent RemoteAgent, remoteTaskID st
 	return task, nil
 }
 
-// parseReply turns a message:send reply (a Task or a direct Message) into an UNTRUSTED RemoteResult. On the
-// TASK branch it ingests + scans every pushed file part (a file part with no Files sink is REFUSED, never
-// dropped). On the direct-MESSAGE branch it currently keeps only the text and DROPS any file part — fail-safe
-// (an untrusted file never becomes an artifact, so nothing is stored unscanned), but the "never dropped"
-// invariant holds only on the Task branch until the client is live-wired (message-branch ingest is a follow-on).
+// parseReply turns a message:send reply (a Task or a direct Message) into an UNTRUSTED RemoteResult. BOTH
+// branches ingest + scan every pushed file part: a file part with no Files sink is REFUSED, never dropped
+// (E19 T5 closed the message-branch drop the moment this client became live-wired — a silent data-loss path
+// is worse than an honest refusal, and the two branches must not disagree about that).
 func (c *Client) parseReply(ctx context.Context, agent RemoteAgent, req RemoteRequest, body []byte) (RemoteResult, error) {
 	var probe struct {
 		Kind string `json:"kind"`
@@ -293,9 +297,14 @@ func (c *Client) parseReply(ctx context.Context, agent RemoteAgent, req RemoteRe
 		res.State = TaskStateCompleted
 		res.RemoteContextID = msg.ContextID
 		res.Output = textOf(msg.Parts)
-		// ponytail: a file part in a direct-message reply is dropped here (text only). Fail-safe — an
-		// untrusted file never becomes an artifact — but a legit remote returning a file via direct message
-		// loses it. Run ingestPushedFiles on this branch too when the client is live-wired into dispatchChild.
+		// A direct message's parts go through the SAME ingest as a task's artifact parts (one Artifact
+		// wrapper, no second code path): scanned + stored under the canonical run, or REFUSED when no sink
+		// is wired. E19 T4's push delivery is the OUTBOUND server→client direction and changes nothing here.
+		ids, err := c.ingestPushedFiles(ctx, agent, req, []Artifact{{Parts: msg.Parts}})
+		if err != nil {
+			return RemoteResult{}, err
+		}
+		res.IngestedArtifactIDs = ids
 		return res, nil
 	default: // a Task (kind "task", or an empty/unknown kind we treat conservatively as a trackable task)
 		var task Task

@@ -2,9 +2,9 @@ package a2a
 
 // remote_child.go materializes SUB-007: a registered remote A2A agent acting as an external CHILD-RUN executor
 // (the remote counterpart of an inline E08 ChildRun). RemoteChildRun is what the orchestrator's dispatchChild
-// would call for a delegation targeting a remote agent instead of a local engine: it negotiates the card
-// (version + extension allowlist), dispatches the child's OBJECTIVE as the minimum context, and folds the
-// remote's UNTRUSTED reply into the child.result shape the engine folds.
+// CALLS — since E19 T5 — for a delegation targeting a remote agent instead of a local engine: it negotiates
+// the card (version + extension allowlist), dispatches the child's OBJECTIVE as the minimum context, and folds
+// the remote's UNTRUSTED reply into the child.result shape the engine folds.
 //
 // SECURITY (the crown RED-first asserts, A2A-005/SUB-007): the child receives the MINIMUM context (its
 // objective only — no parent artifacts by default, per the data_policy 'minimum' pin) and NEVER inherits the
@@ -14,8 +14,9 @@ package a2a
 // other terminal state a failure the parent treats per the delegation's required flag.
 //
 // HONEST CEILING (§6, E08): this is driven by FAKE-ENGINE runs — the engine opens no tool to a real provider,
-// so the dispatch is deterministic. It is the materialized seam, NOT live-wired into orchestrator.dispatchChild
-// (which needs a real remote peer = §6 leg 2). The capability stays "preview".
+// so the dispatch is deterministic. E19 T5 wired it into orchestrator.dispatchChild and proved the whole path
+// against a LOOPBACK peer this repo wrote; a real FOREIGN peer is still §6 leg 2, loopback is not interop, and
+// the capability stays "preview". What E19 T5 removed is "the orchestrator does not call this", nothing more.
 
 import "context"
 
