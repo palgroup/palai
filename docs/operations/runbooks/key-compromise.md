@@ -42,9 +42,13 @@ palai local up >/dev/null 2>&1
 shasum -a 256 "$PALAI_HOME/runner-token"
 ```
 
-`palai local up` mints a **fresh one-use enrollment token** on every invocation, so re-running it
-rotates the runner's enrollment secret; the two digests in the transcript differ. On a production or
-split-VM install the token is minted by hand and copied to the runner host — the exact steps are in
+`palai local up` mints a **fresh enrollment token** on every invocation, so re-running it rotates
+the runner's enrollment secret; the two digests in the transcript differ. Rotation is what retires a
+leaked token — the token is **not** one-use: the runner re-presents it to recover an identity that
+expired before renewal could roll it forward (a sleeping host), so a leaked token stays usable until
+it is rotated. It is rate-limited to one certificate per issued certificate lifetime, so a leak
+mints at most one identity per lifetime, not a fleet. On a production or split-VM install the token
+is minted by hand and copied to the runner host — the exact steps are in
 [`../runner-host.md`](../runner-host.md) (step 2) and [`../install.md`](../install.md).
 
 A runner that is already connected keeps its short-lived workload identity until it expires. If you

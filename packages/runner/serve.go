@@ -26,8 +26,8 @@ type ServeConfig struct {
 	// Renew rolls the client certificate forward over the runner's existing identity; nil
 	// disables renewal (a one-shot, single-lifetime runner). Renewal runs on its OWN mTLS
 	// connection and never touches a parked or in-flight lease connection, so a rollover is
-	// always lease-safe. It authenticates with the current certificate — the one-use
-	// bootstrap token is never presented again.
+	// always lease-safe. It authenticates with the current certificate — the bootstrap token is
+	// never presented on this path; Reenroll below is the only thing that presents it again.
 	Renew func(ctx context.Context, current Identity) (Identity, error)
 	// Reenroll is the RECOVERY path renewal cannot serve: it re-presents the file-mounted
 	// bootstrap credential to obtain a wholly new identity. It runs when and only when the
