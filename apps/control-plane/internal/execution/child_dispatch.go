@@ -466,6 +466,9 @@ func (o *Orchestrator) denyChild(ctx context.Context, st *attemptState, spec chi
 //   - DETACH IS IGNORED HERE. detach releases the parent's compute against a DURABLE job that wakes it, and
 //     a remote child has no job and no waker. A frame carrying both runs synchronously; it is not an error,
 //     it is a request this branch cannot honour, and honouring it needs the same durable state as above.
+//   - CANCEL DOES NOT PROPAGATE (the remote half of SUB-005). A canceled parent cancels its non-terminal
+//     ChildRuns; a remote child is not a run and the client has no cancel call at all, so the remote task
+//     keeps going and its reply is simply never folded. The attempt's ctx aborts OUR request, nothing more.
 //   - max_cost_cents IS NOT ENFORCED. The registered agent carries the field and nothing reads it — the
 //     spend happens inside the remote, where this process has no visibility and the reply reports no cost.
 //     The parent's OWN budget is untouched by a remote child (it spends none of our tokens), so a remote
