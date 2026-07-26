@@ -2385,7 +2385,7 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 			case c.SandboxEscapeProof == nil:
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "sandbox_escape_proof (an escape-suite claim requires the arms + the covered/unowned case sets + the quarantine arms; a 'no escape' marker is not proof)"})
 			case !c.SandboxEscapeProof.Complete():
-				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "sandbox_escape_proof is incomplete: the covered set is not every materialized SAN case plus SEC-102 (a shrunken corpus reports 'no escape' over what it did not run), the unowned set does not name SAN-009/010/012 out loud, a quarantine arm is missing from the suite, no_escape or quarantine_works is false, a failure was recorded, or local_oci_only is false — the microVM path is managed-scope and is not claimed here (SEC-102)"})
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "sandbox_escape_proof is incomplete: the covered set is not every materialized SAN case plus SEC-102 (a shrunken corpus reports 'no escape' over what it did not run), the unowned set does not name SAN-009/010/012 out loud, a quarantine arm is missing from the suite, no_escape or quarantine_works is false, a failure was recorded, an arm was NOT ATTEMPTED (a skipped or filtered-out arm is not a denial — E18 T7's own rule), or local_oci_only is false — the microVM path is managed-scope and is not claimed here (SEC-102)"})
 			}
 		}
 		if c.AuditIntegrityClaim != "" {

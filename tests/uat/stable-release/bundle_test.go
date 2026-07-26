@@ -453,23 +453,22 @@ func buildStableReleaseManifest(t *testing.T) []byte {
 	}
 	cases = append(cases, sec101)
 
-	// SEC-102 — the sandbox escape suite.
-	sec102 := newCase("SEC-102", catalogAssertions("SEC-102"))
-	sec102["sandbox_escape_claim"] = "no-escape-and-quarantine-works"
-	sec102["sandbox_escape_proof"] = map[string]any{
-		"arms": []string{
-			"file-tool-confinement", "oci-sandbox-isolation", "cgroup-resource-exhaustion",
-			"snapshot-integrity-and-secret-exclusion", "host-kill-fences-stale-writer",
-			"allocation-hygiene-and-substrate-quarantine", "runner-cordon-drain-revoke",
-			"uncertain-failure-job-quarantine",
-		},
-		"cases_covered":   uat.SandboxEscapeSuiteCases,
-		"cases_unowned":   uat.SandboxEscapeUnownedCases,
-		"quarantine_arms": uat.SandboxEscapeQuarantineArms,
-		"no_escape":       true, "quarantine_works": true, "failures": []string{},
-		"local_oci_only": true,
-	}
-	cases = append(cases, sec102)
+	// SEC-102 IS DELIBERATELY ABSENT FROM THIS BUNDLE, and that absence is the finding.
+	//
+	// `make uat-escape` is RED at this commit. Run in full it reports `no_escape=false`: the SAN-006 arm
+	// (host-kill-fences-stale-writer) binds TestHostKillFencesStaleWriter, which requires
+	// PALAI_COMPONENT_POSTGRES_URL — and `run_runner_suite`, the harness the arm runs under, never supplies
+	// one, so the test SKIPS. E18 T7's own MUST-FIX 4 landed the rule that catches this ("an arm that ran
+	// NOTHING is no longer a denial"), and the rule is doing its job. Supplying a URL by hand gets further
+	// and then fails on the post-kill re-allocation ("workspace ... not found"), which is an E10/E13 seam.
+	//
+	// So there is no honest SandboxEscapeProof to carry: the type requires no_escape AND an empty
+	// arms_not_attempted, and this session cannot produce either. Carrying SEC-102 as PASS would be the
+	// exact fabrication this gate exists to refuse; carrying it as FAIL would make every future
+	// `evidence-verify` red over a harness defect that is not an escape. It is recorded as `ESC-1` in the RC
+	// triage instead, the release index reports it `case-materialized`, and §64.15's local-OCI item reports
+	// `proven-not-bundled` rather than `evidenced`. The seven denial arms that DO run all pass; what is
+	// unproven is the AGGREGATE report, not a denial.
 
 	// SEC-103 — audit integrity.
 	sec103 := newCase("SEC-103", catalogAssertions("SEC-103"))
@@ -501,6 +500,7 @@ func buildStableReleaseManifest(t *testing.T) []byte {
 		"RELEASE-LEVEL entry, not a UAT case (it has no tests/uat/cases directory): an index over every exact UAT id is not a behaviour ONE case asserts, it is the recomputation over all of them",
 		"the verifier RE-GATHERS every row from the fifteen OTHER committed bundles' manifests and the materialized case corpus and refuses any row that disagrees — this manifest's own copy of the index is a rendering, never an input (plan §T10)",
 		fmt.Sprintf("SH-3 POSTURE, NOT A BLANKET \"STABLE\": %d of the %d Appendix-A ids are carried by a committed evidence bundle; the rest are indexed with the honest disposition the recompute produces (case-materialized / managed-scope / unmaterialized), and the §64.15 checklist reports per-item status rather than a pass mark", countBundleCarried(index), len(index)),
+		"SEC-102 IS ABSENT FROM THIS BUNDLE ON PURPOSE: `make uat-escape` reports no_escape=false at this commit because the SAN-006 arm's test SKIPS for want of PALAI_COMPONENT_POSTGRES_URL, which its harness never supplies (E18 T7's own \"an arm that ran NOTHING is not a denial\" rule catching a real gap). No honest SandboxEscapeProof exists, so none is carried — recorded as `ESC-1` in the RC triage; the index reports SEC-102 case-materialized and §64.15's local-OCI item reports proven-not-bundled",
 		fmt.Sprintf("ZERO OPEN P0/P1 IS READ MECHANICALLY: rc_blockers is %d, re-read by the verifier from docs/operations/known-gaps-1.0.md's `RC-BLOCKERS:` line (kept equal to the table's RC-blocker rows by tests/docs TestKnownGapsRCBlockerCountIsAccurate). A non-zero count REFUSES this gate", blockers),
 		"MANAGED-ONLY §64.15 ITEMS ARE MARKED \"managed-scope, not claimed\" AND NOT ROUNDED UP: production-equivalent cell/microVM topology and the managed high-isolation sandbox path close `not-claimed`, which is the honest disposition for a topology this program never had (master plan §2.2)",
 	})

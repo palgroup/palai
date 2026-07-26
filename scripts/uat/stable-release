@@ -167,11 +167,24 @@ else
 fi
 
 # ---- the opt-in heavy legs ------------------------------------------------------------------------------
+# SEC-102's full suite is KNOWN RED at this commit (ESC-1 in the RC triage): the SAN-006 arm's test SKIPS
+# for want of PALAI_COMPONENT_POSTGRES_URL, which its harness never supplies, so the aggregate report says
+# no_escape=false. The RC bundle carries NO SandboxEscapeProof for exactly that reason, so this leg is
+# opt-in and its failure does NOT invalidate the bundle — but it is run non-fatally when asked for, and its
+# outcome is reported either way. What must never happen is this target reporting a green SEC-102.
 escape="SEC-102 full suite NOT RUN (RUN_ESCAPE_SUITE=1 to run it); its Docker-free coverage guards DID run"
 if [ "${RUN_ESCAPE_SUITE:-0}" = "1" ]; then
-  echo "uat-stable-release: [opt-in] SEC-102 — the full sandbox-escape suite" >&2
-  PALAI_ESCAPE_SUITE=1 go test -tags=security -count=1 -timeout 40m ./tests/uat/escape/
-  escape="SEC-102 full suite RAN"
+  echo "uat-stable-release: [opt-in] SEC-102 — the full sandbox-escape suite (KNOWN RED, ESC-1)" >&2
+  if PALAI_ESCAPE_SUITE=1 go test -tags=security -count=1 -timeout 40m ./tests/uat/escape/; then
+    escape="SEC-102 full suite RAN and PASSED — ESC-1 may be closable; re-check before claiming it"
+    echo "uat-stable-release: SEC-102 PASSED. That is NEW: ESC-1 records it red at this commit. Verify the" >&2
+    echo "  SAN-006 arm really ran (grep the transcript for '--- PASS: TestHostKillFencesStaleWriter') before" >&2
+    echo "  adding a SandboxEscapeProof back to the bundle." >&2
+  else
+    escape="SEC-102 full suite RAN and FAILED as ESC-1 records (no_escape=false — an arm was NOT ATTEMPTED, not an escape)"
+    echo "uat-stable-release: SEC-102 FAILED as expected (ESC-1). This does not invalidate the RC bundle," >&2
+    echo "  which carries no SandboxEscapeProof precisely because this suite cannot report no_escape=true here." >&2
+  fi
 fi
 matrix="release matrix smoke NOT RUN (RUN_MATRIX_SMOKE=1 to run it)"
 if [ "${RUN_MATRIX_SMOKE:-0}" = "1" ]; then

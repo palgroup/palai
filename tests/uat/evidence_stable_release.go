@@ -958,13 +958,18 @@ var SandboxEscapeQuarantineArms = []string{
 // suite's outcome. It invents no escape class — every denial it reports was already written and already
 // proven, which is the point of an aggregation.
 type SandboxEscapeProof struct {
-	Arms            []string `json:"arms"`
-	CasesCovered    []string `json:"cases_covered"`
-	CasesUnowned    []string `json:"cases_unowned"`
-	QuarantineArms  []string `json:"quarantine_arms"`
-	NoEscape        bool     `json:"no_escape"`
-	QuarantineWorks bool     `json:"quarantine_works"`
-	Failures        []string `json:"failures"`
+	Arms         []string `json:"arms"`
+	CasesCovered []string `json:"cases_covered"`
+	CasesUnowned []string `json:"cases_unowned"`
+	// ArmsNotAttempted are arms whose named test did not report `--- PASS:` — it skipped, was filtered out
+	// by a stale -run regex, or never compiled. Complete() REQUIRES this empty, which is the same rule the
+	// suite itself learned at E18 T7: an arm that ran NOTHING is not a denial. It is a FIELD rather than
+	// an absence so a proof cannot report "no escape" by quietly shrinking its own arm list.
+	ArmsNotAttempted []string `json:"arms_not_attempted"`
+	QuarantineArms   []string `json:"quarantine_arms"`
+	NoEscape         bool     `json:"no_escape"`
+	QuarantineWorks  bool     `json:"quarantine_works"`
+	Failures         []string `json:"failures"`
 	// LocalOCIOnly must be TRUE: this is the LOCAL OCI seam. The microVM / managed high-isolation path is
 	// managed-scope and is not claimed, and kernel-exploit research is out of scope — the suite proves
 	// DENIAL and QUARANTINE mechanics.
@@ -992,7 +997,8 @@ func (p SandboxEscapeProof) Complete() bool {
 			return false // a quarantine arm that is not in the suite did not run
 		}
 	}
-	return len(p.Arms) > 0 && p.NoEscape && p.QuarantineWorks && len(p.Failures) == 0 && p.LocalOCIOnly
+	return len(p.Arms) > 0 && p.NoEscape && p.QuarantineWorks &&
+		len(p.Failures) == 0 && len(p.ArmsNotAttempted) == 0 && p.LocalOCIOnly
 }
 
 // --- AuditIntegrityProof -----------------------------------------------------------------------------------

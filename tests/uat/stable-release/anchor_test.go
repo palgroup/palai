@@ -406,33 +406,80 @@ func TestPerformanceProofRefusalMatrix(t *testing.T) {
 	}
 }
 
+// TestSandboxEscapeProofRefusalMatrix drives uat.SandboxEscapeProof.Complete() directly rather than through
+// the committed bundle, because SEC-102 is DELIBERATELY ABSENT from it: `make uat-escape` reports
+// no_escape=false at this commit (the SAN-006 arm's test skips for want of a Postgres URL its harness never
+// supplies), so there is no honest proof to mutate. The type still has to refuse every shape a future green
+// run could get wrong, and the FIRST case below is the one this session actually met.
 func TestSandboxEscapeProofRefusalMatrix(t *testing.T) {
+	good := func() uat.SandboxEscapeProof {
+		return uat.SandboxEscapeProof{
+			Arms: []string{
+				"file-tool-confinement", "oci-sandbox-isolation", "cgroup-resource-exhaustion",
+				"snapshot-integrity-and-secret-exclusion", "host-kill-fences-stale-writer",
+				"allocation-hygiene-and-substrate-quarantine", "runner-cordon-drain-revoke",
+				"uncertain-failure-job-quarantine",
+			},
+			CasesCovered:   append([]string(nil), uat.SandboxEscapeSuiteCases...),
+			CasesUnowned:   append([]string(nil), uat.SandboxEscapeUnownedCases...),
+			QuarantineArms: append([]string(nil), uat.SandboxEscapeQuarantineArms...),
+			NoEscape:       true, QuarantineWorks: true, LocalOCIOnly: true,
+		}
+	}
+	if !good().Complete() {
+		t.Fatal("the reference escape proof is not complete — every negative below would pass for the wrong reason")
+	}
+
 	for _, tc := range []struct {
 		what   string
-		mutate func(map[string]any)
+		mutate func(*uat.SandboxEscapeProof)
 	}{
-		{"a shrunken covered-case set", func(p map[string]any) {
-			c := p["cases_covered"].([]any)
-			p["cases_covered"] = c[:len(c)-1]
+		// THE ONE THIS SESSION MET: the suite really did report an arm as NOT ATTEMPTED, and a proof that
+		// could carry that alongside no_escape=true would have let it through.
+		{"an arm that was NOT ATTEMPTED (SAN-006 skipped for want of a Postgres URL)", func(p *uat.SandboxEscapeProof) {
+			p.ArmsNotAttempted = []string{"host-kill-fences-stale-writer"}
 		}},
-		{"the unowned SAN ids quietly dropped", func(p map[string]any) { p["cases_unowned"] = []any{} }},
-		{"a quarantine arm that is not in the suite", func(p map[string]any) {
-			arms := p["arms"].([]any)
-			kept := []any{}
-			for _, a := range arms {
+		{"a shrunken covered-case set", func(p *uat.SandboxEscapeProof) {
+			p.CasesCovered = p.CasesCovered[:len(p.CasesCovered)-1]
+		}},
+		{"the unowned SAN ids quietly dropped", func(p *uat.SandboxEscapeProof) { p.CasesUnowned = nil }},
+		{"a quarantine arm that is not in the suite", func(p *uat.SandboxEscapeProof) {
+			kept := []string{}
+			for _, a := range p.Arms {
 				if a != "uncertain-failure-job-quarantine" {
 					kept = append(kept, a)
 				}
 			}
-			p["arms"] = kept
+			p.Arms = kept
 		}},
-		{"quarantine_works declared over a failure", func(p map[string]any) { p["failures"] = []any{"an arm failed"} }},
-		{"no_escape false", func(p map[string]any) { p["no_escape"] = false }},
-		{"a microVM claim (local_oci_only false)", func(p map[string]any) { p["local_oci_only"] = false }},
+		{"quarantine_works declared over a failure", func(p *uat.SandboxEscapeProof) {
+			p.Failures = []string{"an arm failed"}
+		}},
+		{"no_escape false", func(p *uat.SandboxEscapeProof) { p.NoEscape = false }},
+		{"quarantine_works false", func(p *uat.SandboxEscapeProof) { p.QuarantineWorks = false }},
+		{"a microVM claim (local_oci_only false)", func(p *uat.SandboxEscapeProof) { p.LocalOCIOnly = false }},
 	} {
-		m := committedManifest(t)
-		tc.mutate(caseWith(t, m, "sandbox_escape_claim")["sandbox_escape_proof"].(map[string]any))
-		refuse(t, "an escape-suite proof with "+tc.what, m, "sandbox_escape_proof is incomplete")
+		p := good()
+		tc.mutate(&p)
+		if p.Complete() {
+			t.Errorf("SandboxEscapeProof.Complete() ACCEPTED %s", tc.what)
+			continue
+		}
+		t.Logf("REFUSED an escape-suite proof with %s", tc.what)
+	}
+}
+
+// TestNoBundleCarriesAnEscapeClaim pins the deliberate absence. If a future session adds SEC-102 back with a
+// SandboxEscapeProof, this fails and forces the author to confirm the suite really went green — which is the
+// whole point of removing it rather than quietly weakening the proof type.
+func TestNoBundleCarriesAnEscapeClaim(t *testing.T) {
+	for _, raw := range committedManifest(t)["cases"].([]any) {
+		c := raw.(map[string]any)
+		if v, ok := c["sandbox_escape_claim"]; ok && v != "" {
+			t.Fatalf("%v carries a sandbox_escape_claim — `make uat-escape` reports no_escape=false at this "+
+				"commit (ESC-1 in the RC triage). Re-add it only with a suite run that reports no_escape=true "+
+				"and an EMPTY arms_not_attempted", c["id"])
+		}
 	}
 }
 
