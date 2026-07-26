@@ -79,33 +79,52 @@ var expectedExtensionsCatalog = map[string]struct {
 		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketNeverLogsTheTokenOrTheTicket",
 		"apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeAndHTTPShareOneCanonicalIdentity",
 	}},
-	"SLK-002": {"unit", []string{
+	// E19 T1 shipped the Events API route, so the redelivery collapse is now asserted on the REAL route
+	// against real Postgres rather than only on the pure mapping: unit -> component-real.
+	"SLK-002": {"component-real", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventRedeliveryIsIdentityStable",
 		"apps/control-plane/internal/automation/dedupe_component_test.go:TestDuplicateDeliveryLinksOriginalSingleAction",
+		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackRetryStormRunsTheEffectOnce",
 	}},
 	"SLK-003": {"component-real", []string{
 		"apps/control-plane/internal/extensions/slack_component_test.go:TestSlackThreadSessionCorrelation",
+		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackThreadCorrelatesToOneSession",
+		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackConcurrentFirstEventsNeverSplitAThread",
 	}},
-	"SLK-004": {"unit", []string{
+	// E19 T2 gave ApproverAuthorized its FIRST production caller, which is what earns deleting E17 T11's
+	// "UNWIRED DECISION PATH" note: the allow-list is now enforced on the shipped interactivity route.
+	"SLK-004": {"component-real", []string{
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace",
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse",
 		"apps/control-plane/internal/extensions/slack_component_test.go:TestSlackConnectionCreateReadRLS",
+		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackUnauthorizedClickEnqueuesNothing",
+		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackStaleHashAndForeignThreadDecideNothing",
 	}},
-	"SLK-005": {"unit", []string{
+	"SLK-005": {"component-real", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventClassifiesEditsAndDeletes",
+		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind",
 	}},
-	"SLK-006": {"unit", []string{
+	"SLK-006": {"component-real", []string{
 		"adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once",
 		"adapters/integrations/slack/ratelimit_test.go:TestPostMessageBoundedRepairThenRateLimited",
+		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionRepairsTheVisibleMessageExactlyOnceUnderA429",
+		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackCoalescedUpdatesArePacedPerChannel",
+		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionSurvivesAPermanentlyRateLimitedSlack",
 	}},
-	"SLK-007": {"unit", []string{
+	"SLK-007": {"component-real", []string{
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace",
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalDenyIsMapped",
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse",
+		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackAuthorizedClickApprovesThroughTheWholeChain",
+		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDenyClickDeniesThePublication",
 	}},
-	"SLK-008": {"unit", []string{
+	// The self-loop guard lives in the pure MapEvent, so it holds on every transport — but "it should" is
+	// not evidence, and a bot event that opened a run over a WebSocket would be a loop nobody notices.
+	"SLK-008": {"component-real", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventDropsBotAndSelfEvents",
 		"adapters/integrations/slack/inbound_test.go:TestMapEventDropsNestedBotEdit",
+		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackBotSelfEventBirthsNothing",
+		"apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeSelfEventBirthsNothing",
 	}},
 	"A2A-001": {"component-real", []string{
 		"adapters/integrations/a2a/card_test.go:TestAgentCardNeverLeaksInternalDetail",

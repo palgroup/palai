@@ -288,6 +288,17 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("GET /v1/queue-connections", qh.listConnections)
 	}
 
+	// The Slack workspace REGISTRATION surface (E19 T9, spec §36): register a workspace binding with its
+	// secret_ref handles, and list what this project has registered. INSIDE the auth middleware for the same
+	// reason the queue admin surface is — an operator action with no source signature of its own, so the
+	// bearer scope is the only tenant authority. The two Slack RECEIVERS mount unauthenticated below; this
+	// one must not, and the split is why it is its own option.
+	if cfg.slackConnections != nil {
+		sch := &slackConnectionHandler{slack: cfg.slackConnections}
+		mux.HandleFunc("POST /v1/slack-connections", sch.createConnection)
+		mux.HandleFunc("GET /v1/slack-connections", sch.listConnections)
+	}
+
 	var root http.Handler = mux
 	root = middleware.Auth(verifier)(root)
 	// The §20.12 request-rate limiter sits INSIDE RequestContext (so a shed 429 still carries the

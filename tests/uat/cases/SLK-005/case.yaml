@@ -1,8 +1,9 @@
 id: SLK-005
 name: edit-is-correction-delete-is-tombstone-file-is-scoped
-proof_class: unit
+proof_class: component-real
 provider: fake
-input: "a message edit maps to a correction (it supersedes, not a new turn), a delete maps to a tombstone (the prior content is retracted), and a file share is classified for a scoped fetch. LOCAL proof (T1): the (type, subtype) classification unit test. HONEST CEILING: the file leg's scoped fetch + scan + artifact + token-discard reuses the existing E09 artifact/scan seam and is materialized in the T11 Slack journey; T1 pins the classification the pipeline branches on. §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — the local seam is the FAKE Slack peer, so `slack` closes PREVIEW, not stable."
+input: "a message edit maps to a correction (it supersedes, not a new turn), a delete maps to a tombstone (the prior content is retracted), and a file share is classified for a scoped fetch. LOCAL proof (T1): the (type, subtype) classification unit test. WIRED (E19 T1): an edit and a delete now reach ADMISSION as their own kind through the shipped route against real PostgreSQL, rather than only being classified in the pure mapping. HONEST CEILING, unchanged: the file leg's scoped fetch + scan + artifact + token-discard reuses the existing E09 artifact/scan seam and is materialized in the T11 Slack journey. §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — the local seam is the FAKE Slack peer, so `slack` closes PREVIEW, not stable."
 expect_status: completed
 proof:
   - adapters/integrations/slack/inbound_test.go:TestMapEventClassifiesEditsAndDeletes
+  - apps/control-plane/internal/store/slack_events_component_test.go:TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind

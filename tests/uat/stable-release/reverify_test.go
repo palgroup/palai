@@ -23,6 +23,9 @@ import (
 // rather than a silence: without it, a bundle that LOST its family claims would quietly move from "passes
 // its own gate" to "no gate recognizes it" and the sweep below would still be green.
 var promoteFamilies = map[string]string{
+	// E19's family is checked AHEAD of E18's in PromoteGateFor: a wiring bundle also carries E17 area
+	// claims, so dispatching on those would reroute it to a gate that knows nothing about mounts.
+	"integration-wiring-0.1.0":  "E19 wiring (mount derivation from the running stack + no-tier-advance against the E17 baseline + the composed extensions gate)",
 	"release-1.0.0-rc1":         "E18 stable-release (release index + product-wide posture + SUP-3's verified artifact set)",
 	"extensions-0.1.0":          "E17 extensions (capability tier table + QUA-003 precondition + the eval gate)",
 	"sdk-provider-parity-0.1.0": "E16 SDK parity (three-language equality + gateway-off)",

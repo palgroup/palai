@@ -45,6 +45,9 @@ import (
 
 // slackFixture is one wired stack: a migrated spine, a registered workspace, and a router serving the route.
 type slackFixture struct {
+	// repo is the REAL api.Admitter this fixture serves — held so a sibling harness (the E19 T9 wiring
+	// journey) can mount the rest of the production router over the same store rather than opening a second.
+	repo      *store.Store
 	pool      *pgxpool.Pool
 	url       string
 	secret    []byte
@@ -168,7 +171,7 @@ func newSlackFixture(t *testing.T) *slackFixture {
 	pool := repo.Spine().Pool()
 
 	f := &slackFixture{
-		pool: pool, secret: []byte("component-signing-secret-not-a-credential"),
+		repo: repo, pool: pool, secret: []byte("component-signing-secret-not-a-credential"),
 		botToken: []byte("xoxb-component-fake-not-a-credential"),
 		appToken: []byte("xapp-1-component-fake-not-a-credential"),
 		org:      newID("org"), project: newID("prj"), principal: newID("prin"),

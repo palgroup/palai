@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -262,6 +263,16 @@ type evidenceCase struct {
 	ReleaseIndexProof       *ReleaseIndexProof       `json:"release_index_proof"`
 	AggregateTierClaim      string                   `json:"aggregate_tier_claim"`
 	AggregateTierProof      *AggregateTierProof      `json:"aggregate_tier_proof"`
+	// The E19 T9 wiring claim (plan §T9 — the E19 EXIT gate) extends the same marker-alone-is-NEVER-proof
+	// discipline to the one invariant this epic owns: six already-built integration surfaces are now WIRED
+	// to the production path, each MOUNTED in a running stack (observed, never declared), each admitting
+	// through the REAL Admitter, each transport-invariant (one source event id → one run no matter which
+	// transport delivered it), and each accounting for every published external-contract requirement it
+	// implements with the source URL and the §3.5 divergence row it closes. It requires its proof — a
+	// "wired" marker is never evidence, and the mount is RE-DERIVED from the running stack's own
+	// /v1/capabilities snapshot and router surface rather than from the manifest's copy.
+	WiringClaim string       `json:"wiring_claim"`
+	WiringProof *WiringProof `json:"wiring_proof"`
 }
 
 type evidenceTerm struct {
@@ -1382,6 +1393,500 @@ func (p ConsoleProof) Complete() bool {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// The E19 EXIT anchor: a wired surface is a FUNCTION of the running stack's mount, never a declaration.
+//
+// E19 connected six already-built adapters to the production path. The failure mode it exists to prevent is
+// the one §3.5 D14 named: a claim that OUTLIVES its mount — `capability-workers` advertised "stable" by a
+// binary that did not import the gateway package at all. So the load-bearing fact this proof carries is not
+// "we wrote a handler", it is "a RUNNING stack answered on this route AND advertised the capability that
+// route belongs to", with the two checked against each other in both directions.
+// ---------------------------------------------------------------------------------------------------------
+
+// WiringBundle is the E19 EXIT bundle's release name. The name carries the honest ceiling: it says
+// INTEGRATION WIRING, not "Slack integration verified" — the release certifies that six surfaces are
+// mounted on the production path and correct against their PUBLISHED contracts, and it certifies nothing
+// about a real Slack workspace, a foreign A2A peer or a broker product. Those are §6 legs 1/2/5.
+const WiringBundle = "integration-wiring-0.1.0"
+
+// WiredSurfaceOrder is the ordered, canonical set of surfaces E19 wired to the production path. A
+// WiringProof must declare EXACTLY these (no more, no fewer) so a surface cannot dodge the mount check by
+// being omitted — the CapabilityTierOrder discipline applied to mounts.
+var WiredSurfaceOrder = []string{
+	"slack-connections", "slack-events", "slack-interactions", "slack-socket",
+	"a2a-push", "queue-inbound", "queue-outbound", "console",
+}
+
+// wiredSurfaceCapability maps each wired surface to the `/v1/capabilities` entry it belongs to. The mapping
+// is what makes "advertised but not mounted" mechanically checkable: the surface names its route, the
+// capability names its discovery entry, and verifyWiredMounts refuses any disagreement between them.
+//
+// `slack-socket` and `queue-inbound`/`queue-outbound` are SUPERVISED LOOPS, not routes — they are mounted by
+// main.go's supervisor rather than by the router — so their Route is the loop's identity rather than an HTTP
+// method+path. The distinction is recorded in wiredSurfaceIsRoute below, because a loop cannot be probed for
+// a status code and pretending otherwise would be the fabrication this proof is built to catch.
+var wiredSurfaceCapability = map[string]string{
+	"slack-connections":  "slack",
+	"slack-events":       "slack",
+	"slack-interactions": "slack",
+	"slack-socket":       "slack",
+	"a2a-push":           "a2a",
+	"queue-inbound":      "queues",
+	"queue-outbound":     "queues",
+	"console":            "console",
+}
+
+// wiredSurfaceIsRoute reports whether a surface is an HTTP route on the shipped router (so the running stack
+// can be probed for a non-404) or a supervised loop (so the observation is that the loop RAN).
+var wiredSurfaceIsRoute = map[string]bool{
+	"slack-connections":  true,
+	"slack-events":       true,
+	"slack-interactions": true,
+	"a2a-push":           true, // the pushNotificationConfigs CRUD, mounted only when a Pusher exists (D13)
+	"console":            true, // the /v1 surface the console reaches; the browser never leaves the relay
+	"slack-socket":       false,
+	"queue-inbound":      false,
+	"queue-outbound":     false,
+}
+
+// ContractRequirement is one published external-contract requirement a wired surface implements, carried
+// with the SOURCE URL it was read from and the §3.5 divergence row it closes. It is the mechanical form of
+// the plan's defining rule — "correctness comes from the published document, not from a live run" — and the
+// reason a reader can audit this bundle without a Slack workspace.
+type ContractRequirement struct {
+	// Divergence is the §3.5 row id (D1..D15). Empty is refused: a requirement with no row is a claim
+	// nobody triaged.
+	Divergence string `json:"divergence"`
+	// SourceURL is the vendor document the requirement was read from.
+	SourceURL string `json:"source_url"`
+	// Requirement is what that document says, in one sentence.
+	Requirement string `json:"requirement"`
+}
+
+// WiringContracts is the CANONICAL ledger of which §3.5 divergence rows each wired surface must account for,
+// and the vendor URL each was read from. It is the gate's OWN copy (the EvalThresholds / HelmPolicyAsserts
+// discipline): a WiringProof's per-surface requirements must equal this table, so a bundle cannot quietly
+// drop D1 (the retry-amplification row) or invent a source URL for a requirement nobody checked.
+//
+// The three internal-consistency rows (D13/D14/D15) carry this repository's own plan as their source: they
+// are not vendor statements and must not be dressed as ones.
+var WiringContracts = map[string][]ContractRequirement{
+	"slack-connections": {{
+		Divergence:  "D14",
+		SourceURL:   "docs/superpowers/plans/phase-19-integration-wiring.md#35",
+		Requirement: "discovery advertises only what is MOUNTED; a registration surface is what makes a `slack` mount reachable by an operator instead of by hand-written SQL",
+	}},
+	"slack-events": {
+		{
+			Divergence:  "D1",
+			SourceURL:   "https://docs.slack.dev/apis/events-api/",
+			Requirement: "a delivery without a 2xx inside 3 seconds is retried three times (immediately, +1m, +5m); a non-200 answer carrying `x-slack-no-retry: 1` suppresses the retry, so a TERMINAL rejection must set it or a poison event is pulled four times",
+		},
+		{
+			Divergence:  "D2",
+			SourceURL:   "https://docs.slack.dev/apis/events-api/",
+			Requirement: "a retry carries both `x-slack-retry-num` (1..3) and `x-slack-retry-reason` (http_timeout, http_error, connection_failed, ssl_error, too_many_redirects, unknown_error)",
+		},
+		{
+			Divergence:  "D3",
+			SourceURL:   "https://docs.slack.dev/apis/events-api/",
+			Requirement: "event_id is globally unique across workspaces; that a RETRY repeats the same event_id is NOT stated on the page and is carried in the tree as a labelled ASSUMPTION the live leg asserts",
+		},
+		{
+			Divergence:  "D9",
+			SourceURL:   "https://docs.slack.dev/authentication/verifying-requests-from-slack/",
+			Requirement: "the v0 base string is exactly 'v0:'+timestamp+':'+raw_body, HMAC-SHA256 hex, the header value 'v0='-prefixed, compared timing-safe, with a timestamp more than five minutes old refused",
+		},
+	},
+	"slack-interactions": {
+		{
+			Divergence:  "D8",
+			SourceURL:   "https://docs.slack.dev/interactivity/handling-user-interaction/",
+			Requirement: "an interaction arrives application/x-www-form-urlencoded with the JSON in a single `payload` parameter and must be answered 200 within 3 seconds; the signature is verified over the RAW form body BEFORE `payload` is extracted",
+		},
+		{
+			Divergence:  "D10",
+			SourceURL:   "https://docs.slack.dev/apis/web-api/rate-limits/",
+			Requirement: "chat.postMessage is Special Tier — roughly one message per channel per second with short bursts — and a throttled call answers 429 with Retry-After in seconds",
+		},
+	},
+	"slack-socket": {
+		{
+			Divergence:  "D4",
+			SourceURL:   "https://docs.slack.dev/apis/events-api/using-socket-mode/",
+			Requirement: "every envelope must be acknowledged so Slack knows whether to retry; NO ack-time budget and no retry count are published for Socket Mode (the 3-second rule is the HTTP page's), so the tree acknowledges BEFORE the work and names the gap rather than inventing an SLA",
+		},
+		{
+			Divergence:  "D5",
+			SourceURL:   "https://docs.slack.dev/apis/events-api/using-socket-mode/",
+			Requirement: "apps.connections.open returns a short-lived wss ticket URL; a `disconnect` with reason `warning` arrives ~10 seconds before close, and up to 10 concurrent connections are supported — so a graceful refresh OVERLAPS a new socket before draining the old one",
+		},
+		{
+			Divergence:  "D6",
+			SourceURL:   "https://docs.slack.dev/apis/events-api/using-socket-mode/",
+			Requirement: "the envelope carries `accepts_response_payload`; a response payload may only be returned on an envelope that accepts one",
+		},
+		{
+			Divergence:  "D7",
+			SourceURL:   "https://docs.slack.dev/apis/events-api/using-socket-mode/",
+			Requirement: "Socket Mode envelopes are NOT signed — the pre-authenticated WebSocket is the authentication — so the absence of a v0 verify on this transport is the documented behaviour, not an omission",
+		},
+	},
+	"a2a-push": {
+		{
+			Divergence:  "D11",
+			SourceURL:   "https://a2a-protocol.org/latest/topics/streaming-and-async/",
+			Requirement: "the server POSTs a StreamResponse (task | message | statusUpdate | artifactUpdate), not a full Task; PushNotificationConfig.token exists for client-side validation but the spec names NO header to carry it, so our header choice cannot be called spec-compliant",
+		},
+		{
+			Divergence:  "D12",
+			SourceURL:   "https://a2a-protocol.org/latest/topics/streaming-and-async/",
+			Requirement: "a server SHOULD NOT blindly POST to any client-supplied URL: allowlist the domain, verify ownership, and put an egress firewall in front of it",
+		},
+		{
+			Divergence:  "D13",
+			SourceURL:   "docs/superpowers/plans/phase-19-integration-wiring.md#35",
+			Requirement: "the pushNotificationConfigs CRUD must mount on the SAME condition the card's pushNotifications flag reads, or a client registers a target against a card that says push is unsupported and is silently never fired",
+		},
+	},
+	"queue-inbound": {{
+		Divergence:  "D14",
+		SourceURL:   "docs/superpowers/plans/phase-19-integration-wiring.md#35",
+		Requirement: "`queues` must derive from an actual mount; before E19 the queue store had no production caller at all while discovery advertised the capability as a static string",
+	}},
+	"queue-outbound": {{
+		Divergence:  "D14",
+		SourceURL:   "docs/superpowers/plans/phase-19-integration-wiring.md#35",
+		Requirement: "the terminal→enqueue half is committed inside the run's terminal transaction, so the outbound result survives a pump that is down — the delivery mechanism is never the durability mechanism",
+	}},
+	"console": {{
+		Divergence:  "D15",
+		SourceURL:   "docs/superpowers/plans/phase-19-integration-wiring.md#35",
+		Requirement: "a hand-written fake upstream can DIVERGE from the real router (E17 T10's fixture invented an approval event the real approval.requested.v1 never carries), so the console's contract must be swept against the REAL /v1 mechanically rather than by review",
+	}},
+}
+
+// wiringContractParts flattens the canonical ledger into hashParts input, in WiredSurfaceOrder. The digest
+// over it is re-derivable from the CODE table alone, so a bundle cannot present a self-consistent digest
+// over an edited ledger.
+func wiringContractParts() []string {
+	parts := make([]string, 0, 4*len(WiredSurfaceOrder))
+	for _, surface := range WiredSurfaceOrder {
+		parts = append(parts, surface)
+		for _, req := range WiringContracts[surface] {
+			parts = append(parts, req.Divergence, req.SourceURL, req.Requirement)
+		}
+	}
+	return parts
+}
+
+// WiringContractsDigest is hashParts over the CANONICAL surface→contract ledger. A WiringProof must carry
+// exactly this value.
+func WiringContractsDigest() string { return hashParts(wiringContractParts()...) }
+
+// WiredSurface is one surface's observed wiring: where it is mounted, what the running stack answered when
+// the observation was taken, how many runs it admitted through the REAL Admitter, and the source events
+// those runs came from.
+type WiredSurface struct {
+	Surface string `json:"surface"`
+	// Route is the mount point as OBSERVED: "POST /v1/slack/events" for a router route, or the supervised
+	// loop's identity for a loop. It must appear in the proof's RouterSurface (see verifyWiredMounts).
+	Route string `json:"route"`
+	// ObservedStatus is the status code the RUNNING stack answered on Route. A 404 fails: that is what an
+	// unmounted route answers, and it is the exact observation the D14 defect would have produced. Zero is
+	// the only legal value for a supervised loop, which has no status to answer.
+	ObservedStatus int `json:"observed_status"`
+	// AdmissionRoute is the idempotency-namespace route constant the admission reserved under — the
+	// mechanical evidence that the REAL shared Admitter ran rather than a parallel path, because only that
+	// admission writes an idempotency_records row. Empty for a surface that admits nothing (the
+	// registration surface, the outbound pump, the console).
+	AdmissionRoute string `json:"admission_route"`
+	// AdmittedRuns is how many canonical runs this surface birthed through that admission.
+	AdmittedRuns int `json:"admitted_runs"`
+	// SourceEventIDs are the DISTINCT source event identities delivered to this surface, and Deliveries is
+	// how many times they were delivered IN TOTAL (across transports and retries). Together with
+	// AdmittedRuns they are the transport-invariance counter: more deliveries than distinct events, and
+	// exactly one run per distinct event.
+	SourceEventIDs []string `json:"source_event_ids"`
+	Deliveries     int      `json:"deliveries"`
+	// Contracts are the published requirements this surface implements. They must EQUAL the canonical
+	// WiringContracts entry for the surface.
+	Contracts []ContractRequirement `json:"contracts"`
+}
+
+// LiveLeg is one credential-gated live smoke in the §T9 inventory: the test that runs it, the env var it
+// needs, the §0 handover row that supplies it, and what it does when the credential is absent. It is
+// carried in the bundle because the phase's deliverable is "ready to run unchanged" — a claim that is only
+// auditable if the inventory is written down and machine-checked against the tests that exist.
+type LiveLeg struct {
+	Test string `json:"test"`
+	// EnvVars are every variable the leg needs, in the order the test asks for them.
+	EnvVars []string `json:"env_vars"`
+	// HandoverRow is the plan §0 row the operator copies the value out of.
+	HandoverRow string `json:"handover_row"`
+	// WithoutCredential is what the leg does with nothing supplied. It must be "skip": a live leg that
+	// FAILS on a missing credential turns a partial handover into a red wall, and one that PASSES is
+	// asserting something it never ran.
+	WithoutCredential string `json:"without_credential"`
+}
+
+// WiringProof is the evidence a wiring_claim requires (plan §T9 — the E19 EXIT anchor). It certifies, per
+// wired surface: the mount as OBSERVED from a running stack, that admission went through the real Admitter,
+// the transport-invariance counter, and the source URL + §3.5 divergence id of every external contract
+// requirement it implements.
+//
+// ANTI-FABRICATION: nothing here is believed on the manifest's word. verifyWiredMounts RE-DERIVES each
+// surface's mount from the running stack's own two observations — the `/v1/capabilities` snapshot and the
+// router surface — and refuses a capability advertised without its routes mounted (the §3.5 D14 defect) as
+// well as routes mounted without the capability advertised. The contract ledger is anchored to the CODE
+// table by ContractsDigest, so a dropped divergence row cannot ride under a self-consistent digest.
+//
+// HONEST CEILING, MECHANICALLY ENFORCED (see Complete): Peers must be "documented-fake". Every counterparty
+// in this bundle is a local fixture built to the PUBLISHED contract — a fake Slack workspace, a loopback A2A
+// sink, the Postgres reference queue. This proof is structurally incapable of claiming a real Slack
+// workspace, a foreign A2A peer or a broker product: those are §6 legs 1/2/5 and they are what flip the
+// tiers, which is why NO tier moves in this release.
+type WiringProof struct {
+	Surfaces []WiredSurface `json:"surfaces"`
+	// CapabilitySnapshot is the `capabilities` map a GET /v1/capabilities against the RUNNING stack
+	// returned; SnapshotSource names how it was taken.
+	CapabilitySnapshot map[string]string `json:"capability_snapshot"`
+	SnapshotSource     string            `json:"snapshot_source"`
+	// RouterSurface is every route the running router ANSWERED (non-404), as observed. It is the second
+	// half of the mount derivation: a capability may only be advertised when its routes are in here.
+	RouterSurface []string `json:"router_surface"`
+	// ContractsDigest anchors the per-surface contract ledger to the canonical code table.
+	ContractsDigest string `json:"contracts_digest"`
+	// Peers is the honest naming of every counterparty, one per wired surface's far side.
+	Peers string `json:"peers"`
+	// LiveLegs is the credential-gated inventory (plan §T9). It is checked against the tests that exist by
+	// tests/uat/wiring, not only against itself.
+	LiveLegs []LiveLeg `json:"live_legs"`
+}
+
+// Complete reports the proof is structurally well-formed: EXACTLY the canonical surfaces, each naming a
+// mount and carrying the canonical contract ledger for itself, an honestly-named peer set, a non-empty
+// router surface and capability snapshot, and a live-leg inventory in which every leg SKIPS without its
+// credential. It deliberately does NOT judge the mount DERIVATION — that cross-checks the snapshot against
+// the router surface, which runs in verifyWiredMounts (called from both VerifyManifest and the promote
+// gate), the CapabilityTierProof shape.
+func (p WiringProof) Complete() bool {
+	if p.Peers != WiringPeers || p.SnapshotSource == "" || p.ContractsDigest != WiringContractsDigest() ||
+		len(p.RouterSurface) == 0 || len(p.CapabilitySnapshot) == 0 || len(p.Surfaces) != len(WiredSurfaceOrder) {
+		return false
+	}
+	byName := make(map[string]WiredSurface, len(p.Surfaces))
+	for _, s := range p.Surfaces {
+		byName[s.Surface] = s
+	}
+	for _, surface := range WiredSurfaceOrder {
+		s, ok := byName[surface]
+		if !ok || s.Route == "" {
+			return false
+		}
+		// A route surface must have been OBSERVED answering; a 404 is what an unmounted route returns and
+		// is the observation the whole proof exists to refuse. A supervised loop has no status at all, and
+		// claiming one for it would be an invented observation.
+		if wiredSurfaceIsRoute[surface] {
+			if s.ObservedStatus == 0 || s.ObservedStatus == http.StatusNotFound {
+				return false
+			}
+		} else if s.ObservedStatus != 0 {
+			return false
+		}
+		if !slices.Equal(s.Contracts, WiringContracts[surface]) {
+			return false // a shrunken/edited contract ledger cannot be used to dodge a divergence row
+		}
+		// The transport-invariance counter, where the surface admits at all: MORE deliveries than distinct
+		// source events (a duplicate genuinely arrived) yet exactly ONE run per distinct event, reserved
+		// under a named admission route. A surface that admits nothing declares nothing.
+		if s.AdmittedRuns > 0 || len(s.SourceEventIDs) > 0 || s.Deliveries > 0 || s.AdmissionRoute != "" {
+			if s.AdmissionRoute == "" || len(s.SourceEventIDs) == 0 ||
+				s.Deliveries <= len(s.SourceEventIDs) || s.AdmittedRuns != len(s.SourceEventIDs) {
+				return false
+			}
+		}
+	}
+	if len(p.LiveLegs) == 0 {
+		return false
+	}
+	for _, leg := range p.LiveLegs {
+		if leg.Test == "" || len(leg.EnvVars) == 0 || leg.HandoverRow == "" || leg.WithoutCredential != "skip" {
+			return false
+		}
+	}
+	return true
+}
+
+// WiringPeers is the ONE honest naming a WiringProof may carry. Every counterparty in this release is a
+// local fixture built to the PUBLISHED vendor contract; the value is a literal so a bundle cannot write
+// "real Slack workspace" and pass — that receipt is §6 leg 1 and no code in this repository can produce it.
+const WiringPeers = "documented-fake"
+
+// WiringLiveLegs is the CANONICAL credential-gated live inventory (plan §T9): every live smoke this epic
+// can run, the env vars it needs, the §0 handover row that supplies them, and what it does with nothing
+// supplied. It lives here, in the gate, for the same reason EvalThresholds does — a bundle that supplied its
+// own inventory could list the legs it happened to have and call that complete.
+//
+// EVERY ENTRY IS "skip", AND THAT IS A DESIGN DECISION rather than an accident (plan §2): the owner will
+// supply the credentials in PIECES, so a partial handover must report partial-green. A leg that FAILED on a
+// missing credential would turn one absent variable into a red wall; a leg that PASSED would be asserting
+// something it never ran. tests/uat/wiring checks this table against the live test FILES, so a leg listed
+// here that does not exist — or a live test that exists and is not listed — fails the gate.
+var WiringLiveLegs = []LiveLeg{
+	{
+		Test:              "TestLiveSlackRetryCarriesTheSameEventID",
+		EnvVars:           []string{"SLACK_SIGNING_SECRET"},
+		HandoverRow:       "§0.1 — App → Basic Information → App Credentials → Signing Secret",
+		WithoutCredential: "skip",
+	},
+	{
+		Test:              "TestLiveSlackMentionBirthsExactlyOneRun",
+		EnvVars:           []string{"PALAI_SLACK_LIVE_POSTGRES_URL", "SLACK_TEAM_ID"},
+		HandoverRow:       "§0.1 — SLACK_TEAM_ID from the workspace admin page or any event payload's team_id; the Postgres URL comes from the running stack (make compose-up prints it)",
+		WithoutCredential: "skip",
+	},
+	{
+		Test:              "TestLiveSlackApprovalMessageIsPostedAndRepaired",
+		EnvVars:           []string{"SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL"},
+		HandoverRow:       "§0.1 — App → OAuth & Permissions → Bot User OAuth Token (scope chat:write); SLACK_TEST_CHANNEL is a channel the bot was invited to",
+		WithoutCredential: "skip",
+	},
+	{
+		Test:              "TestLiveSlackButtonClickIsFormEncodedAndVerifies",
+		EnvVars:           []string{"SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL"},
+		HandoverRow:       "§0.1 — the signing secret, the bot token and the test channel together: this leg posts a real button and verifies the real click",
+		WithoutCredential: "skip",
+	},
+	{
+		Test:              "TestLiveSlackSocketProtocol",
+		EnvVars:           []string{"SLACK_APP_TOKEN"},
+		HandoverRow:       "§0.1 — App → Basic Information → App-Level Tokens → Generate, scope connections:write. NO PUBLIC URL IS NEEDED for this leg",
+		WithoutCredential: "skip",
+	},
+	{
+		Test:              "TestLiveSlackSocketMentionBirthsExactlyOneRun",
+		EnvVars:           []string{"SLACK_APP_TOKEN", "PALAI_SLACK_LIVE_POSTGRES_URL", "SLACK_TEAM_ID"},
+		HandoverRow:       "§0.1 — the app-level token and the team id, plus the running stack's Postgres URL",
+		WithoutCredential: "skip",
+	},
+	{
+		Test:              "TestLiveA2APushReachesFilteredThroughTheRealPolicy",
+		EnvVars:           []string{"A2A_PUSH_WEBHOOK_URL"},
+		HandoverRow:       "§0.2 — OPTIONAL: a foreign https receiver if the owner wants to measure the D11 token-header gap against a real peer. The deterministic loopback proof is complete without it, and a foreign PEER remains §6 leg 2",
+		WithoutCredential: "skip",
+	},
+}
+
+// verifyWiredMounts is the E19 anti-fabrication RECOMPUTE: it derives each surface's mount from the RUNNING
+// stack's own two observations and refuses any disagreement. It never reads a declared mount as input.
+//
+// Both directions are checked, because both have shipped:
+//
+//   - ADVERTISED BUT NOT MOUNTED is the §3.5 D14 defect exactly (`capability-workers` claimed "stable" by a
+//     binary that never imported the gateway). A capability in the snapshot whose surfaces are absent from
+//     the router surface is a FAIL.
+//   - MOUNTED BUT NOT ADVERTISED is the same lie inverted: a deployment serving a surface it does not
+//     declare. Discovery is supposed to be a FUNCTION of the mount, and a function is total.
+//
+// A `disabled` entry is the exception in the first direction only: it is a NEGATIVE claim — it names a
+// surface the deployment does NOT serve — so it needs no mount to derive from.
+func VerifyWiredMounts(p *WiringProof) []string {
+	mounted := make(map[string]bool, len(p.RouterSurface))
+	for _, route := range p.RouterSurface {
+		mounted[route] = true
+	}
+	surfacesFor := make(map[string][]WiredSurface, len(p.Surfaces))
+	for _, s := range p.Surfaces {
+		capability := wiredSurfaceCapability[s.Surface]
+		surfacesFor[capability] = append(surfacesFor[capability], s)
+	}
+
+	var problems []string
+	for _, surface := range WiredSurfaceOrder {
+		var s WiredSurface
+		for _, candidate := range p.Surfaces {
+			if candidate.Surface == surface {
+				s = candidate
+				break
+			}
+		}
+		if s.Surface == "" {
+			continue // Complete() already reported the missing surface
+		}
+		if !mounted[s.Route] {
+			problems = append(problems, fmt.Sprintf(
+				"surface %q declares mount %q but the RUNNING stack's router surface does not contain it — a mount is an observation, never a declaration (plan §T9)",
+				surface, s.Route))
+		}
+		capability := wiredSurfaceCapability[surface]
+		tier, advertised := p.CapabilitySnapshot[capability]
+		switch {
+		case !advertised:
+			problems = append(problems, fmt.Sprintf(
+				"surface %q is mounted at %q but the running stack's /v1/capabilities does not advertise %q — discovery must be a TOTAL function of the mount, not a subset of it (plan §2)",
+				surface, s.Route, capability))
+		case tier == "disabled":
+			problems = append(problems, fmt.Sprintf(
+				"capability %q is advertised %q while surface %q is mounted at %q — a disabled entry is a NEGATIVE claim about a surface this deployment does not serve",
+				capability, tier, surface, s.Route))
+		}
+	}
+	// The other direction: a governed capability advertised as servable with no wired surface behind it.
+	for capability, tier := range p.CapabilitySnapshot {
+		if tier == "disabled" || len(surfacesFor[capability]) > 0 {
+			continue
+		}
+		if _, governed := wiredCapabilityGoverned[capability]; !governed {
+			continue // responses/sessions/workspaces/knowledge/capability-workers are not E19's to wire
+		}
+		problems = append(problems, fmt.Sprintf(
+			"capability %q is advertised %q but this proof wires NO surface for it — an advertised capability with no mount behind it is the §3.5 D14 defect (a claim that outlived its mount)",
+			capability, tier))
+	}
+	return problems
+}
+
+// wiredCapabilityGoverned is the set of capabilities E19 owns a mount for — derived from the canonical
+// surface→capability map so the two can never disagree.
+var wiredCapabilityGoverned = func() map[string]struct{} {
+	out := make(map[string]struct{}, len(wiredSurfaceCapability))
+	for _, capability := range wiredSurfaceCapability {
+		out[capability] = struct{}{}
+	}
+	return out
+}()
+
+// carriesE19WiringClaim reports whether a case carries the E19 wiring claim — the FAMILY marker, read by
+// both the manifest verifier and PromoteGateFor so the two can never disagree about what an E19 release is.
+func carriesE19WiringClaim(c evidenceCase) bool { return c.WiringClaim != "" }
+
+// verifyE19WiringPresence stops the mount derivation from being OPTIONAL. Unlike the E17 tier table there is
+// no second marker to key the family off — a wiring bundle IS its wiring claim — so what this enforces is
+// the "exactly one" half: two wiring proofs in one manifest would let a fabricated table ride behind an
+// honest one, because WiringPromoteGate judges the first while this verifier checks all of them.
+func verifyE19WiringPresence(m evidenceManifest) []Finding {
+	claims, withProof := 0, 0
+	for _, c := range m.Cases {
+		if c.WiringClaim == "" {
+			continue
+		}
+		claims++
+		if c.WiringProof != nil {
+			withProof++
+		}
+	}
+	switch {
+	case claims == 0:
+		return nil
+	case claims > 1:
+		return []Finding{{Kind: "invalid", Detail: fmt.Sprintf("%d wiring_claims (want exactly 1): the promote gate judges the FIRST wiring proof while this verifier checks all of them, so a second table could ride behind an honest one — one release, one mount derivation (plan §T9)", claims)}}
+	case withProof != claims:
+		return []Finding{{Kind: "missing", Detail: "wiring_proof for the manifest's wiring_claim (a claim marker with no proof leaves every mount unverified — plan §T9)"}}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // The E17 EXIT anchor: a capability's maturity tier is a FUNCTION of its claim outcomes, never a claim.
 //
 // Three CANONICAL tables below are the gate's OWN copy of the rule (the EvalThresholds / HelmPolicyAsserts
@@ -1773,6 +2278,10 @@ var committedBundleSurfaces = map[string]string{
 	"self-host-0.2.0":           SurfaceRecomputed,
 	"sdk-provider-parity-0.1.0": SurfaceRecomputed,
 	"extensions-0.1.0":          SurfaceRecomputed,
+	// The E19 T9 wiring bundle. Its anchor is the CANONICAL contract ledger digest (WiringContractsDigest),
+	// which is derived from the code table in this file — so a bundle that dropped a §3.5 divergence row
+	// from a surface's requirements would move every checksum in it.
+	WiringBundle: SurfaceRecomputed,
 	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the other fifteen committed
 	// bundles + the materialized case corpus, so a checksum here cannot be hand-written: it moves the
 	// moment any bundle or any case.yaml does.
@@ -1838,6 +2347,8 @@ func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 		}
 		return []string{c.ID, c.RunID, anchor}
 	// E13..E17 authored bundles: hashParts(id, run_id, the release's canonical anchor digest).
+	case WiringBundle: // tests/uat/wiring/bundle_test.go
+		return []string{c.ID, c.RunID, WiringContractsDigest()}
 	case "extensions-0.1.0": // tests/uat/extensions/bundle_test.go
 		return []string{c.ID, c.RunID, CapabilityClaimsDigest()}
 	case "managed-cloud-0.1.0": // tests/uat/managed-cloud/evidence_test.go
@@ -2014,6 +2525,10 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	// by the FAMILY, never by those two claims themselves, so dropping a marker cannot switch an anchor off
 	// (see verifyE18AnchorPresence).
 	findings = append(findings, verifyE18AnchorPresence(m)...)
+
+	// An E19 wiring bundle carries exactly ONE wiring claim with its proof — two would let a fabricated
+	// mount table ride behind an honest one (see verifyE19WiringPresence).
+	findings = append(findings, verifyE19WiringPresence(m)...)
 
 	// A bundle whose checksums were CORRECTED, or that is shape-only, must SAY SO in the manifest (plan §2
 	// honest-naming): the note is where a reader who opens this file meets the correction or the ceiling.
@@ -2416,6 +2931,24 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "aggregate_tier_proof is incomplete: a non-canonical capability set, a shrunken/padded claim ledger, a tier outside stable/preview/disabled, a governed capability missing from the snapshot, a claims_digest that does not equal the canonical ledger digest, a snapshot_source that does not NAME the fully-mounted router, a claim that a DEPLOYED config serves that map, or an unmounted_reason that does not name PALAI_CAPABILITY_WORKER_LISTEN_ADDR (EXT-1, plan §T10)"})
 			default:
 				for _, problem := range verifyAggregateTiers(c.AggregateTierProof) {
+					findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: problem})
+				}
+			}
+		}
+
+		// The E19 T9 wiring claim mirrors the rule exactly: a non-empty marker with no proof is "missing"; a
+		// proof that fails its Complete() invariant is "invalid" (plan §T9). The MOUNT DERIVATION — every
+		// surface's declared mount re-derived from the running stack's own router surface and
+		// /v1/capabilities snapshot — runs in the default branch, because it cross-checks two observations
+		// the per-surface struct cannot compare alone.
+		if c.WiringClaim != "" {
+			switch {
+			case c.WiringProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "wiring_proof (a wiring claim requires the per-surface observed mount + the real-Admitter admission route + the transport-invariance counters + every contract requirement's source URL and §3.5 divergence id; a 'wired' marker is not proof)"})
+			case !c.WiringProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "wiring_proof is incomplete: a non-canonical surface set, a surface with no observed mount, a ROUTE observed as 404 (what an unmounted route answers) or a supervised loop claiming a status it cannot have, a shrunken/edited contract ledger, a contracts_digest that does not equal the canonical one, a peer set not honestly named \"" + WiringPeers + "\", a transport-invariance counter with no duplicate delivery or with runs != distinct source events, an admission with no route constant (so nothing shows the REAL Admitter ran), an empty router surface or capability snapshot, or a live leg that does not SKIP without its credential (plan §T9)"})
+			default:
+				for _, problem := range VerifyWiredMounts(c.WiringProof) {
 					findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: problem})
 				}
 			}
