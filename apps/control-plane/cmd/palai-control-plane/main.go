@@ -1238,7 +1238,10 @@ func startRunnerGateway(addr string) *execution.RunnerGateway {
 	if err != nil {
 		log.Fatalf("bind runner CA issuer: %v", err)
 	}
-	tokens := execution.NewFileEnrollmentTokens(mustGatewayEnv("PALAI_ENROLLMENT_TOKEN_FILE"))
+	// The bootstrap token is the runner's RECOVERY path when its identity has already expired and
+	// renewal-over-mTLS is therefore impossible (see FileEnrollmentTokens for the threat model). It
+	// is rate-limited to one certificate per issued lifetime, so a leaked token mints no fleet.
+	tokens := execution.NewFileEnrollmentTokens(mustGatewayEnv("PALAI_ENROLLMENT_TOKEN_FILE"), issuer.TTL())
 	gateway := execution.NewRunnerGateway(issuer, tokens)
 
 	srv := &http.Server{

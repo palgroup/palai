@@ -177,7 +177,10 @@ type gatewayFixture struct {
 	sessionURL string
 }
 
-func newGatewayFixture(t *testing.T, tokens *oneUseTokens) *gatewayFixture {
+// tokens is the execution.EnrollmentTokens the gateway redeems against: newOneUseTokens for
+// the in-test one-use set, or the production execution.FileEnrollmentTokens when a proof needs
+// the real redemption rule (the expired-identity recovery proof does).
+func newGatewayFixture(t *testing.T, tokens execution.EnrollmentTokens) *gatewayFixture {
 	t.Helper()
 	ca := newGatewayCA(t)
 	gateway := execution.NewRunnerGateway(ca, tokens)

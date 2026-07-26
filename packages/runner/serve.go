@@ -28,10 +28,16 @@ type ServeConfig struct {
 	// connection and never touches a parked or in-flight lease connection, so a rollover is
 	// always lease-safe. It authenticates with the current certificate — the one-use
 	// bootstrap token is never presented again.
-	Renew   func(ctx context.Context, current Identity) (Identity, error)
-	Now     func() time.Time
-	Log     func(format string, args ...any)
-	Backoff time.Duration // between a failed dial/renewal and the next attempt; zero = 1s
+	Renew func(ctx context.Context, current Identity) (Identity, error)
+	// Reenroll is the RECOVERY path renewal cannot serve: it re-presents the file-mounted
+	// bootstrap credential to obtain a wholly new identity. It runs when and only when the
+	// runner holds no usable identity — the current certificate has already expired, so
+	// renewal-over-mTLS is impossible for the same reason it was needed. nil disables it (the
+	// pre-recovery behaviour: an expired identity is terminal until the process is restarted).
+	Reenroll func(ctx context.Context) (Identity, error)
+	Now      func() time.Time
+	Log      func(format string, args ...any)
+	Backoff  time.Duration // between a failed dial/renewal and the next attempt; zero = 1s
 	// Concurrency is how many leases the runner parks at once on its shared enrolled identity.
 	// Zero or one is the sequential one-lease-at-a-time default (LP-0 unchanged); >1 lets a
 	// delegating run's parent hold its engine while an inline child dials its own on the same
@@ -73,13 +79,12 @@ func (cfg ServeConfig) Serve(ctx context.Context) {
 	// The identity is shared between the lease loop (which reads it for each dial) and the
 	// renewer (which replaces it on rollover). The renewer never touches the live connection,
 	// only the identity the NEXT dial will use — that is what makes the rollover lease-safe.
-	var mu sync.Mutex
-	identity := cfg.Session.Identity
+	state := &serveState{identity: cfg.Session.Identity}
 
 	var wg sync.WaitGroup
 	if cfg.Renew != nil {
 		wg.Go(func() {
-			cfg.renewLoop(ctx, &mu, &identity, now, logf, backoff)
+			cfg.renewLoop(ctx, state, now, logf, backoff)
 		})
 	}
 
@@ -91,23 +96,44 @@ func (cfg ServeConfig) Serve(ctx context.Context) {
 		loops = 1
 	}
 	for range loops {
-		wg.Go(func() { cfg.parkLoop(ctx, &mu, &identity, logf, backoff) })
+		wg.Go(func() { cfg.parkLoop(ctx, state, logf, backoff) })
 	}
 	wg.Wait()
+}
+
+// serveState is the identity the lease loops and the renewer share, plus the say-it-once gates
+// for the operator-facing notices. A 1/s retry loop that repeats the same sentence forever buries
+// the one thing the operator needs, so each notice is printed once for the runner's lifetime.
+type serveState struct {
+	mu       sync.Mutex
+	identity Identity
+	stale    sync.Once // a dial rejected the client certificate
+	expired  sync.Once // the identity is past NotAfter, so recovery (not renewal) is running
+	cure     sync.Once // recovery itself failed — the operator has to act
+}
+
+func (s *serveState) current() Identity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.identity
+}
+
+func (s *serveState) replace(identity Identity) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.identity = identity
 }
 
 // parkLoop parks for one lease at a time and supervises the leased engine until ctx is
 // cancelled, re-reading the shared (renewable) identity for each dial. N of these run
 // concurrently per Serve's Concurrency, each an independent lease slot on one runner identity.
-func (cfg ServeConfig) parkLoop(ctx context.Context, mu *sync.Mutex, identity *Identity, logf func(string, ...any), backoff time.Duration) {
+func (cfg ServeConfig) parkLoop(ctx context.Context, state *serveState, logf func(string, ...any), backoff time.Duration) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		mu.Lock()
 		session := cfg.Session
-		session.Identity = *identity
-		mu.Unlock()
+		session.Identity = state.current()
 
 		leaseSession, err := session.OpenLease(ctx)
 		if err != nil {
@@ -116,8 +142,9 @@ func (cfg ServeConfig) parkLoop(ctx context.Context, mu *sync.Mutex, identity *I
 			}
 			// A transient dial error must not end the runner. A stale-identity error (the
 			// certificate was rejected) is not fixed by re-dialing the same cert — the renewer
-			// refreshes it concurrently — so both cases back off and retry; the log names which.
-			logf("open lease: %v; retrying%s", err, staleIdentityHint(err))
+			// refreshes or replaces it concurrently — so both cases back off and retry. The
+			// stale case names what is happening ONCE; repeating it every second would bury it.
+			logf("open lease: %v; retrying%s", err, cfg.staleIdentityHint(err, state))
 			if sleep(ctx, backoff) != nil {
 				return
 			}
@@ -127,14 +154,14 @@ func (cfg ServeConfig) parkLoop(ctx context.Context, mu *sync.Mutex, identity *I
 	}
 }
 
-// renewLoop rolls the certificate forward as it nears expiry, on its own mTLS connection. It
-// waits until each certificate's renewal point, renews over the current identity, and swaps
-// in the result — never touching a parked or in-flight lease connection.
-func (cfg ServeConfig) renewLoop(ctx context.Context, mu *sync.Mutex, identity *Identity, now func() time.Time, logf func(string, ...any), backoff time.Duration) {
+// renewLoop keeps the runner's identity usable, on its own connection — never touching a parked
+// or in-flight lease. It waits until each certificate's renewal point and rolls the certificate
+// forward over the current identity; when that window was MISSED and the identity is already
+// past NotAfter, it recovers with Reenroll instead, because renewal authenticates with the very
+// certificate that expired and so cannot serve the one case that needs it most.
+func (cfg ServeConfig) renewLoop(ctx context.Context, state *serveState, now func() time.Time, logf func(string, ...any), backoff time.Duration) {
 	for {
-		mu.Lock()
-		current := *identity
-		mu.Unlock()
+		current := state.current()
 
 		deadline, ok := renewalDeadline(current)
 		if !ok {
@@ -146,22 +173,62 @@ func (cfg ServeConfig) renewLoop(ctx context.Context, mu *sync.Mutex, identity *
 			}
 		}
 
-		renewed, err := cfg.Renew(ctx, current)
+		renewed, err := cfg.refresh(ctx, current, now, logf, state)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			logf("renew runner certificate: %v; retrying", err)
+			logf("%v; retrying", err)
 			if sleep(ctx, backoff) != nil {
 				return
 			}
 			continue
 		}
-		mu.Lock()
-		*identity = renewed
-		mu.Unlock()
-		logf("renewed runner certificate; valid until %s", renewed.NotAfter.UTC().Format(time.RFC3339))
+		state.replace(renewed)
+		logf("runner certificate valid until %s", renewed.NotAfter.UTC().Format(time.RFC3339))
 	}
+}
+
+// refresh produces a usable identity from the current one: renewal over mTLS while the
+// certificate is still valid (the normal path), or re-enrollment once it has expired (the
+// recovery path). An expired certificate cannot complete the renew handshake, so spending one
+// doomed handshake per backoff would only hide the real state — the expiry is checked FIRST.
+func (cfg ServeConfig) refresh(ctx context.Context, current Identity, now func() time.Time, logf func(string, ...any), state *serveState) (Identity, error) {
+	if current.NotAfter.After(now()) || cfg.Reenroll == nil {
+		renewed, err := cfg.Renew(ctx, current)
+		if err != nil {
+			return Identity{}, fmt.Errorf("renew runner certificate: %w%s", err, cfg.expiredCure(current, now, state))
+		}
+		return renewed, nil
+	}
+	state.expired.Do(func() {
+		logf("runner identity expired at %s: renewal needs the certificate that expired, so the runner is re-enrolling with its bootstrap credential — no restart needed",
+			current.NotAfter.UTC().Format(time.RFC3339))
+	})
+	reenrolled, err := cfg.Reenroll(ctx)
+	if err != nil {
+		return Identity{}, fmt.Errorf("re-enroll expired runner identity: %w%s", err, cureHint(state))
+	}
+	return reenrolled, nil
+}
+
+// expiredCure names the operator's manual cure ONCE, and only for the runner that cannot help
+// itself: no Reenroll is configured and its certificate has expired, so every retry from here is
+// doomed. A runner with a recovery path says nothing — it fixes itself.
+func (cfg ServeConfig) expiredCure(current Identity, now func() time.Time, state *serveState) string {
+	if cfg.Reenroll != nil || current.NotAfter.After(now()) {
+		return ""
+	}
+	return cureHint(state)
+}
+
+// cureHint is the operator-facing cure, printed at most once for the runner's lifetime.
+func cureHint(state *serveState) string {
+	hint := ""
+	state.cure.Do(func() {
+		hint = " — this runner's identity has expired and it cannot replace it; restart the stack to re-enroll it (`palai local down && palai local up`)"
+	})
+	return hint
 }
 
 // renewalDeadline is the instant a certificate reaches its renewal point (renewalFraction of
@@ -178,16 +245,25 @@ func renewalDeadline(identity Identity) (time.Time, bool) {
 	return leaf.NotBefore.Add(total * renewalFraction / 10), true
 }
 
-// staleIdentityHint names a dial failure whose cause is a rejected client certificate — one
-// that re-dialing the same identity cannot clear — so the log distinguishes it from a
-// transient network error. The background renewer refreshes the identity concurrently, so
-// both cases simply retry; the hint is for the operator reading the log.
-func staleIdentityHint(err error) string {
+// staleIdentityHint names a dial failure whose cause is a rejected client certificate — one that
+// re-dialing the same identity cannot clear — so the log distinguishes it from a transient
+// network error. The renewer refreshes or (once the certificate has expired) replaces the
+// identity concurrently, so both cases simply retry. Said ONCE: this loop runs at 1/s, and a
+// sentence repeated every second is a sentence nobody reads.
+func (cfg ServeConfig) staleIdentityHint(err error, state *serveState) string {
 	msg := err.Error()
-	if strings.Contains(msg, "tls:") || strings.Contains(msg, "certificate") || strings.Contains(msg, "expired") {
-		return " (client identity may be stale; renewal is refreshing it)"
+	if !strings.Contains(msg, "tls:") && !strings.Contains(msg, "certificate") && !strings.Contains(msg, "expired") {
+		return ""
 	}
-	return ""
+	hint := ""
+	state.stale.Do(func() {
+		if cfg.Reenroll != nil {
+			hint = " (the client identity is stale; the runner is refreshing it — or re-enrolling if it has expired — and will pick it up on the next dial, no restart needed)"
+			return
+		}
+		hint = " (the client identity is stale; renewal is refreshing it)"
+	})
+	return hint
 }
 
 // sleep blocks for d or until ctx is cancelled, returning the context error on cancellation
