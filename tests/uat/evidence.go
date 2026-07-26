@@ -1402,6 +1402,12 @@ func (p ConsoleProof) Complete() bool {
 // route belongs to", with the two checked against each other in both directions.
 // ---------------------------------------------------------------------------------------------------------
 
+// WiringBundle is the E19 EXIT bundle's release name. The name carries the honest ceiling: it says
+// INTEGRATION WIRING, not "Slack integration verified" — the release certifies that six surfaces are
+// mounted on the production path and correct against their PUBLISHED contracts, and it certifies nothing
+// about a real Slack workspace, a foreign A2A peer or a broker product. Those are §6 legs 1/2/5.
+const WiringBundle = "integration-wiring-0.1.0"
+
 // WiredSurfaceOrder is the ordered, canonical set of surfaces E19 wired to the production path. A
 // WiringProof must declare EXACTLY these (no more, no fewer) so a surface cannot dodge the mount check by
 // being omitted — the CapabilityTierOrder discipline applied to mounts.
@@ -2272,6 +2278,10 @@ var committedBundleSurfaces = map[string]string{
 	"self-host-0.2.0":           SurfaceRecomputed,
 	"sdk-provider-parity-0.1.0": SurfaceRecomputed,
 	"extensions-0.1.0":          SurfaceRecomputed,
+	// The E19 T9 wiring bundle. Its anchor is the CANONICAL contract ledger digest (WiringContractsDigest),
+	// which is derived from the code table in this file — so a bundle that dropped a §3.5 divergence row
+	// from a surface's requirements would move every checksum in it.
+	WiringBundle: SurfaceRecomputed,
 	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the other fifteen committed
 	// bundles + the materialized case corpus, so a checksum here cannot be hand-written: it moves the
 	// moment any bundle or any case.yaml does.
@@ -2337,6 +2347,8 @@ func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 		}
 		return []string{c.ID, c.RunID, anchor}
 	// E13..E17 authored bundles: hashParts(id, run_id, the release's canonical anchor digest).
+	case WiringBundle: // tests/uat/wiring/bundle_test.go
+		return []string{c.ID, c.RunID, WiringContractsDigest()}
 	case "extensions-0.1.0": // tests/uat/extensions/bundle_test.go
 		return []string{c.ID, c.RunID, CapabilityClaimsDigest()}
 	case "managed-cloud-0.1.0": // tests/uat/managed-cloud/evidence_test.go

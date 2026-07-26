@@ -205,16 +205,40 @@ var tierRank = map[string]int{"disabled": 0, "preview": 1, "stable": 2}
 // every governed capability's tier was established.
 const wiringBaselineRelease = "extensions-0.1.0"
 
-// baselineCapabilityTiers RECOMPUTES the baseline tier table from the committed E17 bundle's own per-case
-// outcomes. It reads BYTES on disk, never a value carried in the release under judgement, so a wiring
-// bundle cannot supply the baseline it is measured against.
+// baselineCapabilityTiers reads the tier table the E17 EXIT gate COMMITTED — the DECLARED tiers in that
+// bundle's CapabilityTierProof, from bytes on disk.
+//
+// IT DELIBERATELY DOES NOT RECOMPUTE, and that is the opposite of the usual rule for a reason worth stating.
+// Everywhere else in this file a recompute beats a copy because the copy is the thing under judgement.
+// Here the copy is the PRIOR STATE: recomputing the baseline with today's tables would move BOTH sides
+// together, so a change to CapabilityOperatorLegs — the single most likely way a tier silently advances —
+// would leave "now" and "was" equal and the whole clause vacuous. A first draft did exactly that, and its
+// RED test could not be made to fail.
+//
+// Trusting the baseline's committed word is safe because that word was itself gated: extensions-0.1.0
+// verifies clean through this same verifier, which refuses any declared tier that disagrees with its own
+// recompute. So the comparison is "this release's RECOMPUTE against the previous release's EARNED word".
 func baselineCapabilityTiers() (map[string]string, error) {
 	path := filepath.Join(repoRootFromSource(), "evidence", "releases", wiringBaselineRelease, "manifest.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read the %s baseline: %w", wiringBaselineRelease, err)
 	}
-	return CapabilityTiersFromBundle(raw)
+	var m evidenceManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("decode the %s baseline: %w", wiringBaselineRelease, err)
+	}
+	for _, c := range m.Cases {
+		if c.CapabilityTierClaim == "" || c.CapabilityTierProof == nil {
+			continue
+		}
+		out := make(map[string]string, len(c.CapabilityTierProof.Capabilities))
+		for _, d := range c.CapabilityTierProof.Capabilities {
+			out[d.Capability] = d.DeclaredTier
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("the %s baseline carries no capability tier table to compare against", wiringBaselineRelease)
 }
 
 // --- the two-person promotion gate (E18 T5) -----------------------------------------------------------
