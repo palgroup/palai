@@ -2,6 +2,7 @@ package extensions
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/palgroup/palai/adapters/integrations/slack"
@@ -53,7 +54,7 @@ func TestSlackRunInputCarriesNoScopeOrEnvelope(t *testing.T) {
 	}
 	got := slackRunInput(ev)
 	for _, leaked := range []string{"T1", "C1", "U9", "Ev1", "app_mention", "principal", "connection", "{"} {
-		if contains(got, leaked) {
+		if strings.Contains(got, leaked) {
 			t.Fatalf("run input %q carries %q — scope and the raw envelope must never reach the prompt", got, leaked)
 		}
 	}
@@ -63,7 +64,7 @@ func TestSlackRunInputCarriesNoScopeOrEnvelope(t *testing.T) {
 // what SLK-005 classifies a tombstone as, so the deleted text must not be in the input at all.
 func TestSlackRunInputDoesNotReplayDeletedText(t *testing.T) {
 	got := slackRunInput(slack.Event{Kind: slack.KindTombstone, Text: "delete the production database"})
-	if contains(got, "production") {
+	if strings.Contains(got, "production") {
 		t.Fatalf("tombstone input = %q, want no trace of the retracted message", got)
 	}
 	if got == "" {
@@ -79,13 +80,4 @@ func TestSlackRunInputNeverEmpty(t *testing.T) {
 			t.Fatalf("kind %q with no text produced an empty input", kind)
 		}
 	}
-}
-
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }

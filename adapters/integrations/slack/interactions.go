@@ -145,6 +145,50 @@ func ApprovalMessage(channel, threadTS, detail, requestHash string) []byte {
 	return raw
 }
 
+// MaxMessageText is how much of a run's answer one reply carries.
+//
+// CONTRACT: https://docs.slack.dev/changelog/2018-truncating-really-long-messages (checked 2026-07-27) — the
+// `text` field of every message-posting method accepts up to 40,000 characters; beyond that Slack "may also
+// automatically split the content into multiple messages". The formatting guidance
+// (https://docs.slack.dev/messaging/formatting-message-text/) puts the readable ceiling far lower, at about
+// 4,000, and points longer content at a file upload.
+//
+// So the budget below is NOT the 40,000 limit, and the reason is the SPLIT rather than the size: a message
+// Slack divides into several is several visible messages with one ts, which quietly breaks the one-run
+// one-message claim the delivery row is keyed on, and leaves later repairs pointing at a fragment. Truncating
+// ourselves keeps one message, one handle, and one honest marker telling the reader where the whole answer
+// is. Threading the overflow instead was rejected for the same reason plus a second: it multiplies a
+// per-channel-rate-limited write by however long the model was feeling. A file upload needs files:write,
+// which this app is not granted.
+const MaxMessageText = 3900
+
+// ThreadReply builds the chat.postMessage body that answers IN THE THREAD the question was asked in.
+// threadTS is the thread root from the SLK-003 correlation, never anything a payload named.
+//
+// Plain text, no Block Kit: a model's answer is prose the model chose, and wrapping attacker-influenced
+// text in mrkdwn blocks adds rendering surface for nothing. Slack's own mrkdwn still applies to `text`, but
+// the message stays one field rather than a structure whose shape a run could steer.
+//
+// Over-long text is truncated with a marker naming the response, so the reader is told the answer was cut
+// and where the whole of it lives — silence about truncation is how a wrong answer gets read as a complete
+// one. responseID may be empty (a run with no stored response), in which case the marker just says it was
+// truncated.
+func ThreadReply(channel, threadTS, text, responseID string) []byte {
+	if n := len([]rune(text)); n > MaxMessageText {
+		marker := "\n\n_… truncated_"
+		if responseID != "" {
+			marker = "\n\n_… truncated; the full answer is response " + responseID + "_"
+		}
+		text = string([]rune(text)[:MaxMessageText-len([]rune(marker))]) + marker
+	}
+	body := map[string]any{"channel": channel, "text": text}
+	if threadTS != "" {
+		body["thread_ts"] = threadTS
+	}
+	raw, _ := json.Marshal(body)
+	return raw
+}
+
 // UpdateMessage builds the chat.update body that REPAIRS an already-visible message in place: same channel,
 // the message's own ts, new text and no buttons (the decision is made; the buttons must not invite a second
 // click). Editing the visible message is the SLK-006 repair — one message per thread, never a second post.

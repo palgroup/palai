@@ -302,7 +302,13 @@ func (f *slackFixture) deliverSigned(t *testing.T, body []byte, timestamp, signa
 // "team_id":…, "event_id":…, "event":{…}}; the inner object carries the message's user/channel/ts, and
 // thread_ts when it is a threaded reply.
 func (f *slackFixture) event(eventID, innerType, user, channel, ts, threadTS string) []byte {
-	inner := map[string]any{"type": innerType, "user": user, "channel": channel, "ts": ts, "text": "hello"}
+	return f.eventText(nil, eventID, innerType, user, channel, ts, threadTS, "hello")
+}
+
+// eventText is event() with the message the human typed spelled out, for the tests that assert what reaches
+// the model. t is only for the signature's symmetry with the other helpers and may be nil.
+func (f *slackFixture) eventText(_ *testing.T, eventID, innerType, user, channel, ts, threadTS, text string) []byte {
+	inner := map[string]any{"type": innerType, "user": user, "channel": channel, "ts": ts, "text": text}
 	if threadTS != "" {
 		inner["thread_ts"] = threadTS
 	}
@@ -511,23 +517,34 @@ func TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind(t *testing.T) {
 	if n := f.sessionCount(t); n != 1 {
 		t.Fatalf("the edit and the delete produced %d thread↔session rows, want 1 — both belong to the same thread", n)
 	}
-	var kinds []string
+	// The kind is READ OFF THE INPUT the model receives, which is the only place it can still be observed
+	// now that the input is the human's message rather than the event envelope — and it is the stronger
+	// assertion of the two: SLK-005's classification is worth nothing if it does not change what the model
+	// is told. An edit is MARKED as an edit (it does not arrive as a brand-new turn), and a delete does NOT
+	// echo the retracted words back.
+	var inputs []string
 	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT input->>'kind' FROM responses WHERE organization_id=$1 AND project_id=$2 ORDER BY input->>'event_id'`,
+		`SELECT input::text FROM responses WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at`,
 		f.org, f.project)
 	if err != nil {
-		t.Fatalf("read admitted kinds: %v", err)
+		t.Fatalf("read admitted inputs: %v", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var kind string
-		if err := rows.Scan(&kind); err != nil {
-			t.Fatalf("scan kind: %v", err)
+		var input string
+		if err := rows.Scan(&input); err != nil {
+			t.Fatalf("scan input: %v", err)
 		}
-		kinds = append(kinds, kind)
+		inputs = append(inputs, input)
 	}
-	if len(kinds) != 2 || kinds[0] != "correction" || kinds[1] != "tombstone" {
-		t.Fatalf("admitted kinds = %v, want [correction tombstone] — an edit supersedes and a delete retracts; neither is a fresh turn (SLK-005)", kinds)
+	if len(inputs) != 2 {
+		t.Fatalf("admitted inputs = %v, want two", inputs)
+	}
+	if inputs[0] != `"(edited) edited"` {
+		t.Fatalf("the edit reached the model as %s, want the corrected text marked as an edit (SLK-005: it supersedes, it is not a fresh turn)", inputs[0])
+	}
+	if !strings.Contains(inputs[1], "deleted their message") || strings.Contains(inputs[1], "gone") {
+		t.Fatalf("the delete reached the model as %s, want a retraction that does not replay the removed words", inputs[1])
 	}
 }
 
@@ -929,5 +946,36 @@ func assertNoRetry(t *testing.T, resp *http.Response, want int, what string) {
 	if got := resp.Header.Get("X-Slack-No-Retry"); got != "1" {
 		t.Fatalf("%s answered %d with X-Slack-No-Retry=%q, want \"1\" — Slack would otherwise pull this poison event three more times (plan §3.5 D1)",
 			what, resp.StatusCode, got)
+	}
+}
+
+// TestSlackEventStoresTheHumanMessageAsTheRunInput is the projection fix over the SHIPPED route and a real
+// database: what lands in responses.input is what the orchestrator hands the engine as run.start's `input`,
+// which the engine appends as the user message and model_dispatch passes to the provider verbatim when it is
+// a string. So this column IS the prompt, and asserting it here asserts what the model reads.
+//
+// The regression it pins: the input used to be the Slack envelope, and a real workspace's first mention was
+// answered with "It looks like you have shared a JSON object that represents a message event from Slack…".
+func TestSlackEventStoresTheHumanMessageAsTheRunInput(t *testing.T) {
+	f := newSlackFixture(t)
+
+	f.deliver(t, f.eventText(t, "EvIn1", "app_mention", "Umapped", "C80", "1700000080.000100", "",
+		"<@"+f.botUser+"> merhaba"), time.Now(), "", "").Body.Close()
+
+	var input string
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT resp.input::text FROM responses resp WHERE resp.organization_id=$1 AND resp.project_id=$2`,
+		f.org, f.project).Scan(&input); err != nil {
+		t.Fatalf("read the stored run input: %v", err)
+	}
+	if input != `"merhaba"` {
+		t.Fatalf("responses.input = %s, want the bare JSON string \"merhaba\" — an object reaches the model as raw JSON", input)
+	}
+	// Nothing about the transport, the tenant or the clicker may ride along: the run's identity is the
+	// connection's principal (asserted elsewhere) and a prompt is not where scope belongs.
+	for _, leaked := range []string{f.team, f.principal, f.revision, "C80", "Umapped", "EvIn1", "app_mention"} {
+		if strings.Contains(input, leaked) {
+			t.Fatalf("responses.input carries %q: %s", leaked, input)
+		}
 	}
 }

@@ -297,6 +297,11 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		sch := &slackConnectionHandler{slack: cfg.slackConnections}
 		mux.HandleFunc("POST /v1/slack-connections", sch.createConnection)
 		mux.HandleFunc("GET /v1/slack-connections", sch.listConnections)
+		// The repair half: a binding registered before a field existed (an app_token_ref, say) was previously
+		// only fixable with raw SQL against slack_connections, which is not a thing an operator has.
+		mux.HandleFunc("GET /v1/slack-connections/{connection_id}", sch.getConnection)
+		mux.HandleFunc("PATCH /v1/slack-connections/{connection_id}", sch.reviseConnection)
+		mux.HandleFunc("DELETE /v1/slack-connections/{connection_id}", sch.deleteConnection)
 	}
 
 	var root http.Handler = mux

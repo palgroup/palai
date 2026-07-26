@@ -172,6 +172,11 @@ run_postgres() {
   # the same real Admitter, against a fake Slack peer built to the published contract (one run per source
   # event through a retry storm, one session per thread, bot-self births nothing, and a rejected delivery
   # writes nothing at all).
+  #
+  # The RETURN LEG joins them: what lands in responses.input is the human's message (not the envelope the
+  # model used to describe back), and a run driven terminal through the REAL coordinator answers in its
+  # thread exactly once -- through repeated ticks, a re-driven terminal transition, a permanently
+  # rate-limited Slack, and a disabled connection. TestSlack* already selects all of it.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v -run 'TestA2ARealAdmitterBirthsRun|TestSlack' ./apps/control-plane/internal/store
