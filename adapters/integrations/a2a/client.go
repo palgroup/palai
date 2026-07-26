@@ -90,6 +90,11 @@ type RemoteAgent struct {
 	MaxCostCents         int
 	TimeoutMS            int
 	MaxOutputBytes       int
+	// Enabled is the row's operator kill-switch, populated by GetRemoteAgent (registration always writes
+	// true). It is READ by a dispatcher — E19 T5's dispatchRemoteChild refuses a disabled agent — not by
+	// the client, which dials whatever agent it is handed: the client enforces the TRUST envelope, the
+	// dispatcher decides whether this agent may be dialed at all.
+	Enabled bool
 }
 
 // RemoteSecretResolver redeems a remote connection's auth secret_ref handle for its bearer bytes at call time

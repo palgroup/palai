@@ -227,15 +227,16 @@ func (s *Store) RegisterRemoteAgent(ctx context.Context, agent RemoteAgent) (str
 }
 
 // GetRemoteAgent resolves a registered remote agent within the authenticated scope. RLS confines the row; the
-// org/project predicate is defence in depth. A foreign scope finds nothing (no existence oracle).
+// org/project predicate is defence in depth. A foreign scope finds nothing (no existence oracle). The row's
+// `enabled` flag is RETURNED on the agent (E19 T5) rather than dropped: once something dials these rows, an
+// operator's kill-switch that no caller can read is not a kill-switch.
 func (s *Store) GetRemoteAgent(ctx context.Context, org, project, id string) (RemoteAgent, bool, error) {
 	ctx = storage.WithTenant(ctx, org, project)
 	row := s.pool.QueryRow(ctx, storage.Query("GetA2ARemoteAgent"), id, org, project)
 	var a RemoteAgent
-	var enabled bool
 	err := row.Scan(&a.ID, &a.Organization, &a.Project, &a.Name, &a.CardURL, &a.Endpoint, &a.ProtocolVersion,
 		&a.AuthConnectionRef, &a.AllowedInputModes, &a.AllowedOutputModes, &a.AllowedExtensionURIs,
-		&a.DataPolicy, &a.MaxCostCents, &a.TimeoutMS, &a.MaxOutputBytes, &enabled)
+		&a.DataPolicy, &a.MaxCostCents, &a.TimeoutMS, &a.MaxOutputBytes, &a.Enabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RemoteAgent{}, false, nil
 	}
