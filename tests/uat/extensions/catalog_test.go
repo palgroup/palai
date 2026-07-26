@@ -266,16 +266,22 @@ var expectedExtensionsCatalog = map[string]struct {
 	"AUT-009": {"component-real", []string{
 		"apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate",
 		"apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect",
+		// WIRED leg (E19 T6): the redelivery admits ONE RUN through the shipped bridge + real admission.
+		"apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun",
 	}},
 	"AUT-010": {"component-real", []string{
 		"apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429",
 		"apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterFloodAppliesBackpressureNoDrop",
+		// WIRED leg (E19 T6): the flood is shed and drained through the shipped bridge, one run per message.
+		"apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeFloodBackpressureNoDropOneRunEach",
 	}},
 	"AUT-013": {"component-real", []string{
 		"apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetrySameIdempotencyKeySingleEverything",
 		"apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetryDifferentKeySameDedupeSingleAction",
 		"apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect",
 		"apps/control-plane/internal/automation/orchestrator_storm_component_test.go:TestOrchestratorRetryStormSingleRun",
+		// WIRED queue leg (E19 T6): the bridge owns no retry of its own — the queue is the single owner.
+		"apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun",
 	}},
 }
 

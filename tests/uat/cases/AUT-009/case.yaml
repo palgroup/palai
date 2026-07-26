@@ -2,7 +2,7 @@ id: AUT-009
 name: redelivery-after-lost-ack-no-duplicate
 proof_class: component-real
 provider: fake
-input: "an upstream redelivery after a lost ack (the receiver committed but the ack never reached the sender) does NOT duplicate the action — the durable source-event dedupe absorbs the retry. LOCAL seam: component-real against a real Postgres inbound pipeline PLUS the reference QUEUE adapter's lost-ack redelivery leg (E17 T7) — the canonical dedupe is one seam, not a per-source reinvention. §6 leg 5: a real SQS/PubSub conformance run is operator work; the cloud adapters are unwritten and deliberately NOT advertised in discovery."
+input: "an upstream redelivery after a lost ack (the receiver committed but the ack never reached the sender) does NOT duplicate the action — the durable source-event dedupe absorbs the retry. LOCAL seam: component-real against a real Postgres inbound pipeline PLUS the SHIPPED queue bridge (E19 T6) driving the reference QUEUE adapter's lost-ack redelivery into the real admission path — the canonical dedupe is one seam, not a per-source reinvention. §6 leg 5: a real SQS/PubSub conformance run is operator work; the cloud adapters are unwritten and deliberately NOT advertised in discovery."
 expect_status: completed
 proof:
   - apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate
@@ -10,3 +10,8 @@ proof:
   # adapter — a crashed consumer's un-acked message redelivers and the append-only idempotency ledger
   # makes the effect run exactly once (real Postgres; no real broker — SQS/PubSub/Kafka is the operator leg).
   - apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect
+  # WIRED leg (E19 T6): the SAME lost-ack redelivery, now through the SHIPPED consume->admit bridge and the
+  # REAL coordinator admission — the redelivery admits ONE RUN, not one scratch row. The dedupe anchor here is
+  # the admission's own idempotency reservation (the receipt is written AFTER it, deliberately), so this is a
+  # strictly different guarantee from the adapter leg above and is proven separately.
+  - apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun

@@ -2,7 +2,7 @@ id: AUT-010
 name: flood-bounded-memory-429-depth-visible
 proof_class: component-real
 provider: fake
-input: "an inbound flood is bounded — in-flight memory stays capped, per-trigger backlog depth is visible, and excess is rejected with a 429 rather than admitted or OOM'd. LOCAL seam: component-real against a real Postgres inbound pipeline PLUS the reference QUEUE adapter's bounded-buffer backpressure leg (E17 T7) — consumption pauses at the threshold and NOTHING is dropped. §6 leg 5: a real SQS/PubSub flood run is operator work; the cloud adapters are unwritten and deliberately NOT advertised in discovery."
+input: "an inbound flood is bounded — in-flight memory stays capped, per-trigger backlog depth is visible, and excess is rejected with a 429 rather than admitted or OOM'd. LOCAL seam: component-real against a real Postgres inbound pipeline PLUS the SHIPPED queue bridge (E19 T6) over the reference QUEUE adapter's bounded-buffer backpressure — consumption pauses at the threshold and NOTHING is dropped. §6 leg 5: a real SQS/PubSub flood run is operator work; the cloud adapters are unwritten and deliberately NOT advertised in discovery."
 expect_status: throttled
 proof:
   - apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429
@@ -10,3 +10,7 @@ proof:
   # producer waits/retries) with a visible depth gauge, rather than dropping the message or growing without
   # bound (real Postgres; bounded-buffer backpressure, the same crux as the inbound 429).
   - apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterFloodAppliesBackpressureNoDrop
+  # WIRED leg (E19 T6): the SAME flood, now through the SHIPPED bridge — the producer is shed with
+  # ErrQueueFull, the depth gauge reports the accepted backlog, and every accepted message becomes EXACTLY ONE
+  # run across a bounded-batch drain. Backpressure applied end to end, nothing dropped and nothing duplicated.
+  - apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeFloodBackpressureNoDropOneRunEach
