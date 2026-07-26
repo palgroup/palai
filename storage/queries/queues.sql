@@ -9,9 +9,42 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
 RETURNING id;
 
 -- name: GetQueueConnection
-SELECT id, organization_id, project_id, name, kind, direction, capacity, visibility_seconds, max_deliveries, enabled
+SELECT id, organization_id, project_id, name, kind, direction, capacity, visibility_seconds, max_deliveries, enabled, config
   FROM queue_connections
  WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- SweepQueueConnections is the BRIDGE's catalogue scan (E19 T6): every ENABLED connection of one direction,
+-- across tenants, so the supervised consumer / outbox pump can tick them all. It runs under the SYSTEM scope
+-- (a cross-tenant sweep by construction, the webhook-pump FanOutEndpoints idiom) and each returned row
+-- carries its OWN org/project — which is then the ONLY tenant the bridge uses for that row's work. `enabled`
+-- is in the WHERE, not a returned column: a disabled connection is not "returned and then filtered", it is
+-- never selected, so no later code path can forget the check (§2, and the disabled-admits-nothing claim).
+-- name: SweepQueueConnections
+SELECT id, organization_id, project_id, capacity, visibility_seconds, max_deliveries, config
+  FROM queue_connections
+ WHERE direction = $1 AND enabled
+ ORDER BY created_at;
+
+-- ListQueueConnections is the tenant-scoped admin page (the ListMCPConnections keyset shape). It returns
+-- NON-SECRET metadata only; `config` is returned because it holds the run target (agent_revision_id /
+-- principal_id) an operator must be able to read back, and secret material lives in secret_refs, never here.
+-- name: ListQueueConnections
+SELECT id, name, kind, direction, capacity, visibility_seconds, max_deliveries, enabled, config, created_at
+  FROM queue_connections
+ WHERE organization_id = $1 AND project_id = $2
+   AND ($3::timestamptz IS NULL OR created_at >= $3)
+   AND ($4::timestamptz IS NULL OR created_at <= $4)
+   AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+ ORDER BY created_at DESC, id DESC
+ LIMIT $7;
+
+-- QueueRunPrincipalInScope confirms the principal named by an inbound connection's config belongs to the
+-- connection's OWN org/project (the SlackRunPrincipalInScope twin, kept as its own name so the queue bridge
+-- does not read a query the Slack surface owns). Without it a project admin could name a FOREIGN principal
+-- and have queue-born runs booked against another tenant's identity: idempotency_records.principal_id is a
+-- bare FK to principals(id), so the database alone would accept it.
+-- name: QueueRunPrincipalInScope
+SELECT 1 FROM principals WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- EnqueueQueueMessage inserts a message; the UNIQUE(queue_connection_id, idempotency_key) collapses a
 -- producer's at-least-once double-publish (ON CONFLICT DO NOTHING -> RowsAffected()==0 signals a dedupe).
@@ -106,6 +139,40 @@ SELECT count(*) FROM queue_effect_receipts
 INSERT INTO queue_deliveries
     (id, organization_id, project_id, queue_connection_id, destination_key, payload, max_attempts)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (queue_connection_id, destination_key) DO NOTHING;
+
+-- EnqueueTerminalQueueDeliveries is the OUTBOUND BRIDGE (E19 T6, §34.5): it runs INSIDE the run's terminal
+-- transaction (applyRunTransitionTx), so the durable result row and the run's terminality commit TOGETHER.
+-- That is the whole loss-lessness claim: there is no window in which a run is terminal and its result was
+-- never recorded for delivery, however long the publisher stays down. The pump only ever DELIVERS what this
+-- statement already committed.
+--
+-- Destination idempotency: destination_key is the run id and UNIQUE(queue_connection_id, destination_key)
+-- + ON CONFLICT DO NOTHING make a second terminal write (a retried transaction, a reconciled cancel) ONE
+-- delivery. The payload names the run's canonical coordinates ONLY — a consumer reads the content back
+-- through /v1/responses under its own credential, so nothing here widens what a queue subscriber can see.
+--
+-- The tenant is NOT a parameter of the payload: org/project come from the connection row (c.*), which the
+-- caller's tenant scope already confines via RLS. A project with no enabled outbound connection inserts
+-- zero rows.
+-- ponytail: an unindexed scan of queue_connections on every terminal transition. The table holds a handful
+-- of rows per deployment, and RLS confines it to the tenant's own; a deployment with many connections wants
+-- a partial index on (organization_id, project_id) WHERE direction='outbound' AND enabled — which is a
+-- migration, and E19 takes none.
+-- name: EnqueueTerminalQueueDeliveries
+INSERT INTO queue_deliveries
+    (id, organization_id, project_id, queue_connection_id, destination_key, payload, max_attempts)
+SELECT 'qdel_' || replace(gen_random_uuid()::text, '-', ''),
+       c.organization_id, c.project_id, c.id, $3,
+       convert_to(jsonb_build_object(
+           'type', 'run.terminal',
+           'run_id', $3::text,
+           'response_id', $4::text,
+           'session_id', $5::text,
+           'state', $6::text)::text, 'UTF8'),
+       c.max_deliveries
+  FROM queue_connections c
+ WHERE c.organization_id = $1 AND c.project_id = $2 AND c.direction = 'outbound' AND c.enabled
 ON CONFLICT (queue_connection_id, destination_key) DO NOTHING;
 
 -- DueQueueDeliveries returns pending outbound deliveries whose backoff clock has elapsed. DeliverDue runs

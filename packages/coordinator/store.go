@@ -504,6 +504,20 @@ func applyRunTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID s
 		if err := sweepQueuedCommands(ctx, tx, tenant, sessionID, responseID, runID, next); err != nil {
 			return Transition{}, err
 		}
+		// The OUTBOUND QUEUE BRIDGE (E19 T6, §34.5). A project with an enabled outbound queue_connections
+		// row gets the run's terminal result recorded for delivery HERE, in the terminal transaction — so
+		// the result's durability is the run's own durability and no publisher-down window can lose it.
+		// Zero enabled outbound connections inserts zero rows, which is every deployment that wires no
+		// queue. The statement is idempotent (ON CONFLICT on the run-keyed destination_key), so a retried
+		// terminal transition is one delivery.
+		var resp string
+		if responseID != nil {
+			resp = *responseID
+		}
+		if _, err := tx.Exec(ctx, storage.Query("EnqueueTerminalQueueDeliveries"),
+			tenant.Organization, tenant.Project, runID, resp, sessionID, string(next)); err != nil {
+			return Transition{}, fmt.Errorf("enqueue terminal queue deliveries: %w", err)
+		}
 	}
 	return Transition{To: next, Event: event, Sequence: seq}, nil
 }

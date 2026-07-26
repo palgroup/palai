@@ -225,6 +225,21 @@ func main() {
 		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns}).
 		WithDecisions(repo.Spine(), http.DefaultClient, os.Getenv("PALAI_SLACK_API_BASE_URL"))
 	routerOpts = append(routerOpts, api.WithSlack(slackBridge), api.WithSlackInteractions(slackBridge))
+	// The queue bridges (E19 T6, spec §34.1-34.5). ONE store serves all three halves: the admin surface
+	// mounted here, the supervised consume→admit bridge, and the outbound DeliverDue pump (both started
+	// below). Unconditional like WithUsage — the reference adapter's broker is this deployment's own
+	// Postgres, so it needs no external credential, and a stack with no registered binding does no work.
+	//
+	// The inbound bridge admits through `repo.Spine()` — the SAME coordinator POST /v1/responses and the
+	// trigger pipeline admit through — but it does NOT go through IngestInbound: a broker's auth boundary is
+	// the CONNECTION, not a per-message HMAC, so it is a second admission entrypoint rather than the signed
+	// one bent by a flag. The full reasoning is at the top of automation/queue_bridge.go.
+	//
+	// Mounting is what would let discovery advertise `queues` at all; it does NOT raise the tier — no broker
+	// PRODUCT exists in this tree (E17 §6 leg 5), so `queues` stays preview and only the T11 recompute writes
+	// the word.
+	queueStore := automation.NewQueueStore(repo.Spine().Pool())
+	routerOpts = append(routerOpts, api.WithQueueConnections(queueStore, nil))
 	// Discovery advertises `capability-workers` ONLY where the gateway above actually BOUND its listener —
 	// the option is passed off the returned value, never off the env var, so the claim cannot outlive the
 	// mount (§2; E19 T8a closed the static "stable" that a binary not importing internal/workers was serving).
@@ -267,6 +282,7 @@ func main() {
 
 	startDispatch(ctx, repo, gateway, supervisor, artStore)
 	startWebhookPump(ctx, webhookStore, supervisor)
+	startQueueBridges(ctx, queueStore, repo.Spine(), edge, supervisor)
 	startDeliveryReconciler(ctx, triggerStore, supervisor)
 	startScheduleTicker(ctx, scheduleStore, supervisor)
 	startRetention(ctx, repo, supervisor, artStore)
@@ -838,6 +854,32 @@ func startWebhookPump(ctx context.Context, store *automation.WebhookStore, super
 		MaxBackoff:  envDurationOr("PALAI_WEBHOOK_BACKOFF_MAX", time.Hour),
 	}, log.Printf)
 	go supervisor.Supervise(ctx, "webhook-pump", pump.Run)
+}
+
+// startQueueBridges launches the two supervised queue loops (E19 T6, spec §34.2/§34.5):
+//
+//   - the INBOUND bridge consumes each enabled inbound binding and admits every message through the
+//     coordinator spine, acking only after the admission and the idempotency receipt have committed;
+//   - the OUTBOUND pump drains queue_deliveries — rows that were already committed inside each run's
+//     TERMINAL TRANSACTION, which is why a publisher-down window (or this pump simply not running) can
+//     never lose a result. The pump delivers; the terminal transaction is what makes it durable.
+//
+// Both are system loops that serve every project and are inert until a binding is registered, so they run
+// unconditionally like the webhook pump. The bridge passes the SAME per-project §20.12 caps the HTTP edge
+// resolves, so a queue flood is shed by the same admission gate a POST flood is — not a second policy.
+func startQueueBridges(ctx context.Context, store *automation.QueueStore, spine *coordinator.Store, edge api.EdgeLimits, supervisor *coordinator.Supervisor) {
+	cfg := automation.QueueBridgeConfig{
+		MaxConcurrentRuns: edge.MaxConcurrentRuns,
+		MaxQueuedRuns:     edge.MaxQueuedRuns,
+		Tick:              envDurationOr("PALAI_QUEUE_TICK", time.Second),
+		DeliveryBackoff:   envDurationOr("PALAI_QUEUE_DELIVERY_BACKOFF", 30*time.Second),
+	}
+	go supervisor.Supervise(ctx, "queue-bridge", automation.NewQueueBridge(store, spine, cfg, log.Printf).Run)
+	// The outbound sink is an egress-safe POST to the destination each connection names, over the SAME
+	// vetted sender the webhook pump uses. A real broker client (an SQS/PubSub/Kafka SDK Publish) is the
+	// operator leg (§6 leg 5) and plugs in behind the same queue.Sink interface.
+	go supervisor.Supervise(ctx, "queue-outbox-pump",
+		automation.NewQueueOutboxPump(store, automation.QueueHTTPSinks(webhook.NewSender()), cfg, log.Printf).Run)
 }
 
 // startDeliveryReconciler launches the supervised trigger delivery-reconciler (spec §20.2.2, E11 Task 2).
