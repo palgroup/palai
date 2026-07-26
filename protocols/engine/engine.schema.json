@@ -129,6 +129,10 @@
                 "description": "The workspace a delegated child receives (spec §29.8, §30.5): none = no workspace (the E08 default); read_only = a read-only snapshot of the parent's; isolated = an isolated copy-on-write branch/worktree. The value is declared here in E09 Task 1 (schema-pin) and enforced in Task 6; before E09 it rode the frame Go/Py-only.",
                 "type": "string",
                 "enum": ["none", "read_only", "isolated"]
+              },
+              "remote_agent": {
+                "description": "A REGISTERED remote A2A agent (an a2a_remote_agents id, spec §38.5) that executes this delegation instead of a local engine (E19 Task 5). Present only when the delegation names one, so a local delegation's frame is byte-identical to before. The id is resolved inside the run's OWN tenant — naming another tenant's registration resolves to nothing — and an unknown, disabled or unwired target is DENIED, never run locally. The remote's reply is untrusted tool-result data and the folded child.result carries no child_run_id: no local run exists, and a remote task id is connection-scoped.",
+                "type": "string"
               }
             }
           }

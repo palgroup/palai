@@ -158,9 +158,19 @@ var expectedExtensionsCatalog = map[string]struct {
 		"adapters/integrations/a2a/client_test.go:TestA2AClientLoopbackInteropAgainstT2Server",
 		"tests/component/postgres/a2a_remote_agent_store_test.go:TestA2ARemoteAgentStoreRLS",
 	}},
-	"SUB-007": {"e2e-deterministic", []string{
+	// E19 T5 wired RemoteChildRun into orchestrator.dispatchChild, so this case's proof_class moves
+	// e2e-deterministic -> component-real: the crown is now asserted by the SHIPPED dispatch path over real
+	// Postgres, not by the client alone.
+	"SUB-007": {"component-real", []string{
 		"adapters/integrations/a2a/client_test.go:TestA2AClientRemoteChildIsUntrustedAndNoCredentialInheritance",
 		"adapters/integrations/a2a/client_test.go:TestA2AClientLoopbackInteropAgainstT2Server",
+		"adapters/integrations/a2a/client_test.go:TestA2AClientIngestsAPushedFileOnTheDIRECTMESSAGEBranchToo",
+		"apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildDispatchesToTheRegisteredRemote",
+		"apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildNeverInheritsTheParentCredential",
+		"apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildFailureIsAnHonestParentTerminal",
+		"apps/control-plane/internal/execution/remote_child_component_test.go:TestRemoteChildIsRefusedRatherThanRunLocally",
+		"apps/control-plane/internal/execution/child_dispatch_test.go:TestRemoteAgentRidesTheChildRequestOnlyWhenNamed",
+		"apps/control-plane/internal/execution/child_dispatch_test.go:TestRemoteChildrenCountAgainstFanout",
 	}},
 	"KNO-001": {"component-real", []string{
 		"apps/control-plane/internal/knowledge/knowledge_component_test.go:TestIngestIsImmutableAndVersioned",

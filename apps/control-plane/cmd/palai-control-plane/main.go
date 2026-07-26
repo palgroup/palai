@@ -459,6 +459,20 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// queue age), so the deterministic tiers are bit-unchanged.
 		orch.SetQueueDeadline(envDuration("PALAI_QUEUE_DEADLINE"))
 		orch.SetHookFirer(toolRegistry)
+		// Wire remote child-run dispatch (E19 T5, §38.5): a child.request naming a REGISTERED
+		// a2a_remote_agents row is executed by that remote instead of a local engine. The lookup is the same
+		// tenant-scoped a2a store the server half uses; the dialer is the E17 T3 client in PRODUCTION posture
+		// — AllowPrivate stays false, so a remote agent registered at a loopback/RFC1918/metadata address is
+		// refused by egress before any dial, and no Files sink is wired, so a remote that returns a file part
+		// fails its child honestly rather than losing the file. The bearer is redeemed ONLY from the agent
+		// row's auth_connection_ref by the org-scoped resolver — there is no parameter through which this
+		// process could hand the remote the parent's or the platform's credential (A2A-005/SUB-007).
+		//
+		// Unconditional, like SetHookFirer: it needs no external key material and a project that registered
+		// no remote agent simply never takes the branch. Registration itself has no HTTP surface yet — the
+		// rows are created directly today — which is a NAMED gap, not a claim this task closes.
+		orch.SetRemoteChildren(a2a.NewStore(spine.Pool(), middleware.NewID),
+			a2a.NewClient(a2a.ClientConfig{Secrets: a2aRemoteSecretResolver}))
 		// Wire the repository publisher the approval pump publishes through (spec §30.9-30.10), gated on
 		// the GitHub App environment. Absent it, an approved publication waits (the pump is a no-op) — no
 		// push happens without a configured destination. ponytail: the live wave sets the env; the
@@ -983,6 +997,34 @@ func slackSecretResolver(org, ref string) ([]byte, error) {
 	path := os.Getenv("PALAI_SLACK_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
 	if path == "" {
 		return nil, fmt.Errorf("no secret bridge configured for slack ref under org %q", org)
+	}
+	return os.ReadFile(path)
+}
+
+// a2aRemoteSecretResolver is the fifth sibling of webhook/inbound/remoteTool/slackSecretResolver (E19 T5):
+// it bridges an a2a_remote_agents.auth_connection_ref handle to the REMOTE CONNECTION'S OWN bearer via
+// PALAI_A2A_REMOTE_SECRET_FILE_<ORG>__<REF> (a FILE PATH, never inline). The org prefix is a server-minted
+// hard tenant boundary, so a tenant's ref can only name a secret provisioned under its OWN org — and the
+// A2A-remote namespace is DISTINCT from the webhook/inbound/remote-tool/Slack ones, so the five secret sets
+// are non-interchangeable. This is the ONLY bearer a remote child dial can carry: an unresolved ref FAILS
+// the dispatch (an honest child failure), it never falls back to the platform's or the parent's credential.
+func a2aRemoteSecretResolver(org, ref string) ([]byte, error) {
+	if org == "" || ref == "" {
+		return nil, errors.New("empty a2a remote secret org/ref")
+	}
+	if v, ok, err := dbSecret(org, ref); err != nil {
+		return nil, err
+	} else if ok {
+		return v, nil
+	}
+	// Belt-and-braces, as in the sibling resolvers: a normalized org key carrying the "__" delimiter is
+	// ambiguous; reject it rather than resolve a colliding key.
+	if strings.Contains(secretEnvKey(org), "__") {
+		return nil, fmt.Errorf("ambiguous a2a remote secret org key %q", org)
+	}
+	path := os.Getenv("PALAI_A2A_REMOTE_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	if path == "" {
+		return nil, fmt.Errorf("no secret bridge configured for a2a remote ref under org %q", org)
 	}
 	return os.ReadFile(path)
 }
