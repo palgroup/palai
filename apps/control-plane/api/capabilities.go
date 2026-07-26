@@ -46,23 +46,11 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 			// discovery derives it from PALAI_WORKSPACE_ROOT the same way it reads the retention TTL — a
 			// deployment with no coding stack never advertises a capability it cannot serve.
 			"workspaces": workspacesCapability(),
-			// Knowledge spine (E17 Task 4): the FTS ingestion/index/retrieval core. FLIPPED to stable by the
-			// T11 exit gate — all eight KNO claims closed green and the capability has no §6 leg its core
-			// depends on. The flip came THROUGH the verification: the tier below must equal
-			// uat.RecomputeCapabilityTiers over the extensions-0.1.0 per-case outcomes, asserted by
-			// TestServedCapabilityTiersEqualTheRecompute. The vector strategy stays DISABLED — the adapter
-			// interface exists but no vector store is wired (§6 leg 4), and discovery never claims a store
-			// it lacks.
-			"knowledge":        "stable",
+			// knowledge-vector stays DISABLED: the adapter interface exists but no vector store is wired
+			// (§6 leg 4), and discovery never claims a store it lacks. A "disabled" word is a NEGATIVE claim —
+			// it names a surface this deployment does NOT serve — so unlike the tiers below it needs no mount
+			// to derive from and is honest exactly because it is static.
 			"knowledge-vector": "disabled",
-			// The queue adapter (E17 T7): a durable SQS/PubSub/Kafka-class consumer + outbound result-delivery
-			// outbox, proven by the Postgres-durable REFERENCE adapter. It stays PREVIEW and the T11 exit gate
-			// KEPT it there: AUT-009/010 are green, but NO broker PRODUCT was ever run — there is no NATS, SQS,
-			// Pub/Sub or Kafka anywhere in this tree, so the T7 plan's own stable-candidacy condition (a real
-			// broker container, NATS JetStream) is UNMET. §6 leg 5, EXTENDED to cover any broker product, is the
-			// operator work that flips it (uat.CapabilityOperatorLegs caps it mechanically). The unwritten cloud
-			// adapters are separately NOT advertised here: an unwritten adapter is never discoverable.
-			"queues": "preview",
 			// apple-build stays DISABLED: there is no signing certificate, provisioning profile or store
 			// credential anywhere (§6 leg 3), so discovery never claims a macOS/iOS BUILD this deployment
 			// cannot serve — WRK-006 proves the capability is ABSENT from the worker catalog rather than
@@ -108,6 +96,32 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 		// T11 CapabilityTierProof recompute — not this line — decides the word.
 		if cfg.slack != nil {
 			caps["slack"] = "preview"
+		}
+		// The knowledge spine (E17 T4): the FTS ingestion/index/retrieval core, advertised ONLY when
+		// WithKnowledge actually mounted the routes. Until E19 T8 this was a static "stable" — the SAME shape
+		// D14 named for capability-workers and at the SAME strongest tier: a router built without WithKnowledge
+		// 404s every /v1/knowledge-bases route while discovery told a client the contract was stable. Production
+		// mounts it unconditionally (main.go), so no deployment's answer changes; what changes is that the
+		// claim can no longer outlive the mount through the exported NewRouter.
+		//
+		// The word is the T11 recompute's, not this line's: all eight KNO claims closed green and the
+		// capability has no §6 leg its core depends on, which is what flipped it to stable — asserted bit-equal
+		// by TestServedCapabilityTiersEqualTheRecompute. Mounting does not raise it and never could.
+		if cfg.knowledge != nil {
+			caps["knowledge"] = "stable"
+		}
+		// The queue adapter (E17 T7 store + E19 T6 bridges): a durable SQS/PubSub/Kafka-class consumer +
+		// outbound result-delivery outbox, proven by the Postgres-durable REFERENCE adapter. Advertised ONLY
+		// when WithQueueConnections mounted the admin surface — the same static-string defect as `knowledge`,
+		// one tier quieter, and E19 T6 is what made a mount exist to derive from at all.
+		//
+		// It stays PREVIEW and the wiring does NOT move it: AUT-009/010 are green, but NO broker PRODUCT was
+		// ever run — there is no NATS, SQS, Pub/Sub or Kafka anywhere in this tree, so the T7 plan's own
+		// stable-candidacy condition is UNMET. §6 leg 5 (EXTENDED to any broker product) is the operator work
+		// that flips it, and uat.CapabilityOperatorLegs caps it mechanically. The unwritten cloud adapters are
+		// separately NOT advertised: an unwritten adapter is never discoverable.
+		if cfg.queues != nil {
+			caps["queues"] = "preview"
 		}
 		body := capabilitiesBody{
 			Object:       "capabilities",

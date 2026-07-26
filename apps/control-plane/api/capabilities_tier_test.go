@@ -71,21 +71,24 @@ func repoRootFromTest(t *testing.T) string {
 }
 
 // fullyMountedRouter builds the router with EVERY optional surface a governed capability derives from
-// mounted — A2A (E17 T2), the capability-worker gateway (E17 T9, E19 T8a) and the Slack Events receiver
-// (E19 T1) — so the served map contains every governed capability and the bit-equality assert below has
-// something to compare for each.
+// mounted — A2A (E17 T2), the capability-worker gateway (E17 T9, E19 T8a), the Slack Events receiver
+// (E19 T1), the knowledge spine (E17 T4) and the queue-binding admin surface (E19 T6) — so the served map
+// contains every governed capability and the bit-equality assert below has something to compare for each.
 //
 // This is the honest reconciliation of mount-gated discovery with the tier recompute, and the two halves are
 // tested separately so neither can hide the other: TestA2ACapabilityAdvertisedOnlyWhenMounted,
-// TestCapabilityWorkersAdvertisedOnlyWhenMounted and TestSlackCapabilityAdvertisedOnlyWhenMounted prove the
-// capability DISAPPEARS when its surface is not mounted, and this file proves that when everything IS mounted
-// the tiers equal the recompute exactly. What stays forbidden is the shortcut: exempting a capability from
-// the assert because a router did not mount it.
+// TestCapabilityWorkersAdvertisedOnlyWhenMounted, TestSlackCapabilityAdvertisedOnlyWhenMounted,
+// TestKnowledgeCapabilityAdvertisedOnlyWhenMounted and TestQueuesCapabilityAdvertisedOnlyWhenMounted prove the
+// capability DISAPPEARS when its surface is not mounted (and TestBareRouterAdvertisesOnlyWhatItCanServe sweeps
+// the whole tier table for the ones nobody remembered to write a test for), and this file proves that when
+// everything IS mounted the tiers equal the recompute exactly. What stays forbidden is the shortcut: exempting
+// a capability from the assert because a router did not mount it.
 func fullyMountedRouter() http.Handler {
 	srv := &a2a.Server{Interfaces: stubIfaceStore{iface: a2a.PublishedInterface{ID: "if_tier"}}, ScopeFunc: a2aScopeFunc}
 	return NewRouter(fakeVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		SSEConfig{}, nil, nil, WithA2A(srv, srv.PublicCardHandler()), WithCapabilityWorkers(),
-		WithSlack(newSlackBridge([]byte("tier-probe"))))
+		WithSlack(newSlackBridge([]byte("tier-probe"))), WithKnowledge(stubKnowledge{}),
+		WithQueueConnections(&fakeQueueAPI{}, nil))
 }
 
 // TestServedCapabilityTiersEqualTheRecompute is the bit-equality assert. It builds the router with every

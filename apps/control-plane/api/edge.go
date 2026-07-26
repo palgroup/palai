@@ -103,9 +103,10 @@ func WithModelRoutes(routes ModelRouteAPI) RouterOption {
 // WithKnowledge mounts the knowledge spine (E17 Task 4): knowledge bases, ingest sources, the immutable
 // ingest -> FTS index build, ranked retrieval, and the index-revision history. A trailing option for the
 // same reason as WithSecretRefs — every existing caller compiles unchanged, and a stack that wires no
-// knowledge store leaves the routes unmounted. Discovery advertises `knowledge` STATICALLY as `preview`
-// (capabilities.go), like the pre-existing `responses` capability — the maturity flag is a static
-// advertisement, not gated on the store being wired.
+// knowledge store leaves the routes unmounted, and discovery then does not advertise `knowledge` at all
+// (E19 T8; until then it was a static "stable" served by routers on which every knowledge route 404s — the
+// §3.5 D14 defect at its strongest tier). Mounting makes the claim advertisABLE; the tier is the E17 T11
+// recompute's, never this option's.
 func WithKnowledge(knowledge KnowledgeAPI) RouterOption {
 	return func(c *routerConfig) { c.knowledge = knowledge }
 }
@@ -142,9 +143,9 @@ func WithCapabilityWorkers() RouterOption {
 //
 // It is the ROUTER half of the queue mount. The working halves — the consume→admit bridge and the outbound
 // DeliverDue pump — are supervised loops in main.go, not routes; this option is what makes the surface
-// reachable and, per §2, what a later discovery change may derive `queues` from. Mounting does NOT raise the
-// tier: `queues` stays preview because no broker PRODUCT exists in this tree (E17 §6 leg 5), and only the
-// E17 T11 recompute writes the word.
+// reachable and, per §2, what discovery now derives `queues` from (E19 T8 — before it, `queues` was a static
+// string every router served). Mounting does NOT raise the tier: `queues` stays preview because no broker
+// PRODUCT exists in this tree (E17 §6 leg 5), and only the E17 T11 recompute writes the word.
 //
 // resolver may be nil (⇒ net.DefaultResolver); it exists so a test drives a deterministic egress vet of an
 // outbound destination.
