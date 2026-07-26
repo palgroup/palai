@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -134,6 +135,76 @@ func retryAfter(header string, max time.Duration) time.Duration {
 		return max
 	}
 	return d
+}
+
+// SpecialTierPerChannel is how fast we may write to ONE channel (E19 plan §3.5 row D10).
+//
+// CONTRACT: https://docs.slack.dev/apis/web-api/rate-limits/ (checked 2026-07-26) — chat.postMessage is NOT
+// in a numbered tier; it is the Web API "Special Tier", and the page says it "generally allows posting one
+// message per second per channel, while also maintaining a workspace-wide limit". Short bursts above that are
+// allowed but come with "no guarantee that messages will be stored or displayed to users" — which for an
+// approval message is the same as losing it. So the pacing is the documented steady rate, not the burst.
+const SpecialTierPerChannel = time.Second
+
+// ChannelPacer holds outbound writes to the documented per-channel rate. It is the missing half of the 429
+// repair above: PostMessage recovers AFTER Slack refuses, while this keeps coalesced updates from asking to
+// be refused in the first place — an update loop that edits a message twice in one instant is exactly the
+// traffic the Special Tier exists to shed.
+//
+// Per CHANNEL, deliberately: the documented limit is per channel, and pacing globally would throttle
+// unrelated conversations against a limit they are not near.
+//
+// ponytail: a map of next-allowed instants, never pruned. One entry per channel the deployment has ever
+// posted to, a few dozen bytes each — a sweep is worth writing when a deployment posts to enough distinct
+// channels for it to matter, and nothing in this tree is near that.
+type ChannelPacer struct {
+	mu   sync.Mutex
+	next map[string]time.Time
+
+	// Interval overrides SpecialTierPerChannel (zero uses it). Now/Sleep are the injectable clock a test
+	// drives without a real pause.
+	Interval time.Duration
+	Now      func() time.Time
+	Sleep    func(context.Context, time.Duration) error
+}
+
+// Wait blocks until this channel's next write is due, then reserves the following slot. A cancelled context
+// returns its error and reserves nothing.
+func (p *ChannelPacer) Wait(ctx context.Context, channel string) error {
+	now, sleep, interval := time.Now, sleep, p.Interval
+	if p.Now != nil {
+		now = p.Now
+	}
+	if p.Sleep != nil {
+		sleep = p.Sleep
+	}
+	if interval <= 0 {
+		interval = SpecialTierPerChannel
+	}
+
+	p.mu.Lock()
+	if p.next == nil {
+		p.next = map[string]time.Time{}
+	}
+	due, delay := p.next[channel], time.Duration(0)
+	if at := now(); due.After(at) {
+		delay = due.Sub(at)
+	}
+	// The slot is reserved BEFORE the wait is served, so two concurrent writers to one channel queue behind
+	// each other instead of both measuring the same "due" and both firing at once.
+	p.next[channel] = now().Add(delay + interval)
+	p.mu.Unlock()
+
+	if delay <= 0 {
+		return nil
+	}
+	if err := sleep(ctx, delay); err != nil {
+		p.mu.Lock()
+		delete(p.next, channel) // the write never happened; do not leave a phantom reservation behind
+		p.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // decodeChatResponse reads Slack's Web API envelope {"ok":bool,"ts":string,"error":string}. ok=false carries

@@ -212,9 +212,19 @@ func main() {
 	// signature is the auth), and the run target from that row's default_policy. Unconditional like WithUsage:
 	// it needs no external key material, and a stack with no registered workspace simply gets no traffic —
 	// mounting is also what lets discovery advertise `slack` at all, at the tier T11 recomputes (preview).
-	routerOpts = append(routerOpts, api.WithSlack(extensions.NewSlackAdmitter(
+	//
+	// The interactivity half (E19 T2) is wired onto the SAME bridge with WithDecisions: an interactive
+	// approval resolves the same connection, verifies under the same signing secret, and then drives the
+	// coordinator's one-shot approval primitive — SlackAuthorizationPolicyFor + ApproverAuthorized are
+	// enforced there, so an unmapped clicker enqueues nothing. It needs the approval spine and an outbound
+	// HTTP client; PALAI_SLACK_API_BASE_URL overrides Slack's own base for a staging/proxied deployment and
+	// is empty in production (⇒ https://slack.com/api). The bot token is redeemed from bot_token_ref at call
+	// time by the same org-scoped resolver.
+	slackBridge := extensions.NewSlackAdmitter(
 		extensions.New(repo.Spine().Pool()), repo, slackSecretResolver,
-		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns})))
+		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns}).
+		WithDecisions(repo.Spine(), http.DefaultClient, os.Getenv("PALAI_SLACK_API_BASE_URL"))
+	routerOpts = append(routerOpts, api.WithSlack(slackBridge), api.WithSlackInteractions(slackBridge))
 	// Discovery advertises `capability-workers` ONLY where the gateway above actually BOUND its listener —
 	// the option is passed off the returned value, never off the env var, so the claim cannot outlive the
 	// mount (§2; E19 T8a closed the static "stable" that a binary not importing internal/workers was serving).

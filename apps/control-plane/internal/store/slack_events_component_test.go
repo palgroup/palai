@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/apps/control-plane/internal/store"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -46,6 +48,7 @@ type slackFixture struct {
 	pool      *pgxpool.Pool
 	url       string
 	secret    []byte
+	botToken  []byte
 	org       string
 	project   string
 	principal string
@@ -56,6 +59,88 @@ type slackFixture struct {
 	// tenant adds that tenant's own ref here, so a cross-tenant proof runs against a resolver that serves both
 	// — otherwise "the other tenant could not verify" would be an artefact of the fixture, not of the code.
 	secrets map[string][]byte
+
+	// The E19 T2 decision half: the real coordinator the approval chain drives, the production bridge (so a
+	// test can call Decide without the HTTP layer), and a local stand-in for slack.com/api.
+	spine  *coordinator.Store
+	bridge *extensions.SlackAdmitter
+	slack  *fakeSlackWebAPI
+}
+
+// fakeSlackWebAPI is a local HTTP server standing in for slack.com/api. It records every call (path, auth
+// header, body) and replays a scripted status sequence, so the outbound path is proven over REAL HTTP with a
+// REAL token resolution rather than against a stubbed Doer.
+//
+// CONTRACT: https://docs.slack.dev/apis/web-api/rate-limits/ (checked 2026-07-26) — a throttled call answers
+// 429 with Retry-After in seconds. Slack's Web API envelope is {"ok":bool,"ts":…,"error":…}.
+type fakeSlackWebAPI struct {
+	mu         sync.Mutex
+	statuses   []int
+	retryAfter string
+	calls      []slackCall
+}
+
+type slackCall struct {
+	path string
+	auth string
+	body string
+}
+
+func (s *fakeSlackWebAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	s.mu.Lock()
+	status := http.StatusOK
+	if n := len(s.calls); n < len(s.statuses) {
+		status = s.statuses[n]
+	} else if len(s.statuses) > 0 {
+		status = s.statuses[len(s.statuses)-1]
+	}
+	s.calls = append(s.calls, slackCall{path: r.URL.Path, auth: r.Header.Get("Authorization"), body: string(body)})
+	ts := fmt.Sprintf("9%02d.000100", len(s.calls))
+	after := s.retryAfter
+	s.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	if status == http.StatusTooManyRequests {
+		if after == "" {
+			after = "1"
+		}
+		w.Header().Set("Retry-After", after)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"ok":false,"error":"ratelimited"}`))
+		return
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(`{"ok":true,"ts":"` + ts + `"}`))
+}
+
+func (f *slackFixture) slackStatuses(statuses ...int) {
+	f.slack.mu.Lock()
+	defer f.slack.mu.Unlock()
+	f.slack.statuses = statuses
+}
+
+func (f *slackFixture) slackRetryAfter(after string) {
+	f.slack.mu.Lock()
+	defer f.slack.mu.Unlock()
+	f.slack.retryAfter = after
+}
+
+func (f *slackFixture) slackCalls() []slackCall {
+	f.slack.mu.Lock()
+	defer f.slack.mu.Unlock()
+	return append([]slackCall(nil), f.slack.calls...)
+}
+
+// connRef is the resolved connection as the route hands it to the bridge — read through the PRODUCTION
+// resolve, so a test driving Decide directly is still using the tenant the real path would have established.
+func (f *slackFixture) connRef(t *testing.T) api.SlackConnectionRef {
+	t.Helper()
+	conn, found, err := f.bridge.ResolveConnection(context.Background(), f.team, "")
+	if err != nil || !found {
+		t.Fatalf("resolve the fixture connection: (%v,%v)", found, err)
+	}
+	return conn
 }
 
 // newSlackFixture seeds the tenant, publishes an agent revision, registers the Slack workspace with the run
@@ -79,8 +164,10 @@ func newSlackFixture(t *testing.T) *slackFixture {
 
 	f := &slackFixture{
 		pool: pool, secret: []byte("component-signing-secret-not-a-credential"),
-		org: newID("org"), project: newID("prj"), principal: newID("prin"),
+		botToken: []byte("xoxb-component-fake-not-a-credential"),
+		org:      newID("org"), project: newID("prj"), principal: newID("prin"),
 		revision: newID("arev"), team: strings.ToUpper(newID("T")), botUser: newID("Ubot"),
+		slack: &fakeSlackWebAPI{},
 	}
 	profileID := newID("aprof")
 	exec(t, pool, `INSERT INTO organizations (id) VALUES ($1)`, f.org)
@@ -94,18 +181,18 @@ func newSlackFixture(t *testing.T) *slackFixture {
 		f.revision, f.org, f.project, profileID)
 
 	ext := extensions.New(pool)
-	const signingRef = "slack/component/signing"
+	const signingRef, botRef = "slack/component/signing", "slack/component/bot"
 	if _, err := ext.CreateSlackConnection(ctx, f.org, f.project, []byte(fmt.Sprintf(
-		`{"team_id":%q,"bot_user_id":%q,"signing_secret_ref":%q,
+		`{"team_id":%q,"bot_user_id":%q,"signing_secret_ref":%q,"bot_token_ref":%q,
 		  "allowed_users":["Umapped"],
 		  "default_policy":{"agent_revision_id":%q,"principal_id":%q}}`,
-		f.team, f.botUser, signingRef, f.revision, f.principal))); err != nil {
+		f.team, f.botUser, signingRef, botRef, f.revision, f.principal))); err != nil {
 		t.Fatalf("register the Slack workspace: %v", err)
 	}
 
 	// The org-scoped secret bridge, the production resolver's shape: a ref only resolves under the org it was
 	// provisioned in, so a connection can never redeem another tenant's secret.
-	f.secrets = map[string][]byte{f.org + "/" + signingRef: f.secret}
+	f.secrets = map[string][]byte{f.org + "/" + signingRef: f.secret, f.org + "/" + botRef: f.botToken}
 	secrets := func(org, ref string) ([]byte, error) {
 		secret, ok := f.secrets[org+"/"+ref]
 		if !ok {
@@ -113,9 +200,17 @@ func newSlackFixture(t *testing.T) *slackFixture {
 		}
 		return secret, nil
 	}
-	bridge := extensions.NewSlackAdmitter(ext, repo, secrets, api.AdmissionLimits{})
+	// The local stand-in for slack.com/api. The bridge posts to it with a REAL http.Client, so the outbound
+	// half is proven over real HTTP with a real Authorization header rather than against a stubbed Doer.
+	slackAPI := httptest.NewServer(f.slack)
+	t.Cleanup(slackAPI.Close)
+
+	f.spine = repo.Spine()
+	bridge := extensions.NewSlackAdmitter(ext, repo, secrets, api.AdmissionLimits{}).
+		WithDecisions(f.spine, http.DefaultClient, slackAPI.URL)
+	f.bridge = bridge
 	ts := httptest.NewServer(api.NewRouter(nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		api.SSEConfig{}, nil, nil, api.WithSlack(bridge)))
+		api.SSEConfig{}, nil, nil, api.WithSlack(bridge), api.WithSlackInteractions(bridge)))
 	t.Cleanup(ts.Close)
 	f.url = ts.URL
 	return f
