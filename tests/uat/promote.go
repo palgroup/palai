@@ -69,8 +69,19 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
 	}
-	// The E18 stable-release family is checked FIRST: it is the most specific policy in the tree and the
-	// only one that governs the whole product rather than one epic. Recognized by ANY E18 area claim, never
+	// The E19 wiring family is checked FIRST, ahead of E18: it is the most specific policy in the tree (it
+	// governs a single epic's mounts AND composes the E17 tier table underneath it), and — the rule that
+	// matters — the family is recognized by the wiring claim while the gate ENFORCES the mount derivation.
+	// A wiring bundle also carries E17 area claims, so without this clause it would reroute to
+	// ExtensionsPromoteGate, which knows nothing about mounts and would pass it: the mount guard would be
+	// optional in practice. That is the exact failure the E17 dispatch comment below describes.
+	for _, c := range m.Cases {
+		if carriesE19WiringClaim(c) {
+			return WiringPromoteGate(raw, target)
+		}
+	}
+	// The E18 stable-release family is checked next: among the remaining policies it is the only one that
+	// governs the whole product rather than one epic. Recognized by ANY E18 area claim, never
 	// by the release index or the aggregate posture themselves — dispatching on the claim the gate enforces
 	// is precisely how a release DROPS it, reroutes to a weaker family and passes.
 	for _, c := range m.Cases {
@@ -107,7 +118,103 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 			return PromoteGate(raw, target)
 		}
 	}
-	return []Refusal{{Detail: "no promote policy for this release: it carries none of the E18 stable-release, E17 extensions/eval-gate, E16 SDK-parity or E15 upgrade claims a promote gate recognizes"}}
+	return []Refusal{{Detail: "no promote policy for this release: it carries none of the E19 wiring, E18 stable-release, E17 extensions/eval-gate, E16 SDK-parity or E15 upgrade claims a promote gate recognizes"}}
+}
+
+// WiringPromoteGate is the mechanical form of the E19 exit-gate sentence (plan §T9, §7): a release cannot be
+// tagged while the MOUNT-DERIVATION guard is red. It has three clauses:
+//
+//  1. the bundle must carry EXACTLY ONE complete WiringProof, and every surface's declared mount must
+//     RE-DERIVE from the running stack's own router surface and /v1/capabilities snapshot. The recompute
+//     lives here as well as in VerifyManifest deliberately: the gate that would tag a release must do its
+//     own derivation, never inherit a verdict (the E15 SF-4 shape);
+//  2. NO TIER MAY ADVANCE. E19's output is wiring, document-accuracy and ready-to-run live legs — never tier
+//     movement — so a wiring bundle that recomputes a capability to `stable` which the §6 operator legs
+//     still cap at `preview` is REFUSED here rather than being explained away in prose. This is the clause
+//     that makes "wiring does not promote" a mechanism instead of a promise;
+//  3. the E17 extensions gate is COMPOSED verbatim — the tier table, the QUA-003 security precondition and
+//     the recomputed eval numbers underneath it. Composing (rather than re-deriving) keeps ONE owner of the
+//     tier rule, exactly as ExtensionsPromoteGate composes EvalPromoteGate.
+//
+// A promote BEYOND rc inherits every refusal underneath and adds nothing of its own: no amount of wiring
+// promotes this release, because `slack`, `a2a`, `queues` and `console` cap at preview by construction
+// (CapabilityOperatorLegs) and this epic contacted none of their counterparties.
+func WiringPromoteGate(raw []byte, target string) []Refusal {
+	var m evidenceManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
+	}
+
+	var refusals []Refusal
+
+	var wiring *WiringProof
+	claims := 0
+	for _, c := range m.Cases {
+		if c.WiringClaim == "" {
+			continue
+		}
+		claims++
+		if wiring == nil {
+			wiring = c.WiringProof
+		}
+	}
+	switch {
+	case claims > 1:
+		refusals = append(refusals, Refusal{Detail: fmt.Sprintf("%d wiring_claims in one manifest (want exactly 1): this gate judges the FIRST wiring proof, so a second table could ride behind an honest one — one release, one mount derivation (plan §T9)", claims)})
+	case wiring == nil || !wiring.Complete():
+		refusals = append(refusals, Refusal{Detail: "no COMPLETE WiringProof (the per-surface OBSERVED mount + the real-Admitter admission route + the transport-invariance counters + the canonical contract ledger + the credential-gated live inventory) — a release whose mount-derivation guard is red cannot be tagged (plan §T9, §7 exit gate)"})
+	default:
+		for _, problem := range VerifyWiredMounts(wiring) {
+			refusals = append(refusals, Refusal{Detail: problem})
+		}
+	}
+
+	// Clause 2 — NO TIER ADVANCES, measured against the epic that established the tiers rather than against
+	// the wiring bundle's own opinion. Comparing to CapabilityOperatorLegs alone would be VACUOUS: a
+	// §6-legged capability already recomputes to preview, so that branch could never fire and would be a
+	// guard in name only. The load-bearing comparison is CROSS-BUNDLE — this release's recompute against
+	// the E17 baseline's — because that is what "wiring did not move anything" actually means, and because
+	// the baseline lives in committed bytes outside this manifest.
+	status := make(map[string]string, len(m.Cases))
+	for _, c := range m.Cases {
+		status[c.ID] = c.Status
+	}
+	baseline, err := baselineCapabilityTiers()
+	if err != nil {
+		// Fail CLOSED: a gate that cannot read its baseline must not wave the release through.
+		refusals = append(refusals, Refusal{Detail: "cannot recompute the E17 baseline tier table to compare against — a wiring release is judged by what it did NOT move, so an unreadable baseline is a refusal, never a pass: " + err.Error()})
+	} else {
+		for _, capability := range CapabilityTierOrder {
+			now, was := RecomputeCapabilityTier(capability, status), baseline[capability]
+			if tierRank[now] > tierRank[was] {
+				refusals = append(refusals, Refusal{Detail: fmt.Sprintf(
+					"capability %q recomputes to %q in this WIRING release but the %s baseline is %q — E19 produces wiring, document-accuracy and ready-to-run live legs, NEVER tier movement%s",
+					capability, now, wiringBaselineRelease, was, tierReason(capability, status))})
+			}
+		}
+	}
+
+	return append(refusals, ExtensionsPromoteGate(raw, target)...)
+}
+
+// tierRank orders the maturity vocabulary so "did this advance?" is a comparison rather than a table of
+// special cases. disabled < preview < stable.
+var tierRank = map[string]int{"disabled": 0, "preview": 1, "stable": 2}
+
+// wiringBaselineRelease is the bundle whose tier table E19 must not move: the E17 EXIT gate, which is where
+// every governed capability's tier was established.
+const wiringBaselineRelease = "extensions-0.1.0"
+
+// baselineCapabilityTiers RECOMPUTES the baseline tier table from the committed E17 bundle's own per-case
+// outcomes. It reads BYTES on disk, never a value carried in the release under judgement, so a wiring
+// bundle cannot supply the baseline it is measured against.
+func baselineCapabilityTiers() (map[string]string, error) {
+	path := filepath.Join(repoRootFromSource(), "evidence", "releases", wiringBaselineRelease, "manifest.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read the %s baseline: %w", wiringBaselineRelease, err)
+	}
+	return CapabilityTiersFromBundle(raw)
 }
 
 // --- the two-person promotion gate (E18 T5) -----------------------------------------------------------
@@ -166,7 +273,9 @@ func ApprovalGate(raw []byte, release, target string, maintainers []string) []Re
 	}
 
 	var refusals []Refusal
-	add := func(format string, args ...any) { refusals = append(refusals, Refusal{Detail: fmt.Sprintf(format, args...)}) }
+	add := func(format string, args ...any) {
+		refusals = append(refusals, Refusal{Detail: fmt.Sprintf(format, args...)})
+	}
 
 	if len(authorized) < 2 {
 		add("the repository declares %d authorized maintainer(s) in .github/CODEOWNERS — two-person promotion cannot be satisfied: until two maintainers and a protected release environment exist, Palai may publish development snapshots but must NOT publish an RC or stable release (release-policy.md, plan §6 leg 1)", len(authorized))
