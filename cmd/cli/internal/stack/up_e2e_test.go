@@ -66,6 +66,7 @@ func TestLiveProofFailsAgainstARealFakeStack(t *testing.T) {
 	if !strings.Contains(err.Error(), "completed on model \"fake\"") {
 		t.Fatalf("the fake stack did not complete a run, so the refusal proves nothing about fake-detection: %v", err)
 	}
+	t.Logf("the live proof refused the fake stack: %v", err)
 }
 
 // repoRoot walks up from the test's directory to the module root — Up() shells `docker build

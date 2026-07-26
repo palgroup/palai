@@ -59,23 +59,26 @@ func Bootstrap(envFile string) error {
 	}
 	get := lookup(fileEnv)
 
-	// [2/6] Identity + layout first: resolveProvider needs to know whether a previous
-	// `palai provider add` already filled the slot.
-	if err := Init(); err != nil {
-		return err
-	}
+	// [2/6] The provider decision comes BEFORE `init`, so a refusal leaves no .palai behind and
+	// costs nothing. secretSlotFilled is honest either way: an absent .palai has no slot, and
+	// `init` would only ever create an EMPTY one.
 	p, err := resolvePaths()
 	if err != nil {
 		return err
 	}
 	choice, err := resolveProvider(get, secretSlotFilled(p))
-	if err != nil {
-		return err
-	}
+	// Warnings print on BOTH paths: a mis-spelled variable name is most worth saying out loud in
+	// the message that is about to tell the operator they have no usable credential.
 	for _, w := range choice.warnings {
 		fmt.Fprintf(os.Stderr, "        WARNING %s\n", w)
 	}
+	if err != nil {
+		return err
+	}
 	fmt.Fprintf(os.Stderr, "[2/6] provider  selector %s — %s\n", liveSelector, choice.source)
+	if err := Init(); err != nil {
+		return err
+	}
 	if choice.credential != "" {
 		if err := addProvider(liveSelector, strings.NewReader(choice.credential)); err != nil {
 			return err
