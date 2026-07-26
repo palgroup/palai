@@ -41,19 +41,29 @@ path-matched to `/v1/*`. Because `/metrics` and `/healthz` live on the control-p
 
 ---
 
-## `palai local doctor` — live health (14 checks)
+## `palai local doctor` — live health (15 checks)
 
 `doctor` probes the running stack over the ports `palai init` published. It reports 11 core checks
 (api, migration, object_store, runner, image_digests, provider, clock, retention_ttl,
-runner_tls_reject, supervisor, host_quarantine) plus the three E14 T3 additions:
+runner_tls_reject, supervisor, host_quarantine) plus the three E14 T3 additions and
+`runner_identity`:
 
 | Check | Signal | Fails when |
 |---|---|---|
 | `disk` | free space on the data dir (`statfs`) | free/total `< 10%` (matches `PalaiDiskLow`) |
 | `queue` | claimable-backlog depth + age of the oldest ready job | oldest ready `> 300s` (matches `PalaiQueueBacklog`) |
 | `callback` | outbound-webhook delivery states | `pending > 50` (matches `PalaiWebhookDeliveryBacklog`) |
+| `runner_identity` | the runner's client-certificate lifetime, from `/healthz/runner` | it has expired **and** no runner session is connected |
 
-The three read the **same signals** `/metrics` exposes (§52.9/§52.10): `queue` and `callback` reuse
+`runner_identity` closes a blind spot the other fourteen share. The runner renews its client
+certificate over mTLS *with that certificate*, so a runner that misses its renewal window — a
+sleeping laptop, a stalled Docker Desktop, a loaded host — holds an identity that can neither renew
+nor connect. `runner` and `runner_tls_reject` stay green through that (the gateway is listening and
+still enforcing mTLS); the only symptom is that every run fails. The runner recovers itself by
+re-presenting its bootstrap token, so an expired identity with a session still parked is a runner
+mid-recovery — named in the detail, not failed. Expired **with nothing connected** is the fault.
+
+The first three read the **same signals** `/metrics` exposes (§52.9/§52.10): `queue` and `callback` reuse
 the `MetricQueueReady` / `MetricWebhookDeliveryStates` statements in
 `storage/queries/metrics.sql`, and each fails on the **same boundary** as its Prometheus alert in
 `deploy/observability/alerts.yml` — so doctor is the operator's on-demand version of the alert set.

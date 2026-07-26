@@ -15,11 +15,17 @@ import (
 // doctorChecks is the exact set of checks `local doctor --json` must report, each with a
 // status and a human detail (spec §44 doctor surface; LP-002). supervisor surfaces the
 // control-plane background-loop restart counters (H2); host_quarantine surfaces the
-// SAN-008 quarantine ledger (E10 Task 6).
+// SAN-008 quarantine ledger (E10 Task 6); disk/queue/callback are E14 T3's operability trio;
+// runner_identity surfaces the runner's certificate lifetime, the one failure every other
+// check stays green through.
+//
+// This list is the count assertion below — keep it exact. It sat at eleven while doctor
+// reported fourteen, which made TestDoctorJSONShape red on main for the three E14 T3 checks
+// it had never been told about.
 var doctorChecks = []string{
 	"api", "migration", "object_store", "runner", "image_digests",
 	"provider", "clock", "retention_ttl", "runner_tls_reject", "supervisor",
-	"host_quarantine",
+	"host_quarantine", "disk", "queue", "callback", "runner_identity",
 }
 
 // TestDoctorJSONShape proves the doctor --json contract: every check is present and

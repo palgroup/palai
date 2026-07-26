@@ -126,7 +126,10 @@ services:
       PALAI_CONTROLLER_URL: https://control-plane:8443
       PALAI_CONTROLLER_DNS: control-plane
       PALAI_RUNNER_CA_CERT: /palai/ca/ca.crt
-      # One-use; consumed at connect, never persisted by the runner.
+      # The bootstrap credential: spent at enrollment, and re-presented ONLY if the runner's
+      # identity expires before renewal could roll it forward (a sleeping laptop, a stalled
+      # Docker Desktop) — the one recovery path that needs no operator. Never persisted by the
+      # runner; the control plane rate-limits it to one certificate per issued lifetime.
       PALAI_ENROLLMENT_TOKEN_FILE: /palai/runner-token
       PALAI_ENGINE_IMAGE: ${PALAI_ENGINE_IMAGE}
       # E15 T2: overrides the baked version stamp the runner advertises in the enroll handshake (§48.2

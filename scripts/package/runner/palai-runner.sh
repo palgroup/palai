@@ -1,7 +1,7 @@
 #!/bin/sh
 # E14 T5 — host launcher for the Palai runner (palai-runner.service ExecStart). It bridges the
 # operator's runner.env to the runner binary's environment, mirroring the compose
-# runner-entrypoint: it reads the one-use enrollment token from its FILE and derives the
+# runner-entrypoint: it reads the enrollment token from its FILE and derives the
 # enroll/session/renew URLs from PALAI_CONTROLLER_URL. The runner opens NO inbound port — it
 # dials PALAI_CONTROLLER_URL outbound only.
 set -eu
@@ -17,14 +17,15 @@ case "$PALAI_CONTROLLER_URL" in
 	*) echo "palai-runner: PALAI_CONTROLLER_URL must start with https:// (got: $PALAI_CONTROLLER_URL)" >&2; exit 1 ;;
 esac
 
-# The one-use token is handed to the process in memory only; the runner clears it after
+# The token is handed to the process in memory only; the runner clears it after
 # enrolling (cmd/runner unsets it) and never writes it back to disk.
 PALAI_ENROLLMENT_TOKEN="$(cat "$PALAI_ENROLLMENT_TOKEN_FILE")"
 export PALAI_ENROLLMENT_TOKEN
 export PALAI_CONTROLLER_CA="$PALAI_RUNNER_CA_CERT"
 export PALAI_ENROLLMENT_URL="${PALAI_CONTROLLER_URL}/v1/runner/enroll"
 # Renewal rolls the client certificate forward over the runner's identity as it nears expiry;
-# the one-use bootstrap token is never presented again.
+# the bootstrap token is presented again only to recover an ALREADY-EXPIRED identity, which
+# renewal cannot do (it authenticates with the certificate that expired).
 export PALAI_RENEW_URL="${PALAI_CONTROLLER_URL}/v1/runner/renew"
 # Enrollment is https; the leasing session is wss over the same host:port.
 export PALAI_SESSION_URL="wss://${PALAI_CONTROLLER_URL#https://}/v1/runner/connect"
