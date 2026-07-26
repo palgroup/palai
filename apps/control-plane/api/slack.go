@@ -81,6 +81,10 @@ type SlackConnectionRef struct {
 	Disabled     bool
 	// SigningSecretRef is the secret_refs HANDLE the v0 verify redeems. A handle, never a value.
 	SigningSecretRef string
+	// BotTokenRef is the secret_refs HANDLE the outbound chat.update redeems (E19 T2). Also a handle: the
+	// token bytes are resolved inside the bridge at call time, ride the Authorization header, and are dropped.
+	// It rides the same single connection read for the same reason SigningSecretRef does.
+	BotTokenRef string
 	// RunPolicy is the connection's default_policy JSONB, opaque to this package: the route hands it back to
 	// the bridge, which reads the run target out of it. Nothing here interprets it.
 	RunPolicy []byte

@@ -16,6 +16,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
 	"github.com/palgroup/palai/storage"
 )
@@ -51,13 +52,22 @@ var (
 	ErrSlackForeignPrincipal = errors.New("extensions: slack connection principal is outside the connection's tenant")
 )
 
-// SlackAdmitter wires the Slack Events route to the durable spine. It is the api.SlackEventsAPI production
-// implementation.
+// SlackAdmitter wires the Slack routes to the durable spine: the api.SlackEventsAPI production
+// implementation, and — once WithDecisions has supplied the approval spine and an outbound client —
+// api.SlackInteractionsAPI too (see slack_decision.go). The two halves share this type because they share
+// the connection: the same resolve, the same signing secret, the same tenant.
 type SlackAdmitter struct {
 	store    *Store
 	admitter api.Admitter
 	secrets  SecretResolver
 	limits   api.AdmissionLimits
+
+	// The decision half (E19 T2), nil until WithDecisions. A nil spine makes Decide fail CLOSED rather than
+	// silently authorize; the route is simply not mounted where it is unset.
+	spine   *coordinator.Store
+	doer    slack.Doer
+	apiBase string
+	pacer   *slack.ChannelPacer
 }
 
 // NewSlackAdmitter builds the bridge. secrets redeems a signing_secret_ref to bytes at verification time (the
@@ -76,7 +86,7 @@ func (a *SlackAdmitter) ResolveConnection(ctx context.Context, teamID, enterpris
 	return api.SlackConnectionRef{
 		ID: conn.ID, Org: conn.Org, Project: conn.Project,
 		TeamID: teamID, EnterpriseID: enterpriseID, BotUserID: conn.BotUserID, Disabled: conn.Disabled,
-		SigningSecretRef: conn.SigningSecretRef, RunPolicy: conn.DefaultPolicy,
+		SigningSecretRef: conn.SigningSecretRef, BotTokenRef: conn.BotTokenRef, RunPolicy: conn.DefaultPolicy,
 	}, true, nil
 }
 
