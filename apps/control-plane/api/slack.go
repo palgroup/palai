@@ -85,6 +85,12 @@ type SlackConnectionRef struct {
 	// token bytes are resolved inside the bridge at call time, ride the Authorization header, and are dropped.
 	// It rides the same single connection read for the same reason SigningSecretRef does.
 	BotTokenRef string
+	// AppTokenRef is the secret_refs HANDLE for the app-level (xapp-) token the Socket Mode connect loop
+	// presents to apps.connections.open (E19 T3). A handle like the other two. It matters more than they do
+	// that it stay one: Socket Mode's ONLY authentication is this token at connect time — the frames it then
+	// carries are unsigned (https://docs.slack.dev/apis/events-api/using-socket-mode/) — so a leaked app
+	// token is the whole transport. It rides the same single connection read.
+	AppTokenRef string
 	// RunPolicy is the connection's default_policy JSONB, opaque to this package: the route hands it back to
 	// the bridge, which reads the run target out of it. Nothing here interprets it.
 	RunPolicy []byte

@@ -271,9 +271,50 @@ func main() {
 	startScheduleTicker(ctx, scheduleStore, supervisor)
 	startRetention(ctx, repo, supervisor, artStore)
 	startOrphanGC(ctx, repo, supervisor, artStore)
+	drainSlackSocket := startSlackSocket(ctx, slackBridge, supervisor)
 
 	log.Printf("palai control-plane listening on %s", addr)
-	serveWithGracefulDrain(srv, gateway)
+	serveWithGracefulDrain(srv, gateway, drainSlackSocket)
+}
+
+// startSlackSocket launches the Slack Socket Mode connect loop (E19 T3, spec §36) and returns its drain, or
+// nil when the deployment has not configured Socket Mode. It is the ONLY start* here that is conditional on
+// an env var, and the reason is the transport itself: Socket Mode holds an OUTBOUND WebSocket to Slack for a
+// SPECIFIC workspace, so unlike the pumps and reapers — which serve every project and sit inert until work
+// exists — there is nothing for it to do until an operator names one.
+//
+// PALAI_SLACK_SOCKET_TEAM_ID is that workspace's Slack team id (§0.1). The connection it resolves to supplies
+// everything else: the tenant, the run target, the bot user for the self-loop guard, and the app_token_ref
+// whose xapp- token is Socket Mode's only authentication. Nothing about the transport is configured twice.
+//
+// WHY THIS IS WORTH MOUNTING AT ALL, in one line an operator can act on: Socket Mode needs NO PUBLIC URL — no
+// tunnel, no DNS, no inbound firewall hole — so it is the cheapest way to put this deployment on a real Slack
+// workspace (plan §0.1).
+//
+// It gets its OWN cancellable context rather than riding the process context every other loop uses, because
+// it is the one loop with something to drain: an in-flight envelope has already been acknowledged to Slack,
+// so it must finish rather than be killed. serveWithGracefulDrain calls the returned func on SIGTERM.
+func startSlackSocket(ctx context.Context, bridge *extensions.SlackAdmitter, supervisor *coordinator.Supervisor) func(context.Context) error {
+	socket := bridge.SocketMode(os.Getenv("PALAI_SLACK_SOCKET_TEAM_ID"))
+	if socket == nil {
+		return nil
+	}
+	sockCtx, stop := context.WithCancel(ctx)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		supervisor.Supervise(sockCtx, "slack-socket", socket.Run)
+	}()
+	log.Printf("palai control-plane: Slack Socket Mode enabled for the configured workspace")
+	return func(drainCtx context.Context) error {
+		stop()
+		select {
+		case <-finished:
+			return nil
+		case <-drainCtx.Done():
+			return drainCtx.Err()
+		}
+	}
 }
 
 // serveWithGracefulDrain serves until SIGTERM/Interrupt, then DRAINS the runner gateway before exit:
@@ -283,7 +324,13 @@ func main() {
 // Whatever does not finish inside the window is reclaimed and completed by the E10 recovery layer on the
 // new control-plane, so a run always survives the swap on its pinned engine. A stack with no gateway
 // (assignment-only tiers) or no in-flight lease drains instantly, so ordinary shutdowns are unchanged.
-func serveWithGracefulDrain(srv *http.Server, gateway *execution.RunnerGateway) {
+//
+// drainSocket (nil unless Socket Mode is configured, E19 T3) is drained on the SAME budget and BEFORE the
+// gateway, because it is upstream of it: the socket is what admits new Slack work, and letting it keep
+// admitting while runner leases drain would mean draining against a source still filling the queue. Its own
+// in-flight envelope is already ACKNOWLEDGED to Slack — Slack will not redeliver it — so it finishes rather
+// than being killed.
+func serveWithGracefulDrain(srv *http.Server, gateway *execution.RunnerGateway, drainSocket func(context.Context) error) {
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -296,11 +343,21 @@ func serveWithGracefulDrain(srv *http.Server, gateway *execution.RunnerGateway) 
 	case <-sigCtx.Done():
 	}
 
-	if gateway != nil {
-		drainTimeout := envDuration("PALAI_DRAIN_TIMEOUT")
-		if drainTimeout <= 0 {
-			drainTimeout = 20 * time.Second
+	drainTimeout := envDuration("PALAI_DRAIN_TIMEOUT")
+	if drainTimeout <= 0 {
+		drainTimeout = 20 * time.Second
+	}
+	if drainSocket != nil {
+		socketCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+		if err := drainSocket(socketCtx); err != nil {
+			log.Printf("slack socket drain did not quiesce (%v); an in-flight envelope may have been abandoned after it was acknowledged", err)
+		} else {
+			log.Printf("slack socket drain complete")
 		}
+		cancel()
+	}
+
+	if gateway != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		if err := gateway.Drain(drainCtx); err != nil {
 			log.Printf("runner drain did not fully quiesce (%v); interrupted work recovers on the next control-plane", err)

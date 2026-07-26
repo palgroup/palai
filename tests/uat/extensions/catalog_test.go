@@ -60,9 +60,24 @@ var expectedExtensionsCatalog = map[string]struct {
 	class  string
 	proofs []string
 }{
-	"SLK-001": {"unit", []string{
+	// E19 T3 moved SLK-001 from `unit` to `component-real` and it is an EARNED upgrade, not a relabel: the
+	// transport-invariance claim is now asserted by the shipped Socket Mode connect loop driving the real
+	// admission bridge against real Postgres, in both transport orders. The protocol half stays untagged on
+	// purpose (a fake WSS server over httptest needs no service), so it runs under a plain `go test` rather
+	// than hiding behind a Postgres skip.
+	"SLK-001": {"component-real", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventNormalizesToCanonicalIdentity",
 		"adapters/integrations/slack/inbound_test.go:TestUnwrapSocketFrameFeedsTheSameMapping",
+		"adapters/integrations/slack/socket_test.go:TestSocketFrameCarriesAcceptsResponsePayload",
+		"adapters/integrations/slack/socket_test.go:TestSocketDisconnectReasonIsDecoded",
+		"adapters/integrations/slack/socket_test.go:TestSocketAckShape",
+		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAcknowledgesBeforeDoingTheWork",
+		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAckShapeMatchesTheDocumentedEnvelope",
+		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketOverlapsOnWarningAndLosesNoEvents",
+		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketStopsPermanentlyOnLinkDisabled",
+		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketDrainsGracefully",
+		"apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketNeverLogsTheTokenOrTheTicket",
+		"apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeAndHTTPShareOneCanonicalIdentity",
 	}},
 	"SLK-002": {"unit", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventRedeliveryIsIdentityStable",
