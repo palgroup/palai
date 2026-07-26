@@ -39,10 +39,8 @@ func Init() error {
 	if err := os.WriteFile(p.pgPassword, []byte(randomHex(24)), 0o600); err != nil {
 		return fmt.Errorf("write pg password: %w", err)
 	}
-	// The provider secret slot must exist even when unconfigured: compose bind-mounts it
-	// as a file-secret and the mount fails on a missing source. `provider add` fills it.
-	if err := os.WriteFile(p.secretPath("provider-one"), []byte{}, 0o600); err != nil {
-		return fmt.Errorf("create provider secret slot: %w", err)
+	if err := ensureSecretSlots(p); err != nil {
+		return err
 	}
 	if err := writeLocalCA(p); err != nil {
 		return err
@@ -69,12 +67,41 @@ func Init() error {
 	return nil
 }
 
+// ensureSecretSlots creates the EMPTY file-secret sources compose bind-mounts, and never touches
+// one that already holds a value. A missing source fails `compose up` outright, which is why the
+// provider-one slot has always been created unconfigured; the master-key slot joins it for the same
+// reason (it only DOES anything when PALAI_SECRET_MASTER_KEY_FILE names it).
+//
+// It runs on every bring-up, not only on `init`: Init short-circuits on an existing config.json, so
+// a .palai written by an earlier build has only the slots that existed then and would otherwise be
+// unable to start at all.
+func ensureSecretSlots(p paths) error {
+	if err := os.MkdirAll(p.secretsDir, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", p.secretsDir, err)
+	}
+	for _, path := range []string{p.secretPath("provider-one"), p.masterKey} {
+		switch _, err := os.Stat(path); {
+		case err == nil:
+			continue
+		case !os.IsNotExist(err):
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+		if err := os.WriteFile(path, []byte{}, 0o600); err != nil {
+			return fmt.Errorf("create secret slot %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
 // Up builds the images, mints a fresh one-use runner enrollment token, brings the four
 // services up with compose --wait, and blocks until the API answers. The token is
 // re-minted every Up so a repeated boot never reuses a spent identity (LP-012).
 func Up() error {
 	cfg, p, err := loadConfig()
 	if err != nil {
+		return err
+	}
+	if err := ensureSecretSlots(p); err != nil {
 		return err
 	}
 

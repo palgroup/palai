@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/palgroup/palai/apps/control-plane/api"
+	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 // TestWebhookSecretResolverIsOrgScoped pins F2: the env-key namespace is scoped by org, so a tenant's
@@ -165,5 +170,38 @@ func TestCapabilityWorkerListenerRefusesOffHost(t *testing.T) {
 			t.Fatalf("listenCapabilityWorker(%q) refused a loopback bind: %v", addr, err)
 		}
 		_ = ln.Close()
+	}
+}
+
+// TestSlackSocketStartsOnlyWhenTheWorkspaceIsNamed pins the composition-root half of the Slack last
+// mile: startSlackSocket is the ONE conditional loop in this binary, and PALAI_SLACK_SOCKET_TEAM_ID
+// is what decides. It was untestable-by-omission rather than wrong — compose passed the variable
+// nowhere, so the loop was dormant in every deployment an operator actually runs and nothing said
+// so. deploy/compose/slack_wiring_test.go holds the other end of the same wire.
+//
+// Dormant means dormant: a nil drain, so serveWithGracefulDrain has nothing to wait on either.
+func TestSlackSocketStartsOnlyWhenTheWorkspaceIsNamed(t *testing.T) {
+	// The bridge's store is nil: this asserts the START DECISION, and the loop's own work (which
+	// would touch the store) is proven against a real Postgres in the extensions component suite.
+	// A panic on the supervised stack is recovered by runGuarded, so it can only cost a backoff.
+	bridge := extensions.NewSlackAdmitter(nil, nil, nil, api.AdmissionLimits{})
+	supervisor := coordinator.NewSupervisor(func(string, ...any) {}, time.Second)
+
+	t.Setenv("PALAI_SLACK_SOCKET_TEAM_ID", "")
+	if drain := startSlackSocket(context.Background(), bridge, supervisor); drain != nil {
+		t.Fatal("the Socket Mode loop started with no workspace named: a stack with no Slack app must be unchanged")
+	}
+
+	t.Setenv("PALAI_SLACK_SOCKET_TEAM_ID", "T0AMPM5JX8U")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	drain := startSlackSocket(ctx, bridge, supervisor)
+	if drain == nil {
+		t.Fatal("PALAI_SLACK_SOCKET_TEAM_ID names a workspace and the connect loop did not start: nothing can arrive from Slack")
+	}
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer drainCancel()
+	if err := drain(drainCtx); err != nil {
+		t.Fatalf("the started loop did not drain on shutdown: %v", err)
 	}
 }

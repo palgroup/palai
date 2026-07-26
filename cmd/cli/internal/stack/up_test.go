@@ -277,7 +277,12 @@ func TestRedChecksCarryTheirDetail(t *testing.T) {
 // confined their PRODUCTION bot to their test channel, and an operator who did not set it got a bot with
 // no scope while the field looked like one.
 func TestSlackTestChannelNeverBecomesAProductionScope(t *testing.T) {
-	base := []string{"SLACK_TEAM_ID", "T0001", "SLACK_AGENT_REVISION_ID", "agr_1", "SLACK_PRINCIPAL_ID", "prn_1"}
+	// SLACK_SIGNING_SECRET is in the base because a COMPLETE environment now includes it: `palai up`
+	// registers signing_secret_ref only when it can store a value under that handle, so without the
+	// value the whole registration is a skip and there is no body to assert scoping on. It is fixture
+	// completeness only — nothing below reads it, and both scopes stay independent of it.
+	base := []string{"SLACK_TEAM_ID", "T0001", "SLACK_AGENT_REVISION_ID", "agr_1", "SLACK_PRINCIPAL_ID", "prn_1",
+		"SLACK_SIGNING_SECRET", "shh"}
 
 	body, skip := slackRegistration(env(append(base, "SLACK_TEST_CHANNEL", "C_TEST")...))
 	if skip != "" {
@@ -307,7 +312,12 @@ func TestSlackTestChannelNeverBecomesAProductionScope(t *testing.T) {
 // ApproverAuthorized is CORRECT and stays; what was broken is that `palai up` registered no approver at
 // all and said nothing, so a real operator's first Approve click was refused with no way to learn why.
 func TestSlackApproverSetIsRegisteredAndItsAbsenceIsSaidOutLoud(t *testing.T) {
-	base := []string{"SLACK_TEAM_ID", "T0001", "SLACK_AGENT_REVISION_ID", "agr_1", "SLACK_PRINCIPAL_ID", "prn_1"}
+	// SLACK_SIGNING_SECRET is in the base because a COMPLETE environment now includes it: `palai up`
+	// registers signing_secret_ref only when it can store a value under that handle, so without the
+	// value the whole registration is a skip and there is no body to assert scoping on. It is fixture
+	// completeness only — nothing below reads it, and both scopes stay independent of it.
+	base := []string{"SLACK_TEAM_ID", "T0001", "SLACK_AGENT_REVISION_ID", "agr_1", "SLACK_PRINCIPAL_ID", "prn_1",
+		"SLACK_SIGNING_SECRET", "shh"}
 
 	with, _ := slackRegistration(env(append(base, "SLACK_APPROVER_IDS", "U1, U2")...))
 	users, ok := with["allowed_users"].([]string)

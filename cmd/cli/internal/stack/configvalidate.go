@@ -44,6 +44,10 @@ var optionalEnv = map[string]bool{
 	"PALAI_PROM_PORT":                 true,
 	"PALAI_GRAFANA_PORT":              true,
 	"PALAI_GRAFANA_ADMIN_PASSWORD":    true,
+	// The Slack Socket Mode workspace (a team id, not a credential). It reads with a compose default
+	// like its neighbours, and it is MORE relevant in production than locally: Socket Mode needs no
+	// public callback URL, so it is the one Slack transport that works behind the edge unchanged.
+	"PALAI_SLACK_SOCKET_TEAM_ID": true,
 }
 
 // ConfigValidate runs the static posture checks and reports them like doctor. With jsonOut it
