@@ -2,6 +2,7 @@ package stack
 
 import (
 	"bufio"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -108,6 +109,13 @@ func Bootstrap(envFile string) error {
 			return err
 		}
 	}
+	// The Slack knobs the CONTAINER needs must be exported before compose creates it: a running
+	// control-plane never re-reads its environment, so a socket switched on after the fact stays off
+	// until the next bring-up. Failures here are reported and carried — an unusable master key must
+	// not fail a bring-up whose model round-trip is about to be proven.
+	for _, w := range applySlackEnv(p, get) {
+		fmt.Fprintf(os.Stderr, "        WARNING %s\n", w)
+	}
 	fmt.Fprintln(os.Stderr, "[3/6] stack     docker compose up (this builds on a first run)")
 	if err := Up(); err != nil {
 		return err
@@ -146,7 +154,7 @@ func Bootstrap(envFile string) error {
 	}
 
 	// [6/6] Slack, if and only if the workspace values are present. Never fatal.
-	slackFact, slackLine := registerSlack(api, get)
+	slackFact, slackLine := wireSlack(api, cfg, p, get)
 	fmt.Fprintf(os.Stderr, "[6/6] slack     %s\n", slackLine)
 
 	caps, err := api.capabilities()
@@ -281,40 +289,313 @@ func proveLive(rt roundTrip) error {
 
 // --- slack ---------------------------------------------------------------------------------
 
-// registerSlack registers the workspace when the SLACK_* values are present, and otherwise says
-// precisely what is missing and where it comes from. It never fails the bring-up: an absent Slack
-// app is a normal state, and a registration hiccup does not un-prove the live round-trip above.
+// slackSecretSlots is the ONE table behind every Slack credential this command touches: the
+// registration field that names the handle, the handle's prefix, and the .env.local variable
+// holding the value stored under it.
 //
-// It returns (fact, line): fact is the observed-state string the capability table shows for
-// `slack` when a workspace IS registered, and line is the operator-facing step result.
-func registerSlack(api *apiClient, get func(string) string) (fact string, line string) {
+// It is one table because the failure it closes is a PAIRING failure. `palai up` used to register
+// `signing_secret_ref: slack-signing-<team>` — correctly a handle, never a secret — while nothing
+// stored a value under that name anywhere the control-plane could redeem it. The handle resolved to
+// nothing, and every consumer of it fails SILENTLY by design: an unresolvable signing secret is a
+// verification refusal (no config oracle), an unresolvable app token is a dial that never happens.
+// Deriving the registered handle and the stored secret's NAME from the same row is what makes them
+// incapable of drifting apart.
+//
+// Where each value comes from is docs/superpowers/plans/phase-19-integration-wiring.md §0.1.
+var slackSecretSlots = []struct{ field, prefix, env, purpose string }{
+	{"signing_secret_ref", "slack-signing-", "SLACK_SIGNING_SECRET", "verifies the v0 signature on the HTTP Events/interactivity callbacks"},
+	{"bot_token_ref", "slack-bot-", "SLACK_BOT_TOKEN", "posts and updates the bot's own messages in the thread"},
+	{"app_token_ref", "slack-app-", "SLACK_APP_TOKEN", "opens the Socket Mode connection (apps.connections.open)"},
+}
+
+// slackAppTokenSlot is the row Socket Mode's only authentication lives on — named once so
+// slackSocketTeam cannot drift from the table.
+const slackAppTokenSlot = "app_token_ref"
+
+// containerMasterKeyPath is where compose mounts the master-key file secret. A PATH, never a value,
+// so it rides the compose environment like every other knob.
+const containerMasterKeyPath = "/run/secrets/master_key"
+
+// slackSocketTeam returns the workspace Socket Mode should dial, or "" to leave the connect loop
+// dormant. It follows the APP-LEVEL TOKEN rather than the team id, because the app-level token is
+// Socket Mode's only authentication (adapters/integrations/slack, D7): switching the loop on
+// without one produces a control-plane that dials, fails and logs on a timer, which reads as a
+// broken stack rather than an unconfigured one.
+func slackSocketTeam(get func(string) string) string {
+	team := strings.TrimSpace(get("SLACK_TEAM_ID"))
+	if team == "" || strings.TrimSpace(get("SLACK_APP_TOKEN")) == "" {
+		return ""
+	}
+	return team
+}
+
+// slackSecretValues maps each secret-ref NAME to the value that must be stored under it. Values
+// present in .env.local only; a slot with no value is left out entirely, so a handle is never
+// registered for a credential the operator does not have.
+func slackSecretValues(get func(string) string) map[string]string {
+	team := strings.TrimSpace(get("SLACK_TEAM_ID"))
+	if team == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, slot := range slackSecretSlots {
+		if v := strings.TrimSpace(get(slot.env)); v != "" {
+			out[slot.prefix+team] = v
+		}
+	}
+	return out
+}
+
+// applySlackEnv exports the compose interpolation the CONTAINER needs for Slack, and returns any
+// operator warnings. It runs BEFORE `docker compose up` because a running control-plane never
+// re-reads its environment.
+//
+// Two variables, both optional and both empty by default in compose.yaml, so a deployment with no
+// Slack app is byte-for-byte unchanged:
+//
+//   - PALAI_SLACK_SOCKET_TEAM_ID switches on main.startSlackSocket (gap 1);
+//   - PALAI_SECRET_MASTER_KEY_FILE mounts the DB-backed secret store, which is the ONE thing on
+//     this profile that can redeem a *_ref handle (gap 2). Without it dbSecretStore stays nil and
+//     the resolvers fall through to an env-file bridge whose key names an <ORG>__<REF> pair a
+//     compose `environment:` key cannot express.
+func applySlackEnv(p paths, get func(string) string) []string {
+	values := slackSecretValues(get)
+	if len(values) == 0 {
+		return nil
+	}
+	var warnings []string
+	if err := ensureMasterKey(p); err != nil {
+		return []string{fmt.Sprintf("Slack credentials are configured but the secret store cannot be enabled: %v. "+
+			"The workspace will be registered with handles that resolve nowhere.", err)}
+	}
+	if err := os.Setenv("PALAI_SECRET_MASTER_KEY_FILE", containerMasterKeyPath); err != nil {
+		return []string{fmt.Sprintf("could not export PALAI_SECRET_MASTER_KEY_FILE: %v", err)}
+	}
+	switch team := slackSocketTeam(get); team {
+	case "":
+		warnings = append(warnings, "SLACK_APP_TOKEN is unset, so Socket Mode stays off: an app-level token (xapp-…) is its only "+
+			"authentication, and without a public callback URL nothing can reach this stack from Slack "+
+			"(§0.1 — App → Basic Information → App-Level Tokens → Generate, scope connections:write)")
+	default:
+		if err := os.Setenv("PALAI_SLACK_SOCKET_TEAM_ID", team); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not export PALAI_SLACK_SOCKET_TEAM_ID: %v", err))
+		}
+	}
+	return warnings
+}
+
+// ensureMasterKey makes $PALAI_HOME/secrets/master-key hold a key identity.ParseMasterKey accepts
+// (32 bytes, hex). An EXISTING valid key is never replaced: it seals every secret already in the
+// store, and dbSecret fails CLOSED on a decrypt failure rather than falling back — so re-minting
+// would not degrade the stack, it would break it.
+//
+// An existing file holding something else (the `REPLACE_WITH_…` placeholder, a truncated paste) is
+// a refusal, not an overwrite: the control-plane treats an unparseable key as a startup error, so
+// booting on it would take the whole stack down, and clobbering it would destroy whatever it was.
+func ensureMasterKey(p paths) error {
+	raw, err := os.ReadFile(p.masterKey)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", p.masterKey, err)
+	}
+	switch key := strings.TrimSpace(string(raw)); {
+	case len(key) == 64 && isHex(key):
+		return nil
+	case key != "":
+		return fmt.Errorf("%s does not hold a 32-byte hex key, so the control-plane would refuse to boot on it "+
+			"(it is a startup error by design) — fix: replace it with `openssl rand -hex 32`, or delete it to have one minted", p.masterKey)
+	}
+	if err := os.MkdirAll(p.secretsDir, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", p.secretsDir, err)
+	}
+	// randomHex(32) is 32 random BYTES hex-encoded — the 64-char form ParseMasterKey requires.
+	if err := os.WriteFile(p.masterKey, []byte(randomHex(32)), 0o600); err != nil {
+		return fmt.Errorf("mint %s: %w", p.masterKey, err)
+	}
+	return nil
+}
+
+func isHex(s string) bool {
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+// slackOutcome is what a bring-up actually OBSERVED about Slack — the input to the report, kept
+// separate from the printing so the "what earns the word live" rule is a testable function rather
+// than a format string.
+type slackOutcome struct {
+	team         string
+	connectionID string
+	stored       int    // secret refs whose VALUE is now redeemable on this stack
+	existing     int    // workspaces already registered (the skip path)
+	connected    bool   // Slack sent the Socket Mode `hello` frame on this boot
+	detail       string // the control-plane's own last word about the socket
+	skip         string // why the step did nothing at all
+	problem      string // a registration/storage failure, already operator-readable
+}
+
+// slackReport turns an observation into (fact, line). fact is what the capability table shows, and
+// a NON-EMPTY fact renders the row as `live` — which is the whole point of this function.
+//
+// THE RULE: `slack` is live only when the control-plane observed Slack's own `hello` frame, the
+// first message on an authenticated Socket Mode connection. Everything short of that is dormant.
+// A 201 from POST /v1/slack-connections proves a row was written; it proves nothing about whether
+// anything can arrive, which is exactly what the previous `slack live — workspace T… registered`
+// claimed. This repo has found nine surfaces reporting more than they proved; this is not a tenth.
+func slackReport(o slackOutcome) (fact string, line string) {
+	switch {
+	case o.skip != "":
+		if o.connected {
+			return fmt.Sprintf("Socket Mode connected — %s", o.detail),
+				fmt.Sprintf("SKIPPED — %s (%d workspace(s) already registered, and Socket Mode IS connected on this stack)", o.skip, o.existing)
+		}
+		if o.existing > 0 {
+			return "", fmt.Sprintf("SKIPPED — %s (%d workspace(s) already registered, but Socket Mode is NOT connected: %s)", o.skip, o.existing, o.detail)
+		}
+		return "", "SKIPPED — " + o.skip
+	case o.problem != "":
+		return "", o.problem
+	case o.connected:
+		return fmt.Sprintf("Socket Mode connected for workspace %s — %s", o.team, o.detail),
+			fmt.Sprintf("registered %s for team %s; %d secret ref(s) stored and redeemable; Socket Mode CONNECTED — %s",
+				o.connectionID, o.team, o.stored, o.detail)
+	default:
+		return "", fmt.Sprintf("registered %s for team %s; %d secret ref(s) stored — but NOT CONNECTED: %s. "+
+			"Nothing will arrive from Slack until that line changes, so `slack` is reported dormant.",
+			o.connectionID, o.team, o.stored, o.detail)
+	}
+}
+
+// wireSlack does the whole last mile after the stack is up: store the credential VALUES where the
+// control-plane can redeem them, register the workspace against those handles, and then OBSERVE
+// whether Slack actually opened a socket. It never fails the bring-up — an absent Slack app is a
+// normal state, and a Slack hiccup does not un-prove the live round-trip above.
+func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fact string, line string) {
 	body, skip := slackRegistration(get)
 	if skip != "" {
-		// Even when skipping, report what the stack already holds — a workspace registered by an
-		// earlier run is live regardless of what .env.local says today.
+		o := slackOutcome{skip: skip}
 		if n, err := api.slackConnectionCount(); err == nil && n > 0 {
-			return fmt.Sprintf("%d workspace(s) registered", n), fmt.Sprintf("SKIPPED — %s (%d workspace(s) already registered on this stack)", skip, n)
+			// A workspace registered by an earlier run may well be live; look before saying so.
+			o.existing = n
+			o.connected, o.detail = observeSlackSocket(cfg, p, 0)
 		}
-		return "", "SKIPPED — " + skip
+		return slackReport(o)
 	}
+	team, _ := body["team_id"].(string)
+	o := slackOutcome{team: team}
+
+	// The VALUES first: a connection registered against handles that resolve nowhere is precisely
+	// the state this task exists to end, so the redemption path is filled before the row names it.
+	for name, value := range slackSecretValues(get) {
+		if err := api.putSecretRef(name, value); err != nil {
+			o.problem = "NOT wired: " + err.Error()
+			return slackReport(o)
+		}
+		o.stored++
+	}
+
 	id, status, err := api.createSlackConnection(body)
 	switch {
 	case err != nil:
-		return "", "NOT registered: " + err.Error()
+		o.problem = "NOT registered: " + err.Error()
+		return slackReport(o)
 	case status == http.StatusConflict:
-		return "workspace already bound", fmt.Sprintf("team %s was already bound (409) — nothing changed", body["team_id"])
+		// The workspace is already bound (possibly from an earlier run). The refs it was bound with
+		// are the same handles — derived from the team id — so the values just stored still apply.
+		o.connectionID = "(already bound)"
+	default:
+		o.connectionID = id
 	}
-	ref, _ := body["signing_secret_ref"].(string)
-	return fmt.Sprintf("workspace %s registered", body["team_id"]), fmt.Sprintf(
-		"registered %s for team %s. NOT PROVEN: the signing-secret handle %q resolves nowhere on this stack, so no Slack "+
-			"signature has been verified — the local compose profile mounts neither PALAI_SLACK_SECRET_FILE_<ORG>__<REF> nor the "+
-			"secret-ref API (which needs a production master key)", id, body["team_id"], ref)
+
+	// The connect loop resolves its workspace ONCE, at boot (extensions.SlackSocket's documented
+	// ceiling, and the remedy its own log line names). A workspace registered by THIS bring-up
+	// therefore cannot be seen by the control-plane that was already running, so look first and
+	// recreate only if the socket is not already up. --force-recreate rather than restart, so the
+	// log read afterwards carries this boot alone.
+	if o.connected, o.detail = observeSlackSocket(cfg, p, 0); !o.connected {
+		fmt.Fprintln(os.Stderr, "        the control-plane is restarting to pick up the workspace (Socket Mode resolves it at boot)")
+		if err := recreateControlPlane(cfg, p); err != nil {
+			o.detail = fmt.Sprintf("the control-plane could not be recreated to pick up the registration: %v", err)
+			return slackReport(o)
+		}
+		o.connected, o.detail = observeSlackSocket(cfg, p, 45*time.Second)
+	}
+	return slackReport(o)
+}
+
+// recreateControlPlane replaces the control-plane container in place, leaving Postgres, the object
+// store and the runner alone. The engine digest is re-resolved rather than defaulted to the tag:
+// the control-plane hands PALAI_ENGINE_IMAGE to the runner's lease, which requires an immutable
+// sha256, so recreating with the mutable tag would break every subsequent run.
+func recreateControlPlane(cfg Config, p paths) error {
+	digest, err := imageID(engineImage)
+	if err != nil {
+		return err
+	}
+	if err := runVisible(cfg.composeEnv(p.home, digest), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+		"up", "-d", "--force-recreate", "--no-deps", "--wait", "control-plane"); err != nil {
+		return fmt.Errorf("recreate the control-plane: %w", err)
+	}
+	return waitForAPI(cfg, p)
+}
+
+// observeSlackSocket reads the control-plane's OWN log until it says Slack sent `hello`, or the
+// window elapses. within == 0 is a single look (the "is it already up?" probe).
+//
+// It is a log read because the `hello` frame is the only evidence that exists: it is Slack's first
+// message on an authenticated Socket Mode connection, so seeing it means apps.connections.open
+// accepted the app-level token AND the WebSocket is open AND the workspace resolved to a real
+// connection row. No endpoint exposes that, and inventing one to report it would be a bigger change
+// than the wiring it reports on. The lines it reads carry no credential by construction
+// (TestSlackSocketNeverLogsTheTokenOrTheTicket is the guard on that).
+func observeSlackSocket(cfg Config, p paths, within time.Duration) (bool, string) {
+	deadline := time.Now().Add(within)
+	for {
+		out, _ := runCaptured(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project,
+			"-f", composeFile(), "logs", "--no-color", "control-plane")
+		connected, detail := readSlackSocketLog(out)
+		if connected || !time.Now().Before(deadline) {
+			return connected, detail
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// slackSocketConnected is the log line extensions.SlackSocket writes when Slack's `hello` arrives.
+const slackSocketConnected = "slack socket: connected"
+
+// readSlackSocketLog reads the control-plane's log for the socket's LATEST state and reports it in
+// the operator's terms. The three outcomes are distinguished on purpose — reporting "not connected"
+// for all of them would send someone hunting for a Slack app problem when the real fault is a
+// variable that never reached the container.
+func readSlackSocketLog(logs string) (bool, string) {
+	const enabled = "Slack Socket Mode enabled"
+	last, started := "", false
+	for _, line := range strings.Split(logs, "\n") {
+		i := strings.Index(line, "slack socket: ")
+		if i < 0 {
+			started = started || strings.Contains(line, enabled)
+			continue
+		}
+		last = strings.TrimSpace(line[i:])
+	}
+	switch {
+	case strings.HasPrefix(last, slackSocketConnected):
+		return true, last
+	case last != "":
+		return false, last
+	case started:
+		return false, "the connect loop started but Slack has not sent `hello` on this boot"
+	default:
+		return false, "the control-plane logged nothing about Socket Mode at all: PALAI_SLACK_SOCKET_TEAM_ID reached no container, " +
+			"so the connect loop never started (set SLACK_TEAM_ID and SLACK_APP_TOKEN in .env.local and re-run `palai up`)"
+	}
 }
 
 // slackRegistration builds the POST /v1/slack-connections body from the .env.local values, or
 // returns the reason the step is skipped. It NEVER sends a credential: the endpoint refuses inline
-// values and accepts only *_ref handles, so SLACK_SIGNING_SECRET's value is not read here at all —
-// only the handle NAME derived from the team id is.
+// values and accepts only *_ref handles, so a value is read here ONLY to decide whether its handle
+// can honestly be registered at all — a handle with no value behind it is worse than an absent one,
+// because the row then claims a capability that silently does nothing.
 func slackRegistration(get func(string) string) (map[string]any, string) {
 	team := strings.TrimSpace(get("SLACK_TEAM_ID"))
 	if team == "" {
@@ -336,11 +617,23 @@ func slackRegistration(get func(string) string) (map[string]any, string) {
 		return nil, fmt.Sprintf("SLACK_TEAM_ID is set but %s missing. POST /v1/slack-connections refuses a binding with no run target "+
 			"(default_policy.agent_revision_id and default_policy.principal_id are required — what to run, and as whom)", strings.Join(missing, " and "))
 	}
+	// signing_secret_ref is the one handle the API itself requires, and this command no longer
+	// registers a handle it cannot store a value for — so an absent signing secret is a skip with
+	// its source named, not a 400 the operator has to decode.
+	if strings.TrimSpace(get("SLACK_SIGNING_SECRET")) == "" {
+		return nil, "SLACK_TEAM_ID is set but SLACK_SIGNING_SECRET is missing. POST /v1/slack-connections requires signing_secret_ref, " +
+			"and a handle with no value behind it resolves nowhere (§0.1 — App → Basic Information → App Credentials → Signing Secret)"
+	}
 	body := map[string]any{
-		"team_id": team,
-		// A HANDLE, never the secret. Derived from the team id so a re-run names the same handle.
-		"signing_secret_ref": "slack-signing-" + team,
-		"default_policy":     map[string]any{"agent_revision_id": revision, "principal_id": principal},
+		"team_id":        team,
+		"default_policy": map[string]any{"agent_revision_id": revision, "principal_id": principal},
+	}
+	// HANDLES, never secrets — and only for the credentials this bring-up can actually store a value
+	// for, off the same table slackSecretValues writes from.
+	for _, slot := range slackSecretSlots {
+		if strings.TrimSpace(get(slot.env)) != "" {
+			body[slot.field] = slot.prefix + team
+		}
 	}
 	if v := strings.TrimSpace(get("SLACK_BOT_USER_ID")); v != "" {
 		body["bot_user_id"] = v
@@ -542,6 +835,32 @@ func (c *apiClient) slackConnectionCount() (int, error) {
 		return 0, fmt.Errorf("GET /v1/slack-connections = %d", status)
 	}
 	return len(body.Data), nil
+}
+
+// putSecretRef stores one credential VALUE under its handle through the E13 T3 secret store — the
+// SAME write-path a production tenant uses, envelope-encrypted at rest and resolved fresh, so the
+// resolver chain that fronts every consumer (dbSecret) redeems the handle with no restart.
+//
+// The value travels in a POST body over loopback and nowhere else: not argv (which `ps` shows), not
+// an env var (which `docker inspect` shows), not a log, not a file this command leaves behind. It
+// is write-only at the far end too — every projection the API serves is metadata, so nothing can
+// read it back out.
+func (c *apiClient) putSecretRef(name, value string) error {
+	status, err := c.do(http.MethodPost, "/v1/secret-refs", map[string]any{"name": name, "value": value}, nil)
+	switch {
+	case err != nil:
+		// c.do builds its error from the method, path and response body — never from the request.
+		return fmt.Errorf("store the secret ref %q: %w", name, err)
+	case status == http.StatusCreated:
+		return nil
+	case status == http.StatusNotFound:
+		return fmt.Errorf("POST /v1/secret-refs = 404: the control-plane booted with no secret store, so the handle %q could resolve nowhere. "+
+			"Fix: PALAI_SECRET_MASTER_KEY_FILE must name a 32-byte hex key file when the container starts (a running one never re-reads it)", name)
+	case status == http.StatusForbidden:
+		return fmt.Errorf("POST /v1/secret-refs = 403: this API key lacks the `provision` capability, so it cannot store the handle %q", name)
+	default:
+		return fmt.Errorf("POST /v1/secret-refs = %d storing the handle %q, want 201", status, name)
+	}
 }
 
 func (c *apiClient) createSlackConnection(body map[string]any) (string, int, error) {
