@@ -379,6 +379,26 @@ func (s *recordingSink) Deliver(_ context.Context, destKey string, _ []byte) err
 }
 
 func (s *recordingSink) total() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.received) }
+
+// timesFor counts how often ONE destination key was delivered. It exists because QueueOutboxPump.Tick
+// sweeps EVERY tenant's outbound connections — correct for production, where one pump serves the whole
+// deployment — so a test that asserts over ALL keys the sink saw is really asserting that no other tenant
+// has a pending delivery on the same database. That held until the E19 T9 wiring gate co-ran three
+// component suites against ONE Postgres and this suite started seeing the journey's tenant's row.
+//
+// The fix is to assert what the test actually means (MY result was delivered exactly once), which is also
+// strictly stronger: an extra delivery of this run still fails, and a foreign tenant's row no longer can.
+func (s *recordingSink) timesFor(destKey string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, k := range s.received {
+		if k == destKey {
+			n++
+		}
+	}
+	return n
+}
 func (s *recordingSink) unique() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

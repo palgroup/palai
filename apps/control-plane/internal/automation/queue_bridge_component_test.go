@@ -500,14 +500,17 @@ func TestQueueTerminalEnqueuesOutboundLosslessExactlyOnce(t *testing.T) {
 	if got := queueDeliveryState(t, pool, org, project, runID, connID); got != "delivered" {
 		t.Fatalf("delivery state after recovery = %q, want delivered", got)
 	}
-	if sink.unique() != 1 {
-		t.Fatalf("unique destination keys = %d, want 1 (exactly one logical delivery)", sink.unique())
+	// TWO attempts on THIS run's key: the one that failed while the publisher was down, and the one that
+	// succeeded after it recovered. The row is `delivered` (asserted above), so those two attempts are ONE
+	// logical delivery — which is the §34.5 claim.
+	if got := sink.timesFor(runID); got != 2 {
+		t.Fatalf("this run's destination key saw %d attempt(s), want 2 (one failed while the publisher was down, one that succeeded)", got)
 	}
 	if err := pump.Tick(ctx); err != nil {
 		t.Fatalf("third pump Tick error = %v", err)
 	}
-	if sink.unique() != 1 || sink.total() > 2 {
-		t.Fatalf("sink saw unique=%d total=%d after a delivered result — a delivered row must not re-send", sink.unique(), sink.total())
+	if got := sink.timesFor(runID); got != 2 {
+		t.Fatalf("this run's destination key saw %d attempt(s) after the row was marked delivered, want the same 2 — a delivered row must not re-send", got)
 	}
 
 	// The payload names the run's canonical coordinates and nothing else — a queue subscriber learns what
