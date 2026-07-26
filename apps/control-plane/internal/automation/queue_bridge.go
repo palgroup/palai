@@ -142,35 +142,28 @@ func (b *QueueBridge) Run(ctx context.Context) error {
 }
 
 // Tick consumes one batch from every ENABLED inbound connection. Exported so the component suite drives it
-// deterministically (no sleeps). It returns the number of messages handled across all connections.
+// deterministically (no sleeps).
 //
-// A connection whose config names no run target is SKIPPED — not consumed and dead-lettered. A
-// misconfiguration is the operator's to fix and the messages are innocent; burning them through the
-// dead-letter bound would destroy a backlog that becomes deliverable the moment the config is corrected.
-func (b *QueueBridge) Tick(ctx context.Context) (err error) {
-	_, err = b.tick(ctx)
-	return err
-}
-
-func (b *QueueBridge) tick(ctx context.Context) (int, error) {
+// The run target is resolved ONCE per connection, BEFORE anything is leased. A connection whose config
+// names no target is skipped entirely rather than consumed and dead-lettered: a misconfiguration is the
+// operator's to fix and the messages are innocent, so burning them through the dead-letter bound would
+// destroy a backlog that becomes deliverable the moment the config is corrected.
+func (b *QueueBridge) Tick(ctx context.Context) error {
 	conns, err := b.store.sweepConnections(ctx, "inbound")
 	if err != nil {
-		return 0, err
+		return err
 	}
-	handled := 0
 	for _, c := range conns {
 		target, terr := b.runTarget(ctx, c)
 		if terr != nil {
 			b.logf("queue: connection %s admits nothing: %v", c.id, terr)
 			continue
 		}
-		n, err := b.store.inboundQueueFor(c).Consume(ctx, b.cfg.Batch, b.handler(c, target))
-		handled += n
-		if err != nil {
-			return handled, err
+		if _, err := b.store.inboundQueueFor(c).Consume(ctx, b.cfg.Batch, b.handler(c, target)); err != nil {
+			return err
 		}
 	}
-	return handled, nil
+	return nil
 }
 
 // handler is the queue.Handler for one connection: normalize → admit → RecordEffect → Ack. Consume acks
