@@ -74,6 +74,38 @@ type RunnerGateway struct {
 	// gateway. A multi-runner fleet would key these by runner id; that is the SaaS/post-SH-0 upgrade path.
 	cordoned atomic.Bool
 	revoked  atomic.Bool
+	// identity is the client certificate the gateway last saw a runner present, on connect or on
+	// renew. It is the only place the runner's certificate lifetime is observable from OUTSIDE the
+	// runner process, and it is what `palai local doctor` reads: a healthy runner refreshes this
+	// every renewal, so a NotAfter in the past means the runner stopped rolling its identity
+	// forward — the expired-identity condition, named where the operator meets it. Nil until the
+	// first runner presents a certificate.
+	identity atomic.Pointer[RunnerIdentity]
+}
+
+// RunnerIdentity is the client certificate a runner last presented to the gateway: who it
+// claimed to be, when that certificate stops being valid, and when the gateway saw it.
+type RunnerIdentity struct {
+	RunnerDNS string    `json:"runner_dns"`
+	NotAfter  time.Time `json:"not_after"`
+	SeenAt    time.Time `json:"seen_at"`
+}
+
+// LastRunnerIdentity reports the client certificate the gateway last saw, or false when no
+// runner has presented one yet.
+func (g *RunnerGateway) LastRunnerIdentity() (RunnerIdentity, bool) {
+	seen := g.identity.Load()
+	if seen == nil {
+		return RunnerIdentity{}, false
+	}
+	return *seen, true
+}
+
+// recordIdentity remembers the presented client certificate. Called from connect and renew —
+// the two places a runner proves its identity — so the record advances on every renewal and
+// goes stale exactly when the runner stops renewing.
+func (g *RunnerGateway) recordIdentity(leaf *x509.Certificate) {
+	g.identity.Store(&RunnerIdentity{RunnerDNS: renewDNS(leaf), NotAfter: leaf.NotAfter, SeenAt: g.now()})
 }
 
 // NewRunnerGateway binds the CA issuer and the one-use token store into a gateway.
@@ -223,6 +255,7 @@ func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	leaf := r.TLS.PeerCertificates[0]
+	g.recordIdentity(leaf)
 	publicDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
 	if err != nil {
 		http.Error(w, "marshal runner public key", http.StatusBadRequest)
@@ -256,6 +289,7 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "runner client certificate required", http.StatusUnauthorized)
 		return
 	}
+	g.recordIdentity(r.TLS.PeerCertificates[0])
 	// A revoked gateway refuses the session before the upgrade, so a decommissioned runner never even
 	// parks (SAN-011). Cordon does NOT reject the connect — a cordoned runner still parks and finishes an
 	// in-flight lease; it is only Dial that stops offering it NEW work.

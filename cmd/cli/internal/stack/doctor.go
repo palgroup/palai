@@ -44,7 +44,7 @@ type Report struct {
 	Checks map[string]Check `json:"checks"`
 }
 
-// Doctor runs the fourteen local-stack checks and reports them. With jsonOut it prints the
+// Doctor runs the fifteen local-stack checks and reports them. With jsonOut it prints the
 // report as JSON and always exits 0 (the verdict is in the body, which the e2e harness
 // parses). Human output prints a table and returns an error when any check is not green,
 // so `scripts/local/doctor` exits non-zero on an unhealthy stack.
@@ -98,6 +98,10 @@ func runChecks(cfg Config, p paths) Report {
 		"disk":     checkDisk(cfg),
 		"queue":    checkQueue(ctx, pgURL),
 		"callback": checkCallback(ctx, pgURL),
+		// The fifteenth: the runner's certificate lifetime. `runner` proves the gateway listens and
+		// `runner_tls_reject` proves it enforces mTLS — both stay green while the runner's own
+		// identity lapses and every run fails, which is the gap this closes (doctor_v2.go).
+		"runner_identity": checkRunnerIdentity(ctx, cfg),
 	}
 	ok := true
 	for _, c := range checks {

@@ -277,7 +277,7 @@ func usage() {
   palai local up                  build + start the four-service stack (retains data)
   palai local down                stop the stack, retaining data volumes
   palai local reset --confirm     stop and DELETE the data volumes
-  palai local doctor [--json]     run the health checks (14: adds disk/queue/callback)
+  palai local doctor [--json]     run the health checks (15: adds disk/queue/callback/runner_identity)
   palai provider add <ref>        store a provider secret (value on stdin)
   palai response create --input <text>
 

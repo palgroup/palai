@@ -285,7 +285,7 @@ func main() {
 		// zero = disabled, so a stack that configures none admits exactly as before.
 		Handler: withSupervisorStatus(api.NewRouter(repo, repo, repo, repo, repo, repo, webhookStore, triggerStore, scheduleStore, repo, repo, repo, repo, identityStore, artifactReader, sseConfigFromEnv(), nil,
 			api.NewToolCallbackHandler(remotehttp.NewOperations(repo.Spine().Pool()), remoteToolSecretResolver),
-			routerOpts...), supervisor),
+			routerOpts...), supervisor, gateway),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -1191,15 +1191,36 @@ func envDefault(name, def string) string {
 	return def
 }
 
-// withSupervisorStatus serves GET /healthz/supervisor as the JSON restart-counter snapshot
-// `palai doctor` surfaces, delegating every other request to next. It rides alongside
-// /healthz (unauthenticated liveness) and carries no sensitive data — only the per-loop
-// restart counts, so an operator can see a background loop that is silently restarting.
-func withSupervisorStatus(next http.Handler, supervisor *coordinator.Supervisor) http.Handler {
+// withSupervisorStatus serves the two JSON health snapshots `palai doctor` surfaces, delegating
+// every other request to next. Both ride alongside /healthz (unauthenticated liveness) and
+// carry no sensitive data:
+//
+//   - /healthz/supervisor — the per-loop restart counts, so an operator can see a background
+//     loop that is silently restarting.
+//   - /healthz/runner — the number of live runner sessions and the EXPIRY of the client
+//     certificate a runner last presented. That expiry is not observable anywhere else outside
+//     the runner process, and it is the difference between "runs are failing" and "the runner's
+//     identity lapsed": the runner refreshes it on every renewal, so a NotAfter in the past means
+//     it stopped rolling the identity forward. A certificate's validity window and a runner DNS
+//     name are public halves of a credential, not secrets — the private key never leaves the
+//     runner and nothing here helps a caller obtain one.
+func withSupervisorStatus(next http.Handler, supervisor *coordinator.Supervisor, gateway *execution.RunnerGateway) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/healthz/supervisor" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"restarts": supervisor.Restarts()})
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/healthz/runner" {
+			body := map[string]any{"gateway": gateway != nil}
+			if gateway != nil {
+				body["sessions"] = gateway.Connected()
+				if identity, seen := gateway.LastRunnerIdentity(); seen {
+					body["identity"] = identity
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(body)
 			return
 		}
 		next.ServeHTTP(w, r)

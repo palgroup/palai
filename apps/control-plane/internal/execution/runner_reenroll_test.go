@@ -102,6 +102,17 @@ func TestRunnerRecoversFromAnExpiredIdentityWithoutARestart(t *testing.T) {
 		t.Fatalf("the runner never recovered from an expired identity: %v", err)
 	}
 	_ = channel.Close()
+
+	// The same recovery is what `palai local doctor` reads: the gateway records the certificate a
+	// runner last presented, so a live identity here is the signal the runner_identity check turns
+	// green — and a lapsed one is what it names.
+	seen, ok := f.gateway.LastRunnerIdentity()
+	if !ok {
+		t.Fatal("the gateway recorded no runner identity; `doctor` would have nothing to report")
+	}
+	if !seen.NotAfter.After(time.Now()) {
+		t.Fatalf("the gateway's last-seen identity is still the expired one (NotAfter=%s); doctor would report the deadlock after recovery", seen.NotAfter)
+	}
 }
 
 // readTokenFile reads the bootstrap token back out of the fixture's file, the way the runner
