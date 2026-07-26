@@ -1233,17 +1233,38 @@ func startRunnerGateway(addr string) *execution.RunnerGateway {
 //     it on the public edge would change the posture the WRK-001..007 proofs were taken under, which is
 //     exactly what §2 forbids: wiring must go through the surface as built.
 //
-// HONEST CEILING — two of them, neither introduced here, both worth the operator knowing:
-//   - Plain HTTP, no TLS on this listener. The worker binary (cmd/palai-capability-worker) dials a base URL
-//     with a stock http.Client and has no CA flag, so a self-signed listener would be undialable and giving
-//     it one means changing the client E17 T9 proved. The operator terminates TLS in front of this address
-//     the same way the public API's listener is fronted; the runner gateway's mTLS is the upgrade path when
-//     a worker fleet needs one.
-//   - NO production path mints an enrollment token yet: Gateway.IssueEnrollmentToken has no operator caller
-//     (the runner's equivalent is PALAI_ENROLLMENT_TOKEN_FILE). The surface is therefore SERVED and enforces
-//     everything T9 proved, but a real worker cannot enroll until that ceremony exists. That is a missing
-//     operator path, not a missing capability — and it is the reason this task mounts what exists rather than
-//     inventing a credential-issuing route on the way past.
+// HONEST CEILINGS — four of them, none introduced here, all worth the operator knowing:
+//
+//   - CLEARTEXT LISTENER, so this wiring REFUSES to bind it off-host (listenCapabilityWorker). Its sibling at
+//     the same topology gets mTLS, and three things travel on this one in the clear: the one-time enrollment
+//     token, the workload bearer on EVERY request — with no channel binding, unlike the runner's client cert
+//     whose private key never leaves the runner, so one observed request is full worker impersonation for the
+//     identity TTL — and the REDEEMED SECRET VALUE in the redeem response body. Loopback + TLS terminated in
+//     front is the supported posture; full parity with startRunnerGateway (tls.Listen, TLS 1.3, ClientCAs,
+//     reusing PALAI_RUNNER_SERVER_CERT/KEY) is the right answer once a fleet actually enrolls across a
+//     network. Note the client is NOT the obstacle: cmd/palai-capability-worker dials c.base+path with a
+//     stock http.Client, which handles an https:// base against a normally-trusted certificate fine — only a
+//     SELF-SIGNED listener would need a CA flag the client does not have.
+//
+//   - DORMANT IN THREE WAYS. The surface is SERVED and enforces everything WRK-001..007 proved, but nothing
+//     drives it yet, so `capability-workers` means "this binary can serve the surface", never "a worker ran a
+//     job": (1) no production path mints an enrollment token — Gateway.IssueEnrollmentToken has no operator
+//     caller (the runner's equivalent is PALAI_ENROLLMENT_TOKEN_FILE), so nobody can enroll; (2) no
+//     production path dispatches a job — Store.DispatchJob has no caller, so even an enrolled worker polls
+//     204 forever; (3) no production path advances worker health or reclaims an expired lease —
+//     Store.SetWorkerHealth and Store.RedispatchForRetry have no callers, so the worker-health fence never
+//     moves and there is no reaper. All three are missing OPERATOR/DRIVER paths, not missing capabilities,
+//     and they are why this task mounts what exists instead of inventing routes on the way past. E19 T8b/T9
+//     own them (docs/superpowers/plans/phase-19-integration-wiring.md, T8).
+//
+//   - The gateway's in-memory maps are now a LONG-LIVED daemon's, not a fixture's (E17 T9 marked them
+//     "fixture scale" when the only caller was a test): Gateway.artifacts is never deleted (every output,
+//     each ≤8MB, is retained for the process lifetime) and Gateway.sessions expiry is CHECKED on every
+//     request but never swept. The durable object store (E09) is the reuse path.
+//
+//   - NO DRAIN. serveWithGracefulDrain drains only the runner gateway and workers.Gateway has no Drain, so a
+//     control-plane swap 401s every worker (sessions and claims are in-process) and leaves leased jobs
+//     `leased` in the journal for the reaper that (see above) does not exist yet. Recovery is T9's.
 func startCapabilityWorkerGateway(addr string, repo *store.Store, secrets *identity.SecretStore) *workers.Gateway {
 	if strings.TrimSpace(addr) == "" {
 		return nil
@@ -1267,13 +1288,41 @@ func startCapabilityWorkerGateway(addr string, repo *store.Store, secrets *ident
 	// Bind synchronously so a bind failure fails fast, for the same reason the runner listener does: the
 	// public /healthz must not report healthy while a configured worker surface silently never came up —
 	// that would recreate the very lie this wiring closed.
-	ln, err := net.Listen("tcp", addr)
+	ln, err := listenCapabilityWorker(addr)
 	if err != nil {
 		log.Fatalf("bind capability worker gateway listener: %v", err)
 	}
 	log.Printf("palai capability worker gateway listening on %s", addr)
 	go func() { log.Fatal(srv.Serve(ln)) }()
 	return gateway
+}
+
+// listenCapabilityWorker binds the capability-worker gateway's listener, REFUSING any address that is not
+// an explicit loopback host. That listener is cleartext (see startCapabilityWorkerGateway's first ceiling
+// for what travels on it), and configvalidate.go's edge check inspects only host-PUBLISHED ports — so an
+// operator copying compose.yaml's `PALAI_RUNNER_LISTEN_ADDR: ":8443"` shape into
+// PALAI_CAPABILITY_WORKER_LISTEN_ADDR would otherwise get a wildcard-bound secret-redemption endpoint with
+// no warning at all. Refusing the bind is what makes accidental remote exposure impossible rather than
+// merely documented; TLS parity with startRunnerGateway is the upgrade path for a real off-host fleet.
+func listenCapabilityWorker(addr string) (net.Listener, error) {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return nil, fmt.Errorf("PALAI_CAPABILITY_WORKER_LISTEN_ADDR %q is not a host:port address: %w", addr, err)
+	}
+	// An empty host is the WILDCARD bind (":8444") — the accident this guards, so it must not read as
+	// loopback. "localhost" is the documented loopback name; a poisoned resolver is not the accident here.
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	loopback := host == "localhost"
+	if ip := net.ParseIP(host); ip != nil {
+		loopback = ip.IsLoopback()
+	}
+	if !loopback {
+		return nil, fmt.Errorf("refusing to bind the CLEARTEXT capability-worker gateway to non-loopback address %q: "+
+			"the enrollment token, the workload bearer on every request, and the redeemed secret VALUE would all "+
+			"travel unencrypted. Bind loopback and terminate TLS in front of it, or give this listener the runner "+
+			"gateway's mTLS (tls.Listen with PALAI_RUNNER_SERVER_CERT/KEY + ClientCAs) before it crosses a network", addr)
+	}
+	return net.Listen("tcp", addr)
 }
 
 // mustGatewayEnv reads a required gateway env var, failing fast when the runner listener

@@ -137,3 +137,33 @@ func TestMigrateAndExitFlag(t *testing.T) {
 		t.Fatal("--migrate-and-exit must select migrate-and-exit mode")
 	}
 }
+
+// TestCapabilityWorkerListenerRefusesOffHost pins the posture guard on the capability-worker gateway's
+// listener. That listener is CLEARTEXT while its sibling at the SAME topology (startRunnerGateway, a
+// port designed to cross a real network) is tls.Listen with ClientCAs — and three things travel on this
+// one in the clear: the one-time enrollment token, the workload bearer on EVERY request (no channel
+// binding, unlike the runner's client cert whose private key never leaves the runner, so one observed
+// request is full worker impersonation for the identity TTL), and the REDEEMED SECRET VALUE in the redeem
+// response body. compose.yaml carries `PALAI_RUNNER_LISTEN_ADDR: ":8443"` right there as the pattern to
+// copy, and configvalidate.go inspects only host-PUBLISHED ports, so an operator writing
+// PALAI_CAPABILITY_WORKER_LISTEN_ADDR=":8444" would otherwise get a wildcard-bound secret-redemption
+// endpoint with no warning. So a non-loopback bind is REFUSED, not warned about; loopback (the fixture
+// and live paths) keeps working unchanged.
+func TestCapabilityWorkerListenerRefusesOffHost(t *testing.T) {
+	// Wildcard, routable, and by-name addresses are all refused BEFORE any bind happens.
+	for _, addr := range []string{":8444", "0.0.0.0:8444", "[::]:8444", "10.0.0.5:8444", "worker.example.com:8444", "8444", ""} {
+		ln, err := listenCapabilityWorker(addr)
+		if err == nil {
+			_ = ln.Close()
+			t.Fatalf("listenCapabilityWorker(%q) bound a cleartext off-host listener; want a refusal", addr)
+		}
+	}
+	// Loopback still binds — the fixture/live worker paths are unchanged.
+	for _, addr := range []string{"127.0.0.1:0", "localhost:0"} {
+		ln, err := listenCapabilityWorker(addr)
+		if err != nil {
+			t.Fatalf("listenCapabilityWorker(%q) refused a loopback bind: %v", addr, err)
+		}
+		_ = ln.Close()
+	}
+}
