@@ -2,8 +2,11 @@ package stack
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -121,6 +124,66 @@ func callbackCheck(states map[string]int64) Check {
 		return fail(fmt.Sprintf("%s — pending over %d, delivery pump not draining (PalaiWebhookDeliveryBacklog)", detail, webhookPendingMax))
 	}
 	return ok(detail)
+}
+
+// checkRunnerIdentity names the one failure the rest of doctor cannot see: the runner's client
+// certificate lapsed. Every other check is green while this happens — the gateway listens, its
+// mTLS rejection works, the schema is current — and the only symptom is that runs fail, because
+// the runner can neither renew (renewal authenticates with the certificate that expired) nor
+// connect. The signal is /healthz/runner: the control plane records the certificate a runner
+// last presented, and a healthy runner refreshes that record on every renewal.
+func checkRunnerIdentity(ctx context.Context, cfg Config) Check {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, cfg.BaseURL+"/healthz/runner", nil)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return fail("GET /healthz/runner: " + err.Error())
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fail(fmt.Sprintf("GET /healthz/runner = %d, want 200", resp.StatusCode))
+	}
+	var body struct {
+		Gateway  bool  `json:"gateway"`
+		Sessions int64 `json:"sessions"`
+		Identity *struct {
+			RunnerDNS string    `json:"runner_dns"`
+			NotAfter  time.Time `json:"not_after"`
+		} `json:"identity"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return fail("decode /healthz/runner: " + err.Error())
+	}
+	if !body.Gateway {
+		return ok("no runner gateway configured on this control plane")
+	}
+	if body.Identity == nil {
+		return runnerIdentityCheck("", time.Time{}, time.Time{}, body.Sessions)
+	}
+	return runnerIdentityCheck(body.Identity.RunnerDNS, body.Identity.NotAfter, time.Now(), body.Sessions)
+}
+
+// runnerIdentityCheck is the verdict, kept pure so its boundaries are unit-tested without a
+// stack. It fails on exactly one condition — the last identity the control plane saw has expired
+// AND no runner session is connected — because that combination is the deadlock and nothing else
+// is. An expired record with a session still parked is normal: a parked WebSocket outlives the
+// certificate that opened it, and the runner is mid-recovery. A zero NotAfter means no runner has
+// presented a certificate yet, which is what a stack looks like for the first seconds after
+// `local up`.
+func runnerIdentityCheck(runnerDNS string, notAfter, now time.Time, sessions int64) Check {
+	if notAfter.IsZero() {
+		return ok("no runner has presented an identity yet (the runner enrolls a few seconds after `palai local up`)")
+	}
+	remaining := notAfter.Sub(now)
+	if remaining > 0 {
+		return ok(fmt.Sprintf("runner %s identity valid for another %s (until %s), %d session(s) connected",
+			runnerDNS, remaining.Round(time.Second), notAfter.UTC().Format(time.RFC3339), sessions))
+	}
+	if sessions > 0 {
+		return ok(fmt.Sprintf("runner %s identity expired %s ago (at %s) but %d session(s) are connected — the runner is rolling it forward",
+			runnerDNS, (-remaining).Round(time.Second), notAfter.UTC().Format(time.RFC3339), sessions))
+	}
+	return fail(fmt.Sprintf("runner %s identity EXPIRED %s ago (at %s) and no runner session is connected — runs will fail until it re-enrolls; the runner recovers itself from PALAI_ENROLLMENT_TOKEN_FILE, so if this persists check `docker logs` for the runner and then run `palai local down && palai local up`",
+		runnerDNS, (-remaining).Round(time.Second), notAfter.UTC().Format(time.RFC3339)))
 }
 
 // humanBytes renders a byte count in binary units for the operator-facing detail.

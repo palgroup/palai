@@ -58,6 +58,10 @@ func NewFileCertIssuer(certPath, keyPath string, ttl time.Duration) (*FileCertIs
 	return &FileCertIssuer{caCert: cert, caKey: key, ttl: ttl}, nil
 }
 
+// TTL is the effective issued-certificate lifetime (the configured value, or runnerCertTTL when
+// none was configured) — the interval FileEnrollmentTokens rate-limits a token's redemption by.
+func (i *FileCertIssuer) TTL() time.Duration { return i.ttl }
+
 // SignRunnerCertificate signs the runner's public key into a short-lived client
 // certificate under runnerDNS, usable only for client authentication.
 func (i *FileCertIssuer) SignRunnerCertificate(publicKeyDER []byte, runnerDNS string) ([]byte, error) {
@@ -88,22 +92,60 @@ func (i *FileCertIssuer) SignRunnerCertificate(publicKeyDER []byte, runnerDNS st
 
 // FileEnrollmentTokens implements EnrollmentTokens against the one-line token file `palai
 // local up` mints fresh on every boot. Consume re-reads the file each call so a re-up that
-// rotated the token is honored, while an in-memory spent set enforces one-use: the same
-// token is redeemed at most once per control-plane process, so a replayed token mints no
-// second identity.
+// rotated the token is honored.
+//
+// WHY THIS IS NOT ONE-USE, AND WHAT REPLACED THAT. Renewal runs over mTLS with the certificate
+// that is expiring, so it serves only a runner still inside its validity window. A runner that
+// missed the window — a sleeping laptop, a stalled Docker Desktop, a loaded host — holds a dead
+// identity that can neither renew nor connect, and a strictly one-use token left it no way back:
+// the stack bricked itself until an operator ran `palai local down && palai local up`, which
+// nothing told them. So the file token is a BOOTSTRAP CREDENTIAL the runner may re-present when
+// it holds no valid identity, not a one-shot.
+//
+// THREAT MODEL. The token grants exactly one capability: mint one runner client certificate.
+// It lives in .palai/runner-token on the host, mounted read-only into the control-plane and the
+// runner. Anyone who can read it therefore reads either (a) the host's .palai directory, which
+// also holds ca/ca.key — the CA private key that signs runner certificates outright, a strictly
+// greater capability than the token's — or (b) the runner container's filesystem, which mounts
+// /var/run/docker.sock and is therefore already host root. Against both adversaries a replayable
+// token grants nothing that was not already theirs, which is the bar: an attacker who cannot read
+// the runner's own filesystem gains nothing. What one-use WAS load-bearing against is a token
+// that leaks WITHOUT that access — copied into a shell history, a support bundle, a `docker
+// inspect` — and minInterval is what stands in its place: at most one certificate is minted per
+// token per issued-certificate lifetime.
+//
+// Be honest about what minInterval is: a RATE LIMIT, not an exclusion. A healthy runner rolls its
+// identity forward over /v1/runner/renew, which never touches the token, so the interval elapses
+// while that runner is alive and a token holder could mint a second, concurrent identity. It
+// bounds replay VOLUME (no fleet from one leaked token) and it makes a runner restart wait out one
+// certificate lifetime rather than re-minting at will. Bounding concurrent identities per token
+// needs a runner registry the single-runner SH-0 topology does not have; that is the upgrade path.
 type FileEnrollmentTokens struct {
-	path     string
-	mu       sync.Mutex
-	consumed map[string]bool
+	path        string
+	minInterval time.Duration
+	mu          sync.Mutex
+	lastIssued  map[string]time.Time
+	now         func() time.Time
 }
 
 // NewFileEnrollmentTokens binds the token file path; the file is read at Consume time.
-func NewFileEnrollmentTokens(path string) *FileEnrollmentTokens {
-	return &FileEnrollmentTokens{path: path, consumed: map[string]bool{}}
+// minInterval is the shortest gap between two redemptions of the same token — pass the issued
+// certificate TTL, so a token mints at most one certificate per certificate lifetime. Zero or
+// negative disables the rate limit (every redemption is admitted).
+func NewFileEnrollmentTokens(path string, minInterval time.Duration) *FileEnrollmentTokens {
+	return &FileEnrollmentTokens{
+		path:        path,
+		minInterval: minInterval,
+		lastIssued:  map[string]time.Time{},
+		now:         time.Now,
+	}
 }
 
-// Consume spends the current file token exactly once. It returns an error for an empty,
-// unknown (not matching the current file), or already-spent token.
+// Path is the bound token file, so a caller can name it in an operator-facing message.
+func (t *FileEnrollmentTokens) Path() string { return t.path }
+
+// Consume redeems the current file token. It returns an error for an empty token, one that does
+// not match the current file, or one redeemed less than minInterval ago.
 func (t *FileEnrollmentTokens) Consume(token string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -117,10 +159,12 @@ func (t *FileEnrollmentTokens) Consume(token string) error {
 	if strings.TrimSpace(string(raw)) != token {
 		return errors.New("unknown enrollment token")
 	}
-	if t.consumed[token] {
-		return errors.New("enrollment token already spent")
+	now := t.now()
+	if last, seen := t.lastIssued[token]; seen && now.Sub(last) < t.minInterval {
+		return fmt.Errorf("enrollment token redeemed %s ago; it mints at most one certificate per %s",
+			now.Sub(last).Round(time.Second), t.minInterval)
 	}
-	t.consumed[token] = true
+	t.lastIssued[token] = now
 	return nil
 }
 

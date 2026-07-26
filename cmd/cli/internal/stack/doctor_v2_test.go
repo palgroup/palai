@@ -3,6 +3,7 @@ package stack
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/palgroup/palai/storage"
 )
@@ -83,5 +84,46 @@ func TestCallbackCheck(t *testing.T) {
 	// 50 pending is at the boundary, not over → green.
 	if c := callbackCheck(map[string]int64{"pending": 50}); c.Status != "ok" {
 		t.Fatalf("50 pending (at boundary) should be ok, got %q (%s)", c.Status, c.Detail)
+	}
+}
+
+// TestRunnerIdentityCheck pins the fifteenth check's boundaries, which are the difference
+// between "the runner is fine" and the deadlock that made every run fail with nothing pointing
+// at the cause. Only one combination is a fault — expired AND no session — and the failing
+// detail must NAME expiry, because that is the whole reason the check exists.
+func TestRunnerIdentityCheck(t *testing.T) {
+	now := time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
+	const dns = "runner-local.runners.palai.internal"
+
+	// Nothing has enrolled yet: a stack in its first seconds is not broken.
+	if c := runnerIdentityCheck("", time.Time{}, now, 0); c.Status != "ok" {
+		t.Fatalf("no identity yet should be ok, got %q (%s)", c.Status, c.Detail)
+	}
+	// A valid identity is green and says how long is left.
+	live := runnerIdentityCheck(dns, now.Add(90*time.Second), now, 1)
+	if live.Status != "ok" {
+		t.Fatalf("a valid identity should be ok, got %q (%s)", live.Status, live.Detail)
+	}
+	if !strings.Contains(live.Detail, "1m30s") {
+		t.Fatalf("remaining lifetime must be named, got %q", live.Detail)
+	}
+	// Expired but a session is still parked: a parked WebSocket outlives the certificate that
+	// opened it and the runner is mid-recovery — named, not failed.
+	recovering := runnerIdentityCheck(dns, now.Add(-30*time.Second), now, 1)
+	if recovering.Status != "ok" {
+		t.Fatalf("expired-with-a-session should stay ok-but-named, got %q (%s)", recovering.Status, recovering.Detail)
+	}
+	if !strings.Contains(recovering.Detail, "expired") {
+		t.Fatalf("expiry must be named even when it is not a fault, got %q", recovering.Detail)
+	}
+	// The deadlock: expired and nothing connected.
+	dead := runnerIdentityCheck(dns, now.Add(-9*time.Minute), now, 0)
+	if dead.Status != "fail" {
+		t.Fatalf("expired with no session is the deadlock and must fail, got %q (%s)", dead.Status, dead.Detail)
+	}
+	for _, want := range []string{"EXPIRED", "9m0s", dns, "2026-07-27T11:51:00Z", "palai local down && palai local up"} {
+		if !strings.Contains(dead.Detail, want) {
+			t.Fatalf("the failing detail must name %q so the operator is not left guessing, got %q", want, dead.Detail)
+		}
 	}
 }
