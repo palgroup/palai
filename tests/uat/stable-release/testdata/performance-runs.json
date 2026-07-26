@@ -1,0 +1,3201 @@
+{
+  "PER-001": {
+    "profile": {
+      "case": "PER-001",
+      "load_shape": "4 concurrent clients x 10 iterations = 40 single-shot admissions, 40 metadata reads and 40 SSE stream starts against one control-plane process + one Postgres container",
+      "machine": "Mac14,10",
+      "os": "Darwin 25.3.0",
+      "arch": "arm64",
+      "cores": 12,
+      "memory_bytes": 17179869184,
+      "docker": "Docker Desktop 4.21.1 (114176) (engine 24.0.2, linux/arm64)",
+      "ceiling": "macOS + Docker Desktop profile on a shared laptop; NO SLO and NO reference-hardware claim (§54.3 targets are product goals — real measurement is E18 §6 leg 3, which also owns the region/tier/environment segmentation §54.3 requires). Dispatch is OFF (E08 rule): these are API + journal spine latencies, never model or engine time. The load shape is the configured one below, not a saturation point."
+    },
+    "summary": {
+      "case": "PER-001",
+      "ceiling": "macOS + Docker Desktop profile on a shared laptop; NO SLO and NO reference-hardware claim (§54.3 targets are product goals — real measurement is E18 §6 leg 3, which also owns the region/tier/environment segmentation §54.3 requires). Dispatch is OFF (E08 rule): these are API + journal spine latencies, never model or engine time. The load shape is the configured one below, not a saturation point.",
+      "percentile_method": "nearest-rank: sort ascending, index = ceil(p/100*n)-1 clamped to [0,n-1]",
+      "samples_sha256": "sha256:7f689a752f602d383e33f1bb69e78d9f46a05a59c1e576f7b775cea9e38510ea",
+      "sample_count": 120,
+      "max_error_rate": 0,
+      "stats": [
+        {
+          "metric": "api_metadata_read",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 1685500,
+          "p95": 2439500,
+          "p99": 2624000,
+          "gate_value": 2439500,
+          "pass": true,
+          "gate": {
+            "percentile": 95,
+            "max": 300000000,
+            "unit": "ns",
+            "source": "spec §54.3 (API metadata read p95 \u003c 300ms)"
+          }
+        },
+        {
+          "metric": "mutation_accept",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 7480833,
+          "p95": 18662750,
+          "p99": 26668208,
+          "gate_value": 18662750,
+          "pass": true,
+          "gate": {
+            "percentile": 95,
+            "max": 500000000,
+            "unit": "ns",
+            "source": "spec §54.3 (accepted mutation p95 \u003c 500ms)"
+          }
+        },
+        {
+          "metric": "sse_first_event",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 2572958,
+          "p95": 3359458,
+          "p99": 3612042,
+          "gate_value": 3359458,
+          "pass": true,
+          "gate": {
+            "percentile": 95,
+            "max": 1000000000,
+            "unit": "ns",
+            "source": "spec §54.3 (first SSE event p95 \u003c 1s)"
+          }
+        }
+      ],
+      "no_slo_claim": true,
+      "reference_hardware": false
+    },
+    "samples": [
+      {
+        "metric": "mutation_accept",
+        "value": 18428375,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 18662750,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 18677042,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 2586084,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 2439500,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 2624000,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 3535125,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 3359458,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 3612042,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 26668208,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1897708,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 3310000,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7582250,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7712500,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7770167,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1632958,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1793583,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1777250,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2450916,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2590125,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2584916,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7500416,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1370792,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2505333,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 6898250,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7131958,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7480833,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1614541,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1754000,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1758500,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2648209,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2572708,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2533042,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7011459,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1540333,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2269917,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 6961584,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7410208,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7590125,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1627500,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1747083,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1785417,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2422167,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2616917,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2485625,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7698917,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1498750,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2124375,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7068333,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 6984542,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1623708,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7173958,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1651250,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1396666,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2371959,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2611125,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2629583,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7463458,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1722084,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2483375,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 8146500,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7770917,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7651083,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1723041,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1685500,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1846375,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2764000,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2776625,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2513125,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7416292,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1676209,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2680334,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7362750,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7570291,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7693250,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 2184542,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1763291,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1761666,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2466917,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2572958,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2801791,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7525042,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1530042,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2658833,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7745292,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7984833,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7904125,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1925083,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1814041,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1674292,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2594834,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2637250,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2764667,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7649125,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1845541,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2590667,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7181708,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7209875,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7230959,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1634209,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1551542,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1657917,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2284542,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2479917,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2708583,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7457750,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1650209,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2094208,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 6868833,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1536417,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 7121875,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 6802750,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1547125,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1726875,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2346417,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "mutation_accept",
+        "value": 6213792,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2100750,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 2159917,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "api_metadata_read",
+        "value": 1067083,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_first_event",
+        "value": 1484417,
+        "ok": true,
+        "unit": "ns"
+      }
+    ]
+  },
+  "PER-002": {
+    "profile": {
+      "case": "PER-002",
+      "load_shape": "6 sequential attempts (attempt 1 labelled 'cold' = first in this process, on an already-warm daemon and DB; 5 warm): real workspace row + allocation + writer lease against Postgres, then a real digest-pinned fixture-engine container to engine.ready",
+      "machine": "Mac14,10",
+      "os": "Darwin 25.3.0",
+      "arch": "arm64",
+      "cores": 12,
+      "memory_bytes": 17179869184,
+      "docker": "Docker Desktop 4.21.1 (114176) (engine 24.0.2, linux/arm64)",
+      "ceiling": "macOS + Docker Desktop profile; NO SLO and NO reference-hardware claim. 'COLD' HERE MEANS ONLY 'the first attempt in this process': the fixture image was just built LOCALLY (so the number excludes image pull, §54.3's own carve-out), Postgres is already migrated, and the OCI driver is constructed before attempt 1 — the daemon and the DB are WARM. The cold metric is therefore n=1 and its 'p95' is that single observation; on this profile it is typically the FASTEST attempt of the run, which is why it must not be read as a cold start. §54.3's cold-start budget is NOT established here — E18 §6 operator leg 3 measures it. The engine is the deterministic fixture per the E08 rule — allocation + container start + §25.6 handshake, never model work. Attempts are sequential: no capacity or saturation behaviour is measured or claimed."
+    },
+    "summary": {
+      "case": "PER-002",
+      "ceiling": "macOS + Docker Desktop profile; NO SLO and NO reference-hardware claim. 'COLD' HERE MEANS ONLY 'the first attempt in this process': the fixture image was just built LOCALLY (so the number excludes image pull, §54.3's own carve-out), Postgres is already migrated, and the OCI driver is constructed before attempt 1 — the daemon and the DB are WARM. The cold metric is therefore n=1 and its 'p95' is that single observation; on this profile it is typically the FASTEST attempt of the run, which is why it must not be read as a cold start. §54.3's cold-start budget is NOT established here — E18 §6 operator leg 3 measures it. The engine is the deterministic fixture per the E08 rule — allocation + container start + §25.6 handshake, never model work. Attempts are sequential: no capacity or saturation behaviour is measured or claimed.",
+      "percentile_method": "nearest-rank: sort ascending, index = ceil(p/100*n)-1 clamped to [0,n-1]",
+      "samples_sha256": "sha256:40d327ac85073eb5a301acfc30776a46ad89f72b74e3fb22a23367b25cd33b73",
+      "sample_count": 30,
+      "max_error_rate": 0,
+      "stats": [
+        {
+          "metric": "assign_to_ready_cold",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 128253917,
+          "p95": 128253917,
+          "p99": 128253917,
+          "gate_value": 128253917,
+          "pass": true,
+          "gate": {
+            "percentile": 95,
+            "max": 90000000000,
+            "unit": "ns",
+            "source": "spec §54.3's cold CEILING (p95 \u003c 90s, excl. large image pull) applied to n=1 — the first in-process attempt on an already-warm daemon and DB, NOT a cold-host measurement and NOT a §54.3 cold-start result (see the profile ceiling; E18 §6 leg 3 measures it)"
+          }
+        },
+        {
+          "metric": "assign_to_ready_warm",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 75689375,
+          "p95": 87635500,
+          "p99": 87635500,
+          "gate_value": 87635500,
+          "pass": true,
+          "gate": {
+            "percentile": 95,
+            "max": 10000000000,
+            "unit": "ns",
+            "source": "spec §54.3 (warm assignment-to-engine-ready p95 \u003c 10s)"
+          }
+        },
+        {
+          "metric": "engine_ready",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 72510708,
+          "p95": 123266792,
+          "p99": 123266792,
+          "gate_value": 0,
+          "pass": true,
+          "gate": null
+        },
+        {
+          "metric": "lease_acquire",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 1058000,
+          "p95": 2995042,
+          "p99": 2995042,
+          "gate_value": 0,
+          "pass": true,
+          "gate": null
+        },
+        {
+          "metric": "workspace_allocate",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 1031792,
+          "p95": 2639709,
+          "p99": 2639709,
+          "gate_value": 0,
+          "pass": true,
+          "gate": null
+        },
+        {
+          "metric": "workspace_create",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 925667,
+          "p95": 1922459,
+          "p99": 1922459,
+          "gate_value": 0,
+          "pass": true,
+          "gate": null
+        }
+      ],
+      "no_slo_claim": true,
+      "reference_hardware": false
+    },
+    "samples": [
+      {
+        "metric": "assign_to_ready_cold",
+        "value": 128253917,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "assign_to_ready_warm",
+        "value": 87635500,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "assign_to_ready_warm",
+        "value": 83368708,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "assign_to_ready_warm",
+        "value": 70062292,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "assign_to_ready_warm",
+        "value": 72913083,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "assign_to_ready_warm",
+        "value": 75689375,
+        "ok": true,
+        "unit": "ns"
+      }
+    ]
+  },
+  "PER-003": {
+    "profile": {
+      "case": "PER-003",
+      "load_shape": "bounded soak window 1m30s: one session with an attached SSE reader for the whole window, one chained response every 100ms, RSS sampled every 2s, stream reconnected every 10s, 40 store=false responses left for the real retention sweep",
+      "machine": "Mac14,10",
+      "os": "Darwin 25.3.0",
+      "arch": "arm64",
+      "cores": 12,
+      "memory_bytes": 17179869184,
+      "docker": "Docker Desktop 4.21.1 (114176) (engine 24.0.2, linux/arm64)",
+      "ceiling": "macOS + Docker Desktop profile; NO SLO and NO reference-hardware claim. 'Soak' is a BOUNDED WINDOW OF MINUTES — the real RC soak is E18 §6 leg 7 and is NOT claimed here. 'Compaction' is the implemented §8.3/§22.2 RETENTION payload scrub, NOT §25.14 context compaction (evaluation-gated, needs real model steps; dispatch is off per the E08 rule, so §25.14 is not exercised or claimed)."
+    },
+    "summary": {
+      "case": "PER-003",
+      "ceiling": "macOS + Docker Desktop profile; NO SLO and NO reference-hardware claim. 'Soak' is a BOUNDED WINDOW OF MINUTES — the real RC soak is E18 §6 leg 7 and is NOT claimed here. 'Compaction' is the implemented §8.3/§22.2 RETENTION payload scrub, NOT §25.14 context compaction (evaluation-gated, needs real model steps; dispatch is off per the E08 rule, so §25.14 is not exercised or claimed).",
+      "percentile_method": "nearest-rank: sort ascending, index = ceil(p/100*n)-1 clamped to [0,n-1]",
+      "samples_sha256": "sha256:9bd6dc08c2c85317991fd9fcf99f4fcf21acf24fbe35526c513de001bcd92783",
+      "sample_count": 914,
+      "max_error_rate": 0,
+      "stats": [
+        {
+          "metric": "control_plane_rss_bytes",
+          "unit": "bytes",
+          "errors": 0,
+          "p50": 24805376,
+          "p95": 25395200,
+          "p99": 26378240,
+          "gate_value": 0,
+          "pass": true,
+          "gate": null
+        },
+        {
+          "metric": "control_plane_rss_growth_bytes",
+          "unit": "bytes",
+          "errors": 0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "gate_value": 0,
+          "pass": true,
+          "gate": {
+            "percentile": 100,
+            "max": 67108864,
+            "unit": "bytes",
+            "source": "case budget (PEAK RSS minus the first reading over the window, not the endpoint difference)"
+          }
+        },
+        {
+          "metric": "journal_bytes_per_event",
+          "unit": "bytes",
+          "errors": 0,
+          "p50": 74,
+          "p95": 74,
+          "p99": 74,
+          "gate_value": 74,
+          "pass": true,
+          "gate": {
+            "percentile": 100,
+            "max": 4096,
+            "unit": "bytes",
+            "source": "case budget (MEAN journal payload bytes per event stays under 4 KiB, sampled every 2s through the window plus pre/post-compaction) — a bound on event SIZE; flat growth over session length is NOT established by it"
+          }
+        },
+        {
+          "metric": "journal_compaction_sweep",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 28152066125,
+          "p95": 28152066125,
+          "p99": 28152066125,
+          "gate_value": 0,
+          "pass": true,
+          "gate": null
+        },
+        {
+          "metric": "journal_events",
+          "unit": "events",
+          "errors": 0,
+          "p50": 803,
+          "p95": 803,
+          "p99": 803,
+          "gate_value": 0,
+          "pass": true,
+          "gate": null
+        },
+        {
+          "metric": "journal_payload_bytes_reclaimed",
+          "unit": "bytes",
+          "errors": 0,
+          "p50": 2200,
+          "p95": 2200,
+          "p99": 2200,
+          "gate_value": 0,
+          "pass": true,
+          "gate": null
+        },
+        {
+          "metric": "soak_append_accept",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 12223125,
+          "p95": 19672875,
+          "p99": 27898500,
+          "gate_value": 19672875,
+          "pass": true,
+          "gate": {
+            "percentile": 95,
+            "max": 500000000,
+            "unit": "ns",
+            "source": "spec §54.3 (accepted mutation p95 \u003c 500ms)"
+          }
+        },
+        {
+          "metric": "sse_reconnect_gaps",
+          "unit": "events",
+          "errors": 0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "gate_value": 0,
+          "pass": true,
+          "gate": {
+            "percentile": 100,
+            "max": 0,
+            "unit": "events",
+            "source": "invariant (resume at exactly last+1: no gap, no duplicate)"
+          }
+        },
+        {
+          "metric": "sse_reconnect_resume",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 4278708,
+          "p95": 7146167,
+          "p99": 7146167,
+          "gate_value": 7146167,
+          "pass": true,
+          "gate": {
+            "percentile": 95,
+            "max": 1000000000,
+            "unit": "ns",
+            "source": "case budget mirroring §54.3's first-SSE-event objective (§54.2 lists SSE reconnect as an availability SLI, not a latency one)"
+          }
+        }
+      ],
+      "no_slo_claim": true,
+      "reference_hardware": false
+    },
+    "samples": [
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "sse_reconnect_resume",
+        "value": 4558833,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_reconnect_gaps",
+        "value": 0,
+        "ok": true,
+        "unit": "events"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "sse_reconnect_resume",
+        "value": 5305792,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_reconnect_gaps",
+        "value": 0,
+        "ok": true,
+        "unit": "events"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "sse_reconnect_resume",
+        "value": 3986209,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_reconnect_gaps",
+        "value": 0,
+        "ok": true,
+        "unit": "events"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "sse_reconnect_resume",
+        "value": 1870792,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_reconnect_gaps",
+        "value": 0,
+        "ok": true,
+        "unit": "events"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "sse_reconnect_resume",
+        "value": 4278708,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_reconnect_gaps",
+        "value": 0,
+        "ok": true,
+        "unit": "events"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "sse_reconnect_resume",
+        "value": 6906500,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_reconnect_gaps",
+        "value": 0,
+        "ok": true,
+        "unit": "events"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "sse_reconnect_resume",
+        "value": 3168625,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_reconnect_gaps",
+        "value": 0,
+        "ok": true,
+        "unit": "events"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "sse_reconnect_resume",
+        "value": 3122792,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_reconnect_gaps",
+        "value": 0,
+        "ok": true,
+        "unit": "events"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "sse_reconnect_resume",
+        "value": 7146167,
+        "ok": true,
+        "unit": "ns"
+      },
+      {
+        "metric": "sse_reconnect_gaps",
+        "value": 0,
+        "ok": true,
+        "unit": "events"
+      },
+      {
+        "metric": "control_plane_rss_growth_bytes",
+        "value": 0,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 74,
+        "ok": true,
+        "unit": "bytes"
+      },
+      {
+        "metric": "journal_bytes_per_event",
+        "value": 71.26027397260275,
+        "ok": true,
+        "unit": "bytes"
+      }
+    ]
+  },
+  "PER-004": {
+    "profile": {
+      "case": "PER-004",
+      "load_shape": "burst: 4 correlation keys x 12 concurrent trigger deliveries (48 total) under concurrency_policy=queue; queue adapter: 256 messages from 4 concurrent producers into a capacity-64 bounded buffer",
+      "machine": "Mac14,10",
+      "os": "Darwin 25.3.0",
+      "arch": "arm64",
+      "cores": 12,
+      "memory_bytes": 17179869184,
+      "docker": "Docker Desktop 4.21.1 (114176) (engine 24.0.2, linux/arm64)",
+      "ceiling": "macOS + Docker Desktop profile; NO SLO and NO reference-hardware claim (§54 targets are product goals, measured for real in E18 §6 leg 3). The E11 leg is the durable per-key admission gate behind the real API; the queue leg is the E17 T7 in-process reference adapter — a real broker is the §6 operator leg. Dispatch is off (E08 rule), so no number here is run-execution time."
+    },
+    "summary": {
+      "case": "PER-004",
+      "ceiling": "macOS + Docker Desktop profile; NO SLO and NO reference-hardware claim (§54 targets are product goals, measured for real in E18 §6 leg 3). The E11 leg is the durable per-key admission gate behind the real API; the queue leg is the E17 T7 in-process reference adapter — a real broker is the §6 operator leg. Dispatch is off (E08 rule), so no number here is run-execution time.",
+      "percentile_method": "nearest-rank: sort ascending, index = ceil(p/100*n)-1 clamped to [0,n-1]",
+      "samples_sha256": "sha256:1fbc351a07cef1c6ace1bf1c3cd4937940c8b523f5ee78f55998062283bfc45a",
+      "sample_count": 574,
+      "max_error_rate": 0,
+      "stats": [
+        {
+          "metric": "queue_depth",
+          "unit": "messages",
+          "errors": 0,
+          "p50": 64,
+          "p95": 64,
+          "p99": 64,
+          "gate_value": 64,
+          "pass": true,
+          "gate": {
+            "percentile": 100,
+            "max": 64,
+            "unit": "messages",
+            "source": "invariant (§34.4 bounded buffer = configured capacity)"
+          }
+        },
+        {
+          "metric": "queue_publish",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 250,
+          "p95": 3125,
+          "p99": 26334,
+          "gate_value": 0,
+          "pass": true,
+          "gate": null
+        },
+        {
+          "metric": "queue_unserved_per_producer",
+          "unit": "messages",
+          "errors": 0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "gate_value": 0,
+          "pass": true,
+          "gate": {
+            "percentile": 100,
+            "max": 0,
+            "unit": "messages",
+            "source": "invariant (no producer starves)"
+          }
+        },
+        {
+          "metric": "trigger_deliveries_lost",
+          "unit": "deliveries",
+          "errors": 0,
+          "p50": 0,
+          "p95": 0,
+          "p99": 0,
+          "gate_value": 0,
+          "pass": true,
+          "gate": {
+            "percentile": 100,
+            "max": 0,
+            "unit": "deliveries",
+            "source": "invariant (durable-record-before-ack, §34.2)"
+          }
+        },
+        {
+          "metric": "trigger_delivery_accept",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 137936750,
+          "p95": 151186542,
+          "p99": 151423791,
+          "gate_value": 151186542,
+          "pass": true,
+          "gate": {
+            "percentile": 95,
+            "max": 2000000000,
+            "unit": "ns",
+            "source": "case budget (burst contention) — NOT the §54.3 healthy-capacity mutation target; PER-001 owns that"
+          }
+        },
+        {
+          "metric": "trigger_queue_depth_per_key",
+          "unit": "deliveries",
+          "errors": 0,
+          "p50": 11,
+          "p95": 11,
+          "p99": 11,
+          "gate_value": 0,
+          "pass": true,
+          "gate": null
+        },
+        {
+          "metric": "trigger_queue_drain",
+          "unit": "ns",
+          "errors": 0,
+          "p50": 52593083,
+          "p95": 52593083,
+          "p99": 52593083,
+          "gate_value": 0,
+          "pass": true,
+          "gate": null
+        },
+        {
+          "metric": "trigger_runs_admitted_per_key",
+          "unit": "runs",
+          "errors": 0,
+          "p50": 1,
+          "p95": 1,
+          "p99": 1,
+          "gate_value": 1,
+          "pass": true,
+          "gate": {
+            "percentile": 100,
+            "max": 1,
+            "unit": "runs",
+            "source": "invariant (E11 queue policy: one admitted run per correlation key)"
+          }
+        }
+      ],
+      "no_slo_claim": true,
+      "reference_hardware": false
+    },
+    "samples": [
+      {
+        "metric": "trigger_runs_admitted_per_key",
+        "value": 1,
+        "ok": true,
+        "unit": "runs"
+      },
+      {
+        "metric": "trigger_runs_admitted_per_key",
+        "value": 1,
+        "ok": true,
+        "unit": "runs"
+      },
+      {
+        "metric": "trigger_runs_admitted_per_key",
+        "value": 1,
+        "ok": true,
+        "unit": "runs"
+      },
+      {
+        "metric": "trigger_runs_admitted_per_key",
+        "value": 1,
+        "ok": true,
+        "unit": "runs"
+      },
+      {
+        "metric": "trigger_deliveries_lost",
+        "value": 0,
+        "ok": true,
+        "unit": "deliveries"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 1,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 2,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 3,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 4,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 7,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 8,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 9,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 10,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 11,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 12,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 13,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 14,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 15,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 16,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 7,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 17,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 18,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 19,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 20,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 21,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 22,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 23,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 24,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 25,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 26,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 27,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 28,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 29,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 30,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 31,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 32,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 33,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 34,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 35,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 36,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 38,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 39,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 40,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 41,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 42,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 43,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 44,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 45,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 46,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 47,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 48,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 49,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 50,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 50,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 51,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 52,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 53,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 54,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 55,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 56,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 58,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 59,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 60,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 61,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 62,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 63,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_depth",
+        "value": 64,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_unserved_per_producer",
+        "value": 0,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_unserved_per_producer",
+        "value": 0,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_unserved_per_producer",
+        "value": 0,
+        "ok": true,
+        "unit": "messages"
+      },
+      {
+        "metric": "queue_unserved_per_producer",
+        "value": 0,
+        "ok": true,
+        "unit": "messages"
+      }
+    ]
+  }
+}
