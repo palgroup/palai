@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Wiring UAT — the E19 EXIT gate (plan §T9). One target, a Docker-free CORE + a Docker-bound JOURNEY tier
+# + a CREDENTIAL-gated live tier. The core is the load-bearing gate: it needs no Docker and no credential.
+#
+# WHY THIS TARGET CO-RUNS THE BACKING SUITES (the E17 T11 review's MUST-FIX 1, inherited verbatim): the
+# bundle's per-case `status` is AUTHORED deterministic data. Only the entries carrying a proof block can be
+# judged by a verifier; the rest carry shape fields alone. So `evidence-verify` on its own certifies "UAT
+# declared green", NOT "UAT green". THIS SCRIPT is what makes the authored status honest: the SAME
+# invocation that verifies the bundle also RUNS the suites that back the surfaces this gate certifies. A red
+# backing suite fails this target; tests/uat/wiring TestARedBackingSuiteFailsTheWiringGate proves that
+# mechanically via PALAI_WIRING_FAULT_SUITE.
+#
+#   Docker-free core (always):
+#     1. go test ./tests/uat/wiring/... — four gates in one package:
+#        a. the committed integration-wiring-0.1.0 bundle is BYTE-identical to its generator and verifies
+#           clean through the SHIPPED verifier;
+#        b. the MOUNT-DERIVATION refusal matrix: thirteen negatives, each a shape-consistent manifest
+#           claiming a mount it did not earn, every one REFUSED;
+#        c. the promote gate: rc PASSES, stable is REFUSED, a mount-broken bundle is REFUSED, and a tier
+#           that ADVANCED against the E17 baseline is REFUSED;
+#        d. the credential-gated live inventory, checked BOTH ways against the tests that exist.
+#     2. the Slack + A2A + queue package suites (no Docker, no credential) — the pure adapters every wired
+#        surface is built on.
+#     3. go test ./apps/control-plane/api -run 'TestServedCapabilityTiers|TestUngovernedCapabilities' — the
+#        SHIPPED /v1/capabilities map, bit-equal to the verifier's recompute.
+#     4. evidence-verify RELEASE=integration-wiring-0.1.0 through the shipped command (0/0/0/0).
+#     5. the two gate corpora any case.yaml touch must re-run: the automation catalog + the tenancy corpus.
+#
+#   Journey tier (Docker, no credential — SKIP_JOURNEYS=1 to opt out):
+#     6. against a throwaway Postgres: the E19 T9 JOURNEY (register a workspace over the shipped admin
+#        route -> a Socket Mode mention births a run -> the SAME event over HTTP births nothing -> an
+#        unauthorized click decides nothing -> an authorized click approves durably -> the run terminal
+#        commits an outbound delivery -> the pump delivers it exactly once -> an A2A push StreamResponse
+#        reaches a loopback sink -> the mounts are OBSERVED and the WiringProof is built from them), plus
+#        the backing Slack/queue/A2A component suites in FULL.
+#
+#   Console tier (node + pnpm, no Docker unless the REAL profile is asked for):
+#     7. the console specs. `make uat-wiring` runs the FAKE profile; the REAL-upstream profile (E19 T7)
+#        needs a full compose stack and is opt-in with RUN_CONSOLE_REAL=1.
+#
+#   Live tier (credentials from .env.local — `make uat-wiring-live`):
+#     8. every leg in uat.WiringLiveLegs, unchanged. Each SKIPS with the name of the missing variable and
+#        the plan §0 row that supplies it, so a PARTIAL handover reports partial-green rather than a red
+#        wall. NO CODE CHANGES ARE NEEDED to run them.
+#
+# HONEST CEILING (plan §6), and it is in this release's NAME: `integration-wiring`, not "slack verified".
+# There is NO real Slack workspace, NO foreign A2A peer, NO broker PRODUCT and NO deployed console with a
+# screen-reader pass in this session. What this gate certifies is: MOUNTED on the production path, CORRECT
+# against the PUBLISHED vendor contract, and READY TO RUN UNCHANGED when the credentials arrive. NO TIER
+# ADVANCES — slack/a2a/queues/console close PREVIEW, knowledge + capability-workers STABLE,
+# knowledge-vector + apple-build DISABLED, and the promote gate refuses any bundle that says otherwise.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+echo "uat-wiring: [1/5] the E19 bundle + mount refusal matrix + promote gate + live inventory (Docker-free)" >&2
+go test -count=1 ./tests/uat/wiring/...
+
+echo "uat-wiring: [2/5] the pure adapter suites every wired surface is built on" >&2
+go test -count=1 ./adapters/integrations/slack/... ./adapters/integrations/a2a/... ./adapters/integrations/queue/...
+
+echo "uat-wiring: [3/5] the SHIPPED /v1/capabilities map is bit-equal to the tier recompute" >&2
+go test -count=1 -run 'TestServedCapabilityTiersEqualTheRecompute|TestUngovernedCapabilitiesAreNotSilentlyGoverned' ./apps/control-plane/api
+
+echo "uat-wiring: [4/5] evidence-verify RELEASE=integration-wiring-0.1.0 (want 0 failed / 0 missing / 0 secret)" >&2
+RELEASE=integration-wiring-0.1.0 scripts/evidence/verify
+
+echo "uat-wiring: [5/5] the two gate corpora (automation catalog + tenancy)" >&2
+go test -count=1 ./tests/uat/automation/...
+go test -tags=security -count=1 ./tests/security/tenancy/...
+
+# ---- the journey tier: real PostgreSQL, no credential -------------------------------------------------------
+journeys="the E19 journey + the Slack/queue/A2A backing suites CO-RUN green"
+if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
+  # Said plainly, because the closing line must never imply a tier that did not run.
+  echo "uat-wiring: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — the journey and the backing" >&2
+  echo "  component suites did NOT run; this invocation does not back the bundle's authored PASS for them" >&2
+  journeys="Docker-bound journey + backing suites NOT RUN (SKIP_JOURNEYS=1)"
+else
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "uat-wiring: docker is not available; the E19 journey needs a throwaway Postgres" >&2
+    exit 2
+  fi
+  image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  label="io.palai.uat=wiring"
+  container="palai-uat-wiring-$$-${RANDOM}"
+  # Throwaway local credential, generated per run; never written to a file, never echoed.
+  password="palai-uat-wiring-${RANDOM}${RANDOM}"
+  cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+  before="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  trap cleanup EXIT
+
+  docker run --detach --pull=never --name "$container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 "$image" >/dev/null
+  ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "uat-wiring: the journey postgres did not become ready" >&2
+    exit 1
+  fi
+  binding="$(docker port "$container" 5432/tcp)"; port="${binding##*:}"
+
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+  # A DEAD Postgres for the fault knob: reachable-looking, connects to nothing. PALAI_WIRING_FAULT_SUITE
+  # points ONE backing suite at it so tests/uat/wiring TestARedBackingSuiteFailsTheWiringGate can prove a
+  # red backing suite makes this target exit non-zero — the guarantee the whole co-run rests on.
+  dead_url="postgres://postgres:$password@127.0.0.1:1/palai?sslmode=disable"
+
+  # The BACKING suites, in FULL (no -run filter) — a red case anywhere fails this gate instead of being
+  # reported around by an authored "PASS" in the bundle. The E19 journey lives in the first entry.
+  suites=(
+    "./apps/control-plane/internal/store"
+    "./apps/control-plane/internal/extensions"
+    "./apps/control-plane/internal/automation"
+  )
+  status=0
+  for suite in "${suites[@]}"; do
+    suite_url="$url"
+    if [ "${PALAI_WIRING_FAULT_SUITE:-}" = "$suite" ]; then
+      suite_url="$dead_url"
+      echo "uat-wiring: FAULT INJECTED — $suite points at a DEAD Postgres; this run MUST fail" >&2
+    fi
+    echo "uat-wiring: [journey] backing suite $suite" >&2
+    set +e
+    PALAI_COMPONENT_POSTGRES_URL="$suite_url" go test -tags=component -count=1 -v "$suite"
+    status=$?
+    set -e
+    if test "$status" -ne 0; then
+      echo "uat-wiring: backing suite $suite FAILED — the bundle's authored PASS for its cases is not honest" >&2
+      docker logs "$container" >&2 || true
+      break
+    fi
+  done
+
+  cleanup
+  trap - EXIT
+  after="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if test "$after" -ne "$before"; then
+    echo "uat-wiring: the journey tier leaked a container" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+fi
+
+# ---- the console tier ---------------------------------------------------------------------------------------
+console="console specs NOT RUN (no pnpm/node_modules)"
+if command -v pnpm >/dev/null 2>&1 && [ -d apps/web-console/node_modules ]; then
+  echo "uat-wiring: the console specs (FAKE upstream profile)" >&2
+  ( cd apps/web-console && pnpm test:e2e )
+  console="console specs green (FAKE upstream)"
+  if [ "${RUN_CONSOLE_REAL:-0}" = "1" ]; then
+    echo "uat-wiring: the console REAL-upstream profile + the fake-vs-real sweep (E19 T7; needs a compose stack)" >&2
+    ( cd apps/web-console && PALAI_CONSOLE_PROFILE=real pnpm test:e2e && pnpm sweep )
+    console="console specs green (FAKE + REAL upstream + the D15 sweep)"
+  fi
+else
+  echo "uat-wiring: pnpm/node_modules absent — the console specs did NOT run; install them with" >&2
+  echo "  corepack pnpm install && (cd apps/web-console && pnpm exec playwright install chromium)" >&2
+fi
+
+# ---- the live tier: credential-gated, NO CODE CHANGES -------------------------------------------------------
+live="live legs NOT RUN (RUN_LIVE unset)"
+if [ "${RUN_LIVE:-0}" = "1" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  echo "uat-wiring: the credential-gated live legs — each SKIPS by name if its variable is absent" >&2
+  # -v so a SKIP is VISIBLE: this family's signature failure is a green report over legs that never ran.
+  go test -tags=live -count=1 -v ./tests/live/slack/... ./tests/live/a2a/...
+  live="live legs attempted (read the SKIP lines above: a skip is not a pass)"
+fi
+
+echo "uat-wiring=PASS (E19 exit gate: mounts derived from the running stack, bundle 0/0/0/0, $journeys, $console, $live)" >&2
+echo "uat-wiring: NO TIER ADVANCED — slack/a2a/queues/console PREVIEW, knowledge + capability-workers STABLE," >&2
+echo "  knowledge-vector + apple-build DISABLED. This gate claims MOUNTED + CORRECT AGAINST THE PUBLISHED" >&2
+echo "  CONTRACT + READY TO RUN UNCHANGED. It does NOT claim a real Slack workspace (§6 leg 1), a foreign" >&2
+echo "  A2A peer (§6 leg 2), a broker product (§6 leg 5) or a deployed console (§6 leg 8)." >&2

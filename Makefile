@@ -6,7 +6,7 @@ SHELL := /bin/bash
 	test-fault test-security test-performance test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
-	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
+	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-wiring uat-wiring-live uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
 	release-matrix-smoke provenance-offline-verify
 
 bootstrap:
@@ -282,6 +282,33 @@ uat-extensions:
 uat-stable-release:
 	@test -x scripts/uat/stable-release || { echo "stable-release UAT not implemented" >&2; exit 2; }
 	@PROVIDER='$(PROVIDER)' SKIP_JOURNEYS='$(SKIP_JOURNEYS)' RUN_ESCAPE_SUITE='$(RUN_ESCAPE_SUITE)' RUN_MATRIX_SMOKE='$(RUN_MATRIX_SMOKE)' scripts/uat/stable-release
+
+# E19 T9 EXIT gate (plan §T9 — the LAST gate of the integration-wiring epic): the Docker-free CORE (the
+# committed integration-wiring-0.1.0 bundle through the shipped verifier, the 13-arm MOUNT-DERIVATION
+# refusal matrix, the promote gate's rc-PASS / stable-REFUSED / mount-broken-REFUSED / tier-advanced-REFUSED,
+# the credential-gated live inventory checked BOTH ways against the tests that exist, the pure adapter
+# suites, and the SHIPPED /v1/capabilities map asserted bit-equal to the recompute) plus a Docker-bound
+# JOURNEY (register a workspace over the shipped admin route -> a Socket Mode mention births a run -> the
+# SAME event over HTTP births nothing -> an unauthorized click decides nothing -> an authorized click
+# approves durably -> the run terminal commits an outbound delivery -> the pump delivers it exactly once ->
+# an A2A push StreamResponse reaches a loopback sink -> the mounts are OBSERVED) plus the console specs.
+# SKIP_JOURNEYS=1 runs the Docker-free core alone; RUN_CONSOLE_REAL=1 adds the REAL-upstream console profile.
+#
+# HONEST CEILING, and it is in the release's NAME (`integration-wiring`, not "slack verified"): NO real Slack
+# workspace, NO foreign A2A peer, NO broker PRODUCT and NO deployed console with a screen-reader pass exist
+# in this session. What it certifies is MOUNTED + CORRECT AGAINST THE PUBLISHED VENDOR CONTRACT + READY TO
+# RUN UNCHANGED. NO TIER ADVANCES, and the promote gate refuses any bundle that says otherwise.
+uat-wiring:
+	@test -x scripts/uat/wiring || { echo "wiring UAT not implemented" >&2; exit 2; }
+	@SKIP_JOURNEYS='$(SKIP_JOURNEYS)' RUN_CONSOLE_REAL='$(RUN_CONSOLE_REAL)' scripts/uat/wiring
+
+# E19 T9 live tier: the ONE command the plan §0 handover promises. It runs every credential-gated leg in
+# uat.WiringLiveLegs with NO CODE CHANGES — keys come from .env.local via `set -a`, never argv. A leg whose
+# variable is absent SKIPS by name, quoting the §0 row that supplies it, so a PARTIAL handover reports
+# partial-green instead of a red wall. READ THE SKIP LINES: a skip is not a pass.
+uat-wiring-live:
+	@test -x scripts/uat/wiring || { echo "wiring UAT not implemented" >&2; exit 2; }
+	@RUN_LIVE=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' RUN_CONSOLE_REAL='$(RUN_CONSOLE_REAL)' scripts/uat/wiring
 
 # E18 T1 image half of the release matrix (Docker-bound, so NOT in `make verify` — like uat-kind): builds
 # linux/amd64 + linux/arm64 for all three images, asserts each indexed tar's digest/image_id/arch against the
