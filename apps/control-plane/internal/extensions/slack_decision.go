@@ -27,13 +27,15 @@ import (
 //	  → coordinator.ApplyApprovalDecision        — the transition, bound to the request hash
 //	  → chat.update                              — the visible message repaired in place (SLK-006)
 //
-// FOUR BINDINGS, all of them server-side, none of them selectable by the payload:
+// FIVE BINDINGS, all of them server-side, none of them selectable by the payload:
 //
 //  1. the TENANT is the resolved connection's org/project (§2/§38.6 — the events route's rule, unchanged);
 //  2. the SESSION comes from the thread the button was clicked in, via the SLK-003 correlation. A hash
 //     observed in one conversation therefore cannot decide another;
-//  3. the CLICKER must be in the connection's allow-list. Empty list ⇒ nobody, never everybody;
-//  4. the OPERATION is pinned by the one-shot request hash: it has to equal the session's pending approval's
+//  3. the CHANNEL must be in the connection's allowed_channels. Empty list ⇒ every channel — the opposite of
+//     the clicker list's emptiness, for the reason documented at SlackAuthorizationPolicy;
+//  4. the CLICKER must be in the connection's allow-list. Empty list ⇒ nobody, never everybody;
+//  5. the OPERATION is pinned by the one-shot request hash: it has to equal the session's pending approval's
 //     hash, and ApplyApprovalDecision re-checks it under lock inside the transaction.
 //
 // WHY THE DECISION IS APPLIED HERE rather than left queued for the boundary pump (the native /commands
@@ -98,6 +100,13 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 	policy, err := a.store.SlackAuthorizationPolicyFor(ctx, conn.Org, conn.Project, conn.ID)
 	if err != nil {
 		return api.SlackDecisionOutcome{}, fmt.Errorf("read slack authorization policy: %w", err)
+	}
+	// 2a. SCOPE. The same allowed_channels gate the events path applies, and it is NOT redundant with it: the
+	// thread above was correlated while its channel was in scope, so an operator NARROWING the allow-list —
+	// which is what containing an incident looks like — would otherwise leave every already-posted button in
+	// the excluded channels still live. A narrowing has to take the in-flight threads with it.
+	if !policy.ChannelAllowed(intent.ChannelID) {
+		return api.SlackDecisionOutcome{SessionID: session, Rejected: "the click's channel is outside the connection's allowed channels"}, nil
 	}
 	if !policy.ApproverAuthorized(intent.UserID) {
 		// The user id is NOT logged here: it is an unauthenticated-adjacent identity from a payload, and the

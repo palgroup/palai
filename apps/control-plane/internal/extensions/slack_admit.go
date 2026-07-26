@@ -115,6 +115,25 @@ func (a *SlackAdmitter) VerifySignature(_ context.Context, conn api.SlackConnect
 // admission resolved. A crash in between is self-healing: the redelivery replays the SAME idempotency record
 // (no second run) and claims the thread with the replayed session.
 func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) (api.SlackAdmitOutcome, error) {
+	// SCOPE, before anything is read or written: the connection's allowed_channels (§36.2). A non-empty list
+	// means the operator confined this integration, and an event from outside it must birth NOTHING — not a
+	// run, not a thread correlation, not even an idempotency reservation. Empty means every channel; the
+	// asymmetry with allowed_users is documented at SlackAuthorizationPolicy.
+	//
+	// It sits HERE rather than on the route because both transports pass through this function: the Events API
+	// callback and the Socket Mode envelope reach it byte for byte the same way (slack_socket.go).
+	policy, err := a.store.SlackAuthorizationPolicyFor(ctx, conn.Org, conn.Project, conn.ID)
+	if err != nil {
+		return api.SlackAdmitOutcome{}, fmt.Errorf("read slack channel scope: %w", err)
+	}
+	if !policy.ChannelAllowed(ev.ChannelID) {
+		// Terminal by construction: no redelivery can move a channel into the allow-list. The channel id IS
+		// logged — unlike the team id on the resolve path, this body's signature has already been verified, and
+		// an operator reconciling their allow-list needs to know which channel was turned away.
+		log.Printf("slack: refused an event from channel %s — outside connection %s's allowed_channels", ev.ChannelID, conn.ID)
+		return api.SlackAdmitOutcome{Rejected: "the event's channel is outside the connection's allowed channels"}, nil
+	}
+
 	target, err := a.runTarget(ctx, conn)
 	if err != nil {
 		if errors.Is(err, ErrSlackNoRunTarget) || errors.Is(err, ErrSlackForeignPrincipal) {
@@ -391,8 +410,9 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 // slack_user_id is SLK-004's event half, and the guarantee is STRUCTURAL rather than a flag: a Slack user
 // never becomes a principal. Whoever caused the event — allow-listed or not — travels as DATA beside the run,
 // while the run's identity is the connection's configured principal. So an unmapped user still gets a run and
-// their Slack identity authorizes exactly nothing, because there is no code path by which it could. (The
-// allow-list itself is read on the DECISION path, SlackAuthorizationPolicyFor, which E19 T2 wires.)
+// their Slack identity authorizes exactly nothing, because there is no code path by which it could. (The USER
+// allow-list is read on the DECISION path, Decide; the CHANNEL allow-list is read at the top of Admit above,
+// so an event from outside the configured scope never reaches this function at all.)
 func slackRunInput(ev slack.Event, conn api.SlackConnectionRef, target slackRunTarget) map[string]any {
 	return map[string]any{
 		"source":        slack.Source,
