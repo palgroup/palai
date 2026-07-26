@@ -201,8 +201,8 @@ func buildExtensionsManifest(t *testing.T) []byte {
 			CanonicalSessions: 1,
 			SourceEventIDs:    []string{"Ev63301", "Ev63306"},
 			DeliveredEvents:   3, CanonicalEffects: 2,
-			PostReceipts:                 []string{"901.000100", "902.000100"},
-			TerminalSummaryPosts:         1, RateLimitRepairs: 1,
+			PostReceipts:         []string{"901.000100", "902.000100"},
+			TerminalSummaryPosts: 1, RateLimitRepairs: 1,
 			UnauthorizedApprovalRejected: true, CanonicalResultIntact: true,
 		},
 	})
@@ -244,7 +244,7 @@ func buildExtensionsManifest(t *testing.T) []byte {
 	attach("AUT-009", map[string]any{
 		"queue_delivery_claim": "lost-ack-redelivery-single-effect-dead-letter-and-loss-less-outbound",
 		"queue_delivery_proof": uat.QueueDeliveryProof{
-			Broker: "postgres-durable-reference",
+			Broker:           "postgres-durable-reference",
 			DistinctMessages: 3, Consumed: 4, Redelivered: 1, CanonicalEffects: 3,
 			DeadLettered: 1, Dropped: 0, OutboundDeliveredOnce: true,
 		},
@@ -269,7 +269,7 @@ func buildExtensionsManifest(t *testing.T) []byte {
 		"console_proof": uat.ConsoleProof{
 			Upstream:      "fake",
 			AxeViolations: 0, AxeReportDigest: digestOf(axeReportSummary),
-			NetworkTrace: consoleNetworkTrace,
+			NetworkTrace:     consoleNetworkTrace,
 			KeyboardOperable: true, SkipLinkFirst: true,
 			ApprovalDetailAuthoritative: true, APIKeyReachedBrowser: false,
 		},
