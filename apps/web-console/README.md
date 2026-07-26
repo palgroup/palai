@@ -50,9 +50,39 @@ pnpm --filter @palai/web-console typecheck
 pnpm --filter @palai/web-console test:e2e   # next build + playwright: public-API-only + axe + keyboard + UI-002
 ```
 
-The e2e runs against a deterministic **fake** `/v1` control-plane (`tests/fake-control-plane.mjs`) — no
-live provider, no credential spend, nothing to leak. A deployed console against a real compose stack plus
-a manual VoiceOver/screen-reader pass is the §6 operator leg above the automated a11y ceiling.
+### Two profiles, one spec set (E19 T7)
+
+`PALAI_CONSOLE_PROFILE` selects the `/v1` upstream. **Both profiles run the same spec files** — a spec that
+can only pass on one of them is a *finding*, recorded in `tests/divergences.mjs`, never a reason to fork.
+
+- **`fake`** (default) — the deterministic upstream (`tests/fake-control-plane.mjs`): fast, Docker-free, and
+  the only place a hostile artifact, a scripted recovery or a paused approval can be produced on demand.
+- **`real`** — a running compose control plane. The bootstrap key comes from the **environment**, never argv:
+
+```
+PALAI_DISPATCH_WORKERS=1 PALAI_MODEL_PROVIDER=fake palai local up
+export PALAI_BASE_URL="$(jq -r .base_url "$PALAI_HOME/config.json")"
+export PALAI_API_KEY="$(cat "$PALAI_HOME/api-key")"
+pnpm --filter @palai/web-console test:e2e:real
+pnpm --filter @palai/web-console sweep       # the fake-vs-real conformance sweep
+```
+
+Asking for the real profile without a real stack **fails the whole run** at config load. It never skips: a
+suite that reports green for the absence of the thing it tests is worse than no suite.
+
+### The conformance sweep (`pnpm sweep`, plan D15)
+
+`tests/conformance.test.mjs` (node:test — no browser) diffs the objects the fixture *dispatches from* against
+the surface it gathers from the **running real router**: route existence via `OPTIONS` (Go's ServeMux answers
+405+`Allow` for a registered path, bare 404 for an unregistered one, so route-absence never masquerades as
+resource-absence), response shapes and statuses, and the event vocabulary and payload keys of a **real run**.
+Every difference must sit in `tests/divergences.mjs`; a row that *stops* being a difference fails too, so the
+ledger cannot rot in either direction. It found that E17 T10's "invented approval event" is one instance of
+six: five event types the fixture scripts are journaled by no production code, and three routes it serves are
+not registered by the real router at all.
+
+A **deployed** console (compose is not a deployment) plus a manual VoiceOver/screen-reader pass remains the
+§6 operator leg above the automated a11y ceiling.
 
 ## Honest ceiling
 

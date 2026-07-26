@@ -1,8 +1,11 @@
 import { test, expect } from "@playwright/test";
 
 import { NEXT_PORT } from "./constants";
+import { announceProfile, skipOnReal } from "./profile";
 
 const APP_ORIGIN = `http://127.0.0.1:${NEXT_PORT}`;
+
+test.beforeAll(() => announceProfile("artifact-download-hardening.spec.ts"));
 
 // Artifact BYTES are untrusted — a run's own output, an ingested knowledge source, an A2A-pushed file, a
 // capability-worker result — and so are the headers the object store replays alongside them. The console
@@ -16,7 +19,17 @@ const APP_ORIGIN = `http://127.0.0.1:${NEXT_PORT}`;
 // content on this origin, never sniff, always download rather than render, and never trust an upstream
 // filename. This suite drives the hostile fixture (/v1/artifacts/art_evil/content: text/html + inline +
 // a traversal/CRLF filename) through the real relay and pins each guarantee.
+//
+// E19 T7 — FAKE-PROFILE ONLY, and for two reasons the sweep measured rather than assumed. First, the
+// hostile artifact has to be SYNTHESISED: no real object store will serve active content with an `inline`
+// disposition and a traversal filename on demand, and manufacturing an attacker is exactly what a fixture
+// is for. Second, on a compose stack the artifact routes are not even registered — compose runs a seaweedfs
+// object-store, publishes it, healthchecks it and depends_on it, then never passes PALAI_S3_ENDPOINT to the
+// control plane, so `artifacts != nil` is false and the whole retrieval surface is unmounted (DIV-RTE-003).
+// The hardening pinned below is real relay code on both profiles; only its adversarial INPUT is fixture-only.
 test.describe("artifact download hardening (untrusted bytes on a trusted origin)", () => {
+  test.beforeEach(() => skipOnReal("DIV-UI-003"));
+
   test("a hostile artifact is neutralized: octet-stream, nosniff, forced attachment, sanitized filename", async ({ request }) => {
     const res = await request.get(`${APP_ORIGIN}/api/palai/v1/artifacts/art_evil/content`);
     expect(res.status()).toBe(200);

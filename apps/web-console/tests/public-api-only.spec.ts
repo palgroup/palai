@@ -3,7 +3,10 @@ import { resolve } from "node:path";
 
 import { test, expect, type Request, type Response as NetResponse } from "@playwright/test";
 
-import { API_KEY, NEXT_PORT, UPSTREAM, UPSTREAM_PORT } from "./constants";
+import { API_KEY, IS_REAL, NEXT_PORT, UPSTREAM, UPSTREAM_PORT } from "./constants";
+import { announceProfile, runToTerminal } from "./profile";
+
+test.beforeAll(() => announceProfile("public-api-only.spec.ts"));
 
 const APP_ORIGIN = `http://127.0.0.1:${NEXT_PORT}`;
 const RELAY_PREFIX = `${APP_ORIGIN}/api/palai/`;
@@ -27,6 +30,16 @@ function browserServedAssets(): { path: string; body: string }[] {
 // itself can only address /v1/*). Cross-origin egress to the upstream, a DB socket, or any non-relay data
 // path would surface here as a captured request and FAIL. The upstream's own introspection closes the
 // loop from the other end: it received ONLY /v1/* paths, every one carrying a server-side Bearer.
+//
+// E19 T7 — THIS CROWN NOW RUNS ON BOTH PROFILES, AND THE REAL ONE IS THE STRONGER CLAIM. On the real
+// profile the credential being scanned for is a LIVE bootstrap key against a running control plane, not a
+// sentinel string: assertions 1-4, 6 and 7 are the same code proving the same thing about a real secret and
+// a real cross-origin upstream. Only assertion 5 — the upstream's own view of what it received — is
+// fixture-only, because a real control plane has no introspection endpoint (DIV-UI-004). That is the
+// weaker half; the browser end is the one that would catch a backchannel, and it runs everywhere.
+//
+// The key is compared with a BOOLEAN rather than `.not.toContain(API_KEY)` throughout: a failing matcher
+// prints both operands, which on the real profile would print a live credential into the test log.
 test("every console request rides the /v1 relay — no privileged backchannel, no direct upstream/DB", async ({ page, request }) => {
   const requests: Request[] = [];
   page.on("request", (req) => requests.push(req));
@@ -37,18 +50,21 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
   const websockets: string[] = [];
   page.on("websocket", (ws) => websockets.push(ws.url()));
 
-  // Exercise the admin surface (many list fetches) and a full live run incl. an approval round-trip and an
-  // artifact download — the broadest set of data requests the console makes.
+  // Exercise the admin surface (many list fetches) and a full live run — the broadest set of data requests
+  // the console makes on this profile.
   await page.goto("/");
-  await expect(page.getByTestId("panel-organizations")).toContainText("Local Org", { timeout: 15_000 });
-  await expect(page.getByTestId("panel-secret-refs")).toContainText("provider-key");
+  await expect(page.getByTestId("panel-organizations")).toContainText("org_local", { timeout: 15_000 });
+  if (IS_REAL) {
+    // /v1/secret-refs is not registered on a compose stack (DIV-RTE-001), so the panel renders its ERROR
+    // state. That path is exercised here on purpose: an unmounted capability is a real operator-facing
+    // state, and it still has to ride the relay like everything else.
+    await expect(page.getByTestId("panel-secret-refs")).toBeVisible();
+  } else {
+    await expect(page.getByTestId("panel-secret-refs")).toContainText("provider-key");
+  }
 
-  await page.goto("/runs");
-  await page.getByTestId("run-button").click();
-  await expect(page.getByTestId("approval-panel")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId("approve-button").click();
-  await expect(page.getByTestId("terminal-status")).toContainText(/completed/i, { timeout: 15_000 });
-  await expect(page.getByTestId("artifact-download")).toBeVisible({ timeout: 15_000 });
+  await runToTerminal(page);
+  if (!IS_REAL) await expect(page.getByTestId("artifact-download")).toBeVisible({ timeout: 15_000 });
 
   // --- Assertion 1: EVERY data request (fetch/xhr) is same-origin under the /api/palai/ relay. ---
   const dataRequests = requests.filter((r) => r.resourceType() === "fetch" || r.resourceType() === "xhr");
@@ -67,7 +83,7 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
   for (const req of requests) {
     const headers = await req.allHeaders();
     const haystack = `${JSON.stringify(headers)} ${req.url()} ${req.postData() ?? ""}`;
-    expect(haystack, `key leaked in a browser request to ${req.url()}`).not.toContain(API_KEY);
+    expect(haystack.includes(API_KEY), `key leaked in a browser request to ${req.url()}`).toBe(false);
   }
 
   // --- Assertion 4: the key is in NO static chunk and NO source map. ---
@@ -75,19 +91,25 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
   expect(assets.length).toBeGreaterThan(0);
   expect(assets.some((a) => a.path.endsWith(".js.map")), "expected browser source maps").toBe(true);
   for (const asset of assets) {
-    expect(asset.body, `key leaked into ${asset.path}`).not.toContain(API_KEY);
+    expect(asset.body.includes(API_KEY), `key leaked into ${asset.path}`).toBe(false);
   }
 
   // --- Assertion 5 (upstream end): the relay hit ONLY /v1/* paths, EVERY one Bearer-authenticated —
-  // no non-/v1 backchannel, no unauthenticated probe. ---
-  const seen = await (await request.get(`${UPSTREAM}/__introspect`)).json();
-  expect(seen.beareredV1Requests, "the relay authenticated server-side").toBeGreaterThan(0);
-  expect(seen.nonV1Requests, "the relay hit a non-/v1 backchannel").toBe(0);
-  expect(seen.unbeareredV1Requests, "the relay sent an unauthenticated /v1 request").toBe(0);
-  for (const p of seen.paths as string[]) {
-    expect(p.startsWith("/v1/"), `upstream saw a non-/v1 path: ${p}`).toBe(true);
+  // no non-/v1 backchannel, no unauthenticated probe. FIXTURE-ONLY: a real control plane ships no
+  // introspection endpoint (DIV-UI-004), so on the real profile this half is absent and the browser-end
+  // assertions above carry the claim alone. ---
+  if (!IS_REAL) {
+    const seen = await (await request.get(`${UPSTREAM}/__introspect`)).json();
+    expect(seen.beareredV1Requests, "the relay authenticated server-side").toBeGreaterThan(0);
+    expect(seen.nonV1Requests, "the relay hit a non-/v1 backchannel").toBe(0);
+    expect(seen.unbeareredV1Requests, "the relay sent an unauthenticated /v1 request").toBe(0);
+    for (const p of seen.paths as string[]) {
+      expect(p.startsWith("/v1/"), `upstream saw a non-/v1 path: ${p}`).toBe(true);
+    }
   }
   // Sanity: the upstream really is a different origin, so "same-origin only" above is a real constraint.
+  // On the real profile the upstream is a compose port that is likewise never 3200.
+  expect(new URL(UPSTREAM).port).not.toBe(String(NEXT_PORT));
   expect(UPSTREAM_PORT).not.toBe(NEXT_PORT);
 
   // --- Assertion 6: the key is in NO RESPONSE BODY. A server component that leaked process.env.PALAI_API_KEY
@@ -100,7 +122,7 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
     } catch {
       continue; // body not retained (redirect / aborted / no content) — nothing to scan
     }
-    expect(body, `key leaked in a response body from ${resp.url()}`).not.toContain(API_KEY);
+    expect(body.includes(API_KEY), `key leaked in a response body from ${resp.url()}`).toBe(false);
   }
 
   // --- Assertion 7: NO WebSocket backchannel and NO service worker (neither surfaces in page.on("request"),

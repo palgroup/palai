@@ -229,15 +229,23 @@ var expectedExtensionsCatalog = map[string]struct {
 		"tests/uat/eval_gate_test.go:TestEvalPromoteGateBlocksRealSecurityRegression",
 		"tests/uat/eval_gate_test.go:TestEvalPromoteGateRefusesMissingProof",
 	}},
+	// E19 T7 gave both UI cases a REAL-upstream leg (no new id — the E17 T7 precedent of appending a leg to an
+	// existing case). The a11y/journey specs now run against a compose control plane on the same spec files,
+	// and the conformance sweep entries are the D15 crown: fixture drift against the real router is caught by
+	// a test rather than by a reviewer. Pinning the sweep here stops those legs from silently disappearing.
 	"UI-001": {"e2e-deterministic", []string{
 		"apps/web-console/tests/a11y.spec.ts:axe-core reports zero violations on the admin surface",
 		"apps/web-console/tests/a11y.spec.ts:axe-core reports zero violations on the live-run surface after a completed run",
 		"apps/web-console/tests/a11y.spec.ts:keyboard navigation: skip link is the first stop and the run→approve flow works with no mouse",
+		"apps/web-console/tests/conformance.test.mjs:every (method, path-pattern) the fixture serves is registered by the RUNNING real router",
 	}},
 	"UI-002": {"e2e-deterministic", []string{
 		"apps/web-console/tests/journey.spec.ts:UI-002: the approval UI shows the authoritative operation/branch/request_hash from the canonical event — the proposal display string does not replace them",
 		"apps/web-console/tests/journey.spec.ts:approve proceeds through recovery to a completed run with a downloadable artifact",
 		"apps/web-console/tests/journey.spec.ts:deny blocks the operation — the run terminates canceled, the push never completes",
+		"apps/web-console/tests/journey.spec.ts:the console renders a run's terminal state end to end — model, status and output from the upstream",
+		"apps/web-console/tests/conformance.test.mjs:the fixture's scripted event vocabulary and payload keys match a REAL run's journal",
+		"apps/web-console/tests/conformance.test.mjs:no ledger row has gone stale — every row was re-observed against the running real stack",
 	}},
 	"WRK-001": {"component-real", []string{
 		"apps/control-plane/internal/workers/workers_component_test.go:TestWorkerEnrollTypedDispatchAndArtifactRoundTrip",
@@ -431,10 +439,11 @@ func TestEveryCatalogedCaseIsGovernedOrExempt(t *testing.T) {
 }
 
 // buildClass maps a proof file's //go:build tag to its master-plan §10.2 proof class. A file with no build tag
-// runs in make verify / test-unit, so it is the "unit" tier. A .ts file is a playwright spec: the
-// e2e-deterministic tier (it is driven by the console's own runner, not `go test`).
+// runs in make verify / test-unit, so it is the "unit" tier. A .ts file is a playwright spec and a .mjs file is
+// the E19 T7 fake-vs-real conformance sweep (node:test): both are the e2e-deterministic tier, driven by the
+// console's own runners rather than `go test`.
 func buildClass(path, body string) string {
-	if strings.HasSuffix(path, ".ts") {
+	if isConsoleProof(path) {
 		return "e2e-deterministic"
 	}
 	for _, line := range strings.Split(body, "\n") {
@@ -481,9 +490,9 @@ func assertExtensionProofs(t *testing.T, root, id, class string, want, got []str
 		}
 		body := string(raw)
 		switch {
-		case strings.HasSuffix(file, ".ts"):
+		case isConsoleProof(file):
 			if !strings.Contains(body, name) {
-				t.Errorf("%s: playwright test %q not found in %s (the case claims a spec that is not in the tree)", id, name, file)
+				t.Errorf("%s: console test %q not found in %s (the case claims a test that is not in the tree)", id, name, file)
 			}
 		default:
 			if !strings.Contains(body, "func "+name+"(") {
@@ -498,6 +507,13 @@ func assertExtensionProofs(t *testing.T, root, id, class string, want, got []str
 	if !dockerBoundClasses[class] && !tiers["unit"] && !tiers["e2e-deterministic"] {
 		t.Errorf("%s: declares proof_class %q but every referenced proof is Docker/credential-bound (%v) — the declared tier cannot actually run this case's proof", id, class, tiers)
 	}
+}
+
+// isConsoleProof reports whether a proof reference names one of the console's own test files rather than a Go
+// test: a .ts playwright spec, or the .mjs fake-vs-real conformance sweep (E19 T7, node:test). Both resolve by
+// TITLE substring because neither declares a Go func, and both are driven by the console's runners.
+func isConsoleProof(path string) bool {
+	return strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".mjs")
 }
 
 // repoRoot walks up to the module root (the dir holding go.mod).

@@ -66,6 +66,13 @@ go test -count=1 ./adapters/integrations/slack/... ./adapters/integrations/a2a/.
 # The console's UI-001/UI-002 proofs are playwright specs, not `go test`, so they are RUN here rather than left
 # implicit — they need node_modules + the pinned chromium and NO Docker. A missing toolchain EXITS (like the
 # docker check below) instead of skipping: a silently unrun backing suite is the exact hole this co-run closes.
+#
+# THIS RUNS THE FAKE PROFILE ONLY, and after E19 T7 that is a deliberate narrowing rather than the whole story.
+# The console now also has a REAL profile (PALAI_CONSOLE_PROFILE=real, same spec files) and a fake-vs-real
+# conformance sweep (`pnpm sweep`), both of which need a full compose stack — too heavy for this gate's
+# Docker-free core, and the wrong owner besides: E19's own gate is where a running stack already lives. So the
+# honest-ceiling paragraph above stays TRUE OF THIS TARGET, and the real-upstream leg is named in the UI-001 and
+# UI-002 case text rather than silently implied here.
 if ! command -v pnpm >/dev/null 2>&1 || [ ! -d apps/web-console/node_modules ]; then
   echo "uat-extensions: the console playwright specs BACK UI-001/UI-002 and cannot be skipped; install them with" >&2
   echo "  corepack pnpm install && (cd apps/web-console && pnpm exec playwright install chromium)" >&2
