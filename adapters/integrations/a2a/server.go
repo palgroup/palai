@@ -96,13 +96,20 @@ type Files interface {
 	Ingest(ctx context.Context, org, project, runID string, f FilePart) (artifactID string, err error)
 }
 
-// Pusher DELIVERS a task's asynchronous push notification. HONEST CEILING (A2A-003, §6): push DELIVERY is
-// not wired in this phase — only the pushNotificationConfigs CRUD surface (register/read/delete targets)
-// exists, and no code path calls Push. A production deployment leaves this nil, and the Agent Card advertises
-// `pushNotifications` ONLY when a Pusher is actually wired (see effectivePush), so discovery never claims a
-// delivery the server will not perform. A real signed delivery to a foreign receiver is the §6 operator leg.
+// Pusher DELIVERS a task's asynchronous push notification.
+//
+// The payload is a typed StreamResponse, not an opaque []byte (§3.5 D11): the published contract says the
+// body is a StreamResponse (task|message|statusUpdate|artifactUpdate), and an opaque seam let nothing hold
+// the wire shape to it. WebhookPusher is the production implementation.
+//
+// Push MUST NOT block its caller for a receiver's full retry curve — these callers are HTTP handlers. It
+// returns a policy refusal synchronously and settles transport failures on its own schedule.
+//
+// HONEST CEILING (A2A-003, §6): a loopback sink is not interop. Whether a FOREIGN A2A peer accepts our
+// deliveries is unproven — the spec names no header for the config token (see PushTokenHeader) — so this is
+// never called spec-compliant push and `a2a` stays preview.
 type Pusher interface {
-	Push(ctx context.Context, cfg PushNotificationConfig, payload []byte) error
+	Push(ctx context.Context, cfg PushNotificationConfig, resp StreamResponse) error
 }
 
 // Server is the A2A 1.0 HTTP+JSON server projection. It routes the 12 endpoints manually because Go's
@@ -163,9 +170,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.listTasks(w, r, interfaceID)
 	case seg[0] == "tasks" && len(seg) == 2:
 		s.taskVerb(w, r, interfaceID, seg[1])
-	case seg[0] == "tasks" && len(seg) == 3 && seg[2] == "pushNotificationConfigs":
+	// D13: the pushNotificationConfigs CRUD is mounted ONLY when a Pusher can actually deliver. Without
+	// this gate the card says pushNotifications:false while the CRUD returns 200 to a client registering a
+	// target that will never fire — a silent-drop surface, which is worse than a missing one. Gating the
+	// route on the same condition effectivePush reads makes that drift structurally impossible.
+	case seg[0] == "tasks" && len(seg) == 3 && seg[2] == "pushNotificationConfigs" && s.Pusher != nil:
 		s.pushCollection(w, r, interfaceID, seg[1])
-	case seg[0] == "tasks" && len(seg) == 4 && seg[2] == "pushNotificationConfigs":
+	case seg[0] == "tasks" && len(seg) == 4 && seg[2] == "pushNotificationConfigs" && s.Pusher != nil:
 		s.pushItem(w, r, interfaceID, seg[1], seg[3])
 	default:
 		writeErr(w, http.StatusNotFound, "not_found", "unknown A2A operation")
@@ -226,11 +237,39 @@ func (s *Server) publicCard(w http.ResponseWriter, r *http.Request, interfaceID 
 }
 
 // effectivePush is the HONEST push-capability the card advertises (SF-1): an interface may be published with
-// push_notifications=true, but the card claims it ONLY when a Pusher is actually wired to DELIVER — otherwise
-// pushNotificationConfigs would be a register-only surface that never fires. With no Pusher wired (the
-// current phase), this is always false, so the card does not overclaim.
+// push_notifications=true, but the card claims it ONLY when a Pusher is actually wired to DELIVER. Since
+// E19 T4 this is the SAME condition that mounts the pushNotificationConfigs routes (D13), so the card and
+// the surface can no longer disagree in either direction: a deployment with a Pusher advertises push AND
+// accepts targets, one without advertises neither and 404s the CRUD.
 func (s *Server) effectivePush(iface PublishedInterface) bool {
 	return iface.PushNotifications && s.Pusher != nil
+}
+
+// notifyPush delivers a StreamResponse to every push target registered on a task. It is a no-op without a
+// Pusher (the CRUD is then unmounted, so there are no targets to begin with).
+//
+// A push failure is DISCARDED here on purpose: the canonical run/task result is already durable and a
+// notification that could not be delivered must not change it, fail the request, or make the task look
+// different to the next reader (the SLK-006 invariant, restated for A2A). The failure's home is the
+// pusher's dead-letter seam.
+//
+// HONEST CEILING: this server has no ASYNCHRONOUS observer of run terminality — it projects a task's state
+// only while serving a request. So a push fires on the state-producing operations below, not on a
+// background transition. A client that registers a target and then goes away is notified when something
+// next drives the task, not the instant the run completes. Closing that needs a sweep over a2a_task_refs
+// with durable per-target delivery state, which needs a table (E19 is migration-free); it is NOT closed here
+// and no claim in this repo says otherwise.
+func (s *Server) notifyPush(r *http.Request, sc Scope, interfaceID, taskID string, resp StreamResponse) {
+	if s.Pusher == nil || taskID == "" {
+		return
+	}
+	ref, ok, err := s.Tasks.GetRef(r.Context(), sc.Organization, sc.Project, interfaceID, taskID)
+	if err != nil || !ok {
+		return
+	}
+	for _, cfg := range ref.PushConfigs {
+		_ = s.Pusher.Push(r.Context(), cfg, resp)
+	}
 }
 
 func (s *Server) extendedCard(w http.ResponseWriter, r *http.Request, interfaceID string) {
@@ -360,7 +399,11 @@ func (s *Server) messageSend(w http.ResponseWriter, r *http.Request, interfaceID
 		writeJSON(w, http.StatusOK, msg)
 		return
 	}
-	writeJSON(w, http.StatusOK, BuildTask(taskID, contextID, TaskStatus{State: state, Timestamp: s.now().UTC().Format(time.RFC3339)}, s.artifactsFor(res)))
+	task := BuildTask(taskID, contextID, TaskStatus{State: state, Timestamp: s.now().UTC().Format(time.RFC3339)}, s.artifactsFor(res))
+	if sc, ok := s.scope(r); ok {
+		s.notifyPush(r, sc, interfaceID, taskID, StreamResponse{Task: &task})
+	}
+	writeJSON(w, http.StatusOK, task)
 }
 
 // messageStream admits the run, then streams A2A status/artifact updates with terminal consistency
@@ -381,10 +424,10 @@ func (s *Server) messageStream(w http.ResponseWriter, r *http.Request, interface
 		writeErr(w, prob.status, prob.code, prob.detail)
 		return
 	}
-	s.streamRun(w, r, taskID, contextID, res)
+	s.streamRun(w, r, interfaceID, taskID, contextID, res)
 }
 
-func (s *Server) streamRun(w http.ResponseWriter, r *http.Request, taskID, contextID string, res RunResult) {
+func (s *Server) streamRun(w http.ResponseWriter, r *http.Request, interfaceID, taskID, contextID string, res RunResult) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeErr(w, http.StatusInternalServerError, "internal_error", "streaming unsupported")
@@ -403,8 +446,13 @@ func (s *Server) streamRun(w http.ResponseWriter, r *http.Request, taskID, conte
 	}
 	// Terminal consistency: the final frame carries the terminal (or current) state; final=true only when
 	// the run has actually reached a lifecycle end, so a still-working stream never lies about completion.
-	writeSSE(w, NewStatusUpdate(taskID, contextID, TaskStatus{State: state, Timestamp: s.now().UTC().Format(time.RFC3339)}, state.Terminal()))
+	final := NewStatusUpdate(taskID, contextID, TaskStatus{State: state, Timestamp: s.now().UTC().Format(time.RFC3339)}, state.Terminal())
+	writeSSE(w, final)
 	flusher.Flush()
+	// The push target receives the SAME frame the stream just emitted — one projection, two transports.
+	if sc, ok := s.scope(r); ok {
+		s.notifyPush(r, sc, interfaceID, taskID, StreamResponse{StatusUpdate: &final.StatusUpdate})
+	}
 }
 
 // artifactsFor projects a completed run's text output into a single A2A artifact. A run with no output yields
@@ -528,6 +576,7 @@ func (s *Server) cancelTask(w http.ResponseWriter, r *http.Request, interfaceID,
 	}
 	status := TaskStatus{State: MapRunState(res.State), Timestamp: s.now().UTC().Format(time.RFC3339)}
 	task := BuildTask(ref.A2ATaskID, ref.A2AContextID, status, s.artifactsFor(res))
+	s.notifyPush(r, sc, interfaceID, ref.A2ATaskID, StreamResponse{Task: &task})
 	body := map[string]any{"task": task}
 	if report.UncertainSideEffect != "" {
 		body["uncertainSideEffect"] = report.UncertainSideEffect
@@ -546,7 +595,7 @@ func (s *Server) subscribeTask(w http.ResponseWriter, r *http.Request, interface
 		writeErr(w, http.StatusNotFound, "not_found", "no such task")
 		return
 	}
-	s.streamRun(w, r, ref.A2ATaskID, ref.A2AContextID, res)
+	s.streamRun(w, r, interfaceID, ref.A2ATaskID, ref.A2AContextID, res)
 }
 
 // ---- pushNotificationConfigs set/get/list/delete ----

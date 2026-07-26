@@ -42,6 +42,17 @@ type Destination struct {
 	AllowPrivate bool // the endpoint's self-host egress allowlist flag (§21.4)
 	TimeoutMS    int
 	Headers      map[string]string
+
+	// MaxRedirects opts this destination out of the default blanket redirect deny and into REVALIDATION
+	// (E19 T4 / §3.5 D12, the E17 T3 A2A-client pattern): up to MaxRedirects hops are followed, and each
+	// hop's target is re-vetted through the SAME egress gate the original URL passed, so a redirect that
+	// LANDS on a private/metadata range is refused before it is requested. Zero — the §21.6 journal-pump
+	// default — keeps the blanket deny: a Location is never followed at all.
+	MaxRedirects int
+	// RedirectCheck is the caller's extra per-hop policy, applied after the egress revalidation (the A2A
+	// pusher re-applies its host allowlist here, because a redirect changes the host AFTER the initial
+	// check). Nil means the egress gate alone governs.
+	RedirectCheck func(*url.URL) error
 }
 
 // Result is one attempt's sanitized outcome (spec §21.6). StatusCode is 0 when no HTTP response was
@@ -109,11 +120,9 @@ func (s *Sender) Deliver(ctx context.Context, dst Destination, body []byte) Resu
 		DialContext:         s.pinnedDial(dst.AllowPrivate),
 	}
 	client := &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return errRedirectDenied // never follow; the Location is never requested
-		},
+		Timeout:       timeout,
+		Transport:     transport,
+		CheckRedirect: checkRedirect(dst),
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dst.URL, bytes.NewReader(body))
@@ -138,6 +147,29 @@ func (s *Sender) Deliver(ctx context.Context, dst Destination, body []byte) Resu
 }
 
 func (s *Sender) elapsed(start time.Time) int64 { return s.now().Sub(start).Milliseconds() }
+
+// checkRedirect is the destination's redirect policy. The DEFAULT (MaxRedirects == 0) is the §21.6 blanket
+// deny: a 3xx is never followed, so its Location is never requested. A destination that opts into
+// revalidation re-vets every hop through the SAME egress gate the original URL passed plus the caller's
+// extra policy — this is the E17 T3 A2A-client pattern, and it is what the A2A push target needs, because
+// refusing every redirect and refusing only the internal ones are not the same guarantee (D12).
+func checkRedirect(dst Destination) func(*http.Request, []*http.Request) error {
+	if dst.MaxRedirects <= 0 {
+		return func(*http.Request, []*http.Request) error { return errRedirectDenied }
+	}
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= dst.MaxRedirects {
+			return errRedirectDenied
+		}
+		if err := egress.VetURL(req.URL.String(), dst.AllowPrivate); err != nil {
+			return err // wraps egress.ErrDenied -> Deliver classifies it terminal, never retried
+		}
+		if dst.RedirectCheck != nil {
+			return dst.RedirectCheck(req.URL)
+		}
+		return nil
+	}
+}
 
 // pinnedDial re-resolves the host through the injected resolver, vets every candidate IP against the
 // egress policy, and dials the FIRST vetted IP by address — never re-resolving the hostname. It

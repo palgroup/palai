@@ -30,11 +30,17 @@ func a2aScopeFunc(r *http.Request) (a2a.Scope, bool) {
 // NewA2AServer builds the production A2A 1.0 server projection (E17 T2, spec §38). It wires the real
 // admission Admitter behind the narrow a2a.Runs seam (an inbound A2A message becomes exactly the admission
 // POST /v1/responses takes — no invented run identity, §34.1), the DB-backed interface + task store, the
-// production ScopeFunc, and the per-project admission caps. Files/Pusher are left nil: inbound file ingest
-// and push DELIVERY are honest ceilings (§5/§6) — the card advertises push only when a Pusher is wired, and
-// the message path never silently drops a file part (it fails the request if a real Files sink is later set).
-func NewA2AServer(admitter Admitter, interfaces a2a.InterfaceStore, tasks a2a.Tasks, limits AdmissionLimits, baseURL string) *a2a.Server {
-	return &a2a.Server{
+// production ScopeFunc, and the per-project admission caps. Files is left nil: inbound file ingest is an
+// honest ceiling (§5/§6) and the message path never silently drops a file part (it fails the request if a
+// real Files sink is later set).
+//
+// pusher may be nil, and the nil CHECK is load-bearing rather than a style choice: assigning a typed-nil
+// *a2a.WebhookPusher straight into the interface field would make the server's `Pusher != nil` gate TRUE,
+// re-mounting the pushNotificationConfigs CRUD and re-advertising pushNotifications on a deployment that
+// configured no pusher — the exact silent-drop surface D13 abolishes. Guarded here, once, at the only
+// production construction site.
+func NewA2AServer(admitter Admitter, interfaces a2a.InterfaceStore, tasks a2a.Tasks, limits AdmissionLimits, baseURL string, pusher *a2a.WebhookPusher) *a2a.Server {
+	srv := &a2a.Server{
 		Interfaces: interfaces,
 		Runs:       a2aRuns{admitter: admitter, limits: limits},
 		Tasks:      tasks,
@@ -42,6 +48,10 @@ func NewA2AServer(admitter Admitter, interfaces a2a.InterfaceStore, tasks a2a.Ta
 		BaseURL:    baseURL,
 		NewID:      middleware.NewID,
 	}
+	if pusher != nil {
+		srv.Pusher = pusher
+	}
+	return srv
 }
 
 // a2aRuns adapts the response-admission Admitter to the A2A server's narrow Runs seam. It invents no run

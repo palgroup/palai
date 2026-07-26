@@ -72,7 +72,7 @@ func TestA2ARealAdmitterBirthsRun(t *testing.T) {
 		t.Fatalf("PublishInterface: %v", err)
 	}
 
-	srv := api.NewA2AServer(repo, a2aStore, a2aStore, api.AdmissionLimits{}, "https://cp.test")
+	srv := api.NewA2AServer(repo, a2aStore, a2aStore, api.AdmissionLimits{}, "https://cp.test", nil)
 	// This harness mounts no auth middleware, so inject the seeded tenant as the resolved scope (the
 	// middleware.Auth -> ScopeFrom plumbing is separately proven by the api-package wiring test). The point
 	// here is that the REAL admission births a run under exactly this scope — never a client-supplied one.

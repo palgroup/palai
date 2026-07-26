@@ -318,10 +318,30 @@ func TestA2AConformance_InputRequiredMapsToWaiting(t *testing.T) {
 	}
 }
 
+// TestA2AConformance_PushConfigCRUD drives the config CRUD (token redaction on every read) AND the
+// DELIVERY leg it exists for (A2A-003, E19 T4): with a Pusher wired the card advertises push, the CRUD is
+// mounted, and a state-producing operation actually POSTs an A2A StreamResponse to the registered target.
 func TestA2AConformance_PushConfigCRUD(t *testing.T) {
+	sink := newPushSink(t, nil)
 	srv, _, _, _ := newServer(completedDurable())
+	pusher, _ := testPusher(t, PushPolicy{}, sink.Server)
+	srv.Pusher = pusher
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
+
+	// With a Pusher wired, effectivePush is TRUE — the card and the mounted surface agree (D13).
+	_, cardBody := loopback(t, ts.URL, http.MethodGet, ifacePath("agent-card.json"), false, nil, nil)
+	var card struct {
+		Capabilities struct {
+			PushNotifications bool `json:"pushNotifications"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(cardBody, &card); err != nil {
+		t.Fatalf("unmarshal card: %v; %s", err, cardBody)
+	}
+	if !card.Capabilities.PushNotifications {
+		t.Fatalf("card advertises pushNotifications=false with a Pusher wired; %s", cardBody)
+	}
 
 	msg := map[string]any{"message": map[string]any{"role": "user", "parts": []Part{{Kind: "text", Text: "p"}}, "messageId": "m7"}}
 	_, body := loopback(t, ts.URL, http.MethodPost, ifacePath("message:send"), true, msg, nil)
@@ -330,7 +350,7 @@ func TestA2AConformance_PushConfigCRUD(t *testing.T) {
 	base := "tasks/" + task.ID + "/pushNotificationConfigs"
 
 	// Set.
-	cfg := PushNotificationConfig{ID: "pc1", URL: "https://sink.example.test/hook", Token: "SECRET_TOKEN"}
+	cfg := PushNotificationConfig{ID: "pc1", URL: sink.URL + "/hook", Token: "SECRET_TOKEN"}
 	status, sb := loopback(t, ts.URL, http.MethodPost, ifacePath(base), true, cfg, nil)
 	if status != http.StatusOK {
 		t.Fatalf("set push = %d; %s", status, sb)
@@ -346,12 +366,90 @@ func TestA2AConformance_PushConfigCRUD(t *testing.T) {
 	if status, lb := loopback(t, ts.URL, http.MethodGet, ifacePath(base), true, nil, nil); status != http.StatusOK || !strings.Contains(string(lb), "pc1") {
 		t.Fatalf("list push = %d; %s", status, lb)
 	}
+
+	// DELIVERY (the half that did not exist before E19 T4): a state-producing operation notifies the
+	// registered target with a real StreamResponse over the signed egress-safe sender.
+	if status, cb := loopback(t, ts.URL, http.MethodPost, ifacePath("tasks/"+task.ID+":cancel"), true, nil, nil); status != http.StatusOK {
+		t.Fatalf("cancel = %d; %s", status, cb)
+	}
+	pusher.Wait()
+	got := sink.received()
+	if len(got) != 1 {
+		t.Fatalf("registered push target received %d deliveries, want 1", len(got))
+	}
+	var delivered StreamResponse
+	if err := json.Unmarshal(got[0].body, &delivered); err != nil || delivered.Task == nil {
+		t.Fatalf("delivery is not a StreamResponse{task}: err=%v; %s", err, got[0].body)
+	}
+	if delivered.Task.ID != task.ID {
+		t.Fatalf("delivered task id = %q, want the registered task %q", delivered.Task.ID, task.ID)
+	}
+	if got[0].headers.Get(PushTokenHeader) != "SECRET_TOKEN" {
+		t.Fatalf("delivery did not carry the config token in %s", PushTokenHeader)
+	}
+
 	// Delete.
 	if status, _ := loopback(t, ts.URL, http.MethodDelete, ifacePath(base+"/pc1"), true, nil, nil); status != http.StatusNoContent {
 		t.Fatalf("delete push = %d, want 204", status)
 	}
 	if status, _ := loopback(t, ts.URL, http.MethodGet, ifacePath(base+"/pc1"), true, nil, nil); status != http.StatusNotFound {
 		t.Fatalf("get deleted push = %d, want 404", status)
+	}
+}
+
+// TestA2APushFailureDoesNotCorruptTheTask is the §T4 invariant (the SLK-006 shape, restated for A2A): a
+// notification that dead-letters is a delivery problem, never a result problem. The canonical task reads
+// exactly the same before and after a push that never lands.
+func TestA2APushFailureDoesNotCorruptTheTask(t *testing.T) {
+	sink := newPushSink(t, func(int) int { return http.StatusInternalServerError })
+	srv, _, _, _ := newServer(completedDurable())
+	pusher, dead := testPusher(t, PushPolicy{MaxAttempts: 2}, sink.Server)
+	srv.Pusher = pusher
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	msg := map[string]any{"message": map[string]any{"role": "user", "parts": []Part{{Kind: "text", Text: "p"}}, "messageId": "mfail"}}
+	_, body := loopback(t, ts.URL, http.MethodPost, ifacePath("message:send"), true, msg, nil)
+	var task Task
+	_ = json.Unmarshal(body, &task)
+
+	_, before := loopback(t, ts.URL, http.MethodGet, ifacePath("tasks/"+task.ID), true, nil, nil)
+
+	cfg := PushNotificationConfig{ID: "pc1", URL: sink.URL + "/hook", Token: "tok"}
+	if status, sb := loopback(t, ts.URL, http.MethodPost, ifacePath("tasks/"+task.ID+"/pushNotificationConfigs"), true, cfg, nil); status != http.StatusOK {
+		t.Fatalf("set push = %d; %s", status, sb)
+	}
+	// message:stream over the SAME task fires a push at the terminal frame; the sink refuses every attempt.
+	if status, sb := loopback(t, ts.URL, http.MethodPost, ifacePath("tasks/"+task.ID+":subscribe"), true, nil, nil); status != http.StatusOK {
+		t.Fatalf("subscribe = %d; %s", status, sb)
+	}
+	pusher.Wait()
+	if n := len(dead.list()); n != 1 {
+		t.Fatalf("dead-letter fired %d times, want 1 (the sink refused every attempt)", n)
+	}
+
+	status, after := loopback(t, ts.URL, http.MethodGet, ifacePath("tasks/"+task.ID), true, nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("task GET after a dead-lettered push = %d, want 200", status)
+	}
+	// Compare the canonical projection field by field. The raw bytes are NOT comparable, and not because of
+	// the push: artifactsFor mints a fresh artifactId on every read, so two GETs of one unchanged task
+	// already differ. That is a pre-existing A2A-002 wart (out of scope here), not something a push does.
+	stable := func(blob []byte) string {
+		var tk Task
+		if err := json.Unmarshal(blob, &tk); err != nil {
+			t.Fatalf("unmarshal task: %v; %s", err, blob)
+		}
+		out := fmt.Sprintf("%s|%s|%s|%s", tk.ID, tk.ContextID, tk.Status.State, tk.Kind)
+		for _, a := range tk.Artifacts {
+			for _, part := range a.Parts {
+				out += "|" + part.Kind + ":" + part.Text
+			}
+		}
+		return out
+	}
+	if stable(after) != stable(before) {
+		t.Fatalf("a dead-lettered push changed the canonical task:\n before=%s\n after =%s", stable(before), stable(after))
 	}
 }
 
@@ -519,4 +617,32 @@ func parseSSE(t *testing.T, body []byte) []map[string]any {
 		out = append(out, m)
 	}
 	return out
+}
+
+// TestA2APushCRUDIsUnmountedWithoutAPusher is the D13 RED guard: the Agent Card says pushNotifications:false
+// when no Pusher is wired, so the pushNotificationConfigs CRUD must be UNMOUNTED too. Today it is mounted
+// unconditionally, so a client registers a target with a 200 against a card that says the surface does not
+// exist — and nothing ever fires. A silent-drop surface is worse than a missing one.
+func TestA2APushCRUDIsUnmountedWithoutAPusher(t *testing.T) {
+	srv, _, _, _ := newServer(completedDurable())
+	srv.Pusher = nil
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	msg := map[string]any{"message": map[string]any{"role": "user", "parts": []Part{{Kind: "text", Text: "p"}}, "messageId": "mgate"}}
+	_, body := loopback(t, ts.URL, http.MethodPost, ifacePath("message:send"), true, msg, nil)
+	var task Task
+	_ = json.Unmarshal(body, &task)
+	base := "tasks/" + task.ID + "/pushNotificationConfigs"
+
+	cfg := PushNotificationConfig{ID: "pc1", URL: "https://sink.example.test/hook", Token: "SECRET_TOKEN"}
+	if status, sb := loopback(t, ts.URL, http.MethodPost, ifacePath(base), true, cfg, nil); status != http.StatusNotFound {
+		t.Fatalf("set push with no Pusher = %d, want 404 (D13: the card advertises no push, so the CRUD must not accept a target); %s", status, sb)
+	}
+	if status, _ := loopback(t, ts.URL, http.MethodGet, ifacePath(base), true, nil, nil); status != http.StatusNotFound {
+		t.Fatalf("list push with no Pusher = %d, want 404", status)
+	}
+	if status, _ := loopback(t, ts.URL, http.MethodGet, ifacePath(base+"/pc1"), true, nil, nil); status != http.StatusNotFound {
+		t.Fatalf("get push item with no Pusher = %d, want 404", status)
+	}
 }
