@@ -187,7 +187,7 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 
 	scope := middleware.Scope{Organization: conn.Org, Project: conn.Project, Principal: target.principal}
 	responseID, runID, sessionID := newID("resp"), newID("run"), newID("ses")
-	input := slackRunInput(ev, conn, target)
+	input := slackRunInput(ev)
 	create := contracts.ResponseCreateRequest{Input: input, Store: true}
 	if target.agentRevisionID != "" {
 		rev := target.agentRevisionID
@@ -403,29 +403,57 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 	return slackRunTarget{agentRevisionID: policy.AgentRevisionID, principal: policy.PrincipalID}, nil
 }
 
-// slackRunInput is the run's input: the canonical Slack identity plus the inner event VERBATIM. The inner
-// event stays opaque here exactly as the adapter left it — turning a Slack message into a prompt is the
-// pinned agent revision's job, not the transport's.
+// slackRunInput is the run's input, and the run's input IS THE PROMPT. That is not a design choice made
+// here — it is what the execution path does: run.start carries `input` verbatim to the engine, the engine
+// appends it as the user message (engines/reference .../context.py start), and model_dispatch's asJSONString
+// passes a STRING through untouched while json.Marshal-ing anything else. So a map arrives at the provider
+// as compact JSON, and the model answers the JSON instead of the human. It did, in production: the first
+// real mention was met with "It looks like you have shared a JSON object that represents a message event
+// from Slack…". A string is therefore the only shape that can be a prompt.
 //
-// slack_user_id is SLK-004's event half, and the guarantee is STRUCTURAL rather than a flag: a Slack user
-// never becomes a principal. Whoever caused the event — allow-listed or not — travels as DATA beside the run,
-// while the run's identity is the connection's configured principal. So an unmapped user still gets a run and
-// their Slack identity authorizes exactly nothing, because there is no code path by which it could. (The USER
-// allow-list is read on the DECISION path, Decide; the CHANNEL allow-list is read at the top of Admit above,
-// so an event from outside the configured scope never reaches this function at all.)
-func slackRunInput(ev slack.Event, conn api.SlackConnectionRef, target slackRunTarget) map[string]any {
-	return map[string]any{
-		"source":        slack.Source,
-		"connection_id": conn.ID,
-		"team_id":       ev.TeamID,
-		"event_id":      ev.SourceEventID,
-		"channel_id":    ev.ChannelID,
-		"thread_ts":     ev.ThreadTS,
-		"slack_user_id": ev.UserID,
-		"kind":          string(ev.Kind),
-		"principal_id":  target.principal,
-		"event":         json.RawMessage(ev.Data),
+// WHAT IS IN IT: what the human wrote, with the app's own mention removed (slack.stripMention) — the mention
+// is Slack's addressing, not a word anyone said.
+//
+// WHAT IS DELIBERATELY NOT IN IT, and this is the load-bearing half:
+//
+//   - The TENANT, the connection, the principal, the pinned revision. None of them are conversation; all of
+//     them are already bound server-side (runTarget above, from the CONNECTION row). Naming them in the
+//     prompt would put a string that reads like authority in the same channel as text any Slack user can
+//     type — the model cannot tell our "principal_id: p_x" from a user's, so neither may exist.
+//   - The channel / team / user ids. These are SCOPE: allowed_channels is enforced at the top of Admit and
+//     allowed_users on the decision path, both against the connection row. SLK-004's guarantee is unchanged
+//     and STRUCTURAL — a Slack user is never a principal — and it is *stronger* for the id not being in the
+//     prompt at all. An operator who needs to know who wrote still has it: the idempotency reservation is
+//     keyed team+event_id, and the thread correlation row holds (team, channel, thread).
+//   - The raw envelope. It was the whole defect.
+//   - THREAD HISTORY. Not because it does not matter, but because the session already carries it: SLK-003
+//     chains every message in a thread onto one session, and run.start replays that session's prior
+//     assistant turns (execution/history.go). Fetching conversations.replies would need a scope this app is
+//     not granted and would duplicate what the session already knows.
+//
+// KIND-AWARE, because SLK-005 already classifies these and a prompt that ignores the classification lies:
+// an edit is marked as an edit rather than arriving as a brand-new turn, and a DELETION does not echo the
+// removed words back — retracting a message and then feeding it to a model is the opposite of retracting it.
+//
+// PURE FUNCTION OF THE EVENT, unchanged and load-bearing: slackRequestHash hashes this, so anything
+// non-deterministic (a clock, the retry hint) would make a redelivery hash differently and turn SLK-002's
+// replay into an idempotency CONFLICT.
+func slackRunInput(ev slack.Event) string {
+	switch ev.Kind {
+	case slack.KindTombstone:
+		return "(the user deleted their message; treat the request it carried as withdrawn)"
+	case slack.KindCorrection:
+		if ev.Text == "" {
+			return "(the user cleared the text of their message)"
+		}
+		return "(edited) " + ev.Text
 	}
+	if ev.Text == "" {
+		// A file share with no comment, or an event kind that carries no words. It still births a run today
+		// (admission is E19 T1's and unchanged here), so it must not spend a model call on an empty prompt.
+		return "(the user sent a message with no text)"
+	}
+	return ev.Text
 }
 
 // NOTE, and it is the kind of detail that silently breaks a dedupe: nothing about the DELIVERY ATTEMPT may
