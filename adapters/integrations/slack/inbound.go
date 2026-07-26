@@ -8,7 +8,10 @@ import (
 
 // Source is the source family Slack events dedupe within — the InboundEvent.Source value the canonical
 // automation pipeline scopes the source-dedupe unique index by. Both transports (Events API HTTP callback
-// and Socket Mode WebSocket) carry the SAME event_id inside, so a transport switch never changes identity.
+// and Socket Mode WebSocket) wrap the SAME event_callback body, so a transport switch never changes identity
+// — that half IS documented (Socket Mode delivers the Events API payload verbatim inside an envelope,
+// https://docs.slack.dev/apis/events-api/using-socket-mode/). What is NOT documented is that a RETRY repeats
+// the event_id; see the D3 assumption on HeaderRetryNum.
 const Source = "slack"
 
 // Kind classifies a normalized Slack event so the mapping downstream can treat an edit as a correction and a
@@ -29,6 +32,12 @@ var (
 	ErrIgnored = errors.New("slack: event ignored (bot/self — loop guard)")
 	// ErrNotAnEvent is a payload whose outer type is not event_callback (e.g. url_verification, which the
 	// caller handles via ParseChallenge before verifying a normal event, or an unknown outer type).
+	//
+	// KNOWN MEMBER OF THIS SET, so T2 does not rediscover it: `app_rate_limited` arrives as an OUTER type,
+	// not as an event_callback (https://docs.slack.dev/apis/web-api/rate-limits/, checked 2026-07-25 — a
+	// workspace/app exceeding 30,000 deliveries per 60 minutes is told so with that payload). It therefore
+	// lands here and the Events route answers 400 + x-slack-no-retry, i.e. the notification that we are being
+	// throttled is discarded. Handling it (log + counter) is E19 plan §3.5 row D10, owned by T2.
 	ErrNotAnEvent = errors.New("slack: payload is not an event_callback")
 	// ErrMalformed is a structurally unusable envelope — non-JSON, or missing the team/event identity that
 	// anchors dedupe and tenant correlation. The caller maps it to a 400 (authenticated client error), the
@@ -38,10 +47,11 @@ var (
 
 // Event is a Slack event normalized to the canonical inbound identity PLUS the Slack correlation fields the
 // downstream mapping needs. Source/SourceTenant/SourceEventID/Data ARE the webhook.InboundEvent identity —
-// SourceEventID is Slack's globally-unique event_id, the dedupe key a redelivery repeats, so Slack events
-// flow through the exact source-dedupe the webhook seam already proves (AUT-001/AUT-009); no parallel dedupe
-// is invented. The correlation fields (team/channel/thread/user) drive thread↔session (SLK-003) and the
-// authorization/self-loop guards; Data stays opaque (the mapping validates the inner event later).
+// SourceEventID is Slack's event_id, documented as globally unique across workspaces and ASSUMED (D3, see
+// HeaderRetryNum) to be repeated by a redelivery, so Slack events flow through the exact source-dedupe the
+// webhook seam already proves (AUT-001/AUT-009); no parallel dedupe is invented. The correlation fields
+// (team/channel/thread/user) drive thread↔session (SLK-003) and the authorization/self-loop guards; Data
+// stays opaque (the mapping validates the inner event later).
 type Event struct {
 	Source        string          // always Source ("slack")
 	SourceTenant  string          // team_id — the workspace the event belongs to
@@ -111,6 +121,28 @@ func ParseChallenge(body []byte) (string, bool) {
 		return "", false
 	}
 	return probe.Challenge, true
+}
+
+// ParseTeam reads the workspace identity out of an UNVERIFIED body. It exists because the receiver has a
+// chicken-and-egg: the v0 signature can only be checked against the signing secret of the connection the
+// callback belongs to, and the only thing naming that connection is the payload itself. So this read happens
+// strictly BEFORE authentication and its result is a LOOKUP KEY AND NOTHING ELSE — never an identity, never a
+// tenant selector, never trusted. What makes that safe is the ORDER that follows it: the resolved connection's
+// secret must then verify the signature over this very body, so a forged team_id can at most select a
+// connection whose secret the forger does not hold, and the verify refuses.
+//
+// ok is false when the body carries no team id (non-JSON, a url_verification handshake — which has no
+// team_id at all — or a truncated envelope): with no lookup key there is no secret to verify against, and the
+// caller must refuse rather than guess a connection.
+func ParseTeam(body []byte) (teamID, enterpriseID string, ok bool) {
+	var probe struct {
+		TeamID       string `json:"team_id"`
+		EnterpriseID string `json:"enterprise_id"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil || probe.TeamID == "" {
+		return "", "", false
+	}
+	return probe.TeamID, probe.EnterpriseID, true
 }
 
 // MapEvent normalizes a verified Events API event_callback body into the canonical Event. botUserID is the

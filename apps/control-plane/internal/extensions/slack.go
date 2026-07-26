@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,16 @@ var (
 	ErrInvalidSlackConfig = errors.New("extensions: slack connection config is invalid")
 	// ErrSlackConnectionExists is a workspace already bound in this project (team_id + enterprise_id).
 	ErrSlackConnectionExists = errors.New("extensions: slack connection already exists for this workspace")
+	// ErrSlackWorkspaceBoundElsewhere is a workspace already bound in a DIFFERENT org/project. It carries no
+	// hint of WHICH tenant holds it: the registering admin has no business learning that another customer
+	// exists, let alone which one.
+	ErrSlackWorkspaceBoundElsewhere = errors.New("extensions: slack workspace is already bound elsewhere")
+	// ErrSlackConnectionAmbiguous is a team id resolving to MORE THAN ONE connection row. It can only happen
+	// when two tenants both hold a binding for one workspace, which CreateSlackConnection refuses — but that
+	// check is a check-then-insert, and a deployment upgraded from before it may already hold such rows. The
+	// receiver must refuse rather than guess a tenant, and refuse REPAIRABLY (no retry suppression), because
+	// an operator can fix a 503 while a suppressed retry is simply a lost event.
+	ErrSlackConnectionAmbiguous = errors.New("extensions: slack team id resolves to more than one connection")
 	// ErrSlackConnectionNotFound is a get/resolve for a connection absent from scope.
 	ErrSlackConnectionNotFound = errors.New("extensions: slack connection not found in scope")
 	// ErrSlackThreadSessionNotFound is a thread-session read for a (team, channel, thread) with no correlated
@@ -61,7 +72,8 @@ type SlackConnectionInput struct {
 }
 
 // CreateSlackConnection registers a workspace binding. It is an admin action — never reachable from a tool
-// the model can call. A team already bound in the project is a typed collision.
+// the model can call. A team already bound in the project is a typed collision; a team already bound in
+// ANOTHER tenant is refused outright (see the cross-tenant check below).
 func (s *Store) CreateSlackConnection(ctx context.Context, org, project string, raw []byte) (SlackConnection, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	in, err := decodeSlackInput(raw)
@@ -73,6 +85,28 @@ func (s *Store) CreateSlackConnection(ctx context.Context, org, project string, 
 	}
 	if in.SigningSecretRef == "" {
 		return SlackConnection{}, fmt.Errorf("%w: signing_secret_ref is required (the v0 verify resolves it)", ErrInvalidSlackConfig)
+	}
+	// The workspace may not already belong to a DIFFERENT tenant. 000035's uniqueness is per-tenant, so the
+	// database would happily accept the row and the unauthenticated resolve — keyed by team_id alone — would
+	// then have two candidates for one Slack workspace. See SlackWorkspaceBoundElsewhere for the whole shape
+	// of the hole this closes.
+	//
+	// ponytail: check-then-insert. Two concurrent registrations in different tenants can both pass it, and a
+	// deployment upgraded from before this check may already hold the rows — which is precisely why
+	// ResolveSlackConnectionByTeam refuses an ambiguous resolve rather than trusting this guard alone.
+	// Closing the race outright needs a GLOBAL unique index on (team_id, enterprise_id), i.e. a migration,
+	// and E19 takes none.
+	var otherID string
+	switch err := s.pool.QueryRow(storage.WithSystemScope(ctx),
+		storage.Query("SlackWorkspaceBoundElsewhere"), in.TeamID, in.EnterpriseID, org, project).
+		Scan(&otherID); {
+	case err == nil:
+		// The detail names the workspace, never the tenant holding it: the caller must not learn that another
+		// customer exists. The id is logged control-plane-side for the operator who has to resolve it.
+		log.Printf("slack: refused a registration for a workspace already bound by connection %s", otherID)
+		return SlackConnection{}, ErrSlackWorkspaceBoundElsewhere
+	case !errors.Is(err, pgx.ErrNoRows):
+		return SlackConnection{}, fmt.Errorf("check slack workspace binding: %w", err)
 	}
 	id := newID("slkc")
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertSlackConnection"),
@@ -161,29 +195,62 @@ type ResolvedSlackConnection struct {
 	AppTokenRef      string
 	BotUserID        string
 	Disabled         bool
+	// DefaultPolicy is the connection's default run policy (the 000035 JSONB). It carries the RUN TARGET the
+	// E19 T1 admission bridge pins — see slackRunTarget — and nothing a Slack payload can influence.
+	DefaultPolicy []byte
 }
 
 // ResolveSlackConnectionByTeam establishes the tenant for a signed inbound Slack callback, keyed by the
 // team + enterprise id the callback carries (the resolveInboundTrigger idiom). It runs SYSTEM-scoped because
 // there is no tenant yet; the caller must still present a valid v0 signature over the returned
 // signing_secret_ref before anything is written — the signature is the auth, not this lookup.
+// It is read with Query, not QueryRow, and the SQL asks for TWO rows: the predicate is not unique (the index
+// is per-tenant) and pgx's QueryRow calls rows.Next() exactly once and closes — a second row would be
+// silently discarded and the winner could flip between requests. A second row is therefore an explicit,
+// typed refusal, never a coin toss between two tenants.
 func (s *Store) ResolveSlackConnectionByTeam(ctx context.Context, teamID, enterpriseID string) (ResolvedSlackConnection, bool, error) {
 	ctx = storage.WithSystemScope(ctx)
-	var r ResolvedSlackConnection
-	switch err := s.pool.QueryRow(ctx, storage.Query("ResolveSlackConnectionByTeam"), teamID, enterpriseID).
-		Scan(&r.ID, &r.Org, &r.Project, &r.SigningSecretRef, &r.BotTokenRef, &r.AppTokenRef, &r.BotUserID, &r.Disabled); {
-	case errors.Is(err, pgx.ErrNoRows):
-		return ResolvedSlackConnection{}, false, nil
-	case err != nil:
+	rows, err := s.pool.Query(ctx, storage.Query("ResolveSlackConnectionByTeam"), teamID, enterpriseID)
+	if err != nil {
 		return ResolvedSlackConnection{}, false, fmt.Errorf("resolve slack connection: %w", err)
 	}
-	return r, true, nil
+	defer rows.Close()
+
+	var resolved []ResolvedSlackConnection
+	for rows.Next() {
+		var r ResolvedSlackConnection
+		if err := rows.Scan(&r.ID, &r.Org, &r.Project, &r.SigningSecretRef, &r.BotTokenRef, &r.AppTokenRef,
+			&r.BotUserID, &r.Disabled, &r.DefaultPolicy); err != nil {
+			return ResolvedSlackConnection{}, false, fmt.Errorf("scan slack connection: %w", err)
+		}
+		resolved = append(resolved, r)
+	}
+	if err := rows.Err(); err != nil {
+		return ResolvedSlackConnection{}, false, fmt.Errorf("resolve slack connection: %w", err)
+	}
+	switch len(resolved) {
+	case 0:
+		return ResolvedSlackConnection{}, false, nil
+	case 1:
+		return resolved[0], true, nil
+	}
+	// Both ids are logged so an operator can see which two rows to reconcile. The team id is NOT logged: it
+	// arrives on an unauthenticated request, and our own connection ids answer the question anyway.
+	log.Printf("slack: workspace resolves to connections %s and %s — refusing to guess which tenant an event belongs to",
+		resolved[0].ID, resolved[1].ID)
+	return ResolvedSlackConnection{}, false, fmt.Errorf("%w: %s, %s", ErrSlackConnectionAmbiguous, resolved[0].ID, resolved[1].ID)
 }
 
 // CorrelateThreadSession resolves the canonical session for a (team, channel, thread), creating the mapping
-// on the first event and REUSING it on every later event in the same thread (SLK-003). The claim is
-// single-winner: a concurrent race collapses at the unique index, so the loser reads the winner's session
-// rather than opening a second one. It returns the canonical session id and whether this call created it.
+// on the first event and REUSING it on every later event in the same thread (SLK-003). It returns the
+// canonical session id and whether this call created it.
+//
+// PRECISELY WHAT THE UNIQUE INDEX BUYS, because the difference has already been over-claimed once: a
+// concurrent race collapses THE ROW, so the loser reads the winner's session and only one correlation
+// exists. It does NOT collapse the SESSIONS — two callers that each minted a session before calling this
+// still have two sessions, and the loser's is simply not the one the thread points at. Serializing that is
+// the caller's job (SlackAdmitter.lockThread holds a thread-keyed advisory lock across the whole
+// first-event window); this function alone cannot provide it.
 func (s *Store) CorrelateThreadSession(ctx context.Context, org, project, connID, team, channel, thread, sessionID string) (string, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	id := newID("slkts")

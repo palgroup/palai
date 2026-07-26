@@ -18,21 +18,25 @@ func TestSlackConnectionCreateReadRLS(t *testing.T) {
 	s, org, project := openStore(t)
 	ctx := context.Background()
 
-	body := []byte(`{"team_id":"T111","bot_user_id":"Ubot","signing_secret_ref":"slack/signing","bot_token_ref":"slack/bot","scopes":"app_mentions:read chat:write","allowed_users":["U1"]}`)
+	// The team id is generated, not a literal: a workspace may be bound in exactly ONE tenant installation-wide
+	// (CreateSlackConnection refuses the rest), so a hardcoded id makes a test collide with any other test —
+	// or any earlier run against the same database — that happened to pick the same string.
+	team := testID("T")
+	body := []byte(`{"team_id":"` + team + `","bot_user_id":"Ubot","signing_secret_ref":"slack/signing","bot_token_ref":"slack/bot","scopes":"app_mentions:read chat:write","allowed_users":["U1"]}`)
 	conn, err := s.CreateSlackConnection(ctx, org, project, body)
 	if err != nil {
 		t.Fatalf("create slack connection: %v", err)
 	}
-	if conn.TeamID != "T111" || conn.SigningSecretRef != "slack/signing" || conn.BotUserID != "Ubot" {
-		t.Fatalf("created connection = %+v, want T111/slack-signing/Ubot", conn)
+	if conn.TeamID != team || conn.SigningSecretRef != "slack/signing" || conn.BotUserID != "Ubot" {
+		t.Fatalf("created connection = %+v, want %s/slack-signing/Ubot", conn, team)
 	}
 
 	got, err := s.GetSlackConnection(ctx, org, project, conn.ID)
 	if err != nil {
 		t.Fatalf("get slack connection: %v", err)
 	}
-	if got.TeamID != "T111" || got.Disabled {
-		t.Fatalf("read-back = %+v, want T111 enabled", got)
+	if got.TeamID != team || got.Disabled {
+		t.Fatalf("read-back = %+v, want %s enabled", got, team)
 	}
 
 	// A duplicate workspace binding in the project is a typed collision.
@@ -87,8 +91,9 @@ func TestSlackThreadSessionCorrelation(t *testing.T) {
 	s, org, project := openStore(t)
 	ctx := context.Background()
 
+	team := testID("T") // generated, not a literal — see TestSlackConnectionCreateReadRLS
 	conn, err := s.CreateSlackConnection(ctx, org, project,
-		[]byte(`{"team_id":"T1","signing_secret_ref":"r"}`))
+		[]byte(`{"team_id":"`+team+`","signing_secret_ref":"r"}`))
 	if err != nil {
 		t.Fatalf("create connection: %v", err)
 	}
@@ -96,18 +101,18 @@ func TestSlackThreadSessionCorrelation(t *testing.T) {
 	sess2 := seedSession(t, s, org, project)
 
 	// First event in the thread claims sess1 as canonical.
-	got, created, err := s.CorrelateThreadSession(ctx, org, project, conn.ID, "T1", "C1", "100.0", sess1)
+	got, created, err := s.CorrelateThreadSession(ctx, org, project, conn.ID, team, "C1", "100.0", sess1)
 	if err != nil || !created || got != sess1 {
 		t.Fatalf("first correlate = (%q,%v,%v), want (%q,true,nil)", got, created, err, sess1)
 	}
 	// A second event in the SAME thread, offering a DIFFERENT session, must REUSE the first (one session
 	// per thread) — the offered sess2 is discarded.
-	got, created, err = s.CorrelateThreadSession(ctx, org, project, conn.ID, "T1", "C1", "100.0", sess2)
+	got, created, err = s.CorrelateThreadSession(ctx, org, project, conn.ID, team, "C1", "100.0", sess2)
 	if err != nil || created || got != sess1 {
 		t.Fatalf("second correlate = (%q,%v,%v), want (%q,false,nil) — thread reuse", got, created, err, sess1)
 	}
 	// A different thread gets its own session.
-	got, created, err = s.CorrelateThreadSession(ctx, org, project, conn.ID, "T1", "C1", "200.0", sess2)
+	got, created, err = s.CorrelateThreadSession(ctx, org, project, conn.ID, team, "C1", "200.0", sess2)
 	if err != nil || !created || got != sess2 {
 		t.Fatalf("other-thread correlate = (%q,%v,%v), want (%q,true,nil)", got, created, err, sess2)
 	}

@@ -319,6 +319,15 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	if toolCallbacks != nil {
 		top.Handle("POST /v1/tool-callbacks/{operation_id}", middleware.RequestContext(toolCallbacks))
 	}
+	// The Slack Events API receiver (E19 T1, spec §36): its auth IS the per-request v0 signature, so — like
+	// the signed inbound receiver and the tool callback — it mounts on the UNAUTHENTICATED top mux, bypassing
+	// middleware.Auth but still wrapped in RequestContext so its problem bodies carry the correlation id. An
+	// unresolvable or unauthenticated workspace is a generic 404 (no config oracle). nil in every tier that
+	// wires no Slack bridge, which is also what keeps `slack` out of discovery there.
+	if cfg.slack != nil {
+		sh := &slackHandler{slack: cfg.slack}
+		top.Handle("POST /v1/slack/events", middleware.RequestContext(http.HandlerFunc(sh.receive)))
+	}
 	// The A2A public Agent Card (E17 T2, spec §38.1): a safe published projection carrying no internal detail
 	// (A2A-001), so — like /healthz and the signed inbound receiver — it mounts on the UNAUTHENTICATED top mux
 	// bypassing middleware.Auth (still wrapped in RequestContext for the correlation id). This exact-path route

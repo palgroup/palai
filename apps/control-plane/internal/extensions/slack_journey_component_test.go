@@ -155,8 +155,11 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	cs, store, triggers, pool := journeySpine(t)
 	ctx := context.Background()
 
+	// team is generated, not a literal: a workspace binds to exactly ONE tenant installation-wide
+	// (CreateSlackConnection refuses the rest), so a fixed id collides with any other run against this
+	// database. The rest are per-journey literals and stay readable.
+	team := testID("T63300")
 	const (
-		team     = "T63300"
 		channel  = "C63300"
 		threadTS = "1700000000.000100"
 		botUser  = "Ubot63300"
@@ -475,7 +478,7 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	}
 	t.Logf("§63.3 journey PASS on a FAKE peer: one canonical session (%d), one effect per source event (%d effects / %d deliveries), unauthorized approval rejected, canonical result intact through a Slack delivery failure. A real workspace receipt is §6 leg 1 — NOT claimed.",
 		proof.CanonicalSessions, proof.CanonicalEffects, proof.DeliveredEvents)
-	t.Log("§63.3 journey CEILINGS, so no reader has to infer them: (1) the SLK-004 approver allow-list is enforced at the POLICY-PRIMITIVE level — SlackAuthorizationPolicyFor/ApproverAuthorized have no non-test caller and there is no Slack HTTP route, so this journey hand-composes the inbound leg a shipped handler would; (2) step 8 is command-ACCEPTANCE (read back durable+queued with its payload), NOT application — a boundary config change needs a running engine (E08 execution tier); step 9's cancellation IS asserted to a real terminal through the production CancelRunReconciled path; (3) terminal_summary_posts counts the single non-duplicated terminal surface post, not a per-delivery-id fan-out.")
+	t.Log("§63.3 journey CEILINGS, so no reader has to infer them: (1) the SLK-004 approver allow-list is enforced at the POLICY-PRIMITIVE level — SlackAuthorizationPolicyFor/ApproverAuthorized still have no non-test caller (E19 T2 wires the interactivity route that becomes the first one), so this journey hand-composes the DECISION leg a shipped handler would. Its inbound leg is likewise hand-composed onto the trigger pipeline, which is now a SECOND path rather than the only one: E19 T1 shipped POST /v1/slack/events, admitting through the real Admitter, and its own component-real proofs live in apps/control-plane/internal/store/slack_events_component_test.go; (2) step 8 is command-ACCEPTANCE (read back durable+queued with its payload), NOT application — a boundary config change needs a running engine (E08 execution tier); step 9's cancellation IS asserted to a real terminal through the production CancelRunReconciled path; (3) terminal_summary_posts counts the single non-duplicated terminal surface post, not a per-delivery-id fan-out.")
 }
 
 // commandRow reads a durable command back off the session: the session it landed on, its state and its raw
