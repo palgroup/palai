@@ -189,8 +189,8 @@ func newRemoteChildFixture(t *testing.T, peer *fakeRemotePeer, authRef string) *
 	orch := &Orchestrator{spine: cs, dialer: failingDialer{}, route: ModelRoute{Provider: "fake", Model: "fake", Secret: parentSentinel}}
 	orch.SetRemoteChildren(store, client)
 	st := &attemptState{
-		attempt:    AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID(pinnedID("att")), Fence: 1},
-		tenant:     tenant, sessionID: sessionID, responseID: responseID, ch: ch,
+		attempt: AttemptDescriptor{RunID: contracts.RunID(runID), AttemptID: contracts.AttemptID(pinnedID("att")), Fence: 1},
+		tenant:  tenant, sessionID: sessionID, responseID: responseID, ch: ch,
 	}
 	return &remoteChildFixture{orch: orch, st: st, ch: ch, peer: peer, agent: agentID, runID: runID, pool: cs.Pool()}
 }
