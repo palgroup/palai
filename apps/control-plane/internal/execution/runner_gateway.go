@@ -101,11 +101,23 @@ func (g *RunnerGateway) LastRunnerIdentity() (RunnerIdentity, bool) {
 	return *seen, true
 }
 
-// recordIdentity remembers the presented client certificate. Called from connect and renew —
-// the two places a runner proves its identity — so the record advances on every renewal and
-// goes stale exactly when the runner stops renewing.
+// recordIdentity remembers the certificate the runner now HOLDS, so the record advances on every
+// renewal and goes stale exactly when the runner stops renewing. Connect passes the presented
+// leaf; enroll and renew pass the certificate they just ISSUED, which is the one the runner will
+// hold from here — recording the presented (outgoing) certificate at renew would leave the record
+// one generation behind, reading "expired" for the tail of every renewal cycle on a runner that is
+// perfectly healthy.
 func (g *RunnerGateway) recordIdentity(leaf *x509.Certificate) {
 	g.identity.Store(&RunnerIdentity{RunnerDNS: renewDNS(leaf), NotAfter: leaf.NotAfter, SeenAt: g.now()})
+}
+
+// recordIssuedIdentity records a certificate the gateway just signed, from its DER. A DER the CA
+// produced a moment ago that will not parse is not worth failing the request over — the runner has
+// its certificate either way — so a parse failure only leaves the record where it was.
+func (g *RunnerGateway) recordIssuedIdentity(certDER []byte) {
+	if leaf, err := x509.ParseCertificate(certDER); err == nil {
+		g.recordIdentity(leaf)
+	}
 }
 
 // NewRunnerGateway binds the CA issuer and the one-use token store into a gateway.
@@ -237,6 +249,7 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign runner certificate", http.StatusBadRequest)
 		return
 	}
+	g.recordIssuedIdentity(certDER)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(enrollResponse{Certificate: base64.StdEncoding.EncodeToString(certDER)})
 }
@@ -255,7 +268,6 @@ func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	leaf := r.TLS.PeerCertificates[0]
-	g.recordIdentity(leaf)
 	publicDER, err := x509.MarshalPKIXPublicKey(leaf.PublicKey)
 	if err != nil {
 		http.Error(w, "marshal runner public key", http.StatusBadRequest)
@@ -266,6 +278,7 @@ func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sign runner certificate", http.StatusBadRequest)
 		return
 	}
+	g.recordIssuedIdentity(certDER)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(enrollResponse{Certificate: base64.StdEncoding.EncodeToString(certDER)})
 }

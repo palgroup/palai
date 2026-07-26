@@ -115,6 +115,38 @@ func TestRunnerRecoversFromAnExpiredIdentityWithoutARestart(t *testing.T) {
 	}
 }
 
+// TestGatewayRecordsTheCertificateTheRunnerNowHolds pins the signal `palai local doctor` reads.
+// Enrollment and renewal must record the certificate they ISSUED, not the one presented to them:
+// at renew the presented certificate is the OUTGOING one, so recording it leaves the record a
+// generation behind and doctor calls a perfectly healthy runner expired for the tail of every
+// renewal cycle. Caught on a live stack — doctor reported "expired 1m24s ago" for an identity the
+// runner had already rolled forward.
+func TestGatewayRecordsTheCertificateTheRunnerNowHolds(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	f.ca.ttl = time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	identity, err := runner.Enroll(ctx, f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	enrolled, seen := f.gateway.LastRunnerIdentity()
+	if !seen || !enrolled.NotAfter.Equal(identity.NotAfter) {
+		t.Fatalf("enrollment recorded %v (seen=%v), want the issued certificate's NotAfter %s", enrolled, seen, identity.NotAfter)
+	}
+
+	renewed, err := runner.Renew(ctx, identity, f.renewConfig())
+	if err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	after, _ := f.gateway.LastRunnerIdentity()
+	if !after.NotAfter.Equal(renewed.NotAfter) {
+		t.Fatalf("renewal recorded NotAfter %s, want the RENEWED certificate's %s (recording the presented one leaves doctor a generation behind)",
+			after.NotAfter, renewed.NotAfter)
+	}
+}
+
 // readTokenFile reads the bootstrap token back out of the fixture's file, the way the runner
 // re-reads PALAI_ENROLLMENT_TOKEN_FILE rather than retaining the token in memory.
 func readTokenFile(t *testing.T, tokens *execution.FileEnrollmentTokens) string {
