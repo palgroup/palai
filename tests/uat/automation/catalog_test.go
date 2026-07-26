@@ -97,11 +97,15 @@ var expectedAutomationCatalog = map[string]struct {
 		"apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate",
 		// Queue-adapter leg (E17 T7): redelivery-after-lost-ack via the durable queue adapter.
 		"apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect",
+		// WIRED leg (E19 T6): the redelivery admits ONE RUN through the shipped bridge + real admission.
+		"apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun",
 	}},
 	"AUT-010": {"component-real", []string{
 		"apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429",
 		// Queue-adapter leg (E17 T7): flood -> bounded-buffer backpressure via the queue adapter.
 		"apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterFloodAppliesBackpressureNoDrop",
+		// WIRED leg (E19 T6): the flood is shed and drained through the shipped bridge, one run per message.
+		"apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeFloodBackpressureNoDropOneRunEach",
 	}},
 	"AUT-011": {"component-real", []string{
 		"apps/control-plane/internal/automation/webhook_component_test.go:TestSignedDeliveryEndToEndRealHTTP",
@@ -123,6 +127,8 @@ var expectedAutomationCatalog = map[string]struct {
 		// to ONE run (real Postgres). The five-step contract + kill-and-reconcile are pinned in
 		// tests/conformance/orchestrator; a real Temporal/Restate run is §6 operator leg 6.
 		"apps/control-plane/internal/automation/orchestrator_storm_component_test.go:TestOrchestratorRetryStormSingleRun",
+		// WIRED queue leg (E19 T6): the bridge owns no retry of its own — the queue is the single owner.
+		"apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun",
 	}},
 }
 

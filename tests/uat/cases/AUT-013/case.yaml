@@ -2,7 +2,7 @@ id: AUT-013
 name: orchestrator-retry-canonical-idempotency
 proof_class: component-real
 provider: fake
-input: "an orchestrator retry with the SAME idempotency key yields a single everything (one delivery, one run, one action); a DIFFERENT key with the same dedupe key still yields a single canonical action — idempotency and dedupe compose. LOCAL seam: component-real against a real Postgres idempotency spine PLUS a SCRIPTED FAKE orchestrator retry storm over the E17 T8 conformance fixtures — one retry owner, no retry multiplication. §6 leg 6: a real Temporal/Restate instance driving the orchestrator kit is operator work; no native adapter is written or claimed."
+input: "an orchestrator retry with the SAME idempotency key yields a single everything (one delivery, one run, one action); a DIFFERENT key with the same dedupe key still yields a single canonical action — idempotency and dedupe compose. LOCAL seam: component-real against a real Postgres idempotency spine PLUS the SHIPPED queue bridge (E19 T6) and a SCRIPTED FAKE orchestrator retry storm over the E17 T8 conformance fixtures — one retry owner, no retry multiplication. §6 leg 6: a real Temporal/Restate instance driving the orchestrator kit is operator work; no native adapter is written or claimed."
 expect_status: completed
 proof:
   - apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetrySameIdempotencyKeySingleEverything
@@ -19,3 +19,7 @@ proof:
   # webhook/SSE/poll wait modes AND the kill-and-reconcile e2e are pinned in tests/conformance/orchestrator.
   # A run against a real Temporal/Restate instance is the §6 operator leg 6; no native adapter is written.
   - apps/control-plane/internal/automation/orchestrator_storm_component_test.go:TestOrchestratorRetryStormSingleRun
+  # WIRED queue leg (E19 T6, §35.2 single retry owner): the shipped bridge adds NO retry of its own — the
+  # queue's visibility timeout is the only redelivery owner, and a redelivered message replays onto the one
+  # admission reservation. One run, not one per attempt.
+  - apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun
