@@ -201,8 +201,8 @@ func buildExtensionsManifest(t *testing.T) []byte {
 			CanonicalSessions: 1,
 			SourceEventIDs:    []string{"Ev63301", "Ev63306"},
 			DeliveredEvents:   3, CanonicalEffects: 2,
-			PostReceipts:                 []string{"901.000100", "902.000100"},
-			TerminalSummaryPosts:         1, RateLimitRepairs: 1,
+			PostReceipts:         []string{"901.000100", "902.000100"},
+			TerminalSummaryPosts: 1, RateLimitRepairs: 1,
 			UnauthorizedApprovalRejected: true, CanonicalResultIntact: true,
 		},
 	})
@@ -244,7 +244,7 @@ func buildExtensionsManifest(t *testing.T) []byte {
 	attach("AUT-009", map[string]any{
 		"queue_delivery_claim": "lost-ack-redelivery-single-effect-dead-letter-and-loss-less-outbound",
 		"queue_delivery_proof": uat.QueueDeliveryProof{
-			Broker: "postgres-durable-reference",
+			Broker:           "postgres-durable-reference",
 			DistinctMessages: 3, Consumed: 4, Redelivered: 1, CanonicalEffects: 3,
 			DeadLettered: 1, Dropped: 0, OutboundDeliveredOnce: true,
 		},
@@ -269,7 +269,7 @@ func buildExtensionsManifest(t *testing.T) []byte {
 		"console_proof": uat.ConsoleProof{
 			Upstream:      "fake",
 			AxeViolations: 0, AxeReportDigest: digestOf(axeReportSummary),
-			NetworkTrace: consoleNetworkTrace,
+			NetworkTrace:     consoleNetworkTrace,
 			KeyboardOperable: true, SkipLinkFirst: true,
 			ApprovalDetailAuthoritative: true, APIKeyReachedBrowser: false,
 		},
@@ -298,7 +298,13 @@ func buildExtensionsManifest(t *testing.T) []byte {
 	anchor["capability_tier_claim"] = "tiers-recomputed-from-per-case-outcomes"
 	anchor["capability_tier_proof"] = uat.CapabilityTierProof{
 		Capabilities: declarations, Snapshot: snapshot,
-		SnapshotSource: "GET /v1/capabilities served by the real api.NewRouter (asserted bit-equal by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute)",
+		// EXT-1 (E18 T9 triage, closed here by E19 T8): the earlier wording — "GET /v1/capabilities served by
+		// the real api.NewRouter" — was defensible but invited the reading that a DEPLOYED binary serves this
+		// map, and none does. The router is the test's fullyMountedRouter(); no shipped deployment config sets
+		// PALAI_CAPABILITY_WORKER_LISTEN_ADDR, so `capability-workers` is advertised by no deployment at all.
+		// This is the same correction release-1.0.0-rc1's AggregateTierProof carries in its own
+		// served_by_deployed_config/unmounted_reason fields, applied to the bundle that first said it.
+		SnapshotSource: "GET /v1/capabilities served by the real api.NewRouter as built by the fullyMountedRouter() test helper — NOT by any deployed config: no shipped deployment sets PALAI_CAPABILITY_WORKER_LISTEN_ADDR, so no deployed binary serves this exact map (asserted bit-equal by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute)",
 		ClaimsDigest:   uat.CapabilityClaimsDigest(),
 	}
 	cases = append(cases, anchor)

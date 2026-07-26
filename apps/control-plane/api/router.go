@@ -274,6 +274,20 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.Handle("/v1/a2a/", cfg.a2a)
 	}
 
+	// The queue-binding admin surface (E19 T6, spec §34.1): register an inbound consumer binding or an
+	// outbound result destination, and list this project's bindings. INSIDE the auth middleware — unlike the
+	// Slack/inbound receivers, this is an operator surface with no source signature of its own, so the
+	// bearer scope is the only tenant authority, and a binding is always created in the caller's own tenant.
+	if cfg.queues != nil {
+		resolver := cfg.queueResolver
+		if resolver == nil {
+			resolver = net.DefaultResolver
+		}
+		qh := &queueConnectionHandler{queues: cfg.queues, resolver: resolver}
+		mux.HandleFunc("POST /v1/queue-connections", qh.createConnection)
+		mux.HandleFunc("GET /v1/queue-connections", qh.listConnections)
+	}
+
 	var root http.Handler = mux
 	root = middleware.Auth(verifier)(root)
 	// The §20.12 request-rate limiter sits INSIDE RequestContext (so a shed 429 still carries the

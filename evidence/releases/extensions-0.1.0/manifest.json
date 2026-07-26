@@ -169,7 +169,7 @@
     {
       "checksum": "sha256:ecbfd6923c5ca756852e3d819d032b197912719d0d7a60cd472271c49b6e2c0c",
       "db_assertions": [
-        "AUT-009: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect",
+        "AUT-009: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/inbound_component_test.go:TestRedeliveryAfterLostAckDoesNotDuplicate; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect; apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran",
         "NO BROKER PRODUCT: queue_delivery_proof.broker is \"postgres-durable-reference\" — one of the seams that actually ran. No NATS, SQS, Pub/Sub or Kafka exists anywhere in this tree, so the plan §T7 tier-promotion condition for `queues` (a real broker container, NATS JetStream) is UNMET and §6 leg 5 (EXTENDED to cover any broker PRODUCT) caps the capability at preview"
@@ -205,7 +205,7 @@
     {
       "checksum": "sha256:adb97949a87d46fa6c56191763adf3a2628842649c025ffbc2847264ed883c31",
       "db_assertions": [
-        "AUT-010: proven by 2 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterFloodAppliesBackpressureNoDrop",
+        "AUT-010: proven by 3 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/inbound_component_test.go:TestFloodBoundsMemoryReportsDepthApplies429; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterFloodAppliesBackpressureNoDrop; apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeFloodBackpressureNoDropOneRunEach",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
       ],
@@ -229,7 +229,7 @@
     {
       "checksum": "sha256:f518b6a6c4e31ea5a500d61f736a6afcbc0dd668c2b2944d96852e7ba7540832",
       "db_assertions": [
-        "AUT-013: proven by 4 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetrySameIdempotencyKeySingleEverything; apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetryDifferentKeySameDedupeSingleAction; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect; apps/control-plane/internal/automation/orchestrator_storm_component_test.go:TestOrchestratorRetryStormSingleRun",
+        "AUT-013: proven by 5 in-tree proof(s) at the component-real tier — apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetrySameIdempotencyKeySingleEverything; apps/control-plane/internal/automation/idempotency_component_test.go:TestOrchestratorRetryDifferentKeySameDedupeSingleAction; apps/control-plane/internal/automation/queue_adapter_component_test.go:TestQueueAdapterRedeliversAfterLostAckSingleEffect; apps/control-plane/internal/automation/orchestrator_storm_component_test.go:TestOrchestratorRetryStormSingleRun; apps/control-plane/internal/automation/queue_bridge_component_test.go:TestQueueBridgeLostAckRedeliversToExactlyOneRun",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran"
       ],
@@ -1192,7 +1192,7 @@
           "queues": "preview",
           "slack": "preview"
         },
-        "snapshot_source": "GET /v1/capabilities served by the real api.NewRouter (asserted bit-equal by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute)",
+        "snapshot_source": "GET /v1/capabilities served by the real api.NewRouter as built by the fullyMountedRouter() test helper — NOT by any deployed config: no shipped deployment sets PALAI_CAPABILITY_WORKER_LISTEN_ADDR, so no deployed binary serves this exact map (asserted bit-equal by apps/control-plane/api TestServedCapabilityTiersEqualTheRecompute)",
         "claims_digest": "sha256:f0d46879af1792764ba43cb078666d73618f1d6ca80e9bdac2cd71af0a5a5b26"
       },
       "checksum": "sha256:38bdb078545023f677e1882068ca195fb69248536ef671fc98e9180d8cba6301",

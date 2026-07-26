@@ -1,6 +1,10 @@
 package api
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/palgroup/palai/adapters/integrations/webhook"
+)
 
 // EdgeLimits is the §20.12 basic-tier admission-control configuration the composition root resolves
 // from the environment and hands NewRouter. Every field defaults to zero = disabled, so a stack that
@@ -54,6 +58,11 @@ type routerConfig struct {
 	slack       SlackEventsAPI // the Slack Events API admission bridge (E19 T1); nil ⇒ route unmounted
 	// slackInteractions is the Slack interactivity decision bridge (E19 T2); nil ⇒ route unmounted.
 	slackInteractions SlackInteractionsAPI
+	// queues is the queue-binding admin surface (E19 T6); nil ⇒ routes unmounted, and discovery must not
+	// advertise `queues` at all.
+	queues QueueConnectionAPI
+	// queueResolver vets an outbound destination at registration; nil ⇒ net.DefaultResolver.
+	queueResolver webhook.Resolver
 	// capabilityWorkers records that this binary SERVES the capability-worker gateway (E17 T9) — on its own
 	// listener, not on this router (see WithCapabilityWorkers). It carries no handler because there is
 	// nothing for the router to mount; it exists so discovery derives the claim from the live mount.
@@ -94,9 +103,10 @@ func WithModelRoutes(routes ModelRouteAPI) RouterOption {
 // WithKnowledge mounts the knowledge spine (E17 Task 4): knowledge bases, ingest sources, the immutable
 // ingest -> FTS index build, ranked retrieval, and the index-revision history. A trailing option for the
 // same reason as WithSecretRefs — every existing caller compiles unchanged, and a stack that wires no
-// knowledge store leaves the routes unmounted. Discovery advertises `knowledge` STATICALLY as `preview`
-// (capabilities.go), like the pre-existing `responses` capability — the maturity flag is a static
-// advertisement, not gated on the store being wired.
+// knowledge store leaves the routes unmounted, and discovery then does not advertise `knowledge` at all
+// (E19 T8; until then it was a static "stable" served by routers on which every knowledge route 404s — the
+// §3.5 D14 defect at its strongest tier). Mounting makes the claim advertisABLE; the tier is the E17 T11
+// recompute's, never this option's.
 func WithKnowledge(knowledge KnowledgeAPI) RouterOption {
 	return func(c *routerConfig) { c.knowledge = knowledge }
 }
@@ -126,6 +136,21 @@ func WithA2A(authed, publicCard http.Handler) RouterOption {
 // recomputes its maturity from the WRK claim outcomes.
 func WithCapabilityWorkers() RouterOption {
 	return func(c *routerConfig) { c.capabilityWorkers = true }
+}
+
+// WithQueueConnections mounts the queue-binding admin surface (E19 T6, spec §34.1): register a durable
+// inbound consumer binding or an outbound result destination, and list what this project has registered.
+//
+// It is the ROUTER half of the queue mount. The working halves — the consume→admit bridge and the outbound
+// DeliverDue pump — are supervised loops in main.go, not routes; this option is what makes the surface
+// reachable and, per §2, what discovery now derives `queues` from (E19 T8 — before it, `queues` was a static
+// string every router served). Mounting does NOT raise the tier: `queues` stays preview because no broker
+// PRODUCT exists in this tree (E17 §6 leg 5), and only the E17 T11 recompute writes the word.
+//
+// resolver may be nil (⇒ net.DefaultResolver); it exists so a test drives a deterministic egress vet of an
+// outbound destination.
+func WithQueueConnections(queues QueueConnectionAPI, resolver webhook.Resolver) RouterOption {
+	return func(c *routerConfig) { c.queues = queues; c.queueResolver = resolver }
 }
 
 // WithSlack mounts the Slack Events API receiver (E19 T1, spec §36) on the UNAUTHENTICATED top mux — its

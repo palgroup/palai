@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -63,6 +64,12 @@ func (in QueueConnectionInput) withDefaults() QueueConnectionInput {
 	return in
 }
 
+// CreateQueueConnection is the api.QueueConnectionAPI create seam — CreateConnection under the name the
+// HTTP surface's interface uses, so the admin route needs no adapter type.
+func (s *QueueStore) CreateQueueConnection(ctx context.Context, org, project string, in QueueConnectionInput) (string, error) {
+	return s.CreateConnection(ctx, org, project, in)
+}
+
 // CreateConnection registers a queue binding in the verified scope and returns its server-minted id.
 func (s *QueueStore) CreateConnection(ctx context.Context, org, project string, in QueueConnectionInput) (string, error) {
 	in = in.withDefaults()
@@ -75,6 +82,43 @@ func (s *QueueStore) CreateConnection(ctx context.Context, org, project string, 
 	return out, err
 }
 
+// QueueConnectionItem is one row of the admin list: the binding's non-secret configuration. Config is
+// included because it holds the run target an operator must be able to read back; secret material lives in
+// secret_refs and the create surface strict-decodes config precisely so it cannot hold a credential.
+type QueueConnectionItem struct {
+	ID            string
+	Name          string
+	Kind          string
+	Direction     string
+	Capacity      int
+	Visibility    int
+	MaxDeliveries int
+	Enabled       bool
+	Config        json.RawMessage
+	CreatedAt     time.Time
+}
+
+// ListQueueConnections returns a tenant-scoped page of queue bindings, newest-first.
+func (s *QueueStore) ListQueueConnections(ctx context.Context, org, project string, w ListWindow) ([]QueueConnectionItem, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListQueueConnections"),
+		org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list queue connections: %w", err)
+	}
+	defer rows.Close()
+	var out []QueueConnectionItem
+	for rows.Next() {
+		var it QueueConnectionItem
+		if err := rows.Scan(&it.ID, &it.Name, &it.Kind, &it.Direction, &it.Capacity, &it.Visibility,
+			&it.MaxDeliveries, &it.Enabled, &it.Config, &it.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan queue connection row: %w", err)
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
 // queueConn holds a connection's resolved tuning knobs, loaded once so the hot Publish/Consume path does
 // not re-read them.
 type queueConn struct {
@@ -83,6 +127,10 @@ type queueConn struct {
 	capacity      int
 	visibility    time.Duration
 	maxDeliveries int
+	// config is the connection's own JSONB. On an inbound binding it carries the RUN TARGET the bridge
+	// admits with (agent_revision_id + principal_id); on an outbound one, the destination. It is
+	// connection-scoped configuration, never message content — see queue_bridge.go.
+	config []byte
 }
 
 func (s *QueueStore) loadConn(ctx context.Context, org, project, connID string) (queueConn, error) {
@@ -92,7 +140,7 @@ func (s *QueueStore) loadConn(ctx context.Context, org, project, connID string) 
 	var enabled bool
 	var visSecs int
 	if err := s.pool.QueryRow(ctx, storage.Query("GetQueueConnection"), connID, org, project).Scan(
-		&c.id, &c.org, &c.project, &name, &kind, &direction, &c.capacity, &visSecs, &c.maxDeliveries, &enabled,
+		&c.id, &c.org, &c.project, &name, &kind, &direction, &c.capacity, &visSecs, &c.maxDeliveries, &enabled, &c.config,
 	); err != nil {
 		return queueConn{}, fmt.Errorf("load queue connection %s: %w", connID, err)
 	}
@@ -102,6 +150,36 @@ func (s *QueueStore) loadConn(ctx context.Context, org, project, connID string) 
 	c.visibility = time.Duration(visSecs) * time.Second
 	return c, nil
 }
+
+// sweepConnections returns every ENABLED connection of one direction across tenants — the supervised
+// bridge's catalogue scan. It runs under the SYSTEM scope because it spans tenants by construction (the
+// webhook pump's FanOutEndpoints precedent); each row then carries the org/project that is the ONLY tenant
+// the bridge does that row's work under. A disabled connection is filtered in SQL, so no caller can forget.
+func (s *QueueStore) sweepConnections(ctx context.Context, direction string) ([]queueConn, error) {
+	rows, err := s.pool.Query(storage.WithSystemScope(ctx), storage.Query("SweepQueueConnections"), direction)
+	if err != nil {
+		return nil, fmt.Errorf("sweep %s queue connections: %w", direction, err)
+	}
+	defer rows.Close()
+	var out []queueConn
+	for rows.Next() {
+		var c queueConn
+		var visSecs int
+		if err := rows.Scan(&c.id, &c.org, &c.project, &c.capacity, &visSecs, &c.maxDeliveries, &c.config); err != nil {
+			return nil, err
+		}
+		c.visibility = time.Duration(visSecs) * time.Second
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// inboundQueueFor opens a PGQueue over an already-swept connection row, WITHOUT re-reading it. The sweep's
+// WHERE clause is the enabled check, so this cannot be handed a disabled binding.
+func (s *QueueStore) inboundQueueFor(c queueConn) *PGQueue { return &PGQueue{store: s, conn: c} }
+
+// outboxFor is inboundQueueFor's outbound twin.
+func (s *QueueStore) outboxFor(c queueConn) *PGOutbox { return &PGOutbox{store: s, conn: c} }
 
 // --- inbound consumer queue ---
 
