@@ -9,12 +9,14 @@ import { announceProfile, runToTerminal, skipOnReal } from "./profile";
 //
 // E19 T7 — WHAT RUNS WHERE, AND WHY. The approval journey is FAKE-PROFILE ONLY, and that is a finding about
 // the control plane rather than a choice about the specs: a compose run cannot reach approval.requested.v1
-// at all, for four independent reasons enumerated in DIV-UI-001 (no workspace root and no shared volume in
+// at all, for three independent reasons enumerated in DIV-UI-001 (no workspace root and no shared volume in
 // compose so no repository is ever prepared; a hardcoded fake adapter with no ToolCalls and a NULL
-// config_policy so no tool is ever advertised; PendingBoundaryCommands filtering approve/deny out of the
-// boundary pump, which makes the HTTP approve path a dead branch; and publishApproved living only inside a
-// live attempt). The conformance sweep re-derives that measurement on every run — MEASURED there, cited
-// here — so if it ever stops being true the sweep goes red before these skips can go stale.
+// config_policy so no tool is ever advertised; and publishApproved living only inside a live attempt). A
+// FOURTH reason has since been fixed — PendingBoundaryCommands filtered approve/deny out of the boundary
+// pump, making the HTTP approve path a dead branch — so the approve a human clicks is now applied; what
+// still cannot happen on compose is producing something to approve. The conformance sweep re-derives that
+// measurement on every run — MEASURED there, cited here — so if it ever stops being true the sweep goes red
+// before these skips can go stale.
 //
 // The last test in this file is the one that DOES run on both, and it is what materially narrowed: the
 // console rendering a REAL run's terminal, retrieved from a real control plane over real SSE.

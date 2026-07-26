@@ -200,14 +200,14 @@ export const DIVERGENCES = [
     id: "DIV-UNX-002",
     kind: "unexercised",
     subject: "approval.requested.v1",
-    detail: "Journaled by packages/coordinator/publication.go. Unreachable on compose for the four independent reasons enumerated in DIV-UI-001.",
+    detail: "Journaled by packages/coordinator/publication.go. Unreachable on compose for the three independent reasons enumerated in DIV-UI-001.",
     owner: "REAL GAPS — see DIV-UI-001",
   },
   {
     id: "DIV-UNX-003",
     kind: "unexercised",
     subject: "approval.approved.v1",
-    detail: "Journaled by packages/coordinator/publication.go. Unreachable on compose; and even given a pending publication, the HTTP approve path cannot apply it — see DIV-UI-001 blocker (3).",
+    detail: "Journaled by packages/coordinator/publication.go. Unreachable on compose for the reasons in DIV-UI-001 — but no longer because the HTTP approve path cannot apply a decision: that blocker is closed, and given a pending publication an approve now transitions it at the next boundary.",
     owner: "REAL GAPS — see DIV-UI-001",
   },
   {
@@ -265,8 +265,8 @@ export const DIVERGENCES = [
     kind: "ui",
     subject: "the approval journey (UI-002 authoritative detail, approve, deny)",
     detail:
-      "No run on a compose stack can reach approval.requested.v1, so the approval panel never renders and the approve/deny specs have nothing to act on. FOUR independent blockers, each verified in the tree, each of which alone is sufficient: (1) deploy/compose/compose.yaml sets no PALAI_WORKSPACE_ROOT and mounts no shared workspace volume, so no repository is prepared and publication_registry.go's RunPublicationTarget finds nothing to publish; (2) the compose fake model adapter is hardcoded to fake.Script{Output:'ok'} with no ToolCalls and no env knob, and a fresh project's config_policy is NULL so NO tools are advertised — the model can never propose palai.publish.push; (3) storage/queries/commands.sql PendingBoundaryCommands filters `kind IN ('send_message','change_config')`, so an HTTP approve is accepted, sits queued, and is expired at run terminal — command_pump.go's applyBoundaryApproval branch is UNREACHABLE from the public API, and the Slack decision path is the only one that applies an approval today; (4) publishApproved runs only inside a live attempt's boundary pump, so even an approved publication on a terminated run is never published. MEASURED, not inferred: POST /v1/sessions/{id}/commands {kind:'approve'} against the real stack returns 202 with status `rejected` and result.code `no_pending_approval`. The console is not the defect; it renders what the event carries, when the event exists.",
-    owner: "REAL GAPS in the control plane — (3) in particular is a dead branch on the approval path. E19 T8/T9 disposition; NOT closable from apps/web-console",
+      "No run on a compose stack can reach approval.requested.v1, so the approval panel never renders and the approve/deny specs have nothing to act on. THREE independent blockers, each verified in the tree, each of which alone is sufficient: (1) deploy/compose/compose.yaml sets no PALAI_WORKSPACE_ROOT and mounts no shared workspace volume, so no repository is prepared and publication_registry.go's RunPublicationTarget finds nothing to publish; (2) the compose fake model adapter is hardcoded to fake.Script{Output:'ok'} with no ToolCalls and no env knob, and a fresh project's config_policy is NULL so NO tools are advertised — the model can never propose palai.publish.push; (3) publishApproved runs only inside a live attempt's boundary pump, so even an approved publication on a terminated run is never published. MEASURED, not inferred: POST /v1/sessions/{id}/commands {kind:'approve'} against the real stack returns 202 with status `rejected` and result.code `no_pending_approval`. The console is not the defect; it renders what the event carries, when the event exists. CLOSED, was blocker (3) of four: storage/queries/commands.sql PendingBoundaryCommands filtered `kind IN ('send_message','change_config')`, so command_pump.go's applyBoundaryApproval branch was unreachable from the public API and an HTTP approve sat queued until run terminal. The query now selects approve/deny and the pump applies them at a boundary (apps/control-plane/internal/execution/approval_pump_component_test.go). The remaining three still block the JOURNEY — nothing on compose produces an approval to approve — so this row and the skips citing it stand, with one reason fewer.",
+    owner: "REAL GAPS in the control plane — the dead approve branch is FIXED; what remains is compose profile/config. E19 T8/T9 disposition; NOT closable from apps/web-console",
   },
   {
     id: "DIV-UI-002",
