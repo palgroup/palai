@@ -560,23 +560,39 @@ func observeSlackSocket(cfg Config, p paths, within time.Duration) (bool, string
 	}
 }
 
-// slackSocketConnected is the log line extensions.SlackSocket writes when Slack's `hello` arrives.
-const slackSocketConnected = "slack socket: connected"
+// The three shapes the control-plane's log carries about Socket Mode.
+const (
+	// slackSocketConnected is what extensions.SlackSocket writes when Slack's `hello` arrives.
+	slackSocketConnected = "slack socket: connected"
+	// slackSocketPrefix marks every line the connect loop writes itself.
+	slackSocketPrefix = "slack socket: "
+	// slackSocketEnabled is main.startSlackSocket announcing the loop was mounted at all.
+	slackSocketEnabled = "Slack Socket Mode enabled"
+	// slackSocketSupervised is the coordinator restarting the loop after a DIAL failure. This one is
+	// easy to miss and is the most actionable of the three: a dial that fails returns to the
+	// supervisor, so `apps.connections.open refused: "invalid_auth"` — the difference between a wrong
+	// app-level token and a stack still waiting — appears ONLY here, never on a `slack socket:` line.
+	// A probe against a real stack with a deliberately bogus token is what surfaced that.
+	slackSocketSupervised = `supervised "slack-socket" failed`
+)
 
 // readSlackSocketLog reads the control-plane's log for the socket's LATEST state and reports it in
-// the operator's terms. The three outcomes are distinguished on purpose — reporting "not connected"
+// the operator's terms. The outcomes are distinguished on purpose — reporting a bare "not connected"
 // for all of them would send someone hunting for a Slack app problem when the real fault is a
-// variable that never reached the container.
+// variable that never reached the container, or hand them "still waiting" when Slack has in fact
+// been refusing their token once a second.
 func readSlackSocketLog(logs string) (bool, string) {
-	const enabled = "Slack Socket Mode enabled"
 	last, started := "", false
 	for _, line := range strings.Split(logs, "\n") {
-		i := strings.Index(line, "slack socket: ")
-		if i < 0 {
-			started = started || strings.Contains(line, enabled)
-			continue
+		switch i, j := strings.Index(line, slackSocketPrefix), strings.Index(line, slackSocketSupervised); {
+		case i >= 0:
+			last = strings.TrimSpace(line[i:])
+		case j >= 0:
+			// The supervisor's own line, which carries the dial reason after "restarting after backoff:".
+			last, started = strings.TrimSpace(line[j:]), true
+		case strings.Contains(line, slackSocketEnabled):
+			started = true
 		}
-		last = strings.TrimSpace(line[i:])
 	}
 	switch {
 	case strings.HasPrefix(last, slackSocketConnected):

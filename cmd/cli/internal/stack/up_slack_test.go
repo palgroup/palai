@@ -159,11 +159,18 @@ func TestSlackIsLiveOnlyWhenSlackSaidHello(t *testing.T) {
 	}
 }
 
-// TestSocketLogTellsTheThreeStatesApart: the observation is a parse of the control-plane's log, so
-// it has to distinguish the states an operator would act on differently. Reporting "not connected"
-// for all three would send someone hunting for a Slack app problem when the real fault is that the
-// container never got the variable.
-func TestSocketLogTellsTheThreeStatesApart(t *testing.T) {
+// TestSocketLogTellsTheStatesApart: the observation is a parse of the control-plane's log, so it has
+// to distinguish the states an operator would act on differently. A bare "not connected" for all of
+// them would send someone hunting for a Slack app problem when the real fault is that the container
+// never got the variable — or leave them waiting while Slack refuses their token once a second.
+//
+// Every `logs` fixture below except the first is VERBATIM `docker compose logs control-plane` output
+// captured from a real compose stack brought up on this branch (an isolated probe project, a real
+// registration, a deliberately bogus app-level token). A hand-written fixture can only confirm what
+// the person writing it already believed the log looked like: the invalid_auth case exists BECAUSE
+// that probe showed the actionable line rides the supervisor, not the loop, which the first version
+// of this parser threw away.
+func TestSocketLogTellsTheStatesApart(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		logs      string
@@ -178,9 +185,16 @@ func TestSocketLogTellsTheThreeStatesApart(t *testing.T) {
 		},
 		{
 			name: "the loop started but the workspace is not registered yet",
-			logs: "control-plane-1  | palai control-plane: Slack Socket Mode enabled for the configured workspace\n" +
-				"control-plane-1  | slack socket: no enabled Slack connection is registered for the configured workspace; Socket Mode stays off until one is registered and the control plane restarts",
+			logs: "control-plane-1  | 2026/07/26 22:46:40 palai control-plane: Slack Socket Mode enabled for the configured workspace\n" +
+				"control-plane-1  | 2026/07/26 22:46:40 slack socket: no enabled Slack connection is registered for the configured workspace; Socket Mode stays off until one is registered and the control plane restarts",
 			want: "no enabled Slack connection is registered",
+		},
+		{
+			name: "Slack refuses the app-level token",
+			logs: "control-plane-1  | 2026/07/26 22:47:24 palai control-plane: Slack Socket Mode enabled for the configured workspace\n" +
+				"control-plane-1  | 2026/07/26 22:47:25 supervised \"slack-socket\" failed (restart 1); restarting after backoff: apps.connections.open refused: \"invalid_auth\"\n" +
+				"control-plane-1  | 2026/07/26 22:47:26 supervised \"slack-socket\" failed (restart 2); restarting after backoff: apps.connections.open refused: \"invalid_auth\"",
+			want: "invalid_auth",
 		},
 		{
 			name: "the loop never started at all",
