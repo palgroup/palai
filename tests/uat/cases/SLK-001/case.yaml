@@ -1,9 +1,19 @@
 id: SLK-001
 name: two-transports-one-canonical-identity-ack-before-work
-proof_class: unit
+proof_class: component-real
 provider: fake
-input: "Events API HTTP callback and Socket Mode WebSocket both normalize to ONE canonical identity (source=slack, team_id, event_id) — the transport switch never changes correlation; the 3-second ack's durable-insert-before-ack + dedupe-commit is the REUSED canonical automation seam (AUT-009), not a Slack-specific path. LOCAL proof: the unit mapping over fake Slack peer frames (Events API + Socket Mode). The real-workspace ack-timing external receipt is the §6 operator leg (slack stays preview)."
+input: "Events API HTTP callback and Socket Mode WebSocket both normalize to ONE canonical identity (source=slack, team_id, event_id) — the transport switch never changes correlation; the ack's durable-insert-before-ack + dedupe-commit is the REUSED canonical automation seam (AUT-009), not a Slack-specific path. Since E19 T3 the Socket Mode half is a SHIPPED CONNECT LOOP rather than a frame decoder: apps.connections.open with the app-level (xapp-) token resolved from app_token_ref, a real WSS dial, and envelopes fed into the SAME admission bridge the HTTP route drives — so the identity claim is asserted against real Postgres and the real Admitter in BOTH orders (socket-then-HTTP births exactly one run under the connection's own tenant/revision/principal; HTTP-then-socket REPLAYS onto that reservation and records no idempotency conflict). Socket Mode envelopes are UNSIGNED and are deliberately NOT verified — Slack's page states inbound events need no verification because they arrive over a pre-authenticated WebSocket — so the transport's authentication is the app-level token at CONNECT time, and the control-plane seam the loop drives structurally excludes VerifySignature rather than merely not calling it. The acknowledgement is written BEFORE any work: NO acknowledgement budget is published for Socket Mode (the 3-second figure is documented for the Events API HTTP callback and for interactivity, not for an envelope), so no number is baked into the code. A `warning` disconnect is a ten-second notice and the loop OVERLAPS — it opens the successor while the warned socket is still delivering, then drains the old one — because a close-then-reconnect drops every event in that window; `refresh_requested` is handled the same way and `link_disabled` stops permanently. LOCAL proof: the unit mapping over fake Slack peer frames, the wire-format unit tests, a fake WSS server built LONGHAND from the published protocol (hello -> envelopes -> acknowledgement verification -> a `warning` disconnect -> overlapping reconnect -> ZERO event loss -> `link_disabled` -> permanent stop), and the two-transport identity proof over real Postgres. §6 leg 1 (unchanged): the real-workspace external receipt is operator work — Socket Mode needs NO public URL, so tests/live/slack runs it on SLACK_APP_TOKEN alone — and `slack` stays PREVIEW until it does."
 expect_status: completed
 proof:
   - adapters/integrations/slack/inbound_test.go:TestMapEventNormalizesToCanonicalIdentity
   - adapters/integrations/slack/inbound_test.go:TestUnwrapSocketFrameFeedsTheSameMapping
+  - adapters/integrations/slack/socket_test.go:TestSocketFrameCarriesAcceptsResponsePayload
+  - adapters/integrations/slack/socket_test.go:TestSocketDisconnectReasonIsDecoded
+  - adapters/integrations/slack/socket_test.go:TestSocketAckShape
+  - apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAcknowledgesBeforeDoingTheWork
+  - apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketAckShapeMatchesTheDocumentedEnvelope
+  - apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketOverlapsOnWarningAndLosesNoEvents
+  - apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketStopsPermanentlyOnLinkDisabled
+  - apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketDrainsGracefully
+  - apps/control-plane/internal/extensions/slack_socket_test.go:TestSlackSocketNeverLogsTheTokenOrTheTicket
+  - apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeAndHTTPShareOneCanonicalIdentity
