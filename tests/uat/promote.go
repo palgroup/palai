@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/palgroup/palai/tests/evals"
 )
@@ -97,6 +99,141 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 		}
 	}
 	return []Refusal{{Detail: "no promote policy for this release: it carries neither the E16 SDK-parity nor the E15 upgrade nor the E17 eval-gate claims a promote gate recognizes"}}
+}
+
+// --- the two-person promotion gate (E18 T5) -----------------------------------------------------------
+
+// ReleaseApprovalSchema / ReleaseEnvironment pin the two halves of release-policy.md's two-person sentence
+// that a record has to name: the record's own shape, and the PROTECTED environment the approval came from.
+// An approval granted anywhere else is not the approval the policy describes.
+const (
+	ReleaseApprovalSchema = "palai.release-approval/v1"
+	ReleaseEnvironment    = "release"
+)
+
+// ReleaseApproval is the record .github/workflows/release.yml's protected `publish` job presents to the
+// promote gate: who started the build, who approved the protected environment, and the run it belongs to.
+type ReleaseApproval struct {
+	Schema      string   `json:"schema"`
+	Release     string   `json:"release"`
+	Target      string   `json:"target"`
+	Environment string   `json:"environment"`
+	WorkflowRun string   `json:"workflow_run"`
+	Builder     string   `json:"builder"`
+	Approvers   []string `json:"approvers"`
+	AdminBypass bool     `json:"admin_bypass"`
+}
+
+// normLogin folds the spellings of ONE GitHub login into one string. Logins are case-insensitive, CODEOWNERS
+// writes them with an @, and a hand-written record carries whitespace — three ways for `maintainer-a` to
+// approve `maintainer-a`'s own release while a naive == says two different people did it.
+func normLogin(s string) string {
+	return strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "@")))
+}
+
+// ApprovalGate is release-policy.md's "Two-person promotion" section, mechanically: a promotion needs a
+// builder and a DIFFERENT authorized maintainer who approved it in the protected release environment, and
+// the builder cannot bypass that — "including as a repository administrator".
+//
+// The authorized set is passed in RECOMPUTED from the canonical source (MaintainersFromCODEOWNERS), never
+// read out of the approval: a record that could name its own approvers would approve itself. The gate is
+// pure so the whole refusal matrix is unit-pinned; `promote --approval <file>` is its only caller.
+//
+// HONEST CEILING: in THIS repository .github/CODEOWNERS names one maintainer, so every approval is refused
+// here — which is release-policy's own sentence ("Until two maintainers and a protected release environment
+// exist, Palai may publish development snapshots but must not publish an RC or stable release") holding
+// mechanically rather than by assertion. A real protected environment's reviewer list is plan §6 leg 1.
+func ApprovalGate(raw []byte, release, target string, maintainers []string) []Refusal {
+	var a ReleaseApproval
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return []Refusal{{Detail: "the approval record is not valid JSON (an unreadable approval is NOT an approval): " + err.Error()}}
+	}
+
+	authorized := make(map[string]bool, len(maintainers))
+	for _, m := range maintainers {
+		if n := normLogin(m); n != "" {
+			authorized[n] = true
+		}
+	}
+
+	var refusals []Refusal
+	add := func(format string, args ...any) { refusals = append(refusals, Refusal{Detail: fmt.Sprintf(format, args...)}) }
+
+	if len(authorized) < 2 {
+		add("the repository declares %d authorized maintainer(s) in .github/CODEOWNERS — two-person promotion cannot be satisfied: until two maintainers and a protected release environment exist, Palai may publish development snapshots but must NOT publish an RC or stable release (release-policy.md, plan §6 leg 1)", len(authorized))
+	}
+	if a.Schema != ReleaseApprovalSchema {
+		add("approval schema %q is not %q — this gate judges one record shape", a.Schema, ReleaseApprovalSchema)
+	}
+	if a.Release != release {
+		add("the approval is for release %q but this promote is %q — an approval binds to ONE release, or an rc approval replays onto anything", a.Release, release)
+	}
+	if a.Target != target {
+		add("the approval is for target %q but this promote is %q — an approval binds to ONE target (an rc approval is not a stable approval)", a.Target, target)
+	}
+	if a.Environment != ReleaseEnvironment {
+		add("the approval names environment %q, not the protected release environment %q — an approval granted outside the protected environment is not the two-person gate (release-policy.md)", a.Environment, ReleaseEnvironment)
+	}
+	if strings.TrimSpace(a.WorkflowRun) == "" {
+		add("the approval names no workflow run — an approval that cannot be traced back to the run it approved is unauditable")
+	}
+	if a.AdminBypass {
+		add("the approval declares an admin bypass — the builder cannot bypass this gate, including as a repository administrator (release-policy.md)")
+	}
+
+	builder := normLogin(a.Builder)
+	if builder == "" {
+		add("the approval names no builder — two-person promotion needs both people named")
+	} else if !authorized[builder] {
+		add("builder %q is not an authorized maintainer (the canonical set is .github/CODEOWNERS, recomputed — never the record's own list)", a.Builder)
+	}
+
+	distinct := 0
+	for _, raw := range a.Approvers {
+		who := normLogin(raw)
+		switch {
+		case who == "":
+			continue // an empty entry is not an approver; the count below reports it as none
+		case who == builder:
+			add("builder %q is among the approvers (spelled %q) — the builder cannot approve their own release, including as a repository administrator (release-policy.md)", a.Builder, raw)
+		case !authorized[who]:
+			add("approver %q is not an authorized maintainer (the canonical set is .github/CODEOWNERS, recomputed — never the record's own list)", raw)
+		default:
+			distinct++
+		}
+	}
+	if distinct == 0 {
+		add("no authorized approver DIFFERENT from the builder: a single-person promotion is REFUSED — one maintainer starts the protected release workflow and a different authorized maintainer approves it (release-policy.md)")
+	}
+	return refusals
+}
+
+// MaintainersFromCODEOWNERS recomputes the authorized maintainer set from the git-tracked owners file — the
+// canonical source (plan §2 recompute-over-copy). A `@org/team` handle is deliberately NOT counted: its
+// membership lives outside this repository, so it cannot stand in for the second human the policy requires.
+// The result is normalized and deduped, in first-seen order.
+func MaintainersFromCODEOWNERS(path string) ([]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read the canonical maintainer set: %w", err)
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		for _, tok := range strings.Fields(line) {
+			if !strings.HasPrefix(tok, "@") || strings.Contains(tok, "/") {
+				continue
+			}
+			if who := normLogin(tok); who != "" && !seen[who] {
+				seen[who] = true
+				out = append(out, who)
+			}
+		}
+	}
+	return out, nil
 }
 
 // ExtensionsPromoteGate is the mechanical form of the E17 exit-gate sentence (plan §T11, §7): a release cannot

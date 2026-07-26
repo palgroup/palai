@@ -16,6 +16,7 @@ import (
 func main() {
 	release := flag.String("release", "", "release name under evidence/releases/")
 	to := flag.String("to", "rc", "promote target: rc | stable")
+	approval := flag.String("approval", "", "a palai.release-approval/v1 record (the protected environment's two-person approval); when given, the promotion is ALSO judged against release-policy.md's two-person rule")
 	flag.Parse()
 	if *release == "" || (*to != "rc" && *to != "stable") {
 		fmt.Fprintln(os.Stderr, "usage: promote --release <name> [--to rc|stable]")
@@ -54,5 +55,35 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	fmt.Printf("promote-gate PASS: %s may be tagged (%s) — verified clean, the release-family exit proofs present\n", *release, *to)
+
+	// The TWO-PERSON gate (E18 T5) runs LAST, on purpose: a fence in front of the evidence gate would
+	// shadow the operator-leg refusal scripts/uat/sh2 and scripts/uat/sdk-parity grep for. It applies only
+	// when an approval is presented, because presenting one is what a PUBLICATION does
+	// (scripts/release/publish.sh always does; a local `promote.sh rc` is the evidence gate, nothing more).
+	if *approval == "" {
+		fmt.Printf("promote-gate PASS: %s may be tagged (%s) — verified clean, the release-family exit proofs present."+
+			" NO two-person approval was presented: this is the evidence gate only, NOT an approved publication"+
+			" (release-policy.md two-person promotion; scripts/release/publish.sh is the gated act)\n", *release, *to)
+		return
+	}
+	record, err := os.ReadFile(*approval)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "promote REFUSED: read the approval record: %v\n", err)
+		os.Exit(1)
+	}
+	maintainers, err := uat.MaintainersFromCODEOWNERS(filepath.Join(".github", "CODEOWNERS"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "promote REFUSED: %v (the authorized set is recomputed from the canonical owners file, never taken from the approval)\n", err)
+		os.Exit(1)
+	}
+	if refusals := uat.ApprovalGate(record, *release, *to, maintainers); len(refusals) > 0 {
+		fmt.Fprintf(os.Stderr, "promote REFUSED: the two-person approval for %s (%s) does not hold:\n", *release, *to)
+		for _, r := range refusals {
+			fmt.Fprintln(os.Stderr, "  - "+r.String())
+		}
+		os.Exit(1)
+	}
+	fmt.Printf("promote-gate PASS: %s may be tagged (%s) — verified clean, the release-family exit proofs present,"+
+		" and approved by an authorized maintainer OTHER than the builder in the protected %q environment\n",
+		*release, *to, uat.ReleaseEnvironment)
 }
