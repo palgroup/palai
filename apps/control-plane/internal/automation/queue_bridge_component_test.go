@@ -22,6 +22,7 @@ package automation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -222,7 +223,7 @@ func TestQueueBridgeFloodBackpressureNoDropOneRunEach(t *testing.T) {
 		switch {
 		case err == nil:
 			accepted++
-		case err == queue.ErrQueueFull:
+		case errors.Is(err, queue.ErrQueueFull):
 			shed++
 		default:
 			t.Fatalf("Publish error = %v", err)
