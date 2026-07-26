@@ -475,6 +475,20 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// queue age), so the deterministic tiers are bit-unchanged.
 		orch.SetQueueDeadline(envDuration("PALAI_QUEUE_DEADLINE"))
 		orch.SetHookFirer(toolRegistry)
+		// Wire remote child-run dispatch (E19 T5, §38.5): a child.request naming a REGISTERED
+		// a2a_remote_agents row is executed by that remote instead of a local engine. The lookup is the same
+		// tenant-scoped a2a store the server half uses; the dialer is the E17 T3 client in PRODUCTION posture
+		// — AllowPrivate stays false, so a remote agent registered at a loopback/RFC1918/metadata address is
+		// refused by egress before any dial, and no Files sink is wired, so a remote that returns a file part
+		// fails its child honestly rather than losing the file. The bearer is redeemed ONLY from the agent
+		// row's auth_connection_ref by the org-scoped resolver — there is no parameter through which this
+		// process could hand the remote the parent's or the platform's credential (A2A-005/SUB-007).
+		//
+		// Unconditional, like SetHookFirer: it needs no external key material and a project that registered
+		// no remote agent simply never takes the branch. Registration itself has no HTTP surface yet — the
+		// rows are created directly today — which is a NAMED gap, not a claim this task closes.
+		orch.SetRemoteChildren(a2a.NewStore(spine.Pool(), middleware.NewID),
+			a2a.NewClient(a2a.ClientConfig{Secrets: a2aRemoteSecretResolver}))
 		// Wire the repository publisher the approval pump publishes through (spec §30.9-30.10), gated on
 		// the GitHub App environment. Absent it, an approved publication waits (the pump is a no-op) — no
 		// push happens without a configured destination. ponytail: the live wave sets the env; the
@@ -1029,6 +1043,34 @@ func slackSecretResolver(org, ref string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// a2aRemoteSecretResolver is the fifth sibling of webhook/inbound/remoteTool/slackSecretResolver (E19 T5):
+// it bridges an a2a_remote_agents.auth_connection_ref handle to the REMOTE CONNECTION'S OWN bearer via
+// PALAI_A2A_REMOTE_SECRET_FILE_<ORG>__<REF> (a FILE PATH, never inline). The org prefix is a server-minted
+// hard tenant boundary, so a tenant's ref can only name a secret provisioned under its OWN org — and the
+// A2A-remote namespace is DISTINCT from the webhook/inbound/remote-tool/Slack ones, so the five secret sets
+// are non-interchangeable. This is the ONLY bearer a remote child dial can carry: an unresolved ref FAILS
+// the dispatch (an honest child failure), it never falls back to the platform's or the parent's credential.
+func a2aRemoteSecretResolver(org, ref string) ([]byte, error) {
+	if org == "" || ref == "" {
+		return nil, errors.New("empty a2a remote secret org/ref")
+	}
+	if v, ok, err := dbSecret(org, ref); err != nil {
+		return nil, err
+	} else if ok {
+		return v, nil
+	}
+	// Belt-and-braces, as in the sibling resolvers: a normalized org key carrying the "__" delimiter is
+	// ambiguous; reject it rather than resolve a colliding key.
+	if strings.Contains(secretEnvKey(org), "__") {
+		return nil, fmt.Errorf("ambiguous a2a remote secret org key %q", org)
+	}
+	path := os.Getenv("PALAI_A2A_REMOTE_SECRET_FILE_" + secretEnvKey(org) + "__" + secretEnvKey(ref))
+	if path == "" {
+		return nil, fmt.Errorf("no secret bridge configured for a2a remote ref under org %q", org)
+	}
+	return os.ReadFile(path)
+}
+
 // secretEnvKey normalizes a SecretRef into an env-var suffix (upper alphanumerics, others to '_').
 func secretEnvKey(ref string) string {
 	var b strings.Builder
@@ -1233,17 +1275,38 @@ func startRunnerGateway(addr string) *execution.RunnerGateway {
 //     it on the public edge would change the posture the WRK-001..007 proofs were taken under, which is
 //     exactly what §2 forbids: wiring must go through the surface as built.
 //
-// HONEST CEILING — two of them, neither introduced here, both worth the operator knowing:
-//   - Plain HTTP, no TLS on this listener. The worker binary (cmd/palai-capability-worker) dials a base URL
-//     with a stock http.Client and has no CA flag, so a self-signed listener would be undialable and giving
-//     it one means changing the client E17 T9 proved. The operator terminates TLS in front of this address
-//     the same way the public API's listener is fronted; the runner gateway's mTLS is the upgrade path when
-//     a worker fleet needs one.
-//   - NO production path mints an enrollment token yet: Gateway.IssueEnrollmentToken has no operator caller
-//     (the runner's equivalent is PALAI_ENROLLMENT_TOKEN_FILE). The surface is therefore SERVED and enforces
-//     everything T9 proved, but a real worker cannot enroll until that ceremony exists. That is a missing
-//     operator path, not a missing capability — and it is the reason this task mounts what exists rather than
-//     inventing a credential-issuing route on the way past.
+// HONEST CEILINGS — four of them, none introduced here, all worth the operator knowing:
+//
+//   - CLEARTEXT LISTENER, so this wiring REFUSES to bind it off-host (listenCapabilityWorker). Its sibling at
+//     the same topology gets mTLS, and three things travel on this one in the clear: the one-time enrollment
+//     token, the workload bearer on EVERY request — with no channel binding, unlike the runner's client cert
+//     whose private key never leaves the runner, so one observed request is full worker impersonation for the
+//     identity TTL — and the REDEEMED SECRET VALUE in the redeem response body. Loopback + TLS terminated in
+//     front is the supported posture; full parity with startRunnerGateway (tls.Listen, TLS 1.3, ClientCAs,
+//     reusing PALAI_RUNNER_SERVER_CERT/KEY) is the right answer once a fleet actually enrolls across a
+//     network. Note the client is NOT the obstacle: cmd/palai-capability-worker dials c.base+path with a
+//     stock http.Client, which handles an https:// base against a normally-trusted certificate fine — only a
+//     SELF-SIGNED listener would need a CA flag the client does not have.
+//
+//   - DORMANT IN THREE WAYS. The surface is SERVED and enforces everything WRK-001..007 proved, but nothing
+//     drives it yet, so `capability-workers` means "this binary can serve the surface", never "a worker ran a
+//     job": (1) no production path mints an enrollment token — Gateway.IssueEnrollmentToken has no operator
+//     caller (the runner's equivalent is PALAI_ENROLLMENT_TOKEN_FILE), so nobody can enroll; (2) no
+//     production path dispatches a job — Store.DispatchJob has no caller, so even an enrolled worker polls
+//     204 forever; (3) no production path advances worker health or reclaims an expired lease —
+//     Store.SetWorkerHealth and Store.RedispatchForRetry have no callers, so the worker-health fence never
+//     moves and there is no reaper. All three are missing OPERATOR/DRIVER paths, not missing capabilities,
+//     and they are why this task mounts what exists instead of inventing routes on the way past. E19 T8b/T9
+//     own them (docs/superpowers/plans/phase-19-integration-wiring.md, T8).
+//
+//   - The gateway's in-memory maps are now a LONG-LIVED daemon's, not a fixture's (E17 T9 marked them
+//     "fixture scale" when the only caller was a test): Gateway.artifacts is never deleted (every output,
+//     each ≤8MB, is retained for the process lifetime) and Gateway.sessions expiry is CHECKED on every
+//     request but never swept. The durable object store (E09) is the reuse path.
+//
+//   - NO DRAIN. serveWithGracefulDrain drains only the runner gateway and workers.Gateway has no Drain, so a
+//     control-plane swap 401s every worker (sessions and claims are in-process) and leaves leased jobs
+//     `leased` in the journal for the reaper that (see above) does not exist yet. Recovery is T9's.
 func startCapabilityWorkerGateway(addr string, repo *store.Store, secrets *identity.SecretStore) *workers.Gateway {
 	if strings.TrimSpace(addr) == "" {
 		return nil
@@ -1267,13 +1330,41 @@ func startCapabilityWorkerGateway(addr string, repo *store.Store, secrets *ident
 	// Bind synchronously so a bind failure fails fast, for the same reason the runner listener does: the
 	// public /healthz must not report healthy while a configured worker surface silently never came up —
 	// that would recreate the very lie this wiring closed.
-	ln, err := net.Listen("tcp", addr)
+	ln, err := listenCapabilityWorker(addr)
 	if err != nil {
 		log.Fatalf("bind capability worker gateway listener: %v", err)
 	}
 	log.Printf("palai capability worker gateway listening on %s", addr)
 	go func() { log.Fatal(srv.Serve(ln)) }()
 	return gateway
+}
+
+// listenCapabilityWorker binds the capability-worker gateway's listener, REFUSING any address that is not
+// an explicit loopback host. That listener is cleartext (see startCapabilityWorkerGateway's first ceiling
+// for what travels on it), and configvalidate.go's edge check inspects only host-PUBLISHED ports — so an
+// operator copying compose.yaml's `PALAI_RUNNER_LISTEN_ADDR: ":8443"` shape into
+// PALAI_CAPABILITY_WORKER_LISTEN_ADDR would otherwise get a wildcard-bound secret-redemption endpoint with
+// no warning at all. Refusing the bind is what makes accidental remote exposure impossible rather than
+// merely documented; TLS parity with startRunnerGateway is the upgrade path for a real off-host fleet.
+func listenCapabilityWorker(addr string) (net.Listener, error) {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return nil, fmt.Errorf("PALAI_CAPABILITY_WORKER_LISTEN_ADDR %q is not a host:port address: %w", addr, err)
+	}
+	// An empty host is the WILDCARD bind (":8444") — the accident this guards, so it must not read as
+	// loopback. "localhost" is the documented loopback name; a poisoned resolver is not the accident here.
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	loopback := host == "localhost"
+	if ip := net.ParseIP(host); ip != nil {
+		loopback = ip.IsLoopback()
+	}
+	if !loopback {
+		return nil, fmt.Errorf("refusing to bind the CLEARTEXT capability-worker gateway to non-loopback address %q: "+
+			"the enrollment token, the workload bearer on every request, and the redeemed secret VALUE would all "+
+			"travel unencrypted. Bind loopback and terminate TLS in front of it, or give this listener the runner "+
+			"gateway's mTLS (tls.Listen with PALAI_RUNNER_SERVER_CERT/KEY + ClientCAs) before it crosses a network", addr)
+	}
+	return net.Listen("tcp", addr)
 }
 
 // mustGatewayEnv reads a required gateway env var, failing fast when the runner listener

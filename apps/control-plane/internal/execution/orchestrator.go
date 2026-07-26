@@ -108,6 +108,13 @@ type Orchestrator struct {
 	// ponytail: one global deadline for the basic tier; a per-project deadline (a config_policy field,
 	// T2) is a later refinement, not a gate requirement.
 	queueDeadline time.Duration
+	// remoteAgents resolves a REGISTERED remote A2A agent (a2a_remote_agents, §38.5) inside the run's OWN
+	// tenant; remoteChildren dispatches a delegated child to it (E19 T5). Either nil ⇒ a child.request
+	// naming a remote agent is DENIED — never quietly run on the LOCAL path, which would execute the
+	// delegation on our engine under our credentials, the exact substitution the remote branch exists to
+	// prevent. main.go injects both via SetRemoteChildren.
+	remoteAgents   RemoteAgents
+	remoteChildren RemoteChildRunner
 }
 
 // HookFirer runs a run's registered hooks at a dispatch point and returns the verdict (spec §28.17, E12 T8).
@@ -164,6 +171,14 @@ func (o *Orchestrator) SetReconstructionForbidden(forbidden bool) {
 	o.reconstructionForbidden = forbidden
 }
 
+// SetRemoteChildren wires remote child-run dispatch (E19 T5, §38.5): the registered-agent lookup and the
+// A2A client that dials it. Left unset (either nil), a delegation naming a remote agent is DENIED rather
+// than dispatched — the same fail-closed discipline as SetPublisher, except the fallback here would be a
+// SECURITY substitution (our engine, our credentials) rather than a no-op, so it is refused explicitly.
+func (o *Orchestrator) SetRemoteChildren(agents RemoteAgents, runner RemoteChildRunner) {
+	o.remoteAgents, o.remoteChildren = agents, runner
+}
+
 // SetQueueDeadline sets the §20.12 admission queue deadline (see the field doc). Left unset (zero),
 // a run is never timed out for queue age — the pre-E13-T7 behaviour, so every existing tier is
 // bit-unchanged. main.go injects it from PALAI_QUEUE_DEADLINE.
@@ -200,6 +215,10 @@ type attemptState struct {
 	budgetBounded bool
 	childReserved int
 	childRunIDs   []string
+	// remoteChildren counts the delegations this attempt sent to REMOTE agents (E19 T5). A remote child
+	// takes no local ChildRun, so childRunIDs cannot count it — and an uncounted child escapes the fan-out
+	// bound entirely, which is why the gate reads fanoutUsed() rather than len(childRunIDs).
+	remoteChildren int
 	// Workspace provisioning state (spec §29.7-29.8, E09 Task 10): the logical workspace the root run
 	// provisioned and its writer lease, released at attempt end. Empty on a run with no attached binding.
 	workspaceID      string
@@ -223,6 +242,11 @@ type attemptState struct {
 	// records (spec §26.6, E12 T4), so an async-callback ledger row is keyed to the boundary it belongs to.
 	lastModelRequestID string
 }
+
+// fanoutUsed is the number of children this attempt has already dispatched: the local ChildRuns plus the
+// remote delegations, which have no run row to be counted by (E19 T5). The fan-out gate reads this, never
+// len(childRunIDs) — an uncounted child is an unbounded one.
+func (st *attemptState) fanoutUsed() int { return len(st.childRunIDs) + st.remoteChildren }
 
 // budgetRemaining reports the parent budget a child may still intersect against: the total less
 // this run's own model spend and the budget already reserved to earlier children. Meaningful only

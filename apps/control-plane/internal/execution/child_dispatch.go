@@ -5,16 +5,35 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 
+	"github.com/palgroup/palai/adapters/integrations/a2a"
 	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
+	"github.com/palgroup/palai/packages/egress"
 )
+
+// RemoteAgents resolves a REGISTERED remote A2A agent row (a2a_remote_agents, §38.5, E19 T5).
+// *a2a.Store satisfies it. The lookup is tenant-scoped by construction — org/project are parameters, not
+// anything the child.request supplies — so a run can only reach an agent its OWN project registered, and a
+// frame naming another tenant's registration id resolves to nothing (no existence oracle).
+type RemoteAgents interface {
+	GetRemoteAgent(ctx context.Context, org, project, id string) (a2a.RemoteAgent, bool, error)
+}
+
+// RemoteChildRunner dispatches one delegated child objective to a resolved remote agent. *a2a.Client
+// satisfies it. The signature is the structural half of "no credential inheritance" (A2A-005/SUB-007):
+// it takes the resolved agent and the child's own request and NOTHING else, so there is no parameter
+// through which the parent's credential — or the parent's context — could travel. Do not add one.
+type RemoteChildRunner interface {
+	RemoteChildRun(ctx context.Context, agent a2a.RemoteAgent, req a2a.RemoteChildRequest) (a2a.RemoteChildResult, error)
+}
 
 // Delegation bounds (spec §25.18). ponytail: fixed here until per-project delegation config
 // arrives with the E-series carve-out — the same fixed-limits pattern as defaultAttemptLimits.
@@ -114,6 +133,10 @@ type childSpec struct {
 	// parent releases its compute at this boundary and the child terminal wakes it, rather than the
 	// parent holding the engine idle while the child runs inline. It rides the child.request frame.
 	Detach bool
+	// RemoteAgent names a REGISTERED a2a_remote_agents row (§38.5, E19 T5): the delegation is executed by
+	// that remote agent instead of a local engine. Empty — every delegation before E19 — leaves the inline
+	// and detached paths exactly as they were.
+	RemoteAgent string
 }
 
 // childAdmission is the deterministic verdict on one delegation. Denied carries a stable reason
@@ -207,6 +230,9 @@ type delegationSpec struct {
 	// (E10 T8 keystone). Stored in the child's delegation.spec JSONB — no separate column, no migration.
 	ChildRequestID string `json:"child_request_id,omitempty"`
 	Detached       bool   `json:"detached,omitempty"`
+	// RemoteAgent (on an emit spec) seeds a delegation to a REGISTERED remote agent (E19 T5). Like Detach
+	// it rides run.start verbatim, so a config-seeded delegation can name a remote executor.
+	RemoteAgent string `json:"remote_agent,omitempty"`
 }
 
 // runDelegation is a run's delegation column (spec §25.18): Emit (+ the parent Budget children
@@ -248,6 +274,11 @@ func (d runDelegation) emitFrames() []map[string]any {
 		if s.Detach {
 			frame["detach"] = true
 		}
+		// Same discipline for the remote executor (E19 T5): carried only when named, so a local
+		// delegation's frame is byte-identical to before.
+		if s.RemoteAgent != "" {
+			frame["remote_agent"] = s.RemoteAgent
+		}
 		out = append(out, frame)
 	}
 	return out
@@ -263,6 +294,7 @@ func decodeChildSpec(data map[string]any) childSpec {
 	spec.WorkspaceMode, _ = data["workspace_mode"].(string)
 	spec.Required, _ = data["required"].(bool)
 	spec.Detach, _ = data["detach"].(bool)
+	spec.RemoteAgent, _ = data["remote_agent"].(string)
 	if tools, ok := data["tools"].([]any); ok {
 		for _, t := range tools {
 			if s, ok := t.(string); ok {
@@ -314,15 +346,17 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 		return err
 	}
 	remaining, bounded := st.budgetRemaining()
-	admission := admitChild(spec, st.depth, len(st.childRunIDs), remaining, bounded, policy, parentTools)
+	admission := admitChild(spec, st.depth, st.fanoutUsed(), remaining, bounded, policy, parentTools)
 	if admission.Denied {
-		denied, _ := json.Marshal(map[string]any{"child_request_id": spec.ChildRequestID, "role": spec.Role, "model": spec.Model, "required": spec.Required, "reason": admission.Reason})
-		if err := o.spine.JournalChildEvent(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), eventChildDenied, denied); err != nil {
-			return err
-		}
-		return st.ch.Send(ctx, o.frame(st, "child.result", map[string]any{
-			"child_request_id": spec.ChildRequestID, "status": "denied", "reason": admission.Reason,
-		}, string(frame.ID)))
+		return o.denyChild(ctx, st, spec, frame, admission.Reason)
+	}
+
+	// A delegation naming a REGISTERED remote agent is executed by that remote, not by us (E19 T5, §38.5):
+	// it takes no local ChildRun and never touches the local engine. It is scored by the SAME gate above —
+	// depth, fan-out, capability, routability, budget — because the branch changes the EXECUTOR, never the
+	// bounds a delegation is admitted under.
+	if spec.RemoteAgent != "" {
+		return o.dispatchRemoteChild(ctx, st, spec, frame)
 	}
 
 	childWS, _ := resolveChildWorkspace(spec.WorkspaceMode) // admitChild already validated the mode
@@ -383,6 +417,142 @@ func (o *Orchestrator) dispatchChild(ctx context.Context, st *attemptState, fram
 	// outcome regardless and report it to the engine, which decides required-vs-optional.
 	_ = o.ExecuteAttempt(ctx, childDesc)
 	return o.foldChildResult(ctx, st, spec.ChildRequestID, childRunID, frame)
+}
+
+// denyChild journals child.denied.v1 on the parent and replies the denied child.result the engine folds
+// (required → fail, optional → skip). One shape for every refusal — the admission gate's and E19 T5's
+// remote refusals — so a new refusal reason can never grow a second, weaker denial frame.
+func (o *Orchestrator) denyChild(ctx context.Context, st *attemptState, spec childSpec, frame contracts.EngineFrame, reason string) error {
+	denied, _ := json.Marshal(map[string]any{"child_request_id": spec.ChildRequestID, "role": spec.Role, "model": spec.Model, "required": spec.Required, "reason": reason})
+	if err := o.spine.JournalChildEvent(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), eventChildDenied, denied); err != nil {
+		return err
+	}
+	return st.ch.Send(ctx, o.frame(st, "child.result", map[string]any{
+		"child_request_id": spec.ChildRequestID, "status": "denied", "reason": reason,
+	}, string(frame.ID)))
+}
+
+// dispatchRemoteChild executes an admitted delegation on a REGISTERED remote A2A agent (E19 T5, §38.5).
+// The remote is the executor: there is NO local ChildRun row and no local engine dial, so the parent's
+// compute is held only for the duration of the remote call and the fold is the remote's reply.
+//
+// The four guarantees E17 T3 built into the client are STRUCTURAL and this wiring keeps them that way:
+//
+//   - UNTRUSTED result: the reply is DATA. The folded frame is built from FIXED keys — nothing the remote
+//     returned becomes a field of its own — so a remote cannot grant a tool, a capability or an
+//     instruction by shaping its JSON. It is labelled trust_class=untrusted regardless of what the remote
+//     calls itself.
+//   - NO credential inheritance: the ONLY bearer is the agent connection's own redeemed secret, resolved
+//     inside the client from auth_connection_ref. Nothing here reaches for the parent's or the platform's
+//     token, and RemoteChildRunner has no parameter that could carry one. An agent with no credential of
+//     its own dials WITHOUT Authorization — it does not borrow ours.
+//   - Connection-scoped remote ids: the remote's task id is journaled only NEXT TO the agent id that
+//     minted it (the only form in which it means anything) and never becomes a canonical id — the folded
+//     frame carries no child_run_id at all, because no local run exists to name.
+//   - MINIMUM context: the remote receives the child's objective. The parent's transcript, artifacts,
+//     session and tools are not parameters of the dispatch.
+//
+// A refusal (no client wired, unknown or disabled agent) is a DENIAL, never a fall-through to the inline
+// path: running a delegation that asked for a remote executor on OUR engine under OUR credentials is the
+// substitution this branch exists to prevent.
+//
+// ponytail ceiling — AT-LEAST-ONCE ACROSS A PARENT CRASH: a remote child has no local run row, so a parent
+// that crashes after the remote completed but before the fold committed re-emits the same child.request
+// and dispatches to the remote AGAIN (the local path folds a terminal child's committed row instead). This
+// is the same re-execution the inline path already performs for a non-terminal child; closing it needs a
+// durable remote-child result — i.e. exactly the run row a remote child deliberately does not have.
+//
+// Two more named ceilings, so nobody has to infer them:
+//   - DETACH IS IGNORED HERE. detach releases the parent's compute against a DURABLE job that wakes it, and
+//     a remote child has no job and no waker. A frame carrying both runs synchronously; it is not an error,
+//     it is a request this branch cannot honour, and honouring it needs the same durable state as above.
+//   - CANCEL DOES NOT PROPAGATE (the remote half of SUB-005). A canceled parent cancels its non-terminal
+//     ChildRuns; a remote child is not a run and the client has no cancel call at all, so the remote task
+//     keeps going and its reply is simply never folded. The attempt's ctx aborts OUR request, nothing more.
+//   - max_cost_cents IS NOT ENFORCED. The registered agent carries the field and nothing reads it — the
+//     spend happens inside the remote, where this process has no visibility and the reply reports no cost.
+//     The parent's OWN budget is untouched by a remote child (it spends none of our tokens), so a remote
+//     delegation is bounded by depth and fan-out, not by money.
+func (o *Orchestrator) dispatchRemoteChild(ctx context.Context, st *attemptState, spec childSpec, frame contracts.EngineFrame) error {
+	if o.remoteAgents == nil || o.remoteChildren == nil {
+		return o.denyChild(ctx, st, spec, frame, "remote_unavailable")
+	}
+	// Tenant-scoped: org/project come from the RUN, never from the frame — a delegation cannot name
+	// another tenant's registration (§38.6, the one-admission-identity rule applied to delegation).
+	agent, found, err := o.remoteAgents.GetRemoteAgent(ctx, st.tenant.Organization, st.tenant.Project, spec.RemoteAgent)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return o.denyChild(ctx, st, spec, frame, "remote_agent_unknown")
+	}
+	if !agent.Enabled {
+		return o.denyChild(ctx, st, spec, frame, "remote_agent_disabled")
+	}
+
+	requested, _ := json.Marshal(map[string]any{
+		"child_request_id": spec.ChildRequestID, "role": spec.Role, "required": spec.Required,
+		"remote_agent": agent.ID, "executor": "remote",
+	})
+	if err := o.spine.JournalChildEvent(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), eventChildRequested, requested); err != nil {
+		return err
+	}
+	st.remoteChildren++ // counted against fan-out before the dial, so a failing remote still consumes its slot
+
+	// The dispatch. RunID scopes any artifact ingested from the reply to the CANONICAL parent run; it is
+	// not sent to the remote (the client puts only the objective on the wire).
+	res, dispatchErr := o.remoteChildren.RemoteChildRun(ctx, agent, a2a.RemoteChildRequest{
+		ChildRequestID: spec.ChildRequestID, RunID: string(st.attempt.RunID), Objective: spec.Objective,
+	})
+	status, output, reason := res.Status, res.Output, ""
+	switch {
+	case dispatchErr != nil:
+		// The remote's failure is not the parent's (the inline path's rule): the child fails honestly and
+		// the engine treats it per the delegation's required flag. The reason is a STABLE classification —
+		// never the error text, which is remote-influenced and would put untrusted bytes in the fold.
+		status, output, reason = "failed", "", remoteFailureReason(dispatchErr)
+	case status != "completed":
+		status, output, reason = "failed", "", "remote_task_not_completed"
+	}
+
+	// The remote task id is journaled BESIDE the agent that minted it — the only scope in which it resolves
+	// — and never anywhere it could pass for one of ours.
+	completed, _ := json.Marshal(map[string]any{
+		"child_request_id": spec.ChildRequestID, "status": status, "reason": reason,
+		"remote_agent": agent.ID, "remote_task_id": res.RemoteTaskID,
+	})
+	if err := o.spine.JournalChildEvent(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), eventChildCompleted, completed); err != nil {
+		return err
+	}
+	data := map[string]any{
+		"child_request_id": spec.ChildRequestID, "status": status, "output": output,
+		"trust_class": trustUntrusted,
+	}
+	if reason != "" {
+		data["reason"] = reason
+	}
+	return st.ch.Send(ctx, o.frame(st, "child.result", data, string(frame.ID)))
+}
+
+// trustUntrusted labels every remote child result on the frame the engine folds. It is FIXED — a remote's
+// own claim about its trust class is one more untrusted field, never the label (A2A-005).
+const trustUntrusted = "untrusted"
+
+// remoteFailureReason classifies a failed remote dispatch into a stable, non-remote-influenced reason the
+// parent journals and the engine folds. An egress denial (SSRF / private target / a redirect revalidated
+// into one) is called out separately from a protocol or transport failure because they are different
+// operator problems; everything else is one bucket rather than a leaked message.
+func remoteFailureReason(err error) string {
+	switch {
+	case errors.Is(err, egress.ErrDenied):
+		return "remote_egress_denied"
+	case errors.Is(err, a2a.ErrVersionUnsupported), errors.Is(err, a2a.ErrExtensionNotAllowed):
+		return "remote_card_refused"
+	case errors.Is(err, a2a.ErrNoSecretResolver):
+		return "remote_credential_unavailable"
+	default:
+		return "remote_dispatch_failed"
+	}
 }
 
 // rebindChild handles a re-emitted child.request whose child already exists (E10 T8, DET-001 keystone):

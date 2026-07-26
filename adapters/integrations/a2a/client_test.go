@@ -85,7 +85,11 @@ func newFakeRemote(cfg fakeRemoteConfig) *fakeRemote {
 		auth := r.Header.Get("Authorization")
 		fr.gotAuth.Store(&auth)
 		if cfg.replyKind == "message" {
-			writeJSON(w, http.StatusOK, BuildDirectMessage(text, "rmsg_1", "rctx_1"))
+			msg := BuildDirectMessage(text, "rmsg_1", "rctx_1")
+			if cfg.replyFile != nil {
+				msg.Parts = append(msg.Parts, Part{Kind: "file", File: cfg.replyFile})
+			}
+			writeJSON(w, http.StatusOK, msg)
 			return
 		}
 		parts := []Part{{Kind: "text", Text: text}}
@@ -326,6 +330,31 @@ func TestA2AClientIngestsAndScansPushedFile(t *testing.T) {
 	noSink := harnessClient(func(string, string) ([]byte, error) { return []byte("s"), nil }, nil)
 	if _, err := noSink.SendMessage(context.Background(), agent, RemoteRequest{RunID: "run_canon", Objective: "x"}); !isErr(err, ErrFileDropWouldOccur) {
 		t.Fatalf("pushed file with no sink error = %v, want ErrFileDropWouldOccur", err)
+	}
+}
+
+// TestA2AClientIngestsAPushedFileOnTheDIRECTMESSAGEBranchToo closes the drop E19 T5 inherited: a remote that
+// answers with a direct MESSAGE (not a task) carrying a file part used to have that part silently discarded
+// — fail-safe, but a legitimate file was lost with no signal. Now the message branch runs the SAME ingest,
+// and with no sink wired it REFUSES rather than drops, exactly like the task branch.
+func TestA2AClientIngestsAPushedFileOnTheDIRECTMESSAGEBranchToo(t *testing.T) {
+	file := &FilePart{Name: "payload.bin", MimeType: "application/octet-stream", Bytes: "aGVsbG8="}
+	fr := newFakeRemote(fakeRemoteConfig{replyKind: "message", replyFile: file})
+	defer fr.close()
+	agent := registeredAgent(fr, "conn", nil)
+	secrets := func(string, string) ([]byte, error) { return []byte("s"), nil }
+
+	files := &fakeFiles{}
+	res, err := harnessClient(secrets, files).SendMessage(context.Background(), agent, RemoteRequest{RunID: "run_canon", Objective: "x"})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if files.count() != 1 || len(res.IngestedArtifactIDs) != 1 {
+		t.Fatalf("direct-message file ingested %d times, ids=%v — want exactly one scanned + stored artifact",
+			files.count(), res.IngestedArtifactIDs)
+	}
+	if _, err := harnessClient(secrets, nil).SendMessage(context.Background(), agent, RemoteRequest{RunID: "run_canon", Objective: "x"}); !isErr(err, ErrFileDropWouldOccur) {
+		t.Fatalf("direct-message file with no sink error = %v, want ErrFileDropWouldOccur (never a silent drop)", err)
 	}
 }
 
