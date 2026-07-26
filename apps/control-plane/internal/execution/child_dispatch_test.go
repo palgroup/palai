@@ -116,10 +116,11 @@ func TestAdmitChildCapabilityAndRoutability(t *testing.T) {
 // LOCAL delegation's frame stays byte-identical to before (no new key) — the same discipline E10 T8 used for
 // detach, so an existing golden frame and its request_hash are untouched.
 func TestRemoteAgentRidesTheChildRequestOnlyWhenNamed(t *testing.T) {
-	frames := runDelegation{Emit: []delegationSpec{
-		{Role: "local", Objective: "here"},
-		{Role: "remote", Objective: "there", RemoteAgent: "a2arem_7"},
-	}}.emitFrames()
+	// Start from the STORED delegation JSONB, not a Go literal: the create body rides through
+	// resolveDelegations as raw JSON, so this is the shape the column actually holds.
+	frames := parseRunDelegation([]byte(
+		`{"emit":[{"role":"local","objective":"here"},{"role":"remote","objective":"there","remote_agent":"a2arem_7"}]}`,
+	)).emitFrames()
 
 	if _, present := frames[0]["remote_agent"]; present {
 		t.Fatalf("a LOCAL delegation's frame gained a remote_agent key: %+v", frames[0])
