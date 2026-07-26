@@ -94,6 +94,15 @@ A non-zero count REFUSES this gate. Zero blockers is not zero risk: read `SUP-2`
 comparisons ship defeated) and `AUD-1` (a retention purge reads as tampering) before treating it as an
 all-clear.
 
+## The live anchor is a JOURNEY leg, not a bundle case
+
+`scripts/uat/stable-release PROVIDER=provider-one` drives ONE real single-step provider run — E08's
+rule holds, the engine opens no tool to a real provider, so a live run is single-step BY
+CONSTRUCTION. It is deliberately NOT a case in this bundle: E18 owns no live-provider UAT id, and
+writing a real provider receipt into a manifest with no live-provider case to gate it would be the
+marker-alone-is-never-proof pattern this verifier refuses everywhere else. The receipt lives in the
+journey transcript; what the bundle carries is what the bundle can gate.
+
 ## What this gate does NOT claim
 
 - **L-1** — a real CI release run: protected environment, two maintainers, workflow-identity provenance, a Sigstore/KMS signature and a transparency-log entry (E18 §6 leg 1)

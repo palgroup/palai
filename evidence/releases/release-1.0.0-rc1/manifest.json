@@ -26,7 +26,7 @@
           "sha256:84b142c1275fea19812abc75fced3f5e424296fcb76c00ac5386757066abed17"
         ],
         "index_digest": "sha256:acc83d895025a67d95cccd5152360e690f2bc68d4efd55a90ff9ba166e8561db",
-        "offline_evidence": "scripts/release/release_verify_test.go TestReleaseVerifyOfflineNetworkNone — the whole verify re-run inside a container with NO network device, gated on an already-loaded tool image (PALAI_RELEASE_TOOL_IMAGE); without it the run says the leg is UNPROVEN rather than skipping quietly",
+        "offline_evidence": "scripts/release/release_verify_test.go TestReleaseVerifyOfflineNetworkNone — the whole verify re-run inside a container with NO network device, printing `release-verify: OK ... verified OFFLINE` plus the two ceilings the container really has (GIT ABSENT, and the SDK packages UNVERIFIED by that run). The leg is operator-gated on an already-loaded openssl+python3 image (PALAI_RELEASE_TOOL_IMAGE) and SKIPS without one, so scripts/uat/stable-release RESOLVES the image and then asserts `--- PASS: TestReleaseVerifyOfflineNetworkNone` BY NAME, exiting rather than reporting green over a skip",
         "offline_verified": true,
         "provenance_builder": "local-macos-session",
         "release_dir": "scripts/release: build.sh --no-images --version 18.0.0 --cli-targets darwin/arm64 --runner-archs arm64, rolled up by sbom-tool.py and attested + signed by provenance.sh (release_verify_test.go attestedRelease), verified by scripts/release/release-verify.sh",

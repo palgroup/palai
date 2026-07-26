@@ -443,7 +443,7 @@ func buildStableReleaseManifest(t *testing.T) []byte {
 		"artifact_digests": supplyChainArtifactDigests, "signed_root": supplyChainSignedRoot,
 		"signature_algorithm": uat.CanonicalReleaseSigner,
 		"offline_verified":    true,
-		"offline_evidence":    "scripts/release/release_verify_test.go TestReleaseVerifyOfflineNetworkNone — the whole verify re-run inside a container with NO network device, gated on an already-loaded tool image (PALAI_RELEASE_TOOL_IMAGE); without it the run says the leg is UNPROVEN rather than skipping quietly",
+		"offline_evidence":    "scripts/release/release_verify_test.go TestReleaseVerifyOfflineNetworkNone — the whole verify re-run inside a container with NO network device, printing `release-verify: OK ... verified OFFLINE` plus the two ceilings the container really has (GIT ABSENT, and the SDK packages UNVERIFIED by that run). The leg is operator-gated on an already-loaded openssl+python3 image (PALAI_RELEASE_TOOL_IMAGE) and SKIPS without one, so scripts/uat/stable-release RESOLVES the image and then asserts `--- PASS: TestReleaseVerifyOfflineNetworkNone` BY NAME, exiting rather than reporting green over a skip",
 		"tamper_arms":         uat.SupplyChainTamperArms,
 		"tamper_rejected":     len(uat.SupplyChainTamperArms),
 		"sbom_formats":        uat.CanonicalSBOMFormats,

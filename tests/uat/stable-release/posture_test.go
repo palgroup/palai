@@ -156,6 +156,15 @@ func sh3PostureReport(t *testing.T) string {
 	p("all-clear.")
 	p("")
 
+	p("## The live anchor is a JOURNEY leg, not a bundle case")
+	p("")
+	p("`scripts/uat/stable-release PROVIDER=provider-one` drives ONE real single-step provider run — E08's")
+	p("rule holds, the engine opens no tool to a real provider, so a live run is single-step BY")
+	p("CONSTRUCTION. It is deliberately NOT a case in this bundle: E18 owns no live-provider UAT id, and")
+	p("writing a real provider receipt into a manifest with no live-provider case to gate it would be the")
+	p("marker-alone-is-never-proof pattern this verifier refuses everywhere else. The receipt lives in the")
+	p("journey transcript; what the bundle carries is what the bundle can gate.")
+	p("")
 	p("## What this gate does NOT claim")
 	p("")
 	for _, leg := range uat.StableAttestationLegs {

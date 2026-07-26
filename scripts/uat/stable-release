@@ -27,8 +27,12 @@
 #     2. the SHIPPED /v1/capabilities map, served over real HTTP by the real router, asserted BIT-EQUAL to
 #        the CROSS-EPIC recompute AND to the snapshot the RC bundle commits. This is what stops the
 #        bundle's posture from being a number checking itself.
-#     3. SEC-101: the real release verifier, the six-arm tamper matrix, the fail-closed resolution and the
-#        air-gap verifier-swap negatives (scripts/release + deploy/airgap).
+#     3. SEC-101: the real release verifier over a real staged release, the six-arm tamper matrix, the
+#        fail-closed resolution, the air-gap verifier-swap negatives, and the OFFLINE (--network none)
+#        verify in a container with no network device. That last leg is operator-gated on a loaded
+#        openssl+python3 image and SKIPS without one, so this target RESOLVES the image and then asserts
+#        the leg reported PASS BY NAME — the bundle declares offline_verified:true and a skipped leg does
+#        not back it. It EXITS rather than reporting green over a skip.
 #     4. SEC-103's Docker-free half: the audit chain, its four typed alerts, the stale-checkpoint rollback
 #        arm and the AUD-1 retention-purge pin (packages/audit).
 #     5. THE CROSS-EPIC RE-VERIFY: every committed bundle through the shipped `scripts/evidence/verify`,
@@ -69,8 +73,51 @@ go test -count=1 ./tests/uat/stable-release/...
 echo "uat-stable-release: [2/6] the SHIPPED /v1/capabilities map is bit-equal to the CROSS-EPIC recompute" >&2
 go test -count=1 -run 'TestServedCapabilityTiersEqualTheAggregateRecompute|TestRCBundleSnapshotIsWhatTheRouterServes|TestServedCapabilityTiersEqualTheRecompute|TestUngovernedCapabilitiesAreNotSilentlyGoverned' ./apps/control-plane/api
 
-echo "uat-stable-release: [3/6] SEC-101 (release verifier + six-arm tamper matrix + air-gap fail-closed) and SEC-103's Docker-free half" >&2
-go test -count=1 ./scripts/release/... ./deploy/airgap/... ./packages/audit/...
+# The OFFLINE (--network none) leg is operator-gated on an already-loaded openssl+python3 image and SKIPS
+# without one. The bundle's SupplyChainProof declares offline_verified:true and NAMES that very test, so a
+# run in which it skipped does NOT back the claim — this target EXITS rather than reporting green over it
+# (the uat-extensions missing-pnpm precedent: a silently unrun backing leg is the hole the co-run closes).
+tool_image="${PALAI_RELEASE_TOOL_IMAGE:-}"
+if [ -z "$tool_image" ]; then
+  for candidate in palai/reference-engine:local 127.0.0.1:28743/palai/reference-engine:0.1.0; do
+    if docker image inspect "$candidate" >/dev/null 2>&1; then tool_image="$candidate"; break; fi
+  done
+fi
+if [ -z "$tool_image" ]; then
+  echo "uat-stable-release: the release-1.0.0-rc1 bundle claims offline_verified:true and names" >&2
+  echo "  TestReleaseVerifyOfflineNetworkNone as its evidence. That test SKIPS without an already-loaded" >&2
+  echo "  openssl+python3 image, and a skipped leg does not back the claim. Load one and set" >&2
+  echo "  PALAI_RELEASE_TOOL_IMAGE=<image> (the reference engine qualifies)." >&2
+  exit 2
+fi
+
+echo "uat-stable-release: [3/6] SEC-101 (release verifier + six-arm tamper matrix + air-gap fail-closed +" >&2
+echo "  the --network none offline verify on $tool_image) and SEC-103's Docker-free half" >&2
+release_log="$(mktemp)"
+trap 'rm -f "$release_log"' EXIT
+PALAI_RELEASE_TOOL_IMAGE="$tool_image" PALAI_PROVENANCE_TOOL_IMAGE="$tool_image" \
+  go test -count=1 -v ./scripts/release/... | tee "$release_log"
+go test -count=1 ./deploy/airgap/... ./packages/audit/...
+
+# ANTI-SKIP: assert by NAME that the legs the bundle's claims rest on actually reported PASS. `ok` on the
+# package is not enough — every one of them skips quietly without its tool image.
+for leg in TestReleaseVerifyOfflineNetworkNone TestReleaseVerifyOfflineHonoursTheRevocationList \
+           TestProvenanceOfflineVerifyNetworkNone TestReleaseVerifyTamperMatrix \
+           TestReleaseVerifyAcceptsACleanRelease TestReleaseVerifyResolutionIsFailClosed; do
+  if ! grep -q -- "--- PASS: $leg" "$release_log"; then
+    echo "uat-stable-release: $leg did not report PASS — a SKIPPED leg is not evidence for the bundle's" >&2
+    echo "  supply-chain claim (grep the transcript above for '--- SKIP: $leg')" >&2
+    exit 1
+  fi
+done
+# The one leg that legitimately does not run here, said out loud rather than left implicit: TestSBOMPipelineLive
+# needs digest-pinned syft+grype images. The staged release above carries T2's COMMITTED scanner fixtures, which
+# is exactly what SEC-101's case text says, and the live SBOM pipeline is `go test -run TestSBOMPipelineLive`.
+if grep -q -- "--- SKIP: TestSBOMPipelineLive" "$release_log"; then
+  echo "uat-stable-release: NOTE — TestSBOMPipelineLive SKIPPED (no syft/grype images loaded): the SBOM" >&2
+  echo "  documents in this run are T2's committed scanner fixtures, not freshly generated ones. SEC-101's" >&2
+  echo "  case text says so; nothing here claims a live scan." >&2
+fi
 
 echo "uat-stable-release: [4/6] THE CROSS-EPIC RE-VERIFY: every committed bundle through the shipped verifier" >&2
 bundles=0
