@@ -220,11 +220,20 @@ func main() {
 	// HTTP client; PALAI_SLACK_API_BASE_URL overrides Slack's own base for a staging/proxied deployment and
 	// is empty in production (⇒ https://slack.com/api). The bot token is redeemed from bot_token_ref at call
 	// time by the same org-scoped resolver.
+	//
+	// The REGISTRATION half (E19 T9) rides the same store through its own seam: until it existed,
+	// CreateSlackConnection had zero non-test callers, so an operator who had just been handed a signing
+	// secret and a bot token had NO way to register the workspace except hand-written SQL — which made the
+	// phase's own promise ("supply the credentials, run the live legs unchanged") untrue at step one. It is
+	// a separate seam from the admission bridge on purpose: registration is a bearer-scoped operator action,
+	// the receivers are unauthenticated signature-verified callbacks.
+	slackStore := extensions.New(repo.Spine().Pool())
 	slackBridge := extensions.NewSlackAdmitter(
-		extensions.New(repo.Spine().Pool()), repo, slackSecretResolver,
+		slackStore, repo, slackSecretResolver,
 		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns}).
 		WithDecisions(repo.Spine(), http.DefaultClient, os.Getenv("PALAI_SLACK_API_BASE_URL"))
-	routerOpts = append(routerOpts, api.WithSlack(slackBridge), api.WithSlackInteractions(slackBridge))
+	routerOpts = append(routerOpts, api.WithSlack(slackBridge), api.WithSlackInteractions(slackBridge),
+		api.WithSlackConnections(extensions.NewSlackRegistry(slackStore)))
 	// The queue bridges (E19 T6, spec §34.1-34.5). ONE store serves all three halves: the admin surface
 	// mounted here, the supervised consume→admit bridge, and the outbound DeliverDue pump (both started
 	// below). Unconditional like WithUsage — the reference adapter's broker is this deployment's own

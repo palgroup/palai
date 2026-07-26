@@ -58,6 +58,8 @@ type routerConfig struct {
 	slack       SlackEventsAPI // the Slack Events API admission bridge (E19 T1); nil ⇒ route unmounted
 	// slackInteractions is the Slack interactivity decision bridge (E19 T2); nil ⇒ route unmounted.
 	slackInteractions SlackInteractionsAPI
+	// slackConnections is the workspace registration admin surface (E19 T9); nil ⇒ routes unmounted.
+	slackConnections SlackConnectionAPI
 	// queues is the queue-binding admin surface (E19 T6); nil ⇒ routes unmounted, and discovery must not
 	// advertise `queues` at all.
 	queues QueueConnectionAPI
@@ -172,6 +174,20 @@ func WithSlack(events SlackEventsAPI) RouterOption {
 // mount only the inbound half. An unmounted route answers 404 rather than 500 on a nil seam.
 func WithSlackInteractions(interactions SlackInteractionsAPI) RouterOption {
 	return func(c *routerConfig) { c.slackInteractions = interactions }
+}
+
+// WithSlackConnections mounts the workspace REGISTRATION surface (E19 T9, spec §36) on the AUTHENTICATED
+// mux beside the queue-binding admin surface it is modelled on. It is separate from WithSlack for the same
+// reason WithSlackInteractions is: the three surfaces have different collaborators and different auth
+// postures (the two receivers verify a per-request v0 signature and mount unauthenticated; this one is a
+// bearer-scoped operator action), so a stack must be able to mount any subset.
+//
+// It closes the gap that made E19's own handover promise false: until this option existed,
+// CreateSlackConnection had no non-test caller, so "supply the credentials and run the live legs unchanged"
+// would in fact have required hand-written SQL. Mounting does NOT move the tier — `slack` stays preview
+// until §6 leg 1 (a real workspace receipt), and only the E17 T11 recompute writes the word.
+func WithSlackConnections(connections SlackConnectionAPI) RouterOption {
+	return func(c *routerConfig) { c.slackConnections = connections }
 }
 
 // WithMetrics mounts the Prometheus text-exposition surface (E14 Task 6) at GET /metrics on the
