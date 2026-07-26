@@ -312,9 +312,9 @@ func TestSlackInteractionTenantComesOnlyFromTheResolvedConnection(t *testing.T) 
 	defer done()
 
 	forged, _ := json.Marshal(map[string]any{
-		"type": "block_actions",
-		"team": map[string]any{"id": "T100"},
-		"user": map[string]any{"id": "Umapped", "team_id": "T100"},
+		"type":            "block_actions",
+		"team":            map[string]any{"id": "T100"},
+		"user":            map[string]any{"id": "Umapped", "team_id": "T100"},
 		"organization_id": "org_attacker", "project_id": "prj_attacker",
 		"org": "org_attacker", "project": "prj_attacker", "principal_id": "prin_attacker",
 		"channel": map[string]any{"id": "C1"},

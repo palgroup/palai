@@ -108,6 +108,12 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 	// 3. The exact operation. The button's value has to be the hash of the approval the session actually has
 	// open — a stale hash (the head moved, the request was edited) or a hash minted for another operation
 	// decides nothing, and does not even become a command.
+	//
+	// "THE" pending approval, singular, and the limit is inherited rather than introduced: both this read and
+	// ApplyApprovalDecision's own LockPendingApprovalForSession take the session's OLDEST pending publication.
+	// So if a session ever holds two open approvals at once, only the older one is decidable — from Slack or
+	// from the native command surface alike. Refusing here is the same verdict the coordinator would reach,
+	// reached one step earlier and without leaving a pointless command behind.
 	tenant := coordinator.Tenant{Organization: conn.Org, Project: conn.Project}
 	pub, found, err := a.spine.PendingApprovalForSession(ctx, tenant, session)
 	if err != nil {

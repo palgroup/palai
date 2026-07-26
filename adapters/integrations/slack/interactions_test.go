@@ -144,8 +144,12 @@ func TestChannelPacerHoldsSpecialTierPerChannel(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	var waited []time.Duration
 	pacer := &ChannelPacer{
-		Now:   func() time.Time { return now },
-		Sleep: func(_ context.Context, d time.Duration) error { waited = append(waited, d); now = now.Add(d); return nil },
+		Now: func() time.Time { return now },
+		Sleep: func(_ context.Context, d time.Duration) error {
+			waited = append(waited, d)
+			now = now.Add(d)
+			return nil
+		},
 	}
 	ctx := context.Background()
 
