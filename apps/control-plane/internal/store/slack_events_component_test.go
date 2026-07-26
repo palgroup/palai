@@ -49,12 +49,17 @@ type slackFixture struct {
 	url       string
 	secret    []byte
 	botToken  []byte
+	appToken  []byte // the Socket Mode app-level (xapp-) token, E19 T3
 	org       string
 	project   string
 	principal string
 	revision  string
 	team      string
 	botUser   string
+	// apiBase is the local stand-in for https://slack.com/api — chat.* AND apps.connections.open.
+	apiBase string
+	// socket is the Socket Mode half of that stand-in, nil until a test asks for it (see socketPeer).
+	socket *fakeSocketModePeer
 	// secrets is the org-scoped secret bridge's backing map, keyed org+"/"+ref. A test that seeds a SECOND
 	// tenant adds that tenant's own ref here, so a cross-tenant proof runs against a resolver that serves both
 	// — otherwise "the other tenant could not verify" would be an artefact of the fixture, not of the code.
@@ -165,6 +170,7 @@ func newSlackFixture(t *testing.T) *slackFixture {
 	f := &slackFixture{
 		pool: pool, secret: []byte("component-signing-secret-not-a-credential"),
 		botToken: []byte("xoxb-component-fake-not-a-credential"),
+		appToken: []byte("xapp-1-component-fake-not-a-credential"),
 		org:      newID("org"), project: newID("prj"), principal: newID("prin"),
 		revision: newID("arev"), team: strings.ToUpper(newID("T")), botUser: newID("Ubot"),
 		slack: &fakeSlackWebAPI{},
@@ -181,18 +187,25 @@ func newSlackFixture(t *testing.T) *slackFixture {
 		f.revision, f.org, f.project, profileID)
 
 	ext := extensions.New(pool)
-	const signingRef, botRef = "slack/component/signing", "slack/component/bot"
+	const signingRef, botRef, appRef = "slack/component/signing", "slack/component/bot", "slack/component/app"
+	// app_token_ref is E19 T3's: Socket Mode's only authentication is the app-level token at connect. It is
+	// registered here rather than in a second fixture so the SAME workspace binding serves all three transports
+	// — which is the point of the transport-invariance proof in slack_socket_component_test.go.
 	if _, err := ext.CreateSlackConnection(ctx, f.org, f.project, []byte(fmt.Sprintf(
-		`{"team_id":%q,"bot_user_id":%q,"signing_secret_ref":%q,"bot_token_ref":%q,
+		`{"team_id":%q,"bot_user_id":%q,"signing_secret_ref":%q,"bot_token_ref":%q,"app_token_ref":%q,
 		  "allowed_users":["Umapped"],
 		  "default_policy":{"agent_revision_id":%q,"principal_id":%q}}`,
-		f.team, f.botUser, signingRef, botRef, f.revision, f.principal))); err != nil {
+		f.team, f.botUser, signingRef, botRef, appRef, f.revision, f.principal))); err != nil {
 		t.Fatalf("register the Slack workspace: %v", err)
 	}
 
 	// The org-scoped secret bridge, the production resolver's shape: a ref only resolves under the org it was
 	// provisioned in, so a connection can never redeem another tenant's secret.
-	f.secrets = map[string][]byte{f.org + "/" + signingRef: f.secret, f.org + "/" + botRef: f.botToken}
+	f.secrets = map[string][]byte{
+		f.org + "/" + signingRef: f.secret,
+		f.org + "/" + botRef:     f.botToken,
+		f.org + "/" + appRef:     f.appToken,
+	}
 	secrets := func(org, ref string) ([]byte, error) {
 		secret, ok := f.secrets[org+"/"+ref]
 		if !ok {
@@ -202,8 +215,14 @@ func newSlackFixture(t *testing.T) *slackFixture {
 	}
 	// The local stand-in for slack.com/api. The bridge posts to it with a REAL http.Client, so the outbound
 	// half is proven over real HTTP with a real Authorization header rather than against a stubbed Doer.
-	slackAPI := httptest.NewServer(f.slack)
+	//
+	// ONE server serves the whole Slack API surface this stack talks to, because that is how the real one is
+	// laid out: chat.postMessage / chat.update AND apps.connections.open live under the same base
+	// (https://slack.com/api). The Socket Mode routes are wired in slack_socket_component_test.go; a fixture
+	// that never runs one simply never receives a call on them.
+	slackAPI := httptest.NewServer(f.slackAPIMux())
 	t.Cleanup(slackAPI.Close)
+	f.apiBase = slackAPI.URL
 
 	f.spine = repo.Spine()
 	bridge := extensions.NewSlackAdmitter(ext, repo, secrets, api.AdmissionLimits{}).
