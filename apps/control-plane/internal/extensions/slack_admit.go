@@ -205,6 +205,21 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	//
 	// An already-correlated thread takes no lock at all: a chained admission is already single-winner at the
 	// one-active-root index, and locking it would hold a pooled connection for every message.
+
+	// THE THREAD THE APP WAS INVITED INTO LATE (slack_thread.go owns the rule, the bounds and the authority
+	// argument). It runs HERE, before the thread lock, for a reason the lock's own ceiling note explains: the
+	// lock is held on a POOLED CONNECTION across the whole admission, and the pool (MaxConns 8) is what bounds
+	// how many first-events of different threads can be in flight. Doing a Slack round trip inside that window
+	// would make the documented ceiling up to slackThreadFetchBudget worse for every new conversation.
+	//
+	// The cost of being outside it is one rare redundant read: a thread that gets correlated between this probe
+	// and the lock has its fetched history DISCARDED below, because the rule is exact — a thread whose session
+	// we already chain onto contributes no fetched history, ever.
+	var threadNote string
+	if requested == nil && ev.InThread {
+		threadNote = a.threadContext(ctx, conn, ev)
+	}
+
 	if requested == nil {
 		release, locked, err := a.lockThread(ctx, slackThreadLockText(conn, ev))
 		if err != nil {
@@ -220,6 +235,9 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 		if requested, _, err = a.threadSessionOrNil(scoped, conn, ev); err != nil {
 			return api.SlackAdmitOutcome{}, err
 		}
+		if requested != nil {
+			threadNote = "" // the race above: this thread became ours, so its own session carries the history
+		}
 	}
 
 	scope := middleware.Scope{Organization: conn.Org, Project: conn.Project, Principal: target.principal}
@@ -233,7 +251,7 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	// admission; the input says a file was not attached.
 	images, skippedFiles := a.admitImages(ctx, conn, ev)
 
-	input := slackRunInput(ev, images, skippedFiles)
+	input := slackRunInput(ev, "", images, skippedFiles)
 	create := contracts.ResponseCreateRequest{Input: input, Store: true}
 	if target.agentRevisionID != "" {
 		rev := target.agentRevisionID
@@ -258,7 +276,28 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	if err != nil {
 		return api.SlackAdmitOutcome{}, fmt.Errorf("marshal slack projection: %w", err)
 	}
-	rawInput, err := json.Marshal(input)
+	// THE PROMPT AND THE REQUEST IDENTITY ARE DELIBERATELY DIFFERENT STRINGS, and this is the one subtlety in
+	// the thread-history change. `create` above — the thing slackRequestHash hashes — carries the EVENT's input
+	// and only that. The fetched thread history rides here, in the prompt, and not into the hash.
+	//
+	// It has to be this way round, because the two strings answer two different questions:
+	//
+	//   - The HASH answers "is this the same request as the one already reserved under this key?" A redelivery
+	//     must answer yes. Slack retries at +1min and +5min, by which time somebody may well have posted in the
+	//     thread — so a hash over the fetched history would make the SAME event hash differently on its second
+	//     delivery, and SLK-002's replay would come back as an idempotency CONFLICT ("the source event id was
+	//     reused with a different request"). The identity of a Slack request is the EVENT, never the ambient
+	//     state of the conversation around it.
+	//   - The PROMPT answers "what does the model need in order to answer?" That legitimately includes context
+	//     the event does not carry.
+	//
+	// A replay never re-reads this value anyway: the reservation returns the STORED projection, so the second
+	// delivery's prompt is discarded whatever it says.
+	//
+	// The prompt is BUILT AGAIN rather than concatenated, because the input is no longer always a string: with
+	// an image it is a content array, and the note belongs inside that array's first item — its text — not
+	// glued onto the JSON. One function renders both, so the two strings can only differ by the note.
+	rawInput, err := json.Marshal(slackRunInput(ev, threadNote, images, skippedFiles))
 	if err != nil {
 		return api.SlackAdmitOutcome{}, fmt.Errorf("marshal slack input: %w", err)
 	}
@@ -400,6 +439,12 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 // CEILING, named because it is reachable: a correction to a message whose run is still IN FLIGHT does not
 // reach that run — it already carries the old input, and steering it needs the command spine. It answers the
 // question as asked, and the correction takes effect from the next turn.
+//
+// A SECOND ONE, and it is the thread note's rather than the image's: superseding a turn that carried FETCHED
+// THREAD HISTORY (slack_thread.go) drops that history, because the note is glued into the turn's text and
+// nothing here can tell where it ends. Editing the first message of a late-joined thread therefore costs the
+// quoted backlog. The image does not have this problem for a structural reason — it is its own item of the
+// content array, so replacing the text cannot touch it.
 func (a *SlackAdmitter) reviseTurn(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) (api.SlackAdmitOutcome, error) {
 	var (
 		response string
@@ -666,16 +711,34 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 //     them are already bound server-side (runTarget above, from the CONNECTION row). Naming them in the
 //     prompt would put a string that reads like authority in the same channel as text any Slack user can
 //     type — the model cannot tell our "principal_id: p_x" from a user's, so neither may exist.
+//
 //   - The channel / team / user ids. These are SCOPE: allowed_channels is enforced at the top of Admit and
 //     allowed_users on the decision path, both against the connection row. SLK-004's guarantee is unchanged
 //     and STRUCTURAL — a Slack user is never a principal — and it is *stronger* for the id not being in the
 //     prompt at all. An operator who needs to know who wrote still has it: the idempotency reservation is
 //     keyed team+event_id, and the thread correlation row holds (team, channel, thread).
+//
 //   - The raw envelope. It was the whole defect.
-//   - THREAD HISTORY. Not because it does not matter, but because the session already carries it: SLK-003
-//     chains every message in a thread onto one session, and run.start replays that session's prior
-//     assistant turns (execution/history.go). Fetching conversations.replies would need a scope this app is
-//     not granted and would duplicate what the session already knows.
+//
+//   - THREAD HISTORY — CORRECTED, and the old reasoning is left standing beside the correction because it is
+//     the reasoning record and half of it is still right. It read:
+//
+//     "Not because it does not matter, but because the session already carries it: SLK-003 chains every
+//     message in a thread onto one session, and run.start replays that session's prior assistant turns
+//     (execution/history.go). Fetching conversations.replies would need a scope this app is not granted and
+//     would duplicate what the session already knows."
+//
+//     BOTH HALVES WERE WRONG IN DIFFERENT WAYS. "The session already carries it" is true only of a thread the
+//     app was in FROM THE START; a thread that existed BEFORE the app was invited has no session and no
+//     history, which is precisely what a human invites a bot into — and the live case was exactly that
+//     ("özetle" in an existing #centauri thread, answered with "please share the text"). "A scope this app is
+//     not granted" is simply false: `channels:history` IS granted (deploy/slack/app-manifest.yaml, SLK-002)
+//     and so is `im:history` (SLK-010) — verified against the live app's own x-oauth-scopes on 2026-07-27.
+//     What survives is the DUPLICATION worry, and it is the one that shaped the fix: history is fetched ONLY
+//     when this thread has no session to chain onto, so a conversation the app is already in never gets a
+//     second, disagreeing copy of what run.start replays. See slack_thread.go for the rule, the bounds and the
+//     authority argument; the fetched text arrives as an untrusted PREFIX (slackThreadNote) and never through
+//     this function, which stays a pure function of the event.
 //
 // KIND-AWARE, because SLK-005 already classifies these and a prompt that ignores the classification lies:
 // an edit is marked as an edit rather than arriving as a brand-new turn, and a DELETION does not echo the
@@ -689,8 +752,13 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 // so naming it in the prompt would put a gate's input in the same channel as a user's words. The channels
 // the app_context names gate NOTHING; they are a description of what the human has on screen, and they enter
 // as trailing, explicitly untrusted text in the same class as model output. See slackContextNote.
-func slackRunInput(ev slack.Event, images []slackImageAttachment, skippedFiles int) any {
-	text := slackTurnText(ev, images, skippedFiles)
+// threadNote is the FETCHED thread history (slack_thread.go) and it LEADS everything, in whichever shape this
+// returns. It is a parameter rather than something the function reaches for because the caller renders this
+// twice on purpose: once with "" for the value slackRequestHash hashes — request identity is the EVENT, and a
+// second delivery's re-read of a thread somebody has posted in since would otherwise CONFLICT instead of
+// replaying — and once with the note for the prompt that is stored and dispatched. See Admit.
+func slackRunInput(ev slack.Event, threadNote string, images []slackImageAttachment, skippedFiles int) any {
+	text := threadNote + slackTurnText(ev, images, skippedFiles)
 	if len(images) == 0 {
 		return text // the bare string, bit-identical to every input this bridge produced before images
 	}

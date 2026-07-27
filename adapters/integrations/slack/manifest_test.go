@@ -161,4 +161,29 @@ func TestManifestGrantsTheScopesTheSubscribedEventsRequire(t *testing.T) {
 	if !granted["files:read"] {
 		t.Fatal("the manifest does not grant files:read; the shared-image leg (adapters/integrations/slack/files.go) 403s on every fetch, and the only symptom is a run that quietly says it could not attach the file")
 	}
+
+	// THE ONE READ THIS APP MAKES needs a scope too, and it is the same silent failure in the other direction:
+	// these two scopes are granted for the EVENTS above, so unsubscribing an event would look like it only
+	// removed a delivery while actually turning `conversations.replies` into `missing_scope` — and reading a
+	// thread the app was invited into late would degrade with nothing but a log line to show it.
+	//
+	// CONTRACT: https://docs.slack.dev/reference/methods/conversations.replies/ (checked 2026-07-27) — bot
+	// scopes channels:history / groups:history / im:history / mpim:history. Only the first and third are
+	// granted, which is exactly why slack_thread.go treats `missing_scope` as a POSTURE fact: a private channel
+	// (groups:history) and a group DM (mpim:history) are deliberately unreadable.
+	for method, scope := range map[string]string{
+		"conversations.replies (a public channel thread)": "channels:history",
+		"conversations.replies (a DM thread)":             "im:history",
+	} {
+		if !granted[scope] {
+			t.Fatalf("the app calls %s, which needs %q, and the manifest does not grant it", method, scope)
+		}
+	}
+	for _, never := range []string{"groups:history", "mpim:history", "search:read"} {
+		if granted[never] {
+			t.Fatalf("the manifest grants %q. Nothing in this tree reads a private channel, a group DM or the "+
+				"search index, and a granted read scope is a read primitive waiting for a caller — it earns its "+
+				"own authority decision, not a line in a scope list", never)
+		}
+	}
 }

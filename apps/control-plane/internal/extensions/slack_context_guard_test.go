@@ -59,6 +59,31 @@ func TestSlackNoCodePathResolvesAContextEntity(t *testing.T) {
 		"files.info",
 	}
 
+	// ONE METHOD HAS SINCE EARNED ITS AUTHORITY DECISION, and this is that decision written down where the
+	// guard can hold it to a single file.
+	//
+	// `conversations.replies` is now called, for the reason the E20 T3 list could not have anticipated: a
+	// thread the app was INVITED INTO LATE has no session and therefore no history, so "summarise this thread"
+	// was unanswerable (see slack_thread.go, and the corrected reasoning record in slackRunInput). The
+	// authority argument is NOT "the ban was too strict" — it is that this read is keyed on the ADMITTED
+	// EVENT'S OWN channel and thread, both of which have already passed the connection's allowed_channels,
+	// while the ban exists to stop a read keyed on an id SOMEBODY ELSE CHOSE. A context entity is still never a
+	// fetch target, and every other method on the list is still nowhere in the tree.
+	//
+	// So the entry does not disappear from `forbidden` — it moves to an ALLOW-LIST OF ONE FILE. The narrowing
+	// is what keeps the guard load-bearing: a second call site, a resolver in the bridge, or the same literal
+	// appearing in a helper that takes its channel from a payload all fail this test exactly as before. Its
+	// behavioural half is TestSlackContextNeverBecomesAFetchTarget (store) and
+	// TestSlackThreadReadAddressesTheEventNotTheContext, which assert what the calls on the wire ADDRESS.
+	allowed := map[string]string{
+		"conversations.replies": filepath.Join("..", "..", "..", "..", "adapters", "integrations", "slack", "history.go"),
+	}
+
+	// seenAllowed counts each exemption's actual uses. An exemption nobody exercises is a hole left open for
+	// nothing, and — worse for this guard — it would mean the call is no longer where this test believes it is,
+	// so the single-call-site claim above would be about a file that does not make the call.
+	seenAllowed := map[string]int{}
+
 	scanned := 0
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -91,14 +116,19 @@ func TestSlackNoCodePathResolvesAContextEntity(t *testing.T) {
 					value = lit.Value
 				}
 				for _, method := range forbidden {
-					if strings.Contains(value, method) {
-						t.Errorf("%s names the Slack Web API method %q in a string literal. A context entity "+
-							"describes what a USER is looking at, while the run carries the CONNECTION "+
-							"principal's authority — reading a conversation because a context named it is a "+
-							"confused-deputy read primitive (E20 T3). If this call is genuinely wanted, it "+
-							"earns its own authority decision and its own review, not a line that slipped in.",
-							path, method)
+					if !strings.Contains(value, method) {
+						continue
 					}
+					if at, ok := allowed[method]; ok && path == at {
+						seenAllowed[method]++
+						continue
+					}
+					t.Errorf("%s names the Slack Web API method %q in a string literal. A context entity "+
+						"describes what a USER is looking at, while the run carries the CONNECTION "+
+						"principal's authority — reading a conversation because a context named it is a "+
+						"confused-deputy read primitive (E20 T3). If this call is genuinely wanted, it "+
+						"earns its own authority decision and its own review, not a line that slipped in.",
+						path, method)
 				}
 				return true
 			})
@@ -106,6 +136,18 @@ func TestSlackNoCodePathResolvesAContextEntity(t *testing.T) {
 	}
 	// A guard that scanned nothing is a guard that proves nothing — the exact green-by-skip this repo has
 	// shipped eleven times.
+	for method, at := range allowed {
+		if seenAllowed[method] == 0 {
+			t.Errorf("the allow-list exempts %q in %s, and that file does not name it. Either the call moved — in "+
+				"which case the exemption is now covering the wrong file and this guard is no longer holding it to "+
+				"one call site — or the call is gone and the exemption should be deleted.", method, at)
+		}
+		if seenAllowed[method] > 1 {
+			t.Errorf("%q appears %d times in %s. The exemption is for ONE read on the admitted event's own "+
+				"thread; a second occurrence is a second call site, which is exactly what this guard exists to "+
+				"make visible.", method, seenAllowed[method], at)
+		}
+	}
 	if scanned < 10 {
 		t.Fatalf("the guard parsed only %d Slack source files; it must be scanning the whole seam", scanned)
 	}

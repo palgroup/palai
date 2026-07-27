@@ -80,6 +80,12 @@ type Event struct {
 	// For an edit or a delete it is the ORIGINAL message's ts, read off the nested object — NOT the change
 	// event's own top-level ts, which is a different number. That is what makes it a handle at all: an edit
 	// does not change a message's ts, so the ts a correction names is the ts the original event carried.
+	//
+	// IT HAS A SECOND READER, and it wants the same field for the same reason: reading a thread the app was
+	// invited into late (slack_thread.go) gets the triggering message back along with the earlier ones, and
+	// quoting the human's own words at them as "earlier context" is confusing. This is what identifies the turn
+	// to skip — an id comparison rather than a text heuristic. ThreadTS cannot serve there either: inside a
+	// thread it is the root's.
 	MessageTS string
 	// InThread is whether Slack's OWN `thread_ts` was present, i.e. this message belongs to a thread rather
 	// than standing alone at the top of a channel. ThreadTS cannot answer that: it falls back to the message's

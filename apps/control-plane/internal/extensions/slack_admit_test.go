@@ -11,9 +11,11 @@ import (
 // slackTextInput is slackRunInput for an event with NO image attached, and it ASSERTS the shape that case
 // must keep: a bare string. Everything below then reads exactly as it did before images existed, and the
 // no-image path silently becoming a content array fails here rather than inside a confusing comparison.
-func slackTextInput(t *testing.T, ev slack.Event) string {
+//
+// threadNote is optional and almost always absent — only the thread-history tests pass one.
+func slackTextInput(t *testing.T, ev slack.Event, threadNote ...string) string {
 	t.Helper()
-	got := slackRunInput(ev, nil, 0)
+	got := slackRunInput(ev, strings.Join(threadNote, ""), nil, 0)
 	text, ok := got.(string)
 	if !ok {
 		t.Fatalf("slackRunInput = %#v, want a bare string when no image is attached", got)

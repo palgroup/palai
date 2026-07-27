@@ -14,7 +14,7 @@ import (
 // an input_text item, then one image_ref per image. The words come first.
 func TestSlackRunInputWithAnImageIsAContentArray(t *testing.T) {
 	got := slackRunInput(
-		slack.Event{Kind: slack.KindFileShare, Text: "ne yazıyor burada"},
+		slack.Event{Kind: slack.KindFileShare, Text: "ne yazıyor burada"}, "",
 		[]slackImageAttachment{{artifactID: "art_1"}, {artifactID: "art_2"}}, 0)
 
 	raw, err := json.Marshal(got)
@@ -43,7 +43,7 @@ func TestSlackRunInputWithAnImageIsAContentArray(t *testing.T) {
 // allOf branches key on exactly "input_text" and "image_ref", and the contracts ContentItem reads the same
 // discriminator. A private spelling would validate nowhere.
 func TestSlackImageInputUsesTheCanonicalContentItemTypes(t *testing.T) {
-	raw, err := json.Marshal(slackRunInput(slack.Event{Kind: slack.KindMessage, Text: "bak"}, []slackImageAttachment{{artifactID: "art_1"}}, 0))
+	raw, err := json.Marshal(slackRunInput(slack.Event{Kind: slack.KindMessage, Text: "bak"}, "", []slackImageAttachment{{artifactID: "art_1"}}, 0))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -91,12 +91,12 @@ func TestSlackImageArtifactIDIsDerivedFromTheFileIdentity(t *testing.T) {
 func TestSlackRunInputWithImagesIsStableAcrossRedelivery(t *testing.T) {
 	ev := slack.Event{Kind: slack.KindFileShare, Text: "bak"}
 	images := []slackImageAttachment{{artifactID: slackImageArtifactID("sc_1", "T1", "F1")}}
-	first, err := slackRequestHash(contracts.ResponseCreateRequest{Input: slackRunInput(ev, images, 1), Store: true})
+	first, err := slackRequestHash(contracts.ResponseCreateRequest{Input: slackRunInput(ev, "", images, 1), Store: true})
 	if err != nil {
 		t.Fatalf("hash: %v", err)
 	}
 	for range 10 {
-		again, err := slackRequestHash(contracts.ResponseCreateRequest{Input: slackRunInput(ev, images, 1), Store: true})
+		again, err := slackRequestHash(contracts.ResponseCreateRequest{Input: slackRunInput(ev, "", images, 1), Store: true})
 		if err != nil {
 			t.Fatalf("hash: %v", err)
 		}
@@ -122,14 +122,14 @@ func TestSlackRunInputSaysWhenAFileWasNotAttached(t *testing.T) {
 		{"one attached, two refused", []slackImageAttachment{{artifactID: "art_1"}}, 2, "2 further files"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			text := inputText(t, slackRunInput(slack.Event{Kind: slack.KindFileShare, Text: "bak"}, tc.attached, tc.skipped))
+			text := inputText(t, slackRunInput(slack.Event{Kind: slack.KindFileShare, Text: "bak"}, "", tc.attached, tc.skipped))
 			if !strings.Contains(text, tc.want) {
 				t.Fatalf("input = %q, want it to mention %q", text, tc.want)
 			}
 		})
 	}
 	// And nothing is said when nothing was refused.
-	if text := inputText(t, slackRunInput(slack.Event{Kind: slack.KindMessage, Text: "bak"}, nil, 0)); strings.Contains(text, "attach") {
+	if text := inputText(t, slackRunInput(slack.Event{Kind: slack.KindMessage, Text: "bak"}, "", nil, 0)); strings.Contains(text, "attach") {
 		t.Fatalf("input = %q, want no note when every file was attached", text)
 	}
 }
@@ -137,7 +137,7 @@ func TestSlackRunInputSaysWhenAFileWasNotAttached(t *testing.T) {
 // A wordless image share must not be described as an empty message: "the user sent a message with no text"
 // was true before an image could be attached and is a lie afterwards.
 func TestSlackRunInputNamesAWordlessImageShare(t *testing.T) {
-	withImage := inputText(t, slackRunInput(slack.Event{Kind: slack.KindFileShare}, []slackImageAttachment{{artifactID: "art_1"}}, 0))
+	withImage := inputText(t, slackRunInput(slack.Event{Kind: slack.KindFileShare}, "", []slackImageAttachment{{artifactID: "art_1"}}, 0))
 	if !strings.Contains(withImage, "shared an image with no comment") {
 		t.Fatalf("input = %q, want it to say an image arrived with no comment", withImage)
 	}
@@ -159,7 +159,7 @@ func TestSlackRunInputWithImagesCarriesNoScopeOrFileMetadata(t *testing.T) {
 			DownloadURL: "https://files.slack.com/files-pri/T1-F1/download/x.png",
 		}},
 	}
-	raw, err := json.Marshal(slackRunInput(ev, []slackImageAttachment{{artifactID: "art_1"}}, 0))
+	raw, err := json.Marshal(slackRunInput(ev, "", []slackImageAttachment{{artifactID: "art_1"}}, 0))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
