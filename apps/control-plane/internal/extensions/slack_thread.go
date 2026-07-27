@@ -107,16 +107,22 @@ const (
 //  3. THE READ IS NOT A CAPABILITY. Nothing in the execution tool surface can address Slack
 //     (apps/control-plane/internal/execution/tools/ has no Slack tool), so a model cannot ask for another
 //     thread. This read happens once, before the run exists, on coordinates the model never sees.
-func (a *SlackAdmitter) threadContext(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) string {
+//
+// It also returns the FILES those earlier messages shared, because a picture posted in a thread is part of
+// what the thread said and reading the thread as text alone made it invisible. Found live: a human posted a
+// screenshot in one message and the @mention in the next, so the run was born from a message carrying no
+// attachment while the image sat one line above — quoted as its caption and nothing else. The image leg
+// itself is unchanged and still decides what is worth fetching; this only stops throwing the candidates away.
+func (a *SlackAdmitter) threadContext(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) (string, []slack.SharedFile) {
 	if a.doer == nil || a.secrets == nil || conn.BotTokenRef == "" {
 		// A deployment with no outbound half admits exactly as it did before this file existed.
-		return ""
+		return "", nil
 	}
 	token, err := a.secrets(conn.Org, conn.BotTokenRef)
 	if err != nil || len(token) == 0 {
 		// The ref name is not echoed — the same no-config-oracle rule VerifySignature follows.
 		log.Printf("slack: thread history skipped for connection %s — the bot token could not be redeemed", conn.ID)
-		return ""
+		return "", nil
 	}
 	fetchCtx, cancelFetch := context.WithTimeout(ctx, slackThreadFetchBudget)
 	defer cancelFetch()
@@ -129,17 +135,26 @@ func (a *SlackAdmitter) threadContext(ctx context.Context, conn api.SlackConnect
 		// thread that has since been deleted.
 		if code := slack.APIErrorCode(err); code != "" {
 			log.Printf("slack: thread history unavailable in channel %s — Slack refused with %s; the run is admitted without it", ev.ChannelID, code)
-			return ""
+			return "", nil
 		}
 		log.Printf("slack: thread history read failed in channel %s: %v; the run is admitted without it", ev.ChannelID, err)
-		return ""
+		return "", nil
 	}
 	// The names ride the CALLER's context, not the fetch's: the read above has already spent its own budget,
 	// and what is left of the admission's is what the names may have (see slackThreadNameBudget).
 	nameCtx, cancelNames := context.WithTimeout(ctx, slackThreadNameBudget)
 	defer cancelNames()
+	// The triggering message's own files are NOT collected here: it is admitted through ev.Files on the
+	// ordinary path, and taking it twice would fetch one image as two attachments.
+	var files []slack.SharedFile
+	for _, m := range msgs {
+		if m.TS == ev.MessageTS {
+			continue
+		}
+		files = append(files, m.Files...)
+	}
 	return slackThreadNote(msgs, hasMore, conn.BotUserID, ev.MessageTS,
-		a.speakerNames(nameCtx, token, msgs, conn.BotUserID))
+		a.speakerNames(nameCtx, token, msgs, conn.BotUserID)), files
 }
 
 // speakerNames resolves the DISTINCT authors of a fetched thread to display names, once each.

@@ -49,6 +49,15 @@ type ThreadMessage struct {
 	UserID string
 	TS     string
 	Text   string
+	// Files is what this thread message SHARED. It is carried for the same reason Event.Files is: an image
+	// posted in a thread is part of what the thread SAYS, and reading the thread as text alone made it
+	// invisible. Found live — a human posted a screenshot in one message and the @mention in the next, so the
+	// run was born from a message with no attachment while the picture sat one line above, quoted as its
+	// caption and nothing more.
+	//
+	// EVERY FIELD BUT THE ID IS THE UPLOADER'S CLAIM, exactly as on Event.Files: the mimetype and size decide
+	// only whether a file is worth fetching, never what the bytes are.
+	Files []SharedFile
 }
 
 // ThreadReplies reads one page of a thread's messages. channel and ts must be the coordinates of a message
@@ -108,6 +117,14 @@ func ThreadReplies(ctx context.Context, doer Doer, apiBase string, token []byte,
 			User    string `json:"user"`
 			TS      string `json:"ts"`
 			Text    string `json:"text"`
+			Files   []struct {
+				ID                 string `json:"id"`
+				Name               string `json:"name"`
+				MimeType           string `json:"mimetype"`
+				Size               int64  `json:"size"`
+				URLPrivateDownload string `json:"url_private_download"`
+				URLPrivate         string `json:"url_private"`
+			} `json:"files"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -122,10 +139,23 @@ func ThreadReplies(ctx context.Context, doer Doer, apiBase string, token []byte,
 		return nil, false, &APIError{Code: env.Error}
 	}
 	for _, m := range env.Messages {
-		if m.Subtype != "" || m.Text == "" {
+		// The text test stays a test on TEXT and not on "has anything", because a caption-less image is a
+		// message this reader still has nothing to quote for. Its files ride along so the image leg can
+		// decide separately.
+		if m.Subtype != "" || (m.Text == "" && len(m.Files) == 0) {
 			continue
 		}
-		msgs = append(msgs, ThreadMessage{UserID: m.User, TS: m.TS, Text: m.Text})
+		tm := ThreadMessage{UserID: m.User, TS: m.TS, Text: m.Text}
+		for _, f := range m.Files {
+			download := f.URLPrivateDownload
+			if download == "" {
+				download = f.URLPrivate // the browser-rendering form is still fetchable with the same token
+			}
+			tm.Files = append(tm.Files, SharedFile{
+				ID: f.ID, Name: f.Name, MimeType: f.MimeType, Size: f.Size, DownloadURL: download,
+			})
+		}
+		msgs = append(msgs, tm)
 	}
 	return msgs, env.HasMore, nil
 }

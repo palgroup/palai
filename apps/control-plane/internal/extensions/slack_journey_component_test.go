@@ -53,10 +53,10 @@ import (
 // replays a scripted status sequence. It is the honest ceiling made concrete — there is no socket to
 // slack.com anywhere in this file.
 type fakeSlackPeer struct {
-	statuses []int    // scripted per-call HTTP statuses; the last one repeats
-	call     int      // calls made
-	posts    []string // the message ts of every ACCEPTED post/update ("receipts")
-	bodies   []string // the raw body of every attempted call, so a repair can be shown to replay the SAME body
+	statuses   []int    // scripted per-call HTTP statuses; the last one repeats
+	call       int      // calls made
+	posts      []string // the message ts of every ACCEPTED post/update ("receipts")
+	bodies     []string // the raw body of every attempted call, so a repair can be shown to replay the SAME body
 	retryAfter string
 }
 

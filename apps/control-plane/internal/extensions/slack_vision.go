@@ -110,8 +110,16 @@ type slackImageAttachment struct {
 // be read, because the alternative — refusing the message — means a Slack user can wedge their own
 // conversation by attaching a file the bot cannot get. The failure is logged with the file id and the reason;
 // the token is never in either.
-func (a *SlackAdmitter) admitImages(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) ([]slackImageAttachment, int) {
-	candidates, skipped := slack.ImageCandidates(ev.Files, slackMaxImagesPerMessage, slackMaxImageBytes)
+// extra carries files the triggering event did not, i.e. those shared by EARLIER messages of a thread this
+// app is reading for the first time. They are appended AFTER the event's own so the message the human
+// actually sent wins the per-message cap: if a thread holds more pictures than the ceiling, the one attached
+// to the request is the one that survives.
+func (a *SlackAdmitter) admitImages(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event, extra []slack.SharedFile) ([]slackImageAttachment, int) {
+	shared := ev.Files
+	if len(extra) > 0 {
+		shared = append(append([]slack.SharedFile(nil), ev.Files...), extra...)
+	}
+	candidates, skipped := slack.ImageCandidates(shared, slackMaxImagesPerMessage, slackMaxImageBytes)
 	if len(candidates) == 0 {
 		return nil, skipped
 	}

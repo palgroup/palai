@@ -238,8 +238,11 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	// and the lock has its fetched history DISCARDED below, because the rule is exact — a thread whose session
 	// we already chain onto contributes no fetched history, ever.
 	var threadNote string
+	// threadFiles are the images EARLIER messages in this thread shared. They ride to admitImages beside the
+	// triggering event's own, so a screenshot posted one message before the @mention is still seen.
+	var threadFiles []slack.SharedFile
 	if requested == nil && ev.InThread {
-		threadNote = a.threadContext(ctx, conn, ev)
+		threadNote, threadFiles = a.threadContext(ctx, conn, ev)
 	}
 
 	if requested == nil {
@@ -271,7 +274,7 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	// REPLAYS. Everything a fetch needs to be legitimate has already happened above: signature verified,
 	// connection resolved, channel inside allowed_channels, run-birth decided. A failure here never fails the
 	// admission; the input says a file was not attached.
-	images, skippedFiles := a.admitImages(ctx, conn, ev)
+	images, skippedFiles := a.admitImages(ctx, conn, ev, threadFiles)
 
 	input := slackRunInput(ev, "", images, skippedFiles)
 	create := contracts.ResponseCreateRequest{Input: input, Store: true}
