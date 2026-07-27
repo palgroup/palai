@@ -766,7 +766,7 @@
     {
       "checksum": "sha256:335212ce7807042c217f851febdc51a1737cbd235deeae2bfd1897425c4d588f",
       "db_assertions": [
-        "SLK-006: proven by 5 in-tree proof(s) at the component-real tier — adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once; adapters/integrations/slack/ratelimit_test.go:TestPostMessageBoundedRepairThenRateLimited; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionRepairsTheVisibleMessageExactlyOnceUnderA429; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackCoalescedUpdatesArePacedPerChannel; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionSurvivesAPermanentlyRateLimitedSlack",
+        "SLK-006: proven by 7 in-tree proof(s) at the component-real tier — adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once; adapters/integrations/slack/ratelimit_test.go:TestPostMessageBoundedRepairThenRateLimited; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionRepairsTheVisibleMessageExactlyOnceUnderA429; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackCoalescedUpdatesArePacedPerChannel; apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionSurvivesAPermanentlyRateLimitedSlack; adapters/integrations/slack/stream_test.go:TestStreamCallsTruncateTheirOwnText; apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamAppendRepairsA429WithoutASecondRetryLayer",
         "the case text NAMES its local seam (fake/loopback/deterministic/live/component-real) AND its §6 operator leg; TestExtensionsCatalogMaterialized enforces both mechanically",
         "AUTHORED BUNDLE, component tier: the E17 journeys drive real PostgreSQL, NOT an engine container — image_digest/provider_request_id/mtls_enroll are the shape verifier's required receipt fields carrying deliberately unservable placeholder values, never a claim that a container ran",
         "E19 WIRING RELEASE: this case's LOCAL seam is unchanged from extensions-0.1.0 — what changed is that the surface it exercises is now MOUNTED on the production path and its proof runs against the SHIPPED route. The counterparty is still a documented FAKE, so the case's §6 operator leg is untouched and its capability's tier does not move."
@@ -1541,6 +1541,48 @@
               "SLACK_TEAM_ID"
             ],
             "handover_row": "§0.1 — the app-level token and the team id, plus the running stack's Postgres URL",
+            "without_credential": "skip"
+          },
+          {
+            "test": "TestLiveSlackStatusNeedsNoNewScope",
+            "env_vars": [
+              "SLACK_BOT_TOKEN",
+              "SLACK_TEST_CHANNEL"
+            ],
+            "handover_row": "§0.1 — the bot token and a test channel, UNCHANGED from E19: E20 T1 asks for no new credential and no new scope (S3 — setStatus and the whole chat.*Stream family are chat:write)",
+            "without_credential": "skip"
+          },
+          {
+            "test": "TestLiveSlackStreamingWorksFromASocketModeApp",
+            "env_vars": [
+              "SLACK_BOT_TOKEN",
+              "SLACK_TEST_CHANNEL",
+              "SLACK_TEAM_ID",
+              "SLACK_APPROVER_IDS",
+              "SLACK_TEST_USER_ID"
+            ],
+            "handover_row": "§0.1/§0.3 — the bot token, a test channel, the team id, and a real user id for the stream's recipient (the approver allow-list's first entry; SLACK_TEST_USER_ID overrides). This leg answers S16(c): can a Socket-Mode-only app call the streaming Web API at all",
+            "without_credential": "skip"
+          },
+          {
+            "test": "TestLiveSlackUnstoppedStreamIsMeasured",
+            "env_vars": [
+              "SLACK_BOT_TOKEN",
+              "SLACK_TEST_CHANNEL",
+              "SLACK_TEAM_ID",
+              "SLACK_APPROVER_IDS",
+              "SLACK_TEST_USER_ID"
+            ],
+            "handover_row": "§0.1/§0.3 — same four as above. This leg MEASURES S16(a) (what a never-stopped stream does) and deliberately leaves one open: it is exactly what a control-plane restart leaves behind, so the operator can judge whether the ceiling is worth migration 000042",
+            "without_credential": "skip"
+          },
+          {
+            "test": "TestLiveSlackStreamRefusesWithoutARecipient",
+            "env_vars": [
+              "SLACK_BOT_TOKEN",
+              "SLACK_TEST_CHANNEL"
+            ],
+            "handover_row": "§0.1 — the bot token and a test channel. This leg turns S9 into a receipt by making the recipient-less call our own client refuses to make",
             "without_credential": "skip"
           },
           {

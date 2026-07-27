@@ -110,6 +110,10 @@ var expectedExtensionsCatalog = map[string]struct {
 		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionRepairsTheVisibleMessageExactlyOnceUnderA429",
 		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackCoalescedUpdatesArePacedPerChannel",
 		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDecisionSurvivesAPermanentlyRateLimitedSlack",
+		// E20 T1 extended this case rather than opening an id: the streaming calls ride the SAME retry owner
+		// and the SAME pacer, so "one repair, no second layer" is now asserted on the stream cadence too.
+		"adapters/integrations/slack/stream_test.go:TestStreamCallsTruncateTheirOwnText",
+		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamAppendRepairsA429WithoutASecondRetryLayer",
 	}},
 	"SLK-007": {"component-real", []string{
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace",

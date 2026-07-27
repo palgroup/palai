@@ -68,6 +68,10 @@ type SlackAdmitter struct {
 	doer    slack.Doer
 	apiBase string
 	pacer   *slack.ChannelPacer
+
+	// The streaming half (E20 T1), nil until WithStreaming. Every use of it is nil-safe: a deployment that
+	// does not mount it admits, runs and answers exactly as it did before.
+	streams *SlackStreamFollower
 }
 
 // NewSlackAdmitter builds the bridge. secrets redeems a signing_secret_ref to bytes at verification time (the
@@ -283,6 +287,16 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 			log.Printf("slack: thread claim lost under the thread lock — run admitted into session %s but the thread points at %s (connection %s, event %s)",
 				session, canonical, conn.ID, ev.SourceEventID)
 		}
+	}
+	// THE RUN IS BORN; now let the thread watch it work (E20 T1). Gated on Replayed for one reason and it is
+	// the whole exactly-once argument: a redelivery replays the SAME reservation onto the SAME run, so it
+	// arrives here with Replayed == true and starts nothing. One run, at most one StartStream, guaranteed by
+	// the admission rather than by anything the follower does.
+	//
+	// Nothing below this line can fail the admission: follow() is fire-and-forget and nil-safe, and a stream
+	// that never opens leaves the run answering exactly as it did before streaming existed.
+	if !out.Replayed {
+		a.streams.follow(ctx, conn, ev, session, runID)
 	}
 	return api.SlackAdmitOutcome{ResponseID: out.ResponseID, SessionID: session, Replayed: out.Replayed}, nil
 }
