@@ -76,6 +76,21 @@ func (a *SlackAdmitter) WithFileFetch(doer slack.Doer, store InboundArtifactStor
 	return a
 }
 
+// FileFetchReady reports whether the image leg has both of its halves, i.e. whether a shared screenshot can
+// become something the model sees at all.
+//
+// IT EXISTS BECAUSE THE ABSENCE WAS SILENT. This leg was built, tested and then mounted behind
+// `if artStore != nil` in a deployment that never configured an object store, so every image was skipped and
+// the ONLY evidence anywhere was a parenthetical inside the run's own input — an operator had to read a
+// prompt to discover a capability was dead. This predicate is what the composition root logs at boot and what
+// a test asserts, so "built but not mounted" cannot be quiet twice.
+//
+// It answers the MOUNT-time half only. The per-connection half (a connection with no bot_token_ref) cannot be
+// known here and logs per event in admitImages, naming the connection.
+func (a *SlackAdmitter) FileFetchReady() bool {
+	return a.fileDoer != nil && a.inboundArtifacts != nil
+}
+
 // slackImageAttachment is one image this event contributed to the run's input.
 type slackImageAttachment struct {
 	artifactID string
@@ -100,9 +115,16 @@ func (a *SlackAdmitter) admitImages(ctx context.Context, conn api.SlackConnectio
 	if len(candidates) == 0 {
 		return nil, skipped
 	}
-	if a.fileDoer == nil || a.inboundArtifacts == nil || a.secrets == nil || conn.BotTokenRef == "" {
-		// No fetch path wired (or no bot token on the connection): every file is unattached, and the prompt
-		// will say so rather than leaving the model to guess why it cannot see anything.
+	if !a.FileFetchReady() {
+		// No fetch path wired at all: every file is unattached and the prompt says so. NOT logged here — the
+		// composition root says it ONCE at boot (FileFetchReady's comment has the story), because a line per
+		// message would bury a permanent configuration fact under traffic.
+		return nil, skipped + len(candidates)
+	}
+	if a.secrets == nil || conn.BotTokenRef == "" {
+		// Wired, but THIS connection carries no bot token to present — a per-connection fact, so it is said
+		// per event and names the connection. The ref itself is not echoed (see below).
+		log.Printf("slack: not fetching %d shared file(s) for connection %s — the connection carries no bot token reference, so the run cannot see the image", len(candidates), conn.ID)
 		return nil, skipped + len(candidates)
 	}
 	token, err := a.secrets(conn.Org, conn.BotTokenRef)

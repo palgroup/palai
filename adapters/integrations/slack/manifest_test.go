@@ -179,6 +179,18 @@ func TestManifestGrantsTheScopesTheSubscribedEventsRequire(t *testing.T) {
 			t.Fatalf("the app calls %s, which needs %q, and the manifest does not grant it", method, scope)
 		}
 	}
+	// users.info, and it is worth saying why this line only became honest now. `users:read` sat in this
+	// manifest from E19 as SLK-004's "Slack user id → mapped principal" — a granted read scope with NO caller,
+	// exactly the thing the loop below refuses. It has one now (users.go), and it is a WEAKER use than the one
+	// it was granted for: the names it reads are rendered as speaker labels inside an untrusted quoted block
+	// and nothing maps them to a principal. A missing grant here is the same silent degradation files:read
+	// has — the run is born, the summary is fine, and the speakers are "person 1" and "person 2" with a log
+	// line as the only evidence.
+	if !granted["users:read"] {
+		t.Fatal("the manifest does not grant users:read; every thread speaker falls back to a numbered label " +
+			"(adapters/integrations/slack/users.go), and the only symptom is a summary that cannot name anyone")
+	}
+
 	for _, never := range []string{"groups:history", "mpim:history", "search:read"} {
 		if granted[never] {
 			t.Fatalf("the manifest grants %q. Nothing in this tree reads a private channel, a group DM or the "+

@@ -97,6 +97,51 @@ func TestComposeCanRedeemASecretRefHandle(t *testing.T) {
 	}
 }
 
+// TestComposeWiresTheObjectStoreIntoTheControlPlane is Gap 3, and it is the same shape as the two above:
+// something the operator runs was BUILT and then never connected.
+//
+// WHAT IT COST. The owner shared a screenshot and asked what was in it; the run's input said, honestly, "a
+// file shared with this message could not be attached". The image leg (E20, slack_vision.go) is mounted in
+// main.go — `if artStore != nil { WithFileFetch(...) }` — but artStore comes from artifactStoreFromEnv, which
+// returns nil unless PALAI_S3_ENDPOINT is set, and THIS FILE has always started an object-store service,
+// health-checked it, published its port and made the control-plane depend_on it while telling the
+// control-plane nothing about where it is. So every compose deployment ran an object store nothing wrote to.
+//
+// The Slack image leg is only the loudest symptom. Everything gated on artStore is off the same way: the
+// artifact retrieval read-path, the checkpoint and snapshot sinks, retention's byte deletion and the orphan
+// collector. artifacts.Config's own comment already names the value this test asserts
+// ("e.g. http://object-store:8333 (compose)") — the code was written for a wire that was never run.
+//
+// UNLIKE the two gaps above this one has NO empty default, and that is deliberate: the object store is not
+// optional configuration an operator opts into, it is a service this same file starts unconditionally. An
+// interpolated `${...:-}` here would reproduce the bug the moment somebody ran compose without an env file.
+func TestComposeWiresTheObjectStoreIntoTheControlPlane(t *testing.T) {
+	doc := loadWiring(t)
+	if _, ok := doc.Services["object-store"]; !ok {
+		t.Fatal("compose.yaml has no object-store service; this test's premise is gone, not satisfied")
+	}
+	env := doc.Services["control-plane"].Environment
+
+	got, ok := env["PALAI_S3_ENDPOINT"]
+	if !ok {
+		t.Fatal("the control-plane service does not pass PALAI_S3_ENDPOINT: artifactStoreFromEnv returns nil, so " +
+			"the Slack image leg is never mounted (a shared screenshot is silently admitted as text), artifact " +
+			"retrieval is unmounted and retention deletes no bytes — while this same file runs an object store")
+	}
+	// The service NAME on the compose network, not a host port: the control-plane reaches its peer inside the
+	// network, and 127.0.0.1:${PALAI_S3_PORT} is where the HOST reaches it. Getting this wrong fails at boot
+	// (EnsureBucket is fatal), which is loud — but it is still worth pinning, because "it booted" is the only
+	// evidence anyone has that the store is wired.
+	if want := "http://object-store:8333"; got != want {
+		t.Fatalf("PALAI_S3_ENDPOINT = %q, want %q — the control-plane must address the object store by its "+
+			"service name on the compose network, not by a published host port", got, want)
+	}
+	if bucket, ok := env["PALAI_S3_BUCKET"]; !ok || bucket == "" {
+		t.Fatalf("PALAI_S3_BUCKET = %q (present=%t); artifacts.NewStore requires a non-empty bucket and "+
+			"main.go's envDefault fallback is not something a deployment should rely on being there", bucket, ok)
+	}
+}
+
 // TestComposeCarriesNoSlackCredential is the hygiene half: the wiring above must move HANDLES and
 // PATHS only. A Slack credential named in a compose `environment:` value would land in
 // `docker inspect` / `compose config` — which is the whole reason the provider key rides a
