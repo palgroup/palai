@@ -82,8 +82,8 @@ type Event struct {
 	// admit the `message.channels` TWIN of every top-level app_mention — Slack delivers both for one mention,
 	// and by the time the twin arrives the mention has already correlated the thread, so "is this thread ours?"
 	// answers yes and one message becomes two runs.
-	InThread     bool
-	UserID       string
+	InThread bool
+	UserID   string
 	// Type is the INNER event type verbatim ("app_mention", "message", "app_home_opened", …). Kind is the
 	// coarse classification the run-shaping branches on; this is the identity a log line and the panel's
 	// no-run branch need in order to name what arrived, and neither should be inferring it back out of Data.
