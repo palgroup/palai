@@ -191,11 +191,16 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 	// that can no longer succeed. The cost of being wrong is one message left in Slack's streaming state; the
 	// cost of the other order is an answer nobody ever sees.
 	if channel, ts, streaming := a.streams.streamFor(o.runID); streaming {
+		// E20 T4: the answer becomes markdown_text plus the blocks rendered under it — the ONE call of the
+		// three documented to accept blocks (the conservative reading of the contradiction cited at
+		// slack.AppendStream). The tasks are read BEFORE the stream is forgotten, and the render is TOTAL:
+		// prose comes back as prose with no blocks at all, so an ordinary answer looks exactly as it did.
+		//
+		// Nothing the MODEL wrote can become an actionable element here — that is the render's own invariant
+		// and it is enforced by the sweep in adapters/integrations/slack/blocks_test.go, not by this comment.
+		markdown, blocks := slack.RenderOutput(answer, a.streams.tasksFor(o.runID))
 		a.streams.forget(o.runID)
-		// Blocks are deliberately nil: the renderer that fills them is E20 T4, and chat.stopStream is the
-		// only one of the three streaming calls documented to accept them (the conservative reading of the
-		// contradiction cited at slack.AppendStream).
-		if err := slack.StopStream(ctx, a.doer, a.apiBase, token, channel, ts, answer, nil); err != nil {
+		if err := slack.StopStream(ctx, a.doer, a.apiBase, token, channel, ts, markdown, blocks); err != nil {
 			log.Printf("slack: could not close run %s's stream with its answer (attempt %d/%d): %v; the next attempt posts it as a message",
 				o.runID, o.attempt, o.maxAttempts, err)
 			p.retire(ctx, o, "slack refused to close the stream")

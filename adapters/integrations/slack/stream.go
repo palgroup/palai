@@ -112,10 +112,12 @@ func AppendStream(ctx context.Context, doer Doer, apiBase string, token []byte, 
 // the security rule that governs it lives there — an actionable element (`actions`, `button`, `action_id`, …)
 // may only ever be minted by interactions.go. nil omits the field rather than sending a null.
 func StopStream(ctx context.Context, doer Doer, apiBase string, token []byte, channel, ts, markdownText string, blocks json.RawMessage) error {
-	payload := map[string]any{
-		"channel":       channel,
-		"ts":            ts,
-		"markdown_text": TruncateMarkdown(markdownText),
+	payload := map[string]any{"channel": channel, "ts": ts}
+	// Both optional fields are OMITTED rather than sent empty. E20 T4 made that reachable: an answer whose
+	// whole content is typed (a table and nothing else) has no markdown at all, and sending "" for a field
+	// the reference documents as optional is asking Slack a question no page answers.
+	if markdownText != "" {
+		payload["markdown_text"] = TruncateMarkdown(markdownText)
 	}
 	if len(blocks) > 0 {
 		payload["blocks"] = blocks
