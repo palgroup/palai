@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,10 @@ var allTables = []string{
 	// The E17 T9 CapabilityWorker contract tables (000040): the enrolled-worker registry and the
 	// APPEND-ONLY job journal (self-re-asserting REVOKE).
 	"capability_workers", "capability_jobs",
+	// The E19 Slack tables: the workspace binding registry and the thread<->session correlation (000035),
+	// and the return leg's order-to-post outbox (000041). The first two were never registered here; a table
+	// this ledger does not name is a table its drop can go unnoticed.
+	"slack_connections", "slack_thread_sessions", "slack_reply_deliveries",
 	"schema_migrations",
 }
 
@@ -1755,5 +1760,69 @@ func TestMigration27Skills(t *testing.T) {
 	}
 	if !tableExists(t, pool, "skills") || !tableExists(t, pool, "skill_revisions") || !columnExists(t, pool, "runs", "skill_pins") {
 		t.Fatal("after reapply, a 000027 object is missing")
+	}
+}
+
+// TestMigration41SlackReplies pins the RETURN LEG's durable order-to-post (000041). Two properties earn the
+// migration and both are asserted at the DATABASE, not in Go: UNIQUE (run_id) is the exactly-once claim —
+// a second terminal transaction for the same run must insert NOTHING, whatever the caller believes — and
+// the session index is what keeps the enqueue (which runs on EVERY terminal transition in the deployment,
+// almost all of them non-Slack) off a sequential scan inside the hot transaction.
+func TestMigration41SlackReplies(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// A second boot re-runs the whole chain; every object is IF NOT EXISTS / idempotent.
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "slack_reply_deliveries") {
+		t.Fatal("after apply, slack_reply_deliveries is missing")
+	}
+	if !indexExists(t, pool, "slack_reply_deliveries_due_idx") || !indexExists(t, pool, "slack_thread_sessions_session_idx") {
+		t.Fatal("after apply, a 000041 index is missing — the enqueue would scan slack_thread_sessions on every terminal transition")
+	}
+	var version41 int
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM schema_migrations WHERE version = 41`).Scan(&version41); err != nil {
+		t.Fatalf("count version 41 error = %v", err)
+	}
+	if version41 != 1 {
+		t.Fatalf("schema_migrations records version 41 %d times, want 1", version41)
+	}
+
+	tenant, _, runID := seedRun(t, pool)
+	connID := newID("slkc")
+	exec(t, pool,
+		`INSERT INTO slack_connections (id, organization_id, project_id, team_id, signing_secret_ref)
+		 VALUES ($1,$2,$3,$4,'slack/signing')`,
+		connID, tenant.Organization, tenant.Project, strings.ToUpper(newID("T")))
+
+	insert := func() error {
+		_, err := pool.Exec(storage.WithSystemScope(ctx),
+			`INSERT INTO slack_reply_deliveries
+			   (id, organization_id, project_id, connection_id, run_id, channel_id, thread_ts, run_state)
+			 VALUES ($1,$2,$3,$4,$5,'C1','100.0','completed')`,
+			newID("sdel"), tenant.Organization, tenant.Project, connID, runID)
+		return err
+	}
+	if err := insert(); err != nil {
+		t.Fatalf("first slack_reply_deliveries insert error = %v", err)
+	}
+	if err := insert(); err == nil {
+		t.Fatal("a SECOND order-to-post for the same run was accepted; UNIQUE (run_id) is the whole exactly-once claim")
+	}
+
+	// An unbound workspace must take its undelivered replies with it: a connection we no longer hold is one
+	// we must not post into.
+	exec(t, pool, `DELETE FROM slack_connections WHERE id = $1`, connID)
+	var left int
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM slack_reply_deliveries WHERE connection_id = $1`, connID).Scan(&left); err != nil {
+		t.Fatalf("count orphaned deliveries: %v", err)
+	}
+	if left != 0 {
+		t.Fatalf("%d delivery row(s) outlived their connection, want 0", left)
 	}
 }

@@ -243,3 +243,53 @@ func TestApprovalMessageCarriesBothMintedButtons(t *testing.T) {
 		t.Fatalf("round trip = (%+v,%v), want the minted hash back", intent, err)
 	}
 }
+
+// A model can answer at any length. Slack truncates a `text` over 40,000 characters and "may also
+// automatically split the content into multiple messages" — and a split message is several visible messages
+// under one ts, which silently breaks the one-run-one-message claim the delivery row is keyed on. So the
+// truncation is ours, it is visible, and it says where the whole answer is.
+func TestThreadReplyTruncatesLongOutputWithAMarker(t *testing.T) {
+	long := strings.Repeat("ü", 10_000) // multi-byte on purpose: the budget is characters, not bytes
+	var body struct {
+		Channel  string `json:"channel"`
+		ThreadTS string `json:"thread_ts"`
+		Text     string `json:"text"`
+	}
+	if err := json.Unmarshal(ThreadReply("C1", "100.0", long, "resp_abc"), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if n := len([]rune(body.Text)); n != MaxMessageText {
+		t.Fatalf("truncated text = %d runes, want exactly %d", n, MaxMessageText)
+	}
+	if !strings.Contains(body.Text, "truncated") || !strings.Contains(body.Text, "resp_abc") {
+		t.Fatalf("the truncated reply does not say it was cut or where the rest is: %q", body.Text[len(body.Text)-120:])
+	}
+	if body.Channel != "C1" || body.ThreadTS != "100.0" {
+		t.Fatalf("reply addressed to %q/%q, want C1/100.0", body.Channel, body.ThreadTS)
+	}
+}
+
+// A short answer is posted verbatim — no marker, no blocks, no rewriting of what the model said.
+func TestThreadReplyPassesShortOutputThrough(t *testing.T) {
+	var body struct {
+		Text   string `json:"text"`
+		Blocks any    `json:"blocks"`
+	}
+	if err := json.Unmarshal(ThreadReply("C1", "100.0", "merhaba", "resp_abc"), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Text != "merhaba" {
+		t.Fatalf("text = %q, want it verbatim", body.Text)
+	}
+	if body.Blocks != nil {
+		t.Fatalf("the reply carries Block Kit blocks (%v); a model's prose needs no rendering surface", body.Blocks)
+	}
+}
+
+// A message posted OUTSIDE a thread carries no thread_ts at all rather than an empty one, which Slack would
+// read as a malformed parent.
+func TestThreadReplyOmitsAnEmptyThreadTS(t *testing.T) {
+	if got := string(ThreadReply("C1", "", "hi", "")); strings.Contains(got, "thread_ts") {
+		t.Fatalf("body = %s, want no thread_ts key", got)
+	}
+}

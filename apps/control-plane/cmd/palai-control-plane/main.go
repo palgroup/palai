@@ -296,6 +296,11 @@ func main() {
 	startScheduleTicker(ctx, scheduleStore, supervisor)
 	startRetention(ctx, repo, supervisor, artStore)
 	startOrphanGC(ctx, repo, supervisor, artStore)
+	// The Slack RETURN LEG's poster. Unconditional like the other pumps and for the same reason: it serves
+	// every project and stays inert until a Slack-born run terminates, so there is nothing for an operator
+	// to configure. Its work was committed inside each run's terminal transaction, which is why this loop
+	// being down (or restarting) delays an answer and can never lose one.
+	go supervisor.Supervise(ctx, "slack-reply-pump", extensions.NewSlackReplyPump(slackBridge).Run)
 	drainSlackSocket := startSlackSocket(ctx, slackBridge, supervisor)
 
 	log.Printf("palai control-plane listening on %s", addr)

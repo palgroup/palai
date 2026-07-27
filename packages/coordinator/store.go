@@ -518,6 +518,18 @@ func applyRunTransitionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID s
 			tenant.Organization, tenant.Project, runID, resp, sessionID, string(next)); err != nil {
 			return Transition{}, fmt.Errorf("enqueue terminal queue deliveries: %w", err)
 		}
+		// The SLACK RETURN LEG (E19, 000041), and it is here rather than in finalize for one concrete reason:
+		// finalize is only the ENGINE's terminal path. A cancel (orchestration.CancelRunReconciled), a
+		// dead-letter sweep (lease.go), a queue-deadline timeout, and a crash-restore fail all reach terminal
+		// WITHOUT passing through it — so a reply wired there would leave a human in Slack staring at silence
+		// for exactly the outcomes they most need told about. This is the choke point all five share.
+		//
+		// A run whose session has no Slack thread inserts zero rows, which is every non-Slack run. Idempotent
+		// on the run id, so a retried transition is one message.
+		if _, err := tx.Exec(ctx, storage.Query("EnqueueTerminalSlackReply"),
+			tenant.Organization, tenant.Project, runID, resp, sessionID, string(next)); err != nil {
+			return Transition{}, fmt.Errorf("enqueue terminal slack reply: %w", err)
+		}
 	}
 	return Transition{To: next, Event: event, Sequence: seq}, nil
 }

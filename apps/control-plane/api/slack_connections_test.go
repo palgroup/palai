@@ -19,6 +19,13 @@ type fakeSlackConnectionAPI struct {
 	items                      []SlackConnectionItem
 	lastWindow                 SlackListWindow
 	listedOrg, listedProject   string
+
+	// The repair half. missing makes every by-id call report not-found, so the 404 mapping is pinned.
+	detail                   SlackConnectionDetail
+	missing                  bool
+	patched                  SlackConnectionPatch
+	patchedID, deletedID     string
+	repairOrg, repairProject string
 }
 
 func (f *fakeSlackConnectionAPI) CreateSlackConnection(_ context.Context, org, project string, raw []byte) (string, error) {
@@ -32,6 +39,26 @@ func (f *fakeSlackConnectionAPI) CreateSlackConnection(_ context.Context, org, p
 func (f *fakeSlackConnectionAPI) ListSlackConnections(_ context.Context, org, project string, w SlackListWindow) ([]SlackConnectionItem, error) {
 	f.listedOrg, f.listedProject, f.lastWindow = org, project, w
 	return f.items, nil
+}
+
+func (f *fakeSlackConnectionAPI) GetSlackConnection(_ context.Context, org, project, id string) (SlackConnectionDetail, bool, error) {
+	f.repairOrg, f.repairProject = org, project
+	if f.missing {
+		return SlackConnectionDetail{}, false, nil
+	}
+	d := f.detail
+	d.ID = id
+	return d, true, nil
+}
+
+func (f *fakeSlackConnectionAPI) UpdateSlackConnection(_ context.Context, org, project, id string, patch SlackConnectionPatch) (bool, error) {
+	f.repairOrg, f.repairProject, f.patchedID, f.patched = org, project, id, patch
+	return !f.missing, nil
+}
+
+func (f *fakeSlackConnectionAPI) DeleteSlackConnection(_ context.Context, org, project, id string) (bool, error) {
+	f.repairOrg, f.repairProject, f.deletedID = org, project, id
+	return !f.missing, nil
 }
 
 func slackConnTestServer(t *testing.T, s SlackConnectionAPI) string {
@@ -239,5 +266,130 @@ func TestSlackConnectionRoutesAreUnmountedWithoutTheOption(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("%s with no WithSlackConnections = %d, want 404", m, resp.StatusCode)
 		}
+	}
+	// The by-id repair routes are mounted on the same nil check, so they must be absent too.
+	for _, m := range []string{"GET", "PATCH", "DELETE"} {
+		resp := do(t, m, srv.URL+"/v1/slack-connections/slkc_1", `{"scopes":"chat:write"}`, nil)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s by id with no WithSlackConnections = %d, want 404", m, resp.StatusCode)
+		}
+	}
+}
+
+// A binding registered before a field existed — an app_token_ref on a connection created before Socket Mode
+// needed one — was previously unrepairable through any API: the operator's only route was raw SQL against
+// slack_connections. This is that repair, and the tenant rule is the create path's: the scope comes from the
+// verified bearer, never from the path or the body.
+func TestSlackConnectionPatchRepairsAHandleUnderTheVerifiedScope(t *testing.T) {
+	fake := &fakeSlackConnectionAPI{}
+	base := slackConnTestServer(t, fake)
+
+	resp := do(t, "PATCH", base+"/v1/slack-connections/slkc_1", `{"app_token_ref":"slack/app"}`, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("patch status = %d, want 200", resp.StatusCode)
+	}
+	if fake.patchedID != "slkc_1" {
+		t.Fatalf("patched id = %q, want slkc_1", fake.patchedID)
+	}
+	if fake.repairOrg != "org_1" || fake.repairProject != "prj_1" {
+		t.Fatalf("patch scope = %s/%s, want the bearer's org_1/prj_1", fake.repairOrg, fake.repairProject)
+	}
+	if fake.patched.AppTokenRef == nil || *fake.patched.AppTokenRef != "slack/app" {
+		t.Fatalf("app_token_ref = %v, want slack/app", fake.patched.AppTokenRef)
+	}
+	// Everything the body did not mention stays nil, so the statement COALESCEs it to the stored value: a
+	// PATCH that repairs one handle must not silently blank the other eight columns.
+	if fake.patched.BotTokenRef != nil || fake.patched.SigningSecretRef != nil || fake.patched.Disabled != nil ||
+		fake.patched.AllowedChannels != nil || fake.patched.AllowedUsers != nil || fake.patched.DefaultPolicy != nil {
+		t.Fatalf("an unmentioned field was set: %+v", fake.patched)
+	}
+}
+
+// The squat refusal survives the new surface STRUCTURALLY: the workspace a binding points at is not a
+// revisable field, so there is no request that moves a connection onto a team someone else holds — the
+// registration-time check cannot be routed around because there is nothing to route.
+func TestSlackConnectionPatchCannotMoveTheWorkspaceOrTheTenant(t *testing.T) {
+	fake := &fakeSlackConnectionAPI{}
+	base := slackConnTestServer(t, fake)
+
+	for _, body := range []string{
+		`{"team_id":"T_victim"}`,
+		`{"enterprise_id":"E_victim"}`,
+		`{"organization_id":"org_other"}`,
+		`{"project_id":"proj_other"}`,
+		`{"signing_secret":"8f742231b10e"}`,
+		`{"bot_token":"xoxb-real-token"}`,
+		`{"signing_secret_ref":""}`,
+		`{"default_policy":{"agent_revision_id":"arev_1"}}`,
+		`{"default_policy":{"agent_revision_id":"arev_1","principal_id":"p1","organization_id":"org_other"}}`,
+	} {
+		resp := do(t, "PATCH", base+"/v1/slack-connections/slkc_1", body, nil)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("PATCH %s = %d, want 400", body, resp.StatusCode)
+		}
+		if fake.patchedID != "" {
+			t.Fatalf("PATCH %s reached the store; it must be refused at the boundary", body)
+		}
+	}
+}
+
+// A connection in ANOTHER tenant answers 404 on every by-id verb — never 403, which would confirm it exists.
+func TestSlackConnectionRepairOfAForeignIDIsNotFound(t *testing.T) {
+	fake := &fakeSlackConnectionAPI{missing: true}
+	base := slackConnTestServer(t, fake)
+
+	for _, tc := range []struct{ method, body string }{
+		{"GET", ""}, {"PATCH", `{"scopes":"chat:write"}`}, {"DELETE", ""},
+	} {
+		resp := do(t, tc.method, base+"/v1/slack-connections/slkc_other", tc.body, nil)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s of a foreign connection = %d, want 404", tc.method, resp.StatusCode)
+		}
+	}
+}
+
+// The read half of the repair loop: an operator cannot fix a handle they cannot see, and the LIST projection
+// deliberately omits every ref. So the by-id read carries the handles — which are names, never values.
+func TestSlackConnectionGetCarriesTheHandlesAndNoSecretValues(t *testing.T) {
+	fake := &fakeSlackConnectionAPI{detail: SlackConnectionDetail{
+		TeamID: "T1", BotUserID: "Ubot", SigningSecretRef: "slack/signing", BotTokenRef: "slack/bot", AppTokenRef: "",
+	}}
+	base := slackConnTestServer(t, fake)
+
+	resp := do(t, "GET", base+"/v1/slack-connections/slkc_1", "", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get status = %d, want 200", resp.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["signing_secret_ref"] != "slack/signing" || got["app_token_ref"] != "" {
+		t.Fatalf("read = %v, want the handles including the EMPTY app_token_ref an operator has to notice", got)
+	}
+	for key := range got {
+		if key == "signing_secret" || key == "bot_token" || key == "app_token" {
+			t.Fatalf("the read carries %q; only handles exist on this surface", key)
+		}
+	}
+}
+
+// DELETE answers 204 with no body — the schedules posture.
+func TestSlackConnectionDeleteUnbindsTheWorkspace(t *testing.T) {
+	fake := &fakeSlackConnectionAPI{}
+	base := slackConnTestServer(t, fake)
+
+	resp := do(t, "DELETE", base+"/v1/slack-connections/slkc_1", "", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
+	}
+	if fake.deletedID != "slkc_1" || fake.repairOrg != "org_1" {
+		t.Fatalf("delete = %q under %q, want slkc_1 under the bearer's org", fake.deletedID, fake.repairOrg)
 	}
 }

@@ -2,8 +2,11 @@ package extensions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/storage"
@@ -67,4 +70,92 @@ func (r *SlackRegistry) ListSlackConnections(ctx context.Context, org, project s
 		out = append(out, it)
 	}
 	return out, rows.Err()
+}
+
+// GetSlackConnection reads one binding's handles for the repair surface. The store method it wraps already
+// scopes to the tenant and answers ErrSlackConnectionNotFound for a foreign id, so a cross-tenant read is
+// indistinguishable here from a nonexistent one — which is what the 404 upstream depends on.
+func (r *SlackRegistry) GetSlackConnection(ctx context.Context, org, project, id string) (api.SlackConnectionDetail, bool, error) {
+	conn, err := r.store.GetSlackConnection(ctx, org, project, id)
+	switch {
+	case errors.Is(err, ErrSlackConnectionNotFound):
+		return api.SlackConnectionDetail{}, false, nil
+	case err != nil:
+		return api.SlackConnectionDetail{}, false, err
+	}
+	return api.SlackConnectionDetail{
+		ID: conn.ID, TeamID: conn.TeamID, EnterpriseID: conn.EnterpriseID, BotUserID: conn.BotUserID,
+		SigningSecretRef: conn.SigningSecretRef, BotTokenRef: conn.BotTokenRef, AppTokenRef: conn.AppTokenRef,
+		Scopes: conn.Scopes, Disabled: conn.Disabled,
+	}, true, nil
+}
+
+// UpdateSlackConnection applies a partial revision. Every nil field COALESCEs to the stored value in the
+// statement, so this method converts "absent" to SQL NULL and nothing else — it does not read-modify-write,
+// which would race a concurrent revise and silently restore whatever it had read.
+func (r *SlackRegistry) UpdateSlackConnection(ctx context.Context, org, project, id string, patch api.SlackConnectionPatch) (bool, error) {
+	channels, err := jsonListOrNil(patch.AllowedChannels)
+	if err != nil {
+		return false, err
+	}
+	users, err := jsonListOrNil(patch.AllowedUsers)
+	if err != nil {
+		return false, err
+	}
+	var policy []byte
+	if len(patch.DefaultPolicy) > 0 {
+		policy = patch.DefaultPolicy
+	}
+	var updated string
+	switch err := r.store.pool.QueryRow(storage.ScopeToTenant(ctx, org, project),
+		storage.Query("UpdateSlackConnection"), id, org, project,
+		patch.BotUserID, patch.SigningSecretRef, patch.BotTokenRef, patch.AppTokenRef, patch.Scopes,
+		channels, users, policy, patch.Disabled).Scan(&updated); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("update slack connection: %w", err)
+	}
+	return true, nil
+}
+
+// DeleteSlackConnection unbinds a workspace. The thread correlations go first (000035's FK is a plain
+// reference, so the connection cannot be deleted while any thread points at it) and both statements share
+// ONE transaction: a half-applied unbind would leave correlations pointing at a connection that is gone,
+// and every later event in those threads would resolve a row the registry no longer has.
+func (r *SlackRegistry) DeleteSlackConnection(ctx context.Context, org, project, id string) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	tx, err := r.store.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin slack connection delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, storage.Query("DeleteSlackConnectionThreads"), id, org, project); err != nil {
+		return false, fmt.Errorf("delete slack connection threads: %w", err)
+	}
+	var deleted string
+	switch err := tx.QueryRow(ctx, storage.Query("DeleteSlackConnection"), id, org, project).Scan(&deleted); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil // nothing committed: the rollback above undoes the thread delete too
+	case err != nil:
+		return false, fmt.Errorf("delete slack connection: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit slack connection delete: %w", err)
+	}
+	return true, nil
+}
+
+// jsonListOrNil encodes an allow-list for the JSONB parameter. nil stays nil (SQL NULL ⇒ COALESCE keeps the
+// stored list); a present-but-empty list encodes as `[]`, which is a real revision meaning "no restriction"
+// for channels and "nobody" for users — the asymmetry SlackAuthorizationPolicy documents.
+func jsonListOrNil(list []string) ([]byte, error) {
+	if list == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return nil, fmt.Errorf("encode slack allow-list: %w", err)
+	}
+	return raw, nil
 }

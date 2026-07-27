@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -159,4 +160,59 @@ func TestUnwrapSocketFrameFeedsTheSameMapping(t *testing.T) {
 	if ev.SourceEventID != "Ev7" || ev.ChannelID != "C1" {
 		t.Fatalf("socket-mode identity = %q/%q, want Ev7/C1", ev.SourceEventID, ev.ChannelID)
 	}
+}
+
+// The MESSAGE the human wrote is what a run is about, so the adapter has to surface it as text — and the
+// bot's own mention is addressing, not content. Everything else the human typed, including OTHER people's
+// mentions, survives verbatim: "ask <@U999>" is a sentence, not a routing artefact.
+func TestMapEventCarriesTheHumanTextWithoutTheBotMention(t *testing.T) {
+	for _, tc := range []struct {
+		name, text, want string
+	}{
+		{"leading mention", "<@Ubot> merhaba", "merhaba"},
+		{"labelled mention", "<@Ubot|palai> merhaba", "merhaba"},
+		{"trailing mention", "merhaba <@Ubot>", "merhaba"},
+		{"mid-sentence mention", "hey <@Ubot> ship it", "hey ship it"},
+		{"another user survives", "<@Ubot> ask <@U999> about it", "ask <@U999> about it"},
+		{"no mention at all", "just a message", "just a message"},
+		{"only the mention", "<@Ubot>", ""},
+		{"unterminated mention is content", "a <@Ubot literal", "a <@Ubot literal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev01","event":` +
+				`{"type":"app_mention","user":"U9","channel":"C1","ts":"111.1","text":` + quote(tc.text) + `}}`)
+			ev, err := MapEvent(body, "Ubot", false)
+			if err != nil {
+				t.Fatalf("MapEvent error = %v", err)
+			}
+			if ev.Text != tc.want {
+				t.Fatalf("Text = %q, want %q", ev.Text, tc.want)
+			}
+		})
+	}
+}
+
+// An EDIT nests its text under `message` exactly as it nests its author, so the correction carries the
+// corrected words — not the empty top-level text field.
+func TestMapEventNestedEditCarriesTheEditedText(t *testing.T) {
+	edit := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev11","event":{
+		"type":"message","subtype":"message_changed","channel":"C1","ts":"11.9",
+		"message":{"type":"message","user":"U9","ts":"5.5","thread_ts":"100.0","text":"<@Ubot> fixed typo"}
+	}}`)
+	ev, err := MapEvent(edit, "Ubot", false)
+	if err != nil {
+		t.Fatalf("nested edit: err = %v", err)
+	}
+	if ev.Text != "fixed typo" {
+		t.Fatalf("Text = %q, want %q (from the nested message, not top-level)", ev.Text, "fixed typo")
+	}
+}
+
+// quote is json.Marshal for a string, so a table case can carry quotes and backslashes safely.
+func quote(s string) string {
+	raw, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
 }
