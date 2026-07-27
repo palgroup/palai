@@ -1897,3 +1897,80 @@ func TestMigration42SlackMessageTurns(t *testing.T) {
 		t.Fatalf("%d turn handle(s) outlived their response, want 0", left)
 	}
 }
+
+// TestMigration43SlackRequester is 000043: the DURABLE identity the agent's own question is addressed to.
+// Two properties earn it and both are asserted at the database. The DEFAULT is the fail-closed value — an
+// insert that names no requester gets ”, which is what every row written before today carries and what the
+// renderer treats as "send the words, mention nobody" — and the id CASCADES with the row it hangs off, so a
+// reaped response or an unbound workspace cannot leave an address behind pointing at a conversation that no
+// longer exists.
+func TestMigration43SlackRequester(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// A second boot re-runs the whole chain; both ALTERs are ADD COLUMN IF NOT EXISTS.
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !columnExists(t, pool, "slack_message_turns", "requester_user_id") {
+		t.Fatal("after apply, slack_message_turns.requester_user_id is missing — admission would have nowhere to record who asked")
+	}
+	if !columnExists(t, pool, "slack_reply_deliveries", "requester_user_id") {
+		t.Fatal("after apply, slack_reply_deliveries.requester_user_id is missing — the reply pump could not address the mention")
+	}
+	var version43 int
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM schema_migrations WHERE version = 43`).Scan(&version43); err != nil {
+		t.Fatalf("count version 43 error = %v", err)
+	}
+	if version43 != 1 {
+		t.Fatalf("schema_migrations records version 43 %d times, want 1", version43)
+	}
+
+	tenant, sessionID, runID := seedRun(t, pool)
+	connID := newID("slkc")
+	exec(t, pool,
+		`INSERT INTO slack_connections (id, organization_id, project_id, team_id, signing_secret_ref)
+		 VALUES ($1,$2,$3,$4,'slack/signing')`,
+		connID, tenant.Organization, tenant.Project, strings.ToUpper(newID("T")))
+	responseID := newID("resp")
+	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id) VALUES ($1,$2,$3,$4)`,
+		responseID, tenant.Organization, tenant.Project, sessionID)
+
+	// FAIL-CLOSED BACKFILL: the shape of every row that existed before this migration. An insert that names
+	// no requester must be accepted and must read back as the empty string — not NULL, which would make every
+	// consumer decide what a missing id means.
+	exec(t, pool,
+		`INSERT INTO slack_reply_deliveries
+		   (id, organization_id, project_id, connection_id, run_id, channel_id, thread_ts, run_state)
+		 VALUES ($1,$2,$3,$4,$5,'C1','100.0','completed')`,
+		newID("sdel"), tenant.Organization, tenant.Project, connID, runID)
+	var legacy string
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT requester_user_id FROM slack_reply_deliveries WHERE run_id = $1`, runID).Scan(&legacy); err != nil {
+		t.Fatalf("read the defaulted requester: %v", err)
+	}
+	if legacy != "" {
+		t.Fatalf("a delivery written without a requester reads back %q, want the empty fail-closed value", legacy)
+	}
+
+	exec(t, pool,
+		`INSERT INTO slack_message_turns
+		   (id, organization_id, project_id, connection_id, team_id, channel_id, message_ts, response_id,
+		    session_id, requester_user_id)
+		 VALUES ($1,$2,$3,$4,'T1','C1','100.0',$5,$6,'U0ASKER')`,
+		newID("slkmt"), tenant.Organization, tenant.Project, connID, responseID, sessionID)
+
+	// The identity cannot outlive what it describes: reaping the response takes the turn handle AND the id
+	// with it, so a purge cannot leave a person's id attached to a conversation nobody can read.
+	exec(t, pool, `DELETE FROM responses WHERE id = $1`, responseID)
+	var left int
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM slack_message_turns WHERE requester_user_id = 'U0ASKER'`).Scan(&left); err != nil {
+		t.Fatalf("count orphaned requesters: %v", err)
+	}
+	if left != 0 {
+		t.Fatalf("%d requester id(s) outlived the turn they describe, want 0", left)
+	}
+}

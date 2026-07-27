@@ -18,11 +18,17 @@ import (
 // mint of anything a human can act on stays interactions.go — protected by a test that sweeps this renderer's
 // output AND the package's source, not by a comment (see blocks_test.go).
 //
-// THE UNION IS CLOSED AND THE RENDER IS TOTAL. Four variants, each with a user today: text, table (test
-// results), tasks (the journal's task.* events), file_ref (an artifact, as a link). Anything else — a tag we
-// do not know, a tag Slack knows and we did not choose, a malformed variant — renders as INERT TEXT. Never
-// passthrough: the bytes are shown as characters, so the reader still sees what the model wrote and nobody
-// can click it.
+// THE UNION IS CLOSED AND THE RENDER IS TOTAL. Five variants, each with a user today: text, table (test
+// results), tasks (the journal's task.* events), file_ref (an artifact, as a link), mention (E21 T3 — the
+// agent asking the person who asked it). Anything else — a tag we do not know, a tag Slack knows and we did
+// not choose, a malformed variant — renders as INERT TEXT. Never passthrough: the bytes are shown as
+// characters, so the reader still sees what the model wrote and nobody can click it.
+//
+// THE MENTION EXTENDS THAT RULE RATHER THAN EXCEPTING IT, and the distinction is one sentence: the defence is
+// not "the model may not address a human", it is "text the MODEL WROTE may not address a human". A `<@U…>` in
+// the model's prose is still defused; the token this renderer emits is built from an id the model never
+// supplies and cannot name (MentionRequester, Result.mint). Same shape as the button rule above — typed
+// intent in, our mint out.
 //
 // WHAT IS DELIBERATELY NOT HERE, so a later reader does not read absence as oversight:
 //
@@ -45,7 +51,18 @@ const (
 	ResultTable   = "table"
 	ResultTasks   = "tasks"
 	ResultFileRef = "file_ref"
+	ResultMention = "mention"
 )
+
+// MentionRequester is the ONLY value `who` takes (E21 T3, plan §2). It is a closed enum rather than a user
+// id because the difference is the whole defence: an id would be a string the MODEL chose, and this renderer
+// takes no identity from the model at all — it holds exactly one, the requester frozen on the delivery row,
+// and `who` selects between that and nothing.
+//
+// ADDING A SECOND IDENTITY (say, "the approver") costs three things and none of them is a constant: a column
+// that carries that id durably to the reply pump, a value here, and a test proving WE and not the model
+// decide who it names.
+const MentionRequester = "requester"
 
 // The vendor's limits, every one of them a TRUNCATION POINT rather than a rejection — an answer that is one
 // row too long must still reach the human, minus the rows and plus a marker saying so.
@@ -83,6 +100,14 @@ type Result struct {
 	// file_ref
 	URL   string `json:"url,omitempty"`
 	Label string `json:"label,omitempty"`
+	// mention. Who is a CLOSED ENUM (MentionRequester and nothing else), which is why the field is a string
+	// the parse keeps rather than an id the render trusts.
+	Who string `json:"who,omitempty"`
+	// mint is the user id the `<@U…>` token is built from, and it is UNEXPORTED ON PURPOSE: encoding/json
+	// cannot populate an unexported field, so no model output can reach it, and no package outside this one
+	// can set it either. RenderOutput — the only function that is given the requester — is the only writer.
+	// A Result that arrives any other way carries no id and therefore mints nothing.
+	mint string
 }
 
 // Task is one durable task as this renderer needs it. It is the shape of coordinator.Task{Key, Kind, Title,
@@ -147,7 +172,13 @@ func TaskDisplayMode(tasks int) string {
 // twice. An ordinary prose answer — which is what every real single-step run produces (E08) — comes back as
 // exactly the markdown it was, with NO blocks at all, so this task did not change what a normal reply looks
 // like. Only an answer that is genuinely typed grows structure.
-func RenderOutput(answer string, tasks []Task) (markdown string, blocks json.RawMessage) {
+//
+// requesterUserID (E21 T3) is the ONE identity a rendered answer can address: the person whose message birthed
+// this run, frozen on the delivery row at enqueue time (000043). It enters HERE, at the only door the reply
+// pump uses, and it is stamped onto the mention variant's unexported field — so the id travels with the
+// result the model asked for without ever being something the model could name. EMPTY IS FAIL-CLOSED: a
+// delivery row written before 000043 carries ”, and its answer goes out with the words and no mention.
+func RenderOutput(answer string, tasks []Task, requesterUserID string) (markdown string, blocks json.RawMessage) {
 	var text []string
 	var structured []Result
 	for _, result := range ParseResults(answer) {
@@ -156,6 +187,9 @@ func RenderOutput(answer string, tasks []Task) (markdown string, blocks json.Raw
 				text = append(text, result.Text)
 			}
 			continue
+		}
+		if result.Type == ResultMention && result.Who == MentionRequester {
+			result.mint = requesterUserID
 		}
 		structured = append(structured, result)
 	}
@@ -197,7 +231,7 @@ func parseResult(raw json.RawMessage, whole string) Result {
 		return Result{Type: ResultText, Text: string(raw)}
 	}
 	switch tag.Type {
-	case ResultText, ResultTable, ResultTasks, ResultFileRef:
+	case ResultText, ResultTable, ResultTasks, ResultFileRef, ResultMention:
 		var result Result
 		if err := json.Unmarshal(raw, &result); err != nil {
 			// A known tag with a shape we cannot decode is NOT half-rendered: it falls to inert text like
@@ -255,6 +289,15 @@ func renderResult(result Result) []any {
 		return taskBlocks(result)
 	case ResultFileRef:
 		return []any{fileRefBlock(result)}
+	case ResultMention:
+		// A `who` we did not choose selects NOBODY, and it falls through to the inert arm below rather than
+		// rendering as text-minus-the-mention: a model that wrote a user id into this field tried to pick a
+		// person, and the honest thing to show the reader is what it wrote. `requester` with an empty id is
+		// the OTHER case and it does render (mrkdwnSection mints nothing) — that is a row from before
+		// 000043, not an attempt.
+		if result.Who == MentionRequester {
+			return []any{mrkdwnSection(result.mint, result.Text)}
+		}
 	}
 	inert, err := json.Marshal(result)
 	if err != nil {
@@ -271,8 +314,24 @@ func renderResult(result Result) []any {
 // Every string that reaches Slack through a BLOCK passes through here or through cell(): blocks do not route
 // through TruncateMarkdown or ThreadReply, which are where the text path's broadcast defence lives, so this
 // calls the SAME NeutralizeBroadcasts rather than growing a third copy of the rule.
-func section(text string) any {
+func section(text string) any { return mrkdwnSection("", text) }
+
+// mrkdwnSection builds that block with an OPTIONAL minted mention in front of the model's words, and THE
+// ORDER IS THE WHOLE SECURITY PROPERTY (plan §2, M19): the model's text is defused FIRST, our token is added
+// SECOND. Reversed, NeutralizeBroadcasts would escape our own `<@U…>` into characters; merged into one pass,
+// a model could write the token and have it survive. So they are two steps and this comment says which is
+// which.
+//
+// mentionUserID is ours or it is empty — see Result.mint, which no model output and no other package can
+// reach. Empty mints nothing, which is what makes a delivery row from before 000043 send its words rather
+// than an invented address.
+//
+// The truncation cuts the TAIL, so the token cannot be halved into a live `<@` fragment.
+func mrkdwnSection(mentionUserID, text string) any {
 	text = NeutralizeBroadcasts(text)
+	if mentionUserID != "" {
+		text = "<@" + mentionUserID + "> " + text
+	}
 	if runes := []rune(text); len(runes) > MaxSectionText {
 		text = string(runes[:MaxSectionText-len([]rune(truncationMarker))]) + truncationMarker
 	}

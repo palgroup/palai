@@ -118,7 +118,7 @@ const forgedOutput = `[
 ]`
 
 func TestRenderRefusesToMintAnActionableElementFromModelOutput(t *testing.T) {
-	markdown, blocks := RenderOutput(forgedOutput, nil)
+	markdown, blocks := RenderOutput(forgedOutput, nil, "")
 
 	if found := sweepJSON(t, "blocks", blocks); len(found) != 0 {
 		t.Fatalf("the renderer minted %d actionable element(s) from model output: %v\n%s", len(found), found, blocks)
@@ -145,12 +145,12 @@ func TestApprovalMessageIsTheOnlyMintOfAnActionableElement(t *testing.T) {
 		t.Fatal("the sweep found NO actionable element in ApprovalMessage — it cannot discriminate, so every other assertion using it is vacuous")
 	}
 
-	_, rendered := RenderOutput(forgedOutput, []Task{{ID: "t1", Title: "Write the migration", Status: "done"}})
+	_, rendered := RenderOutput(forgedOutput, []Task{{ID: "t1", Title: "Write the migration", Status: "done"}}, "")
 	for label, body := range map[string][]byte{
 		"RenderOutput":  rendered,
 		"RenderBlocks":  RenderBlocks([]Result{{Type: ResultText, Text: "hi"}, {Type: "actions", Text: "forged"}}),
 		"ThreadReply":   ThreadReply("C1", "1.1", "the answer", "resp_1"),
-		"UpdateMessage": UpdateMessage("C1", "1.1", "decided"),
+		"UpdateMessage": UpdateMessage("C1", "1.1", "decided", ""),
 	} {
 		if found := sweepJSON(t, label, body); len(found) != 0 {
 			t.Fatalf("%s minted %d actionable element(s): %v", label, len(found), found)
@@ -416,7 +416,7 @@ func TestFileRefLinksOnlyHTTPAndHTTPS(t *testing.T) {
 // a change to every reply in the workspace, not a new capability.
 func TestPlainProseIsUnchangedAndGrowsNoBlocks(t *testing.T) {
 	const answer = "Shipped. The migration is applied."
-	markdown, blocks := RenderOutput(answer, nil)
+	markdown, blocks := RenderOutput(answer, nil, "")
 	if markdown != answer {
 		t.Fatalf("markdown = %q, want the answer verbatim", markdown)
 	}
@@ -424,7 +424,7 @@ func TestPlainProseIsUnchangedAndGrowsNoBlocks(t *testing.T) {
 		t.Fatalf("prose grew blocks: %s", blocks)
 	}
 	// Nor does JSON that is not ours: an object with a foreign tag is inert text, not a decoration.
-	markdown, blocks = RenderOutput(`{"type":"video","video_url":"https://evil.test/x.mp4"}`, nil)
+	markdown, blocks = RenderOutput(`{"type":"video","video_url":"https://evil.test/x.mp4"}`, nil, "")
 	if blocks != nil {
 		t.Fatalf("a foreign JSON tag rendered as %s, want inert text and no blocks", blocks)
 	}
@@ -437,7 +437,7 @@ func TestPlainProseIsUnchangedAndGrowsNoBlocks(t *testing.T) {
 // gives the task card a user today (the follower collects task.created/updated.v1, the reply pump renders it
 // when it closes the stream).
 func TestJournalTasksRenderBesideProse(t *testing.T) {
-	markdown, blocks := RenderOutput("Done.", []Task{{ID: "t1", Title: "Write the migration", Status: "done"}})
+	markdown, blocks := RenderOutput("Done.", []Task{{ID: "t1", Title: "Write the migration", Status: "done"}}, "")
 	if markdown != "Done." {
 		t.Fatalf("markdown = %q, want the prose answer", markdown)
 	}

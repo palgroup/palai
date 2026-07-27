@@ -335,13 +335,17 @@ func (s *Store) CorrelateThreadSession(ctx context.Context, org, project, connID
 // RecordSlackMessageTurn records which turn a Slack message became (000042), so a later edit or deletion of
 // that message can act on it. Best-effort by design and by the caller: the run is already durable when this
 // writes, and a lost handle costs a retraction, never a run.
-func (s *Store) RecordSlackMessageTurn(ctx context.Context, org, project, connID, team, channel, messageTS, responseID, sessionID string) error {
+//
+// requesterUserID (E21 T3, 000043) is written HERE because this is the only durable write that happens with
+// the event in hand: it is what lets the reply pump address the person who asked, minutes later and across a
+// restart. It never reaches a prompt.
+func (s *Store) RecordSlackMessageTurn(ctx context.Context, org, project, connID, team, channel, messageTS, responseID, sessionID, requesterUserID string) error {
 	if messageTS == "" || responseID == "" {
 		return nil // an event with no message ts names no turn; there is nothing to point at
 	}
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	if _, err := s.pool.Exec(ctx, storage.Query("RecordSlackMessageTurn"),
-		newID("slkmt"), org, project, connID, team, channel, messageTS, responseID, sessionID); err != nil {
+		newID("slkmt"), org, project, connID, team, channel, messageTS, responseID, sessionID, requesterUserID); err != nil {
 		return fmt.Errorf("record slack message turn: %w", err)
 	}
 	return nil

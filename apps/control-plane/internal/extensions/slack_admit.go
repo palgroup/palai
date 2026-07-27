@@ -379,12 +379,18 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	// it afterwards and have that mean something. It is written for every admitted message, not just the first
 	// in a thread, because every one of them can be edited.
 	//
+	// AND WHO WROTE IT (000043, E21 T3). The id rides this write rather than getting one of its own for the
+	// reason it is durable at all: the agent's own question — "which branch should I publish?" — is posted by
+	// the reply pump, minutes later and across restarts, and ev.UserID lives only for this call. It is SCOPE
+	// and stays scope: it does not enter the prompt (see slackRunInput), and the renderer that mints the
+	// `<@U…>` takes no id from the model.
+	//
 	// Best-effort, and deliberately so: the run is already durable and the reservation committed, so failing
 	// the ack here would earn a redelivery that can only replay onto the same response. The cost of the lost
 	// row is that a later deletion of THIS message retracts nothing — bad, and still much less bad than
 	// refusing a message that was already answered.
 	if err := a.store.RecordSlackMessageTurn(ctx, conn.Org, conn.Project, conn.ID,
-		ev.TeamID, ev.ChannelID, ev.MessageTS, out.ResponseID, session); err != nil {
+		ev.TeamID, ev.ChannelID, ev.MessageTS, out.ResponseID, session, ev.UserID); err != nil {
 		log.Printf("slack: could not record the turn message %s opened on connection %s; a later edit or deletion of it will not reach the conversation: %v",
 			ev.MessageTS, conn.ID, err)
 	}
@@ -715,8 +721,17 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 //   - The channel / team / user ids. These are SCOPE: allowed_channels is enforced at the top of Admit and
 //     allowed_users on the decision path, both against the connection row. SLK-004's guarantee is unchanged
 //     and STRUCTURAL — a Slack user is never a principal — and it is *stronger* for the id not being in the
-//     prompt at all. An operator who needs to know who wrote still has it: the idempotency reservation is
-//     keyed team+event_id, and the thread correlation row holds (team, channel, thread).
+//     prompt at all.
+//
+//     THE SECOND HALF OF THIS RATIONALE WAS FALSE UNTIL 000043 AND IS CORRECTED HERE (E21 §3.6 D4). It read
+//     "an operator who needs to know who wrote still has it: the idempotency reservation is keyed
+//     team+event_id, and the thread correlation row holds (team, channel, thread)". Those two facts are true
+//     and neither one is a person: the reservation names an EVENT and the correlation names a THREAD, so the
+//     USER id was in no table at all — an operator asking "who asked this?" had nowhere to look, while the
+//     comment said otherwise. It is now on slack_message_turns.requester_user_id (and frozen onto the
+//     delivery row), written next to the turn handle by the code below. The exclusion from the PROMPT is
+//     unchanged and is the part that was always load-bearing: the id is scope the model is not handed, and
+//     the mention this identity exists for is minted by our renderer from our column, never named by a model.
 //
 //   - The raw envelope. It was the whole defect.
 //

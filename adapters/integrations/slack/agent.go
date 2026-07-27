@@ -38,17 +38,26 @@ const MaxLoadingMessages = 10
 //
 // Over-long loading_messages are TRIMMED rather than refused: a status indicator is decoration, and dropping
 // it because someone wrote eleven strings would be the wrong failure.
+//
+// THE TEXT IS DEFUSED (E21 T3, plan §3.6 D6). This call was one of the two outbound paths that never met
+// NeutralizeBroadcasts. Every caller feeds it CONSTANTS today, so it was safe BY ARGUMENT — and a status
+// line is exactly the field a later task hands a model's own words, at which point the safety would have
+// expired silently. Making it safe by CONSTRUCTION costs one call and removes the question.
 func SetStatus(ctx context.Context, doer Doer, apiBase string, token []byte, channelID, threadTS, status string, loadingMessages []string) error {
 	payload := map[string]any{
 		"channel_id": channelID,
 		"thread_ts":  threadTS,
-		"status":     status,
+		"status":     NeutralizeBroadcasts(status),
 	}
 	if len(loadingMessages) > MaxLoadingMessages {
 		loadingMessages = loadingMessages[:MaxLoadingMessages]
 	}
 	if len(loadingMessages) > 0 {
-		payload["loading_messages"] = loadingMessages
+		defused := make([]string, 0, len(loadingMessages))
+		for _, message := range loadingMessages {
+			defused = append(defused, NeutralizeBroadcasts(message))
+		}
+		payload["loading_messages"] = defused
 	}
 	body, _ := json.Marshal(payload)
 	_, err := PostMessage(ctx, doer, PostRequest{

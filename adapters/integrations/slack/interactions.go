@@ -196,7 +196,20 @@ func ThreadReply(channel, threadTS, text, responseID string) []byte {
 // UpdateMessage builds the chat.update body that REPAIRS an already-visible message in place: same channel,
 // the message's own ts, new text and no buttons (the decision is made; the buttons must not invite a second
 // click). Editing the visible message is the SLK-006 repair — one message per thread, never a second post.
-func UpdateMessage(channel, messageTS, text string) []byte {
+//
+// THE TEXT AND THE PING ARE TWO ARGUMENTS (E21 T3, plan §3.6 D6), and that split is the fix rather than
+// decoration. This was the second outbound path outside the broadcast defence, and what it interpolates is
+// not incidental: the decision repair names a publication display built from THE RUN'S OWN BRANCH NAME, and
+// `<!channel>` is a valid git ref. Neutralizing the whole string would have taken the decider's ping with it;
+// keeping the whole string live left a run able to broadcast. So text is defused and mentionUserID — an id
+// the caller read off a click it already authorized, never off model output — is minted HERE, after.
+//
+// Empty mentionUserID mints nothing, so a repair with nobody to ping is a repair with no mention.
+func UpdateMessage(channel, messageTS, text, mentionUserID string) []byte {
+	text = NeutralizeBroadcasts(text)
+	if mentionUserID != "" {
+		text += " (<@" + mentionUserID + ">)"
+	}
 	raw, _ := json.Marshal(map[string]any{
 		"channel": channel,
 		"ts":      messageTS,
