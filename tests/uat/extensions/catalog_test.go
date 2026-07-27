@@ -101,7 +101,7 @@ var expectedExtensionsCatalog = map[string]struct {
 		"adapters/integrations/slack/history_test.go:TestThreadRepliesDropsSubtypedAndEmptyMessages",
 		"adapters/integrations/slack/history_test.go:TestThreadRepliesTypesTheAPIRefusal",
 		"adapters/integrations/slack/history_test.go:TestThreadRepliesDoesNotRetryARateLimit",
-		"adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheMessagesOwnTS",
+		"adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheAffectedMessageTS",
 		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteIsEmptyWhenThereIsNothingToQuote",
 		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteLeadsWithTheUntrustedLabelAndEndsBeforeTheRequest",
 		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteAttributesWithoutNamingAnyone",
