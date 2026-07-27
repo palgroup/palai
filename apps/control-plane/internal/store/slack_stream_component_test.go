@@ -28,8 +28,9 @@ import (
 // document (slackOKEnvelope, with the four URLs and the date they were checked).
 //
 // HONEST CEILING, and it is why several tests below have "fake engine" in their name: a REAL run is
-// single-step (E08 exposes no tools to a real provider) and the journal carries no token deltas, so a real
-// run has exactly ONE thing to stream. The multi-append behaviour proven here is driven by journal events
+// single-step WHEN ITS EFFECTIVE TOOL SET IS EMPTY (not "because a real provider gets no tools" — that E08
+// reading stopped being true at E12 T1; §3.6 D1) and the journal carries no token deltas, so such a run has
+// exactly ONE thing to stream. The multi-append behaviour proven here is driven by journal events
 // this fixture writes directly — the shape a fake engine produces. Nothing here is evidence that a real model
 // streams anything.
 
@@ -142,8 +143,8 @@ func TestSlackStreamShowsTheRunWorkingThenClosesWithTheAnswer(t *testing.T) {
 	//    step no longer produces a line at all: markdown_text is the message BODY, so "_Working on it…_" was
 	//    rendering in front of the answer (see TestSlackRealRunsAnswerCarriesNoStatusText). What opens a stream
 	//    now is a journal event carrying words a human wrote, and a task is the only kind there is. THIS TEST
-	//    IS FAKE-ENGINE-DRIVEN FROM HERE: a real run is single-step, journals no task, and opens no stream.
-	f.commitStep(t, sessionID, responseID, runID) // the single step a real run gets — silent, on purpose
+	//    IS FAKE-ENGINE-DRIVEN FROM HERE: a toolless run is single-step, journals no task, and opens no stream.
+	f.commitStep(t, sessionID, responseID, runID) // the single step a toolless run gets — silent, on purpose
 	f.upsertTask(t, sessionID, responseID, runID, "t1", "Write the migration", "in_progress")
 	start := decodeSlackCall(t, f.awaitCalls(t, "/chat.startStream", 1)[0])
 	// S9: both recipient ids are required when streaming to a channel, and both come off the event.
@@ -407,7 +408,7 @@ func TestSlackStreamAppendRepairsA429WithoutASecondRetryLayer(t *testing.T) {
 // which forges an approval button reaches the human as characters rather than as something to click.
 //
 // FAKE-ENGINE-DRIVEN, and named so: the tasks below are journaled by this fixture, and a real run journals
-// none (E08 — single step, no tools). What is real here is the route, the coordinator, the journal, the
+// none (a run with an empty effective tool set takes a single step). What is real here is the route, the coordinator, the journal, the
 // follower and the reply pump; the model's typed answer is a fixture's projection.
 func TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton(t *testing.T) {
 	f := newSlackFixture(t)
@@ -594,7 +595,7 @@ func TestSlackGoneThreadStopsTheFollowerAtTheFirstRefusal(t *testing.T) {
 //
 //	_Working on it..._2 + 2 = 4.
 //
-// A REAL run is single-step (E08 exposes no tools to a real provider), so "_Working on it…_" was the only line
+// A run with an EMPTY effective tool set is single-step, so "_Working on it…_" was the only line
 // it ever produced — a STATUS, duplicated into the body of the answer, and the status surface was already
 // saying it one API call earlier. Slack's documented home for progress is a task_update CHUNK, not the body.
 func TestSlackRealRunsAnswerCarriesNoStatusText(t *testing.T) {

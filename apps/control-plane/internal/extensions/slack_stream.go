@@ -30,8 +30,11 @@ import (
 // HONEST CEILING, and it is the most over-claimable thing in this epic, so it is stated three ways:
 //
 //  1. THIS IS NOT TOKEN STREAMING. The journal has no delta event; its finest-grained output event is
-//     model_step.completed.v1. E08's rule (no tools are exposed to a real provider) makes a real Slack run
-//     SINGLE-STEP, so a real run has exactly ONE thing to stream.
+//     model_step.completed.v1. A run whose EFFECTIVE TOOL SET IS EMPTY is single-step, so it has exactly ONE
+//     thing to stream. (This used to say "E08's rule: no tools are exposed to a real provider". That ceiling
+//     was lifted in E12 T1 — advertisedTools runs on every dispatch with no fake/real branch and no env gate.
+//     Single-step is a CONFIGURATION STATE, not an engine posture, and E21 T4 gives the Slack revision a tool
+//     set. Corrected E21, plan §3.6 D1.)
 //  2. THE JOURNAL DOES NOT CARRY THE MODEL'S WORDS. model_step.completed.v1's payload is
 //     {run_id, model_request_id} — the text lives in the model request's stored result, behind a read path
 //     this follower deliberately does not open. So what streams here is PROGRESS, not prose: the answer
@@ -493,7 +496,8 @@ func (f *SlackStreamFollower) rememberTask(runID string, event contracts.Event) 
 }
 
 // tasksFor is what the reply pump renders into task cards when it closes the stream. Empty for a run that
-// journaled none — which is EVERY real run today, since a real run is single-step and manages no tasks (E08).
+// journaled none — which is every run whose effective tool set is empty, since such a run is single-step and
+// manages no tasks. (Not "every real run": that was the E08 reading, wrong since E12 T1 — §3.6 D1.)
 func (f *SlackStreamFollower) tasksFor(runID string) []slack.Task {
 	if f == nil {
 		return nil
@@ -531,9 +535,10 @@ func slackEventRunID(event contracts.Event) string {
 // a status has its own surface (assistant.threads.setStatus, already set before the first journal read), and
 // duplicating it into the body produced exactly `_Working on it..._2 + 2 = 4.` in a real workspace.
 //
-// THAT IS WHY model_step.* IS ABSENT, and the absence has a consequence worth stating plainly: a real run is
-// SINGLE-STEP (E08 exposes no tools to a real provider), so a real run now produces NO line at all, opens no
-// stream, and its answer arrives as a plain threaded message. The status indicator is what shows it working.
+// THAT IS WHY model_step.* IS ABSENT, and the absence has a consequence worth stating plainly: a run with an
+// EMPTY EFFECTIVE TOOL SET is single-step, so it produces NO line at all, opens no stream, and its answer
+// arrives as a plain threaded message. The status indicator is what shows it working. (Formerly "a real run
+// is single-step (E08 exposes no tools to a real provider)" — false since E12 T1; §3.6 D1.)
 // What was lost is a message appearing one journal-poll before the terminal transaction; what was gained is an
 // answer that is only the answer.
 //

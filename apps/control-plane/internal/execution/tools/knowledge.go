@@ -19,9 +19,13 @@ type Retriever interface {
 	Retrieve(ctx context.Context, scope middleware.Scope, kbID string, body []byte) (api.ProvisionResult, error)
 }
 
-// KnowledgeRetrievalTool is the built-in knowledge retrieval tool (E17 T5, §25.15.4). It is exposed ONLY in
-// fake-engine runs — the E08 rule: the engine opens no tool to a real provider (real-provider turns are
-// single-step and toolless). The model supplies a knowledge_base_id + query + optional strategy; it can
+// KnowledgeRetrievalTool is the built-in knowledge retrieval tool (E17 T5, §25.15.4). It is exposed to any
+// run whose effective tool set NAMES it — there is no fake/real branch anywhere in the advertising path.
+// (This comment used to say it is exposed ONLY in fake-engine runs, citing "the E08 rule: the engine opens
+// no tool to a real provider". That ceiling was lifted in E12 T1 and the env gate that enforced it was
+// deleted; what is single-step is a run whose effective tool set is EMPTY — a configuration state, not an
+// engine posture. Corrected E21 T4, plan §3.6 D1.) The model supplies a knowledge_base_id + query + optional
+// strategy; it can
 // NEVER supply an ACL grant (there is no grant argument, and the request body is strict-decoded), so
 // authorization is entirely server-side. The tool retrieves under the RUN's tenant scope with NO principal
 // ACL grants — it therefore sees only KB-wide (unrestricted) sources (fail-closed).
