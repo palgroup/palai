@@ -447,3 +447,24 @@ func TestSlackBornRunsAreFoundByTheLiveLegsPredicate(t *testing.T) {
 		t.Fatal("the live legs' predicate matched a run for a team that has none — a receipt must be about the workspace it names")
 	}
 }
+
+// TestSlackBotsOwnDMBirthsNothing is SLK-008 inside the panel. The loop guard lives in MapEvent, so it is
+// surface-independent by construction — but a DM is the one conversation where a loop has NO witnesses: a
+// channel full of people notices a bot talking to itself, and a two-party DM does not. The guard is
+// therefore asserted where the panel actually runs, not only where it is implemented.
+func TestSlackBotsOwnDMBirthsNothing(t *testing.T) {
+	f := newSlackFixture(t)
+	f.scopeToChannels(t, "C40") // the exemption is live; it must not carry the app's own messages through it
+
+	resp := f.deliver(t, f.dmEvent("EvSelfDM", f.botUser, "D024BE91L", "1700000080.000100", "", "my own answer"), time.Now(), "", "")
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("the app's own DM = %d, want a 2xx ack — it was delivered, and acking is what stops Slack retrying an event we will keep ignoring", resp.StatusCode)
+	}
+	if n := f.runCount(t); n != 0 {
+		t.Fatalf("the app's own DM birthed %d runs, want 0 — in a DM there is nobody to notice the loop", n)
+	}
+	if n := f.sessionCount(t); n != 0 {
+		t.Fatalf("the app's own DM correlated %d threads, want 0", n)
+	}
+}
