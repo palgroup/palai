@@ -95,6 +95,10 @@ type Event struct {
 	// Context is app_context.entities — what the PERSON is looking at — in Slack's own relevance order,
 	// filtered to this event's OWN workspace. It is DATA, and the whole of E20 T3 is what may be done with
 	// it: it is recorded and described, NEVER resolved. See ContextEntity.
+	//
+	// Transport-invariant for free, and that is why it is populated HERE: both shipped transports call
+	// MapEvent over byte-identical bodies (api/slack.go for the HTTP callback, slack_socket.go for the
+	// Socket Mode envelope), so neither can carry a context the other does not.
 	Context []ContextEntity
 	Kind    Kind
 	Retry   bool // a redelivery (X-Slack-Retry-Num set) — advisory; the dedupe is on SourceEventID
