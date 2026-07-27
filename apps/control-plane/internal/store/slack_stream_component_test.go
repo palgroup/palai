@@ -82,6 +82,30 @@ func (f *slackFixture) runState(t *testing.T, runID string) string {
 	return state
 }
 
+// bornRun is one admitted run's three ids, in birth order — what a test needs to drive a SECOND run when the
+// fixture's single-run runAndResponse helper no longer fits.
+type bornRun struct{ id, responseID, sessionID string }
+
+func (f *slackFixture) runsInOrder(t *testing.T) []bornRun {
+	t.Helper()
+	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()),
+		`SELECT id, response_id, session_id FROM runs WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at`,
+		f.org, f.project)
+	if err != nil {
+		t.Fatalf("read runs: %v", err)
+	}
+	defer rows.Close()
+	var born []bornRun
+	for rows.Next() {
+		var r bornRun
+		if err := rows.Scan(&r.id, &r.responseID, &r.sessionID); err != nil {
+			t.Fatalf("scan run: %v", err)
+		}
+		born = append(born, r)
+	}
+	return born
+}
+
 func decodeSlackCall(t *testing.T, c slackCall) map[string]any {
 	t.Helper()
 	var got map[string]any
@@ -233,34 +257,19 @@ func TestSlackStreamOverTheConcurrencyCapStillAnswers(t *testing.T) {
 
 	f.deliver(t, f.eventText(t, "EvS3b", "app_mention", "Umapped", "C83", "1700000083.000100", "", "<@"+f.botUser+"> second"),
 		time.Now(), "", "").Body.Close()
-	var second string
-	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT id, response_id, session_id FROM runs WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at`, f.org, f.project)
-	if err != nil {
-		t.Fatalf("read runs: %v", err)
+	born := f.runsInOrder(t)
+	if len(born) != 2 {
+		t.Fatalf("%d runs were born, want 2 — the cap must not refuse an ADMISSION, only a decoration", len(born))
 	}
-	var responses, sessions []string
-	var ids []string
-	for rows.Next() {
-		var id, resp, sess string
-		if err := rows.Scan(&id, &resp, &sess); err != nil {
-			t.Fatalf("scan run: %v", err)
-		}
-		ids, responses, sessions = append(ids, id), append(responses, resp), append(sessions, sess)
-	}
-	rows.Close()
-	if len(ids) != 2 {
-		t.Fatalf("%d runs were born, want 2", len(ids))
-	}
-	second = ids[1]
+	second := born[1]
 
 	// The second run produces output and finishes. No stream was opened for it, so its answer posts plainly.
-	f.terminate(t, second, statemachines.RunCmdProvision, statemachines.RunCmdStart)
-	f.commitStep(t, sessions[1], responses[1], second)
-	f.finalizeWith(t, responses[1], "completed", map[string]any{
+	f.terminate(t, second.id, statemachines.RunCmdProvision, statemachines.RunCmdStart)
+	f.commitStep(t, second.sessionID, second.responseID, second.id)
+	f.finalizeWith(t, second.responseID, "completed", map[string]any{
 		"output": []any{map[string]any{"type": "message", "content": "the second answer"}},
 	})
-	f.terminate(t, second, statemachines.RunCmdComplete)
+	f.terminate(t, second.id, statemachines.RunCmdComplete)
 
 	if posted, err := extensions.NewSlackReplyPump(f.bridge).Tick(context.Background()); err != nil || posted != 1 {
 		t.Fatalf("the capped-out run delivered %d answers (err %v), want 1 — the cap must never lose an answer", posted, err)
