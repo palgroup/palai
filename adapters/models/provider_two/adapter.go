@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,6 +40,19 @@ const defaultMaxTokens = 4096
 
 const maxSSELineBytes = 1 << 20 // one MiB, matching the engine frame ceiling
 
+// ErrImageUnsupported REFUSES a request carrying image content, and the refusal is the whole point.
+//
+// This family has no image conversion. Anthropic's Messages API does take images (a
+// {"type":"image","source":{"type":"base64",…}} content block), so writing one is a small change — but it
+// would be an UNPROVEN wire shape in a tree whose vision claim rests on a real round trip, and there is no
+// Anthropic round trip behind it. The alternative to refusing is what this code did before the check
+// existed: drop the images and answer the text alone, so the user is told the model cannot see an image it
+// was in fact never shown. That is the silent-wrong-answer shape §27.5 exists to refuse.
+//
+// Upgrade path, named so it is a deliberate act: add the image block to wireMessages and delete this guard
+// in the same change that adds a real Anthropic vision round trip.
+var ErrImageUnsupported = errors.New("image_input_unsupported")
+
 // Adapter converts a canonical request into an Anthropic streaming message.
 type Adapter struct {
 	BaseURL   string       // defaults to DefaultBaseURL
@@ -52,6 +66,14 @@ func (a Adapter) Execute(ctx context.Context, req modelbroker.Request, secret st
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, req.Deadline)
 		defer cancel()
+	}
+
+	// Refuse BEFORE the credential is used or a request is built: an image this family cannot render must
+	// never become a silent text-only call (see ErrImageUnsupported).
+	for _, m := range req.Messages {
+		if len(m.Images) > 0 {
+			return modelbroker.Result{}, fmt.Errorf("%w: the provider-two adapter has no image conversion, so a run carrying an image is refused rather than answered without it", ErrImageUnsupported)
+		}
 	}
 
 	body, names, err := a.buildBody(req)
