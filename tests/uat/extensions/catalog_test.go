@@ -126,9 +126,25 @@ var expectedExtensionsCatalog = map[string]struct {
 		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackUnauthorizedClickEnqueuesNothing",
 		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackStaleHashAndForeignThreadDecideNothing",
 	}},
+	// E20 extended this case rather than opening an id, and what it added is the half SLK-005 had DECLARED as
+	// its own ceiling: the file leg. The fetch, the artifact, the input's image_ref, the provider's content
+	// part, the caps and the visible refusals are all this case's claim now, so the ceiling sentence is gone
+	// from case.yaml and the proof block carries the tests that replaced it.
 	"SLK-005": {"component-real", []string{
 		"adapters/integrations/slack/inbound_test.go:TestMapEventClassifiesEditsAndDeletes",
+		"adapters/integrations/slack/files_test.go:TestFetchImageUsesTheTokenOnlyAsABearerHeader",
+		"adapters/integrations/slack/files_test.go:TestFetchImageRefusesAnyHostButSlackFiles",
+		"adapters/integrations/slack/files_test.go:TestFetchImageRefusesBytesThatAreNotAnImage",
+		"apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesResolvesAnImageRefToBytes",
+		"apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesTakesNothingButBytesFromAnImageItem",
+		"apps/control-plane/internal/execution/vision_component_test.go:TestDispatchResolvesAnImageRefIntoTheProviderRequest",
+		"adapters/models/provider_one/vision_test.go:TestBuildBodyRendersAnImageAsAContentPart",
 		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind",
+		"apps/control-plane/internal/store/slack_image_component_test.go:TestSlackSharedImageBecomesAnImageRefInTheRunInput",
+		"apps/control-plane/internal/store/slack_image_component_test.go:TestSlackImageRedeliveryReplaysOntoTheSameRunAndArtifact",
+		"apps/control-plane/internal/store/slack_image_component_test.go:TestSlackNonImageAndOversizeFilesAreRefusedVisibly",
+		"apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestArtifactInboundImageWriteIsIdempotentAtACallerChosenID",
+		"apps/control-plane/internal/artifacts/inbound_image_component_test.go:TestInboundImageIsReachedByRetentionOnlyOnceAttached",
 	}},
 	"SLK-006": {"component-real", []string{
 		"adapters/integrations/slack/ratelimit_test.go:TestPostMessageRepairsA429Once",

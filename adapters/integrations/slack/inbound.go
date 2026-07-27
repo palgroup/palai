@@ -124,8 +124,17 @@ type Event struct {
 	// MapEvent over byte-identical bodies (api/slack.go for the HTTP callback, slack_socket.go for the
 	// Socket Mode envelope), so neither can carry a context the other does not.
 	Context []ContextEntity
-	Kind    Kind
-	Retry   bool // a redelivery (X-Slack-Retry-Num set) — advisory; the dedupe is on SourceEventID
+	// Files is what the message SHARED, as the payload declared it — the metadata half of SLK-005's deferred
+	// file leg. It is populated whatever the subtype says, and that is the point: an @mention with an
+	// attachment arrives as app_mention with NO subtype and a DM upload as message.im, so keying the parse on
+	// subtype "file_share" (which is what Kind does) would see neither. Kind still classifies as it always
+	// did; this field simply does not depend on it.
+	//
+	// EVERY FIELD BUT THE ID IS THE UPLOADER'S CLAIM. See SharedFile: the mimetype and name decide only
+	// whether a file is worth fetching, and never what the bytes are.
+	Files []SharedFile
+	Kind  Kind
+	Retry bool // a redelivery (X-Slack-Retry-Num set) — advisory; the dedupe is on SourceEventID
 }
 
 // ContextEntityChannel is the ONE entity type Slack's agent pages document with a shape we can read: `value`
@@ -192,6 +201,20 @@ type innerEvent struct {
 	// — a context that never arrives looks exactly like a user looking at nothing.
 	AppContext *appContext `json:"app_context"`
 	Context    *appContext `json:"context"`
+	// Files is the shared-file array. Decoded on EVERY inner event, not just subtype file_share: Slack puts
+	// it on app_mention and on message.im too, where there is no subtype to key on.
+	Files []struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		MimeType string `json:"mimetype"`
+		Size     int64  `json:"size"`
+		// url_private_download is the download endpoint; url_private renders in a browser. Both need the
+		// bot token and `files:read` (https://docs.slack.dev/messaging/working-with-files/, checked
+		// 2026-07-27). The download form is preferred and the other is the fallback, because a file object
+		// missing url_private_download but carrying url_private is still fetchable.
+		URLPrivateDownload string `json:"url_private_download"`
+		URLPrivate         string `json:"url_private"`
+	} `json:"files"`
 }
 
 // appContext is the context object as published. `value` stays raw because its shape depends on the entity
@@ -325,6 +348,7 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 		Tab:           inner.Tab,
 		Text:          stripMention(text, botUserID),
 		Context:       contextEntities(inner, outer.TeamID),
+		Files:         sharedFiles(inner),
 		Kind:          classify(inner.Type, inner.Subtype),
 		Retry:         retry,
 	}
@@ -448,6 +472,30 @@ func stripMention(text, botUserID string) string {
 // classify maps a Slack (type, subtype) pair onto the coarse Kind the downstream mapping branches on. An
 // edit and a delete are their own kinds so a correction supersedes rather than starting a fresh turn and a
 // tombstone retracts (SLK-005), instead of both being treated as new messages.
+// sharedFiles normalizes the inner event's `files` array, keeping payload order (the fetch caller's
+// candidate selection is order-stable, and that stability is what keeps a redelivery a replay rather than an
+// idempotency conflict). A file with no id is dropped: there is nothing to identify or attribute it by.
+//
+// The download URL is url_private_download where present, url_private otherwise. Both are fetched the same
+// way and both are checked against the Slack file-host allow-list before the token is presented (FetchImage).
+func sharedFiles(inner innerEvent) []SharedFile {
+	if len(inner.Files) == 0 {
+		return nil
+	}
+	out := make([]SharedFile, 0, len(inner.Files))
+	for _, f := range inner.Files {
+		if f.ID == "" {
+			continue
+		}
+		download := f.URLPrivateDownload
+		if download == "" {
+			download = f.URLPrivate
+		}
+		out = append(out, SharedFile{ID: f.ID, Name: f.Name, MimeType: f.MimeType, Size: f.Size, DownloadURL: download})
+	}
+	return out
+}
+
 func classify(typ, subtype string) Kind {
 	switch subtype {
 	case "message_changed":

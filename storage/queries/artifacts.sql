@@ -14,6 +14,36 @@ INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size
     media_type, logical_type, malware_scan_status, provenance)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 
+-- InsertInboundArtifact records an artifact whose id the CALLER chose, run_id still unset, and
+-- does nothing if that id already exists. Both halves are for one caller shape: an integration
+-- that admitted a shared file (E19/E20 Slack).
+--
+-- WHY THE CALLER CHOOSES THE ID. The run's stored input names the artifact, and the admission's
+-- request hash covers that input (slackRequestHash). A random id would make Slack's redelivery of
+-- one event hash DIFFERENTLY from the original, so the idempotency reservation would report a
+-- CONFLICT instead of replaying — the exact opposite of SLK-002. A caller-derived id that is a pure
+-- function of the source event keeps the redelivery a replay. ON CONFLICT DO NOTHING is the other
+-- half of that: the redelivery re-derives the same id and must find the row, not fail on it.
+--
+-- WHY run_id IS NULL HERE. The row has to exist BEFORE the admission, because the admission commits
+-- the run's dispatch outbox in its own transaction — an artifact written after it races the model
+-- step that reads it. But runs.id does not exist yet either, and artifacts.run_id references it. So
+-- the row lands unattached and AttachArtifactRun binds it the moment the run is real.
+-- name: InsertInboundArtifact
+INSERT INTO artifacts (id, organization_id, project_id, object_key, size_bytes, checksum,
+    media_type, logical_type, malware_scan_status, provenance)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (id) DO NOTHING;
+
+-- AttachArtifactRun binds an inbound artifact to the run that was admitted for it, tenant-scoped.
+-- It is what puts the row inside RETENTION's reach: the §22.2 purge reaches an artifact through
+-- `artifacts JOIN runs ON artifacts.run_id = runs.id`, so an unattached row is a row retention
+-- cannot see. Only ever widens NULL -> a run: the guard makes it idempotent under a redelivery and
+-- makes re-pointing an existing artifact at another run impossible.
+-- name: AttachArtifactRun
+UPDATE artifacts SET run_id = $4
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND run_id IS NULL;
+
 -- GetArtifact reads an artifact's row within the tenant scope. An unknown or foreign id
 -- returns no row, which the caller renders as a miss (404) — a foreign tenant cannot tell
 -- a real artifact apart from a missing one, so the read leaks no cross-tenant existence.

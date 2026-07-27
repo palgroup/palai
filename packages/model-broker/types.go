@@ -25,10 +25,27 @@ type PrivacyFlags struct {
 	NoTrain  bool `json:"no_train,omitempty"`
 }
 
-// Message is one conversation turn sent to the provider.
+// Image is one image attached to a conversation turn, carried as RAW BYTES plus the media
+// type the bytes were SNIFFED as. The adapter base64s it onto the provider wire; nothing
+// here holds a URL, and that is deliberate — a provider-fetched URL would make the provider
+// dereference an address chosen upstream of us, and the bytes are already control-plane-side
+// by the time a Message is built (spec §24: the object store is control-plane only).
+//
+// MediaType is the SNIFFED type, never a filename extension or a sender-declared mimetype:
+// an image is untrusted third-party input and its metadata is data, not authority.
+type Image struct {
+	MediaType string `json:"media_type"`
+	Data      []byte `json:"data"`
+}
+
+// Message is one conversation turn sent to the provider. Content and Images are both
+// content of the SAME turn: a turn with images renders as the provider's multi-part
+// content shape (text part + image parts), a turn without them renders exactly as it
+// did before images existed — so a text-only run's provider request is bit-unchanged.
 type Message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content,omitempty"`
+	Images     []Image    `json:"images,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }

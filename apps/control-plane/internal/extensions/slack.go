@@ -357,8 +357,9 @@ func (s *Store) RetractSlackMessageTurn(ctx context.Context, org, project, team,
 	return s.reviseSlackTurn(ctx, "RetractSlackMessageTurn", org, project, team, channel, messageTS)
 }
 
-// SupersedeSlackMessageTurn replaces the stored turn's input with `input` — the corrected words, already
-// rendered by slackRunInput so the stored turn and a fresh one are shaped identically.
+// SupersedeSlackMessageTurn replaces the stored turn's WORDS with `input` — the corrected text, already
+// rendered by slackTurnText so the stored turn and a fresh one read identically. Only the words: a turn that
+// carried an image keeps it (see the query), because an edit changes what was said, not what was shared.
 func (s *Store) SupersedeSlackMessageTurn(ctx context.Context, org, project, team, channel, messageTS, input string) (string, error) {
 	return s.reviseSlackTurn(ctx, "SupersedeSlackMessageTurn", org, project, team, channel, messageTS, input)
 }

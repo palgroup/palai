@@ -290,11 +290,23 @@ RETURNING r.id;
 -- it to the engine verbatim and model_dispatch serialises anything that is not a string), so writing an
 -- object here would put raw JSON in front of the model — the defect ed44544 fixed on the way in.
 --
+-- A TURN THAT CARRIES AN IMAGE IS STORED AS A CONTENT ARRAY (E20), and there the words are one ITEM of it, so
+-- the whole value cannot be overwritten: an edit rewrites the caption, and blanking the array would take the
+-- image out of the conversation while it is still sitting in the thread for everyone to see. jsonb_set
+-- replaces the text of item 0 and leaves the image_ref items alone. Item 0 is the words by construction —
+-- slackRunInput puts them first and is the only writer of these rows — and the CASE keeps a plain text turn
+-- on the string path, so this is not the "raw JSON at the model" defect: a content array is a shape
+-- model_dispatch decodes (decodeContentParts), not an envelope it stringifies.
+--
 -- A RETRACTED turn is left alone: the words were withdrawn, and an edit arriving afterwards must not put
 -- them back. Slack does not send one, but the guard is one predicate and the alternative is unrecoverable.
 -- name: SupersedeSlackMessageTurn
 UPDATE responses r
-SET input = to_jsonb($6::text), updated_at = clock_timestamp()
+SET input = CASE jsonb_typeof(r.input)
+                WHEN 'array' THEN jsonb_set(r.input, '{0,text}', to_jsonb($6::text))
+                ELSE to_jsonb($6::text)
+            END,
+    updated_at = clock_timestamp()
 FROM slack_message_turns t
 WHERE t.organization_id = $1 AND t.project_id = $2
   AND t.team_id = $3 AND t.channel_id = $4 AND t.message_ts = $5

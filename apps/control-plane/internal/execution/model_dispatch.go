@@ -118,7 +118,7 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 		return len(toolCalls) > 0, st.ch.Send(ctx, o.frame(st, "model.result", data, string(frame.ID)))
 	}
 
-	messages, err := decodeMessages(frame.Data["messages"])
+	messages, err := decodeMessages(frame.Data["messages"], o.imageResolver(ctx, st))
 	if err != nil {
 		return false, fmt.Errorf("model request %s: %w", requestID, err)
 	}
@@ -282,7 +282,13 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 // messages. The engine carries tool-call arguments and content as JSON objects, while
 // the canonical message shape carries both as strings, so this is the inbound half of
 // the same string/object boundary toEngineToolCalls owns outbound (spec §25.9).
-func decodeMessages(raw any) ([]modelbroker.Message, error) {
+//
+// A turn whose content is a CONTENT ARRAY (the §25.10 richer shape, content.json's typed items) is folded
+// into text + images here rather than serialised: `resolve` turns each image_ref's artifact id into bytes,
+// control-plane-side. That resolution CANNOT live in the engine — the object-store credential is
+// control-plane-only (spec §24) and the 1 MiB engine frame ceiling (execute_run.go MaxFrameBytes) could not
+// carry a screenshot anyway, which is why the input carries a REFERENCE and the bytes join here.
+func decodeMessages(raw any, resolve imageResolver) ([]modelbroker.Message, error) {
 	items, ok := raw.([]any)
 	if !ok {
 		if raw == nil {
@@ -291,12 +297,24 @@ func decodeMessages(raw any) ([]modelbroker.Message, error) {
 		return nil, fmt.Errorf("messages is not an array")
 	}
 	out := make([]modelbroker.Message, 0, len(items))
+	// The image budget is spent on the MOST RECENT images, so `budget` starts as the number of images this
+	// conversation must skip before it starts resolving. See countImageRefs for why it works this way round.
+	budget := countImageRefs(items) - maxRunImages
 	for _, item := range items {
 		fields, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		msg := modelbroker.Message{Content: asJSONString(fields["content"])}
+		msg := modelbroker.Message{}
+		if parts, ok := fields["content"].([]any); ok {
+			text, resolved, err := decodeContentParts(parts, resolve, &budget)
+			if err != nil {
+				return nil, err
+			}
+			msg.Content, msg.Images = text, resolved
+		} else {
+			msg.Content = asJSONString(fields["content"])
+		}
 		msg.Role, _ = fields["role"].(string)
 		msg.ToolCallID, _ = fields["tool_call_id"].(string)
 		if calls, ok := fields["tool_calls"].([]any); ok {
@@ -313,6 +331,186 @@ func decodeMessages(raw any) ([]modelbroker.Message, error) {
 		out = append(out, msg)
 	}
 	return out, nil
+}
+
+// ImageReader is the object-store read path an image content item resolves through. It is a separate
+// one-method seam from ArtifactWriter on purpose: the write side has its own implementors (including test
+// doubles), and widening it would have made every one of them carry a read they do not do.
+type ImageReader interface {
+	ReadImageArtifact(ctx context.Context, org, project, artifactID string) (mediaType string, content []byte, found bool, err error)
+}
+
+// imageResolver binds this run's TENANT to the object-store read, and that binding is the whole access
+// control: the artifact id comes out of the run's own input, which is untrusted content, and the read is
+// scoped to the run's organization+project so a foreign id reads no row at all (the §22.6 non-disclosure
+// rule the retrieval API already relies on). An id cannot select a tenant — the tenant is already fixed by
+// the run.
+//
+// A NON-IMAGE artifact is refused as a miss rather than sent: media types are recorded at write time, and a
+// caller pointing an image_ref at a text artifact would otherwise have a diff base64'd into a vision request.
+func (o *Orchestrator) imageResolver(ctx context.Context, st *attemptState) imageResolver {
+	return func(artifactID string) (modelbroker.Image, bool, error) {
+		if o.images == nil {
+			return modelbroker.Image{}, false, nil // no object store wired: honestly unavailable
+		}
+		mediaType, content, found, err := o.images.ReadImageArtifact(ctx, st.tenant.Organization, st.tenant.Project, artifactID)
+		if err != nil || !found {
+			return modelbroker.Image{}, false, err
+		}
+		if !strings.HasPrefix(mediaType, "image/") {
+			return modelbroker.Image{}, false, nil
+		}
+		return modelbroker.Image{MediaType: mediaType, Data: content}, true, nil
+	}
+}
+
+// imageResolver turns an artifact id into the image's bytes and SNIFFED media type, or reports it
+// unresolvable. found=false is a blameless miss (retention reaped it, or the row is not there); an error is
+// a real storage failure. It is a func rather than an interface because there is exactly one production
+// implementation and the tests want a literal (the one-implementation-interface rule).
+type imageResolver func(artifactID string) (modelbroker.Image, bool, error)
+
+// maxRunImages caps how many images ONE model request may carry, counted across the whole assembled
+// conversation. The number is ours — no provider publishes a hard limit — and it exists because an image is
+// the most expensive input a third party can put into a run: one 1080x144 screenshot MEASURED 8524 input
+// tokens on gpt-4o-mini and a larger one 19858 (tests/live/provider/vision_live_test.go). Without a ceiling
+// a workspace member prices a run arbitrarily by attaching files, and a long thread re-sends every image it
+// ever accumulated on every single turn.
+const maxRunImages = 8
+
+// maxImageBytes caps ONE image's decoded size. A screenshot is far under it; a multi-hundred-megabyte
+// "image" is a memory attack, and the bytes are buffered whole (base64 into a request body) so the bound has
+// to be a real one. Enforced HERE as well as at every ingest point, because this is the last boundary before
+// the bytes are copied into a provider request — an ingest-only bound would be one forgotten caller away
+// from useless.
+const maxImageBytes = 5 << 20 // 5 MiB
+
+// NOTHING HERE FAILS THE STEP, and that is a correction to how this was first written rather than an
+// oversight. The first version refused the model step when the conversation carried more images than the cap.
+// Trace that through a real Slack thread: three images in message one, three in message two, three in message
+// three — and the ninth trips the cap. But the conversation is REPLAYED on every turn, so from then on EVERY
+// message in that thread fails, forever, including messages carrying no image at all. A cost ceiling would
+// have become a thread-killer.
+//
+// So an image the request cannot carry becomes a MARKER in the conversation instead. That is still a visible
+// refusal — arguably a better one: the model reads it and can tell the user which images it could not see,
+// where a failed run tells them only that something broke. The rule "make the refusal visible, not silent" is
+// satisfied by the marker, not by the failure.
+const (
+	// missingImageNote stands in for an image that could not be resolved — retention reaped it, or the row is
+	// not there. It names no artifact id: the id is internal scope, and a prompt is not where scope belongs
+	// (the slackRunInput rule).
+	missingImageNote = "(an image shared in this conversation is no longer available)"
+	// droppedImageNote stands in for an image dropped to stay under the per-request cap. The budget is spent
+	// on the MOST RECENT images, so this only ever marks older ones — which is the right way round: the
+	// question being asked now is about what was just shared.
+	droppedImageNote = "(an older image from this conversation is not shown here, to stay within the images one request may carry)"
+	// oversizeImageNote stands in for an image past the byte ceiling. Unreachable from the Slack path, which
+	// bounds the fetch at the same ceiling; a hand-written /v1/responses body can still get here.
+	oversizeImageNote = "(an image in this conversation is too large to show)"
+	// redactedContentNote is what a purged prior turn says. It replaces what this path used to do with the
+	// §22.2 redaction marker — serialise `[{"type":"redacted_content"}]` and present the JSON to the model as
+	// the assistant's own prior words.
+	redactedContentNote = "(the content of this turn was redacted by data retention)"
+)
+
+// countImageRefs totals the image_ref items across the whole assembled conversation.
+//
+// It exists so the budget can be spent on the NEWEST images rather than the first ones the walk happens to
+// meet. decodeContentParts walks forward, so "keep the last N" is expressed as "skip the first total-N" —
+// which needs the total up front. The alternative, walking backwards and reversing, buys nothing.
+func countImageRefs(items []any) int {
+	n := 0
+	for _, item := range items {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		parts, ok := fields["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			if p, ok := part.(map[string]any); ok && contracts.ContentItem(p).Type() == "image_ref" {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// decodeContentParts folds ONE turn's content array into the provider-facing text plus its resolved images
+// (spec §25.10's richer shape over content.json's typed items).
+//
+// WHAT IS TAKEN FROM AN ITEM, exhaustively, because an image is untrusted third-party input and this is the
+// boundary that decides what of it becomes conversation:
+//
+//   - input_text / output_text / text → the `text` string, joined in order.
+//   - image_ref → the `artifact_id`, used ONLY as a lookup key against the run's own tenant, and only the
+//     resolved bytes + sniffed media type come back.
+//   - redacted_content → the retention marker.
+//   - anything else → SKIPPED. ContentItem is an open union (ADR-0002), so an unknown type must survive
+//     rather than fail the step.
+//
+// Nothing else is read. An item's own `role`, `tools`, `organization_id`, `filename` or `text` cannot
+// re-role the turn, grant a tool, select a tenant or contribute words — the item is data, never authority
+// (the E17 T10 relay rule and the A2A untrusted-remote-result rule, applied to pixels).
+//
+// PROMPT INJECTION THROUGH THE IMAGE ITSELF IS NOT SOLVED HERE, and a reader meeting this function should
+// know that rather than infer safety from the care above: text rendered INSIDE a screenshot reaches the
+// model as model-visible content, and a model that reads "ignore your instructions" in a picture may act on
+// it exactly as it may when it reads the same words in a message. What this boundary guarantees is narrower
+// and worth having: an image cannot change the run's authority. Bounding what a model may DO with what it
+// reads is the tool-surface and approval machinery's job (§28, the hooks), not this decode's.
+//
+// skip is the number of image_ref items still to be passed over before the budget starts being spent, so the
+// cap keeps the NEWEST images rather than the first ones met (see countImageRefs). It is decremented, so it
+// carries across turns.
+func decodeContentParts(parts []any, resolve imageResolver, skip *int) (string, []modelbroker.Image, error) {
+	var text []string
+	var resolved []modelbroker.Image
+	for _, part := range parts {
+		item, ok := part.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch contracts.ContentItem(item).Type() {
+		case "input_text", "output_text", "text":
+			// "text" is not in content.json; it is accepted because it is the name the OpenAI Chat shape
+			// uses for the same thing, and a client that sends it would otherwise have its words silently
+			// dropped. Only ever read on an item that DECLARES one of these types.
+			if s, ok := item["text"].(string); ok && s != "" {
+				text = append(text, s)
+			}
+		case "redacted_content":
+			text = append(text, redactedContentNote)
+		case "image_ref":
+			id, _ := item["artifact_id"].(string)
+			if id == "" {
+				continue
+			}
+			if *skip > 0 {
+				// Over the per-request cap: marked, not resolved. No read is issued for it either, so a
+				// long thread does not pay a storage round trip per image it will not send.
+				*skip--
+				text = append(text, droppedImageNote)
+				continue
+			}
+			img, found, err := resolve(id)
+			if err != nil {
+				return "", nil, err
+			}
+			switch {
+			case !found:
+				text = append(text, missingImageNote)
+			case len(img.Data) > maxImageBytes:
+				text = append(text, oversizeImageNote)
+			default:
+				resolved = append(resolved, img)
+			}
+		}
+	}
+	return strings.Join(text, "\n"), resolved, nil
 }
 
 // asJSONString keeps a string value as-is and serializes any other JSON value (object,

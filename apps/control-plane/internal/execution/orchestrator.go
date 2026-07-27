@@ -81,6 +81,10 @@ type Orchestrator struct {
 	// test-log through (spec §30.6). Nil ⇒ no changeset is compiled (a stack with no artifact store
 	// wired). main.go injects it via SetChangesetWriter.
 	artifacts ArtifactWriter
+	// images is the object-store READ path an `image_ref` content item resolves through, so a run can see
+	// an image (spec §25.10). Nil ⇒ every image_ref reads as a miss and the turn says so; a text-only run is
+	// unaffected either way. main.go injects it via SetImageReader.
+	images ImageReader
 	// checkpoints persists an engine checkpoint.offer as a durable recovery object (spec §26.1-26.2).
 	// Nil ⇒ no object store wired (every non-S3 stack): a checkpoint offer is advisory and dropped,
 	// no durable boundary is created. main.go injects it via SetCheckpointSink.
@@ -155,6 +159,15 @@ func (o *Orchestrator) SetHookFirer(h HookFirer) {
 // patch + test-log through (spec §30.6). Left unset, a terminated coding run compiles no changeset —
 // the same discipline as SetPublisher.
 func (o *Orchestrator) SetChangesetWriter(aw ArtifactWriter) { o.artifacts = aw }
+
+// SetImageReader injects the read side of the object store, which is what lets a run SEE an image: an
+// `image_ref` content item in the run's input names an artifact, and the bytes are joined to the provider
+// request here in the control plane (spec §24 — the object-store credential never reaches the engine, and
+// the 1 MiB engine frame could not carry a screenshot regardless).
+//
+// Left unset, every image_ref resolves as a miss and the turn carries the "no longer available" marker —
+// which is the truth for a stack with no object store, and leaves a text-only run bit-unchanged.
+func (o *Orchestrator) SetImageReader(ir ImageReader) { o.images = ir }
 
 // SetCheckpointSink injects the checkpoint persistence path (spec §26.1-26.2). Left unset, a
 // checkpoint.offer is dropped (no durable boundary) — the same discipline as SetChangesetWriter.

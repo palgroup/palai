@@ -73,6 +73,12 @@ type SlackAdmitter struct {
 	// The streaming half (E20 T1), nil until WithStreaming. Every use of it is nil-safe: a deployment that
 	// does not mount it admits, runs and answers exactly as it did before.
 	streams *SlackStreamFollower
+
+	// The image half (E20, slack_vision.go), nil until WithFileFetch: the client that fetches from Slack's
+	// FILE hosts (not the Web API) and the object store the bytes land in. Both nil ⇒ a shared file is
+	// admitted exactly as before, text only.
+	fileDoer         slack.Doer
+	inboundArtifacts InboundArtifactStore
 }
 
 // NewSlackAdmitter builds the bridge. secrets redeems a signing_secret_ref to bytes at verification time (the
@@ -236,7 +242,16 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 
 	scope := middleware.Scope{Organization: conn.Org, Project: conn.Project, Principal: target.principal}
 	responseID, runID, sessionID := newID("resp"), newID("run"), newID("ses")
-	input := slackRunInput(ev)
+
+	// FETCH THE SHARED IMAGES BEFORE THE ADMISSION, and the ordering is not incidental — slack_vision.go
+	// carries the whole argument. In short: the artifact row must exist before the admission commits the run's
+	// dispatch outbox, and its id must be derived from the event so a redelivery hashes identically and
+	// REPLAYS. Everything a fetch needs to be legitimate has already happened above: signature verified,
+	// connection resolved, channel inside allowed_channels, run-birth decided. A failure here never fails the
+	// admission; the input says a file was not attached.
+	images, skippedFiles := a.admitImages(ctx, conn, ev)
+
+	input := slackRunInput(ev, "", images, skippedFiles)
 	create := contracts.ResponseCreateRequest{Input: input, Store: true}
 	if target.agentRevisionID != "" {
 		rev := target.agentRevisionID
@@ -278,7 +293,11 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	//
 	// A replay never re-reads this value anyway: the reservation returns the STORED projection, so the second
 	// delivery's prompt is discarded whatever it says.
-	rawInput, err := json.Marshal(threadNote + input)
+	//
+	// The prompt is BUILT AGAIN rather than concatenated, because the input is no longer always a string: with
+	// an image it is a content array, and the note belongs inside that array's first item — its text — not
+	// glued onto the JSON. One function renders both, so the two strings can only differ by the note.
+	rawInput, err := json.Marshal(slackRunInput(ev, threadNote, images, skippedFiles))
 	if err != nil {
 		return api.SlackAdmitOutcome{}, fmt.Errorf("marshal slack input: %w", err)
 	}
@@ -321,6 +340,18 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 			return a.repairDeadCorrelation(scoped, conn, ev, *requested, rejected)
 		}
 		return api.SlackAdmitOutcome{Rejected: rejected, Retryable: retryable}, nil
+	}
+
+	// THE RUN EXISTS NOW, so the images it was admitted with can be bound to it — which is what puts their
+	// bytes inside data retention's reach (§22.2 purges an artifact through its run).
+	//
+	// Gated on Replayed for a concrete reason rather than symmetry with the follower below: on a replay `runID`
+	// is a freshly minted id that was never inserted into `runs`, so attaching to it would violate the
+	// artifacts.run_id foreign key. The ORIGINAL admission attached them, and AttachArtifactRun only ever
+	// fills a NULL, so there is nothing left to do. The one gap this leaves — the original died between the
+	// write and the attach — is named at the top of slack_vision.go.
+	if !out.Replayed {
+		a.attachImagesToRun(scoped, conn, images, runID)
 	}
 
 	// The session the admission settled on (the minted one for a fresh session, the chained one otherwise).
@@ -393,9 +424,27 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 // existed, one whose handle was lost) revises NOTHING and is simply acked. The handle lookup is the scope
 // check: only messages this tenant admitted have a row, so an edit in a channel we merely sit in finds none.
 //
+// AN IMAGE GOES WITH ITS TURN (E20), and the two verbs take it in opposite directions on purpose:
+//
+//   - RETRACTED, so the image goes too. The turn's stored input is the content array that NAMES the artifact,
+//     and SessionHistory stops carrying that row entirely — so the image_ref never enters another assembled
+//     conversation. That is load-bearing rather than incidental: model_dispatch resolves image_refs across the
+//     WHOLE conversation, so a screenshot somebody deleted would otherwise keep being sent to the provider on
+//     every later turn in the thread.
+//   - SUPERSEDED, and the image STAYS. Only the words are replaced, in place, leaving the image_ref items
+//     where they are (SupersedeSlackMessageTurn does that in one statement). Editing a caption does not
+//     un-share the file — it is still in the thread, and the human can still see it — so a rewrite that
+//     dropped it would make the model blind to the thing being talked about.
+//
 // CEILING, named because it is reachable: a correction to a message whose run is still IN FLIGHT does not
 // reach that run — it already carries the old input, and steering it needs the command spine. It answers the
 // question as asked, and the correction takes effect from the next turn.
+//
+// A SECOND ONE, and it is the thread note's rather than the image's: superseding a turn that carried FETCHED
+// THREAD HISTORY (slack_thread.go) drops that history, because the note is glued into the turn's text and
+// nothing here can tell where it ends. Editing the first message of a late-joined thread therefore costs the
+// quoted backlog. The image does not have this problem for a structural reason — it is its own item of the
+// content array, so replacing the text cannot touch it.
 func (a *SlackAdmitter) reviseTurn(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) (api.SlackAdmitOutcome, error) {
 	var (
 		response string
@@ -407,7 +456,8 @@ func (a *SlackAdmitter) reviseTurn(ctx context.Context, conn api.SlackConnection
 		response, err = a.store.RetractSlackMessageTurn(ctx, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.MessageTS)
 	} else {
 		verb = "superseded"
-		response, err = a.store.SupersedeSlackMessageTurn(ctx, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.MessageTS, slackRunInput(ev))
+		response, err = a.store.SupersedeSlackMessageTurn(ctx, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.MessageTS,
+			slackTurnText(ev, nil, 0))
 	}
 	if err != nil {
 		return api.SlackAdmitOutcome{}, err
@@ -639,6 +689,19 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 // real mention was met with "It looks like you have shared a JSON object that represents a message event
 // from Slack…". A string is therefore the only shape that can be a prompt.
 //
+// TWO SHAPES, AND THE STRING IS STILL THE DEFAULT. With no image attached this returns the same bare string
+// it always did, so every existing request hash, every stored input and every prompt is bit-unchanged. With
+// an image it returns the CONTENT ARRAY content.json has always defined — an `input_text` item carrying the
+// same words, plus one `image_ref` item per attached image. That array is a shape the tree understands
+// end to end (execution.decodeContentParts folds it into text + resolved bytes); it is emphatically NOT the
+// raw-envelope-as-JSON defect above, which was an UNTYPED map the provider was shown verbatim.
+//
+// THE IMAGE IS A REFERENCE, NEVER BYTES, and that is forced rather than preferred: the engine frame ceiling
+// is 1 MiB (execution/execute_run.go MaxFrameBytes) and run.start carries this input, so a base64 screenshot
+// could not cross the engine boundary at all. The bytes join the provider request control-plane-side, where
+// the object-store credential already lives (spec §24) — which also means the untrusted bytes never enter
+// the engine container.
+//
 // WHAT IS IN IT: what the human wrote, with the app's own mention removed (slack.stripMention) — the mention
 // is Slack's addressing, not a word anyone said.
 //
@@ -674,8 +737,9 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 //     What survives is the DUPLICATION worry, and it is the one that shaped the fix: history is fetched ONLY
 //     when this thread has no session to chain onto, so a conversation the app is already in never gets a
 //     second, disagreeing copy of what run.start replays. See slack_thread.go for the rule, the bounds and the
-//     authority argument; the fetched text arrives as an untrusted PREFIX (slackThreadNote) and never through
-//     this function, which stays a pure function of the event.
+//     authority argument; the fetched text arrives as an untrusted PREFIX (slackThreadNote), passed IN as
+//     threadNote below rather than fetched here — this function stays a pure function of its arguments, and
+//     the call that establishes request identity passes "".
 //
 // KIND-AWARE, because SLK-005 already classifies these and a prompt that ignores the classification lies:
 // an edit is marked as an edit rather than arriving as a brand-new turn, and a DELETION does not echo the
@@ -684,13 +748,40 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 // PURE FUNCTION OF THE EVENT, unchanged and load-bearing: slackRequestHash hashes this, so anything
 // non-deterministic (a clock, the retry hint) would make a redelivery hash differently and turn SLK-002's
 // replay into an idempotency CONFLICT.
+//
 // THE CONTEXT (E20 T3) is the one exception to "scope is not conversation", and the distinction is exact.
 // The channel THIS EVENT CAME FROM stays out, because it is SCOPE — allowed_channels is enforced against it,
 // so naming it in the prompt would put a gate's input in the same channel as a user's words. The channels
 // the app_context names gate NOTHING; they are a description of what the human has on screen, and they enter
 // as trailing, explicitly untrusted text in the same class as model output. See slackContextNote.
-func slackRunInput(ev slack.Event) string {
-	return slackContextNote(ev.Context) + slackMessageInput(ev)
+//
+// threadNote is the FETCHED thread history (slack_thread.go) and it LEADS everything, in whichever shape this
+// returns. It is a parameter rather than something the function reaches for because the caller renders this
+// twice on purpose: once with "" for the value slackRequestHash hashes — request identity is the EVENT, and a
+// second delivery's re-read of a thread somebody has posted in since would otherwise CONFLICT instead of
+// replaying — and once with the note for the prompt that is stored and dispatched. See Admit.
+func slackRunInput(ev slack.Event, threadNote string, images []slackImageAttachment, skippedFiles int) any {
+	text := threadNote + slackTurnText(ev, images, skippedFiles)
+	if len(images) == 0 {
+		return text // the bare string, bit-identical to every input this bridge produced before images
+	}
+	items := make([]map[string]any, 0, len(images)+1)
+	// The words go FIRST and the images follow, matching every vision example a provider publishes and
+	// keeping the human's own text ahead of anything else in the turn.
+	items = append(items, map[string]any{"type": "input_text", "text": text})
+	for _, img := range images {
+		items = append(items, map[string]any{"type": "image_ref", "artifact_id": img.artifactID})
+	}
+	return items
+}
+
+// slackTurnText is the WORDS half of a turn, and it exists because a CORRECTION needs exactly this half and
+// no other: it REPLACES what a stored turn says while leaving what that turn SHOWED alone (see reviseTurn and
+// SupersedeSlackMessageTurn). An edit carries no files of its own — Slack puts them on the original message,
+// and the two kinds that revise a turn never birth a run and so never fetch — so images are nil there, which
+// is exactly right: the words change, the picture the human is still looking at does not.
+func slackTurnText(ev slack.Event, images []slackImageAttachment, skippedFiles int) string {
+	return slackContextNote(ev.Context) + slackMessageInput(ev, len(images) > 0) + slackImageNote(images, skippedFiles)
 }
 
 // slackMessageInput is the human's half.
@@ -706,7 +797,12 @@ func slackRunInput(ev slack.Event) string {
 // A CORRECTION KEEPS ITS BRANCH, but it is now the SUPERSEDING TEXT rather than a fresh turn's prompt: this
 // is what replaces the stored turn, so a later run is shown the corrected question, marked as edited because
 // that is what happened.
-func slackMessageInput(ev slack.Event) string {
+//
+// hasImage says whether this turn actually carries an attached image, and it only changes the WORDLESS case —
+// because the old answer became a lie the moment an image could be attached: "the user sent a message with no
+// text" describes an empty message, while somebody dropping a screenshot in with no caption has said
+// something quite specific. It never reaches the two kinds above: neither births a run, so neither fetches.
+func slackMessageInput(ev slack.Event, hasImage bool) string {
 	if ev.Kind == slack.KindTombstone {
 		return "(a message was withdrawn)"
 	}
@@ -717,8 +813,12 @@ func slackMessageInput(ev slack.Event) string {
 		return "(edited) " + ev.Text
 	}
 	if ev.Text == "" {
-		// A file share with no comment, or an event kind that carries no words. It still births a run today
-		// (admission is E19 T1's and unchanged here), so it must not spend a model call on an empty prompt.
+		if hasImage {
+			return "(the user shared an image with no comment)"
+		}
+		// A file share whose file was not attached, or an event kind that carries no words. It still births a
+		// run today (admission is E19 T1's and unchanged here), so it must not spend a model call on an empty
+		// prompt.
 		return "(the user sent a message with no text)"
 	}
 	return ev.Text

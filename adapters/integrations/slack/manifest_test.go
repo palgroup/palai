@@ -152,6 +152,15 @@ func TestManifestGrantsTheScopesTheSubscribedEventsRequire(t *testing.T) {
 	if m.Features.AgentView.AgentDescription != "" && !granted["assistant:write"] {
 		t.Fatal("agent_view is declared but assistant:write is not written out; Slack adds it on enable, and an implicit scope is one nobody reviews")
 	}
+	// files:read is not required by any EVENT — a file share arrives on message.channels / message.im like
+	// any other message — so the loop above cannot reach it. It is required by what this app DOES with that
+	// event: FetchImage presents the bot token to files.slack.com, and without the scope every fetch 403s.
+	// The failure would be quiet in the worst way: runs are still born, images are still "not attached", and
+	// the only signal is a log line. Asserted here because a scope nothing asserts is a scope somebody tidies
+	// away.
+	if !granted["files:read"] {
+		t.Fatal("the manifest does not grant files:read; the shared-image leg (adapters/integrations/slack/files.go) 403s on every fetch, and the only symptom is a run that quietly says it could not attach the file")
+	}
 
 	// THE ONE READ THIS APP MAKES needs a scope too, and it is the same silent failure in the other direction:
 	// these two scopes are granted for the EVENTS above, so unsubscribing an event would look like it only

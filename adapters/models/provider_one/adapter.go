@@ -12,6 +12,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -329,7 +330,12 @@ func wireMessages(messages []modelbroker.Message) []map[string]any {
 	out := make([]map[string]any, 0, len(messages))
 	for _, m := range messages {
 		wire := map[string]any{"role": m.Role}
-		if m.Content != "" {
+		switch {
+		case len(m.Images) > 0:
+			// A turn with images renders as the multi-part content array. Only reached when the turn
+			// actually carries one, so a text-only run's body stays byte-identical to the pre-vision one.
+			wire["content"] = contentParts(m)
+		case m.Content != "":
 			wire["content"] = m.Content
 		}
 		if m.ToolCallID != "" {
@@ -354,6 +360,48 @@ func wireMessages(messages []modelbroker.Message) []map[string]any {
 		out = append(out, wire)
 	}
 	return out
+}
+
+// contentParts renders one turn's text + images as the provider's multi-part content array.
+//
+// CONTRACT: https://developers.openai.com/api/docs/api-reference/chat/create (checked 2026-07-27) — a user
+// message's content may be an array whose parts are {"type":"text","text":…} and
+// {"type":"image_url","image_url":{"url":…}}, and the url may be a `data:<media-type>;base64,<bytes>` URI.
+//
+// THE IMAGE GOES AS BYTES, NEVER AS A URL, and this is the security half rather than a style choice: an
+// `image_url` pointing at a remote address makes the PROVIDER dereference something chosen upstream of us
+// — for a Slack file that means handing OpenAI a files.slack.com address, and any credential the address
+// carries with it. The bytes are already control-plane-side (spec §24) by the time a Message exists, so
+// there is nothing to gain by re-addressing them.
+//
+// An empty-worded turn (a file shared with no comment) contributes NO text part: a zero-length text part is
+// rejected by the provider, and "" says nothing a missing part does not.
+//
+// `detail` is deliberately left unset so the endpoint applies its own default. Choosing low/high here would
+// be choosing a cost/accuracy tradeoff on the operator's behalf with no way to override it.
+func contentParts(m modelbroker.Message) []map[string]any {
+	parts := make([]map[string]any, 0, len(m.Images)+1)
+	if m.Content != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": m.Content})
+	}
+	for _, img := range m.Images {
+		parts = append(parts, map[string]any{
+			"type":      "image_url",
+			"image_url": map[string]any{"url": dataURL(img)},
+		})
+	}
+	return parts
+}
+
+// dataURL encodes one image as a base64 data URI. The media type is the SNIFFED one the caller resolved
+// (never a filename or a sender-declared mimetype); an empty one falls back to the octet-stream default
+// rather than emitting a malformed `data:;base64,` the endpoint would reject.
+func dataURL(img modelbroker.Image) string {
+	mediaType := img.MediaType
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(img.Data)
 }
 
 // sanitizeError converts a non-200 response into a canonical error that carries the

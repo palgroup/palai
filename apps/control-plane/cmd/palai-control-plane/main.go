@@ -238,6 +238,13 @@ func main() {
 		// scope-free — assistant.threads.setStatus and the chat.*Stream family are all `chat:write`, which
 		// this app already holds, so nothing here waits on a reinstall or on the agent panel.
 		WithStreaming(repo, supervisor, 0)
+	// The IMAGE leg (E20, slack_vision.go): a screenshot dropped in a thread is fetched with the bot token and
+	// named by the run's input, so the model can see it. Gated on the object store because that is where the
+	// bytes go — without one there is nothing to put an image in, and a shared file is admitted text-only
+	// exactly as before. `files:read` is the only scope it needs and this app already holds it.
+	if artStore != nil {
+		slackBridge = slackBridge.WithFileFetch(http.DefaultClient, artifacts.NewWriter(artStore, repo.Spine().Pool()))
+	}
 	routerOpts = append(routerOpts, api.WithSlack(slackBridge), api.WithSlackInteractions(slackBridge),
 		api.WithSlackConnections(extensions.NewSlackRegistry(slackStore)))
 	// The queue bridges (E19 T6, spec §34.1-34.5). ONE store serves all three halves: the admin surface
@@ -530,7 +537,12 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			// object store — NOT the coding workspace. The changeset compile still only runs for a
 			// workspace-bound run (it needs a base to diff), so hoisting it here is behavior-preserving for
 			// the changeset while letting a workspace-less research run persist its full fetched body.
-			orch.SetChangesetWriter(artifacts.NewWriter(artStore, spine.Pool()))
+			artifactWriter := artifacts.NewWriter(artStore, spine.Pool())
+			orch.SetChangesetWriter(artifactWriter)
+			// The READ side of the same store, which is what lets a run see an image: an `image_ref` in the
+			// run's input resolves to bytes here, control-plane-side (spec §24, §25.10). Same object store,
+			// so a stack that can persist a changeset can also show a model a screenshot.
+			orch.SetImageReader(artifactWriter)
 		}
 		// Wire the root run's workspace auto-provisioning + coding-tool sandbox, gated on
 		// PALAI_WORKSPACE_ROOT (spec §29.7-30.3, E09 Task 10). This is what makes a coding session

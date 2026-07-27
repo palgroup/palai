@@ -35,7 +35,9 @@ func TestSlackThreadNoteLeadsWithTheUntrustedLabelAndEndsBeforeTheRequest(t *tes
 		threadMsg("U1", "1.1", "the deploy is stuck on migration 41"),
 		threadMsg("U2", "1.2", "roll it back"),
 	}, false, "Ubot", "1.9")
-	prompt := note + slackRunInput(slack.Event{Kind: slack.KindMessage, Text: "özetle"})
+	// Rendered THROUGH slackRunInput rather than concatenated here, which is the stronger form of the same
+	// claim: the note leads because the production renderer puts it there, not because the test did.
+	prompt := slackTextInput(t, slack.Event{Kind: slack.KindMessage, Text: "özetle"}, note)
 
 	if !strings.HasPrefix(prompt, "(untrusted context") {
 		t.Fatalf("prompt = %q, want the untrusted label FIRST", prompt)
