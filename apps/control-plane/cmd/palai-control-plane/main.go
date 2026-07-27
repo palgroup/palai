@@ -22,6 +22,7 @@ import (
 	// container without /usr/share/zoneinfo (spec §33.1; time.LoadLocation's documented final fallback).
 	_ "time/tzdata"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/palgroup/palai/adapters/integrations/a2a"
 	mcpclient "github.com/palgroup/palai/adapters/integrations/mcp"
 	"github.com/palgroup/palai/adapters/integrations/webhook"
@@ -238,13 +239,7 @@ func main() {
 		// scope-free — assistant.threads.setStatus and the chat.*Stream family are all `chat:write`, which
 		// this app already holds, so nothing here waits on a reinstall or on the agent panel.
 		WithStreaming(repo, supervisor, 0)
-	// The IMAGE leg (E20, slack_vision.go): a screenshot dropped in a thread is fetched with the bot token and
-	// named by the run's input, so the model can see it. Gated on the object store because that is where the
-	// bytes go — without one there is nothing to put an image in, and a shared file is admitted text-only
-	// exactly as before. `files:read` is the only scope it needs and this app already holds it.
-	if artStore != nil {
-		slackBridge = slackBridge.WithFileFetch(http.DefaultClient, artifacts.NewWriter(artStore, repo.Spine().Pool()))
-	}
+	slackBridge = mountSlackFileFetch(slackBridge, artStore, repo.Spine().Pool())
 	routerOpts = append(routerOpts, api.WithSlack(slackBridge), api.WithSlackInteractions(slackBridge),
 		api.WithSlackConnections(extensions.NewSlackRegistry(slackStore)))
 	// The queue bridges (E19 T6, spec §34.1-34.5). ONE store serves all three halves: the admin surface
@@ -1176,6 +1171,35 @@ func envDurationOr(name string, def time.Duration) time.Duration {
 		return d
 	}
 	return def
+}
+
+// mountSlackFileFetch mounts the Slack IMAGE leg (E20, extensions/slack_vision.go) onto the bridge: a
+// screenshot dropped in a thread is fetched with the bot token and named by the run's input, so the model can
+// see it. It is gated on the object store because that is where the bytes go — without one there is nothing
+// to put an image in, and a shared file is admitted text-only. `files:read` is the only scope it needs and
+// this app already holds it.
+//
+// IT IS A FUNCTION RATHER THAN THREE LINES IN run() FOR TWO REASONS, both of them things that already went
+// wrong:
+//
+//   - IT SAYS WHEN IT IS OFF. The leg was built, tested and mounted here, and then ran for weeks against a
+//     compose deployment that set no PALAI_S3_ENDPOINT. Every shared image was skipped, and the only evidence
+//     anywhere was a parenthetical inside the run's own input — the owner had to ask why the agent could not
+//     see his screenshot, and finding out took a trace. A dead capability now announces itself at boot.
+//   - IT IS TESTABLE. TestSlackImageLegIsMountedWhenThereIsAnObjectStore holds this composition, so deleting
+//     the mount fails a test instead of quietly costing the model its eyes.
+//
+// pool may be nil only in that test: NewWriter stores it and dials nothing until a write.
+func mountSlackFileFetch(bridge *extensions.SlackAdmitter, artStore *artifacts.Store, pool *pgxpool.Pool) *extensions.SlackAdmitter {
+	if artStore != nil {
+		bridge = bridge.WithFileFetch(http.DefaultClient, artifacts.NewWriter(artStore, pool))
+	}
+	if !bridge.FileFetchReady() {
+		log.Printf("palai control-plane: the Slack image leg is OFF — no object store is configured " +
+			"(PALAI_S3_ENDPOINT is unset), so a screenshot shared in a thread is admitted as text and the run " +
+			"cannot see it")
+	}
+	return bridge
 }
 
 // artifactStoreFromEnv builds the control-plane's S3 artifact store from PALAI_S3_* when an

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
+	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/coordinator"
 )
@@ -180,6 +181,32 @@ func TestCapabilityWorkerListenerRefusesOffHost(t *testing.T) {
 // so. deploy/compose/slack_wiring_test.go holds the other end of the same wire.
 //
 // Dormant means dormant: a nil drain, so serveWithGracefulDrain has nothing to wait on either.
+// TestSlackImageLegIsMountedWhenThereIsAnObjectStore holds the composition the image leg needs, in the
+// spirit of TestBareRouterAdvertisesOnlyWhatItCanServe: a capability that is built, tested and then WIRED TO
+// NOTHING is this codebase's recurring failure, and its worst property is silence — the owner shared a
+// screenshot, the agent said it could not see it, and the only evidence was a parenthetical inside the run's
+// own input.
+//
+// Both directions are asserted and both are load bearing. Mounted-when-there-is-a-store is the regression
+// this fixes; unmounted-when-there-is-not is what keeps a deployment with no object store admitting a shared
+// file as text instead of failing.
+func TestSlackImageLegIsMountedWhenThereIsAnObjectStore(t *testing.T) {
+	// The store is a bare value and the pool is nil on purpose: this asserts the MOUNT DECISION and nothing
+	// downstream of it. NewWriter dials nothing until a write, and the write path itself is proven against a
+	// real object store and a real Postgres in the extensions component suite.
+	bridge := mountSlackFileFetch(extensions.NewSlackAdmitter(nil, nil, nil, api.AdmissionLimits{}), &artifacts.Store{}, nil)
+	if !bridge.FileFetchReady() {
+		t.Fatal("an object store is configured and the Slack image leg is not mounted: every shared screenshot " +
+			"is skipped, the run's input says only that a file 'could not be attached', and nothing in the " +
+			"control-plane log says why")
+	}
+
+	off := mountSlackFileFetch(extensions.NewSlackAdmitter(nil, nil, nil, api.AdmissionLimits{}), nil, nil)
+	if off.FileFetchReady() {
+		t.Fatal("the image leg reports ready with no object store behind it: a fetched image would have nowhere to go")
+	}
+}
+
 func TestSlackSocketStartsOnlyWhenTheWorkspaceIsNamed(t *testing.T) {
 	// The bridge's store is nil: this asserts the START DECISION, and the loop's own work (which
 	// would touch the store) is proven against a real Postgres in the extensions component suite.

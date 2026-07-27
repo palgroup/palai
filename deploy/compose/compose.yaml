@@ -63,6 +63,19 @@ services:
       PALAI_ENROLLMENT_TOKEN_FILE: /palai/runner-token
       PALAI_BOOTSTRAP_API_KEY_FILE: /run/secrets/bootstrap_api_key
       PALAI_ENGINE_IMAGE: ${PALAI_ENGINE_IMAGE}
+      # The object store this same file starts, addressed by its service name on the compose
+      # network (the published 127.0.0.1:${PALAI_S3_PORT} above is how the HOST reaches it).
+      # Until these two lines existed compose ran a healthy, depended-on object store and told
+      # the control-plane NOTHING about it, so artifactStoreFromEnv returned nil and everything
+      # gated on it was off: the Slack image leg (a shared screenshot was silently admitted as
+      # text the model could not see), artifact retrieval, the checkpoint/snapshot sinks,
+      # retention's byte deletion and the orphan collector. NOT interpolated and with no empty
+      # default on purpose — this is not operator configuration, it is the address of a peer
+      # service in this same file, and a `${...:-}` would restore the bug for anyone running
+      # compose without an env file. SeaweedFS accepts anonymous S3, so no credential belongs
+      # here; a real backend sets PALAI_S3_ACCESS_KEY/SECRET_KEY through the secret path.
+      PALAI_S3_ENDPOINT: http://object-store:8333
+      PALAI_S3_BUCKET: palai-artifacts
       # Dispatch drives the production exec-path (Task 15). Default 0 (queued-only) keeps the
       # browser/clean-boot proofs unchanged; the wiring test and live UAT set it to 1 with
       # PALAI_MODEL_PROVIDER to run a real create -> engine -> terminal round-trip.
