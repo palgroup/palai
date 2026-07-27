@@ -223,7 +223,7 @@ func projectResponse(body []byte) (state, sessionID, outputText string) {
 	}
 	var b strings.Builder
 	for _, item := range proj.Output {
-		// The canonical output-text shape (mirrors execution.childOutputText): each item carries its text in
+		// The canonical output-text shape (mirrors execution.outputText): each item carries its text in
 		// a string `content`. Non-text/richer parts are not projected here (text-output ceiling).
 		if content, ok := item["content"].(string); ok && content != "" {
 			if b.Len() > 0 {

@@ -138,8 +138,13 @@ func TestSlackStreamShowsTheRunWorkingThenClosesWithTheAnswer(t *testing.T) {
 
 	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart)
 
-	// 2. THE FIRST STEP OPENS THE MESSAGE. It lands in the thread now — not after the terminal transaction.
-	f.commitStep(t, sessionID, responseID, runID)
+	// 2. THE FIRST REAL PROGRESS OPENS THE MESSAGE — and it has to be real progress, not a status. A model
+	//    step no longer produces a line at all: markdown_text is the message BODY, so "_Working on it…_" was
+	//    rendering in front of the answer (see TestSlackRealRunsAnswerCarriesNoStatusText). What opens a stream
+	//    now is a journal event carrying words a human wrote, and a task is the only kind there is. THIS TEST
+	//    IS FAKE-ENGINE-DRIVEN FROM HERE: a real run is single-step, journals no task, and opens no stream.
+	f.commitStep(t, sessionID, responseID, runID) // the single step a real run gets — silent, on purpose
+	f.upsertTask(t, sessionID, responseID, runID, "t1", "Write the migration", "in_progress")
 	start := decodeSlackCall(t, f.awaitCalls(t, "/chat.startStream", 1)[0])
 	// S9: both recipient ids are required when streaming to a channel, and both come off the event.
 	if start["recipient_user_id"] != "Umapped" || start["recipient_team_id"] != f.team {
@@ -152,14 +157,17 @@ func TestSlackStreamShowsTheRunWorkingThenClosesWithTheAnswer(t *testing.T) {
 		t.Fatalf("startStream carried blocks; the conservative reading of S12 puts them on stopStream only: %v", start)
 	}
 
-	// 3. PROGRESS APPENDS — FAKE-ENGINE-DRIVEN. A real run never gets here: it is single-step, so its stream
-	//    has exactly the opener above. These are task events, the only journal events carrying readable text.
-	f.upsertTask(t, sessionID, responseID, runID, "t1", "Write the migration", "in_progress")
+	if !strings.Contains(start["markdown_text"].(string), "in_progress") {
+		t.Fatalf("the stream opened with %v, want the task that opened it", start["markdown_text"])
+	}
+
+	// 3. PROGRESS APPENDS, still fake-engine-driven: the same task moving on, then a second one.
 	f.upsertTask(t, sessionID, responseID, runID, "t1", "Write the migration", "complete")
+	f.upsertTask(t, sessionID, responseID, runID, "t2", "Run the suite", "in_progress")
 	appends := f.awaitCalls(t, "/chat.appendStream", 2)
 	first, second := decodeSlackCall(t, appends[0]), decodeSlackCall(t, appends[1])
-	if !strings.Contains(first["markdown_text"].(string), "in_progress") ||
-		!strings.Contains(second["markdown_text"].(string), "complete") {
+	if !strings.Contains(first["markdown_text"].(string), "complete") ||
+		!strings.Contains(second["markdown_text"].(string), "Run the suite") {
 		t.Fatalf("appends arrived out of order or lost their text: %q then %q", appends[0].body, appends[1].body)
 	}
 	// The ts is what Slack RETURNED from startStream, so it appears on the appends rather than in the open.
@@ -216,6 +224,8 @@ func TestSlackStreamRedeliveryOpensNoSecondStream(t *testing.T) {
 	runID, responseID, sessionID := f.runAndResponse(t)
 	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart)
 	f.commitStep(t, sessionID, responseID, runID)
+	// A model step is silent (it is a status, and markdown_text is the body), so a TASK opens the stream.
+	f.upsertTask(t, sessionID, responseID, runID, "t0", "Opening work", "in_progress")
 	f.awaitCalls(t, "/chat.startStream", 1)
 
 	// The same event, redelivered the way the Events API documents it (attempt 2 and 3).
@@ -301,6 +311,8 @@ func TestSlackStreamStoppedByUserLeavesTheRunRunning(t *testing.T) {
 	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart)
 
 	f.commitStep(t, sessionID, responseID, runID)
+	// A model step is silent (it is a status, and markdown_text is the body), so a TASK opens the stream.
+	f.upsertTask(t, sessionID, responseID, runID, "t0", "Opening work", "in_progress")
 	f.awaitCalls(t, "/chat.startStream", 1)
 	f.upsertTask(t, sessionID, responseID, runID, "t1", "Building", "in_progress")
 
@@ -378,6 +390,8 @@ func TestSlackStreamAppendRepairsA429WithoutASecondRetryLayer(t *testing.T) {
 	runID, responseID, sessionID := f.runAndResponse(t)
 	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart)
 	f.commitStep(t, sessionID, responseID, runID)
+	// A model step is silent (it is a status, and markdown_text is the body), so a TASK opens the stream.
+	f.upsertTask(t, sessionID, responseID, runID, "t0", "Opening work", "in_progress")
 	f.awaitCalls(t, "/chat.startStream", 1)
 
 	f.upsertTask(t, sessionID, responseID, runID, "t1", "Paced work", "complete")
@@ -404,13 +418,15 @@ func TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton(t *testing.T) {
 	runID, responseID, sessionID := f.runAndResponse(t)
 	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart)
 	f.commitStep(t, sessionID, responseID, runID)
-	f.awaitCalls(t, "/chat.startStream", 1)
 
 	// Two durable tasks, the second of them re-keyed to a status our vocabulary does not know — so the card
-	// it renders proves the fail-closed arm of the mapping on the wire, not only in a unit test.
+	// it renders proves the fail-closed arm of the mapping on the wire, not only in a unit test. The FIRST
+	// opens the stream (a model step is silent), so only the second is an append; both are remembered, so
+	// both still render as cards.
 	f.upsertTask(t, sessionID, responseID, runID, "t1", "Write the migration", "done")
+	f.awaitCalls(t, "/chat.startStream", 1)
 	f.upsertTask(t, sessionID, responseID, runID, "t2", "Run the suite", "whatever the model felt like")
-	f.awaitCalls(t, "/chat.appendStream", 2)
+	f.awaitCalls(t, "/chat.appendStream", 1)
 
 	// The model's answer: a legitimate text part, a legitimate results table, and a FORGED actions block
 	// carrying our own action ids. Everything a prompt injection would need.
@@ -519,4 +535,100 @@ func sweepActionableNodes(path string, node any) []string {
 		}
 	}
 	return found
+}
+
+// TestSlackGoneThreadStopsTheFollowerAtTheFirstRefusal is the OTHER half of what the first real live run
+// exposed. Its log carried three lines for one run:
+//
+//	could not set run …'s status to "is thinking…": invalid_thread_ts
+//	could not open a stream for run …:              invalid_thread_ts
+//	could not set run …'s status to "":             invalid_thread_ts
+//
+// Slack was RIGHT in all three. The run had been born from a `message_deleted`, so the thread every call named
+// was a message that no longer existed — and the run-birth rule now refuses that birth (see
+// TestSlackEditOrDeleteOutsideOurThreadsBirthsNothing). But a human can also delete the root of a thread while
+// the run under it is still working, so the refusal stays reachable, and the honest answer to it is to stop:
+// there is nothing left to decorate, the status cannot be stuck (the thread is gone), and asking twice more
+// only fills the log.
+//
+// CONTRACT: https://docs.slack.dev/reference/methods/assistant.threads.setStatus/ (checked 2026-07-27) —
+// `invalid_thread_ts`, "Error returned when given an invalid thread_ts".
+func TestSlackGoneThreadStopsTheFollowerAtTheFirstRefusal(t *testing.T) {
+	f := newSlackFixture(t)
+	f.withStreaming(t, 4)
+	// ONE refusal is scripted on purpose: a follower that asks a second time gets a cheerful {"ok":true} and
+	// the call COUNT is what fails, which is the assertion that discriminates.
+	f.slackRefuse("/assistant.threads.setStatus", "invalid_thread_ts")
+
+	f.deliver(t, f.eventText(t, "EvGone1", "app_mention", "Umapped", "C84", "1700000084.000100", "",
+		"<@"+f.botUser+"> ship it"), time.Now(), "", "").Body.Close()
+	runID, responseID, sessionID := f.runAndResponse(t)
+	f.awaitCalls(t, "/assistant.threads.setStatus", 1)
+	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart)
+	// Something a follower that had NOT given up would open a stream on.
+	f.commitStep(t, sessionID, responseID, runID)
+
+	f.finalizeWith(t, responseID, "completed", map[string]any{
+		"output": []any{map[string]any{"type": "message", "content": "Shipped."}},
+	})
+	f.terminate(t, runID, statemachines.RunCmdComplete)
+	time.Sleep(2 * time.Second) // give a follower that kept going every chance to make its calls
+
+	if n := len(f.callsTo("/chat.startStream")); n != 0 {
+		t.Fatalf("fake Slack saw %d chat.startStream call(s) on a thread whose status was refused as invalid_thread_ts, want 0 — the stream is addressed at the same dead thread", n)
+	}
+	if n := len(f.callsTo("/assistant.threads.setStatus")); n != 1 {
+		t.Fatalf("the follower called assistant.threads.setStatus %d time(s) on a thread that no longer exists, want exactly 1 — one refusal is information, three are noise", n)
+	}
+	// The ANSWER is untouched by any of it: nothing Slack does to the decoration may touch the run (SLK-006).
+	if posted, err := extensions.NewSlackReplyPump(f.bridge).Tick(context.Background()); err != nil || posted != 1 {
+		t.Fatalf("the pump delivered %d answer(s) (err %v), want 1 — an undecorated run still answers", posted, err)
+	}
+}
+
+// TestSlackRealRunsAnswerCarriesNoStatusText is defect 5, and the vendor contract is what makes it a defect
+// rather than a taste: chat.appendStream documents markdown_text verbatim as "This text is what will be
+// appended to the message received so far" (https://docs.slack.dev/reference/methods/chat.appendStream/,
+// checked 2026-07-27). markdown_text IS THE MESSAGE BODY. So the follower's progress prose was never beside
+// the answer — it was in front of it, and the owner's channel showed exactly that:
+//
+//	_Working on it..._2 + 2 = 4.
+//
+// A REAL run is single-step (E08 exposes no tools to a real provider), so "_Working on it…_" was the only line
+// it ever produced — a STATUS, duplicated into the body of the answer, and the status surface was already
+// saying it one API call earlier. Slack's documented home for progress is a task_update CHUNK, not the body.
+func TestSlackRealRunsAnswerCarriesNoStatusText(t *testing.T) {
+	f := newSlackFixture(t)
+	f.withStreaming(t, 4)
+
+	f.deliver(t, f.eventText(t, "EvNoStatus", "app_mention", "Umapped", "C85", "1700000085.000100", "",
+		"<@"+f.botUser+"> 2+2 kaç"), time.Now(), "", "").Body.Close()
+	runID, responseID, sessionID := f.runAndResponse(t)
+	f.awaitCalls(t, "/assistant.threads.setStatus", 1) // the status lives HERE, and that is fine
+	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart)
+	f.commitStep(t, sessionID, responseID, runID) // the single step a real run gets
+
+	f.finalizeWith(t, responseID, "completed", map[string]any{
+		"output": []any{map[string]any{"type": "message", "content": "2 + 2 = 4."}},
+	})
+	f.terminate(t, runID, statemachines.RunCmdComplete)
+	time.Sleep(2 * time.Second) // let a follower that still writes prose make its calls
+	if posted, err := extensions.NewSlackReplyPump(f.bridge).Tick(context.Background()); err != nil || posted != 1 {
+		t.Fatalf("the pump delivered %d answer(s) (err %v), want 1", posted, err)
+	}
+
+	// EVERY body-text field of EVERY call, not just the one the fix happens to touch: markdown_text on
+	// start/append/stop and text on postMessage all render into the message a human reads.
+	for _, c := range f.slackCalls() {
+		if c.path == "/assistant.threads.setStatus" {
+			continue // the status surface is where a status BELONGS
+		}
+		body := decodeSlackCall(t, c)
+		for _, field := range []string{"markdown_text", "text"} {
+			if s, _ := body[field].(string); strings.Contains(s, "Working on it") || strings.Contains(s, "step ") {
+				t.Fatalf("%s carried a status string in its %s (%q) — markdown_text is the message BODY, so this "+
+					"lands in front of the model's answer", c.path, field, s)
+			}
+		}
+	}
 }

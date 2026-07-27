@@ -195,3 +195,44 @@ func TestSlackRunInputIsStableAcrossRedelivery(t *testing.T) {
 		}
 	}
 }
+
+// TestSlackBirthsRunOnlyWhenAddressed is the run-birth rule as a table, and it is the cheapest possible
+// statement of the defect the first live run found: before it, every `message` in every channel the bot had
+// been invited to opened a run, because `message` and `app_mention` shared one branch.
+func TestSlackBirthsRunOnlyWhenAddressed(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ev         slack.Event
+		correlated bool
+		want       bool
+	}{
+		{"channel chatter, no mention, no thread of ours",
+			slack.Event{Type: "message", ChannelType: "channel"}, false, false},
+		{"channel chatter inside a thread that is not ours",
+			slack.Event{Type: "message", ChannelType: "channel", InThread: true}, false, false},
+		{"a mention",
+			slack.Event{Type: "app_mention", ChannelType: "channel"}, false, true},
+		{"a follow-up inside a thread we are already in",
+			slack.Event{Type: "message", ChannelType: "channel", InThread: true}, true, true},
+		{"an edit inside a thread we are already in is still a turn (SLK-005)",
+			slack.Event{Type: "message", Kind: slack.KindCorrection, ChannelType: "channel", InThread: true}, true, true},
+		{"an edit outside our threads is not",
+			slack.Event{Type: "message", Kind: slack.KindCorrection, ChannelType: "channel", InThread: true}, false, false},
+		{"a DM is always a turn — that is the panel",
+			slack.Event{Type: "message", ChannelType: "im"}, false, true},
+		{"a DM follow-up too",
+			slack.Event{Type: "message", ChannelType: "im", InThread: true}, false, true},
+		// THE TWIN, and it is why InThread exists at all: Slack delivers a top-level mention TWICE, once as
+		// app_mention and once as message.channels. The mention correlates the thread, so by the time the twin
+		// is judged "is this thread ours?" answers YES — and only "was this message written inside a thread?"
+		// tells them apart.
+		{"the message.channels twin of a top-level mention, after the mention correlated the thread",
+			slack.Event{Type: "message", ChannelType: "channel"}, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := slackBirthsRun(tc.ev, tc.correlated); got != tc.want {
+				t.Fatalf("slackBirthsRun(%+v, correlated=%t) = %t, want %t", tc.ev, tc.correlated, got, tc.want)
+			}
+		})
+	}
+}

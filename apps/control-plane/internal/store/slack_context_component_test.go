@@ -240,18 +240,18 @@ func TestSlackContextNeverBecomesAFetchTarget(t *testing.T) {
 
 	// Drive the run all the way through the outbound seam, so there is traffic to inspect.
 	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart)
-	f.commitStep(t, sessionID, responseID, runID)
-	f.awaitCalls(t, "/chat.startStream", 1)
+	f.commitStep(t, sessionID, responseID, runID) // a model step is silent, so a real single-step run opens no stream
 	f.finalizeWith(t, responseID, "completed", map[string]any{
 		"output": []any{map[string]any{"type": "message", "content": "Two items are left."}},
 	})
 	f.terminate(t, runID, statemachines.RunCmdComplete)
-	// The reply pump is what CLOSES the stream (E20 T1), so the terminal leg of the outbound seam only runs
-	// when it ticks. Without it this test would await a call nobody makes.
+	f.awaitCalls(t, "/assistant.threads.setStatus", 2) // the follower saw the terminal and cleared the status
+	// The reply pump is what POSTS the answer, so the terminal leg of the outbound seam only runs when it
+	// ticks. Without it this test would await a call nobody makes.
 	if posted, err := extensions.NewSlackReplyPump(f.bridge).Tick(context.Background()); err != nil || posted != 1 {
 		t.Fatalf("the reply pump delivered %d answers (err %v), want 1", posted, err)
 	}
-	f.awaitCalls(t, "/chat.stopStream", 1)
+	f.awaitCalls(t, "/chat.postMessage", 1)
 
 	calls := f.slackCalls()
 	if len(calls) < 3 {

@@ -24,7 +24,7 @@ import (
 //	  → follow          — one supervised tailer per BORN run, capped by a semaphore
 //	  → SetStatus       — the working indicator; chat:write, so no new scope and no panel needed (S3)
 //	  → EventReader.After — the SAME journal seam the SSE endpoint tails; no new read path exists
-//	  → StartStream / AppendStream — the message appears when the first step lands
+//	  → StartStream / AppendStream — ONLY when the run journals real progress (see slackStreamLine)
 //	  → (the reply pump's StopStream closes it with the answer — see slack_reply.go)
 //
 // HONEST CEILING, and it is the most over-claimable thing in this epic, so it is stated three ways:
@@ -35,9 +35,11 @@ import (
 //  2. THE JOURNAL DOES NOT CARRY THE MODEL'S WORDS. model_step.completed.v1's payload is
 //     {run_id, model_request_id} — the text lives in the model request's stored result, behind a read path
 //     this follower deliberately does not open. So what streams here is PROGRESS, not prose: the answer
-//     itself arrives in one piece when the stream is closed. What the human actually gains is (a) a spinning
-//     status while the model works and (b) a message that appears the moment the first step lands rather
-//     than after the terminal transaction. Nothing more than that is claimed anywhere.
+//     itself arrives in one piece when the stream is closed. What a real run gains is (a) a spinning status
+//     while the model works — AND ONLY THAT. markdown_text is the message BODY (chat.appendStream: "This text
+//     is what will be appended to the message received so far"), so a single-step run has nothing to put in
+//     it that is not a status, and it opens no stream at all. Its answer is a plain threaded message, and it
+//     is only the answer. Nothing more than that is claimed anywhere.
 //  3. THE STREAM STATE IS DELIBERATELY NON-DURABLE. The ts and the cursor live in this process. A restart
 //     loses them; that message stays in Slack's streaming state (S16(a) is unconfirmed) and the answer lands
 //     as a NEW message instead. Visible, not destructive — the canonical result is untouched either way
@@ -101,6 +103,10 @@ type SlackStreamFollower struct {
 
 	poll   time.Duration
 	budget time.Duration
+
+	// statusUnusable says the "this workspace will not carry a status indicator" line ONCE. A capability we
+	// cannot use is a standing fact about the deployment; repeating it per run turns a log into weather.
+	statusUnusable sync.Once
 
 	// open maps a run to the streaming message opened for it, so the reply pump can CLOSE that message with
 	// the answer instead of posting a second one. In-process on purpose (ceiling 3 above).
@@ -204,18 +210,38 @@ func (f *SlackStreamFollower) redeem(tg slackStreamTarget) []byte {
 }
 
 // setStatus redeems the token, sets (or with an empty status clears) the thread's working indicator, and
-// drops the bytes. It reports false only when the token could not be redeemed — i.e. nothing at all can be
-// written to Slack for this run. A REFUSED status is true: it is cosmetic, and the stream must not depend on
-// a call whose reach is inferred rather than documented (see slack.SetStatus).
+// drops the bytes. false means STOP FOLLOWING THIS RUN — there is nothing left that can be written for it —
+// and it has exactly two causes, which are deliberately not the same as "the call failed":
+//
+//   - The token could not be redeemed. Nothing at all can be sent.
+//   - Slack answered `invalid_thread_ts`. The thread this run is decorating no longer exists, because the
+//     human deleted its root message. Every OTHER call is addressed at the same thread, so the stream would
+//     be refused identically and the clear-on-exit would be a third refusal — three log lines, which is what
+//     the first live run produced. One is information; three are noise. Nothing is left stuck either: a
+//     deleted thread cannot show a stale "is thinking…".
+//
+// ANY OTHER REFUSAL IS TRUE, and stays true on purpose. It is cosmetic — the stream and the answer must not
+// depend on a call whose reach is inferred rather than documented (see slack.SetStatus) — and it is said ONCE
+// per process rather than once per run, because a surface that does not carry a status is a standing fact
+// about the workspace, not news about this run.
 func (f *SlackStreamFollower) setStatus(ctx context.Context, tg slackStreamTarget, status string, loading []string) bool {
 	token := f.redeem(tg)
 	if token == nil {
 		return false
 	}
-	if err := slack.SetStatus(ctx, f.bridge.doer, f.bridge.apiBase, token, tg.channel, tg.threadTS, status, loading); err != nil {
-		log.Printf("slack: could not set run %s's status to %q: %v", tg.runID, status, err)
+	err := slack.SetStatus(ctx, f.bridge.doer, f.bridge.apiBase, token, tg.channel, tg.threadTS, status, loading)
+	switch {
+	case err == nil:
+		return true
+	case slack.APIErrorCode(err) == slack.CodeInvalidThreadTS:
+		log.Printf("slack: run %s's thread no longer exists (its root message was deleted); the run continues, undecorated, and its answer still posts", tg.runID)
+		return false
+	default:
+		f.statusUnusable.Do(func() {
+			log.Printf("slack: this workspace refused the thread status indicator (%v); runs will be decorated without it. Logged once per process, not once per run.", err)
+		})
+		return true
 	}
-	return true
 }
 
 // tail is one run's whole visible life: set the status, walk the journal, open the stream when there is
@@ -259,7 +285,6 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 		return
 	}
 	var (
-		steps    int
 		streamTS string
 		// silenced means a Slack failure took the decoration away. The follower KEEPS WATCHING anyway, and
 		// that is deliberate: the status indicator is the part of this task that helps most, and giving up on
@@ -291,7 +316,7 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 			if silenced {
 				continue // still watching for the terminal, no longer writing
 			}
-			line := slackStreamLine(event, &steps)
+			line := slackStreamLine(event)
 			if line == "" {
 				continue
 			}
@@ -499,21 +524,30 @@ func slackEventRunID(event contracts.Event) string {
 // gains nothing from. It is TOTAL: an unknown event type is silently skipped rather than dumped into a
 // workspace channel.
 //
+// WHAT A LINE ACTUALLY IS, and it is the correction this function was rebuilt around: it is BODY TEXT.
+// chat.appendStream documents markdown_text as "This text is what will be appended to the message received so
+// far" (https://docs.slack.dev/reference/methods/chat.appendStream/, checked 2026-07-27) — so every line here
+// is written INTO the message the answer will land in, in front of it. Nothing here may therefore be a status:
+// a status has its own surface (assistant.threads.setStatus, already set before the first journal read), and
+// duplicating it into the body produced exactly `_Working on it..._2 + 2 = 4.` in a real workspace.
+//
+// THAT IS WHY model_step.* IS ABSENT, and the absence has a consequence worth stating plainly: a real run is
+// SINGLE-STEP (E08 exposes no tools to a real provider), so a real run now produces NO line at all, opens no
+// stream, and its answer arrives as a plain threaded message. The status indicator is what shows it working.
+// What was lost is a message appearing one journal-poll before the terminal transaction; what was gained is an
+// answer that is only the answer.
+//
+// WHAT REMAINS is genuine progress a reader can follow across a MULTI-STEP run — which only a fake engine
+// produces today. ponytail: these stay in markdown_text, so they too sit above the answer. Slack's documented
+// home for them is a `task_update` CHUNK (a timeline UI beside the body, with its own status vocabulary);
+// move them there when a real multi-step run exists to justify the encoder.
+//
 // WHAT IT CANNOT DO, restated because it is the ceiling and not an oversight: none of these events carries
 // the model's OUTPUT. model_step.completed.v1's payload is {run_id, model_request_id}; tool_call's is
 // {run_id, tool_call_id}. So these lines describe PROGRESS. The words the model wrote arrive when the stream
 // is closed with the run's answer.
-//
-// steps is the caller's step counter — a real run reaches 1 and stops there (E08: no tools are exposed to a
-// real provider, so a real run is single-step); higher numbers only ever appear under a fake engine.
-func slackStreamLine(event contracts.Event, steps *int) string {
+func slackStreamLine(event contracts.Event) string {
 	switch event.Type {
-	case "model_step.completed.v1":
-		*steps++
-		if *steps == 1 {
-			return "_Working on it…_"
-		}
-		return fmt.Sprintf("_…step %d_", *steps)
 	case "tool_call.executing.v1":
 		// The payload carries the call id, not the tool's NAME, so the line cannot name it. Saying "a tool"
 		// is true; inventing a name from the id would not be.

@@ -187,6 +187,13 @@ func TestAgentSurfaceJourney(t *testing.T) {
 
 	f.terminate(t, streamRun.id, statemachines.RunCmdProvision, statemachines.RunCmdStart)
 	f.commitStep(t, streamRun.sessionID, streamRun.responseID, streamRun.id)
+
+	// FAKE-ENGINE-DRIVEN progress, and it is what OPENS the stream. A real run never gets here: it is
+	// single-step, and a model step journals no line at all — markdown_text is the message body, so a status
+	// written there lands in front of the model's answer.
+	for _, task := range uat.AgentSurfaceJournalTasks {
+		f.upsertTask(t, streamRun.sessionID, streamRun.responseID, streamRun.id, task.ID, task.Title, task.Status)
+	}
 	start := decodeSlackCall(t, f.awaitCalls(t, "/chat.startStream", 1)[0])
 	// S9: both recipient ids are required when streaming to a channel, and both come off the event.
 	if start["recipient_user_id"] != "Umapped" || start["recipient_team_id"] != f.team {
@@ -195,12 +202,8 @@ func TestAgentSurfaceJourney(t *testing.T) {
 	if _, forbidden := start["blocks"]; forbidden {
 		t.Fatalf("startStream carried blocks; S12's conservative reading puts them on stopStream only: %v", start)
 	}
-
-	// FAKE-ENGINE-DRIVEN progress. A real run never gets here — it is single-step.
-	for _, task := range uat.AgentSurfaceJournalTasks {
-		f.upsertTask(t, streamRun.sessionID, streamRun.responseID, streamRun.id, task.ID, task.Title, task.Status)
-	}
-	f.awaitCalls(t, "/chat.appendStream", len(uat.AgentSurfaceJournalTasks))
+	// The FIRST task opened the stream, so the rest are appends.
+	f.awaitCalls(t, "/chat.appendStream", len(uat.AgentSurfaceJournalTasks)-1)
 
 	// The model's answer and the two tasks come from the CANONICAL fixture the bundle also renders, so the
 	// bytes this journey observes on the wire and the bytes the committed evidence carries have one owner.

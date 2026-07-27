@@ -54,13 +54,15 @@ SET state = $4, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- SessionHistory returns the prior responses of a session in creation order so run.start can
--- carry them as conversation history (spec §22.2). A retained response yields its stored
--- output projection; a purged one yields NULL output with purged = true, which the assembler
--- renders as a redacted_content marker. Ordered by created_at (id tiebreak) — ponytail:
+-- carry them as conversation history (spec §22.2). A retained response yields the question it
+-- was asked AND its stored output projection; a purged one yields NULL output with
+-- purged = true, which the assembler renders as a redacted_content marker.
+-- `input` is selected because a history of answers alone is not a conversation — the model
+-- would see its own replies with nothing they replied to. Ordered by created_at (id tiebreak) — ponytail:
 -- created_at ordering, responses carry no per-session ordinal of their own; add one if a
 -- sub-microsecond clock tie ever reorders a chain.
 -- name: SessionHistory
-SELECT output, purged_at IS NOT NULL AS purged
+SELECT input, output, purged_at IS NOT NULL AS purged
 FROM responses
 WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
   AND created_at < (SELECT created_at FROM responses WHERE id = $4)
