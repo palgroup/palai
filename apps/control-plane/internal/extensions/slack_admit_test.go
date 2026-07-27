@@ -214,10 +214,26 @@ func TestSlackBirthsRunOnlyWhenAddressed(t *testing.T) {
 			slack.Event{Type: "app_mention", ChannelType: "channel"}, false, true},
 		{"a follow-up inside a thread we are already in",
 			slack.Event{Type: "message", ChannelType: "channel", InThread: true}, true, true},
-		{"an edit inside a thread we are already in is still a turn (SLK-005)",
-			slack.Event{Type: "message", Kind: slack.KindCorrection, ChannelType: "channel", InThread: true}, true, true},
-		{"an edit outside our threads is not",
+		// SLK-005's two kinds, and the rule for both is about WHAT arrived rather than where. An edit
+		// SUPERSEDES a turn and a delete RETRACTS one; neither is a new thing said, so neither opens a run —
+		// not in a thread we hold, not in a DM, not even when the edited text mentions the bot. The live
+		// defect was the deleted half: the app answered a deletion with "it seems you deleted your message".
+		{"an edit inside a thread we are already in supersedes; it is not a new turn (SLK-005)",
+			slack.Event{Type: "message", Kind: slack.KindCorrection, ChannelType: "channel", InThread: true}, true, false},
+		{"an edit outside our threads is not a turn either",
 			slack.Event{Type: "message", Kind: slack.KindCorrection, ChannelType: "channel", InThread: true}, false, false},
+		{"an edit in a DM still births nothing",
+			slack.Event{Type: "message", Kind: slack.KindCorrection, ChannelType: "im"}, false, false},
+		{"a deletion inside a thread we are already in retracts; it births nothing",
+			slack.Event{Type: "message", Kind: slack.KindTombstone, ChannelType: "channel", InThread: true}, true, false},
+		{"a deletion in a DM births nothing — the live defect, where the app answered the deletion",
+			slack.Event{Type: "message", Kind: slack.KindTombstone, ChannelType: "im"}, false, false},
+		// A file share IS a turn (SLK-005 classifies it for a scoped fetch; it does not exempt it from the
+		// conversation), so it follows the ordinary WHERE rule — addressed, or in a thread we hold.
+		{"a file share in a thread we hold is a turn",
+			slack.Event{Type: "message", Kind: slack.KindFileShare, ChannelType: "channel", InThread: true}, true, true},
+		{"a file share in a channel we are not talking in is not",
+			slack.Event{Type: "message", Kind: slack.KindFileShare, ChannelType: "channel", InThread: true}, false, false},
 		{"a DM is always a turn — that is the panel",
 			slack.Event{Type: "message", ChannelType: "im"}, false, true},
 		{"a DM follow-up too",

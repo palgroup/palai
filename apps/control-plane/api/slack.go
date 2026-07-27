@@ -105,13 +105,21 @@ type SlackAdmitOutcome struct {
 	Replayed   bool
 	Rejected   string
 	Retryable  bool
-	// Ignored is an event that was HANDLED and deliberately birthed nothing: ordinary channel chatter, which
-	// this app subscribes to (SLK-002/SLK-005 need message.channels) and only acts on when it is addressed —
-	// a mention, or a follow-up in a thread the app is already in. See extensions.slackBirthsRun.
+	// Ignored is an event that was HANDLED and birthed no run. Two different things arrive under it:
+	//
+	//   - ORDINARY CHANNEL CHATTER, which this app subscribes to (SLK-002/SLK-005 need message.channels) and
+	//     only acts on when it is addressed — a mention, or a follow-up in a thread the app is already in.
+	//   - AN EDIT OR A DELETION, which changes a turn instead of opening one: a correction supersedes the
+	//     stored turn and a tombstone retracts it (extensions.reviseTurn). Those DID do something durable, and
+	//     it is still not a run — this field says "no run", not "no effect".
+	//
+	// Both are the same thing to this route: ack, and answer nothing into the thread. See
+	// extensions.slackBirthsRun for the rule.
 	//
 	// It is NOT a Rejected value, and the difference is the log: a refusal is news an operator acts on, while
 	// every message two colleagues exchange in the channel would be one line each of it. Ignored is acked and
-	// silent. (ErrNoRun is the same idea one layer up, for events the mapping alone can classify.)
+	// silent here — a retraction that DID land is logged by the bridge, which is the layer that knows one
+	// happened. (ErrNoRun is the same idea one layer up, for events the mapping alone can classify.)
 	Ignored bool
 }
 

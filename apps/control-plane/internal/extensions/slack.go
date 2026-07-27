@@ -332,6 +332,52 @@ func (s *Store) CorrelateThreadSession(ctx context.Context, org, project, connID
 	}
 }
 
+// RecordSlackMessageTurn records which turn a Slack message became (000042), so a later edit or deletion of
+// that message can act on it. Best-effort by design and by the caller: the run is already durable when this
+// writes, and a lost handle costs a retraction, never a run.
+func (s *Store) RecordSlackMessageTurn(ctx context.Context, org, project, connID, team, channel, messageTS, responseID, sessionID string) error {
+	if messageTS == "" || responseID == "" {
+		return nil // an event with no message ts names no turn; there is nothing to point at
+	}
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	if _, err := s.pool.Exec(ctx, storage.Query("RecordSlackMessageTurn"),
+		newID("slkmt"), org, project, connID, team, channel, messageTS, responseID, sessionID); err != nil {
+		return fmt.Errorf("record slack message turn: %w", err)
+	}
+	return nil
+}
+
+// RetractSlackMessageTurn withdraws the turn a now-deleted Slack message opened, and SupersedeSlackMessageTurn
+// rewrites the turn an edited one opened. Both return the affected response id, or "" when this message never
+// became a turn here — the ordinary case, since most messages in a channel birth nothing at all.
+//
+// One helper serves both because they differ only in the statement: same tenant scope, same handle lookup,
+// same "no such turn is not an error".
+func (s *Store) RetractSlackMessageTurn(ctx context.Context, org, project, team, channel, messageTS string) (string, error) {
+	return s.reviseSlackTurn(ctx, "RetractSlackMessageTurn", org, project, team, channel, messageTS)
+}
+
+// SupersedeSlackMessageTurn replaces the stored turn's input with `input` — the corrected words, already
+// rendered by slackRunInput so the stored turn and a fresh one are shaped identically.
+func (s *Store) SupersedeSlackMessageTurn(ctx context.Context, org, project, team, channel, messageTS, input string) (string, error) {
+	return s.reviseSlackTurn(ctx, "SupersedeSlackMessageTurn", org, project, team, channel, messageTS, input)
+}
+
+func (s *Store) reviseSlackTurn(ctx context.Context, query, org, project, team, channel, messageTS string, extra ...any) (string, error) {
+	if messageTS == "" {
+		return "", nil
+	}
+	args := append([]any{org, project, team, channel, messageTS}, extra...)
+	var responseID string
+	switch err := s.pool.QueryRow(storage.ScopeToTenant(ctx, org, project), storage.Query(query), args...).Scan(&responseID); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", nil // this message never became a turn in this tenant
+	case err != nil:
+		return "", fmt.Errorf("revise slack turn: %w", err)
+	}
+	return responseID, nil
+}
+
 // threadSession reads the canonical session (and its last visible bot message ts) a thread resolved to.
 func (s *Store) threadSession(ctx context.Context, org, project, team, channel, thread string) (string, string, error) {
 	var sessionID, lastTS string
