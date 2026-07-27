@@ -85,6 +85,16 @@ const (
 // false.
 const truncationMarker = "… (truncated)"
 
+// MaxMarkdownText is the markdown block's budget, and it is CUMULATIVE ACROSS A PAYLOAD rather than per
+// block — three 5,000-character blocks are over the limit even though none of them is. That is why it is
+// threaded through the render as a running budget instead of checked at each builder.
+//
+// CONTRACT: https://docs.slack.dev/reference/block-kit/blocks/markdown-block/ (checked 2026-07-27) — "The
+// cumulative limit for all `markdown` blocks in a single payload is 12,000 characters." The block carries
+// `type` and `text`, both required, and nothing else that survives: "The `block_id` is ignored in markdown
+// blocks and will not be retained."
+const MaxMarkdownText = 12000
+
 // Result is ONE element of the closed union. It is a flat struct rather than four types because it is decoded
 // straight from a model's JSON: encoding/json drops fields we do not declare, so structure we never chose
 // cannot survive the parse at all. Type is the discriminator and nothing else is trusted.
@@ -181,22 +191,33 @@ func TaskDisplayMode(tasks int) string {
 func RenderOutput(answer string, tasks []Task, requesterUserID string) (markdown string, blocks json.RawMessage) {
 	var text []string
 	var structured []Result
-	for _, result := range ParseResults(answer) {
+	for _, result := range resultsFor(answer, tasks, requesterUserID) {
 		if result.Type == ResultText {
 			if strings.TrimSpace(result.Text) != "" {
 				text = append(text, result.Text)
 			}
 			continue
 		}
-		if result.Type == ResultMention && result.Who == MentionRequester {
-			result.mint = requesterUserID
-		}
 		structured = append(structured, result)
 	}
-	if len(tasks) > 0 {
-		structured = append(structured, Result{Type: ResultTasks, Tasks: tasks})
-	}
 	return strings.Join(text, "\n\n"), RenderBlocks(structured)
+}
+
+// resultsFor is what a run's answer IS, before either surface decides how to draw it: the closed union as
+// parsed, with the one identity a render may address stamped onto a mention variant, and the journal's own
+// tasks appended. Shared by RenderOutput and ReplyMessage so the two paths can never disagree about the
+// content — only about the blocks.
+func resultsFor(answer string, tasks []Task, requesterUserID string) []Result {
+	results := ParseResults(answer)
+	for i := range results {
+		if results[i].Type == ResultMention && results[i].Who == MentionRequester {
+			results[i].mint = requesterUserID
+		}
+	}
+	if len(tasks) > 0 {
+		results = append(results, Result{Type: ResultTasks, Tasks: tasks})
+	}
+	return results
 }
 
 // ParseResults reads a model's answer as the closed union. It NEVER fails: prose is one text result, and any
@@ -246,14 +267,78 @@ func parseResult(raw json.RawMessage, whole string) Result {
 	return Result{Type: ResultText, Text: string(raw)}
 }
 
-// RenderBlocks is the TOTAL render: every Result becomes blocks, an unknown one becomes inert text, and the
-// array is held to the documented ceiling with a visible marker. nil when there is nothing to render, which
-// is what keeps a plain answer a plain answer.
-func RenderBlocks(results []Result) json.RawMessage {
+// ReplyMessage builds the chat.postMessage body for a run's answer — the OTHER of the two paths a reply
+// takes, and the one where the model's markdown was being lost (E21 T6, M13).
+//
+// THE LOSS WAS MEASURED, not assumed. chat.stopStream already carries prose in `markdown_text`, which is real
+// markdown with a 12,000-character budget. chat.postMessage carries it in `text`, which is Slack's own
+// narrower mrkdwn: a fenced block loses its language, a header renders as a literal `#`, a table does not
+// render and a nested list collapses. So on THIS path the prose becomes a markdown block, and `text` stays
+// exactly what it was — with blocks present Slack draws the blocks and uses text as the notification
+// fallback, so every push preview reads as it did before.
+//
+// CONTRACT: https://docs.slack.dev/reference/block-kit/blocks/markdown-block/ (checked 2026-07-27) — the
+// page's own example is a message payload, `{"blocks":[{"type":"markdown","text":"…"}]}`, and its usage note
+// says the block exists "when you expect a markdown response from an LLM that can get lost in translation
+// rendering in Slack", which is this exact reply.
+//
+// ThreadReply is CALLED rather than reimplemented: it owns the text field's neutralisation, its truncation
+// marker and the thread_ts rule, and a second copy of those would be a second place for them to drift.
+func ReplyMessage(channel, threadTS, answer, responseID string, tasks []Task, requesterUserID string) []byte {
+	results := resultsFor(answer, tasks, requesterUserID)
+	var prose []string
+	for _, result := range results {
+		if result.Type == ResultText && strings.TrimSpace(result.Text) != "" {
+			prose = append(prose, result.Text)
+		}
+	}
+	// The fallback is the prose, or the whole answer when there is none — never empty, because an answer that
+	// is all structure would otherwise arrive as a push notification with nothing in it.
+	fallback := strings.Join(prose, "\n\n")
+	if fallback == "" {
+		fallback = answer
+	}
+	body := ThreadReply(channel, threadTS, fallback, responseID)
+	blocks := renderBlocks(results, true)
+	if len(blocks) == 0 {
+		return body
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return body // unreachable: ThreadReply marshals an object
+	}
+	fields["blocks"] = blocks
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return body
+	}
+	return raw
+}
+
+// RenderBlocks is the TOTAL render for the chat.stopStream path: every Result becomes blocks, an unknown one
+// becomes inert text, and the array is held to the documented ceiling with a visible marker. nil when there
+// is nothing to render, which is what keeps a plain answer a plain answer.
+func RenderBlocks(results []Result) json.RawMessage { return renderBlocks(results, false) }
+
+// renderBlocks is that render with the SURFACE named, because the two paths do not carry the same blocks.
+//
+// markdown selects the chat.postMessage surface, where a text result becomes a markdown block. It is FALSE
+// for chat.stopStream and that is M20(d) fail-closed: no published page says stopStream's `blocks` array
+// accepts a markdown block. A vendor's silence is not a design freedom (E20 S12's rule), so the streaming
+// path keeps the section it has always sent until §6 leg 1 measures the other. The cost is named rather than
+// hidden: a run that ends by STREAMING gets the older render, which is visible, inconsistent and deliberate.
+func renderBlocks(results []Result, markdown bool) json.RawMessage {
 	blocks := make([]any, 0, len(results))
+	budget := MaxMarkdownText
 	truncated := false
 	for _, result := range results {
-		for _, block := range renderResult(result) {
+		// The cumulative budget is checked HERE, before the builder, so an exhausted payload stops rather
+		// than emitting a run of blocks that are nothing but truncation markers.
+		if markdown && result.Type == ResultText && budget <= 0 {
+			truncated = true
+			break
+		}
+		for _, block := range renderResult(result, markdown, &budget) {
 			if len(blocks) >= MaxBlocks-1 {
 				truncated = true
 				break
@@ -279,9 +364,18 @@ func RenderBlocks(results []Result) json.RawMessage {
 
 // renderResult is the union's one dispatch. The default arm is the security-relevant one: it renders the
 // variant's own JSON as TEXT, so an unknown tag is something a human reads rather than something Slack draws.
-func renderResult(result Result) []any {
+//
+// budget is the payload's remaining markdown allowance and is spent by markdownBlock alone; every other
+// builder here has its own documented ceiling.
+func renderResult(result Result, markdown bool, budget *int) []any {
 	switch result.Type {
 	case ResultText:
+		if markdown {
+			if strings.TrimSpace(result.Text) == "" {
+				return nil // nothing to draw; a markdown block with an empty text field is invalid_blocks
+			}
+			return []any{markdownBlock(result.Text, budget)}
+		}
 		return []any{section(result.Text)}
 	case ResultTable:
 		return []any{tableBlock(result)}
@@ -341,15 +435,39 @@ func mrkdwnSection(mentionUserID, text string) any {
 	return map[string]any{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": text}}
 }
 
+// markdownBlock is the fidelity fix itself: the model's markdown handed to Slack AS markdown.
+//
+// CONTRACT: https://docs.slack.dev/reference/block-kit/blocks/markdown-block/ (checked 2026-07-27) — `type`
+// and `text` are the block's fields and both are required; block_id is not sent because the same page says it
+// "is ignored in markdown blocks and will not be retained". Supported syntax includes headers, block quotes,
+// tables, task lists, nested lists and CODE BLOCKS WITH SYNTAX HIGHLIGHTING — the four this reply was losing.
+// The page's own reason for the block is this exact case: "a markdown response from an LLM that can get lost
+// in translation rendering in Slack".
+//
+// THE DEFENCE IS UNCHANGED, AND THAT IS THE POINT (plan §2): a richer render is not a weaker one, so the text
+// goes through the SAME NeutralizeBroadcasts as every other builder in this file rather than growing a
+// dialect-specific copy of the rule. The cut takes the TAIL, so an escape can never be halved back into a
+// live `<`, and it is never silent.
+//
+// budget is the payload's REMAINING cumulative allowance and this is the only function that spends it.
+func markdownBlock(text string, budget *int) any {
+	text = NeutralizeBroadcasts(text)
+	runes := []rune(text)
+	if len(runes) > *budget {
+		marker := []rune(truncationMarker)
+		keep := max(*budget-len(marker), 0)
+		runes = append(runes[:keep:keep], marker...)
+		text = string(runes)
+	}
+	*budget -= len(runes)
+	return map[string]any{"type": "markdown", "text": text}
+}
+
 // tableBlock renders the test-results table.
 //
 // CONTRACT: https://docs.slack.dev/reference/block-kit/blocks/table-block/ (checked 2026-07-27) — `rows` is
 // an array of rows of cells; a cell is rich_text, raw_text or raw_number; at most 100 rows, 20 columns per
 // row, 10,000 characters per table.
-//
-// CELLS ARE raw_text, and that is a security choice as much as a simplicity one: the documentation describes
-// raw_text as "basic text characters" while rich_text is the type that carries mentions and links. A model's
-// bytes go in the type with the least interpretation, and they are defused on the way in regardless.
 //
 // The columns become the header row, which is how the vendor's own example shows headers.
 func tableBlock(result Result) any {
@@ -379,7 +497,7 @@ func tableBlock(result Result) any {
 				truncated = true
 			}
 			budget -= len([]rune(text))
-			cells = append(cells, map[string]any{"type": "raw_text", "text": text})
+			cells = append(cells, cell(text))
 		}
 		out = append(out, cells)
 	}
@@ -449,6 +567,33 @@ func taskBlocks(result Result) []any {
 		title = "Tasks"
 	}
 	return []any{map[string]any{"type": "plan", "title": title, "tasks": cards}}
+}
+
+// cell types one table cell by WHAT IT IS, which is M14's whole (small, real) win: a cell that is a number is
+// declared as one, and Slack then right-aligns the column and sorts it numerically instead of alphabetically.
+//
+// CONTRACT: https://docs.slack.dev/reference/block-kit/blocks/table-block/ (checked 2026-07-27) — cells are
+// rich_text, raw_text or raw_number, and "raw_number support numeric values". That page names the three types
+// but prints no schema for raw_number; the sibling
+// https://docs.slack.dev/reference/block-kit/blocks/data-table-block/ (same date) carries the cell schema and
+// gives raw_number a `value` of JSON type number alongside its `text`. Both fields are sent: `value` is what
+// Slack sorts and aligns on, `text` is what it draws. THAT INFERENCE IS NAMED because the two pages are not
+// the same block — if a live leg ever answers invalid_blocks on a numeric table, this comment is the suspect.
+//
+// raw_text stays the DEFAULT and that is a security choice as much as a simplicity one: the documentation
+// describes raw_text as "basic text characters" while rich_text is the type that carries mentions and links.
+// A model's bytes go in the type with the least interpretation, and they are defused on the way in regardless.
+//
+// The number is carried as json.Number — the cell's OWN digits re-emitted verbatim — rather than parsed into
+// a float and printed back, which is how a 20-digit build id becomes 1.0000000000000001e+19 in a table. The
+// decode is the type test: encoding/json accepts exactly the JSON number grammar, so `1.5s`, `NaN`, `0x1f`
+// and a quoted `"42"` all stay raw_text.
+func cell(text string) map[string]any {
+	var number json.Number
+	if err := json.Unmarshal([]byte(text), &number); err == nil {
+		return map[string]any{"type": "raw_number", "value": number, "text": text}
+	}
+	return map[string]any{"type": "raw_text", "text": text}
 }
 
 // richText is the rich_text object a task card's details field takes, in the shape the task-card reference's
