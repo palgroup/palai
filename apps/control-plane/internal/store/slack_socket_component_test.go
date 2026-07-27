@@ -337,7 +337,7 @@ func TestSlackPanelDMEntersTheSameAdmissionBridge(t *testing.T) {
 	conn := f.startSocketMode(t)
 
 	// The panel's DM over HTTP first.
-	dm := f.dmEvent("EvPanelDM", "Uoutsider", "D024BE91L", "1700000060.000100", "what is left on the release?")
+	dm := f.dmEvent("EvPanelDM", "Uoutsider", "D024BE91L", "1700000060.000100", "", "what is left on the release?")
 	resp := f.deliver(t, dm, time.Now(), "", "")
 	if resp.StatusCode/100 != 2 {
 		t.Fatalf("the panel DM over HTTP = %d, want a 2xx ack", resp.StatusCode)

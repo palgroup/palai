@@ -182,20 +182,27 @@ func TestSlackChannelAllowListRefusesAClickOutsideIt(t *testing.T) {
 
 // ---- E20 T2: the agent panel's DM, and the surface events that are not conversation --------------------
 
-// dmEvent builds a message.im envelope — the agent panel's conversation.
+// dmEvent builds a message.im envelope — the agent panel's conversation. threadTS empty means the message IS
+// its own thread root, which is what the FIRST message in a panel conversation is.
 //
 // CONTRACT: https://docs.slack.dev/reference/events/message.im/ (checked 2026-07-27). The example payload is
 // {"type":"event_callback","team_id":…,"event_id":…,"event":{"type":"message","channel":"D024BE91L",
 // "user":…,"text":…,"ts":…,"event_ts":…,"channel_type":"im"}} and the event requires the `im:history` scope.
-// Built from THAT page rather than from our own mapper, so a drift in MapEvent cannot drag the fixture along.
-func (f *slackFixture) dmEvent(eventID, user, channel, ts, text string) []byte {
+// https://docs.slack.dev/ai/developing-agents/ (checked 2026-07-27) adds the half that makes the panel a
+// CONVERSATION rather than a series of strangers: in an agent thread "the root message will appear from the
+// user" and the follow-ups carry thread_ts, which you "use as the unique identifier" for the conversation.
+// Built from THOSE pages rather than from our own mapper, so a drift in MapEvent cannot drag the fixture along.
+func (f *slackFixture) dmEvent(eventID, user, channel, ts, threadTS, text string) []byte {
+	inner := map[string]any{
+		"type": "message", "channel": channel, "user": user, "text": text,
+		"ts": ts, "event_ts": ts, "channel_type": "im",
+	}
+	if threadTS != "" {
+		inner["thread_ts"] = threadTS
+	}
 	raw, _ := json.Marshal(map[string]any{
 		"type": "event_callback", "team_id": f.team, "api_app_id": "A0001",
-		"event_id": eventID, "event_time": 1700000000,
-		"event": map[string]any{
-			"type": "message", "channel": channel, "user": user, "text": text,
-			"ts": ts, "event_ts": ts, "channel_type": "im",
-		},
+		"event_id": eventID, "event_time": 1700000000, "event": inner,
 	})
 	return raw
 }
@@ -235,7 +242,7 @@ func TestSlackDMIsExemptFromTheConfiguredChannelAllowList(t *testing.T) {
 
 	// (1) The panel's DM is admitted despite being nowhere in the list.
 	const dmChannel, dmOpener = "D024BE91L", "Uoutsider"
-	dm := f.deliver(t, f.dmEvent("EvDM1", dmOpener, dmChannel, "1700000050.000100", "ship the release notes"), time.Now(), "", "")
+	dm := f.deliver(t, f.dmEvent("EvDM1", dmOpener, dmChannel, "1700000050.000100", "", "ship the release notes"), time.Now(), "", "")
 	if dm.StatusCode/100 != 2 {
 		t.Fatalf("a panel DM under allowed_channels=[C40] = %d, want a 2xx ack — a DM is scoped by Slack's invitation model, not by the operator's channel list", dm.StatusCode)
 	}
@@ -328,5 +335,58 @@ func TestSlackPanelSurfaceEventsBirthNoRun(t *testing.T) {
 	}
 	if reservations != 0 {
 		t.Fatalf("the panel surface events took %d idempotency reservations, want 0 — they are refused BEFORE admission, in the mapper", reservations)
+	}
+}
+
+// TestSlackPanelConversationKeepsOneSession is the half of the owner's "like Cursor" expectation that IS met:
+// PERSISTENT CONTEXT. The panel is a conversation, not a series of strangers — and that only holds if a DM
+// thread correlates the way a channel thread does (SLK-003), through the SAME slack_thread_sessions row keyed
+// (team, channel, thread_ts), with a "D…" channel id going in like any other.
+//
+// It is asserted rather than assumed because the correlation turns on a field the panel supplies and the
+// channel surface does not: https://docs.slack.dev/ai/developing-agents/ (checked 2026-07-27) says an agent
+// thread's root message "will appear from the user" and its follow-ups carry thread_ts, which you "use as the
+// unique identifier". A panel whose follow-ups did NOT carry it would open a fresh session per message and
+// lose the conversation — silently, and only in the surface the owner actually uses.
+func TestSlackPanelConversationKeepsOneSession(t *testing.T) {
+	f := newSlackFixture(t)
+	const dmChannel, root = "D024BE91L", "1700000070.000100"
+
+	// The panel's FIRST message is its own thread root.
+	f.deliver(t, f.dmEvent("EvPanel1", "Uoutsider", dmChannel, root, "", "start the release checklist"), time.Now(), "", "").Body.Close()
+	if n := f.sessionCount(t); n != 1 {
+		t.Fatalf("the first panel message produced %d thread↔session rows, want 1", n)
+	}
+	// One active root run per session (000006), so the first has to finish before the follow-up — the same
+	// staging TestSlackThreadCorrelatesToOneSession uses for the channel surface.
+	f.terminateRuns(t)
+
+	// The follow-up carries thread_ts. It must CHAIN, not open a parallel conversation.
+	resp := f.deliver(t, f.dmEvent("EvPanel2", "Uoutsider", dmChannel, "1700000071.000100", root, "and what is blocked?"), time.Now(), "", "")
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("the panel follow-up = %d, want a 2xx ack", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if n := f.sessionCount(t); n != 1 {
+		t.Fatalf("a panel follow-up produced %d thread↔session rows, want 1 canonical session (SLK-003)", n)
+	}
+	// The row count alone proves nothing (the claim is ON CONFLICT DO NOTHING): assert the RUNS share a session.
+	var sessions, runs int
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT count(DISTINCT session_id), count(*) FROM runs WHERE organization_id=$1 AND project_id=$2`,
+		f.org, f.project).Scan(&sessions, &runs); err != nil {
+		t.Fatalf("count the panel's runs: %v", err)
+	}
+	if runs != 2 || sessions != 1 {
+		t.Fatalf("two panel messages produced %d runs across %d sessions, want 2 runs in 1 session — the panel is a conversation, and a session is what carries its history", runs, sessions)
+	}
+	var correlated, ran string
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT (SELECT session_id FROM slack_thread_sessions WHERE organization_id=$1 AND channel_id=$2 AND thread_ts=$3),
+		        (SELECT DISTINCT session_id FROM runs WHERE organization_id=$1)`, f.org, dmChannel, root).Scan(&correlated, &ran); err != nil {
+		t.Fatalf("compare the panel thread's correlated session to its runs': %v", err)
+	}
+	if correlated != ran {
+		t.Fatalf("the panel thread points at session %q but its runs are in %q", correlated, ran)
 	}
 }
