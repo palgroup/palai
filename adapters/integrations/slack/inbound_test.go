@@ -328,3 +328,111 @@ func TestMapEventDropsTheBotsOwnDM(t *testing.T) {
 		t.Fatalf("another bot's DM: err = %v, want ErrIgnored", err)
 	}
 }
+
+// ---- E20 T3: app_context — what the person is LOOKING AT ---------------------------------------------
+
+// TestMapEventCarriesAppContextInRelevanceOrder is the whole of T3's read half. The context arrives INSIDE
+// the message (S6), so there is no context state machine to build — but the field it arrives under is NOT
+// agreed between Slack's own pages (S19), and a mapper that guessed one name would drop the context for
+// half the surfaces without ever failing.
+//
+// CONTRACT: https://docs.slack.dev/reference/events/app_context_changed/ (checked 2026-07-27) — the payload
+// is {"context":{"entities":[{"type":"slack#/types/channel_id","value":"C01234ABDCE","team_id":"T0ABCDE6543"}]}}
+// and "the entities are ordered by relevance".
+// https://docs.slack.dev/changelog/2026/07/02/app-context/ (checked 2026-07-27) — "The `app_context` is now
+// sent to message.im and app_home_opened events" when the app subscribes to app_context_changed.
+// https://docs.slack.dev/ai/developing-agents/ (checked 2026-07-27) — the SAME context is "called simply
+// `context` in the latter". BOTH names are therefore accepted; see S19 in the plan's divergence table.
+func TestMapEventCarriesAppContextInRelevanceOrder(t *testing.T) {
+	entities := `[{"type":"slack#/types/channel_id","value":"C_FIRST","team_id":"T1"},
+	              {"type":"slack#/types/channel_id","value":"C_SECOND","team_id":"T1"}]`
+	for _, field := range []string{"app_context", "context"} {
+		t.Run(field, func(t *testing.T) {
+			body := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev-ctx","event":{
+				"type":"message","channel":"D1","channel_type":"im","user":"U9","ts":"1.1","text":"hi",
+				"` + field + `":{"entities":` + entities + `}}}`)
+			ev, err := MapEvent(body, "Ubot", false)
+			if err != nil {
+				t.Fatalf("MapEvent: %v", err)
+			}
+			if len(ev.Context) != 2 {
+				t.Fatalf("Context = %+v, want the 2 entities carried under %q", ev.Context, field)
+			}
+			if ev.Context[0].Value != "C_FIRST" || ev.Context[1].Value != "C_SECOND" {
+				t.Fatalf("Context lost Slack's relevance order: %+v", ev.Context)
+			}
+			if ev.Context[0].Type != ContextEntityChannel || ev.Context[0].TeamID != "T1" {
+				t.Fatalf("Context entity = %+v, want the published {type,value,team_id} triple", ev.Context[0])
+			}
+		})
+	}
+}
+
+// TestMapEventDropsForeignWorkspaceContextEntities: an entity carries its OWN team_id (S6), and another
+// workspace's channel has no business in our prompt. Dropped at MAP time rather than at description time,
+// because "must not even reach the description" is only structural if the value never exists in our types.
+func TestMapEventDropsForeignWorkspaceContextEntities(t *testing.T) {
+	body := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev-foreign","event":{
+		"type":"message","channel":"D1","channel_type":"im","user":"U9","ts":"1.1","text":"hi",
+		"app_context":{"entities":[
+			{"type":"slack#/types/channel_id","value":"C_OURS","team_id":"T1"},
+			{"type":"slack#/types/channel_id","value":"C_THEIRS","team_id":"T_OTHER"},
+			{"type":"slack#/types/channel_id","value":"C_NAMELESS"}]}}}`)
+	ev, err := MapEvent(body, "Ubot", false)
+	if err != nil {
+		t.Fatalf("MapEvent: %v", err)
+	}
+	if len(ev.Context) != 1 || ev.Context[0].Value != "C_OURS" {
+		t.Fatalf("Context = %+v, want only the event's own workspace — a foreign team_id, and an entity with "+
+			"no team_id at all, must both be dropped (an unprovable workspace is not our workspace)", ev.Context)
+	}
+}
+
+// TestMapEventSurvivesAStructuredContextValue is the availability half of S20, and it is the reason the
+// entity value is not decoded as a string: Slack documents `slack#/types/message_context` whose `value` is an
+// OBJECT, not an id. A `value string` field would make encoding/json fail the WHOLE inner event, so one
+// person looking at a message would turn every DM in that workspace into a malformed-envelope 400.
+//
+// CONTRACT: https://docs.slack.dev/reference/events/app_home_opened/ (checked 2026-07-27) — the documented
+// context example is {"type":"slack#/types/message_context","value":{"message_ts":"1782919931.619439",
+// "channel_id":"C01AB234CDE"},"team_id":"T012345ABCDE"}.
+func TestMapEventSurvivesAStructuredContextValue(t *testing.T) {
+	body := []byte(`{"type":"event_callback","team_id":"T012345ABCDE","event_id":"Ev-struct","event":{
+		"type":"message","channel":"D1","channel_type":"im","user":"U9","ts":"1.1","text":"hi",
+		"app_context":{"entities":[
+			{"type":"slack#/types/message_context","value":{"message_ts":"1782919931.619439","channel_id":"C01AB234CDE"},"team_id":"T012345ABCDE"},
+			{"type":"slack#/types/channel_id","value":"C_OK","team_id":"T012345ABCDE"}]}}}`)
+	ev, err := MapEvent(body, "Ubot", false)
+	if err != nil {
+		t.Fatalf("a structured entity value made the whole event unmappable: %v", err)
+	}
+	if ev.Text != "hi" {
+		t.Fatalf("Text = %q — the message survived the structured entity but lost its words", ev.Text)
+	}
+	if len(ev.Context) != 2 {
+		t.Fatalf("Context = %+v, want both entities carried", ev.Context)
+	}
+	if ev.Context[0].Value != "" {
+		t.Fatalf("structured entity Value = %q, want empty — a non-string value is NOT flattened into a fake "+
+			"id, because the only thing we could do with an invented id is resolve it", ev.Context[0].Value)
+	}
+	if ev.Context[1].Value != "C_OK" {
+		t.Fatalf("the string-valued entity beside it = %+v, want C_OK", ev.Context[1])
+	}
+}
+
+// TestMapEventEmptyContextIsNotAnError: "when there are no entities, an empty context object is sent" — a
+// state, not a failure.
+func TestMapEventEmptyContextIsNotAnError(t *testing.T) {
+	for _, inner := range []string{`"app_context":{}`, `"app_context":{"entities":[]}`, `"context":{}`} {
+		body := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev-empty","event":{
+			"type":"message","channel":"D1","channel_type":"im","user":"U9","ts":"1.1","text":"hi",` + inner + `}}`)
+		ev, err := MapEvent(body, "Ubot", false)
+		if err != nil {
+			t.Fatalf("%s: MapEvent = %v, want a normal event — an empty context is a state", inner, err)
+		}
+		if len(ev.Context) != 0 {
+			t.Fatalf("%s: Context = %+v, want none", inner, ev.Context)
+		}
+	}
+}

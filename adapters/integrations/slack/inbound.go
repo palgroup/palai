@@ -91,9 +91,41 @@ type Event struct {
 	// control plane enforces server-side, and repeating scope into the conversation would invite a model to
 	// treat a payload string as authority. Empty for an event that carries no text (a deletion, a bare file
 	// share); the caller decides what a textless event means rather than this adapter guessing.
-	Text  string
-	Kind  Kind
-	Retry bool // a redelivery (X-Slack-Retry-Num set) — advisory; the dedupe is on SourceEventID
+	Text string
+	// Context is app_context.entities — what the PERSON is looking at — in Slack's own relevance order,
+	// filtered to this event's OWN workspace. It is DATA, and the whole of E20 T3 is what may be done with
+	// it: it is recorded and described, NEVER resolved. See ContextEntity.
+	//
+	// Transport-invariant for free, and that is why it is populated HERE: both shipped transports call
+	// MapEvent over byte-identical bodies (api/slack.go for the HTTP callback, slack_socket.go for the
+	// Socket Mode envelope), so neither can carry a context the other does not.
+	Context []ContextEntity
+	Kind    Kind
+	Retry   bool // a redelivery (X-Slack-Retry-Num set) — advisory; the dedupe is on SourceEventID
+}
+
+// ContextEntityChannel is the ONE entity type Slack's agent pages document with a shape we can read: `value`
+// is a channel id string. Every other type's value shape is undocumented on those pages (S20 found one whose
+// value is an OBJECT), so no other type is described into a prompt — see slackContextNote.
+const ContextEntityChannel = "slack#/types/channel_id"
+
+// ContextEntity is one item of app_context: a thing the human has on screen.
+//
+// THE AUTHORITY BOUNDARY, and it is why this type exists rather than a map[string]any: the context tells us
+// what the USER is looking at, while the run executes with the CONNECTION PRINCIPAL's authority. Those are
+// different parties. So an entity may never (1) select a tenant — org/project come only from the resolved
+// connection, (2) select a run target — default_policy, (3) widen allowed_channels, or (4) become a FETCH
+// TARGET. The fourth is the heaviest: this app holds `channels:history`, so reading a channel because a
+// context said the user is looking at it would hand the user the connection's authority — a confused-deputy
+// read primitive. Nothing in this repo resolves an entity, and TestSlackNoCodePathResolvesAContextEntity
+// keeps it that way by scanning for the method names that would.
+//
+// Value is populated ONLY when Slack's `value` is a JSON string. A structured value (S20) leaves it empty on
+// purpose: the sole use for an invented flat id would be to resolve it.
+type ContextEntity struct {
+	Type   string
+	Value  string
+	TeamID string
 }
 
 // eventCallback is the Events API outer envelope. Only the fields the mapping needs are decoded; the inner
@@ -128,6 +160,25 @@ type innerEvent struct {
 	Text            string          `json:"text"`
 	Message         *nestedIdentity `json:"message"`          // message_changed nests the edited message here
 	PreviousMessage *nestedIdentity `json:"previous_message"` // message_deleted nests the removed message here
+	// TWO NAMES FOR ONE FIELD, and this is plan divergence S19 rather than defensive coding: the 2026-07-02
+	// changelog says "the `app_context` is now sent to message.im and app_home_opened", the developing-agents
+	// page says the same context is "called simply `context` in the latter", app_context_changed's own
+	// reference documents `context`, and message.im's example payload shows NEITHER. No page states which key
+	// message.im uses. Both are read; whichever is present wins. Being wrong in the other direction is silent
+	// — a context that never arrives looks exactly like a user looking at nothing.
+	AppContext *appContext `json:"app_context"`
+	Context    *appContext `json:"context"`
+}
+
+// appContext is the context object as published. `value` stays raw because its shape depends on the entity
+// type (S20: `slack#/types/channel_id` is a string, `slack#/types/message_context` is an object) and a typed
+// `string` here would fail the WHOLE inner event's decode for one structured entity.
+type appContext struct {
+	Entities []struct {
+		Type   string          `json:"type"`
+		Value  json.RawMessage `json:"value"`
+		TeamID string          `json:"team_id"`
+	} `json:"entities"`
 }
 
 // nestedIdentity is the author + thread correlation (and the words) carried inside a message_changed /
@@ -241,6 +292,7 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 		ChannelType:   inner.ChannelType,
 		Tab:           inner.Tab,
 		Text:          stripMention(text, botUserID),
+		Context:       contextEntities(inner, outer.TeamID),
 		Kind:          classify(inner.Type, inner.Subtype),
 		Retry:         retry,
 	}
@@ -259,6 +311,39 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 // The FIELD is the authority, never the id prefix: no Slack page commits to "D…" meaning DM, and an
 // exemption resting on an undocumented prefix is an exemption resting on nothing.
 func (e Event) IsDM() bool { return e.ChannelType == "im" }
+
+// contextEntities normalizes app_context into the ordered, own-workspace-only list Event carries.
+//
+// THE WORKSPACE FILTER RUNS HERE, at map time, and that placement is the guarantee: an entity from another
+// team must "not even reach the description", which is only structural if the value never exists in our
+// types at all — a filter one layer up is a filter someone can forget to call. An entity with NO team_id is
+// dropped for the same reason a scope that cannot be checked is not met (ChannelAllowed's rule): a workspace
+// we cannot prove is ours is not ours.
+//
+// CONTRACT: https://docs.slack.dev/reference/events/app_context_changed/ (checked 2026-07-27) — each entity
+// is {type, value, team_id} and "the entities are ordered by relevance". The order is Slack's; we preserve
+// it and make no claim about it (see the honest ceiling on slackContextNote).
+func contextEntities(inner innerEvent, teamID string) []ContextEntity {
+	ctx := inner.AppContext
+	if ctx == nil || len(ctx.Entities) == 0 {
+		ctx = inner.Context // S19: the same object under the other published name
+	}
+	if ctx == nil || teamID == "" {
+		return nil
+	}
+	var out []ContextEntity
+	for _, e := range ctx.Entities {
+		if e.TeamID == "" || e.TeamID != teamID {
+			continue
+		}
+		var value string
+		// A non-string value (S20) leaves this empty rather than erroring: the entity is still RECORDED, it
+		// is simply not describable, and inventing a flat id for it would only ever serve a resolver.
+		_ = json.Unmarshal(e.Value, &value)
+		out = append(out, ContextEntity{Type: e.Type, Value: value, TeamID: e.TeamID})
+	}
+	return out
+}
 
 // noRun names the agent panel's SURFACE events — the ones that describe what a human is LOOKING AT rather
 // than something they said. They carry no message, so admitting one would spend a model call on an empty
