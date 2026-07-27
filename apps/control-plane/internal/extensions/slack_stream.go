@@ -178,18 +178,45 @@ func (f *SlackStreamFollower) follow(ctx context.Context, conn api.SlackConnecti
 	}()
 }
 
+// redeem resolves the connection's bot token for ONE call and nothing longer, returning nil when it cannot.
+//
+// PER CALL, and the reason is that this is the longest-lived consumer of a bot token in the tree: a follower
+// exists for the length of a RUN, which is minutes, while the handle discipline (plan §2) is "resolved at
+// call time, ridden on the Authorization header, dropped". Resolving once and holding the bytes across a
+// whole run would widen the residency window in exactly the place it stays open longest — the one spot where
+// keeping it narrow is worth a secret-store read per Slack call, which the paced HTTP call dwarfs anyway.
+//
+// The ref name is NEVER echoed: an operator sees which run went undecorated, not the handle.
+func (f *SlackStreamFollower) redeem(tg slackStreamTarget) []byte {
+	token, err := f.bridge.secrets(tg.org, tg.botTokenRef)
+	if err != nil || len(token) == 0 {
+		log.Printf("slack: run %s cannot be decorated; its connection's bot token could not be redeemed", tg.runID)
+		return nil
+	}
+	return token
+}
+
+// setStatus redeems the token, sets (or with an empty status clears) the thread's working indicator, and
+// drops the bytes. It reports false only when the token could not be redeemed — i.e. nothing at all can be
+// written to Slack for this run. A REFUSED status is true: it is cosmetic, and the stream must not depend on
+// a call whose reach is inferred rather than documented (see slack.SetStatus).
+func (f *SlackStreamFollower) setStatus(ctx context.Context, tg slackStreamTarget, status string, loading []string) bool {
+	token := f.redeem(tg)
+	if token == nil {
+		return false
+	}
+	if err := slack.SetStatus(ctx, f.bridge.doer, f.bridge.apiBase, token, tg.channel, tg.threadTS, status, loading); err != nil {
+		log.Printf("slack: could not set run %s's status to %q: %v", tg.runID, status, err)
+	}
+	return true
+}
+
 // tail is one run's whole visible life: set the status, walk the journal, open the stream when there is
 // something to show, and clear the status when the run ends. Every Slack failure inside it is logged and
 // abandoned rather than raised — SLK-006's invariant is that nothing Slack does can touch the run, and the
 // answer's delivery is the reply pump's job either way.
 func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 	a := f.bridge
-	token, err := a.secrets(tg.org, tg.botTokenRef)
-	if err != nil || len(token) == 0 {
-		// The ref name is not echoed — an operator sees which run went undecorated, not the handle.
-		log.Printf("slack: run %s cannot be followed; its connection's bot token could not be redeemed", tg.runID)
-		return
-	}
 
 	// The status FIRST, before any journal read: it is the one thing that helps a SINGLE-STEP run, where the
 	// wait is the model call and there is nothing yet to stream.
@@ -198,16 +225,12 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 	// assistant.threads.setStatus renders in an ordinary CHANNEL thread is not stated anywhere (see
 	// slack.SetStatus). A failure is therefore logged and stepped over, never fatal: the stream and the
 	// answer do not depend on it.
-	if err := slack.SetStatus(ctx, a.doer, a.apiBase, token, tg.channel, tg.threadTS, slackStatusThinking, slackLoadingMessages); err != nil {
-		log.Printf("slack: could not set the working status for run %s: %v", tg.runID, err)
+	if !f.setStatus(ctx, tg, slackStatusThinking, slackLoadingMessages) {
+		return // the token cannot be redeemed at all; the answer still posts through the reply pump
 	}
-	defer func() {
-		// Clearing is best-effort but not optional: a thread left saying "is thinking…" after the answer
-		// landed is a claim the next reader has no way to check.
-		if err := slack.SetStatus(context.WithoutCancel(ctx), a.doer, a.apiBase, token, tg.channel, tg.threadTS, "", nil); err != nil {
-			log.Printf("slack: could not clear the working status for run %s: %v", tg.runID, err)
-		}
-	}()
+	// Clearing is best-effort but not optional: a thread left saying "is thinking…" after the answer landed is
+	// a claim the next reader has no way to check. WithoutCancel so a shutting-down context still clears it.
+	defer f.setStatus(context.WithoutCancel(ctx), tg, "", nil)
 
 	// WHERE THE TAIL STARTS, and it is not zero. A Slack THREAD is ONE session across many runs (SLK-003), so
 	// this session's journal already holds every earlier run's events — starting at zero would replay the
@@ -266,6 +289,11 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 				continue
 			}
 			if streamTS == "" {
+				token := f.redeem(tg)
+				if token == nil {
+					silenced = true
+					continue
+				}
 				ts, err := slack.StartStream(ctx, a.doer, a.apiBase, token, slack.StreamStart{
 					Channel: tg.channel, ThreadTS: tg.threadTS,
 					RecipientUserID: tg.recipientUser, RecipientTeamID: tg.team,
@@ -289,10 +317,15 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 					return
 				}
 			}
+			token := f.redeem(tg)
+			if token == nil {
+				silenced = true
+				continue
+			}
 			if err := slack.AppendStream(ctx, a.doer, a.apiBase, token, tg.channel, streamTS, line); err != nil {
 				silenced = true
 				if slack.APIErrorCode(err) == slack.CodeStoppedByUser {
-					f.stoppedByUser(ctx, tg, token)
+					f.stoppedByUser(ctx, tg)
 					continue
 				}
 				// The stream is NOT forgotten here: it is still open on Slack's side, so the answer should
@@ -345,7 +378,7 @@ func (f *SlackStreamFollower) journalHead(ctx context.Context, tg slackStreamTar
 //
 // The stream is FORGOTTEN, so the answer arrives as a plain message: appending to a stopped stream is
 // refused forever, and the reply pump must not spend its attempts discovering that.
-func (f *SlackStreamFollower) stoppedByUser(ctx context.Context, tg slackStreamTarget, token []byte) {
+func (f *SlackStreamFollower) stoppedByUser(ctx context.Context, tg slackStreamTarget) {
 	a := f.bridge
 	f.forget(tg.runID)
 	log.Printf("slack: the user stopped run %s's live stream; the run continues and its answer will post as a message", tg.runID)
@@ -353,6 +386,10 @@ func (f *SlackStreamFollower) stoppedByUser(ctx context.Context, tg slackStreamT
 		if err := a.pacer.Wait(ctx, tg.channel); err != nil {
 			return
 		}
+	}
+	token := f.redeem(tg)
+	if token == nil {
+		return
 	}
 	if _, err := slack.PostMessage(ctx, a.doer, slack.PostRequest{
 		MethodURL: a.apiBase + "/chat.postMessage", Token: token,
