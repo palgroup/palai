@@ -112,10 +112,15 @@ run_postgres() {
   # test the -run list does not name is a test this tier never runs. TestBoundaryApproval* is the
   # APV-001 wiring: an approve accepted through the ordinary command path is applied by the boundary
   # pump (the branch that was unreachable while PendingBoundaryCommands filtered approve/deny out).
+  # TestDispatch*Image* is the E20 vision spine: an engine frame carrying an `image_ref` content item resolves
+  # to BYTES in the provider request through the production SetImageReader seam, and a stack with no object
+  # store marks the image instead of dropping it silently. It is named here for the reason the sentence above
+  # gives — a test the -run list does not name is a test this tier never runs, and the whole point of this one
+  # is to catch a wiring that was never connected.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval' \
+        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing' \
         ./apps/control-plane/internal/execution
     status=$?
   fi

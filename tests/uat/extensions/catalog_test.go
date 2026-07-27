@@ -114,6 +114,7 @@ var expectedExtensionsCatalog = map[string]struct {
 		"adapters/integrations/slack/files_test.go:TestFetchImageRefusesBytesThatAreNotAnImage",
 		"apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesResolvesAnImageRefToBytes",
 		"apps/control-plane/internal/execution/vision_test.go:TestDecodeMessagesTakesNothingButBytesFromAnImageItem",
+		"apps/control-plane/internal/execution/vision_component_test.go:TestDispatchResolvesAnImageRefIntoTheProviderRequest",
 		"adapters/models/provider_one/vision_test.go:TestBuildBodyRendersAnImageAsAContentPart",
 		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind",
 		"apps/control-plane/internal/store/slack_image_component_test.go:TestSlackSharedImageBecomesAnImageRefInTheRunInput",
