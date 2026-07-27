@@ -259,6 +259,12 @@ func envGetter(m map[string]string) func(string) string {
 // principal, the agent-profile lineage, its revisions, and publish. It records every path so a test can
 // assert the bring-up opened NO new route, and it keeps created state so a second resolve can reuse.
 func fakeProvisioningAPI(t *testing.T) (*apiClient, *[]string) {
+	c, calls, _ := fakeProvisioningAPIWithTools(t)
+	return c, calls
+}
+
+// fakeProvisioningAPIWithTools additionally hands back the switch for the revision list's `tools` field.
+func fakeProvisioningAPIWithTools(t *testing.T) (*apiClient, *[]string, *bool) {
 	t.Helper()
 	var calls []string
 	profileID, revisionID, published := "", "", false
@@ -267,6 +273,9 @@ func fakeProvisioningAPI(t *testing.T) (*apiClient, *[]string) {
 	// for, so a forgetful fixture would prove reuse that the real server never performs.
 	var revisionTools []string
 	revisionSeq := 0
+	// listCarriesTools models the server-side field this fixture depends on. A test can turn it OFF to
+	// reproduce the pre-fix server and prove the reuse check actually needs it.
+	listCarriesTools := true
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
 		write := func(code int, v any) {
@@ -289,7 +298,16 @@ func fakeProvisioningAPI(t *testing.T) (*apiClient, *[]string) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/agents/"+profileID+"/revisions":
 			data := []any{}
 			if revisionID != "" && published {
-				data = append(data, map[string]any{"id": revisionID, "status": "published", "tools": revisionTools})
+				// The revision list mirrors what the REAL server returns. This was WRONG until 2026-07-27:
+				// the fake carried `tools` here while apps/control-plane/internal/store/agents.go's
+				// ListAgentRevisions did not serialise it, so every reuse check compared against nil and
+				// `palai up` minted a fresh revision on EVERY bring-up. Measured against the running stack,
+				// not reasoned about — two published revisions with identical tool lists.
+				rev := map[string]any{"id": revisionID, "status": "published"}
+				if listCarriesTools {
+					rev["tools"] = revisionTools
+				}
+				data = append(data, rev)
 			}
 			write(http.StatusOK, map[string]any{"object": "list", "data": data})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/agents/"+profileID+"/revisions":
@@ -312,5 +330,5 @@ func fakeProvisioningAPI(t *testing.T) (*apiClient, *[]string) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &apiClient{baseURL: srv.URL, key: "test", http: &http.Client{Timeout: 5 * time.Second}}, &calls
+	return &apiClient{baseURL: srv.URL, key: "test", http: &http.Client{Timeout: 5 * time.Second}}, &calls, &listCarriesTools
 }

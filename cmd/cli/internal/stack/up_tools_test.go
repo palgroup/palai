@@ -95,3 +95,40 @@ func TestReorderingTheToolListIsNotAChange(t *testing.T) {
 		}
 	}
 }
+
+// THE BUG THIS FIXTURE ONCE HID, found on a running stack rather than in a test: the revisions LIST did not
+// serialise `tools`, so the reuse check above compared its wanted list against nil, never matched, and
+// `palai up` minted a fresh published revision on EVERY bring-up. Two bring-ups left revision 1 and
+// revision 2 with identical tool lists — exactly the "binding moves under the operator, orphan revisions
+// pile up" outcome ensureSlackAgentRevision's own comment was written to prevent.
+//
+// The fake was the reason it was invisible: it returned tools in the list when the server did not. This
+// test drives the fixture back to the server's OLD shape, so the reuse check's dependency on that field is
+// a proven requirement rather than an assumption.
+func TestReuseNeedsTheListToCarryTools(t *testing.T) {
+	api, calls, listCarriesTools := fakeProvisioningAPIWithTools(t)
+	*listCarriesTools = false // the server as it behaved before this was fixed
+
+	first, err := resolveRunTarget(api, envGetter(nil))
+	if err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	before := len(*calls)
+	second, err := resolveRunTarget(api, envGetter(nil))
+	if err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if first.revision == second.revision {
+		t.Fatal("this test is vacuous: with no tools in the list the bring-up should NOT have been able to " +
+			"recognise its own revision, yet it reused one")
+	}
+	minted := false
+	for _, c := range (*calls)[before:] {
+		if strings.HasPrefix(c, "POST ") && strings.HasSuffix(c, "/revisions") {
+			minted = true
+		}
+	}
+	if !minted {
+		t.Fatal("expected the second bring-up to mint a revision when it cannot read the first one's tools")
+	}
+}

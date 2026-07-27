@@ -108,9 +108,19 @@ func (s *Store) ListAgentRevisions(ctx context.Context, scope middleware.Scope, 
 		if it.Published {
 			status = "published"
 		}
+		// `tools` is listed because a caller cannot otherwise tell two published revisions apart. The create
+		// response has always carried it (revisionBody below) and there is no per-revision GET, so the list
+		// was the only place to read a revision's executable config — and it did not.
+		//
+		// That gap had a live consequence, found on a running stack rather than reasoned about: `palai up`
+		// reuses its Slack revision only when the tools already match, so with the field absent it compared
+		// against nil, never matched, and minted a fresh published revision on EVERY bring-up. Two bring-ups
+		// left two identical revisions behind. Listing it is additive — no field changes meaning, nothing is
+		// removed — and it closes the read side of a config the API already lets you write.
 		body := mustJSON(map[string]any{
 			"id": it.ID, "object": "agent_revision", "agent_id": profileID,
-			"revision_number": it.RevisionNumber, "model": it.Model, "instructions": it.Instructions, "status": status,
+			"revision_number": it.RevisionNumber, "model": it.Model, "tools": it.Tools,
+			"instructions": it.Instructions, "status": status,
 		})
 		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
 	}

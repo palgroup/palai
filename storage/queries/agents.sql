@@ -36,7 +36,7 @@ LIMIT $7;
 -- ListAgentRevisions pages one profile's revisions newest-first (spec §10, E13 T4). Scoped by profile_id
 -- ($3) on top of the tenant scope, so an unknown/foreign profile simply yields an empty page.
 -- name: ListAgentRevisions
-SELECT id, revision_number, model, instructions, published_at IS NOT NULL, created_at
+SELECT id, revision_number, model, tools, instructions, published_at IS NOT NULL, created_at
 FROM agent_revisions
 WHERE organization_id = $1 AND project_id = $2 AND profile_id = $3
   AND ($4::timestamptz IS NULL OR created_at >= $4)
