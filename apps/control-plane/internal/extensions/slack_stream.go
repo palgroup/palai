@@ -145,7 +145,7 @@ type slackStreamTarget struct {
 // replays onto the same response and births no second run — reaches this function zero times. One run, at
 // most one StartStream, enforced upstream of anything this file could get wrong.
 func (f *SlackStreamFollower) follow(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event, sessionID, runID string) {
-	if f == nil || f.bridge == nil || f.bridge.doer == nil || f.bridge.secrets == nil || f.events == nil {
+	if f == nil || f.bridge == nil || f.bridge.doer == nil || f.bridge.secrets == nil || f.events == nil || f.sup == nil {
 		return // the outbound half is not wired; the run answers exactly as it did before
 	}
 	select {

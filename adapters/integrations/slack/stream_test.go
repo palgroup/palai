@@ -183,3 +183,40 @@ func TestStreamCallsTruncateTheirOwnText(t *testing.T) {
 		}
 	}
 }
+
+// A BROADCAST IS AN ACTION, and E20 T1 is the first task to put model-authored text (a task's title) on a
+// path of its own into a workspace. `<!channel>` notifies everyone present; nothing in a run's output gets to
+// decide that, and it is one prompt injection away.
+//
+// The check is on the ONE function every streaming call routes its text through and on ThreadReply, which is
+// the other — so a future call site inherits the defence instead of having to remember it.
+func TestModelTextCannotBroadcast(t *testing.T) {
+	hostile := "done <!channel> and <!here> and <!subteam^S1> cc <@U0BADBAD>"
+	got := NeutralizeBroadcasts(hostile)
+	for _, live := range []string{"<!channel>", "<!here>", "<!subteam^", "<@U0BADBAD>"} {
+		if strings.Contains(got, live) {
+			t.Fatalf("neutralized text still carries a live %s: %q", live, got)
+		}
+	}
+	// Escaped, not deleted: the reader still sees what the model wrote.
+	for _, want := range []string{"&lt;!channel", "&lt;@U0BADBAD"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("neutralized text dropped the token instead of escaping it (want %q): %q", want, got)
+		}
+	}
+	if plain := NeutralizeBroadcasts("an ordinary answer with a < and an @"); plain != "an ordinary answer with a < and an @" {
+		t.Fatalf("ordinary text was altered: %q", plain)
+	}
+
+	// Both outbound paths, not just the helper: the streaming calls and the plain thread reply.
+	peer := &recordingPeer{}
+	if err := AppendStream(context.Background(), peer, "https://slack.test/api", []byte("x"), "C1", "1.1", hostile); err != nil {
+		t.Fatalf("AppendStream: %v", err)
+	}
+	if text, _ := peer.decode(t, 0)["markdown_text"].(string); strings.Contains(text, "<!channel>") {
+		t.Fatalf("a streamed line reached Slack with a live broadcast: %q", text)
+	}
+	if body := string(ThreadReply("C1", "1.1", hostile, "resp_1")); strings.Contains(body, "<!channel>") {
+		t.Fatalf("a posted reply reached Slack with a live broadcast: %q", body)
+	}
+}

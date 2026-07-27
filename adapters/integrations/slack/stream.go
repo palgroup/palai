@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // The AGENT STREAMING wire (E20 T1, spec §36). Three calls, and each one rides PostMessage — the SAME sender
@@ -129,9 +130,38 @@ func StopStream(ctx context.Context, doer Doer, apiBase string, token []byte, ch
 // been told something false. Applied inside each call above too, so a caller that forgets it cannot hand
 // Slack an over-long field.
 func TruncateMarkdown(text string) string {
+	text = NeutralizeBroadcasts(text)
 	runes := []rune(text)
 	if len(runes) <= MaxStreamMarkdown {
 		return text
 	}
 	return string(runes[:MaxStreamMarkdown-1]) + "…"
+}
+
+// NeutralizeBroadcasts defuses the mention tokens in text a MODEL had a hand in.
+//
+// A broadcast is not a click, but it IS an action: `<!channel>` notifies everyone in the channel, `<!here>`
+// everyone present, `<!subteam^S…>` a user group, and `<@U…>` one person. None of them are things a run's
+// output gets to decide, and all of them are one prompt injection away — the same reasoning as the epic's
+// carrying rule (a model must not be able to mint an element that acts on people), applied to the text path
+// rather than the block path.
+//
+// SO WHERE IT IS APPLIED MATTERS: here, in the ONE function every streaming call routes its text through, and
+// in ThreadReply, which is the other. That is every path by which model-influenced text reaches a workspace
+// today. E20 T4's renderer owns the BLOCK half of the same rule.
+//
+// It escapes the opening angle bracket rather than deleting the token, so the reader still sees what the
+// model wrote — `<!channel>` renders as literal text instead of vanishing. Silent removal would be its own
+// small lie.
+//
+// SOURCE, and the honest label: https://docs.slack.dev/messaging/formatting-message-text/ (checked
+// 2026-07-27) documents the mention syntax and says to escape `<`, `>` and `&` in text that is not meant to
+// be markup. It does NOT say an app must neutralize its own model's output — nothing does. This is OUR
+// defence, not a spec requirement, and it is labelled that way rather than dressed up as a vendor rule.
+func NeutralizeBroadcasts(text string) string {
+	if !strings.Contains(text, "<!") && !strings.Contains(text, "<@") {
+		return text
+	}
+	text = strings.ReplaceAll(text, "<!", "&lt;!")
+	return strings.ReplaceAll(text, "<@", "&lt;@")
 }
