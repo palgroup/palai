@@ -102,6 +102,40 @@ func TestResolveUnionsToolSetGrantsThenCeiling(t *testing.T) {
 	}
 }
 
+// TestResolveGrantsToolSetsOnANullProjectBaseline answers the DIV-UI-001 blocker (2) question for the MCP
+// path specifically: "a fresh project's config_policy is NULL so NO tools are advertised". That is true of a
+// run that relies on the PROJECT baseline — Store.ProjectConfig maps a NULL config_policy to the zero
+// ConfigPolicy, so ProjectTools is nil and a baseline-only run resolves an empty set. It is NOT true of a run
+// that pins an agent revision with tool_sets, which is the ONLY way an MCP tool ever reaches a model: the set
+// grant UNIONS onto the empty baseline, and with no declared ceiling (AgentRevisionTools nil — PinnedExecConfig
+// leaves it nil for a NULL tools column) nothing intersects it away.
+//
+// So an operator does NOT have to write a config_policy to connect Jira. This is a regression guard on that:
+// if the union were ever reordered behind the baseline, or an empty baseline started short-circuiting, an MCP
+// connection would go silently unadvertised — the failure mode is a model that simply never calls the tool.
+func TestResolveGrantsToolSetsOnANullProjectBaseline(t *testing.T) {
+	// Exactly the shape a fresh project + an MCP-granting agent revision produces: no project baseline, no
+	// declared ceiling, one set-granted MCP tool.
+	snap := Resolve(ResolveInput{
+		DeploymentModel:           "m",
+		ProjectTools:              nil, // NULL config_policy
+		AgentRevisionID:           "arev_jira",
+		AgentRevisionToolSetTools: []string{"jira__getJiraIssue"},
+		AgentRevisionTools:        nil, // no declared ceiling
+	})
+	if !hasTool(snap.Tools, "jira__getJiraIssue") {
+		t.Fatalf("effective tools = %v, want the set-granted jira__getJiraIssue on a NULL project baseline "+
+			"(a fresh project must not need a config_policy to advertise an MCP tool)", snap.Tools)
+	}
+
+	// The complement, so this test cannot pass for the wrong reason: with NO set grant the same fresh project
+	// really does resolve nothing — the half of DIV-UI-001 (2) that IS true.
+	bare := Resolve(ResolveInput{DeploymentModel: "m", ProjectTools: nil, AgentRevisionID: "arev_jira"})
+	if len(bare.Tools) != 0 {
+		t.Fatalf("effective tools = %v on a NULL baseline with no grant, want none", bare.Tools)
+	}
+}
+
 func hasTool(tools []string, name string) bool {
 	for _, t := range tools {
 		if t == name {
