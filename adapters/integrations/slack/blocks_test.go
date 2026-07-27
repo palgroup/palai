@@ -153,7 +153,7 @@ func TestApprovalMessageIsTheOnlyMintOfAnActionableElement(t *testing.T) {
 		"ThreadReply":  ThreadReply("C1", "1.1", "the answer", "resp_1"),
 		// E21 T6: the markdown block gave this package a SECOND outbound body carrying blocks, so it is swept
 		// here too. A new render surface outside this map would be a hole in the singularity claim.
-		"ReplyMessage":  ReplyMessage("C1", "1.1", forgedOutput, "resp_1", []Task{{ID: "t1", Title: "Write it", Status: "done"}}, "U9"),
+		"ReplyMessage":  ReplyMessage("C1", "1.1", forgedOutput, "resp_1", "U9"),
 		"UpdateMessage": UpdateMessage("C1", "1.1", "decided", ""),
 	} {
 		if found := sweepJSON(t, label, body); len(found) != 0 {
@@ -448,7 +448,7 @@ func TestPostMessageRendersProseAsAMarkdownBlock(t *testing.T) {
 		Text   string           `json:"text"`
 		Blocks []map[string]any `json:"blocks"`
 	}
-	if err := json.Unmarshal(ReplyMessage("C1", "1.1", answer, "resp_1", nil, ""), &body); err != nil {
+	if err := json.Unmarshal(ReplyMessage("C1", "1.1", answer, "resp_1", ""), &body); err != nil {
 		t.Fatalf("decode the posted body: %v", err)
 	}
 	if len(body.Blocks) != 1 || body.Blocks[0]["type"] != "markdown" {
@@ -476,7 +476,7 @@ func TestMarkdownBlockNeutralizesBroadcastTokens(t *testing.T) {
 	var body struct {
 		Blocks json.RawMessage `json:"blocks"`
 	}
-	if err := json.Unmarshal(ReplyMessage("C1", "1.1", "ping <!channel> and <!here> and <@U123>", "", nil, ""), &body); err != nil {
+	if err := json.Unmarshal(ReplyMessage("C1", "1.1", "ping <!channel> and <!here> and <@U123>", "", ""), &body); err != nil {
 		t.Fatalf("decode the posted body: %v", err)
 	}
 	texts := strings.Join(decodedStrings(t, body.Blocks), "\n")
@@ -498,7 +498,7 @@ func TestMarkdownBudgetIsCumulativeAndCutsVisibly(t *testing.T) {
 	var body struct {
 		Blocks []map[string]any `json:"blocks"`
 	}
-	if err := json.Unmarshal(ReplyMessage("C1", "1.1", answer, "", nil, ""), &body); err != nil {
+	if err := json.Unmarshal(ReplyMessage("C1", "1.1", answer, "", ""), &body); err != nil {
 		t.Fatalf("decode the posted body: %v", err)
 	}
 	chars := 0
@@ -545,7 +545,7 @@ func TestTheStopStreamPathCarriesNoMarkdownBlock(t *testing.T) {
 	// THE ASSERTION ABOVE MUST DISCRIMINATE. The SAME fixture on the postMessage surface does carry a
 	// markdown block — without this the test would keep passing after the block was deleted entirely, and
 	// would be certifying nothing.
-	if !strings.Contains(string(ReplyMessage("C1", "1.1", forgedOutput, "", nil, "")), `"type":"markdown"`) {
+	if !strings.Contains(string(ReplyMessage("C1", "1.1", forgedOutput, "", "")), `"type":"markdown"`) {
 		t.Fatal("the postMessage surface carries NO markdown block either, so the stopStream assertion above proves nothing")
 	}
 }
@@ -577,13 +577,23 @@ func TestNumericTableCellsAreRawNumber(t *testing.T) {
 		if cell["type"] != "raw_number" {
 			t.Fatalf("numeric cell %v is typed %v, want raw_number", cell["text"], cell["type"])
 		}
-		// Both fields: `value` is the number Slack sorts and aligns on, `text` is what it draws.
-		if cell["value"] == nil || cell["text"] == "" {
-			t.Fatalf("a raw_number cell must carry both value and text: %v", cell)
+		// NO `value` KEY, and this is a guard rather than a shape preference: a button's `value` is the
+		// payload it dispatches, so `value` is one of the two field names the actionable sweep hunts for
+		// (SweepActionableElements, sweepActionable). A numeric cell carrying one would count as a forged
+		// interaction in every evidence bundle, and the only way to green that again is to weaken the sweep.
+		if _, ok := cell["value"]; ok {
+			t.Fatalf("a raw_number cell carries a `value` key, which the actionable sweep reads as a dispatchable element: %v", cell)
+		}
+		if cell["text"] == "" {
+			t.Fatalf("a raw_number cell lost the text Slack draws: %v", cell)
 		}
 	}
-	if fmt.Sprint(rows[2][1]["value"]) != "12" {
-		t.Fatalf("the raw_number value is %v, want the cell's own number", rows[2][1]["value"])
+	if fmt.Sprint(rows[2][1]["text"]) != "12" {
+		t.Fatalf("the raw_number cell draws %v, want the cell's own digits", rows[2][1]["text"])
+	}
+	// The sweep must stay CLEAN over a numeric table — the collision above, asserted where it would bite.
+	if found := sweepJSON(t, "numeric table", blocks); len(found) != 0 {
+		t.Fatalf("a numeric table registered %d actionable element(s): %v", len(found), found)
 	}
 }
 

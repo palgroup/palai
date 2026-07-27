@@ -284,8 +284,16 @@ func parseResult(raw json.RawMessage, whole string) Result {
 //
 // ThreadReply is CALLED rather than reimplemented: it owns the text field's neutralisation, its truncation
 // marker and the thread_ts rule, and a second copy of those would be a second place for them to drift.
-func ReplyMessage(channel, threadTS, answer, responseID string, tasks []Task, requesterUserID string) []byte {
-	results := resultsFor(answer, tasks, requesterUserID)
+//
+// THE JOURNAL'S TASKS ARE DELIBERATELY NOT A PARAMETER, and the reason is the failure mode rather than taste.
+// A stopStream that Slack answers invalid_blocks on falls back to this call on the next attempt; THIS call
+// has no fallback below it, so a rejected body is an answer nobody sees. task_card/plan carry the one shape
+// E20 named as UNCONFIRMED (the reference table calls plan's `title` an Object, its example a bare string),
+// so they stay on the path that can recover. The plain post renders the model's own answer and keeps the
+// task cards as the stream's decoration — which is exactly what it did before this task, minus the lost
+// markdown.
+func ReplyMessage(channel, threadTS, answer, responseID, requesterUserID string) []byte {
+	results := resultsFor(answer, nil, requesterUserID)
 	var prose []string
 	for _, result := range results {
 		if result.Type == ResultText && strings.TrimSpace(result.Text) != "" {
@@ -573,25 +581,33 @@ func taskBlocks(result Result) []any {
 // declared as one, and Slack then right-aligns the column and sorts it numerically instead of alphabetically.
 //
 // CONTRACT: https://docs.slack.dev/reference/block-kit/blocks/table-block/ (checked 2026-07-27) — cells are
-// rich_text, raw_text or raw_number, and "raw_number support numeric values". That page names the three types
-// but prints no schema for raw_number; the sibling
-// https://docs.slack.dev/reference/block-kit/blocks/data-table-block/ (same date) carries the cell schema and
-// gives raw_number a `value` of JSON type number alongside its `text`. Both fields are sent: `value` is what
-// Slack sorts and aligns on, `text` is what it draws. THAT INFERENCE IS NAMED because the two pages are not
-// the same block — if a live leg ever answers invalid_blocks on a numeric table, this comment is the suspect.
+// rich_text, raw_text or raw_number, and "raw_number support numeric values"; "if a column contains cells all
+// of type raw_number, a numeric sort will be performed instead of the default alphabetical sort".
+//
+// ONLY `type` AND `text` ARE SENT, and that is a decision with two reasons rather than an omission. The table
+// block's own page prints NO schema for raw_number. The sibling
+// https://docs.slack.dev/reference/block-kit/blocks/data-table-block/ (same date) does, and it gives the cell
+// a `value` of JSON type number beside its `text` — but it is a DIFFERENT BLOCK and its schema names no
+// required set, so "raw_number needs a value" is an inference across two pages, not a contract. The second
+// reason is ours and it is not a preference: a `value` KEY IS WHAT OUR OWN ACTIONABLE-ELEMENT SWEEP LOOKS FOR
+// (tests/uat/evidence.go SweepActionableElements, blocks_test.go sweepActionable — a button's `value` is the
+// payload it dispatches). A numeric cell carrying one would register as a forged interaction in every
+// evidence bundle, and the only way to make that green again is to weaken the sweep. A right-aligned column
+// is not worth a hole in the defence this renderer exists for.
+//
+// SO THE UNCONFIRMED IS NAMED: if a live leg answers invalid_blocks on a numeric table, `value` is the
+// suspect — and adding it is a question for the sweep before it is a question for the renderer.
 //
 // raw_text stays the DEFAULT and that is a security choice as much as a simplicity one: the documentation
 // describes raw_text as "basic text characters" while rich_text is the type that carries mentions and links.
 // A model's bytes go in the type with the least interpretation, and they are defused on the way in regardless.
 //
-// The number is carried as json.Number — the cell's OWN digits re-emitted verbatim — rather than parsed into
-// a float and printed back, which is how a 20-digit build id becomes 1.0000000000000001e+19 in a table. The
-// decode is the type test: encoding/json accepts exactly the JSON number grammar, so `1.5s`, `NaN`, `0x1f`
-// and a quoted `"42"` all stay raw_text.
+// The decode IS the type test: encoding/json accepts exactly the JSON number grammar, so `1.5s`, `NaN`,
+// `0x1f`, `007 ` and a quoted `"42"` all stay raw_text rather than being coerced into numbers they are not.
 func cell(text string) map[string]any {
 	var number json.Number
 	if err := json.Unmarshal([]byte(text), &number); err == nil {
-		return map[string]any{"type": "raw_number", "value": number, "text": text}
+		return map[string]any{"type": "raw_number", "text": text}
 	}
 	return map[string]any{"type": "raw_text", "text": text}
 }
