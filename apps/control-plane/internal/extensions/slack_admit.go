@@ -73,6 +73,12 @@ type SlackAdmitter struct {
 	// The streaming half (E20 T1), nil until WithStreaming. Every use of it is nil-safe: a deployment that
 	// does not mount it admits, runs and answers exactly as it did before.
 	streams *SlackStreamFollower
+
+	// The image half (E20, slack_vision.go), nil until WithFileFetch: the client that fetches from Slack's
+	// FILE hosts (not the Web API) and the object store the bytes land in. Both nil ⇒ a shared file is
+	// admitted exactly as before, text only.
+	fileDoer         slack.Doer
+	inboundArtifacts InboundArtifactStore
 }
 
 // NewSlackAdmitter builds the bridge. secrets redeems a signing_secret_ref to bytes at verification time (the
@@ -211,7 +217,16 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 
 	scope := middleware.Scope{Organization: conn.Org, Project: conn.Project, Principal: target.principal}
 	responseID, runID, sessionID := newID("resp"), newID("run"), newID("ses")
-	input := slackRunInput(ev)
+
+	// FETCH THE SHARED IMAGES BEFORE THE ADMISSION, and the ordering is not incidental — slack_vision.go
+	// carries the whole argument. In short: the artifact row must exist before the admission commits the run's
+	// dispatch outbox, and its id must be derived from the event so a redelivery hashes identically and
+	// REPLAYS. Everything a fetch needs to be legitimate has already happened above: signature verified,
+	// connection resolved, channel inside allowed_channels, run-birth decided. A failure here never fails the
+	// admission; the input says a file was not attached.
+	images, skippedFiles := a.admitImages(ctx, conn, ev)
+
+	input := slackRunInput(ev, images, skippedFiles)
 	create := contracts.ResponseCreateRequest{Input: input, Store: true}
 	if target.agentRevisionID != "" {
 		rev := target.agentRevisionID
@@ -279,6 +294,18 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 			return a.repairDeadCorrelation(scoped, conn, ev, *requested, rejected)
 		}
 		return api.SlackAdmitOutcome{Rejected: rejected, Retryable: retryable}, nil
+	}
+
+	// THE RUN EXISTS NOW, so the images it was admitted with can be bound to it — which is what puts their
+	// bytes inside data retention's reach (§22.2 purges an artifact through its run).
+	//
+	// Gated on Replayed for a concrete reason rather than symmetry with the follower below: on a replay `runID`
+	// is a freshly minted id that was never inserted into `runs`, so attaching to it would violate the
+	// artifacts.run_id foreign key. The ORIGINAL admission attached them, and AttachArtifactRun only ever
+	// fills a NULL, so there is nothing left to do. The one gap this leaves — the original died between the
+	// write and the attach — is named at the top of slack_vision.go.
+	if !out.Replayed {
+		a.attachImagesToRun(scoped, conn, images, runID)
 	}
 
 	// The session the admission settled on (the minted one for a fresh session, the chained one otherwise).
@@ -515,6 +542,19 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 // real mention was met with "It looks like you have shared a JSON object that represents a message event
 // from Slack…". A string is therefore the only shape that can be a prompt.
 //
+// TWO SHAPES, AND THE STRING IS STILL THE DEFAULT. With no image attached this returns the same bare string
+// it always did, so every existing request hash, every stored input and every prompt is bit-unchanged. With
+// an image it returns the CONTENT ARRAY content.json has always defined — an `input_text` item carrying the
+// same words, plus one `image_ref` item per attached image. That array is a shape the tree understands
+// end to end (execution.decodeContentParts folds it into text + resolved bytes); it is emphatically NOT the
+// raw-envelope-as-JSON defect above, which was an UNTYPED map the provider was shown verbatim.
+//
+// THE IMAGE IS A REFERENCE, NEVER BYTES, and that is forced rather than preferred: the engine frame ceiling
+// is 1 MiB (execution/execute_run.go MaxFrameBytes) and run.start carries this input, so a base64 screenshot
+// could not cross the engine boundary at all. The bytes join the provider request control-plane-side, where
+// the object-store credential already lives (spec §24) — which also means the untrusted bytes never enter
+// the engine container.
+//
 // WHAT IS IN IT: what the human wrote, with the app's own mention removed (slack.stripMention) — the mention
 // is Slack's addressing, not a word anyone said.
 //
@@ -547,12 +587,26 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 // so naming it in the prompt would put a gate's input in the same channel as a user's words. The channels
 // the app_context names gate NOTHING; they are a description of what the human has on screen, and they enter
 // as trailing, explicitly untrusted text in the same class as model output. See slackContextNote.
-func slackRunInput(ev slack.Event) string {
-	return slackContextNote(ev.Context) + slackMessageInput(ev)
+func slackRunInput(ev slack.Event, images []slackImageAttachment, skippedFiles int) any {
+	text := slackContextNote(ev.Context) + slackMessageInput(ev, len(images) > 0) + slackImageNote(images, skippedFiles)
+	if len(images) == 0 {
+		return text // the bare string, bit-identical to every input this bridge produced before images
+	}
+	items := make([]map[string]any, 0, len(images)+1)
+	// The words go FIRST and the images follow, matching every vision example a provider publishes and
+	// keeping the human's own text ahead of anything else in the turn.
+	items = append(items, map[string]any{"type": "input_text", "text": text})
+	for _, img := range images {
+		items = append(items, map[string]any{"type": "image_ref", "artifact_id": img.artifactID})
+	}
+	return items
 }
 
-// slackMessageInput is the human's half, unchanged since E19 T1.
-func slackMessageInput(ev slack.Event) string {
+// slackMessageInput is the human's half. hasImage says whether this turn actually carries an attached image,
+// which only changes the WORDLESS case — and it changes it because the old answer became a lie the moment an
+// image could be attached: "the user sent a message with no text" describes an empty message, while somebody
+// dropping a screenshot in with no caption has said something quite specific.
+func slackMessageInput(ev slack.Event, hasImage bool) string {
 	switch ev.Kind {
 	case slack.KindTombstone:
 		return "(the user deleted their message; treat the request it carried as withdrawn)"
@@ -563,8 +617,12 @@ func slackMessageInput(ev slack.Event) string {
 		return "(edited) " + ev.Text
 	}
 	if ev.Text == "" {
-		// A file share with no comment, or an event kind that carries no words. It still births a run today
-		// (admission is E19 T1's and unchanged here), so it must not spend a model call on an empty prompt.
+		if hasImage {
+			return "(the user shared an image with no comment)"
+		}
+		// A file share whose file was not attached, or an event kind that carries no words. It still births a
+		// run today (admission is E19 T1's and unchanged here), so it must not spend a model call on an empty
+		// prompt.
 		return "(the user sent a message with no text)"
 	}
 	return ev.Text

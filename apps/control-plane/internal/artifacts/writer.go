@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -153,6 +154,103 @@ func (w *Writer) Read(ctx context.Context, org, project, artifactID string) (Art
 		return Artifact{}, nil, false, nil
 	}
 	return art, body, true, nil
+}
+
+// InboundImageLogicalType is the §22.6 logical type of an image an integration fetched from the
+// outside world on a user's behalf. It is its own type, not "report"/"patch"/"log": these bytes are
+// UNTRUSTED THIRD-PARTY INPUT rather than something a run produced, and an operator reading the
+// artifacts table has to be able to tell those apart.
+const InboundImageLogicalType = "inbound-image"
+
+// inboundObjectKeyPrefix is where an inbound artifact's bytes live, in place of the run id an
+// artifact produced by a run is keyed under. It has to be run-less for the same reason the row is
+// (see WriteInboundArtifact): the run does not exist when the bytes are written.
+const inboundObjectKeyPrefix = "inbound"
+
+// WriteInboundArtifact persists bytes an integration fetched on a user's behalf under an id the
+// CALLER derived, idempotently, with no run attached yet. AttachArtifactRun binds it once the run is
+// real; the SQL comments on InsertInboundArtifact carry the full ordering argument.
+//
+// It is deliberately NOT Write: Write mints a random id and demands a run, and both would break the
+// admission's idempotency (a redelivery must re-derive the same id) and its ordering (the row must
+// exist before the run's dispatch is committed).
+//
+// The bytes are PUT before the row is inserted, matching Write: a failure between them leaves an
+// object no row references, which the orphan GC reclaims. mediaType must be the caller's SNIFFED
+// type — a filename or a sender-declared mimetype is not evidence of what bytes are.
+//
+// provenance MUST carry no credential. It is stored, read back by operators, and served over the
+// retrieval API; a fetch token that reached it would be a token in the database.
+func (w *Writer) WriteInboundArtifact(ctx context.Context, org, project, artifactID string, content []byte, mediaType string, provenance map[string]any) error {
+	if org == "" || project == "" || artifactID == "" {
+		return errors.New("artifacts: an inbound artifact write requires organization, project, and an id")
+	}
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	key := objectKey(org, project, inboundObjectKeyPrefix, artifactID)
+	checksum, size, err := w.store.Put(ctx, key, content)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(provenanceOrEmpty(provenance))
+	if err != nil {
+		return fmt.Errorf("marshal artifact provenance: %w", err)
+	}
+	if _, err := w.pool.Exec(ctx, storage.Query("InsertInboundArtifact"),
+		artifactID, org, project, key, size, checksum,
+		mediaType, InboundImageLogicalType, notScanned, encoded); err != nil {
+		return fmt.Errorf("record inbound artifact row: %w", err)
+	}
+	return nil
+}
+
+// AttachArtifactRun binds an inbound artifact to the run admitted for it, which is what brings the
+// row inside retention's reach (§22.2 purges an artifact through its run). Idempotent and one-way:
+// only a NULL run_id is filled, so a redelivery is a no-op and no artifact can be re-pointed at a
+// different run.
+func (w *Writer) AttachArtifactRun(ctx context.Context, org, project, artifactID, runID string) error {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	if _, err := w.pool.Exec(ctx, storage.Query("AttachArtifactRun"), artifactID, org, project, runID); err != nil {
+		return fmt.Errorf("attach artifact %s to run: %w", artifactID, err)
+	}
+	return nil
+}
+
+// ReadImageArtifact resolves an artifact to its media type and bytes within the tenant scope — the
+// execution.ImageReader seam a run's `image_ref` content item resolves through, so the control plane
+// can join an image to a provider request without the engine ever seeing the bytes (spec §24).
+//
+// found is false for an unknown id, a FOREIGN id, and a row whose object the store no longer holds
+// (retention reaped it). All three read the same way on purpose: an id out of a run's input is
+// untrusted content, and a caller must not be able to tell a foreign artifact from a missing one
+// (§22.6 non-disclosure). The caller renders the miss as a marker in the conversation.
+//
+// The media type is returned as RECORDED, and its caller is what enforces that it is an image — the
+// row is the only claim about these bytes that a producer, not a sender, made.
+func (w *Writer) ReadImageArtifact(ctx context.Context, org, project, artifactID string) (string, []byte, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	var runID *string
+	var objectKey, checksum, mediaType, logicalType, scanStatus string
+	var size int64
+	var createdAt time.Time
+	err := w.pool.QueryRow(ctx, storage.Query("ArtifactByID"), artifactID, org, project).
+		Scan(&runID, &objectKey, &size, &checksum, &mediaType, &logicalType, &scanStatus, &createdAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil, false, nil
+	}
+	if err != nil {
+		return "", nil, false, fmt.Errorf("read artifact row: %w", err)
+	}
+	if objectKey == "" {
+		return "", nil, false, nil // retention scrubbed the row's index of its bytes
+	}
+	content, found, err := w.store.Get(ctx, objectKey)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if !found {
+		return "", nil, false, nil
+	}
+	return mediaType, content, true, nil
 }
 
 // objectKey lays out the S3 key tenant-first so keys never collide across tenants and a
