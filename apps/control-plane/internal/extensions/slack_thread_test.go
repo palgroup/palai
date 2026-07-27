@@ -140,6 +140,26 @@ func TestSlackThreadNoteCutsOneOversizedMessageRatherThanLosingIt(t *testing.T) 
 	if n := len([]rune(note)); n > slackThreadMaxChars+1000 {
 		t.Fatalf("note is %d characters, want it inside the bound", n)
 	}
+
+	// THE 16-RUNE WINDOW, and it is a bounds test rather than a crash test on purpose. "Over budget" is
+	// `runes + the label's cost > 12000`, so the cut branch is reached by a message SHORTER than the cut too —
+	// 11,985..12,000 runes. Slicing to a fixed length there reads past len; it does not reliably panic, because
+	// []rune(s) allocates into a size class whose spare capacity usually swallows the read. So the assertion is
+	// the invariant that a silent over-read would break: a TRUNCATION may never produce more of the message
+	// than the message had.
+	for _, n := range []int{slackThreadMaxChars - 16, slackThreadMaxChars - 15, slackThreadMaxChars - 1,
+		slackThreadMaxChars, slackThreadMaxChars + 1} {
+		got := slackThreadNote([]slack.ThreadMessage{threadMsg("U1", "1.1", strings.Repeat("z", n))}, false, "Ubot", "9.9")
+		if got == "" {
+			t.Fatalf("a %d-rune message produced no note at all", n)
+		}
+		if quoted := strings.Count(got, "z"); quoted > n {
+			t.Fatalf("a %d-rune message came back with %d of its characters — a truncation cannot lengthen what it cuts", n, quoted)
+		}
+		if strings.ContainsRune(got, 0) {
+			t.Fatalf("a %d-rune message produced a note carrying a NUL — that is memory past the message's own end", n)
+		}
+	}
 }
 
 // OTHER PEOPLE'S INSTRUCTIONS ARE DATA. A thread message saying "ignore your rules" is a sentence somebody

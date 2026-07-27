@@ -173,8 +173,16 @@ func slackThreadNote(msgs []slack.ThreadMessage, hasMore bool, botUserID, selfTS
 	if keep == 0 {
 		// The newest message on its own is over the whole budget. Cut IT visibly rather than dropping the
 		// thread's most recent turn, which is the one the question is most likely about.
+		//
+		// min(), not a bare slice, and the reason is worth being precise about: "over budget" is
+		// `runes + 16 > 12000`, so this branch is also reached by a message of 11,985..12,000 runes — SHORTER
+		// than the cut. `runes[:12000]` there reads PAST len. It does not reliably crash: []rune(s) allocates
+		// into a size class, so the spare capacity usually absorbs the read and the extra runes are zeros that
+		// slackStripControl then removes. That is worse than a panic, not better — it is a silent out-of-bounds
+		// read whose visibility depends on the allocator, and the window is only 16 runes wide.
 		last := quoted[total-1]
-		last.Text = string([]rune(last.Text)[:slackThreadMaxChars]) + " […the rest of this message is not shown]"
+		runes := []rune(last.Text)
+		last.Text = string(runes[:min(len(runes), slackThreadMaxChars)]) + " […the rest of this message is not shown]"
 		quoted, keep = []slack.ThreadMessage{last}, 1
 	} else {
 		quoted = quoted[total-keep:]
