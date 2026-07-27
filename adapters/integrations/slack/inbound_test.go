@@ -436,3 +436,34 @@ func TestMapEventEmptyContextIsNotAnError(t *testing.T) {
 		}
 	}
 }
+
+// TestMapEventSeparatesAThreadRootFromALoneMessage is what ThreadTS alone cannot say. It falls back to the
+// message's own ts so the correlation key always exists, which makes a lone top-level message and a threaded
+// reply look identical — and the run-birth rule needs them not to (a top-level app_mention is delivered TWICE,
+// once as app_mention and once as message.channels; only "was this written inside a thread?" separates the
+// twin from a genuine follow-up).
+func TestMapEventSeparatesAThreadRootFromALoneMessage(t *testing.T) {
+	lone := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev20","event":{"type":"message","channel":"C1","user":"U1","ts":"20.1","text":"lunch?"}}`)
+	ev, err := MapEvent(lone, "Ubot", false)
+	if err != nil {
+		t.Fatalf("map a lone message: %v", err)
+	}
+	if ev.InThread {
+		t.Fatal("a top-level channel message reported InThread; Slack sends no thread_ts for one")
+	}
+	if ev.ThreadTS != "20.1" {
+		t.Fatalf("ThreadTS = %q, want the message's own ts as the correlation root", ev.ThreadTS)
+	}
+
+	reply := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev21","event":{"type":"message","channel":"C1","user":"U1","ts":"21.1","thread_ts":"20.1","text":"and the notes?"}}`)
+	if ev, _ = MapEvent(reply, "Ubot", false); !ev.InThread || ev.ThreadTS != "20.1" {
+		t.Fatalf("a threaded reply mapped to InThread=%t ThreadTS=%q, want true and the thread root", ev.InThread, ev.ThreadTS)
+	}
+
+	// A delete nests the removed message, so the thread it belonged to has to be read from THERE — otherwise
+	// a tombstone always looks top-level and never reaches the thread it retracts a message in.
+	del := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev22","event":{"type":"message","subtype":"message_deleted","channel":"C1","previous_message":{"user":"U1","ts":"21.1","thread_ts":"20.1","text":"gone"}}}`)
+	if ev, _ = MapEvent(del, "Ubot", false); !ev.InThread || ev.ThreadTS != "20.1" {
+		t.Fatalf("a deleted threaded reply mapped to InThread=%t ThreadTS=%q, want true and the thread root", ev.InThread, ev.ThreadTS)
+	}
+}

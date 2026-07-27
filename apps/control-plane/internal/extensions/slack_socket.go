@@ -440,6 +440,10 @@ func (s *SlackSocket) dispatch(ctx context.Context, conn api.SlackConnectionRef,
 			// named here so an operator reading the log knows what happened.
 			s.log("slack socket: ADMISSION FAILED after the envelope was acknowledged — connection=%s event=%s. Slack will not redeliver an acknowledged envelope, so this event produced no run: %v",
 				conn.ID, ev.SourceEventID, err)
+		case out.Ignored:
+			// Channel chatter the app is not addressed in (slackBirthsRun). Acknowledged with every other
+			// envelope and NOT logged — a line per message two colleagues exchange is not information. The HTTP
+			// route does the identical thing; the two transports may not disagree about what opens a run.
 		case out.Rejected != "":
 			s.log("slack socket: admission refused: connection=%s event=%s retryable=%t reason=%s",
 				conn.ID, ev.SourceEventID, out.Retryable, out.Rejected)

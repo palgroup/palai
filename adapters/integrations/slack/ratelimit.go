@@ -35,6 +35,16 @@ func (e *APIError) Error() string { return "slack: api refused the call: " + e.C
 // it says nothing about the run, and it carries no authenticated actor, so it is not run control (plan §2).
 const CodeStoppedByUser = "stopped_by_user"
 
+// CodeInvalidThreadTS is Slack refusing a call because the thread it names is not one: in practice the root
+// message was deleted between the event and the call. It is not a capability answer and must not be read as
+// one — a workspace that refuses ONE thread this way has refused nothing about the method.
+//
+// CONTRACT: https://docs.slack.dev/reference/methods/assistant.threads.setStatus/ (checked 2026-07-27)
+// documents it verbatim as "Error returned when given an invalid thread_ts". chat.startStream's own reference
+// (checked the same day) does NOT list the code at all, and a real workspace returned it there anyway — see
+// the E20 plan §3.5 divergence row.
+const CodeInvalidThreadTS = "invalid_thread_ts"
+
 // APIErrorCode returns Slack's own error string when err is an API refusal, and "" for anything else
 // (transport failures, cancellations, the bounded-repair give-up). Callers switch on this rather than on
 // substring matching an error message.

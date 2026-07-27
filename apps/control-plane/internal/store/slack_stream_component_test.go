@@ -520,3 +520,52 @@ func sweepActionableNodes(path string, node any) []string {
 	}
 	return found
 }
+
+// TestSlackGoneThreadStopsTheFollowerAtTheFirstRefusal is the OTHER half of what the first real live run
+// exposed. Its log carried three lines for one run:
+//
+//	could not set run …'s status to "is thinking…": invalid_thread_ts
+//	could not open a stream for run …:              invalid_thread_ts
+//	could not set run …'s status to "":             invalid_thread_ts
+//
+// Slack was RIGHT in all three. The run had been born from a `message_deleted`, so the thread every call named
+// was a message that no longer existed — and the run-birth rule now refuses that birth (see
+// TestSlackEditOrDeleteOutsideOurThreadsBirthsNothing). But a human can also delete the root of a thread while
+// the run under it is still working, so the refusal stays reachable, and the honest answer to it is to stop:
+// there is nothing left to decorate, the status cannot be stuck (the thread is gone), and asking twice more
+// only fills the log.
+//
+// CONTRACT: https://docs.slack.dev/reference/methods/assistant.threads.setStatus/ (checked 2026-07-27) —
+// `invalid_thread_ts`, "Error returned when given an invalid thread_ts".
+func TestSlackGoneThreadStopsTheFollowerAtTheFirstRefusal(t *testing.T) {
+	f := newSlackFixture(t)
+	f.withStreaming(t, 4)
+	// ONE refusal is scripted on purpose: a follower that asks a second time gets a cheerful {"ok":true} and
+	// the call COUNT is what fails, which is the assertion that discriminates.
+	f.slackRefuse("/assistant.threads.setStatus", "invalid_thread_ts")
+
+	f.deliver(t, f.eventText(t, "EvGone1", "app_mention", "Umapped", "C84", "1700000084.000100", "",
+		"<@"+f.botUser+"> ship it"), time.Now(), "", "").Body.Close()
+	runID, responseID, sessionID := f.runAndResponse(t)
+	f.awaitCalls(t, "/assistant.threads.setStatus", 1)
+	f.terminate(t, runID, statemachines.RunCmdProvision, statemachines.RunCmdStart)
+	// Something a follower that had NOT given up would open a stream on.
+	f.commitStep(t, sessionID, responseID, runID)
+
+	f.finalizeWith(t, responseID, "completed", map[string]any{
+		"output": []any{map[string]any{"type": "message", "content": "Shipped."}},
+	})
+	f.terminate(t, runID, statemachines.RunCmdComplete)
+	time.Sleep(2 * time.Second) // give a follower that kept going every chance to make its calls
+
+	if n := len(f.callsTo("/chat.startStream")); n != 0 {
+		t.Fatalf("fake Slack saw %d chat.startStream call(s) on a thread whose status was refused as invalid_thread_ts, want 0 — the stream is addressed at the same dead thread", n)
+	}
+	if n := len(f.callsTo("/assistant.threads.setStatus")); n != 1 {
+		t.Fatalf("the follower called assistant.threads.setStatus %d time(s) on a thread that no longer exists, want exactly 1 — one refusal is information, three are noise", n)
+	}
+	// The ANSWER is untouched by any of it: nothing Slack does to the decoration may touch the run (SLK-006).
+	if posted, err := extensions.NewSlackReplyPump(f.bridge).Tick(context.Background()); err != nil || posted != 1 {
+		t.Fatalf("the pump delivered %d answer(s) (err %v), want 1 — an undecorated run still answers", posted, err)
+	}
+}

@@ -105,6 +105,14 @@ type SlackAdmitOutcome struct {
 	Replayed   bool
 	Rejected   string
 	Retryable  bool
+	// Ignored is an event that was HANDLED and deliberately birthed nothing: ordinary channel chatter, which
+	// this app subscribes to (SLK-002/SLK-005 need message.channels) and only acts on when it is addressed —
+	// a mention, or a follow-up in a thread the app is already in. See extensions.slackBirthsRun.
+	//
+	// It is NOT a Rejected value, and the difference is the log: a refusal is news an operator acts on, while
+	// every message two colleagues exchange in the channel would be one line each of it. Ignored is acked and
+	// silent. (ErrNoRun is the same idea one layer up, for events the mapping alone can classify.)
+	Ignored bool
 }
 
 // SlackEventsAPI is the narrow seam this route drives (implemented by extensions.SlackAdmitter). Splitting it
@@ -251,6 +259,12 @@ func (h *slackHandler) receive(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		h.log("slack events: admission failed: connection=%s event=%s", conn.ID, ev.SourceEventID)
 		middleware.WriteProblem(w, r, http.StatusServiceUnavailable, "internal_error", "the receiver is temporarily unavailable")
+		return
+	case out.Ignored:
+		// Channel chatter the app is not addressed in. Acked (Slack delivered it correctly, and refusing would
+		// only earn three redeliveries of the same sentence) and NOT logged: the quiet is the feature. Socket
+		// Mode's dispatch does the identical thing.
+		w.WriteHeader(http.StatusOK)
 		return
 	case out.Rejected != "" && out.Retryable:
 		// Load, not poison: a full queue empties. Retry-After pairs with the 429 the way §20.12 does it.

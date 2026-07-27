@@ -73,6 +73,16 @@ type Event struct {
 	EnterpriseID string
 	ChannelID    string
 	ThreadTS     string // the thread root (thread_ts, or the message ts when it starts a thread) — the correlation key
+	// InThread is whether Slack's OWN `thread_ts` was present, i.e. this message belongs to a thread rather
+	// than standing alone at the top of a channel. ThreadTS cannot answer that: it falls back to the message's
+	// own ts so the correlation key always exists, which makes a lone message and a thread root identical.
+	//
+	// IT IS THE RUN-BIRTH RULE'S SECOND HALF (see slackBirthsRun): a channel message with no mention births a
+	// run only when it lands in a thread this app already has a session for. Without this field the check would
+	// admit the `message.channels` TWIN of every top-level app_mention — Slack delivers both for one mention,
+	// and by the time the twin arrives the mention has already correlated the thread, so "is this thread ours?"
+	// answers yes and one message becomes two runs.
+	InThread     bool
 	UserID       string
 	// Type is the INNER event type verbatim ("app_mention", "message", "app_home_opened", …). Kind is the
 	// coarse classification the run-shaping branches on; this is the identity a log line and the panel's
@@ -287,6 +297,7 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 		EnterpriseID:  outer.EnterpriseID,
 		ChannelID:     inner.Channel,
 		ThreadTS:      thread,
+		InThread:      threadTS != "",
 		UserID:        user,
 		Type:          inner.Type,
 		ChannelType:   inner.ChannelType,

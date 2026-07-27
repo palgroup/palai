@@ -586,6 +586,14 @@ func TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind(t *testing.T) {
 	f := newSlackFixture(t)
 	const root = "1700000005.000100"
 
+	// The thread has to be OURS before an edit or a delete inside it means anything: since the run-birth rule
+	// (slackBirthsRun) an unaddressed channel message births nothing, and an edit to a message the app was
+	// never talking about is exactly that. So the conversation opens the way a real one does — with a mention —
+	// and SLK-005's claim is then made about a thread the app is actually in, which is the only place the claim
+	// was ever true. TestSlackEditOrDeleteOutsideOurThreadsBirthsNothing owns the other side.
+	f.deliver(t, f.event("Ev6a", "app_mention", "Umapped", "C4", root, ""), time.Now(), "", "").Body.Close()
+	f.terminateRuns(t)
+
 	edit, _ := json.Marshal(map[string]any{
 		"type": "event_callback", "team_id": f.team, "event_id": "Ev6",
 		"event": map[string]any{"type": "message", "subtype": "message_changed", "channel": "C4",
@@ -606,10 +614,10 @@ func TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind(t *testing.T) {
 		}
 		resp.Body.Close()
 	}
-	if n := f.runCount(t); n != 2 {
-		t.Fatalf("the edit and the delete birthed %d runs, want 2 (each is its own source event)", n)
+	if n := f.runCount(t); n != 3 {
+		t.Fatalf("the opening mention, the edit and the delete birthed %d runs, want 3 (each is its own source event)", n)
 	}
-	// Both correlate to the SAME thread, so they continue one conversation rather than opening two.
+	// All three correlate to the SAME thread, so they continue one conversation rather than opening three.
 	if n := f.sessionCount(t); n != 1 {
 		t.Fatalf("the edit and the delete produced %d thread↔session rows, want 1 — both belong to the same thread", n)
 	}
@@ -633,14 +641,15 @@ func TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind(t *testing.T) {
 		}
 		inputs = append(inputs, input)
 	}
-	if len(inputs) != 2 {
-		t.Fatalf("admitted inputs = %v, want two", inputs)
+	// inputs[0] is the mention that opened the thread; the two this test is about follow it.
+	if len(inputs) != 3 {
+		t.Fatalf("admitted inputs = %v, want three (the opening mention, then the edit and the delete)", inputs)
 	}
-	if inputs[0] != `"(edited) edited"` {
-		t.Fatalf("the edit reached the model as %s, want the corrected text marked as an edit (SLK-005: it supersedes, it is not a fresh turn)", inputs[0])
+	if inputs[1] != `"(edited) edited"` {
+		t.Fatalf("the edit reached the model as %s, want the corrected text marked as an edit (SLK-005: it supersedes, it is not a fresh turn)", inputs[1])
 	}
-	if !strings.Contains(inputs[1], "deleted their message") || strings.Contains(inputs[1], "gone") {
-		t.Fatalf("the delete reached the model as %s, want a retraction that does not replay the removed words", inputs[1])
+	if !strings.Contains(inputs[2], "deleted their message") || strings.Contains(inputs[2], "gone") {
+		t.Fatalf("the delete reached the model as %s, want a retraction that does not replay the removed words", inputs[2])
 	}
 }
 
@@ -878,7 +887,10 @@ func TestSlackConcurrentFirstEventsNeverSplitAThread(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			body := f.event(fmt.Sprintf("EvRace%d", i), "message", "Umapped", "C22",
+			// app_mention, not a bare message: two concurrent FIRST events in a thread nobody has correlated
+			// yet is precisely the case the run-birth rule turns away for a plain message (there is no thread
+			// of ours to follow up in), and a mention is what a real first event in a thread IS.
+			body := f.event(fmt.Sprintf("EvRace%d", i), "app_mention", "Umapped", "C22",
 				fmt.Sprintf("17000000%d.000100", 24+i), root)
 			timestamp, signature := signSlack(f.secret, body, time.Now())
 			<-start
@@ -930,8 +942,13 @@ func TestSlackConcurrentFirstEventsNeverSplitAThread(t *testing.T) {
 // Classified as terminal it would answer 422 + the suppress header FOREVER, with nothing in the tree that
 // repairs the correlation row — one closed session would silently retire a Slack thread for good.
 //
-// A dead correlation is repairable, so the receiver repairs it: the stale row is dropped and the refusal is
-// retryable, so Slack's next attempt opens a fresh session in the same thread.
+// A dead correlation is repairable, so the receiver repairs it — at LOOKUP time, in the delivery that finds
+// it: the stale row is dropped and the very same message opens a fresh session in the same thread. Two things
+// make that placement load bearing rather than tidy. The run-birth rule admits a bare follow-up only in a
+// thread that is OURS, and a repair that waited for a redelivery would have thrown that fact away between the
+// two deliveries — a thread whose session died would then answer nothing again until somebody re-mentioned the
+// bot. And Socket Mode has no redelivery at all (the envelope is acked before dispatch), so a repair that
+// needs one never completes there.
 func TestSlackClosedSessionDoesNotBrickTheThread(t *testing.T) {
 	f := newSlackFixture(t)
 	const root = "1700000026.000100"
@@ -943,26 +960,23 @@ func TestSlackClosedSessionDoesNotBrickTheThread(t *testing.T) {
 	f.terminateRuns(t)
 	exec(t, f.pool, `UPDATE sessions SET state='closed' WHERE organization_id=$1 AND project_id=$2`, f.org, f.project)
 
+	// A BARE follow-up, with no mention: the case the run-birth rule would turn away if the repair had let the
+	// thread stop being ours.
 	body := f.event("EvDead2", "message", "Umapped", "C23", "1700000027.000100", root)
 	resp := f.deliver(t, body, time.Now(), "", "")
 	if got := resp.Header.Get("X-Slack-No-Retry"); got == "1" {
 		t.Fatalf("an event on a thread whose session is CLOSED answered %d with X-Slack-No-Retry=1 — the thread is then bricked forever: nothing repairs the correlation row, so every future message in it is refused",
 			resp.StatusCode)
 	}
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("the message that found the dead session = %d, want a 2xx ack — the repair runs in THIS delivery, so there is nothing to redeliver", resp.StatusCode)
+	}
 	resp.Body.Close()
-	if n := f.sessionCount(t); n != 0 {
-		t.Fatalf("%d thread↔session rows survive, want 0 — a correlation pointing at a dead session must be dropped so the thread can open a new one", n)
-	}
-
-	// Slack's redelivery of the SAME event now opens a fresh session and admits: one delayed message rather
-	// than a retired thread.
-	retry := f.deliver(t, body, time.Now(), "1", "http_error")
-	defer retry.Body.Close()
-	if retry.StatusCode/100 != 2 {
-		t.Fatalf("the redelivery after the repair = %d, want a 2xx ack", retry.StatusCode)
-	}
 	if n := f.runCount(t); n != 2 {
-		t.Fatalf("%d runs, want 2 — the repaired thread must admit the message the dead session refused", n)
+		t.Fatalf("%d runs, want 2 — the message that found the dead correlation must itself be admitted into the fresh session", n)
+	}
+	if n := f.sessionCount(t); n != 1 {
+		t.Fatalf("%d thread↔session rows, want 1 — the dead row is dropped and the thread re-correlated in one delivery", n)
 	}
 	var state string
 	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
@@ -1074,4 +1088,112 @@ func TestSlackEventStoresTheHumanMessageAsTheRunInput(t *testing.T) {
 			t.Fatalf("responses.input carries %q: %s", leaked, input)
 		}
 	}
+}
+
+// TestSlackOnlyMentionsAndFollowUpsBirthRuns is the RUN-BIRTH RULE, and it is here because the first real live
+// run against the owner's workspace answered EVERY message in the channel it had been invited to. `message`
+// and `app_mention` shared one branch, so ordinary chatter between two colleagues opened a run each.
+//
+// The rule, and why each half exists:
+//
+//   - IN A CHANNEL a message births a run only if it is an app_mention, or if it lands in a thread this
+//     connection already has a session for — a follow-up to the bot's own conversation, where re-mentioning it
+//     every line would be absurd. Everything else is other people talking.
+//   - IN A DM every message births a run. That IS the agent panel; there is nothing else a DM to the app
+//     could mean, and Slack's own channel_type == "im" is the authority (slack.Event.IsDM).
+//
+// The `message.channels` SUBSCRIPTION is untouched, and that is deliberate: SLK-002 and SLK-005 need those
+// events (edits, deletes, file shares in threads the bot is in). What changed is what BIRTHS A RUN, not what
+// arrives.
+func TestSlackOnlyMentionsAndFollowUpsBirthRuns(t *testing.T) {
+	f := newSlackFixture(t)
+	const root = "1700000061.000100"
+
+	// 1. ORDINARY CHATTER: a channel message with no mention, in no thread of ours. Acknowledged — Slack
+	//    delivered it, and refusing the delivery would only earn three redeliveries of the same message — and
+	//    nothing else at all: no run, no session, no thread correlation.
+	chatter := f.deliver(t, f.eventText(t, "EvBirth1", "message", "Umapped", "C60", "1700000060.000100", "",
+		"anyone up for lunch?"), time.Now(), "", "")
+	if chatter.StatusCode/100 != 2 {
+		t.Fatalf("ordinary channel chatter = %d, want a 2xx ack (it is handled, it is simply not a question for us)", chatter.StatusCode)
+	}
+	chatter.Body.Close()
+	if n := f.runCount(t); n != 0 {
+		t.Fatalf("an ordinary channel message birthed %d run(s), want 0 — the bot must answer mentions and its own threads, not the channel", n)
+	}
+	if n := f.sessionCount(t); n != 0 {
+		t.Fatalf("an ordinary channel message claimed %d thread↔session row(s), want 0", n)
+	}
+
+	// 2. THE SAME CHANNEL, WITH A MENTION. This is what the integration is for.
+	f.deliver(t, f.eventText(t, "EvBirth2", "app_mention", "Umapped", "C60", root, "",
+		"<@"+f.botUser+"> ship it"), time.Now(), "", "").Body.Close()
+	if n := f.runCount(t); n != 1 {
+		t.Fatalf("a mention birthed %d run(s), want 1", n)
+	}
+
+	// 3. A FOLLOW-UP INSIDE THE THREAD THE MENTION OPENED, with no mention of its own. The thread is ours, so
+	//    this is the conversation continuing (SLK-003) — the owner's live session did exactly this four times.
+	f.terminateRuns(t) // one active root run per session; the previous one has to finish first
+	followUp := f.deliver(t, f.eventText(t, "EvBirth3", "message", "Umapped", "C60", "1700000062.000100", root,
+		"and the release notes?"), time.Now(), "", "")
+	if followUp.StatusCode/100 != 2 {
+		t.Fatalf("a follow-up in our own thread = %d, want a 2xx ack", followUp.StatusCode)
+	}
+	followUp.Body.Close()
+	if n := f.runCount(t); n != 2 {
+		t.Fatalf("a follow-up in a thread the bot is correlated with birthed a total of %d run(s), want 2 — a thread we are in does not need re-mentioning", n)
+	}
+
+	// 4. A DM. Every message is a turn; that is the whole of the panel.
+	f.terminateRuns(t)
+	dm := f.deliver(t, f.dmEvent("EvBirth4", "Umapped", "D024BE91L", "1700000063.000100", "",
+		"what is left on the release?"), time.Now(), "", "")
+	if dm.StatusCode/100 != 2 {
+		t.Fatalf("a DM = %d, want a 2xx ack", dm.StatusCode)
+	}
+	dm.Body.Close()
+	if n := f.runCount(t); n != 3 {
+		t.Fatalf("a DM birthed a total of %d run(s), want 3 — every panel message is a turn", n)
+	}
+}
+
+// TestSlackEditOrDeleteOutsideOurThreadsBirthsNothing is the run-birth rule applied to the kinds SLK-005
+// classifies. An edit is a correction and a delete is a tombstone — but only of a conversation we are in.
+// Someone editing their own message in a channel the bot merely sits in is not addressing the bot, and the
+// live incident was exactly the deleted half: a `message_deleted` for a message nobody had answered birthed a
+// run whose every outbound call was then refused, because the thread it named no longer existed.
+func TestSlackEditOrDeleteOutsideOurThreadsBirthsNothing(t *testing.T) {
+	f := newSlackFixture(t)
+	const orphan = "1700000065.000100"
+
+	for _, body := range [][]byte{
+		mustJSON(map[string]any{
+			"type": "event_callback", "team_id": f.team, "event_id": "EvOrphan1",
+			"event": map[string]any{"type": "message", "subtype": "message_changed", "channel": "C61",
+				"message": map[string]any{"user": "Umapped", "ts": orphan, "thread_ts": orphan, "text": "edited"}},
+		}),
+		mustJSON(map[string]any{
+			"type": "event_callback", "team_id": f.team, "event_id": "EvOrphan2",
+			"event": map[string]any{"type": "message", "subtype": "message_deleted", "channel": "C61",
+				"previous_message": map[string]any{"user": "Umapped", "ts": orphan, "thread_ts": orphan, "text": "gone"}},
+		}),
+	} {
+		resp := f.deliver(t, body, time.Now(), "", "")
+		if resp.StatusCode/100 != 2 {
+			t.Fatalf("an edit/delete outside our threads = %d, want a 2xx ack", resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	if n := f.runCount(t); n != 0 {
+		t.Fatalf("an edit and a delete in a thread the bot has never been in birthed %d run(s), want 0", n)
+	}
+}
+
+func mustJSON(v map[string]any) []byte {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return raw
 }

@@ -102,6 +102,10 @@ type SlackStreamFollower struct {
 	poll   time.Duration
 	budget time.Duration
 
+	// statusUnusable says the "this workspace will not carry a status indicator" line ONCE. A capability we
+	// cannot use is a standing fact about the deployment; repeating it per run turns a log into weather.
+	statusUnusable sync.Once
+
 	// open maps a run to the streaming message opened for it, so the reply pump can CLOSE that message with
 	// the answer instead of posting a second one. In-process on purpose (ceiling 3 above).
 	mu   sync.Mutex
@@ -204,18 +208,38 @@ func (f *SlackStreamFollower) redeem(tg slackStreamTarget) []byte {
 }
 
 // setStatus redeems the token, sets (or with an empty status clears) the thread's working indicator, and
-// drops the bytes. It reports false only when the token could not be redeemed — i.e. nothing at all can be
-// written to Slack for this run. A REFUSED status is true: it is cosmetic, and the stream must not depend on
-// a call whose reach is inferred rather than documented (see slack.SetStatus).
+// drops the bytes. false means STOP FOLLOWING THIS RUN — there is nothing left that can be written for it —
+// and it has exactly two causes, which are deliberately not the same as "the call failed":
+//
+//   - The token could not be redeemed. Nothing at all can be sent.
+//   - Slack answered `invalid_thread_ts`. The thread this run is decorating no longer exists, because the
+//     human deleted its root message. Every OTHER call is addressed at the same thread, so the stream would
+//     be refused identically and the clear-on-exit would be a third refusal — three log lines, which is what
+//     the first live run produced. One is information; three are noise. Nothing is left stuck either: a
+//     deleted thread cannot show a stale "is thinking…".
+//
+// ANY OTHER REFUSAL IS TRUE, and stays true on purpose. It is cosmetic — the stream and the answer must not
+// depend on a call whose reach is inferred rather than documented (see slack.SetStatus) — and it is said ONCE
+// per process rather than once per run, because a surface that does not carry a status is a standing fact
+// about the workspace, not news about this run.
 func (f *SlackStreamFollower) setStatus(ctx context.Context, tg slackStreamTarget, status string, loading []string) bool {
 	token := f.redeem(tg)
 	if token == nil {
 		return false
 	}
-	if err := slack.SetStatus(ctx, f.bridge.doer, f.bridge.apiBase, token, tg.channel, tg.threadTS, status, loading); err != nil {
-		log.Printf("slack: could not set run %s's status to %q: %v", tg.runID, status, err)
+	err := slack.SetStatus(ctx, f.bridge.doer, f.bridge.apiBase, token, tg.channel, tg.threadTS, status, loading)
+	switch {
+	case err == nil:
+		return true
+	case slack.APIErrorCode(err) == slack.CodeInvalidThreadTS:
+		log.Printf("slack: run %s's thread no longer exists (its root message was deleted); the run continues, undecorated, and its answer still posts", tg.runID)
+		return false
+	default:
+		f.statusUnusable.Do(func() {
+			log.Printf("slack: this workspace refused the thread status indicator (%v); runs will be decorated without it. Logged once per process, not once per run.", err)
+		})
+		return true
 	}
-	return true
 }
 
 // tail is one run's whole visible life: set the status, walk the journal, open the stream when there is

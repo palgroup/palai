@@ -163,9 +163,20 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	// An unscoped connection sees NO rows — which would not error, it would silently report every thread as
 	// new and mint a second session for every reply in a thread.
 	scoped := storage.ScopeToTenant(ctx, conn.Org, conn.Project)
-	requested, err := a.threadSessionOrNil(scoped, conn, ev)
+	requested, ours, err := a.threadSessionOrNil(scoped, conn, ev)
 	if err != nil {
 		return api.SlackAdmitOutcome{}, err
+	}
+
+	// THE RUN-BIRTH RULE, and it sits here because "is this thread already ours" is the half of it that only
+	// the database knows. Everything above this line has happened (a scope read, a target read, a correlation
+	// read); everything below it is durable, so this is the last point at which an event can leave no trace at
+	// all — which is exactly what ordinary channel chatter must leave.
+	//
+	// `ours`, not `requested != nil`: a thread whose session has died is still ours, and threadSessionOrNil has
+	// just cleared its correlation so this delivery can open a fresh one.
+	if !slackBirthsRun(ev, ours) {
+		return api.SlackAdmitOutcome{Ignored: true}, nil
 	}
 
 	// The FIRST event in a thread has to be serialized, and the thread row's unique index is NOT enough to do
@@ -191,7 +202,9 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 		}
 		defer release()
 		// Re-read under the lock: the winner of the race may have committed between the probe and the lock.
-		if requested, err = a.threadSessionOrNil(scoped, conn, ev); err != nil {
+		// `ours` is not re-read — the birth decision is already made, and re-making it here could only
+		// disagree with itself.
+		if requested, _, err = a.threadSessionOrNil(scoped, conn, ev); err != nil {
 			return api.SlackAdmitOutcome{}, err
 		}
 	}
@@ -302,17 +315,87 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	return api.SlackAdmitOutcome{ResponseID: out.ResponseID, SessionID: session, Replayed: out.Replayed}, nil
 }
 
+// slackBirthsRun decides whether an event opens a run. correlated is whether this thread already has a
+// canonical session in THIS connection's tenant — i.e. whether the app is already talking in it.
+//
+// IT EXISTS BECAUSE THE FIRST REAL LIVE RUN ANSWERED EVERYTHING. `message` and `app_mention` shared one Kind,
+// so a colleague writing "anyone up for lunch?" in a channel the bot had been invited to opened a run, and a
+// deleted message opened one too — the second of those then spent three refused API calls on a thread that no
+// longer existed (slack_stream.go's setStatus owns that half).
+//
+// THE RULE, and each clause is a different question the event answers:
+//
+//   - A DM IS ALWAYS A TURN. That is the whole agent panel: there is nothing else a direct message to the app
+//     could be addressed to. Slack's own channel_type is the authority (slack.Event.IsDM), never the "D…"
+//     prefix.
+//   - AN app_mention IS ALWAYS A TURN. Somebody typed the bot's name; that is the invitation, and it needs no
+//     prior relationship with the thread.
+//   - ANYTHING ELSE IN A CHANNEL is a turn only as a FOLLOW-UP: it must be inside a thread (Slack's own
+//     thread_ts, see slack.Event.InThread) AND that thread must already be one of ours. Both halves are load
+//     bearing. Without `correlated`, every message in every channel opens a run — the live defect. Without
+//     `InThread`, the `message.channels` TWIN Slack delivers alongside each top-level app_mention would be
+//     admitted too, because the mention has by then correlated the thread, and one mention would become two
+//     runs.
+//
+// WHAT IT DELIBERATELY DOES NOT DO: it does not unsubscribe from message.channels. SLK-002 (redelivery) and
+// SLK-005 (edits, deletes, file shares) need those events, and they still arrive — an edit inside a thread we
+// are in is still a correction, a delete inside one is still a tombstone. What changed is what BIRTHS A RUN.
+//
+// CEILING, named rather than discovered later: a mention typed INSIDE a thread that is already ours still
+// arrives twice (as app_mention and as its message twin), and both clear this rule. The second is refused
+// downstream by the one-active-root index ("the session already has an active run"), which is a refusal and
+// not a duplicate answer — but it is a refusal, not a design. Collapsing the twins needs an idempotency key
+// over the MESSAGE rather than over Slack's event_id, and that is a change to SLK-002's dedupe identity.
+func slackBirthsRun(ev slack.Event, correlated bool) bool {
+	switch {
+	case ev.IsDM(), ev.Type == "app_mention":
+		return true
+	default:
+		return ev.InThread && correlated
+	}
+}
+
 // threadSessionOrNil reads the thread's canonical session, mapping "no correlation yet" to nil rather than to
 // an error — the shape RequestedSessionID wants. ctx must already be tenant-scoped (threadSession is not).
-func (a *SlackAdmitter) threadSessionOrNil(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) (*string, error) {
+//
+// `ours` is a SECOND question and not the same one: it says this thread HAS been this connection's
+// conversation, whether or not the session it points at can still be chained onto. That is what the run-birth
+// rule needs, and only that — a session dying under a thread does not turn the people talking in it into
+// strangers, and a follow-up there is still a follow-up.
+//
+// A correlation pointing at a session nothing can ever chain onto again — closed, closing, deleted, or simply
+// gone — is DROPPED HERE and reported as (nil, ours=true): the thread is ours and it needs a fresh session,
+// which this very delivery then opens. Doing it at lookup rather than after the admission refuses is what
+// makes it a repair at all: the message is admitted NOW instead of on a redelivery, and Socket Mode has no
+// redelivery to wait for (the envelope is acked before dispatch, so Slack never sends it again).
+// repairDeadCorrelation still stands behind this for the race where the session dies in between.
+//
+// PAUSED IS NOT DEAD, and it is left alone deliberately: it is resumable, so the correlation is still
+// correct, and dropping it would fork the conversation the moment someone resumes. It travels on to the
+// admission and is refused retryably there, exactly as before.
+func (a *SlackAdmitter) threadSessionOrNil(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) (requested *string, ours bool, err error) {
 	existing, _, err := a.store.threadSession(ctx, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS)
 	switch {
-	case err == nil && existing != "":
-		return &existing, nil
 	case err != nil && !errors.Is(err, ErrSlackThreadSessionNotFound):
-		return nil, err
+		return nil, false, err
+	case existing == "":
+		return nil, false, nil
 	}
-	return nil, nil
+	var id, state string
+	switch err := a.store.pool.QueryRow(ctx, storage.Query("SessionForCreate"), existing, conn.Org, conn.Project).
+		Scan(&id, &state); {
+	case err != nil && !errors.Is(err, pgx.ErrNoRows):
+		return nil, false, fmt.Errorf("read correlated session state: %w", err)
+	case err == nil && (state == string(statemachines.SessionActive) || state == string(statemachines.SessionPaused)):
+		return &existing, true, nil
+	}
+	if _, err := a.store.pool.Exec(ctx, storage.Query("DeleteThreadSession"),
+		conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.ThreadTS, existing); err != nil {
+		return nil, false, fmt.Errorf("clear dead slack thread correlation: %w", err)
+	}
+	log.Printf("slack: cleared a thread correlation pointing at unusable session %s (connection %s); this event opens a new one",
+		existing, conn.ID)
+	return nil, true, nil
 }
 
 // repairDeadCorrelation answers an admission that a thread's CHAINED session refused. Two cases, and the
