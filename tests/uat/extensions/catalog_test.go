@@ -115,12 +115,22 @@ var expectedExtensionsCatalog = map[string]struct {
 		"adapters/integrations/slack/stream_test.go:TestStreamCallsTruncateTheirOwnText",
 		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamAppendRepairsA429WithoutASecondRetryLayer",
 	}},
+	// E20 T4 extended this case rather than opening an id — the same move T1 made on SLK-006, and for the same
+	// reason: the claim is already here. "ONLY from a MINTED button" always had a supply side nobody proved,
+	// and the renderer is where it is now proven — a model's forged approve button falls to inert text, so the
+	// "foreign button" this case refuses downstream never reaches a human upstream either. (SLK-012, the id
+	// the T4 seam names, lands with T5: cataloging a NEW case regenerates extensions-0.1.0, and governing it
+	// grows CapabilityClaims["slack"], which three committed manifests and the 1.0 RC recompute from.)
 	"SLK-007": {"component-real", []string{
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalBindsHashUserWorkspace",
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalDenyIsMapped",
 		"adapters/integrations/slack/approval_test.go:TestMapInteractiveApprovalRejectsEverythingElse",
 		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackAuthorizedClickApprovesThroughTheWholeChain",
 		"apps/control-plane/internal/store/slack_interactions_component_test.go:TestSlackDenyClickDeniesThePublication",
+		"adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput",
+		"adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement",
+		"adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement",
+		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton",
 	}},
 	// The self-loop guard lives in the pure MapEvent, so it holds on every transport — but "it should" is
 	// not evidence, and a bot event that opened a run over a WebSocket would be a loop nobody notices.
