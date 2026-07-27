@@ -13,6 +13,7 @@ import (
 	"github.com/palgroup/palai/adapters/integrations/slack"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/storage"
+	live "github.com/palgroup/palai/tests/live/slack"
 )
 
 // slack_connections.allowed_channels, ENFORCED — E19 T2 follow-up. Until this file existed the column was
@@ -388,5 +389,61 @@ func TestSlackPanelConversationKeepsOneSession(t *testing.T) {
 	}
 	if correlated != ran {
 		t.Fatalf("the panel thread points at session %q but its runs are in %q", correlated, ran)
+	}
+}
+
+// TestSlackBornRunsAreFoundByTheLiveLegsPredicate runs the SQL the credential-gated live smokes depend on
+// against real Slack-born rows. It exists because of what those smokes cost when their predicate rots.
+//
+// E19's live legs identified a Slack-born run by its stored input projection (input->>'source' = 'slack').
+// When the run's input became THE PROMPT — a bare JSON string, because a map reaches the provider as compact
+// JSON and the model answers the JSON — `->>` started returning NULL and the predicate stopped matching
+// anything. The tests did not go red in CI: they cannot run without a real workspace. They would have gone
+// red in the owner's hands, at the one moment a live leg is worth anything, blaming his Request URL and his
+// app subscription instead of our query.
+//
+// A live test's SQL is the one part of it that CAN be proved here, so it is.
+func TestSlackBornRunsAreFoundByTheLiveLegsPredicate(t *testing.T) {
+	f := newSlackFixture(t)
+	start := time.Now().UTC().Add(-time.Minute)
+
+	// Two source events: a channel mention and a panel DM. The live legs must find BOTH — the panel is a
+	// third entrance into one bridge, so one predicate has to cover it.
+	f.deliver(t, f.event("EvLive1", "app_mention", "Umapped", "C90", "1700000090.000100", ""), time.Now(), "", "").Body.Close()
+	f.terminateRuns(t)
+	f.deliver(t, f.dmEvent("EvLive2", "Uoutsider", "D024BE91L", "1700000091.000100", "", "and in the panel"), time.Now(), "", "").Body.Close()
+
+	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()), live.BornRunsByTeam, f.team, start)
+	if err != nil {
+		t.Fatalf("the live legs' predicate does not even execute: %v", err)
+	}
+	defer rows.Close()
+	found := map[string][]string{}
+	for rows.Next() {
+		var eventID, respID string
+		if err := rows.Scan(&eventID, &respID); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		found[eventID] = append(found[eventID], respID)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("the live legs' predicate failed mid-read: %v", err)
+	}
+	for _, want := range []string{"EvLive1", "EvLive2"} {
+		got := found[want]
+		if len(got) != 1 {
+			t.Fatalf("the live legs' predicate found %d response(s) for source event %s (%v), want exactly 1 — a live smoke reading this would tell the owner his workspace is misconfigured when it is not",
+				len(got), want, got)
+		}
+	}
+	// And it must not sweep up another workspace's traffic: the key is prefixed by the team, so a different
+	// team id finds nothing at all.
+	other, err := f.pool.Query(storage.WithSystemScope(context.Background()), live.BornRunsByTeam, "T_SOMEONE_ELSE", start)
+	if err != nil {
+		t.Fatalf("re-run the predicate for a foreign team: %v", err)
+	}
+	defer other.Close()
+	if other.Next() {
+		t.Fatal("the live legs' predicate matched a run for a team that has none — a receipt must be about the workspace it names")
 	}
 }

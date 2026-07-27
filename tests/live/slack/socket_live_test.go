@@ -226,9 +226,8 @@ func TestLiveSlackSocketMentionBirthsExactlyOneRun(t *testing.T) {
 	}
 	defer pool.Close()
 
-	const bornSince = `SELECT COALESCE(input->>'event_id',''), id
-	                     FROM responses
-	                    WHERE input->>'source' = 'slack' AND input->>'team_id' = $1 AND created_at > $2`
+	// Keyed on the admission reservation; BornRunsByTeam records why the input projection stopped working.
+	const bornSince = BornRunsByTeam
 	start := time.Now().UTC()
 	t.Logf("watching for a Socket-Mode-born run in workspace %s. The control plane must be running with PALAI_SLACK_SOCKET_TEAM_ID=%s and the workspace registered with a resolvable app_token_ref. @-mention the bot now.",
 		team, team)
