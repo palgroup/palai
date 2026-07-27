@@ -40,6 +40,16 @@ case "$provider/$case_name" in
     run="TestLiveProviderOneTextStreamToolSchema"
     required_key="OPENAI_API_KEY"
     ;;
+  provider-one/vision-reads-image)
+    # E20 (the image leg): the ONE proof that a real model really READS an image a run carried. It renders
+    # text nobody told the model — "PALAI 7429", drawn from bitmaps that are in the test source, so what the
+    # model is asked to read is reviewable in the diff — sends the PIXELS through the shipped provider-one
+    # adapter, and asserts the four digits came back. A model that could not see the image has one chance in
+    # ten thousand, and the prompt says nothing about the content. Uses OPENAI_API_KEY; no docker.
+    pkg="./tests/live/provider"
+    run="TestLiveProviderOneReadsTextInAnImage"
+    required_key="OPENAI_API_KEY"
+    ;;
   provider-one/cancel-terminal)
     # E16 Task 6 (MOD-009): a REAL streamed provider-one completion is canceled mid-stream on the
     # first token; the call terminates with context.Canceled (never a fabricated completed result)
