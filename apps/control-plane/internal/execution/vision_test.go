@@ -2,7 +2,7 @@ package execution
 
 import (
 	"encoding/json"
-	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -124,45 +124,137 @@ func TestDecodeMessagesMarksAMissingImageRatherThanFailing(t *testing.T) {
 	}
 }
 
-// A COUNT over the cap is REFUSED, not truncated: an unbounded image count is an unbounded provider bill,
-// and quietly dropping the tail would answer about a subset of what was sent while claiming to have looked.
-// Reachable only from a hand-written /v1/responses body — the Slack path bounds itself before admission.
-func TestDecodeMessagesRefusesMoreImagesThanTheCap(t *testing.T) {
+// imageTable builds n resolvable artifacts named art_0..art_n-1.
+func imageTable(n int) map[string]modelbroker.Image {
 	table := map[string]modelbroker.Image{}
-	var items []string
-	for i := 0; i <= maxRunImages; i++ {
-		id := "art_" + string(rune('a'+i))
-		table[id] = modelbroker.Image{MediaType: "image/png", Data: []byte("x")}
-		items = append(items, `{"type":"image_ref","artifact_id":"`+id+`"}`)
+	for i := range n {
+		table[imageID(i)] = modelbroker.Image{MediaType: "image/png", Data: []byte{byte('0' + i%10)}}
 	}
-	resolve, _ := resolverFor(table)
-	var value any
-	if err := json.Unmarshal([]byte(`[{"role":"user","content":[`+strings.Join(items, ",")+`]}]`), &value); err != nil {
-		t.Fatalf("fixture: %v", err)
-	}
-	_, err := decodeMessages(value, resolve)
-	if !errors.Is(err, errTooManyImages) {
-		t.Fatalf("err = %v, want errTooManyImages", err)
-	}
+	return table
 }
 
-// The cap is over the WHOLE conversation, not per turn: a thread that accumulated one image per turn must
-// hit the same ceiling as one message carrying them all, or the bound is trivially bypassed by any thread.
-func TestDecodeMessagesCapsImagesAcrossTheWholeConversation(t *testing.T) {
-	table := map[string]modelbroker.Image{}
+func imageID(i int) string { return "art_" + strconv.Itoa(i) }
+
+// THE CAP KEEPS THE NEWEST IMAGES AND MARKS THE REST — it does not fail the step, and which way round that
+// goes is the whole point.
+//
+// The first version of this refused the model step over the cap. Trace it through a real Slack thread: three
+// images in message one, three in message two, three in message three, and the ninth trips the cap. But the
+// conversation is REPLAYED on every turn, so from then on EVERY message in that thread fails forever —
+// including messages carrying no image at all. A cost ceiling would have become a thread-killer.
+//
+// So the budget is spent on the MOST RECENT images (the question being asked now is about what was just
+// shared) and the older ones become a marker the model can read and be honest about.
+func TestDecodeMessagesKeepsTheNewestImagesAndMarksTheRest(t *testing.T) {
+	const total = maxRunImages + 3
 	var turns []string
-	for i := 0; i <= maxRunImages; i++ {
-		id := "art_" + string(rune('a'+i))
-		table[id] = modelbroker.Image{MediaType: "image/png", Data: []byte("x")}
-		turns = append(turns, `{"role":"user","content":[{"type":"image_ref","artifact_id":"`+id+`"}]}`)
+	for i := range total {
+		turns = append(turns, `{"role":"user","content":[{"type":"image_ref","artifact_id":"`+imageID(i)+`"}]}`)
 	}
-	resolve, _ := resolverFor(table)
+	resolve, calls := resolverFor(imageTable(total))
 	var value any
 	if err := json.Unmarshal([]byte(`[`+strings.Join(turns, ",")+`]`), &value); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	if _, err := decodeMessages(value, resolve); !errors.Is(err, errTooManyImages) {
-		t.Fatalf("err = %v, want errTooManyImages across turns", err)
+	msgs, err := decodeMessages(value, resolve)
+	if err != nil {
+		t.Fatalf("decodeMessages: %v — the cap must MARK, never fail: a replayed thread would fail forever", err)
+	}
+
+	carried := 0
+	for i, m := range msgs {
+		if len(m.Images) > 0 {
+			carried += len(m.Images)
+			if i < total-maxRunImages {
+				t.Fatalf("turn %d (an OLD one) carried an image; the budget must be spent on the newest", i)
+			}
+		}
+	}
+	if carried != maxRunImages {
+		t.Fatalf("carried %d images, want exactly the cap of %d", carried, maxRunImages)
+	}
+	// The three that did not fit say so, in the turns they belonged to.
+	for i := range total - maxRunImages {
+		if !strings.Contains(msgs[i].Content, "not shown here") {
+			t.Fatalf("turn %d content = %q, want a marker naming the dropped image", i, msgs[i].Content)
+		}
+	}
+	// A dropped image costs NO storage read: a long thread must not pay a round trip per image it will not
+	// send. Only the surviving ones were resolved, and they are the newest.
+	if len(*calls) != maxRunImages {
+		t.Fatalf("resolver calls = %d (%v), want %d — a dropped image must not be fetched", len(*calls), *calls, maxRunImages)
+	}
+	if (*calls)[0] != imageID(total-maxRunImages) {
+		t.Fatalf("first resolved = %q, want the oldest SURVIVING image %q", (*calls)[0], imageID(total-maxRunImages))
+	}
+}
+
+// The cap is over the WHOLE conversation, not per turn: one message carrying them all hits the same ceiling
+// as a thread that accumulated them one at a time, or the bound is trivially bypassed by any thread.
+func TestDecodeMessagesCapsImagesAcrossTheWholeConversation(t *testing.T) {
+	const total = maxRunImages + 3
+	var items []string
+	for i := range total {
+		items = append(items, `{"type":"image_ref","artifact_id":"`+imageID(i)+`"}`)
+	}
+	resolve, _ := resolverFor(imageTable(total))
+	var value any
+	if err := json.Unmarshal([]byte(`[{"role":"user","content":[`+strings.Join(items, ",")+`]}]`), &value); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	msgs, err := decodeMessages(value, resolve)
+	if err != nil {
+		t.Fatalf("decodeMessages: %v", err)
+	}
+	if len(msgs[0].Images) != maxRunImages {
+		t.Fatalf("images = %d in one turn, want the cap of %d", len(msgs[0].Images), maxRunImages)
+	}
+	if n := strings.Count(msgs[0].Content, "not shown here"); n != total-maxRunImages {
+		t.Fatalf("markers = %d, want %d — every image the request could not carry must be named", n, total-maxRunImages)
+	}
+}
+
+// A single image past the BYTE ceiling is marked, not sent and not fatal. Unreachable from Slack (the fetch
+// bounds at the same ceiling) but reachable from a hand-written /v1/responses body — and fatal here would
+// wedge that caller's session the same way the count cap would have wedged a thread.
+func TestDecodeMessagesMarksAnOversizeImage(t *testing.T) {
+	resolve, _ := resolverFor(map[string]modelbroker.Image{
+		"art_big": {MediaType: "image/png", Data: make([]byte, maxImageBytes+1)},
+	})
+	msgs := decode(t, `[{"role":"user","content":[
+		{"type":"input_text","text":"bak"},
+		{"type":"image_ref","artifact_id":"art_big"}]}]`, resolve)
+	if len(msgs[0].Images) != 0 {
+		t.Fatalf("images = %d, want none for an image over the byte ceiling", len(msgs[0].Images))
+	}
+	if !strings.Contains(msgs[0].Content, "too large") {
+		t.Fatalf("content = %q, want it to say the image is too large", msgs[0].Content)
+	}
+}
+
+// A PURGED prior turn says it was redacted. It used to have `[{"type":"redacted_content"}]` serialised and
+// handed to the model as the assistant's own prior words (asJSONString took anything non-string), which is
+// the §22.2 marker being shown to a model as content rather than as the absence of content.
+func TestDecodeMessagesRendersTheRetentionMarkerAsWords(t *testing.T) {
+	resolve, _ := resolverFor(nil)
+	// The exact value historyMessages builds for a purged prior — Go values, not a JSON round trip.
+	msgs, err := decodeMessages([]any{map[string]any{
+		"role":    "assistant",
+		"content": []any{map[string]any{"type": "redacted_content"}},
+	}}, resolve)
+	if err != nil {
+		t.Fatalf("decodeMessages: %v", err)
+	}
+	if strings.Contains(msgs[0].Content, "redacted_content") || strings.Contains(msgs[0].Content, "{") {
+		t.Fatalf("content = %q — the JSON marker must not be presented to the model as prior words", msgs[0].Content)
+	}
+	if !strings.Contains(msgs[0].Content, "redacted") {
+		t.Fatalf("content = %q, want it to say the turn was redacted", msgs[0].Content)
+	}
+	// And it must not be EMPTY: an assistant turn with neither content nor tool calls is not a valid provider
+	// message, so a bare skip here would 400 the resumed request.
+	if msgs[0].Content == "" {
+		t.Fatal("a purged assistant turn decoded to empty content — a real provider rejects that message")
 	}
 }
 

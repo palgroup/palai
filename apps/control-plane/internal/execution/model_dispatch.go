@@ -297,7 +297,9 @@ func decodeMessages(raw any, resolve imageResolver) ([]modelbroker.Message, erro
 		return nil, fmt.Errorf("messages is not an array")
 	}
 	out := make([]modelbroker.Message, 0, len(items))
-	images := 0 // counted across the WHOLE conversation, so a long thread cannot outflank the cap turn by turn
+	// The image budget is spent on the MOST RECENT images, so `budget` starts as the number of images this
+	// conversation must skip before it starts resolving. See countImageRefs for why it works this way round.
+	budget := countImageRefs(items) - maxRunImages
 	for _, item := range items {
 		fields, ok := item.(map[string]any)
 		if !ok {
@@ -305,7 +307,7 @@ func decodeMessages(raw any, resolve imageResolver) ([]modelbroker.Message, erro
 		}
 		msg := modelbroker.Message{}
 		if parts, ok := fields["content"].([]any); ok {
-			text, resolved, err := decodeContentParts(parts, resolve, &images)
+			text, resolved, err := decodeContentParts(parts, resolve, &budget)
 			if err != nil {
 				return nil, err
 			}
@@ -370,9 +372,10 @@ type imageResolver func(artifactID string) (modelbroker.Image, bool, error)
 
 // maxRunImages caps how many images ONE model request may carry, counted across the whole assembled
 // conversation. The number is ours — no provider publishes a hard limit — and it exists because an image is
-// the most expensive input token-for-token that a third party can put into a run: without a ceiling, a
-// workspace member can price a run arbitrarily by attaching files, and a long thread would keep re-sending
-// every image it ever accumulated.
+// the most expensive input a third party can put into a run: one 1080x144 screenshot MEASURED 8524 input
+// tokens on gpt-4o-mini and a larger one 19858 (tests/live/provider/vision_live_test.go). Without a ceiling
+// a workspace member prices a run arbitrarily by attaching files, and a long thread re-sends every image it
+// ever accumulated on every single turn.
 const maxRunImages = 8
 
 // maxImageBytes caps ONE image's decoded size. A screenshot is far under it; a multi-hundred-megabyte
@@ -382,23 +385,59 @@ const maxRunImages = 8
 // from useless.
 const maxImageBytes = 5 << 20 // 5 MiB
 
-var (
-	// errTooManyImages REFUSES the model step. Truncating instead would answer about a subset of what the
-	// user attached while appearing to have looked at all of it — a silent wrong answer, which is worse than
-	// a visible refusal (§27.5's rule, and the same reason provider-two refuses images outright).
-	errTooManyImages = errors.New("too_many_images")
-	// errImageTooLarge REFUSES the model step for one oversized image, for the same reason.
-	errImageTooLarge = errors.New("image_too_large")
+// NOTHING HERE FAILS THE STEP, and that is a correction to how this was first written rather than an
+// oversight. The first version refused the model step when the conversation carried more images than the cap.
+// Trace that through a real Slack thread: three images in message one, three in message two, three in message
+// three — and the ninth trips the cap. But the conversation is REPLAYED on every turn, so from then on EVERY
+// message in that thread fails, forever, including messages carrying no image at all. A cost ceiling would
+// have become a thread-killer.
+//
+// So an image the request cannot carry becomes a MARKER in the conversation instead. That is still a visible
+// refusal — arguably a better one: the model reads it and can tell the user which images it could not see,
+// where a failed run tells them only that something broke. The rule "make the refusal visible, not silent" is
+// satisfied by the marker, not by the failure.
+const (
+	// missingImageNote stands in for an image that could not be resolved — retention reaped it, or the row is
+	// not there. It names no artifact id: the id is internal scope, and a prompt is not where scope belongs
+	// (the slackRunInput rule).
+	missingImageNote = "(an image shared in this conversation is no longer available)"
+	// droppedImageNote stands in for an image dropped to stay under the per-request cap. The budget is spent
+	// on the MOST RECENT images, so this only ever marks older ones — which is the right way round: the
+	// question being asked now is about what was just shared.
+	droppedImageNote = "(an older image from this conversation is not shown here, to stay within the images one request may carry)"
+	// oversizeImageNote stands in for an image past the byte ceiling. Unreachable from the Slack path, which
+	// bounds the fetch at the same ceiling; a hand-written /v1/responses body can still get here.
+	oversizeImageNote = "(an image in this conversation is too large to show)"
+	// redactedContentNote is what a purged prior turn says. It replaces what this path used to do with the
+	// §22.2 redaction marker — serialise `[{"type":"redacted_content"}]` and present the JSON to the model as
+	// the assistant's own prior words.
+	redactedContentNote = "(the content of this turn was redacted by data retention)"
 )
 
-// missingImageNote is what a turn says in place of an image that could not be resolved. It names no
-// artifact id: the id is internal scope, and a prompt is not where scope belongs (the slackRunInput rule).
-const missingImageNote = "(an image shared in this conversation is no longer available)"
-
-// redactedContentNote is what a purged prior turn says. It replaces what this path used to do with the
-// §22.2 redaction marker — serialise `[{"type":"redacted_content"}]` and present the JSON to the model as
-// the assistant's own prior words.
-const redactedContentNote = "(the content of this turn was redacted by data retention)"
+// countImageRefs totals the image_ref items across the whole assembled conversation.
+//
+// It exists so the budget can be spent on the NEWEST images rather than the first ones the walk happens to
+// meet. decodeContentParts walks forward, so "keep the last N" is expressed as "skip the first total-N" —
+// which needs the total up front. The alternative, walking backwards and reversing, buys nothing.
+func countImageRefs(items []any) int {
+	n := 0
+	for _, item := range items {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		parts, ok := fields["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			if p, ok := part.(map[string]any); ok && contracts.ContentItem(p).Type() == "image_ref" {
+				n++
+			}
+		}
+	}
+	return n
+}
 
 // decodeContentParts folds ONE turn's content array into the provider-facing text plus its resolved images
 // (spec §25.10's richer shape over content.json's typed items).
@@ -423,7 +462,11 @@ const redactedContentNote = "(the content of this turn was redacted by data rete
 // it exactly as it may when it reads the same words in a message. What this boundary guarantees is narrower
 // and worth having: an image cannot change the run's authority. Bounding what a model may DO with what it
 // reads is the tool-surface and approval machinery's job (§28, the hooks), not this decode's.
-func decodeContentParts(parts []any, resolve imageResolver, images *int) (string, []modelbroker.Image, error) {
+//
+// skip is the number of image_ref items still to be passed over before the budget starts being spent, so the
+// cap keeps the NEWEST images rather than the first ones met (see countImageRefs). It is decremented, so it
+// carries across turns.
+func decodeContentParts(parts []any, resolve imageResolver, skip *int) (string, []modelbroker.Image, error) {
 	var text []string
 	var resolved []modelbroker.Image
 	for _, part := range parts {
@@ -446,22 +489,25 @@ func decodeContentParts(parts []any, resolve imageResolver, images *int) (string
 			if id == "" {
 				continue
 			}
-			if *images >= maxRunImages {
-				return "", nil, fmt.Errorf("%w: a model request may carry at most %d images", errTooManyImages, maxRunImages)
+			if *skip > 0 {
+				// Over the per-request cap: marked, not resolved. No read is issued for it either, so a
+				// long thread does not pay a storage round trip per image it will not send.
+				*skip--
+				text = append(text, droppedImageNote)
+				continue
 			}
 			img, found, err := resolve(id)
 			if err != nil {
 				return "", nil, err
 			}
-			if !found {
+			switch {
+			case !found:
 				text = append(text, missingImageNote)
-				continue
+			case len(img.Data) > maxImageBytes:
+				text = append(text, oversizeImageNote)
+			default:
+				resolved = append(resolved, img)
 			}
-			if len(img.Data) > maxImageBytes {
-				return "", nil, fmt.Errorf("%w: an image is %d bytes, over the %d-byte ceiling", errImageTooLarge, len(img.Data), maxImageBytes)
-			}
-			*images++
-			resolved = append(resolved, img)
 		}
 	}
 	return strings.Join(text, "\n"), resolved, nil
