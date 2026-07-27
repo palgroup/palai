@@ -86,12 +86,23 @@ type fakeSlackWebAPI struct {
 	statuses   []int
 	retryAfter string
 	calls      []slackCall
+	// scripted queues per-METHOD replies, consumed one per call. The positional `statuses` script above
+	// cannot express "the second append is refused" once a run also sets a status and opens a stream, and
+	// E20 T1's cancel and rate-limit proofs need exactly that.
+	scripted map[string][]scriptedReply
 }
 
 type slackCall struct {
 	path string
 	auth string
 	body string
+}
+
+// scriptedReply is one queued answer for a method: an HTTP status plus the envelope body ("" takes the
+// method's documented success envelope).
+type scriptedReply struct {
+	status int
+	body   string
 }
 
 func (s *fakeSlackWebAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -106,9 +117,26 @@ func (s *fakeSlackWebAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.calls = append(s.calls, slackCall{path: r.URL.Path, auth: r.Header.Get("Authorization"), body: string(body)})
 	ts := fmt.Sprintf("9%02d.000100", len(s.calls))
 	after := s.retryAfter
+	var scripted *scriptedReply
+	if queue := s.scripted[r.URL.Path]; len(queue) > 0 {
+		reply := queue[0]
+		s.scripted[r.URL.Path] = queue[1:]
+		scripted = &reply
+	}
 	s.mu.Unlock()
 
 	w.Header().Set("Content-Type", "application/json")
+	if scripted != nil {
+		if scripted.status == http.StatusTooManyRequests {
+			w.Header().Set("Retry-After", "0")
+		}
+		w.WriteHeader(scripted.status)
+		if scripted.body == "" {
+			scripted.body = slackOKEnvelope(r.URL.Path, ts)
+		}
+		_, _ = w.Write([]byte(scripted.body))
+		return
+	}
 	if status == http.StatusTooManyRequests {
 		if after == "" {
 			after = "1"
@@ -119,7 +147,28 @@ func (s *fakeSlackWebAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(`{"ok":true,"ts":"` + ts + `"}`))
+	_, _ = w.Write([]byte(slackOKEnvelope(r.URL.Path, ts)))
+}
+
+// slackOKEnvelope is the DOCUMENTED success shape of each method this stack calls. It matters that these come
+// from the published references rather than from our own client: a fake shaped by the code it tests confirms
+// itself, which is exactly how E17 T10 shipped an invented event.
+//
+// CONTRACT (all checked 2026-07-27):
+//   - https://docs.slack.dev/reference/methods/chat.startStream/  → {"ok":true,"channel":…,"ts":…}
+//   - https://docs.slack.dev/reference/methods/chat.appendStream/ → {"ok":true,"channel":…,"ts":…}
+//   - https://docs.slack.dev/reference/methods/chat.stopStream/   → {"ok":true,"channel":…,"ts":…,"message":{…}}
+//   - https://docs.slack.dev/reference/methods/assistant.threads.setStatus/ → {"ok":true}
+func slackOKEnvelope(path, ts string) string {
+	switch path {
+	case "/assistant.threads.setStatus":
+		return `{"ok":true}`
+	case "/chat.startStream", "/chat.appendStream":
+		return `{"ok":true,"channel":"C1","ts":"` + ts + `"}`
+	case "/chat.stopStream":
+		return `{"ok":true,"channel":"C1","ts":"` + ts + `","message":{"text":"","bot_id":"B1","ts":"` + ts + `","type":"message"}}`
+	}
+	return `{"ok":true,"ts":"` + ts + `"}`
 }
 
 func (f *slackFixture) slackStatuses(statuses ...int) {
@@ -132,6 +181,53 @@ func (f *slackFixture) slackRetryAfter(after string) {
 	f.slack.mu.Lock()
 	defer f.slack.mu.Unlock()
 	f.slack.retryAfter = after
+}
+
+// slackScript queues per-method replies, consumed one per call to that method. `body` "" takes the method's
+// documented success envelope, so a caller scripting only a 429 does not have to restate the success shape.
+func (f *slackFixture) slackScript(path string, replies ...scriptedReply) {
+	f.slack.mu.Lock()
+	defer f.slack.mu.Unlock()
+	if f.slack.scripted == nil {
+		f.slack.scripted = map[string][]scriptedReply{}
+	}
+	f.slack.scripted[path] = append(f.slack.scripted[path], replies...)
+}
+
+// slackRefuse queues one documented API refusal ({"ok":false,"error":code}) for a method — an HTTP 200 that
+// Slack nonetheless says no to, which is a different failure from a transport error and must be handled as
+// one.
+func (f *slackFixture) slackRefuse(path, code string) {
+	f.slackScript(path, scriptedReply{status: http.StatusOK, body: `{"ok":false,"error":"` + code + `"}`})
+}
+
+// callsTo returns every call the fake saw on one method, in order.
+func (f *slackFixture) callsTo(path string) []slackCall {
+	var out []slackCall
+	for _, c := range f.slackCalls() {
+		if c.path == path {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// awaitCalls waits until the fake has seen at least n calls to a method, so a test never races the follower's
+// journal poll. It fails the test rather than hanging.
+func (f *slackFixture) awaitCalls(t *testing.T, path string, n int) []slackCall {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if calls := f.callsTo(path); len(calls) >= n {
+			return calls
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fake Slack saw %d call(s) to %s within 15s, want at least %d (all calls: %v)",
+				len(f.callsTo(path)), path, n, f.slackCalls())
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func (f *slackFixture) slackCalls() []slackCall {

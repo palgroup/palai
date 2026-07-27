@@ -231,7 +231,13 @@ func main() {
 	slackBridge := extensions.NewSlackAdmitter(
 		slackStore, repo, slackSecretResolver,
 		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns}).
-		WithDecisions(repo.Spine(), http.DefaultClient, os.Getenv("PALAI_SLACK_API_BASE_URL"))
+		WithDecisions(repo.Spine(), http.DefaultClient, os.Getenv("PALAI_SLACK_API_BASE_URL")).
+		// The RUN FOLLOWER (E20 T1): while a Slack-born run works, its thread shows a status and the message
+		// appears when the first step lands instead of only after the terminal transaction. `repo` is the SAME
+		// api.EventReader the SSE endpoint tails, so no second journal read path exists. Unconditional and
+		// scope-free — assistant.threads.setStatus and the chat.*Stream family are all `chat:write`, which
+		// this app already holds, so nothing here waits on a reinstall or on the agent panel.
+		WithStreaming(repo, supervisor, 0)
 	routerOpts = append(routerOpts, api.WithSlack(slackBridge), api.WithSlackInteractions(slackBridge),
 		api.WithSlackConnections(extensions.NewSlackRegistry(slackStore)))
 	// The queue bridges (E19 T6, spec §34.1-34.5). ONE store serves all three halves: the admin surface

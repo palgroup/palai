@@ -32,7 +32,9 @@ import (
 //     yet wired cannot lose an answer — it delivers what is already committed.
 //  2. EXACTLY ONCE. UNIQUE (run_id) collapses a retried terminal transaction or a reconciled cancel to one
 //     row, and ClaimDueSlackReplies claims-and-reschedules in ONE statement so two posters cannot take the
-//     same row. The visible result is one message per run.
+//     same row. The visible result is one message per run. E20 T1 kept that true rather than adding a second
+//     writer: when the run follower has already opened a streaming message for this run, the answer CLOSES
+//     that message (chat.stopStream) instead of posting beside it.
 //  3. PACED. slack.ChannelPacer holds the documented Special-Tier rate BEFORE the call, so a burst of
 //     terminals in one channel queues instead of asking Slack to refuse it.
 //  4. NON-CORRUPTING (SLK-006). Nothing here can touch the run. A post that fails is retried and eventually
@@ -167,7 +169,7 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 			projection = view.Output
 		}
 	}
-	body := slack.ThreadReply(o.channelID, o.threadTS, renderSlackReply(o.runState, projection), o.responseID)
+	answer := renderSlackReply(o.runState, projection)
 
 	// The documented per-channel rate, held BEFORE the call rather than recovered from after a 429 (the
 	// E19 T2 pacer, reused verbatim — a second pacer would pace against a second budget and neither would
@@ -177,8 +179,41 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 			return false // cancelled: the row stays claimed and its backoff already scheduled the retry
 		}
 	}
+
+	scoped := storage.ScopeToTenant(ctx, o.org, o.project)
+
+	// E20 T1: if this run's progress is already streaming into a message THIS process opened, the answer
+	// CLOSES that message instead of posting a second one. That is what keeps "one run, one visible message"
+	// true now that a run can become visible before it finishes.
+	//
+	// The stream is forgotten FIRST, before the call: appending to (or stopping) a stream twice is refused
+	// forever, so a failure here must fall back to a plain post on the next attempt rather than retry a call
+	// that can no longer succeed. The cost of being wrong is one message left in Slack's streaming state; the
+	// cost of the other order is an answer nobody ever sees.
+	if channel, ts, streaming := a.streams.streamFor(o.runID); streaming {
+		a.streams.forget(o.runID)
+		// Blocks are deliberately nil: the renderer that fills them is E20 T4, and chat.stopStream is the
+		// only one of the three streaming calls documented to accept them (the conservative reading of the
+		// contradiction cited at slack.AppendStream).
+		if err := slack.StopStream(ctx, a.doer, a.apiBase, token, channel, ts, answer, nil); err != nil {
+			log.Printf("slack: could not close run %s's stream with its answer (attempt %d/%d): %v; the next attempt posts it as a message",
+				o.runID, o.attempt, o.maxAttempts, err)
+			p.retire(ctx, o, "slack refused to close the stream")
+			return false
+		}
+		if _, err := a.store.pool.Exec(scoped, storage.Query("MarkSlackReplyDelivered"), o.id, ts); err != nil {
+			log.Printf("slack: closed run %s's stream but could not record its delivery: %v", o.runID, err)
+		}
+		// last_bot_message_ts is deliberately NOT moved to a streaming message's ts. That column is the
+		// approval repair's chat.update handle, and whether chat.update works on a message that was streamed
+		// is UNCONFIRMED (S16(b)) — handing the repair a handle we cannot promise is editable would trade a
+		// working repair for an untested one. It keeps pointing at the last message we know is editable.
+		return true
+	}
+
 	res, err := slack.PostMessage(ctx, a.doer, slack.PostRequest{
-		MethodURL: a.apiBase + "/chat.postMessage", Token: token, Body: body,
+		MethodURL: a.apiBase + "/chat.postMessage", Token: token,
+		Body: slack.ThreadReply(o.channelID, o.threadTS, answer, o.responseID),
 	}, slack.PostOptions{})
 	if err != nil {
 		log.Printf("slack: reply for run %s failed on attempt %d/%d after %d call(s): %v",
@@ -187,7 +222,6 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 		return false
 	}
 
-	scoped := storage.ScopeToTenant(ctx, o.org, o.project)
 	if _, err := a.store.pool.Exec(scoped, storage.Query("MarkSlackReplyDelivered"), o.id, res.MessageTS); err != nil {
 		// The message is VISIBLE. Failing to record that is a duplicate-message risk on the next tick, so it
 		// is logged loudly — but there is nothing to undo, and un-posting is not a thing Slack offers.
