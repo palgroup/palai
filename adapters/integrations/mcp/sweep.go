@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -33,6 +34,11 @@ type Sweeper struct {
 	grace  time.Duration
 	now    func() time.Time
 	rounds atomic.Int64
+	// passFailed reports a failing pass ONCE per process. A sweep failure is almost always a standing
+	// condition — no Docker socket, a wedged daemon — not an event, and re-stating it once a minute
+	// forever is what a real MCP failure gets buried under. Same shape, same reason, as
+	// slack_stream.go's statusUnusable.
+	passFailed sync.Once
 }
 
 // NewSweeper connects to the daemon described by the standard Docker environment and binds the grace window.
@@ -95,7 +101,12 @@ func (s *Sweeper) Sweep(ctx context.Context) (int, error) {
 func (s *Sweeper) Rounds() int64 { return s.rounds.Load() }
 
 // Run reconciles every interval until ctx is cancelled (the artifact-orphan-gc supervised loop). A pass
-// error is logged and non-fatal — the next tick retries — and every pass advances Rounds().
+// error is non-fatal — the next tick retries — and every pass advances Rounds().
+//
+// The error is logged ONCE per process (§3.6 D8). It kept retrying and kept saying so, once a minute,
+// which read as an incident and was one only the first time; Rounds() is still the honest liveness
+// counter for anything that wants to see the loop is alive. A reclaim is logged every time, because
+// that one IS an event.
 func (s *Sweeper) Run(ctx context.Context, interval time.Duration) error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -107,7 +118,10 @@ func (s *Sweeper) Run(ctx context.Context, interval time.Duration) error {
 			reclaimed, err := s.Sweep(ctx)
 			s.rounds.Add(1)
 			if err != nil {
-				log.Printf("mcp orphan-sweep pass failed: %v", err)
+				s.passFailed.Do(func() {
+					log.Printf("mcp orphan-sweep pass failed: %v. The loop keeps retrying; this is logged once per process, "+
+						"not once per tick, so a real MCP failure is not buried under it.", err)
+				})
 			} else if reclaimed > 0 {
 				log.Printf("mcp orphan-sweep reclaimed %d orphan container(s)", reclaimed)
 			}

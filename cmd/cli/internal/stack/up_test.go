@@ -164,15 +164,22 @@ func TestSlackStepSkipsCleanlyWithoutValues(t *testing.T) {
 	}
 }
 
-// TestSlackSkipNamesTheMissingRunTarget: a team id alone cannot be registered — the API refuses a
-// binding with no run target, and the skip must say which two values are missing rather than
-// letting the operator discover it as a 400.
-func TestSlackSkipNamesTheMissingRunTarget(t *testing.T) {
-	_, skip := slackRegistration(env("SLACK_TEAM_ID", "T0001", "SLACK_SIGNING_SECRET", "s3cr3t"))
-	for _, want := range []string{"SLACK_AGENT_REVISION_ID", "SLACK_PRINCIPAL_ID", "run target"} {
-		if !strings.Contains(skip, want) {
-			t.Fatalf("the skip reason must mention %q, got: %q", want, skip)
-		}
+// TestATeamIdAndASigningSecretAreEnoughToRegister replaces the old
+// TestSlackSkipNamesTheMissingRunTarget, and the replacement IS the E21 T2 behaviour change.
+//
+// That test pinned a skip: a team id alone could not be registered because the API refuses a binding
+// with no run target, so `palai up` named SLACK_AGENT_REVISION_ID / SLACK_PRINCIPAL_ID and did
+// nothing. The skip was accurate and the outcome was still wrong — those two are Palai-side ids that
+// no Slack app page hands you, `palai up` exited GREEN having wired nothing, and an operator saw a
+// successful install that could not answer a message. The bring-up resolves them itself now
+// (resolveRunTarget), so the only Slack values an operator must supply are Slack's own.
+func TestATeamIdAndASigningSecretAreEnoughToRegister(t *testing.T) {
+	body, skip := slackRegistration(env("SLACK_TEAM_ID", "T0001", "SLACK_SIGNING_SECRET", "s3cr3t"))
+	if skip != "" {
+		t.Fatalf("registration skipped for want of ids the bring-up provisions itself: %q", skip)
+	}
+	if body["team_id"] != "T0001" {
+		t.Fatalf("team_id = %v", body["team_id"])
 	}
 }
 
@@ -195,9 +202,10 @@ func TestSlackRegistrationSendsHandlesNeverCredentials(t *testing.T) {
 			t.Fatalf("field %q carries the signing secret VALUE", k)
 		}
 	}
-	policy, ok := body["default_policy"].(map[string]any)
-	if !ok || policy["agent_revision_id"] != "agr_1" || policy["principal_id"] != "prn_1" {
-		t.Fatalf("default_policy = %v, want the run target the API requires", body["default_policy"])
+	// default_policy is no longer built here: wireSlack fills it from resolveRunTarget, against the
+	// running stack. TestExplicitRunTargetAlwaysWins is where the two explicit ids are proven to survive.
+	if _, present := body["default_policy"]; present {
+		t.Fatalf("slackRegistration built a default_policy from the environment: %v", body["default_policy"])
 	}
 }
 

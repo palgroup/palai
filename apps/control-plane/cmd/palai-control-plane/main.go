@@ -827,8 +827,18 @@ func mcpSecretResolver(org, ref string) ([]byte, error) {
 // startMCPOrphanSweep launches the label-scoped MCP orphan-container sweep (spec §28.13 named gap, E12 T5):
 // a crash between a per-call container's Start and its teardown leaves an orphan, which this reclaims. It is
 // STRICTLY io.palai.sandbox=mcp — an engine/shell container is never touched (and the engine reaper never
-// touches an MCP one). It runs like the artifact-orphan-gc sweep: unconditionally supervised, a killed
-// process just misses ticks. Grace/interval are env-tunable.
+// touches an MCP one). Grace/interval are env-tunable.
+//
+// It is no longer started UNCONDITIONALLY (§3.6 D8). client.New only builds a client — it dials nothing — so
+// on a deployment with no Docker socket the failure surfaced once a minute, forever, from the loop. The first
+// pass runs HERE instead, synchronously, and doubles as the reachability probe: it reclaims whatever the
+// previous process left behind, and if the daemon cannot be reached the sweep is disabled with ONE line
+// naming the reason. There is no MCP stdio transport without a Docker socket, so there is nothing for the
+// loop to reclaim either.
+//
+// ponytail: a transient daemon hiccup exactly at boot disables the sweep for that process's lifetime; the
+// orphans are reclaimed by the next boot's probe. Promote this to a bounded retry if a real deployment is
+// ever seen to lose the socket only momentarily at startup.
 func startMCPOrphanSweep(ctx context.Context, supervisor *coordinator.Supervisor) {
 	grace := envDurationOr("PALAI_MCP_SWEEP_GRACE", 2*time.Minute)
 	interval := envDurationOr("PALAI_MCP_SWEEP_INTERVAL", time.Minute)
@@ -836,6 +846,15 @@ func startMCPOrphanSweep(ctx context.Context, supervisor *coordinator.Supervisor
 	if err != nil {
 		log.Printf("mcp orphan-sweep: %v (disabled)", err)
 		return
+	}
+	switch reclaimed, err := sweeper.Sweep(ctx); {
+	case err != nil:
+		log.Printf("mcp orphan-sweep: docker is not reachable from this process (%v) — the sweep is DISABLED for this "+
+			"boot rather than retried every %s. MCP stdio servers need the same socket, so nothing can be orphaned "+
+			"while it is absent.", err, interval)
+		return
+	case reclaimed > 0:
+		log.Printf("mcp orphan-sweep reclaimed %d orphan container(s) left by an earlier process", reclaimed)
 	}
 	go supervisor.Supervise(ctx, "mcp-orphan-sweep", func(ctx context.Context) error { return sweeper.Run(ctx, interval) })
 }
