@@ -140,11 +140,16 @@ host B). This document is verified against **two isolated stacks on the same Doc
 (different `PALAI_HOME`, ports, and volume set) — the local-production-compose equivalent of
 "restore to a separate clean install". It does **not** claim a real separate-host restore.
 
-> **The secret path is NOT exercised by that two-stack proof.** The base compose profile has no
-> secret store (`PALAI_SECRET_MASTER_KEY_FILE` is unset), so the two-stack backup/restore never
-> carries a `secret_ref`. The master-key round-trip — a secret sealed under key A fails closed under
-> key B, and `restore verify`'s canary catches it — is proven at the **component tier against a real
-> Postgres with two master keys**, not in the two-stack run.
+> **The secret path is NOT exercised by that two-stack proof.** The two-stack backup/restore carries
+> no `secret_ref` because nothing in the run writes one — not because the store is off. That second
+> reading was true when this was written and is no longer: as of E21 T2 the base compose profile
+> ALWAYS mounts the secret store (`PALAI_SECRET_MASTER_KEY_FILE` is written literally in
+> `compose.yaml` and every bring-up mints the key it names), so a stack that stores a secret and is
+> then backed up does carry it. **This raises the stakes on the precondition above**: carry the source
+> `secrets/master-key`, because a local stack can now have secrets worth losing. The master-key
+> round-trip — a secret sealed under key A fails closed under key B, and `restore verify`'s canary
+> catches it — is still proven at the **component tier against a real Postgres with two master keys**,
+> not in the two-stack run.
 
 The object store in the packaged stack holds **no wired S3 objects** — the control-plane sets no
 `PALAI_S3_ENDPOINT`, so artifacts are not written to S3 today. The backup copies the object-store

@@ -99,21 +99,13 @@ services:
       # from SLACK_TEAM_ID once it has an app-level token to dial with; an operator can also
       # export it by hand. It is a workspace ID, not a credential.
       PALAI_SLACK_SOCKET_TEAM_ID: ${PALAI_SLACK_SOCKET_TEAM_ID:-}
-      # The DB-backed secret store's master key (E13 T3). This is the ONE place a *_ref handle can
-      # redeem, which is what makes a registered Slack connection able to verify a signature, post a
-      # reply and open a socket. The VALUE here is a PATH; the key itself rides the file-secret
-      # below, never a compose environment value.
-      #
-      # WRITTEN LITERALLY, exactly as production.yml already does, and that is the whole of §3.6 D5.
-      # It used to read ${PALAI_SECRET_MASTER_KEY_FILE:-} — interpolated from whatever shell invoked
-      # compose — and the ONLY thing that ever exported it was `palai up`'s applySlackEnv, which ran
-      # only when .env.local held Slack credentials. So `docker compose up -d`, and every `palai up`
-      # on a stack with no Slack app, passed an EMPTY value: dbSecretStore stayed nil, the secret-ref
-      # routes stayed unmounted, and every handle resolved nowhere. The secrets themselves were never
-      # fragile (they are envelope-encrypted rows in Postgres, re-read on every resolve) — the
-      # POINTER to their key was. `palai up`'s ensureSecretSlots is what guarantees the file this
-      # path names holds a parseable key on every bring-up; the control-plane log.Fatalf's otherwise.
-      PALAI_SECRET_MASTER_KEY_FILE: /run/secrets/master_key
+      # The DB-backed secret store's master key (E13 T3). Unset = dbSecretStore stays nil, the
+      # secret-ref routes stay unmounted and the resolvers stay env-file-only — the pre-existing
+      # local posture, unchanged. Set (to the file-secret mount path below) it becomes the ONE
+      # place a *_ref handle can redeem, which is what makes a registered Slack connection able to
+      # verify a signature, post a reply and open a socket. The VALUE here is a PATH; the key
+      # itself rides the file-secret, never a compose environment value.
+      PALAI_SECRET_MASTER_KEY_FILE: ${PALAI_SECRET_MASTER_KEY_FILE:-}
     secrets:
       - provider_one_key
       - bootstrap_api_key
