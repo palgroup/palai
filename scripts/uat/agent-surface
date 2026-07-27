@@ -168,7 +168,10 @@ if [ "${RUN_LIVE:-0}" = "1" ]; then
   fi
   echo "uat-agent-surface: the credential-gated live legs — each SKIPS by name if its variable is absent" >&2
   # -v so a SKIP is VISIBLE: this family's signature failure is a green report over legs that never ran.
-  go test -tags=live -count=1 -v ./tests/live/slack/...
+  # BOTH roots the canonical inventory spans, not only Slack's. uat.WiringLiveLegs carries one A2A leg, and
+  # a command that claimed to run "every live leg" while skipping the package it lives in would be an
+  # overclaim of exactly the kind this gate exists to refuse.
+  go test -tags=live -count=1 -v ./tests/live/slack/... ./tests/live/a2a/...
   live="live legs attempted (read the SKIP lines above: a skip is not a pass)"
 fi
 

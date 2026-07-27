@@ -137,8 +137,13 @@ func TestOneCommandRunsEveryLiveLeg(t *testing.T) {
 	if !strings.Contains(body, "-tags=live") {
 		t.Error("the script's live tier does not build with -tags=live, so every credential-gated leg is excluded from the binary")
 	}
-	if !strings.Contains(body, "./tests/live/slack") {
-		t.Error("the script's live tier does not name ./tests/live/slack, where every E20 leg lives")
+	// BOTH roots, because the canonical inventory spans both: E20's four legs are Slack's, but
+	// uat.WiringLiveLegs also carries an A2A leg, and "one command runs every live leg" is only true if the
+	// command reaches the package that leg lives in.
+	for _, root := range []string{"./tests/live/slack", "./tests/live/a2a"} {
+		if !strings.Contains(body, root) {
+			t.Errorf("the script's live tier does not name %s — a leg in the canonical inventory would never run, and the one-command claim would be an overclaim", root)
+		}
 	}
 	// -v matters: a SKIP is only visible with it, and a green report over legs that never ran is precisely
 	// the failure this whole file exists to prevent.
