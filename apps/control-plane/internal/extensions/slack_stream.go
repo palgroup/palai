@@ -108,7 +108,14 @@ type SlackStreamFollower struct {
 	open map[string]slackOpenStream
 }
 
-type slackOpenStream struct{ channel, ts string }
+// slackOpenStream is one streaming message this process opened, plus the tasks the run has journaled into it.
+// The tasks ride along because they are what the terminal render draws its cards from (E20 T4) — and they are
+// kept HERE, on the open stream, so a run that never opened one records nothing: blocks travel only on
+// chat.stopStream, so an undecorated run has no use for them and no way to leak them.
+type slackOpenStream struct {
+	channel, ts string
+	tasks       []slack.Task
+}
 
 // WithStreaming mounts the follower. events is the SAME api.EventReader the SSE endpoint reads through — the
 // production store — so no second journal read path exists. maxConcurrent <= 0 takes the default.
@@ -308,6 +315,7 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 				}
 				streamTS = ts
 				f.remember(tg.runID, tg.channel, ts)
+				f.rememberTask(tg.runID, event) // the event that opened the stream may itself be a task
 				continue
 			}
 			// The documented per-channel rate, held BEFORE the call (the E19 T2 pacer, reused — a second
@@ -334,6 +342,7 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 				log.Printf("slack: could not append to run %s's stream: %v", tg.runID, err)
 				continue
 			}
+			f.rememberTask(tg.runID, event)
 		}
 		if len(batch) < slackStreamBatch {
 			if sleepCtx(ctx, f.poll) != nil {
@@ -419,6 +428,54 @@ func (f *SlackStreamFollower) streamFor(runID string) (channel, ts string, ok bo
 	defer f.mu.Unlock()
 	s, ok := f.open[runID]
 	return s.channel, s.ts, ok
+}
+
+// rememberTask records ONE durable task on the run's open stream, so the terminal render can draw it as a
+// task card (E20 T4, S10). It is a no-op for every other event type and for a run with no open stream.
+//
+// WHAT THE JOURNAL ACTUALLY CARRIES, because the card's shape invites assuming more: a task.created/updated.v1
+// payload is {key, kind, title, status} — coordinator.Task's Detail is on the ROW, not on the event. So the
+// card's optional `details` stays empty on this path rather than being filled from a second query nothing has
+// asked for yet. Kind is dropped: Slack's card has no home for it.
+//
+// Keyed by the task's key, updated in place: a task that moves open -> in_progress -> done is ONE card whose
+// status changed, which is what the registry's own key means.
+func (f *SlackStreamFollower) rememberTask(runID string, event contracts.Event) {
+	if event.Type != "task.created.v1" && event.Type != "task.updated.v1" {
+		return
+	}
+	key, _ := event.Data["key"].(string)
+	title, _ := event.Data["title"].(string)
+	status, _ := event.Data["status"].(string)
+	if key == "" || title == "" {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	open, ok := f.open[runID]
+	if !ok {
+		return
+	}
+	for i := range open.tasks {
+		if open.tasks[i].ID == key {
+			open.tasks[i].Title, open.tasks[i].Status = title, status
+			f.open[runID] = open
+			return
+		}
+	}
+	open.tasks = append(open.tasks, slack.Task{ID: key, Title: title, Status: status})
+	f.open[runID] = open
+}
+
+// tasksFor is what the reply pump renders into task cards when it closes the stream. Empty for a run that
+// journaled none — which is EVERY real run today, since a real run is single-step and manages no tasks (E08).
+func (f *SlackStreamFollower) tasksFor(runID string) []slack.Task {
+	if f == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.open[runID].tasks
 }
 
 func (f *SlackStreamFollower) forget(runID string) {
