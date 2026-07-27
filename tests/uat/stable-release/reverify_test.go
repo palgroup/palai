@@ -23,7 +23,14 @@ import (
 // rather than a silence: without it, a bundle that LOST its family claims would quietly move from "passes
 // its own gate" to "no gate recognizes it" and the sweep below would still be green.
 var promoteFamilies = map[string]string{
-	// E20's family is checked FIRST of all in PromoteGateFor, for the reason E19's clause below describes
+	// E21's family is checked FIRST of all in PromoteGateFor, one level above E20 and for the same reason a
+	// level down: a tools-and-memory bundle also carries the E20 agent-surface claim (it derives its
+	// inherited case set from that release), so dispatching on that would reroute it to a gate that knows
+	// nothing about the stored-search-byte or mention re-derivations. It is recognized by the E21 CASE IDS —
+	// and their `TLM-` prefix is part of that decision: an `SLK-` id outside AgentSurfaceCaseIDs would have
+	// matched NO family marker and fallen through to a weaker gate entirely.
+	"tools-memory-0.1.0": "E21 tools-and-memory (the stored-search-byte sweep over the persisted surface + the mention re-derivation over the answer's own bytes + the composed agent-surface/wiring/extensions/eval gates)",
+	// E20's family is checked next, for the reason E19's clause below describes
 	// one level down: an agent-surface bundle also carries the E19 wiring claim (it derives its inherited
 	// case set from that release), so dispatching on that would reroute it to a gate that knows nothing
 	// about the forgery derivation. It is recognized by the E20 CASE IDS rather than by the
