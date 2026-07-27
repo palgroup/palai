@@ -118,6 +118,59 @@ func TestMapEventClassifiesEditsAndDeletes(t *testing.T) {
 	}
 }
 
+// A TOMBSTONE CARRIES NO WORDS. Slack nests the removed message under `previous_message`, text and all, and
+// the whole of a deletion is "this turn is retracted" — the sentence itself has no consumer and every place
+// it could reach is a place it must not be (Text is the one field that becomes a prompt). Before this, the
+// deleted message's text rode the Event and reached slackRunInput.
+func TestMapEventTombstoneCarriesNoRetractedText(t *testing.T) {
+	del := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev4","event":{"type":"message","subtype":"message_deleted","channel":"C1","previous_message":{"user":"U1","ts":"4.4","text":"delete the production database"}}}`)
+	ev, err := MapEvent(del, "Ubot", false)
+	if err != nil {
+		t.Fatalf("MapEvent error = %v", err)
+	}
+	if ev.Text != "" {
+		t.Fatalf("tombstone Text = %q, want empty — the retracted words must not travel", ev.Text)
+	}
+	// The IDENTITY still comes from the nested object, or the loop guard and the retraction handle would both
+	// read empty top-level fields.
+	if ev.UserID != "U1" || ev.MessageTS != "4.4" {
+		t.Fatalf("tombstone identity = %q/%q, want U1/4.4", ev.UserID, ev.MessageTS)
+	}
+}
+
+// TestMapEventCarriesTheAffectedMessageTS is the handle a correction and a tombstone ACT ON. Classifying an
+// edit as a correction is worth nothing if nothing downstream can say WHICH turn it corrects, and Slack's
+// answer is the message's own ts — carried on the nested `message` / `previous_message` object, never at the
+// top level of the change event (the top-level ts of a message_changed is the CHANGE, a different number).
+//
+// CONTRACT: https://docs.slack.dev/reference/events/message/ (checked 2026-07-27) — message_changed nests the
+// edited message under `message` and message_deleted nests the removed one under `previous_message`; the
+// nested `ts` is the ORIGINAL message's, which is why an edit does not change a message's ts.
+func TestMapEventCarriesTheAffectedMessageTS(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"a plain message is its own ts",
+			`{"type":"event_callback","team_id":"T1","event_id":"Ev1","event":{"type":"message","user":"U1","channel":"C1","ts":"1.1"}}`, "1.1"},
+		{"a mention is its own ts",
+			`{"type":"event_callback","team_id":"T1","event_id":"Ev2","event":{"type":"app_mention","user":"U1","channel":"C1","ts":"2.2"}}`, "2.2"},
+		{"an edit names the message it edits, not the change",
+			`{"type":"event_callback","team_id":"T1","event_id":"Ev3","event":{"type":"message","subtype":"message_changed","channel":"C1","ts":"9.9","message":{"user":"U1","ts":"3.3","thread_ts":"3.0","text":"edited"}}}`, "3.3"},
+		{"a delete names the message it removes",
+			`{"type":"event_callback","team_id":"T1","event_id":"Ev4","event":{"type":"message","subtype":"message_deleted","channel":"C1","ts":"9.9","previous_message":{"user":"U1","ts":"4.4","thread_ts":"4.0","text":"gone"}}}`, "4.4"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev, err := MapEvent([]byte(tc.body), "Ubot", false)
+			if err != nil {
+				t.Fatalf("MapEvent error = %v", err)
+			}
+			if ev.MessageTS != tc.want {
+				t.Fatalf("MessageTS = %q, want %q — without it a correction and a tombstone name no turn", ev.MessageTS, tc.want)
+			}
+		})
+	}
+}
+
 func TestMapEventRejectsMalformedAndNonEvents(t *testing.T) {
 	if _, err := MapEvent([]byte(`not json`), "", false); !errors.Is(err, ErrMalformed) {
 		t.Fatalf("non-json: err = %v, want ErrMalformed", err)

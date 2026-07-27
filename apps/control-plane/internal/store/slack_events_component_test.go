@@ -415,6 +415,69 @@ func (f *slackFixture) eventText(_ *testing.T, eventID, innerType, user, channel
 	return raw
 }
 
+// answerRuns finishes every run in the tenant AND gives its response a terminal projection carrying `text`,
+// so the exchange is COMPLETE. terminateRuns alone is not enough for any assertion about history: a response
+// with no output is skipped by execution.historyMessages ("neither half of the exchange is settled"), so a
+// history proof built on it would pass whether or not the code under test does anything — the twelfth
+// green-by-vacuity in this tree. This is a HARNESS shortcut like terminateRuns: it writes the terminal
+// projection directly rather than driving an engine.
+func (f *slackFixture) answerRuns(t *testing.T, text string) {
+	t.Helper()
+	f.terminateRuns(t)
+	exec(t, f.pool, `UPDATE responses SET state='completed', output=$3::jsonb
+	                 WHERE organization_id=$1 AND project_id=$2 AND output IS NULL`,
+		f.org, f.project, `{"output":[{"type":"message","content":`+strconv.Quote(text)+`}]}`)
+}
+
+// threadSessionID is the canonical session the fixture's single correlated thread resolved to.
+func (f *slackFixture) threadSessionID(t *testing.T) string {
+	t.Helper()
+	var session string
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT session_id FROM slack_thread_sessions WHERE organization_id=$1 AND project_id=$2`,
+		f.org, f.project).Scan(&session); err != nil {
+		t.Fatalf("read the thread's session: %v", err)
+	}
+	return session
+}
+
+// responseIDs lists the tenant's responses in creation order, with the input each one carries.
+func (f *slackFixture) responseIDs(t *testing.T) (ids, inputs []string) {
+	t.Helper()
+	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()),
+		`SELECT id, input::text FROM responses WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at, id`,
+		f.org, f.project)
+	if err != nil {
+		t.Fatalf("read responses: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, input string
+		if err := rows.Scan(&id, &input); err != nil {
+			t.Fatalf("scan response: %v", err)
+		}
+		ids, inputs = append(ids, id), append(inputs, input)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read responses: %v", err)
+	}
+	return ids, inputs
+}
+
+// modelHistory is THE HISTORY SHOWN TO THE MODEL, read through the SHIPPED query: coordinator.SessionHistory
+// is what execution.historyMessages assembles run.start's conversation from, so a turn this returns is a turn
+// the provider is told about. Asserting here rather than on a column is the difference between "a flag was
+// written" and "the words stopped reaching the model".
+func (f *slackFixture) modelHistory(t *testing.T, session, before string) []coordinator.PriorResponse {
+	t.Helper()
+	prior, err := f.spine.SessionHistory(context.Background(),
+		coordinator.Tenant{Organization: f.org, Project: f.project}, session, before)
+	if err != nil {
+		t.Fatalf("read session history: %v", err)
+	}
+	return prior
+}
+
 func (f *slackFixture) runCount(t *testing.T) int {
 	t.Helper()
 	var n int
@@ -576,80 +639,108 @@ func TestSlackThreadCorrelatesToOneSession(t *testing.T) {
 	}
 }
 
-// TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind is SLK-005 over the wire: an edit is a correction and
-// a delete is a tombstone, each admitted under its OWN event id, and neither is mistaken for a new message.
+// TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind is SLK-005 over the wire, and the kind is what DECIDES
+// the effect: an edit SUPERSEDES the turn it edits and a delete RETRACTS the turn it removes. Neither is a new
+// thing said, so neither births a run — the words already in the conversation are what change.
+//
+// THE DEFECT IT PINS, found against the owner's real workspace minutes after the run-birth rule shipped: a
+// deletion inside a thread the app held satisfied "a follow-up in a thread we already hold", so it birthed a
+// run, and the model — handed "(the user deleted their message…)" as a prompt — replied "it seems you deleted
+// your message, would you like help with something else?". The run-birth rule was about WHERE an event
+// happened; this one is about WHAT arrived, and both are needed.
 //
 // CONTRACT: https://docs.slack.dev/apis/events-api/ (checked 2026-07-25) — message_changed / message_deleted
 // are SUBTYPES of the `message` event, and they nest the affected message under `message` /
-// `previous_message` rather than at the top level.
+// `previous_message` rather than at the top level. The nested `ts` is the ORIGINAL message's, which is the
+// handle both effects act on.
 func TestSlackEditsAndDeletesReachAdmissionAsTheirOwnKind(t *testing.T) {
 	f := newSlackFixture(t)
 	const root = "1700000005.000100"
+	const followUp = "1700000005.000200"
 
 	// The thread has to be OURS before an edit or a delete inside it means anything: since the run-birth rule
 	// (slackBirthsRun) an unaddressed channel message births nothing, and an edit to a message the app was
 	// never talking about is exactly that. So the conversation opens the way a real one does — with a mention —
 	// and SLK-005's claim is then made about a thread the app is actually in, which is the only place the claim
 	// was ever true. TestSlackEditOrDeleteOutsideOurThreadsBirthsNothing owns the other side.
-	f.deliver(t, f.event("Ev6a", "app_mention", "Umapped", "C4", root, ""), time.Now(), "", "").Body.Close()
-	f.terminateRuns(t)
+	f.deliver(t, f.eventText(t, "Ev6a", "app_mention", "Umapped", "C4", root, "",
+		"<@"+f.botUser+"> ilk soru"), time.Now(), "", "").Body.Close()
+	f.answerRuns(t, "ilk cevap")
 
-	edit, _ := json.Marshal(map[string]any{
+	// A SECOND turn in the same thread, because history is "everything before this response": without a later
+	// response there is nothing to look back FROM, and the retraction proof would have no vantage point. It is
+	// also what a real thread does next.
+	f.deliver(t, f.eventText(t, "Ev6b", "message", "Umapped", "C4", followUp, root,
+		"ve sonra?"), time.Now(), "", "").Body.Close()
+	f.answerRuns(t, "ikinci cevap")
+
+	ids, inputs := f.responseIDs(t)
+	if len(ids) != 2 || inputs[0] != `"ilk soru"` {
+		t.Fatalf("the thread opened with %v, want two turns whose first is the bare question", inputs)
+	}
+	session, first, second := f.threadSessionID(t), ids[0], ids[1]
+
+	// POSITIVE CONTROL, and the assertions below are worth nothing without it: the first turn IS in the
+	// history the second run was shown. A "the turn is gone" proof over a history that was empty anyway is
+	// the vacuous shape this tree has shipped twelve times.
+	if prior := f.modelHistory(t, session, second); len(prior) != 1 || string(prior[0].Input) != `"ilk soru"` {
+		t.Fatalf("the second run's history = %v, want the first turn — the retraction proof needs something to retract", prior)
+	}
+
+	// 1. THE EDIT. It supersedes the turn it names: no new run, and the STORED turn — the one every later run
+	//    is shown — now carries the corrected words.
+	edit := mustJSON(map[string]any{
 		"type": "event_callback", "team_id": f.team, "event_id": "Ev6",
 		"event": map[string]any{"type": "message", "subtype": "message_changed", "channel": "C4",
-			"message": map[string]any{"user": "Umapped", "ts": root, "thread_ts": root, "text": "edited"}},
+			"message": map[string]any{"user": "Umapped", "ts": root, "thread_ts": root, "text": "düzeltilmiş soru"}},
 	})
-	del, _ := json.Marshal(map[string]any{
+	resp := f.deliver(t, edit, time.Now(), "", "")
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("edit = %d, want a 2xx ack", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if n := f.runCount(t); n != 2 {
+		t.Fatalf("the edit brought the run total to %d, want 2 — a correction supersedes a turn, it does not open one", n)
+	}
+	if _, inputs := f.responseIDs(t); inputs[0] != `"(edited) düzeltilmiş soru"` {
+		t.Fatalf("the superseded turn reads %s, want the corrected text marked as an edit (SLK-005: it supersedes, it is not a fresh turn)", inputs[0])
+	}
+	if prior := f.modelHistory(t, session, second); len(prior) != 1 || string(prior[0].Input) != `"(edited) düzeltilmiş soru"` {
+		t.Fatalf("the history shown to the model = %v, want the CORRECTED turn — an edit nobody is shown is not a correction", prior)
+	}
+
+	// 2. THE DELETE. It retracts: no run, and the turn stops being part of the conversation the model is
+	//    shown. A user who deletes a message expects it to stop influencing the agent, and since history
+	//    carries USER turns (ed44544) a retracted turn left visible is a genuine leak.
+	del := mustJSON(map[string]any{
 		"type": "event_callback", "team_id": f.team, "event_id": "Ev7",
 		"event": map[string]any{"type": "message", "subtype": "message_deleted", "channel": "C4",
-			"previous_message": map[string]any{"user": "Umapped", "ts": root, "thread_ts": root, "text": "gone"}},
+			"previous_message": map[string]any{"user": "Umapped", "ts": root, "thread_ts": root, "text": "düzeltilmiş soru"}},
 	})
-	for i, body := range [][]byte{edit, del} {
-		if i > 0 {
-			f.terminateRuns(t) // one active root run per session; the previous one has to finish first
-		}
-		resp := f.deliver(t, body, time.Now(), "", "")
-		if resp.StatusCode/100 != 2 {
-			t.Fatalf("edit/delete = %d, want a 2xx ack", resp.StatusCode)
-		}
-		resp.Body.Close()
+	resp = f.deliver(t, del, time.Now(), "", "")
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("delete = %d, want a 2xx ack", resp.StatusCode)
 	}
-	if n := f.runCount(t); n != 3 {
-		t.Fatalf("the opening mention, the edit and the delete birthed %d runs, want 3 (each is its own source event)", n)
+	resp.Body.Close()
+	if n := f.runCount(t); n != 2 {
+		t.Fatalf("the deletion brought the run total to %d, want 2 — THE LIVE DEFECT: the app answered a deletion", n)
 	}
-	// All three correlate to the SAME thread, so they continue one conversation rather than opening three.
+	if prior := f.modelHistory(t, session, second); len(prior) != 0 {
+		t.Fatalf("the history shown to the model still carries %v after the turn was deleted — a retraction that keeps feeding the words to the model retracts nothing", prior)
+	}
+	// The response itself is NOT destroyed: what the user wrote and that they withdrew it are both facts an
+	// operator can still read. Retraction is about what the model is shown, not about erasing the ledger.
+	var retracted bool
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT retracted_at IS NOT NULL FROM responses WHERE id=$1`, first).Scan(&retracted); err != nil {
+		t.Fatalf("read the retracted turn: %v", err)
+	}
+	if !retracted {
+		t.Fatal("the deleted turn's response is not marked retracted")
+	}
+	// All of it stayed ONE conversation: neither the edit nor the delete opened a thread of its own.
 	if n := f.sessionCount(t); n != 1 {
 		t.Fatalf("the edit and the delete produced %d thread↔session rows, want 1 — both belong to the same thread", n)
-	}
-	// The kind is READ OFF THE INPUT the model receives, which is the only place it can still be observed
-	// now that the input is the human's message rather than the event envelope — and it is the stronger
-	// assertion of the two: SLK-005's classification is worth nothing if it does not change what the model
-	// is told. An edit is MARKED as an edit (it does not arrive as a brand-new turn), and a delete does NOT
-	// echo the retracted words back.
-	var inputs []string
-	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()),
-		`SELECT input::text FROM responses WHERE organization_id=$1 AND project_id=$2 ORDER BY created_at`,
-		f.org, f.project)
-	if err != nil {
-		t.Fatalf("read admitted inputs: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var input string
-		if err := rows.Scan(&input); err != nil {
-			t.Fatalf("scan input: %v", err)
-		}
-		inputs = append(inputs, input)
-	}
-	// inputs[0] is the mention that opened the thread; the two this test is about follow it.
-	if len(inputs) != 3 {
-		t.Fatalf("admitted inputs = %v, want three (the opening mention, then the edit and the delete)", inputs)
-	}
-	if inputs[1] != `"(edited) edited"` {
-		t.Fatalf("the edit reached the model as %s, want the corrected text marked as an edit (SLK-005: it supersedes, it is not a fresh turn)", inputs[1])
-	}
-	if !strings.Contains(inputs[2], "deleted their message") || strings.Contains(inputs[2], "gone") {
-		t.Fatalf("the delete reached the model as %s, want a retraction that does not replay the removed words", inputs[2])
 	}
 }
 

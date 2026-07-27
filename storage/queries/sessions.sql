@@ -61,9 +61,15 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- would see its own replies with nothing they replied to. Ordered by created_at (id tiebreak) — ponytail:
 -- created_at ordering, responses carry no per-session ordinal of their own; add one if a
 -- sub-microsecond clock tie ever reorders a chain.
+-- A RETRACTED turn is not carried at all — not even as a redacted marker. The human deleted the message, and
+-- since this query is what the model is shown (execution.historyMessages), a turn left here goes on
+-- influencing every later answer in the thread. Purged and retracted are different facts with different
+-- answers: purge means the CONTENT was reaped and something happened here (a marker is honest), retraction
+-- means the person took the words back (nothing here is honest). The row itself survives both.
 -- name: SessionHistory
 SELECT input, output, purged_at IS NOT NULL AS purged
 FROM responses
 WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+  AND retracted_at IS NULL
   AND created_at < (SELECT created_at FROM responses WHERE id = $4)
 ORDER BY created_at, id;

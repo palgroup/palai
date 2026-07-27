@@ -73,6 +73,14 @@ type Event struct {
 	EnterpriseID string
 	ChannelID    string
 	ThreadTS     string // the thread root (thread_ts, or the message ts when it starts a thread) — the correlation key
+	// MessageTS is the AFFECTED MESSAGE's own ts, and it is the handle a correction and a tombstone act on:
+	// ThreadTS cannot serve, because inside a thread it names the ROOT, so retracting by it would retract the
+	// wrong turn (or the whole conversation's first one).
+	//
+	// For an edit or a delete it is the ORIGINAL message's ts, read off the nested object — NOT the change
+	// event's own top-level ts, which is a different number. That is what makes it a handle at all: an edit
+	// does not change a message's ts, so the ts a correction names is the ts the original event carried.
+	MessageTS string
 	// InThread is whether Slack's OWN `thread_ts` was present, i.e. this message belongs to a thread rather
 	// than standing alone at the top of a channel. ThreadTS cannot answer that: it falls back to the message's
 	// own ts so the correlation key always exists, which makes a lone message and a thread root identical.
@@ -274,7 +282,13 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 	if n := inner.Message; n != nil {
 		user, botID, ts, threadTS, text = n.User, n.BotID, n.TS, n.ThreadTS, n.Text
 	} else if n := inner.PreviousMessage; n != nil {
-		user, botID, ts, threadTS, text = n.User, n.BotID, n.TS, n.ThreadTS, n.Text
+		// THE TEXT IS DELIBERATELY NOT TAKEN. previous_message.text is the message the human just DELETED, and
+		// nothing downstream has any business with those words: a deletion retracts a turn (it names it by ts),
+		// it does not say anything. Carrying them would put the retracted sentence one field access away from a
+		// prompt — and it did, live: the removed text used to reach slackRunInput. Text's own contract has said
+		// "empty for a deletion" since E17 T1; this is the line that makes it true.
+		user, botID, ts, threadTS = n.User, n.BotID, n.TS, n.ThreadTS
+		text = ""
 	}
 
 	// Loop guard (SLK-008): a bot event, or the app's own bot user, is dropped BEFORE a run can be born —
@@ -297,6 +311,7 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 		EnterpriseID:  outer.EnterpriseID,
 		ChannelID:     inner.Channel,
 		ThreadTS:      thread,
+		MessageTS:     ts,
 		InThread:      threadTS != "",
 		UserID:        user,
 		Type:          inner.Type,
