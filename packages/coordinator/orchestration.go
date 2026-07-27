@@ -358,9 +358,15 @@ func (s *Store) hasUncertainSideEffect(ctx context.Context, tenant Tenant, runID
 }
 
 // PriorResponse is one earlier response in a session, as run.start history needs it:
-// Output is the stored terminal projection (nil once purged or not yet terminal), and
-// Purged marks a reaped response whose content is a redacted_content marker (spec §22.2).
+// Input is what the human asked, Output the stored terminal projection (nil once purged
+// or not yet terminal), and Purged marks a reaped response whose content is a
+// redacted_content marker (spec §22.2).
+//
+// Input is carried because a history of ANSWERS ALONE IS NOT A CONVERSATION: without it
+// the model sees its own replies with nothing they were replies to, and cannot answer
+// "what did I just ask you" — which is what a real Slack thread did, four runs deep.
 type PriorResponse struct {
+	Input  []byte
 	Output []byte
 	Purged bool
 }
@@ -378,7 +384,7 @@ func (s *Store) SessionHistory(ctx context.Context, tenant Tenant, sessionID, re
 	var out []PriorResponse
 	for rows.Next() {
 		var p PriorResponse
-		if err := rows.Scan(&p.Output, &p.Purged); err != nil {
+		if err := rows.Scan(&p.Input, &p.Output, &p.Purged); err != nil {
 			return nil, fmt.Errorf("scan session history: %w", err)
 		}
 		out = append(out, p)

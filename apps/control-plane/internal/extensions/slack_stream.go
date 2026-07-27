@@ -24,7 +24,7 @@ import (
 //	  → follow          — one supervised tailer per BORN run, capped by a semaphore
 //	  → SetStatus       — the working indicator; chat:write, so no new scope and no panel needed (S3)
 //	  → EventReader.After — the SAME journal seam the SSE endpoint tails; no new read path exists
-//	  → StartStream / AppendStream — the message appears when the first step lands
+//	  → StartStream / AppendStream — ONLY when the run journals real progress (see slackStreamLine)
 //	  → (the reply pump's StopStream closes it with the answer — see slack_reply.go)
 //
 // HONEST CEILING, and it is the most over-claimable thing in this epic, so it is stated three ways:
@@ -35,9 +35,11 @@ import (
 //  2. THE JOURNAL DOES NOT CARRY THE MODEL'S WORDS. model_step.completed.v1's payload is
 //     {run_id, model_request_id} — the text lives in the model request's stored result, behind a read path
 //     this follower deliberately does not open. So what streams here is PROGRESS, not prose: the answer
-//     itself arrives in one piece when the stream is closed. What the human actually gains is (a) a spinning
-//     status while the model works and (b) a message that appears the moment the first step lands rather
-//     than after the terminal transaction. Nothing more than that is claimed anywhere.
+//     itself arrives in one piece when the stream is closed. What a real run gains is (a) a spinning status
+//     while the model works — AND ONLY THAT. markdown_text is the message BODY (chat.appendStream: "This text
+//     is what will be appended to the message received so far"), so a single-step run has nothing to put in
+//     it that is not a status, and it opens no stream at all. Its answer is a plain threaded message, and it
+//     is only the answer. Nothing more than that is claimed anywhere.
 //  3. THE STREAM STATE IS DELIBERATELY NON-DURABLE. The ts and the cursor live in this process. A restart
 //     loses them; that message stays in Slack's streaming state (S16(a) is unconfirmed) and the answer lands
 //     as a NEW message instead. Visible, not destructive — the canonical result is untouched either way
@@ -283,7 +285,6 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 		return
 	}
 	var (
-		steps    int
 		streamTS string
 		// silenced means a Slack failure took the decoration away. The follower KEEPS WATCHING anyway, and
 		// that is deliberate: the status indicator is the part of this task that helps most, and giving up on
@@ -315,7 +316,7 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 			if silenced {
 				continue // still watching for the terminal, no longer writing
 			}
-			line := slackStreamLine(event, &steps)
+			line := slackStreamLine(event)
 			if line == "" {
 				continue
 			}
@@ -523,21 +524,30 @@ func slackEventRunID(event contracts.Event) string {
 // gains nothing from. It is TOTAL: an unknown event type is silently skipped rather than dumped into a
 // workspace channel.
 //
+// WHAT A LINE ACTUALLY IS, and it is the correction this function was rebuilt around: it is BODY TEXT.
+// chat.appendStream documents markdown_text as "This text is what will be appended to the message received so
+// far" (https://docs.slack.dev/reference/methods/chat.appendStream/, checked 2026-07-27) — so every line here
+// is written INTO the message the answer will land in, in front of it. Nothing here may therefore be a status:
+// a status has its own surface (assistant.threads.setStatus, already set before the first journal read), and
+// duplicating it into the body produced exactly `_Working on it..._2 + 2 = 4.` in a real workspace.
+//
+// THAT IS WHY model_step.* IS ABSENT, and the absence has a consequence worth stating plainly: a real run is
+// SINGLE-STEP (E08 exposes no tools to a real provider), so a real run now produces NO line at all, opens no
+// stream, and its answer arrives as a plain threaded message. The status indicator is what shows it working.
+// What was lost is a message appearing one journal-poll before the terminal transaction; what was gained is an
+// answer that is only the answer.
+//
+// WHAT REMAINS is genuine progress a reader can follow across a MULTI-STEP run — which only a fake engine
+// produces today. ponytail: these stay in markdown_text, so they too sit above the answer. Slack's documented
+// home for them is a `task_update` CHUNK (a timeline UI beside the body, with its own status vocabulary);
+// move them there when a real multi-step run exists to justify the encoder.
+//
 // WHAT IT CANNOT DO, restated because it is the ceiling and not an oversight: none of these events carries
 // the model's OUTPUT. model_step.completed.v1's payload is {run_id, model_request_id}; tool_call's is
 // {run_id, tool_call_id}. So these lines describe PROGRESS. The words the model wrote arrive when the stream
 // is closed with the run's answer.
-//
-// steps is the caller's step counter — a real run reaches 1 and stops there (E08: no tools are exposed to a
-// real provider, so a real run is single-step); higher numbers only ever appear under a fake engine.
-func slackStreamLine(event contracts.Event, steps *int) string {
+func slackStreamLine(event contracts.Event) string {
 	switch event.Type {
-	case "model_step.completed.v1":
-		*steps++
-		if *steps == 1 {
-			return "_Working on it…_"
-		}
-		return fmt.Sprintf("_…step %d_", *steps)
 	case "tool_call.executing.v1":
 		// The payload carries the call id, not the tool's NAME, so the line cannot name it. Saying "a tool"
 		// is true; inventing a name from the id would not be.

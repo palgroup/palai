@@ -603,7 +603,7 @@ func (o *Orchestrator) foldChildResult(ctx context.Context, st *attemptState, ch
 	}
 	return st.ch.Send(ctx, o.frame(st, "child.result", map[string]any{
 		"child_request_id": childRequestID, "status": status, "child_run_id": childRunID,
-		"output": childOutputText(output),
+		"output": outputText(output),
 	}, string(frame.ID)))
 }
 
@@ -658,9 +658,12 @@ func childStatus(runState string) string {
 	return "failed"
 }
 
-// childOutputText extracts the child's final text from its response projection so the parent folds a
-// typed result, not a hidden transcript. A missing/again-shaped projection yields "".
-func childOutputText(projection []byte) string {
+// outputText extracts a response projection's final text — the assistant's words, without the
+// item envelope around them. TWO callers, for the same reason: a ChildRun folds a TYPED result into
+// its parent rather than a hidden transcript, and session history shows the model its own prior
+// words rather than the JSON we happened to store them in (see historyMessages, which learned that
+// the hard way). A missing or otherwise-shaped projection yields "".
+func outputText(projection []byte) string {
 	if len(projection) == 0 {
 		return ""
 	}
@@ -671,8 +674,26 @@ func childOutputText(projection []byte) string {
 		return ""
 	}
 	for _, item := range proj.Output {
-		if content, ok := item["content"].(string); ok && content != "" {
-			return content
+		switch content := item["content"].(type) {
+		case string:
+			if content != "" {
+				return content
+			}
+		case []any:
+			// The §25.10 richer content shape. Handled rather than skipped because the caller that
+			// SKIPS it silently drops a whole conversation turn, and a history with a hole in it is
+			// harder to notice than one that is empty. (extensions.outputText reads the same two
+			// shapes for the Slack reply — ponytail: two twelve-line readers in two packages beats a
+			// package that exists to hold one function. Merge them if a third appears.)
+			for _, el := range content {
+				m, ok := el.(map[string]any)
+				if !ok {
+					continue
+				}
+				if text, ok := m["text"].(string); ok && text != "" {
+					return text
+				}
+			}
 		}
 	}
 	return ""

@@ -58,24 +58,25 @@ func TestSlackStreamNeverControlsTheRun(t *testing.T) {
 // slackStreamLine is TOTAL: every event type it does not know maps to silence rather than to a dump of an
 // internal payload into a workspace channel.
 func TestSlackStreamLineIsTotalAndSaysOnlyWhatTheJournalKnows(t *testing.T) {
-	step := 0
-	if got := slackStreamLine(contracts.Event{Type: "model_step.completed.v1"}, &step); got == "" || step != 1 {
-		t.Fatalf("the first model step produced %q at step %d, want an opening line at step 1", got, step)
-	}
-	if got := slackStreamLine(contracts.Event{Type: "model_step.completed.v1"}, &step); !strings.Contains(got, "2") {
-		t.Fatalf("the second model step produced %q, want it numbered", got)
+	// A MODEL STEP IS SILENT, and that is the fix for the status that was landing inside the answer.
+	// markdown_text is the message BODY ("This text is what will be appended to the message received so far",
+	// chat.appendStream, checked 2026-07-27), so "_Working on it…_" was rendering in front of the model's
+	// words: `_Working on it..._2 + 2 = 4.` in a real channel. A status has its own surface and is already set
+	// there before the first journal read. A real run is single-step, so it now streams nothing at all.
+	if got := slackStreamLine(contracts.Event{Type: "model_step.completed.v1"}); got != "" {
+		t.Fatalf("a model step produced %q, want silence — a status in markdown_text is a status in the answer", got)
 	}
 
 	// A task event is the ONLY kind carrying text a human wrote, and it is echoed with its status.
 	line := slackStreamLine(contracts.Event{
 		Type: "task.updated.v1",
 		Data: map[string]any{"title": "Write the migration", "status": "complete"},
-	}, &step)
+	})
 	if !strings.Contains(line, "Write the migration") || !strings.Contains(line, "complete") {
 		t.Fatalf("task line = %q, want the title and its status", line)
 	}
 	// A task with no title has nothing to say.
-	if got := slackStreamLine(contracts.Event{Type: "task.created.v1", Data: map[string]any{"status": "pending"}}, &step); got != "" {
+	if got := slackStreamLine(contracts.Event{Type: "task.created.v1", Data: map[string]any{"status": "pending"}}); got != "" {
 		t.Fatalf("a titleless task produced %q, want silence", got)
 	}
 
@@ -85,7 +86,7 @@ func TestSlackStreamLineIsTotalAndSaysOnlyWhatTheJournalKnows(t *testing.T) {
 		"config.revised.v1", "attempt.recovering.v1", "checkpoint.rejected.v1",
 		"run.queued.v1", "some.future.event.v9", "",
 	} {
-		if got := slackStreamLine(contracts.Event{Type: quiet, Data: map[string]any{"secret": "x"}}, &step); got != "" {
+		if got := slackStreamLine(contracts.Event{Type: quiet, Data: map[string]any{"secret": "x"}}); got != "" {
 			t.Fatalf("event %q produced %q, want silence", quiet, got)
 		}
 	}
