@@ -69,8 +69,16 @@ func TestComposePassesTheSlackSocketSelector(t *testing.T) {
 // resolved to nothing and the connection was registered but inert.
 //
 // The master key is delivered as a file-secret (never an env VALUE) from the SAME
-// ${PALAI_HOME}/secrets/master-key path the production overlay already uses, and the env var — a
-// PATH — defaults empty, so a stack that never configured one boots exactly as before.
+// ${PALAI_HOME}/secrets/master-key path the production overlay already uses.
+//
+// E21 T2 (§3.6 D5) CHANGED THE EXPECTATION HERE, and the change is the fix. This assertion used to
+// demand `${PALAI_SECRET_MASTER_KEY_FILE:-}` — interpolated, empty by default — reasoning that a stack
+// which configured no key should boot exactly as before. Measured, that default was not "the secret
+// store stays off", it was "the secret store is off unless the operator happened to have Slack
+// credentials in .env.local", because `palai up`'s applySlackEnv was the one and only exporter of the
+// variable. A plain `docker compose up -d` produced an inert stack whose every handle resolved
+// nowhere. The path is written LITERALLY now, as production.yml has always written it, and the CLI's
+// ensureSecretSlots mints the key it names on every bring-up.
 func TestComposeCanRedeemASecretRefHandle(t *testing.T) {
 	doc := loadWiring(t)
 	cp := doc.Services["control-plane"]
@@ -79,8 +87,10 @@ func TestComposeCanRedeemASecretRefHandle(t *testing.T) {
 	if !ok {
 		t.Fatal("the control-plane service does not pass PALAI_SECRET_MASTER_KEY_FILE: dbSecretStore stays nil, so every *_ref handle resolves to nothing")
 	}
-	if got != "${PALAI_SECRET_MASTER_KEY_FILE:-}" {
-		t.Fatalf("PALAI_SECRET_MASTER_KEY_FILE = %q, want ${PALAI_SECRET_MASTER_KEY_FILE:-} (optional, empty default = the secret store stays off)", got)
+	if got != "/run/secrets/master_key" {
+		t.Fatalf("PALAI_SECRET_MASTER_KEY_FILE = %q, want the literal /run/secrets/master_key. An interpolated value is read from "+
+			"whatever shell invoked compose, and nothing but `palai up`-with-Slack-credentials ever sets it — so the secret store "+
+			"silently stays nil and every *_ref handle resolves nowhere (§3.6 D5)", got)
 	}
 
 	var mounted bool

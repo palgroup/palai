@@ -350,27 +350,23 @@ func slackSecretValues(get func(string) string) map[string]string {
 // operator warnings. It runs BEFORE `docker compose up` because a running control-plane never
 // re-reads its environment.
 //
-// Two variables, both optional and both empty by default in compose.yaml, so a deployment with no
-// Slack app is byte-for-byte unchanged:
+// ONE variable now, optional and empty by default in compose.yaml, so a deployment with no Slack app
+// is byte-for-byte unchanged: PALAI_SLACK_SOCKET_TEAM_ID switches on main.startSlackSocket.
 //
-//   - PALAI_SLACK_SOCKET_TEAM_ID switches on main.startSlackSocket (gap 1);
-//   - PALAI_SECRET_MASTER_KEY_FILE mounts the DB-backed secret store, which is the ONE thing on
-//     this profile that can redeem a *_ref handle (gap 2). Without it dbSecretStore stays nil and
-//     the resolvers fall through to an env-file bridge whose key names an <ORG>__<REF> pair a
-//     compose `environment:` key cannot express.
+// PALAI_SECRET_MASTER_KEY_FILE USED TO BE EXPORTED HERE and no longer is (E21 T2, §3.6 D5). That was
+// the bug: the secret store is not a Slack feature — every *_ref handle on the stack redeems through
+// it — but it was mounted only when Slack credentials happened to be present, so a stack without them
+// resolved every handle nowhere. compose.yaml now writes the path literally and ensureSecretSlots
+// mints the key it names, on every bring-up, Slack or not.
+//
+// p stays in the signature deliberately: an env-shaping step that cannot see the stack's own paths is
+// where the next "only when Slack is configured" special case gets added back.
 func applySlackEnv(p paths, get func(string) string) []string {
 	values := slackSecretValues(get)
 	if len(values) == 0 {
 		return nil
 	}
 	var warnings []string
-	if err := ensureMasterKey(p); err != nil {
-		return []string{fmt.Sprintf("Slack credentials are configured but the secret store cannot be enabled: %v. "+
-			"The workspace will be registered with handles that resolve nowhere.", err)}
-	}
-	if err := os.Setenv("PALAI_SECRET_MASTER_KEY_FILE", containerMasterKeyPath); err != nil {
-		return []string{fmt.Sprintf("could not export PALAI_SECRET_MASTER_KEY_FILE: %v", err)}
-	}
 	switch team := slackSocketTeam(get); team {
 	case "":
 		warnings = append(warnings, "SLACK_APP_TOKEN is unset, so Socket Mode stays off: an app-level token (xapp-…) is its only "+
@@ -489,12 +485,28 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 			o.connected, o.detail = observeSlackSocket(cfg, p, 0)
 		}
 		// No body was sent, so nothing here knows the STORED connection's approver list — and
-		// guessing at it is exactly what slackApproverWarning exists to replace.
+		// guessing at it is exactly what slackApproverWarning exists to replace. The skip itself IS
+		// carried out, though: a half-configured install that silently does nothing is what item 3
+		// of this task exists to end.
 		fact, line = slackReport(o)
-		return fact, line, ""
+		return fact, line, slackSkipWarning(get, skip)
 	}
 	team, _ := body["team_id"].(string)
 	o := slackOutcome{team: team}
+
+	// WHAT to run and AS WHOM. Resolved against the running stack (explicit config wins, otherwise
+	// provisioned) rather than demanded from .env.local — see resolveRunTarget. It runs AFTER the
+	// team/signing checks above so a stack with no Slack app provisions nothing at all.
+	target, err := resolveRunTarget(api, get)
+	if err != nil {
+		o.problem = "NOT registered: " + err.Error()
+		fact, line = slackReport(o)
+		return fact, line, ""
+	}
+	body["default_policy"] = map[string]any{"agent_revision_id": target.revision, "principal_id": target.principal}
+	if target.resolved != "" {
+		fmt.Fprintf(os.Stderr, "        %s\n", target.resolved)
+	}
 
 	// The VALUES first: a connection registered against handles that resolve nowhere is precisely
 	// the state this task exists to end, so the redemption path is filled before the row names it.
@@ -644,21 +656,13 @@ func slackRegistration(get func(string) string) (map[string]any, string) {
 		return nil, "no SLACK_TEAM_ID in the environment. A Slack workspace needs an app at https://api.slack.com/apps; " +
 			"the values and where each is found are in docs/superpowers/plans/phase-19-integration-wiring.md §0.1"
 	}
-	// The API requires a run target: a binding that has not been told what to run, or as whom,
-	// admits nothing. These two are not in plan §0.1 because they are Palai-side ids, not Slack's.
-	revision := strings.TrimSpace(get("SLACK_AGENT_REVISION_ID"))
-	principal := strings.TrimSpace(get("SLACK_PRINCIPAL_ID"))
-	var missing []string
-	if revision == "" {
-		missing = append(missing, "SLACK_AGENT_REVISION_ID")
-	}
-	if principal == "" {
-		missing = append(missing, "SLACK_PRINCIPAL_ID")
-	}
-	if len(missing) > 0 {
-		return nil, fmt.Sprintf("SLACK_TEAM_ID is set but %s missing. POST /v1/slack-connections refuses a binding with no run target "+
-			"(default_policy.agent_revision_id and default_policy.principal_id are required — what to run, and as whom)", strings.Join(missing, " and "))
-	}
+	// The run target (default_policy.agent_revision_id + principal_id) is NOT checked here any more,
+	// and its absence is no longer a skip (E21 T2). It used to be both: a missing SLACK_AGENT_REVISION_ID
+	// or SLACK_PRINCIPAL_ID made the whole registration skip and `palai up` still exit green — an
+	// operator watching a successful install that could not run anything. wireSlack resolves the target
+	// against the running stack instead (resolveRunTarget: explicit config wins, otherwise provisioned
+	// over the existing API) and fills default_policy in. Nothing here may guess at it.
+	//
 	// signing_secret_ref is the one handle the API itself requires, and this command no longer
 	// registers a handle it cannot store a value for — so an absent signing secret is a skip with
 	// its source named, not a 400 the operator has to decode.
@@ -666,10 +670,7 @@ func slackRegistration(get func(string) string) (map[string]any, string) {
 		return nil, "SLACK_TEAM_ID is set but SLACK_SIGNING_SECRET is missing. POST /v1/slack-connections requires signing_secret_ref, " +
 			"and a handle with no value behind it resolves nowhere (§0.1 — App → Basic Information → App Credentials → Signing Secret)"
 	}
-	body := map[string]any{
-		"team_id":        team,
-		"default_policy": map[string]any{"agent_revision_id": revision, "principal_id": principal},
-	}
+	body := map[string]any{"team_id": team}
 	// HANDLES, never secrets — and only for the credentials this bring-up can actually store a value
 	// for, off the same table slackSecretValues writes from.
 	for _, slot := range slackSecretSlots {
@@ -697,6 +698,94 @@ func slackRegistration(get func(string) string) (map[string]any, string) {
 		body["allowed_users"] = v
 	}
 	return body, ""
+}
+
+// --- the run target (E21 T2, plan §4 T2 item 2) ----------------------------------------------------
+
+const (
+	// bootstrapKeyID is the fixed id of a stack's first API key (identity.firstKey, seeded by
+	// ProvisionFirstOrg). It is the key `palai up` itself authenticates with, so its principal is the
+	// identity this operator already acts as. install_backup.go pins the same four bootstrap ids.
+	bootstrapKeyID = "key_local"
+	// slackAgentProfileName is the profile lineage a bring-up provisions when the operator named no
+	// SLACK_AGENT_REVISION_ID. Looked up by name so a re-run reuses it instead of piling up lineages.
+	slackAgentProfileName = "slack"
+)
+
+// slackRunTarget is what a Slack binding must be told before it can admit anything: WHAT to run
+// (a published agent revision) and AS WHOM (a principal). resolved is operator-facing prose naming
+// the target and where each half came from; it is empty only when the operator configured both.
+type slackRunTarget struct {
+	revision  string
+	principal string
+	resolved  string
+}
+
+// resolveRunTarget answers the two questions POST /v1/slack-connections refuses a binding without.
+//
+// It exists because the alternative was worse than an error: a missing SLACK_AGENT_REVISION_ID or
+// SLACK_PRINCIPAL_ID used to SKIP the whole registration while `palai up` still exited green, so an
+// operator watched a successful install that could never run anything. Neither id is a Slack value —
+// they are Palai-side ids no Slack app page will ever hand you — so demanding them from .env.local
+// asked the operator for something only the running stack could tell them.
+//
+// EXPLICIT CONFIGURATION ALWAYS WINS, per id: anything the operator named is used verbatim and
+// nothing is provisioned for it. It opens NO new path — both halves come off the existing
+// provisioning API (§4 T2), and neither writes a credential.
+func resolveRunTarget(api *apiClient, get func(string) string) (slackRunTarget, error) {
+	t := slackRunTarget{
+		revision:  strings.TrimSpace(get("SLACK_AGENT_REVISION_ID")),
+		principal: strings.TrimSpace(get("SLACK_PRINCIPAL_ID")),
+	}
+	if t.revision != "" && t.principal != "" {
+		return t, nil
+	}
+	var how []string
+	if t.principal == "" {
+		// The bootstrap key's OWN principal, read back — not a freshly minted one. The only API that
+		// creates a principal is POST /v1/api-keys, which also mints a full-scope key whose plaintext is
+		// returned once and would then be discarded: a live admin credential nobody holds, left in the
+		// database forever, to obtain an id that differs from this one only in its characters. Slack runs
+		// therefore admit as the same principal an operator's own API calls do, which is the truth of a
+		// single-operator self-host stack. Set SLACK_PRINCIPAL_ID to attribute them to a different one.
+		p, err := api.bootstrapPrincipal()
+		if err != nil {
+			return slackRunTarget{}, err
+		}
+		t.principal = p
+		how = append(how, fmt.Sprintf("as principal %s (this stack's bootstrap-key principal — set SLACK_PRINCIPAL_ID to bind a different one)", p))
+	}
+	if t.revision == "" {
+		rev, minted, err := api.ensureSlackAgentRevision()
+		if err != nil {
+			return slackRunTarget{}, err
+		}
+		t.revision = rev
+		switch {
+		case minted:
+			how = append(how, fmt.Sprintf("running agent revision %s, created and published by this bring-up "+
+				"(it carries NO tool set, so Slack runs are single-step until one is bound to it)", rev))
+		default:
+			how = append(how, fmt.Sprintf("running agent revision %s, reused from the %q profile an earlier bring-up created", rev, slackAgentProfileName))
+		}
+	}
+	t.resolved = "Slack run target: " + strings.Join(how, ", ")
+	return t, nil
+}
+
+// slackSkipWarning turns a registration skip into the report's WARNING section — but only when the
+// operator was evidently trying to wire Slack (E21 T2 item 3). A skip inside a green bring-up is how
+// an install that does nothing reads as an install that worked.
+//
+// A stack with no SLACK_TEAM_ID at all is NOT warned about: that operator did not ask for Slack, and
+// warning them on every single bring-up is precisely the crying-wolf this same task removes from the
+// orphan sweep. The step line still says SKIPPED either way — the warning is the escalation.
+func slackSkipWarning(get func(string) string, skip string) string {
+	if strings.TrimSpace(get("SLACK_TEAM_ID")) == "" {
+		return ""
+	}
+	return "Slack is configured in this environment but was NOT wired: " + skip +
+		". The bring-up above still succeeded, so nothing else will tell you — but no message will reach the agent until this is fixed."
 }
 
 // splitList parses a comma-separated operator value: trimmed, empties dropped. nil when nothing is left,
@@ -924,6 +1013,128 @@ func (c *apiClient) slackConnectionCount() (int, error) {
 		return 0, fmt.Errorf("GET /v1/slack-connections = %d", status)
 	}
 	return len(body.Data), nil
+}
+
+// bootstrapPrincipal reads back the principal behind the stack's bootstrap API key — the identity
+// this command is already authenticated as. Metadata only: GET /v1/api-keys/{id} never renders a key.
+func (c *apiClient) bootstrapPrincipal() (string, error) {
+	var body struct {
+		PrincipalID string `json:"principal_id"`
+	}
+	status, err := c.do(http.MethodGet, "/v1/api-keys/"+bootstrapKeyID, nil, &body)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("read this stack's own principal: %w", err)
+	case status != http.StatusOK:
+		return "", fmt.Errorf("GET /v1/api-keys/%s = %d: this stack has no bootstrap key row to take a principal from, "+
+			"so a Slack binding cannot be told who to run as — set SLACK_PRINCIPAL_ID to name one", bootstrapKeyID, status)
+	case body.PrincipalID == "":
+		return "", fmt.Errorf("GET /v1/api-keys/%s returned no principal_id", bootstrapKeyID)
+	}
+	return body.PrincipalID, nil
+}
+
+// ensureSlackAgentRevision returns a PUBLISHED agent revision for the Slack binding to pin, reusing
+// the one an earlier bring-up made where possible. minted reports whether THIS call created it.
+//
+// Published is not a nicety: coordinator's admission verifies published_at before pinning a run, so a
+// draft revision would register a binding that admits nothing — today's silent failure with one more
+// step in front of it. The reuse lookup is by profile NAME because `palai up` is re-run constantly,
+// and a bring-up that minted a fresh lineage each time would move the workspace's binding underneath
+// the operator and leave a pile of orphan revisions behind.
+func (c *apiClient) ensureSlackAgentRevision() (id string, minted bool, err error) {
+	profileID, err := c.findAgentProfile(slackAgentProfileName)
+	if err != nil {
+		return "", false, err
+	}
+	if profileID != "" {
+		if rev, err := c.publishedAgentRevision(profileID); err != nil {
+			return "", false, err
+		} else if rev != "" {
+			return rev, false, nil
+		}
+	} else {
+		var created struct {
+			ID string `json:"id"`
+		}
+		status, err := c.do(http.MethodPost, "/v1/agents", map[string]any{"name": slackAgentProfileName}, &created)
+		if err != nil {
+			return "", false, fmt.Errorf("create the %q agent profile: %w", slackAgentProfileName, err)
+		}
+		if status != http.StatusCreated || created.ID == "" {
+			return "", false, fmt.Errorf("POST /v1/agents = %d, want 201 with an id", status)
+		}
+		profileID = created.ID
+	}
+
+	// An EMPTY executable config on purpose: the revision inherits the deployment's model and imposes
+	// no tool ceiling. Guessing an instruction or a model here would bake a `palai up` opinion into
+	// every Slack run, invisibly, and the operator would have no idea where it came from.
+	var rev struct {
+		ID string `json:"id"`
+	}
+	status, err := c.do(http.MethodPost, "/v1/agents/"+profileID+"/revisions", map[string]any{}, &rev)
+	if err != nil {
+		return "", false, fmt.Errorf("create an agent revision under %s: %w", profileID, err)
+	}
+	if status != http.StatusCreated || rev.ID == "" {
+		return "", false, fmt.Errorf("POST /v1/agents/%s/revisions = %d, want 201 with an id", profileID, status)
+	}
+	status, err = c.do(http.MethodPost, "/v1/agents/"+profileID+"/revisions/"+rev.ID+"/publish", map[string]any{}, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("publish agent revision %s: %w", rev.ID, err)
+	}
+	if status != http.StatusOK {
+		return "", false, fmt.Errorf("publish agent revision %s = %d, want 200: a DRAFT revision pins no run, so the "+
+			"binding would admit nothing", rev.ID, status)
+	}
+	return rev.ID, true, nil
+}
+
+// findAgentProfile returns the id of the profile lineage with this name, or "" when there is none.
+func (c *apiClient) findAgentProfile(name string) (string, error) {
+	var page struct {
+		Data []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	status, err := c.do(http.MethodGet, "/v1/agents", nil, &page)
+	if err != nil {
+		return "", fmt.Errorf("list agent profiles: %w", err)
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("GET /v1/agents = %d, want 200", status)
+	}
+	for _, p := range page.Data {
+		if p.Name == name {
+			return p.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// publishedAgentRevision returns a published revision of this profile, or "" when it has none.
+func (c *apiClient) publishedAgentRevision(profileID string) (string, error) {
+	var page struct {
+		Data []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	status, err := c.do(http.MethodGet, "/v1/agents/"+profileID+"/revisions", nil, &page)
+	if err != nil {
+		return "", fmt.Errorf("list revisions of %s: %w", profileID, err)
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("GET /v1/agents/%s/revisions = %d, want 200", profileID, status)
+	}
+	for _, r := range page.Data {
+		if r.Status == "published" {
+			return r.ID, nil
+		}
+	}
+	return "", nil
 }
 
 // putSecretRef stores one credential VALUE under its handle through the E13 T3 secret store — the

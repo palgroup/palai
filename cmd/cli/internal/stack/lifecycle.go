@@ -67,19 +67,28 @@ func Init() error {
 	return nil
 }
 
-// ensureSecretSlots creates the EMPTY file-secret sources compose bind-mounts, and never touches
-// one that already holds a value. A missing source fails `compose up` outright, which is why the
-// provider-one slot has always been created unconfigured; the master-key slot joins it for the same
-// reason (it only DOES anything when PALAI_SECRET_MASTER_KEY_FILE names it).
+// ensureSecretSlots creates the file-secret sources compose bind-mounts, and never touches one that
+// already holds a value. A missing source fails `compose up` outright, which is why the provider-one
+// slot has always been created unconfigured.
 //
 // It runs on every bring-up, not only on `init`: Init short-circuits on an existing config.json, so
 // a .palai written by an earlier build has only the slots that existed then and would otherwise be
-// unable to start at all.
+// unable to start at all. That also makes it the ONE funnel every compose bring-up routes through —
+// `palai local up` calls it directly, `palai up` reaches it through Up() — which is why the master
+// key is minted HERE (E21 T2, §3.6 D5) and no longer on the Slack path.
+//
+// The master-key slot is MINTED rather than left empty. Empty was safe only while compose named the
+// key conditionally; compose now names it on every stack, and the control-plane treats a set-but-
+// unparseable key file as log.Fatalf by design. An empty slot would no longer mean "secret store
+// off" — it would mean "this stack never comes up".
 func ensureSecretSlots(p paths) error {
 	if err := os.MkdirAll(p.secretsDir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", p.secretsDir, err)
 	}
-	for _, path := range []string{p.secretPath("provider-one"), p.masterKey} {
+	if err := ensureMasterKey(p); err != nil {
+		return err
+	}
+	for _, path := range []string{p.secretPath("provider-one")} {
 		switch _, err := os.Stat(path); {
 		case err == nil:
 			continue
