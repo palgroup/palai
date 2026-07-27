@@ -82,8 +82,12 @@ func authorizationHeader(secret string) (string, error) {
 			return "", fmt.Errorf("%w: connection secret is not a valid Authorization header value (control character at byte %d)", ErrProtocol, i)
 		}
 	}
+	// Case-INSENSITIVE, because RFC 7235 makes the scheme token case-insensitive and a secret stored as
+	// "basic ZW1h..." would otherwise be re-wrapped into "Bearer basic ZW1h..." — which, against the
+	// Atlassian endpoint, fails SILENTLY (an unaccepted credential there drops you to an anonymous tool set
+	// rather than returning 401, so the operator would see a model that just never calls the tool).
 	for _, scheme := range authSchemes {
-		if strings.HasPrefix(secret, scheme) {
+		if len(secret) >= len(scheme) && strings.EqualFold(secret[:len(scheme)], scheme) {
 			return secret, nil
 		}
 	}
