@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// setStatus is the FIRST visible win of the agent surface and it needs NO new scope (S3: chat:write, the
-// scope the app already holds), so it runs on today's channel flow before any panel exists. The wire shape
-// differs from chat.* on purpose and the difference is easy to get silently wrong: the argument is
-// `channel_id`, not `channel`.
+// setStatus needs NO new scope (S3: chat:write, the scope the app already holds), so it costs no reinstall.
+// Whether it RENDERS in an ordinary channel thread is a separate, undocumented question the live leg settles;
+// nothing here claims it. The wire shape differs from chat.* on purpose and the difference is easy to get
+// silently wrong: the argument is `channel_id`, not `channel`.
 func TestSetStatusCarriesTheDocumentedArguments(t *testing.T) {
 	peer := &recordingPeer{reply: `{"ok":true}`}
 	if err := SetStatus(context.Background(), peer, "https://slack.test/api", []byte("xoxb-token"),

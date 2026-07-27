@@ -10,8 +10,15 @@ import (
 // WHY THIS IS THE FIRST THING TO SHIP: assistant.threads.setStatus needs `chat:write`, NOT `assistant:write`
 // (S3). The guidance everyone repeats — "the agent methods need assistant:write" — is an INCOMPLETE truth: it
 // holds for setSuggestedPrompts and setTitle, and not for status or for any of the streaming calls. So this
-// runs on the app's EXISTING scopes, in today's channel threads, before `agent_view` is enabled and before
-// anyone reinstalls anything.
+// needs no reinstall and no new permission.
+//
+// WHAT IS NOT CONFIRMED, and it is the difference between "no new scope" and "works today": the reference
+// documents channel_id + thread_ts and says nothing about the thread having to be an AGENT thread — but it
+// does not say it works in an ordinary channel thread either, and the method lives in the assistant.threads.*
+// namespace. So the scope claim is documented; the "already works in today's channel flow" claim is an
+// INFERENCE, and TestLiveSlackStatusNeedsNoNewScope is what settles it against a real workspace. Every caller
+// treats a failure here as cosmetic and carries on, so the inference being wrong costs the indicator and
+// nothing else.
 
 // MaxLoadingMessages caps the rotating strings a status can carry.
 //

@@ -191,8 +191,13 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 		return
 	}
 
-	// The status FIRST, before any journal read: it is the one thing that helps a single-step run, and it is
-	// the whole visible win on a workspace that has not enabled the agent panel.
+	// The status FIRST, before any journal read: it is the one thing that helps a SINGLE-STEP run, where the
+	// wait is the model call and there is nothing yet to stream.
+	//
+	// It is also the one call here whose reach is inferred rather than documented — whether
+	// assistant.threads.setStatus renders in an ordinary CHANNEL thread is not stated anywhere (see
+	// slack.SetStatus). A failure is therefore logged and stepped over, never fatal: the stream and the
+	// answer do not depend on it.
 	if err := slack.SetStatus(ctx, a.doer, a.apiBase, token, tg.channel, tg.threadTS, slackStatusThinking, slackLoadingMessages); err != nil {
 		log.Printf("slack: could not set the working status for run %s: %v", tg.runID, err)
 	}
