@@ -174,6 +174,10 @@ const MaxMessageText = 3900
 // one. responseID may be empty (a run with no stored response), in which case the marker just says it was
 // truncated.
 func ThreadReply(channel, threadTS, text, responseID string) []byte {
+	// The model's words are on this path, so the broadcast tokens in them are defused before anything else
+	// happens (see NeutralizeBroadcasts). It runs BEFORE the truncation below so the escape can never be cut
+	// in half — a `&lt;` sliced at the marker would put a raw `<` back on the wire.
+	text = NeutralizeBroadcasts(text)
 	if n := len([]rune(text)); n > MaxMessageText {
 		marker := "\n\n_… truncated_"
 		if responseID != "" {

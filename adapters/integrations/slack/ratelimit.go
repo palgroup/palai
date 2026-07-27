@@ -19,6 +19,33 @@ import (
 // discarding the run's outcome.
 var ErrRateLimited = errors.New("slack: rate limited after repair budget exhausted")
 
+// APIError is Slack REFUSING a call it received and understood: HTTP 200 carrying {"ok":false,"error":…}.
+// It is separate from a transport failure because the caller's correct answer differs — a
+// `channel_not_found` will fail identically forever while a dialing failure will not — and E20 T1 needs one
+// code in particular: `stopped_by_user` says the HUMAN stopped the stream, which stops appending and must
+// not be mistaken for Slack being unreachable.
+//
+// CONTRACT: https://docs.slack.dev/reference/methods/chat.appendStream/ (checked 2026-07-27) documents
+// `stopped_by_user` as "The streaming message was stopped by the user and no further appends are accepted".
+type APIError struct{ Code string }
+
+func (e *APIError) Error() string { return "slack: api refused the call: " + e.Code }
+
+// CodeStoppedByUser is the append refusal the Slack UI's stop button produces. It says the STREAM stopped;
+// it says nothing about the run, and it carries no authenticated actor, so it is not run control (plan §2).
+const CodeStoppedByUser = "stopped_by_user"
+
+// APIErrorCode returns Slack's own error string when err is an API refusal, and "" for anything else
+// (transport failures, cancellations, the bounded-repair give-up). Callers switch on this rather than on
+// substring matching an error message.
+func APIErrorCode(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Code
+	}
+	return ""
+}
+
 // Doer is the minimal HTTP client PostMessage drives — *http.Client satisfies it; a fake in the test drives
 // the 429→200 repair deterministically without a real network or a real sleep.
 type Doer interface {
@@ -116,7 +143,9 @@ func PostMessage(ctx context.Context, doer Doer, req PostRequest, opts PostOptio
 		_ = resp.Body.Close()
 		ts, ok, apiErr := decodeChatResponse(body)
 		if !ok {
-			return result, fmt.Errorf("slack: chat post failed: %s", apiErr)
+			// Wrapped rather than formatted in, so errors.As reaches the code (see APIErrorCode). The message
+			// reads the same as it always did; what changed is that a caller can now branch on it.
+			return result, fmt.Errorf("slack: chat post failed: %w", &APIError{Code: apiErr})
 		}
 		result.MessageTS = ts
 		return result, nil
