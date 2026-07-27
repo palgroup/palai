@@ -295,3 +295,39 @@ func TestSlackContextChangedStillBirthsNoRun(t *testing.T) {
 		t.Fatalf("app_context_changed made %d outbound Slack calls, want 0", n)
 	}
 }
+
+// THE PANEL'S OWN SURFACE, which is where the context actually arrives (S6): a DM carries its context inside
+// the message, so the whole of T3 is a field read rather than a state machine — and it travels the UNCHANGED
+// admission bridge, the same one the channel legs above use.
+//
+// The DM half matters on its own because it is the one E20 T2 opened: allowed_channels does not govern a DM,
+// so a context on a DM is the case where the least operator configuration stands between a workspace member
+// and the prompt.
+func TestSlackDMCarriesItsOwnContext(t *testing.T) {
+	f := newSlackFixture(t)
+	f.scopeToChannels(t, "C40") // a narrowed install: the DM is exempt (T2), the context still is not authority
+
+	resp := f.deliver(t, withContext(t,
+		f.dmEvent("EvCtxDM", "Uoutsider", "D024BE91L", "1700000060.000100", "", "what is left on the release?"),
+		ctxEntity("slack#/types/channel_id", "C0PANELVIEW", f.team),
+		ctxEntity("slack#/types/channel_id", "C0SECONDVIEW", "T0OTHERWORKSPACE"),
+	), time.Now(), "", "")
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("a DM with a context = %d, want 2xx", resp.StatusCode)
+	}
+	if n := f.runCount(t); n != 1 {
+		t.Fatalf("%d runs from one panel DM, want 1", n)
+	}
+	input := f.runInput(t)
+	if !strings.Contains(input, "C0PANELVIEW") || !strings.Contains(input, "what is left on the release?") {
+		t.Fatalf("the prompt = %s, want the human's words AND the context channel they came with", input)
+	}
+	if strings.Contains(input, "C0SECONDVIEW") {
+		t.Fatalf("the prompt = %s carries another workspace's channel — an entity outside the connection's "+
+			"team must not even reach the description", input)
+	}
+	if strings.Index(input, "untrusted") > strings.Index(input, "what is left") {
+		t.Fatalf("the prompt = %s puts the untrusted context AFTER the human's ask; the ask must close the prompt", input)
+	}
+}
