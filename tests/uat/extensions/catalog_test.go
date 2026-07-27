@@ -4,10 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/palgroup/palai/tests/uat"
 )
 
 // extCase is the case.yaml catalog record for an E17 extension case — the same shape the automation /
@@ -402,7 +405,15 @@ func TestExtensionsCatalogMaterialized(t *testing.T) {
 	}
 
 	// Orphan guard: every case dir under an E17-exclusive prefix must be in the map, so a stray case cannot
-	// escape proof resolution.
+	// escape proof resolution — OR in the ONE other catalog that owns some of them (uat.AgentSurfaceCaseIDs,
+	// resolved by tests/uat/agent-surface). The sweep stays TOTAL: nothing is skipped, ownership is simply
+	// allowed to live in two places, and TestTheSLKCatalogsAreDisjoint below refuses an id claimed by both.
+	//
+	// WHY E20's FOUR IDS ARE NOT IN THIS MAP, and it is a measured decision rather than a convenience: this
+	// map IS the shipped extensions-0.1.0 bundle's case list (the generator reads it), and uat.CapabilityClaims
+	// feeds a digest folded into that bundle's every checksum. Adding SLK-009..012 here would force the
+	// regeneration of a committed HISTORICAL release, rewriting the record of a run that happened. A case
+	// belongs to the bundle that certifies it, and these four are certified by slack-agent-surface-0.1.0.
 	entries, err := os.ReadDir(casesDir)
 	if err != nil {
 		t.Fatalf("read cases dir: %v", err)
@@ -413,11 +424,24 @@ func TestExtensionsCatalogMaterialized(t *testing.T) {
 		}
 		for _, prefix := range extensionIDPrefixes {
 			if strings.HasPrefix(e.Name(), prefix) {
-				if _, ok := expectedExtensionsCatalog[e.Name()]; !ok {
-					t.Errorf("%s: an E17-family case dir is not in expectedExtensionsCatalog (add it, or it escapes proof resolution)", e.Name())
+				_, e17 := expectedExtensionsCatalog[e.Name()]
+				if !e17 && !slices.Contains(uat.AgentSurfaceCaseIDs, e.Name()) {
+					t.Errorf("%s: a case dir under an E17-family prefix is in NEITHER expectedExtensionsCatalog nor uat.AgentSurfaceCaseIDs (add it to one, or it escapes proof resolution entirely)", e.Name())
 				}
 				break
 			}
+		}
+	}
+}
+
+// TestTheSLKCatalogsAreDisjoint is the other half of the split ownership above. Two catalogs resolving the
+// same id would both report green while each assumed the other was the authority — and worse, a case could
+// be quietly moved from the gate that actually runs its proofs to one that does not. Exactly one owner, and
+// the E20 side (tests/uat/agent-surface) asserts every id in its list has a directory.
+func TestTheSLKCatalogsAreDisjoint(t *testing.T) {
+	for _, id := range uat.AgentSurfaceCaseIDs {
+		if _, both := expectedExtensionsCatalog[id]; both {
+			t.Errorf("%s is claimed by BOTH expectedExtensionsCatalog and uat.AgentSurfaceCaseIDs — two owners is no owner", id)
 		}
 	}
 }

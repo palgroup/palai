@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# Agent-surface UAT — the E20 EXIT gate (plan §T5). One target, a Docker-free CORE + a Docker-bound JOURNEY
+# tier + a CREDENTIAL-gated live tier. The core is the load-bearing gate: it needs no Docker and no
+# credential.
+#
+# WHY THIS TARGET CO-RUNS THE BACKING SUITES (the E17 T11 review's MUST-FIX 1, inherited verbatim through
+# E19): the bundle's per-case `status` is AUTHORED deterministic data. Only the entries carrying a proof
+# block can be judged by a verifier; the rest carry shape fields alone. So `evidence-verify` on its own
+# certifies "UAT declared green", NOT "UAT green". THIS SCRIPT is what makes the authored status honest: the
+# SAME invocation that verifies the bundle also RUNS the suites that back the four cases it certifies. A red
+# backing suite fails this target, and tests/uat/agent-surface TestARedBackingSuiteFailsTheSurfaceGate proves
+# that mechanically via PALAI_SURFACE_FAULT_SUITE.
+#
+#   Docker-free core (always):
+#     1. go test ./tests/uat/agent-surface/... — four gates in one package:
+#        a. the committed slack-agent-surface-0.1.0 bundle is BYTE-identical to its generator and verifies
+#           clean through the SHIPPED verifier;
+#        b. the FORGERY-DERIVATION refusal matrix: shape-consistent manifests claiming a surface property
+#           they did not earn, every one REFUSED — including a closing message that carries a forged button
+#           while declaring zero;
+#        c. the promote gate: rc PASSES, stable is REFUSED, a dropped claim marker still routes HERE, and a
+#           tier that ADVANCED against the E17 baseline is REFUSED;
+#        d. the four cases' catalog + the credential-gated live inventory, checked against the tree.
+#     2. the pure Slack adapter suite — the wire, the renderer and the manifest gate the whole surface rests
+#        on (no Docker, no credential).
+#     3. evidence-verify RELEASE=slack-agent-surface-0.1.0 through the shipped command (0/0/0/0).
+#     4. the automation catalog corpus (the tenancy half runs in the journey tier — it NEEDS a real Postgres
+#        and reports `ok` over five skips without one). E20 adds FOUR case.yaml files, so neither is optional.
+#
+#   Journey tier (Docker, no credential — SKIP_JOURNEYS=1 to opt out):
+#     5. against a throwaway Postgres: the E20 T5 JOURNEY (the panel opens and births nothing -> a panel DM
+#        with its own app_context births a run through the unchanged admission bridge -> the same event over
+#        Socket Mode births nothing -> a channel mention over Socket Mode births a second run and its HTTP
+#        redelivery births nothing -> a third run requests a publication, an unauthorized click decides
+#        nothing and an authorized click approves durably -> the run STREAMS and closes with the renderer's
+#        blocks while the model's forged button arrives as characters -> the context named a channel and
+#        nothing ever read it), plus the Slack component suite in FULL and the TENANCY corpus, which needs
+#        this tier's real Postgres to run at all.
+#
+#   Live tier (credentials from .env.local — `make uat-agent-surface-live`):
+#     6. every leg in uat.WiringLiveLegs, unchanged, INCLUDING E20's four. Each SKIPS with the name of the
+#        missing variable and the plan §0 row that supplies it, so a PARTIAL handover reports partial-green
+#        rather than a red wall. NO CODE CHANGES ARE NEEDED to run them.
+#
+# HONEST CEILING (plan §6), and it is in this release's NAME: `slack-agent-surface`, not "slack agent
+# verified". A real workspace IS connected and a real run DID complete on 2026-07-26 — and that run left NO
+# CAPTURED RECEIPT, so it closes nothing. What this gate certifies is: a wider surface, correct against the
+# PUBLISHED vendor documents, funnelled through the ONE admission bridge, with a model that cannot mint
+# anything a human can press. NO TIER ADVANCES — `slack` closes PREVIEW, and E20's contribution to §6 leg 1
+# is to make it BIGGER and CHEAPER, never to close it.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+echo "uat-agent-surface: [1/4] the E20 bundle + forgery refusal matrix + promote gate + catalog + live inventory" >&2
+go test -count=1 ./tests/uat/agent-surface/...
+
+echo "uat-agent-surface: [2/4] the pure Slack adapter suite (the wire, the renderer, the manifest gate)" >&2
+go test -count=1 ./adapters/integrations/slack/...
+
+echo "uat-agent-surface: [3/4] evidence-verify RELEASE=slack-agent-surface-0.1.0 (want 0 failed / 0 missing / 0 secret)" >&2
+RELEASE=slack-agent-surface-0.1.0 scripts/evidence/verify
+
+echo "uat-agent-surface: [4/4] the automation catalog corpus — E20 adds FOUR case.yaml files" >&2
+go test -count=1 ./tests/uat/automation/...
+# The TENANCY corpus is the other half of the re-verify rule, and it is NOT run here: all five of its tests
+# t.Skip without PALAI_SECURITY_POSTGRES_URL, so a plain `go test` reports `ok` over five skips — a green
+# that certifies nothing (E19's copy of this script has exactly that hole). It runs in the JOURNEY tier
+# below, against the throwaway Postgres that tier already stands up.
+
+# ---- the journey tier: real PostgreSQL, no credential -------------------------------------------------------
+journeys="the E20 journey + the Slack backing suite CO-RUN green"
+if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
+  # Said plainly, because the closing line must never imply a tier that did not run.
+  echo "uat-agent-surface: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — the journey and the backing" >&2
+  echo "  component suite did NOT run; this invocation does not back the bundle's authored PASS for them" >&2
+  journeys="Docker-bound journey + backing suite NOT RUN (SKIP_JOURNEYS=1)"
+else
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "uat-agent-surface: docker is not available; the E20 journey needs a throwaway Postgres" >&2
+    exit 2
+  fi
+  image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  label="io.palai.uat=agent-surface"
+  container="palai-uat-surface-$$-${RANDOM}"
+  # Throwaway local credential, generated per run; never written to a file, never echoed.
+  password="palai-uat-surface-${RANDOM}${RANDOM}"
+  cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+  before="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  trap cleanup EXIT
+
+  docker run --detach --pull=never --name "$container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 "$image" >/dev/null
+  ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "uat-agent-surface: the journey postgres did not become ready" >&2
+    exit 1
+  fi
+  binding="$(docker port "$container" 5432/tcp)"; port="${binding##*:}"
+
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+  # A DEAD Postgres for the fault knob: reachable-looking, connects to nothing. PALAI_SURFACE_FAULT_SUITE
+  # points ONE backing suite at it so tests/uat/agent-surface TestARedBackingSuiteFailsTheSurfaceGate can
+  # prove a red backing suite makes this target exit non-zero — the guarantee the whole co-run rests on.
+  dead_url="postgres://postgres:$password@127.0.0.1:1/palai?sslmode=disable"
+
+  # The BACKING suite, with the E20 journey and every Slack component test in it. The -run selector is the
+  # SHIPPED one from scripts/test/component, verbatim: the store package also holds suites this epic does
+  # not own, and running them here would make the gate's runtime somebody else's problem.
+  # The TENANCY corpus, against the real Postgres — the half of the re-verify rule a Docker-free tier
+  # cannot honestly run (see [4/4] above). E20 adds four case.yaml files, so it is not optional.
+  echo "uat-agent-surface: [journey] the tenancy corpus against real PostgreSQL" >&2
+  set +e
+  PALAI_SECURITY_POSTGRES_URL="$url" go test -tags=security -count=1 -v ./tests/security/tenancy
+  tenancy_status=$?
+  set -e
+  if test "$tenancy_status" -ne 0; then
+    echo "uat-agent-surface: the tenancy corpus FAILED — a new case.yaml must re-run it" >&2
+    cleanup; trap - EXIT
+    exit "$tenancy_status"
+  fi
+
+  suites=("./apps/control-plane/internal/store")
+  status=0
+  for suite in "${suites[@]}"; do
+    suite_url="$url"
+    if [ "${PALAI_SURFACE_FAULT_SUITE:-}" = "$suite" ]; then
+      suite_url="$dead_url"
+      echo "uat-agent-surface: FAULT INJECTED — $suite points at a DEAD Postgres; this run MUST fail" >&2
+    fi
+    echo "uat-agent-surface: [journey] backing suite $suite" >&2
+    set +e
+    PALAI_COMPONENT_POSTGRES_URL="$suite_url" \
+      go test -tags=component -count=1 -v -run 'TestSlack|TestAgentSurfaceJourney' "$suite"
+    status=$?
+    set -e
+    if test "$status" -ne 0; then
+      echo "uat-agent-surface: backing suite $suite FAILED — the bundle's authored PASS for its cases is not honest" >&2
+      docker logs "$container" >&2 || true
+      break
+    fi
+  done
+
+  cleanup
+  trap - EXIT
+  after="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if test "$after" -ne "$before"; then
+    echo "uat-agent-surface: the journey tier leaked a container" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+fi
+
+# ---- the live tier: credential-gated, NO CODE CHANGES -------------------------------------------------------
+live="live legs NOT RUN (RUN_LIVE unset)"
+if [ "${RUN_LIVE:-0}" = "1" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  echo "uat-agent-surface: the credential-gated live legs — each SKIPS by name if its variable is absent" >&2
+  # -v so a SKIP is VISIBLE: this family's signature failure is a green report over legs that never ran.
+  # BOTH roots the canonical inventory spans, not only Slack's. uat.WiringLiveLegs carries one A2A leg, and
+  # a command that claimed to run "every live leg" while skipping the package it lives in would be an
+  # overclaim of exactly the kind this gate exists to refuse.
+  go test -tags=live -count=1 -v ./tests/live/slack/... ./tests/live/a2a/...
+  live="live legs attempted (read the SKIP lines above: a skip is not a pass)"
+fi
+
+echo "uat-agent-surface=PASS (E20 exit gate: bundle 0/0/0/0, forgery re-derived from the closing bytes, $journeys, $live)" >&2
+echo "uat-agent-surface: NO TIER ADVANCED — \`slack\` closes PREVIEW. A real workspace IS connected and a real" >&2
+echo "  run DID complete on 2026-07-26, and it left NO CAPTURED RECEIPT, demonstrated ONE claim of twelve, and" >&2
+echo "  arrived in the epic that GREW the surface most. E20 makes §6 leg 1 bigger and cheaper, not closed." >&2

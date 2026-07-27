@@ -1,0 +1,21 @@
+id: SLK-009
+name: one-run-is-one-visible-message-while-it-works
+proof_class: component-real
+provider: fake
+input: "a run becomes VISIBLE while it works and still produces exactly ONE message when it is done (E20 T1). A mention sets a working status through assistant.threads.setStatus — which needs `chat:write` and NO new scope (§3.5 S3), so it is the one gain an already-installed app gets with no reinstall — then the first journal step OPENS a stream with chat.startStream carrying BOTH recipient ids the published reference requires when streaming to a channel (S9; absent either, the call is not made and the answer falls back to a plain post), progress APPENDS ride chat.appendStream, and the terminal transaction CLOSES that same message rather than posting beside it: chat.postMessage is called ZERO times for a streamed run. EXACTLY-ONCE comes from admission, not from de-duplication in the follower: the follower starts only when the idempotency reservation reported Replayed==false, so Slack's documented three-attempt redelivery of one event_id opens exactly one stream. Over the concurrency cap the stream is SKIPPED and never the answer — the capped-out run still delivers one plain message. S11 is closed as a boundary rather than a feature: `stopped_by_user` stops the STREAM, the RUN KEEPS RUNNING, the thread is told so plainly, and the negative is enforced structurally by a source scan that fails if the follower so much as names AcceptCommand — a Slack UI affordance carries no authenticated actor and is therefore not run control. A failed run streams an HONEST terminal derived from the journal's own terminal event; a run that produced no output opens no stream at all. S12 is taken CONSERVATIVELY where two Slack pages contradict each other: blocks travel on chat.stopStream only. LOCAL seam: component-real against REAL PostgreSQL, the real coordinator and the real journal, with a FAKE Slack peer answering the envelopes the published references document. HONEST CEILING, and it is the most important sentence here: this is NOT token streaming — the journal has no delta event and E08 opens no tools to a real provider, so a REAL run is single-step and has exactly ONE thing to stream; every multi-append cadence proven here is driven by a FAKE ENGINE's journal events. A control-plane restart loses the stream's ts and the terminal lands as a NEW message. §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — `slack` closes PREVIEW, not stable."
+expect_status: completed
+proof:
+  - adapters/integrations/slack/stream_test.go:TestStartStreamRefusesWithoutARecipient
+  - adapters/integrations/slack/stream_test.go:TestStartStreamCarriesTheDocumentedArguments
+  - adapters/integrations/slack/stream_test.go:TestOnlyStopStreamCarriesBlocks
+  - adapters/integrations/slack/stream_test.go:TestAppendStreamSurfacesStoppedByUser
+  - adapters/integrations/slack/stream_test.go:TestStreamTextIsTruncatedVisibly
+  - adapters/integrations/slack/agent_test.go:TestSetStatusCarriesTheDocumentedArguments
+  - adapters/integrations/slack/agent_test.go:TestSetStatusCapsLoadingMessagesAtTen
+  - apps/control-plane/internal/extensions/slack_stream_test.go:TestSlackStreamNeverControlsTheRun
+  - apps/control-plane/internal/extensions/slack_stream_test.go:TestSlackStreamLineIsTotalAndSaysOnlyWhatTheJournalKnows
+  - apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamShowsTheRunWorkingThenClosesWithTheAnswer
+  - apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamRedeliveryOpensNoSecondStream
+  - apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamOverTheConcurrencyCapStillAnswers
+  - apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStreamStoppedByUserLeavesTheRunRunning
+  - apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackRunWithNoOutputOpensNoStream

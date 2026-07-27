@@ -23,6 +23,12 @@ import (
 // rather than a silence: without it, a bundle that LOST its family claims would quietly move from "passes
 // its own gate" to "no gate recognizes it" and the sweep below would still be green.
 var promoteFamilies = map[string]string{
+	// E20's family is checked FIRST of all in PromoteGateFor, for the reason E19's clause below describes
+	// one level down: an agent-surface bundle also carries the E19 wiring claim (it derives its inherited
+	// case set from that release), so dispatching on that would reroute it to a gate that knows nothing
+	// about the forgery derivation. It is recognized by the E20 CASE IDS rather than by the
+	// agent_surface_claim it enforces — dispatching on the claim a gate enforces is how a release drops it.
+	"slack-agent-surface-0.1.0": "E20 agent-surface (the forgery re-derivation over the closing blocks + the three admission entrances + the composed wiring/extensions/eval gates)",
 	// E19's family is checked AHEAD of E18's in PromoteGateFor: a wiring bundle also carries E17 area
 	// claims, so dispatching on those would reroute it to a gate that knows nothing about mounts.
 	"integration-wiring-0.1.0":  "E19 wiring (mount derivation from the running stack + no-tier-advance against the E17 baseline + the composed extensions gate)",

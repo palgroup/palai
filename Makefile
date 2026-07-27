@@ -6,7 +6,8 @@ SHELL := /bin/bash
 	test-fault test-security test-performance test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
-	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-wiring uat-wiring-live uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
+	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-wiring uat-wiring-live \
+	uat-agent-surface uat-agent-surface-live uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
 	release-matrix-smoke provenance-offline-verify
 
 bootstrap:
@@ -309,6 +310,20 @@ uat-wiring:
 uat-wiring-live:
 	@test -x scripts/uat/wiring || { echo "wiring UAT not implemented" >&2; exit 2; }
 	@RUN_LIVE=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' RUN_CONSOLE_REAL='$(RUN_CONSOLE_REAL)' scripts/uat/wiring
+
+# E20 T5 exit gate (plan §T5): the slack-agent-surface-0.1.0 bundle, the forgery-derivation refusal matrix,
+# the promote gate, the four case ids this epic opened, and the Docker-bound journey. uat-wiring and every
+# earlier uat-* target above stay untouched.
+uat-agent-surface:
+	@test -x scripts/uat/agent-surface || { echo "agent-surface UAT not implemented" >&2; exit 2; }
+	@SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/agent-surface
+
+# THE ONE COMMAND (plan §T5): every credential-gated live leg in uat.WiringLiveLegs, E20's four included.
+# Each SKIPS by the NAME of the variable it is missing, so a partial handover reports partial-green rather
+# than a red wall, and no code change is needed to run any of them.
+uat-agent-surface-live:
+	@test -x scripts/uat/agent-surface || { echo "agent-surface UAT not implemented" >&2; exit 2; }
+	@RUN_LIVE=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/agent-surface
 
 # E18 T1 image half of the release matrix (Docker-bound, so NOT in `make verify` — like uat-kind): builds
 # linux/amd64 + linux/arm64 for all three images, asserts each indexed tar's digest/image_id/arch against the
