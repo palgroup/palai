@@ -531,6 +531,10 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		case "model.request":
 			st.modelStepIndex++
 			continues, err := o.dispatchModel(ctx, st, frame)
+			if errors.Is(err, errContextOverflow) {
+				// Named, not retried: the history that did not fit will not fit on attempt two.
+				return o.failContextOverflow(ctx, st)
+			}
 			if err != nil {
 				return abortIfTerminal(err)
 			}
@@ -719,6 +723,83 @@ func validateFrame(f contracts.EngineFrame, a AttemptDescriptor) error {
 		return fmt.Errorf("frame %s attempt identity mismatch", f.ID)
 	}
 	return nil
+}
+
+// errContextOverflow marks a provider failure caused by the request not fitting the model's context
+// window. It is a SENTINEL, not a message: model_dispatch wraps the sanitized provider failure with
+// it and the run loop acts on it, so the two ends agree without parsing each other's text.
+var errContextOverflow = errors.New("context_overflow")
+
+// contextOverflowCodes are the provider error codes that mean "this did not fit". The classification
+// keys on the CODE and only the code, because both adapters' sanitizeError deliberately discards the
+// provider's free text (it can echo a credential prefix) and replaces it with "provider returned HTTP
+// N" — so there is no message to match against, by construction.
+//
+// CONTRACT: OpenAI API errors — https://developers.openai.com/api/docs/guides/error-codes
+// (fetched 2026-07-27). UNCONFIRMED IN THE DOCUMENT: that page enumerates only status-level
+// conditions (401/403/429/500/503) and does not publish a table of `code` values at all, so
+// `context_length_exceeded` is recorded here as the code the API returns in practice rather than as
+// a documented guarantee. provider_one's sanitizeError takes error.code when present, else
+// error.type, so this is the string that reaches us.
+//
+// CONTRACT: Anthropic Messages API errors — https://platform.claude.com/docs/en/api/errors
+// (fetched 2026-07-27). `request_too_large` (413) IS documented: "Request exceeds the maximum
+// allowed number of bytes", 32 MB on the Messages API. That is the oversized-conversation failure
+// for provider-two and it is classified here.
+//
+// WHAT IS DELIBERATELY NOT CLASSIFIED, and this is the honest ceiling of the whole bullet: a prompt
+// over the CONTEXT WINDOW (as opposed to the byte ceiling) is, on Anthropic, a 400
+// `invalid_request_error` — the same documented type as a malformed tool block, an unsupported
+// thinking parameter, or a prefilled assistant message. provider_two's sanitizeError reads
+// error.type, so every one of those arrives as the same code. Classifying it would fail every
+// provider-two 400 as a context overflow, which is a worse lie than not naming it at all. On
+// provider-two the byte budget in history.go is the defence and this classifier is not.
+var contextOverflowCodes = map[string]bool{
+	"context_length_exceeded": true, // provider-one
+	"request_too_large":       true, // provider-two
+}
+
+// isContextOverflow reports whether a sanitized provider failure is an oversized request.
+func isContextOverflow(e *modelbroker.SanitizedError) bool {
+	return e != nil && contextOverflowCodes[e.Code]
+}
+
+// contextOverflowProblem is the terminal Response error an overflowed run projects. It is separate
+// from terminalProblems' generic "Internal error" for one reason: Slack's failure line appends the
+// problem TITLE (renderSlackReply), so this title is the difference between a person being told the
+// conversation got too long and a person being told nothing. Status 400 — the request was too big,
+// which is a caller-side fact, and it is NOT retryable: the same history retried is the same size.
+func contextOverflowProblem() contracts.Problem {
+	return contracts.Problem{
+		Type:   problemTypePrefix + "context_length_exceeded",
+		Code:   "context_length_exceeded",
+		Title:  "The conversation is too long for the model",
+		Status: 400,
+		Detail: "the request exceeded the model's context window even after older turns were dropped; " +
+			"start a new thread, or send a clear command to reset this session's history",
+	}
+}
+
+// failContextOverflow drives the run to an explicit, NAMED terminal failure. It mirrors
+// failRecovery's shape deliberately — one terminal transition, one projection — and it returns nil
+// so the attempt ends cleanly instead of failing the job: an oversized request is DETERMINISTIC, so
+// the retry ladder would spend eight attempts and every one of them would send the same too-large
+// history to the same provider before dead-lettering into the generic failure this exists to avoid.
+func (o *Orchestrator) failContextOverflow(ctx context.Context, st *attemptState) error {
+	switch _, err := o.spine.ApplyRunTransition(ctx, st.tenant, string(st.attempt.RunID), statemachines.RunCmdFail); {
+	case errors.Is(err, coordinator.ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+		return nil // another path already settled this run; its projection stands
+	case err != nil:
+		return err
+	}
+	problem := contextOverflowProblem()
+	projection, _ := json.Marshal(map[string]any{
+		"output": st.output,
+		"usage":  st.usage,
+		"model":  st.model,
+		"error":  problem,
+	})
+	return o.spine.FinalizeResponse(ctx, st.tenant, st.responseID, "failed", projection)
 }
 
 // abortIfTerminal maps a mid-attempt terminal-run rejection to a clean attempt end. When a
