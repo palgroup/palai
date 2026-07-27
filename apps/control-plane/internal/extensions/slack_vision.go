@@ -188,6 +188,12 @@ func slackImageProvenance(conn api.SlackConnectionRef, ev slack.Event, file slac
 //
 // It says nothing about WHICH file or WHY: a filename is untrusted text and a reason is operator detail that
 // belongs in the log line, not in a conversation.
+//
+// IT TRAILS THE HUMAN'S WORDS, which is the opposite of what slackContextNote does, and the difference is the
+// reason rather than an inconsistency. The context note LEADS because it is UNTRUSTED — a workspace member
+// puts channels in it simply by looking at them — and untrusted annotation must never sit where the most
+// recent instruction goes. This note is entirely ours: a fixed sentence and an integer, with no field of the
+// payload in it. There is nothing here for a user to write.
 func slackImageNote(attached []slackImageAttachment, skipped int) string {
 	switch {
 	case skipped == 0:

@@ -186,18 +186,27 @@ func TestFetchImageRefusesAnyHostButSlackFiles(t *testing.T) {
 	}
 }
 
-// A non-2xx must not become an "image" made of the error page's bytes.
-func TestFetchImageRefusesANonOKResponse(t *testing.T) {
+// A non-2xx must not become an "image" made of the error page's bytes, and the error it raises must carry
+// neither the credential nor the response body — a Slack error page is untrusted bytes, and an error string
+// is a place values get logged.
+func TestFetchImageRefusesANonOKResponseWithoutEchoingTheBodyOrTheToken(t *testing.T) {
 	_, err := FetchImage(context.Background(), doerFunc(func(*http.Request) (*http.Response, error) {
-		r := respond([]byte(`{"error":"not_allowed"}`))
+		r := respond([]byte(`{"error":"not_allowed","hint":"UNTRUSTEDBODYTEXT"}`))
 		r.StatusCode = http.StatusForbidden
 		return r, nil
-	}), []byte("t"), SharedFile{ID: "F1", MimeType: "image/png", DownloadURL: "https://files.slack.com/x"}, 1<<20)
+	}), []byte("xoxb-NEEDLE-not-a-credential"), SharedFile{ID: "F1", MimeType: "image/png", DownloadURL: "https://files.slack.com/x"}, 1<<20)
 	if err == nil {
 		t.Fatal("a 403 was accepted as an image")
 	}
-	if strings.Contains(err.Error(), "t") && strings.Contains(err.Error(), "Bearer") {
-		t.Fatalf("err = %v carries credential material", err)
+	// A distinctive needle, not a one-letter token: "does the error contain 't'" matches nearly any sentence
+	// and would have asserted nothing.
+	for _, leaked := range []string{"xoxb-NEEDLE-not-a-credential", "Bearer", "UNTRUSTEDBODYTEXT", "not_allowed"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("err = %v carries %q", err, leaked)
+		}
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Fatalf("err = %v, want it to name the status an operator needs", err)
 	}
 }
 
