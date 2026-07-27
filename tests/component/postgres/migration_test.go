@@ -1964,10 +1964,18 @@ func TestMigration43SlackRequester(t *testing.T) {
 
 	// The identity cannot outlive what it describes: reaping the response takes the turn handle AND the id
 	// with it, so a purge cannot leave a person's id attached to a conversation nobody can read.
+	//
+	// THE COUNT IS TENANT-SCOPED, and it was not until E21 T7's exit gate co-ran this package with the store
+	// suite against ONE Postgres. `U0ASKER` is a shared fixture id — the store tier's mention test uses the
+	// same literal — so an unscoped sweep counts ANOTHER test's rows and fails on work this test never did.
+	// The same shape defeated an E19 T6 outbound assertion for the same reason: a global count is not an
+	// assertion about this test's cascade, it is an assertion about whatever else touched the database.
 	exec(t, pool, `DELETE FROM responses WHERE id = $1`, responseID)
 	var left int
 	if err := pool.QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM slack_message_turns WHERE requester_user_id = 'U0ASKER'`).Scan(&left); err != nil {
+		`SELECT count(*) FROM slack_message_turns
+		  WHERE organization_id = $1 AND project_id = $2 AND requester_user_id = 'U0ASKER'`,
+		tenant.Organization, tenant.Project).Scan(&left); err != nil {
 		t.Fatalf("count orphaned requesters: %v", err)
 	}
 	if left != 0 {

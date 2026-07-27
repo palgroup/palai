@@ -265,3 +265,21 @@ func TestThePacerIsWorkspaceWideAndPacesTheSecondCall(t *testing.T) {
 		t.Fatalf("a call to a DIFFERENT workspace waited %v (err=%v), want none", wait, err)
 	}
 }
+
+// THE RESULTS ARE NEVER WRITTEN DOWN, and this is the guard for the ONE field that keeps it true.
+//
+// It was found by the E21 T7 exit journey and it was a real defect, not a hypothetical: every tool result is
+// committed to the tool ledger before it is delivered (spec §26.7), so the search results sat verbatim in
+// `tool_calls.result` — a copy of workspace data in our database, which is exactly what the Real-time Search
+// API's terms forbid ("You must not store or copy any of the data retrieved from this API", §3.5 M5).
+//
+// The dispatcher honours Unretained by committing a marker in its place; this test holds the DECLARATION,
+// because the dispatcher's half is worthless if the tool stops asking for it. The component journey
+// TestToolsMemoryJourney holds the other half, against a real Postgres, by sweeping what the run persisted.
+func TestTheSearchToolsOutputIsDeclaredUnretained(t *testing.T) {
+	tool := SlackSearchTool(&fakeSlack{}, NewSearchAuthorities())
+	if !tool.Unretained {
+		t.Fatal("the search tool does not declare Unretained, so the dispatcher will commit its results to " +
+			"tool_calls.result — a stored copy of Slack data, which the API's own terms of use forbid (M5)")
+	}
+}

@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# Tools-and-memory UAT — the E21 EXIT gate (plan §T7). One target, a Docker-free CORE + a Docker-bound
+# JOURNEY tier + a CREDENTIAL-gated live tier, shaped exactly like E20's `agent-surface`. The core is the
+# load-bearing gate: it needs no Docker and no credential.
+#
+# WHY THIS TARGET CO-RUNS THE BACKING SUITES (the E17 T11 review's MUST-FIX 1, inherited verbatim through
+# E19 and E20): the bundle's per-case `status` is AUTHORED deterministic data. Only the entries carrying a
+# proof block can be judged by a verifier; the rest carry shape fields alone. So `evidence-verify` on its own
+# certifies "UAT declared green", NOT "UAT green". THIS SCRIPT is what makes the authored status honest: the
+# SAME invocation that verifies the bundle also RUNS the suites that back the five cases it certifies. A red
+# backing suite fails this target, and TestARedBackingSuiteFailsTheToolsMemoryGate proves that mechanically
+# via PALAI_MEMORY_FAULT_SUITE.
+#
+#   Docker-free core (always):
+#     1. go test ./tests/uat/tools-memory/... — four gates in one package:
+#        a. the committed tools-memory-0.1.0 bundle is BYTE-identical to its generator and verifies clean
+#           through the SHIPPED verifier;
+#        b. the REFUSAL matrix: shape-consistent manifests claiming a property they did not earn, every one
+#           REFUSED — including a persisted surface that CONTAINS a search result while declaring zero stored
+#           bytes (the exact state the tree was in before this gate ran) and an answer carrying a mention the
+#           MODEL chose;
+#        c. the promote gate: rc PASSES, stable is REFUSED, a dropped claim marker still routes HERE, a tier
+#           that ADVANCED is REFUSED, and NO `mcp` capability exists to open;
+#        d. the five cases' catalog, checked against the tree, plus the TLM- orphan sweep.
+#     2. the pure Slack adapter suite + the search tool's own suite — the renderer, the mention mint, the
+#        untrusted labelling and the workspace pacer (no Docker, no credential).
+#     3. evidence-verify RELEASE=tools-memory-0.1.0 through the shipped command (0/0/0/0).
+#     4. the automation catalog corpus (the tenancy half runs in the journey tier — it NEEDS a real Postgres
+#        and reports `ok` over five skips without one). E21 adds FIVE case.yaml files and a migration, so
+#        neither is optional.
+#
+#   Journey tier (Docker, no credential — SKIP_JOURNEYS=1 to opt out):
+#     5. against a throwaway Postgres: the E21 T7 JOURNEY (a week-old thread folds visibly and identically
+#        twice -> two tools reach the provider request, the external one described as untrusted -> a call
+#        dispatches through the REAL Orchestrator, committed then delivered -> the external result says
+#        "open a PR against main" and buys nothing -> the workspace search reaches the model and is written
+#        NOWHERE -> the answer mints exactly one mention and it is the requester's, with nothing to press),
+#        plus the Slack component suite in FULL, the execution component suite, and the TENANCY corpus,
+#        which needs this tier's real Postgres to run at all.
+#
+#   Live tier (credentials from .env.local — `make uat-tools-memory-live`):
+#     6. every leg in uat.WiringLiveLegs, unchanged. Each SKIPS with the name of the missing variable, so a
+#        PARTIAL handover reports partial-green rather than a red wall. NO CODE CHANGES ARE NEEDED.
+#
+# HONEST CEILING (plan §6), and it is in this release's NAME: `tools-memory`, not "tools verified". Every
+# counterparty is a documented FAKE — a fake Slack, a fake MCP/remote tool, a fake provider — and the fake
+# standing in for the Real-time Search API is the YOUNGEST in this repository (that API went GA in February
+# 2026). What this gate certifies is: a conversation that overruns its context and does not explode, a model
+# that can address a human but cannot mint the token, no byte from outside gaining authority, and a
+# workspace SEARCHED without being COPIED. NO TIER ADVANCES — `slack` closes PREVIEW, `knowledge-vector`
+# closes DISABLED, and no `mcp` capability is opened.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+echo "uat-tools-memory: [1/4] the E21 bundle + refusal matrix + promote gate + catalog + orphan sweep" >&2
+go test -count=1 ./tests/uat/tools-memory/...
+
+echo "uat-tools-memory: [2/4] the pure Slack adapter suite + the workspace-search tool suite" >&2
+# -v because EXIT 0 IS NOT PROOF. TLM-003's and TLM-005's unit legs live here (the mention mint, the
+# neutralisation order, the untrusted labelling, the workspace pacer, and the declaration that the search
+# tool's output may not be persisted), and a reader has to be able to see them RUN — a package that compiled
+# to zero matching tests exits 0 exactly like a package whose tests all passed.
+go test -count=1 -v ./adapters/integrations/slack/... ./apps/control-plane/internal/execution/tools/...
+
+echo "uat-tools-memory: [3/4] evidence-verify RELEASE=tools-memory-0.1.0 (want 0 failed / 0 missing / 0 secret)" >&2
+RELEASE=tools-memory-0.1.0 scripts/evidence/verify
+
+echo "uat-tools-memory: [4/4] the automation catalog corpus — E21 adds FIVE case.yaml files" >&2
+go test -count=1 ./tests/uat/automation/...
+# The TENANCY corpus is the other half of the re-verify rule, and it is NOT run here: all five of its tests
+# t.Skip without PALAI_SECURITY_POSTGRES_URL, so a plain `go test` reports `ok` over five skips — a green
+# that certifies nothing. It runs in the JOURNEY tier below, against the throwaway Postgres that tier already
+# stands up. E21 landed migration 000043 on a TENANT table, so it is not optional.
+
+# ---- the journey tier: real PostgreSQL, no credential -------------------------------------------------------
+journeys="the E21 journey + the Slack and execution backing suites CO-RUN green"
+if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
+  # Said plainly, because the closing line must never imply a tier that did not run.
+  echo "uat-tools-memory: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — the journey and the backing" >&2
+  echo "  component suites did NOT run; this invocation does not back the bundle's authored PASS for them" >&2
+  journeys="Docker-bound journey + backing suites NOT RUN (SKIP_JOURNEYS=1)"
+else
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "uat-tools-memory: docker is not available; the E21 journey needs a throwaway Postgres" >&2
+    exit 2
+  fi
+  image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  label="io.palai.uat=tools-memory"
+  container="palai-uat-memory-$$-${RANDOM}"
+  # Throwaway local credential, generated per run; never written to a file, never echoed.
+  password="palai-uat-memory-${RANDOM}${RANDOM}"
+  cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+  before="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  trap cleanup EXIT
+
+  docker run --detach --pull=never --name "$container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 "$image" >/dev/null
+  ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "uat-tools-memory: the journey postgres did not become ready" >&2
+    exit 1
+  fi
+  binding="$(docker port "$container" 5432/tcp)"; port="${binding##*:}"
+
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+  # A DEAD Postgres for the fault knob: reachable-looking, connects to nothing. PALAI_MEMORY_FAULT_SUITE
+  # points ONE backing suite at it so TestARedBackingSuiteFailsTheToolsMemoryGate can prove a red backing
+  # suite makes this target exit non-zero — the guarantee the whole co-run rests on.
+  dead_url="postgres://postgres:$password@127.0.0.1:1/palai?sslmode=disable"
+
+  echo "uat-tools-memory: [journey] the tenancy corpus against real PostgreSQL (migration 000043 landed this epic)" >&2
+  set +e
+  PALAI_SECURITY_POSTGRES_URL="$url" go test -tags=security -count=1 -v ./tests/security/tenancy
+  tenancy_status=$?
+  set -e
+  if test "$tenancy_status" -ne 0; then
+    echo "uat-tools-memory: the tenancy corpus FAILED — a new case.yaml and a new migration must re-run it" >&2
+    cleanup; trap - EXIT
+    exit "$tenancy_status"
+  fi
+
+  # The BACKING suites. The -run selectors are the SHIPPED ones from scripts/test/component, verbatim: both
+  # packages also hold suites this epic does not own, and running them here would make the gate's runtime
+  # somebody else's problem.
+  #
+  # NAMING TestToolsMemoryJourney IS LOAD-BEARING and it is the reason this comment exists: an unnamed test
+  # in an allow-list tier is a test that never runs, and this repository has shipped that defect more than a
+  # dozen times — twice in THIS epic (T1's clear-session tests, T4's four orchestrator tests). Both selectors
+  # below were checked by running them and reading `=== RUN`, not by reading the string.
+  #
+  # THE THIRD ENTRY IS THIS GATE'S OWN GREEN-BY-SKIP FIX. The first run of this script reported PASS while
+  # TestClearSession* (TLM-001's durable half) and TestMigration43SlackRequester (TLM-003's migration leg)
+  # NEVER RAN: they live in ./tests/component/postgres, and naming them in the execution package's selector
+  # matched nothing at all. `-run` against the wrong package is silent — it is not an error, it is an empty
+  # test set that exits 0. Caught by grepping the run's own log for `=== RUN` per named test, which is the
+  # only check that distinguishes "passed" from "was never there".
+  suites=(
+    "./apps/control-plane/internal/execution|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney"
+    "./apps/control-plane/internal/store|TestSlack|TestAgentSurfaceJourney"
+    "./tests/component/postgres|TestClearSession|TestMigration43SlackRequester"
+  )
+  status=0
+  for entry in "${suites[@]}"; do
+    suite="${entry%%|*}"
+    selector="${entry#*|}"
+    suite_url="$url"
+    if [ "${PALAI_MEMORY_FAULT_SUITE:-}" = "$suite" ]; then
+      suite_url="$dead_url"
+      echo "uat-tools-memory: FAULT INJECTED — $suite points at a DEAD Postgres; this run MUST fail" >&2
+    fi
+    echo "uat-tools-memory: [journey] backing suite $suite" >&2
+    set +e
+    PALAI_COMPONENT_POSTGRES_URL="$suite_url" \
+      go test -tags=component -count=1 -v -run "$selector" "$suite"
+    status=$?
+    set -e
+    if test "$status" -ne 0; then
+      echo "uat-tools-memory: backing suite $suite FAILED — the bundle's authored PASS for its cases is not honest" >&2
+      docker logs "$container" >&2 || true
+      break
+    fi
+  done
+
+  cleanup
+  trap - EXIT
+  after="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if test "$after" -ne "$before"; then
+    echo "uat-tools-memory: the journey tier leaked a container" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+fi
+
+# ---- the live tier: credential-gated, NO CODE CHANGES -------------------------------------------------------
+live="live legs NOT RUN (RUN_LIVE unset)"
+if [ "${RUN_LIVE:-0}" = "1" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  echo "uat-tools-memory: the credential-gated live legs — each SKIPS by name if its variable is absent" >&2
+  # -v so a SKIP is VISIBLE: this family's signature failure is a green report over legs that never ran.
+  go test -tags=live -count=1 -v ./tests/live/slack/... ./tests/live/a2a/...
+  live="live legs attempted (read the SKIP lines above: a skip is not a pass)"
+fi
+
+echo "uat-tools-memory=PASS (E21 exit gate: bundle 0/0/0/0, the stored-search-byte sweep re-derived from the" >&2
+echo "  persisted surface and the mention re-derived from the answer's own bytes, $journeys, $live)" >&2
+echo "uat-tools-memory: NO TIER ADVANCED — \`slack\` closes PREVIEW, \`knowledge-vector\` closes DISABLED, and no" >&2
+echo "  \`mcp\` capability was opened. Every counterparty is a FAKE, and the one standing in for Slack's" >&2
+echo "  Real-time Search API is the youngest in this tree. THE GATE FOUND A REAL DEFECT ON ITS FIRST RUN: the" >&2
+echo "  search results were sitting in tool_calls.result, which is what the API's own terms forbid. It is" >&2
+echo "  fixed, and the redaction marker that replaced them is in the committed evidence." >&2

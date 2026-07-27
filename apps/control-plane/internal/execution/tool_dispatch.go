@@ -145,6 +145,23 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	st.usage = addUsage(st.usage, outcome.Usage)
 
 	result, _ := json.Marshal(outcome.Result)
+	// AN UNRETAINED TOOL'S OUTPUT IS NEVER WRITTEN DOWN (E21 T5, §3.5 M5). The ledger row still exists —
+	// the call happened, the fence advanced, an auditor can see WHAT was asked and WHEN — but the bytes it
+	// returned are replaced by a marker. The engine below is still delivered the REAL result: the vendor's
+	// term restricts STORING the data, not answering with it.
+	//
+	// The two consequences are deliberate and neither is silent. A committed-replay after a kill serves this
+	// marker rather than the results, which is the honest answer for a search whose action_token did not
+	// survive the restart either; and an operator reading the ledger sees that a search ran and that its
+	// content was not kept, rather than seeing nothing at all.
+	committedResult := result
+	if outcome.Unretained {
+		committedResult, _ = json.Marshal(map[string]any{
+			"unretained": true,
+			"reason": "this tool's results may not be stored or copied (Slack Real-time Search API terms of " +
+				"use); the model received them, nothing wrote them down",
+		})
+	}
 	payload, _ := json.Marshal(map[string]any{"run_id": st.attempt.RunID, "tool_call_id": callID})
 	// The ledger row carries the tool's DECLARED replay class and the model's ORIGINAL request hash (NOT
 	// outcome.Hash, which a before_tool transform would recompute over the patched args): the identity a
@@ -152,7 +169,7 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	// replay (§26.6, the seam pin). The `arguments` column stays PATCHED (honest audit of what ran). A
 	// stale-fence late callback is rejected here (TOL-017, ErrStaleToolCommit).
 	if _, err := o.spine.CommitToolResult(ctx, st.tenant, st.sessionID, st.responseID, runID,
-		st.attempt.Fence, callID, name, arguments, result, string(outcome.ReplayClass), requestHash, toolCallCompletedEvent, payload); err != nil {
+		st.attempt.Fence, callID, name, arguments, committedResult, string(outcome.ReplayClass), requestHash, toolCallCompletedEvent, payload); err != nil {
 		return err
 	}
 

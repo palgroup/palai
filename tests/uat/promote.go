@@ -69,7 +69,23 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
 	}
-	// The E20 agent-surface family is checked FIRST, ahead of E19: it is now the most specific policy in the
+	// The E21 tools-and-memory family is checked FIRST, ahead of E20: it is now the most specific policy in
+	// the tree and it COMPOSES the agent-surface gate underneath itself (which composes wiring, which
+	// composes the E17 tier table, which composes the eval gate). An E21 bundle also carries the E20
+	// agent-surface claim and the E19 wiring claim — it DERIVES its case set from those releases — so without
+	// this clause it would reroute to AgentSurfacePromoteGate, which knows nothing about the stored-search-byte
+	// or mention re-derivations and would pass it: both crown guards would be optional in practice.
+	//
+	// THE FAMILY IS RECOGNIZED BY THE E21 CASE IDS, NOT BY THE tools_memory_claim THIS GATE ENFORCES. This is
+	// also why E21's ids carry the `TLM-` prefix rather than `SLK-`: an `SLK-013` outside AgentSurfaceCaseIDs
+	// would have matched no family marker at all and fallen through to a WEAKER gate — the
+	// promote-gate-family-dispatch defect, arrived at by a naming choice.
+	for _, c := range m.Cases {
+		if carriesE21ToolsMemoryCase(c) {
+			return ToolsMemoryPromoteGate(raw, target)
+		}
+	}
+	// The E20 agent-surface family is checked next, ahead of E19: it is the most specific policy in the
 	// tree and it COMPOSES the wiring gate underneath itself (which composes the E17 tier table, which
 	// composes the eval gate). An agent-surface bundle also carries the E19 wiring claim — it derives its
 	// case set from that release — so without this clause it would reroute to WiringPromoteGate, which knows
@@ -132,7 +148,7 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 			return PromoteGate(raw, target)
 		}
 	}
-	return []Refusal{{Detail: "no promote policy for this release: it carries none of the E20 agent-surface, E19 wiring, E18 stable-release, E17 extensions/eval-gate, E16 SDK-parity or E15 upgrade claims a promote gate recognizes"}}
+	return []Refusal{{Detail: "no promote policy for this release: it carries none of the E21 tools-and-memory, E20 agent-surface, E19 wiring, E18 stable-release, E17 extensions/eval-gate, E16 SDK-parity or E15 upgrade claims a promote gate recognizes"}}
 }
 
 // AgentSurfacePromoteGate is the mechanical form of the E20 exit-gate sentence (plan §T5, §7): a release

@@ -7,7 +7,7 @@ SHELL := /bin/bash
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
 	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-wiring uat-wiring-live \
-	uat-agent-surface uat-agent-surface-live uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
+	uat-agent-surface uat-agent-surface-live uat-tools-memory uat-tools-memory-live uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
 	release-matrix-smoke provenance-offline-verify
 
 bootstrap:
@@ -324,6 +324,23 @@ uat-agent-surface:
 uat-agent-surface-live:
 	@test -x scripts/uat/agent-surface || { echo "agent-surface UAT not implemented" >&2; exit 2; }
 	@RUN_LIVE=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/agent-surface
+
+# E21 T7 exit gate (plan §T7): the tools-memory-0.1.0 bundle, the refusal matrix (a persisted surface that
+# CONTAINS a search result; an answer carrying a mention the MODEL chose), the promote gate dispatched ahead
+# of E20's, the five case ids this epic opened, and the Docker-bound journey. Every earlier uat-* target above
+# stays untouched.
+uat-tools-memory:
+	@test -x scripts/uat/tools-memory || { echo "tools-memory UAT not implemented" >&2; exit 2; }
+	@SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/tools-memory
+
+# THE ONE COMMAND (plan §T7): every credential-gated live leg in uat.WiringLiveLegs, unchanged. Each SKIPS by
+# the NAME of the variable it is missing, so a partial handover reports partial-green rather than a red wall,
+# and no code change is needed to run any of them. E21's §6 contribution is to make leg 1 BIGGER again — it
+# now covers the tool surface, the workspace search and the mention — and to add leg 2's four M20 measurements
+# at zero extra cost.
+uat-tools-memory-live:
+	@test -x scripts/uat/tools-memory || { echo "tools-memory UAT not implemented" >&2; exit 2; }
+	@RUN_LIVE=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/tools-memory
 
 # E18 T1 image half of the release matrix (Docker-bound, so NOT in `make verify` — like uat-kind): builds
 # linux/amd64 + linux/arm64 for all three images, asserts each indexed tar's digest/image_id/arch against the

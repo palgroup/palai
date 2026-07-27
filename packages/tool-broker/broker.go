@@ -70,6 +70,21 @@ type Tool struct {
 	// (external_idempotency_key = tool_call_id) so a reconcile can correlate; a built-in with no external
 	// key records none (honest: the column is empty unless a real external key exists).
 	ExternalKeyed bool
+	// Unretained marks a tool whose OUTPUT MAY NOT BE PERSISTED (E21 T5/T7). The dispatcher commits a
+	// redaction marker to the tool ledger in its place; the model still receives the real result, because
+	// the restriction is on STORING the bytes and not on using them.
+	//
+	// It exists because the alternative is worse. Every tool result is committed before it is delivered
+	// (spec §26.7, and that ordering is load-bearing), so the ledger is where a result lands by default —
+	// and `assistant.search.context`'s own terms are "You must not store or copy any of the data retrieved
+	// from this API" (§3.5 M5). Without a declared property the orchestrator would need to know the NAME of
+	// a Slack tool, which is precisely the coupling the broker exists to prevent.
+	//
+	// CONSEQUENCE, and it is deliberate: the committed row can no longer replay this call's result across a
+	// process kill. That is the honest behaviour for a search whose authority (the event's action_token) did
+	// not survive the restart either — a resumed run must ask again rather than be served a copy that should
+	// not exist.
+	Unretained bool
 }
 
 // replayClass reports the tool's declared class, defaulting an unset one to ClassPure.
@@ -90,6 +105,9 @@ type Outcome struct {
 	Hash        string
 	ReplayClass ReplayClass
 	Cached      bool
+	// Unretained is the executed tool's declared no-persist property, copied onto the outcome so the
+	// dispatcher can honour it without resolving the tool a second time (Tool.Unretained).
+	Unretained bool
 }
 
 // LookupFunc resolves a tool absent from the static conformance set by name, scoped by the per-attempt
@@ -303,7 +321,8 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 
 	// Idempotent replay: a completed row is authoritative and never re-runs.
 	if r, ok := b.rows[callID]; ok && r.state == statemachines.ToolCallCompleted {
-		out := Outcome{Result: r.result, State: r.state, Hash: r.hash, ReplayClass: tool.replayClass(), Cached: true}
+		out := Outcome{Result: r.result, State: r.state, Hash: r.hash, ReplayClass: tool.replayClass(),
+			Cached: true, Unretained: tool.Unretained}
 		b.mu.Unlock()
 		return out, nil
 	}
@@ -362,7 +381,8 @@ func (b *Broker) Execute(ctx context.Context, callID contracts.ToolCallID, name 
 	}
 	r.state = final
 	r.result = result
-	return Outcome{Result: result, State: r.state, Usage: contracts.Usage{ToolCalls: 1}, Hash: r.hash, ReplayClass: tool.replayClass()}, nil
+	return Outcome{Result: result, State: r.state, Usage: contracts.Usage{ToolCalls: 1}, Hash: r.hash,
+		ReplayClass: tool.replayClass(), Unretained: tool.Unretained}, nil
 }
 
 // invoke runs the tool through whichever surface it defines: a workspace-touching Exec receives the

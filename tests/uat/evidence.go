@@ -283,6 +283,15 @@ type evidenceCase struct {
 	// actionable elements instead of the manifest's zero being taken at its word.
 	AgentSurfaceClaim string                  `json:"agent_surface_claim"`
 	AgentSurfaceProof *SlackAgentSurfaceProof `json:"agent_surface_proof"`
+	// The E21 T7 tools-and-memory claim (plan §T7 — the E21 EXIT gate) extends the same discipline to the
+	// invariants THIS epic owns: a conversation that overruns its context is windowed deterministically, a
+	// tool is dispatched through the REAL Orchestrator, no byte arriving from outside gains authority, no
+	// byte retrieved from the Real-time Search API is STORED (M5's written term of use), and a human can be
+	// mentioned only through a token OUR renderer minted. It requires its proof, and two counters are
+	// RE-DERIVED rather than believed — the stored search bytes are re-swept out of the persisted surface,
+	// and every `<@…>` token is re-swept out of the answer's blocks.
+	ToolsMemoryClaim string            `json:"tools_memory_claim"`
+	ToolsMemoryProof *ToolsMemoryProof `json:"tools_memory_proof"`
 }
 
 type evidenceTerm struct {
@@ -2706,6 +2715,12 @@ var committedBundleSurfaces = map[string]string{
 	// (AgentSurfaceContractsDigest), derived from the code table in this file — so a bundle that dropped or
 	// reworded a §3.5 divergence row would move every checksum in it.
 	AgentSurfaceBundle: SurfaceRecomputed,
+	// The E21 T7 tools-and-memory bundle. Its anchor is the CANONICAL vendor contract ledger digest
+	// (ToolsMemoryContractsDigest), derived from the code table in evidence_tools_memory.go — so a bundle that
+	// dropped or reworded a §3.5 divergence row would move every checksum in it. It may NOT be
+	// LegacyShapeOnly: this is a bundle written TODAY, and a new release that cannot recompute its own
+	// checksums is the exact history E18 T8 spent a task correcting.
+	ToolsMemoryBundle: SurfaceRecomputed,
 	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the other fifteen committed
 	// bundles + the materialized case corpus, so a checksum here cannot be hand-written: it moves the
 	// moment any bundle or any case.yaml does.
@@ -2775,6 +2790,8 @@ func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 		return []string{c.ID, c.RunID, WiringContractsDigest()}
 	case AgentSurfaceBundle: // tests/uat/agent-surface/bundle_test.go
 		return []string{c.ID, c.RunID, AgentSurfaceContractsDigest()}
+	case ToolsMemoryBundle: // tests/uat/tools-memory/bundle_test.go
+		return []string{c.ID, c.RunID, ToolsMemoryContractsDigest()}
 	case "extensions-0.1.0": // tests/uat/extensions/bundle_test.go
 		return []string{c.ID, c.RunID, CapabilityClaimsDigest()}
 	case "managed-cloud-0.1.0": // tests/uat/managed-cloud/evidence_test.go
@@ -2958,6 +2975,9 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	// Same shape for E20: a manifest carrying the agent-surface CASES must carry the anchor that judges them,
 	// or the crown security claim ships unverified behind four green case rows.
 	findings = append(findings, verifyE20AgentSurfacePresence(m)...)
+	// And for E21: a manifest carrying the tools-and-memory CASES must carry the anchor that judges them, or
+	// "nothing was stored" and "only our renderer mints a mention" ship unverified behind five green rows.
+	findings = append(findings, verifyE21ToolsMemoryPresence(m)...)
 
 	// A bundle whose checksums were CORRECTED, or that is shape-only, must SAY SO in the manifest (plan §2
 	// honest-naming): the note is where a reader who opens this file meets the correction or the ceiling.
@@ -3392,6 +3412,18 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "agent_surface_proof (an agent-surface claim requires the one-visible-message-per-run counter, the three admission entrances with the shared-Admit counter, the transport-invariance counter, the context entities granted ZERO authority, the actionable elements minted outside the approval builder, and every vendor requirement's source URL + §3.5 divergence id; a 'surfaced' marker is not proof — plan §T5)"})
 			case !c.AgentSurfaceProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "agent_surface_proof is incomplete: a peer not honestly named \"" + AgentSurfacePeer + "\" (this bundle cannot claim a real workspace — §6 leg 1), a shrunken/edited vendor contract ledger or a contracts_digest that does not equal the canonical one, a count that is not ONE visible message per run, an entrance set that is not the canonical three or an admission not reserved under " + AgentSurfaceAdmissionRoute + ", a transport-invariance counter with no duplicate delivery, a context that granted authority or became a fetch target, a forgery sweep that could never have FOUND anything (zero approval-builder mints), or closing blocks that RE-DERIVE an actionable element the proof declared away (plan §T5)"})
+			}
+		}
+
+		// The E21 T7 tools-and-memory anchor (plan §T7). Complete() already RE-DERIVES the stored-search-byte
+		// count out of the persisted surface and every mention token out of the answer's blocks, so a proof
+		// that declares zero over bytes saying otherwise never reaches this branch clean.
+		if c.ToolsMemoryClaim != "" {
+			switch {
+			case c.ToolsMemoryProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "tools_memory_proof (a tools-and-memory claim requires the folded-turn counters with the two BIT-EQUAL fold digests, the tools advertised and dispatched through the REAL Orchestrator, the authority an external tool's output gained (zero), the search bytes STORED (zero, re-derived from the persisted surface), the mentions minted beside the mentions minted outside our renderer (zero), and every vendor requirement's source URL + §3.5 divergence id; a 'searched' marker is not proof — plan §T7)"})
+			case !c.ToolsMemoryProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "tools_memory_proof is incomplete: a peer not honestly named \"" + ToolsMemoryPeer + "\" (this bundle cannot claim a real workspace or a real MCP server — §6 legs 1 and 4), a shrunken/edited vendor contract ledger or a contracts_digest that does not equal the canonical one, a fold that dropped nothing (no budget was reached) or everything (a truncation, not a window), two fold digests that DISAGREE (the determinism history.go's replay contract rests on), a tool surface with nothing advertised or nothing dispatched through the real Orchestrator, an external result that GAINED authority, a search whose results cannot be found in what reached the model (so the stored-zero is vacuous) or CAN be found in what the run persisted (M5: \"You must not store or copy any of the data retrieved from this API\"), a mention token in the answer that is not the delivery row's frozen requester id, or answer blocks that RE-DERIVE an actionable element (plan §T7)"})
 			}
 		}
 
