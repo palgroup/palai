@@ -126,6 +126,12 @@ var expectedToolsMemoryCatalog = map[string]struct {
 		"cmd/cli/internal/stack/up_tools_test.go:TestChangingTheToolListMintsANewRevisionRatherThanSilentlyReusingTheOld",
 		"cmd/cli/internal/stack/up_tools_test.go:TestReorderingTheToolListIsNotAChange",
 		"apps/control-plane/internal/execution/config_test.go:TestResolveGrantsToolSetsOnANullProjectBaseline",
+		// The dead-tool guard: palai.slack.search was absent from `palai up`'s default list when T5
+		// shipped, so the search tool was mounted, tested and unreachable. cmd/cli cannot import the tool
+		// package, so nothing compared the two sides until this did.
+		"apps/control-plane/internal/execution/tools/default_set_test.go:TestEverySlackDefaultToolResolves",
+		"apps/control-plane/internal/execution/tools/default_set_test.go:TestTheSearchToolIsInTheDefaultSet",
+		"apps/control-plane/internal/execution/tools/default_set_test.go:TestNoDefaultSlackToolHasSideEffects",
 	}},
 	// E21 T5 — the workspace search. The last two entries are E21 T7's own: the DECLARATION that the tool's
 	// output may not be persisted, and the journey that sweeps what the run actually wrote down. They are here

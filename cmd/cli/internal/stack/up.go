@@ -1212,8 +1212,18 @@ func slackAgentTools(get func(string) string) []string {
 
 // slackDefaultTools: read-only, side-effect-free, and functional on a plain compose stack — no workspace
 // root, no repository, no sandbox driver required. palai.research.fetch carries its own egress guards;
-// palai.knowledge.retrieve is ACL-first and fail-closed to KB-wide sources.
-var slackDefaultTools = []string{"palai.research.fetch", "palai.knowledge.retrieve"}
+// palai.knowledge.retrieve is ACL-first and fail-closed to KB-wide sources; palai.slack.search reads this
+// workspace's PUBLIC channels and stores nothing (its own two gates are elsewhere and both must hold — the
+// workspace must have granted search:read.public, and the RUN must carry an action_token, or the broker
+// lookup never offers the tool at all).
+//
+// A NAME MISSING FROM THIS LIST IS A TOOL THAT CANNOT EXIST, and that is not obvious from either side:
+// advertisedTools iterates the run's EFFECTIVE SET and only asks the broker about names it already holds,
+// so a tool absent here is never resolved no matter how completely it is wired. palai.slack.search was
+// missing for exactly that reason and the whole search feature was unreachable — mounted, tested, and dead.
+// TestEverySlackDefaultToolResolves is the guard, and it lives control-plane-side because that is the only
+// place that can see both this list and the real broker.
+var slackDefaultTools = []string{"palai.research.fetch", "palai.knowledge.retrieve", "palai.slack.search"}
 
 // putSecretRef stores one credential VALUE under its handle through the E13 T3 secret store — the
 // SAME write-path a production tenant uses, envelope-encrypted at rest and resolved fresh, so the
