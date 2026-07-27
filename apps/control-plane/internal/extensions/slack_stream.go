@@ -204,8 +204,26 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 		}
 	}()
 
+	// WHERE THE TAIL STARTS, and it is not zero. A Slack THREAD is ONE session across many runs (SLK-003), so
+	// this session's journal already holds every earlier run's events — starting at zero would replay the
+	// previous answer's progress into this run's stream.
+	//
+	// The obvious alternative, filtering each event by its run id, does NOT work and the reason is worth
+	// writing down: not every journal event carries one. task.created/updated.v1 payloads are
+	// {key, kind, title, status} — no run_id — and those are the events that carry the only human-readable
+	// text in the whole journal. Filtering on the id would have silently dropped exactly the events worth
+	// streaming. So the cursor is the boundary and the id is only a cross-check where it exists.
+	//
+	// CEILING, named because it is a race rather than a certainty: an event committed between the admission
+	// and this read is treated as past. The window is the two lines between AdmitResponse returning and
+	// follow() running, and closing it needs a sequence the admission itself reports. If a run's terminal
+	// ever landed inside it the follower would simply tail until its budget; the answer still posts.
+	cursor, err := f.journalHead(ctx, tg)
+	if err != nil {
+		log.Printf("slack: could not read the journal head for run %s: %v", tg.runID, err)
+		return
+	}
 	var (
-		cursor   int64
 		steps    int
 		streamTS string
 		deadline = time.Now().Add(f.budget)
@@ -221,10 +239,10 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 		}
 		for _, event := range batch {
 			cursor = int64(event.Sequence)
-			// A Slack THREAD is one session across many runs (SLK-003), so the session's journal carries every
-			// earlier run's events too. Filtering on the run id is what keeps a follow-up message from
-			// replaying the previous answer's progress into a new stream.
-			if slackEventRunID(event) != tg.runID {
+			// The cross-check: an event that DOES name a run and names a different one is not this follower's
+			// business. (One session holds one active root run, so this is belt-and-braces rather than the
+			// boundary — the cursor above is the boundary.)
+			if id := slackEventRunID(event); id != "" && id != tg.runID {
 				continue
 			}
 			if slackRunTerminalEvents[event.Type] {
@@ -273,6 +291,30 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 		}
 	}
 	log.Printf("slack: stopped following run %s after %s without a terminal event; its answer will still post", tg.runID, f.budget)
+}
+
+// journalHead walks the session's existing journal to its end WITHOUT acting on any of it, and returns the
+// sequence the tail should start after. Everything already written belongs to an earlier turn of this thread.
+//
+// ponytail: it is a full pass over the session's history, once, when a run is born. A Slack thread's journal
+// is bounded by how long the conversation is, and the read is the same indexed query the SSE endpoint pages.
+// The cheaper shape is an admission that reports the sequence it allocated; that is a coordinator change and
+// nothing needs it yet.
+func (f *SlackStreamFollower) journalHead(ctx context.Context, tg slackStreamTarget) (int64, error) {
+	var cursor int64
+	for {
+		batch, err := f.events.After(ctx, tg.org, tg.project, tg.sessionID, cursor, slackStreamBatch)
+		if err != nil {
+			return 0, err
+		}
+		if len(batch) == 0 {
+			return cursor, nil
+		}
+		cursor = int64(batch[len(batch)-1].Sequence)
+		if len(batch) < slackStreamBatch {
+			return cursor, nil
+		}
+	}
 }
 
 // stoppedByUser handles S11 — the human pressed stop in Slack's UI.

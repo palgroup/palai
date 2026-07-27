@@ -133,19 +133,12 @@ func TestSlackStreamShowsTheRunWorkingThenClosesWithTheAnswer(t *testing.T) {
 	f.upsertTask(t, sessionID, responseID, runID, "t1", "Write the migration", "in_progress")
 	f.upsertTask(t, sessionID, responseID, runID, "t1", "Write the migration", "complete")
 	appends := f.awaitCalls(t, "/chat.appendStream", 2)
-	streamTS, _ := decodeSlackCall(t, f.awaitCalls(t, "/chat.startStream", 1)[0])["ts"].(string)
-	_ = streamTS
 	first, second := decodeSlackCall(t, appends[0]), decodeSlackCall(t, appends[1])
 	if !strings.Contains(first["markdown_text"].(string), "in_progress") ||
 		!strings.Contains(second["markdown_text"].(string), "complete") {
 		t.Fatalf("appends arrived out of order or lost their text: %q then %q", appends[0].body, appends[1].body)
 	}
-	openedTS := start["ts"]
-	if openedTS == nil {
-		// startStream's REQUEST has no ts; the ts comes back in the response. Read it off the append instead,
-		// which is where the client had to put it.
-		openedTS = first["ts"]
-	}
+	// The ts is what Slack RETURNED from startStream, so it appears on the appends rather than in the open.
 	if first["ts"] != second["ts"] {
 		t.Fatalf("two appends addressed different messages (%v, %v); one run opens ONE stream", first["ts"], second["ts"])
 	}
@@ -204,14 +197,25 @@ func TestSlackStreamRedeliveryOpensNoSecondStream(t *testing.T) {
 	// The same event, redelivered the way the Events API documents it (attempt 2 and 3).
 	f.deliver(t, body, time.Now(), "2", "http_timeout").Body.Close()
 	f.deliver(t, body, time.Now(), "3", "http_timeout").Body.Close()
-	// Give a second follower every chance to exist before asserting it does not.
-	time.Sleep(2 * time.Second)
+
+	// Now give a second follower something it COULD open a stream on, and this is the part that makes the
+	// test discriminate rather than merely pass. A redelivery's Admit mints a run id it then discards (the
+	// reservation replays onto the original run), so a follower wrongly started for one would be tailing an
+	// id no event carries — and it would sail past the run-id cross-check on exactly the events that have no
+	// run id in their payload. task.* events are those events. Without the Replayed gate, this is a SECOND
+	// chat.startStream.
+	f.upsertTask(t, sessionID, responseID, runID, "t1", "Shared work", "in_progress")
+	f.awaitCalls(t, "/chat.appendStream", 1)
+	time.Sleep(2 * time.Second) // give a second stream every chance to exist before asserting it does not
 
 	if n := f.runCount(t); n != 1 {
 		t.Fatalf("the retry storm birthed %d runs, want 1", n)
 	}
 	if n := len(f.callsTo("/chat.startStream")); n != 1 {
 		t.Fatalf("fake Slack saw %d chat.startStream call(s) after two redeliveries, want exactly 1", n)
+	}
+	if n := len(f.callsTo("/chat.appendStream")); n != 1 {
+		t.Fatalf("one journal line produced %d append(s), want 1 — a second follower is a second visible message", n)
 	}
 }
 
