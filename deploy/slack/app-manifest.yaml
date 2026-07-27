@@ -82,6 +82,17 @@ features:
       - title: "Check the release"
         message: "What is still open on the current release?"
 
+  # THE MESSAGES TAB (found live 2026-07-27, after the panel rendered but refused to accept typing).
+  # Without this block Slack leaves the Messages tab READ-ONLY and the panel shows "Sending messages
+  # to this app has been turned off": agent_view renders, the suggested prompts render, and the human
+  # cannot type a word. agent_view's own page says agent conversations happen in the Messages tab but
+  # never says the tab must be enabled for that to work — we found it by hitting it.
+  # https://docs.slack.dev/reference/app-manifest/ (checked 2026-07-27)
+  app_home:
+    home_tab_enabled: false                 # nothing here renders a Home tab; do not advertise one
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false   # false = the human may actually send
+
 oauth_config:
   scopes:
     bot:
