@@ -2,6 +2,7 @@ package slack
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -134,7 +135,17 @@ type Event struct {
 	// whether a file is worth fetching, and never what the bytes are.
 	Files []SharedFile
 	Kind  Kind
-	Retry bool // a redelivery (X-Slack-Retry-Num set) — advisory; the dedupe is on SourceEventID
+	// ActionToken authorises a Real-time Search call made with the BOT token, in the API's own words: "All
+	// API calls made using a bot token require an `action_token`." It arrives with the message that started
+	// the run, which is a property worth keeping rather than working around — the search is bound to THAT
+	// conversation instead of being a standing power the app holds.
+	//
+	// IT IS A CREDENTIAL, and it is treated as one everywhere downstream: never logged, never written to a
+	// table, never in argv, never in evidence. Its lifetime is UNDOCUMENTED (plan §3.5 M20a), which is the
+	// reason it is never persisted — storing a credential whose expiry you cannot know is keeping something
+	// you cannot tell has become rubbish.
+	ActionToken string
+	Retry       bool // a redelivery (X-Slack-Retry-Num set) — advisory; the dedupe is on SourceEventID
 }
 
 // ContextEntityChannel is the ONE entity type Slack's agent pages document with a shape we can read: `value`
@@ -170,6 +181,14 @@ type eventCallback struct {
 	APIAppID     string          `json:"api_app_id"`
 	EventID      string          `json:"event_id"`
 	Event        json.RawMessage `json:"event"`
+	// ActionToken is read at BOTH levels for the same reason app_context is (S19), and the contradiction is
+	// again Slack's own: the Real-time Search API page says "an app can obtain the action_token needed to
+	// query the Real-time Search API from either a `message` event or an `app_mention` event", while
+	// app_mention's reference prints an example payload whose fields are exactly {type,user,text,ts,channel,
+	// event_ts} — no action_token anywhere (plan §3.5 M20b, both checked 2026-07-27). No page says which
+	// level carries it. Both are read, the inner one wins, and being wrong is SILENT in the other direction:
+	// a token that never arrives looks exactly like a workspace that granted no search scope.
+	ActionToken string `json:"action_token"`
 }
 
 // innerEvent is the subset of the inner event object the mapping reads to classify + correlate. bot_id (or
@@ -201,6 +220,9 @@ type innerEvent struct {
 	// — a context that never arrives looks exactly like a user looking at nothing.
 	AppContext *appContext `json:"app_context"`
 	Context    *appContext `json:"context"`
+	// See eventCallback.ActionToken: the same field is read at both levels because the two Slack pages that
+	// mention it disagree about where it lives.
+	ActionToken string `json:"action_token"`
 	// Files is the shared-file array. Decoded on EVERY inner event, not just subtype file_share: Slack puts
 	// it on app_mention and on message.im too, where there is no subtype to key on.
 	Files []struct {
@@ -350,6 +372,7 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 		Context:       contextEntities(inner, outer.TeamID),
 		Files:         sharedFiles(inner),
 		Kind:          classify(inner.Type, inner.Subtype),
+		ActionToken:   cmp.Or(inner.ActionToken, outer.ActionToken),
 		Retry:         retry,
 	}
 	if noRun(inner.Type) {

@@ -112,6 +112,28 @@ oauth_config:
       - files:read          # SLK-005 — fetch a shared file's content
       - im:history          # SLK-010 — the ONLY way to receive message.im, i.e. the panel conversation.
                             # A POSTURE CHANGE: see the block at the top of this file before granting it.
+      - search:read.public  # TLM-005 — assistant.search.context, the Real-time Search API. THE SECOND POSTURE
+                            # CHANGE IN THIS FILE, and it is narrower than im:history but wider than it looks.
+                            #
+                            # WHAT IT GRANTS, plainly: the agent can search this workspace's PUBLIC channel
+                            # messages. Slack's own scope page is explicit that membership is not the boundary
+                            # — "the searching user need not be a member of the public channels, just of the
+                            # workspace, for the channels to be included in the search results". So the agent
+                            # can surface a message from a public channel the person asking has never opened.
+                            # That is Slack's design, not ours, and there is no documented parameter to narrow
+                            # it (https://docs.slack.dev/reference/scopes/search.read.public/, 2026-07-27).
+                            #
+                            # WHAT IT DOES NOT GRANT, and this half is structural rather than promised:
+                            # private channels, DMs and group DMs need search:read.private / .im / .mpim, and
+                            # those are USER-token scopes that a bot token cannot hold. We could not ask for
+                            # them here if we wanted to.
+                            #
+                            # NOTHING RETRIEVED IS STORED — the API's own terms: "You must not store or copy
+                            # any of the data retrieved from this API." A result enters one prompt and is gone.
+                            # It is why knowledge-vector stays disabled rather than being wired to this.
+                            #
+                            # NOT granting it is a supported outcome: leave this scope out and the agent keeps
+                            # working exactly as E20 shipped it, answering from the thread it is in.
       - users:read          # SLK-004 — users.info. Its ONE caller resolves the speakers of a fetched
                             # thread to display names, so a summary says who said what instead of
                             # "person 1" / "person 2". A name is DATA: it is rendered inside the

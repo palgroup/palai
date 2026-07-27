@@ -79,6 +79,28 @@ type SlackAdmitter struct {
 	// admitted exactly as before, text only.
 	fileDoer         slack.Doer
 	inboundArtifacts InboundArtifactStore
+
+	// The search half (E21 T5), nil until WithSearch. A nil authorizer means the search tool is never
+	// offered to any run, which is the same posture a workspace that never granted search:read.public has.
+	searchAuthorities SearchAuthorizer
+}
+
+// SearchAuthorizer is where a run's Slack-search authority is handed over. It is declared HERE, as the
+// consumer, and satisfied structurally by execution/tools.SearchAuthorities — because execution already
+// imports this package (finalize.go, hook_seam.go), so importing back would close a cycle. Primitives
+// rather than a struct for the same reason: no shared type has to exist.
+//
+// The token is a CREDENTIAL and this is the only place it crosses a package boundary. It is never logged,
+// never written to a table, never in argv and never in evidence — its lifetime is undocumented (plan §3.5
+// M20a), so it is held for the life of the run and no longer.
+type SearchAuthorizer interface {
+	Grant(runID, teamID, apiBase string, botToken []byte, actionToken string)
+}
+
+// WithSearch mounts the Slack workspace search (E21 T5). Without it a run answers from its thread alone.
+func (a *SlackAdmitter) WithSearch(authorities SearchAuthorizer) *SlackAdmitter {
+	a.searchAuthorities = authorities
+	return a
 }
 
 // NewSlackAdmitter builds the bridge. secrets redeems a signing_secret_ref to bytes at verification time (the
@@ -353,6 +375,11 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	if !out.Replayed {
 		a.attachImagesToRun(scoped, conn, images, runID)
 	}
+
+	// THE RUN MAY NOW SEARCH THE WORKSPACE (E21 T5) — if the event that started it carried the authority to.
+	// Placed after the admission on purpose: a rejected admission has no run to authorise, and granting first
+	// would leave a credential held for a run that never existed.
+	a.grantSearch(conn, ev, runID)
 
 	// The session the admission settled on (the minted one for a fresh session, the chained one otherwise).
 	session := sessionIDFromProjection(out.Body)
@@ -972,4 +999,28 @@ func sessionIDFromProjection(body []byte) string {
 		return ""
 	}
 	return proj.SessionID
+}
+
+// grantSearch hands this run its Slack-search authority, when there is one to hand over.
+//
+// EVERY REFUSAL HERE IS SILENT AND CORRECT, which is unusual enough to say plainly: the search tool is
+// resolved through a broker LOOKUP that asks whether a run has authority, so a run that gets none is simply
+// never offered the tool. Nothing fails, nothing warns, and the model answers from its thread — which is
+// exactly the behaviour of a workspace that never granted search:read.public.
+//
+// The action_token is UNCONFIRMED territory (plan §3.5 M20b): the Real-time Search page says an app can get
+// one from a message or app_mention event, while app_mention's own reference prints an example payload with
+// no such field. Both readings are decoded (inbound.go) and being wrong is silent in the safe direction —
+// no token means no search, never a search that runs unauthorised.
+func (a *SlackAdmitter) grantSearch(conn api.SlackConnectionRef, ev slack.Event, runID string) {
+	if a.searchAuthorities == nil || ev.ActionToken == "" || a.secrets == nil || conn.BotTokenRef == "" {
+		return
+	}
+	token, err := a.secrets(conn.Org, conn.BotTokenRef)
+	if err != nil || len(token) == 0 {
+		// A bot token we cannot redeem is a search we cannot make. The reply path resolves the same handle
+		// and reports its own failure loudly; a second alarm here would be noise about the same fact.
+		return
+	}
+	a.searchAuthorities.Grant(runID, ev.TeamID, a.apiBase, token, ev.ActionToken)
 }

@@ -229,6 +229,11 @@ func main() {
 	// a separate seam from the admission bridge on purpose: registration is a bearer-scoped operator action,
 	// the receivers are unauthenticated signature-verified callbacks.
 	slackStore := extensions.New(repo.Spine().Pool())
+	// The SEARCH AUTHORITIES (E21 T5) are built here rather than beside the tool broker below, because both
+	// ends need them and they are born at opposite ends of this function: admission writes a run's authority
+	// in, the broker's lookup reads it out. Nothing is persisted — an action_token's lifetime is undocumented,
+	// so it lives exactly as long as the run does.
+	slackSearchAuthorities := tools.NewSearchAuthorities()
 	slackBridge := extensions.NewSlackAdmitter(
 		slackStore, repo, slackSecretResolver,
 		api.AdmissionLimits{MaxConcurrentRuns: edge.MaxConcurrentRuns, MaxQueuedRuns: edge.MaxQueuedRuns}).
@@ -238,7 +243,11 @@ func main() {
 		// api.EventReader the SSE endpoint tails, so no second journal read path exists. Unconditional and
 		// scope-free — assistant.threads.setStatus and the chat.*Stream family are all `chat:write`, which
 		// this app already holds, so nothing here waits on a reinstall or on the agent panel.
-		WithStreaming(repo, supervisor, 0)
+		WithStreaming(repo, supervisor, 0).
+		// WORKSPACE SEARCH (E21 T5): a run born from a message that carried an action_token may search this
+		// workspace's PUBLIC channels. Nothing it finds is stored — the Real-time Search API's terms forbid
+		// copying retrieved data, which is the same reason knowledge-vector stays disabled.
+		WithSearch(slackSearchAuthorities)
 	slackBridge = mountSlackFileFetch(slackBridge, artStore, repo.Spine().Pool())
 	routerOpts = append(routerOpts, api.WithSlack(slackBridge), api.WithSlackInteractions(slackBridge),
 		api.WithSlackConnections(extensions.NewSlackRegistry(slackStore)))
@@ -297,7 +306,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	startDispatch(ctx, repo, gateway, supervisor, artStore)
+	startDispatch(ctx, repo, gateway, supervisor, artStore, slackSearchAuthorities)
 	startWebhookPump(ctx, webhookStore, supervisor)
 	startQueueBridges(ctx, queueStore, repo.Spine(), edge, supervisor)
 	startDeliveryReconciler(ctx, triggerStore, supervisor)
@@ -432,7 +441,7 @@ func migrateAndExit() bool {
 // the read-path SSE e2e drives (no broker/engine racing it). A killed worker's lease lapses
 // and its job is reclaimed at a higher fence, so no graceful shutdown is needed.
 // PALAI_DISPATCH_WORKERS sets the worker count (default 1); 0 disables dispatch.
-func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor, artStore *artifacts.Store) {
+func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor, artStore *artifacts.Store, slackSearchAuthorities *tools.SearchAuthorities) {
 	workers := envIntDefault("PALAI_DISPATCH_WORKERS", 1)
 	if workers <= 0 {
 		return
@@ -472,9 +481,14 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 				remotehttp.WithCallbackBaseURL(os.Getenv("PALAI_TOOL_CALLBACK_BASE_URL"))),
 			remoteToolSecretResolver,
 		)
-		toolBroker.SetLookup(func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
-			return toolRegistry.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
-		})
+		// The Slack search tool resolves AHEAD of the registry, and through a lookup rather than the static
+		// map for one reason: a run with no action_token must not be OFFERED it. A tool advertised but always
+		// failing is worse than one that does not exist — the model spends a turn on it and then tells a human
+		// the workspace holds no such information. The lookup can see the run; the static map cannot.
+		toolBroker.SetLookup(tools.SlackSearchLookup(http.DefaultClient, slackSearchAuthorities,
+			func(ctx context.Context, env toolbroker.ExecEnv, name string) (toolbroker.Tool, bool, error) {
+				return toolRegistry.LookupTool(ctx, env.Scope.Org, env.Scope.Project, env.Scope.RunID, name)
+			}))
 		// Wire the MCP client (E12 T5): a discovered MCP tool resolves through its run's connection rider and
 		// runs in a per-call, network-less OCI sandbox (stdio) or a vetted HTTP transport. The SAME manager
 		// backs the dispatch lookup (Call) and the admin discover API (repo.SetMCP), and a label-scoped orphan

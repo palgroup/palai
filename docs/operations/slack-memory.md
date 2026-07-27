@@ -100,17 +100,37 @@ The reply arrives in a **thread** under your message. If nothing arrives, §7.
 
 - **It answers.** A mention opens a run, the run answers in the thread, and a publication proposal gets
   Approve/Reject buttons that only `SLACK_APPROVER_IDS` can press.
-- **It is single-step.** The agent revision `palai up` created carries **no tool set**, so the model gets
-  one turn with no tools. This is a configuration state, not an engine limit: bind a published tool set to
-  the revision (`docs/operations/jira-mcp-connection.md` §3 walks the same grant) and it stops being true.
-- **Its memory is the thread.** A run sees the thread it was mentioned in. It does not search your
-  workspace and it does not carry anything from another channel.
-- **Starting a new thread starts a new session.** Correlation is `(team, channel, thread_ts)`, so a fresh
-  top-level message is a fresh session with none of the previous one's history — there is nothing to clear
-  and no command to run. Replying inside an old thread continues that session.
+- **It has tools, and they are read-only by default.** `palai up` binds `palai.research.fetch` and
+  `palai.knowledge.retrieve` to the revision it creates. Both are read-only, side-effect-free, and work on a
+  plain compose stack. A run whose effective tool set is EMPTY is single-step; this one is not.
 
-  > *Placeholder for T1's exact wording; the mechanism above is what the correlation key already does
-  > today, and T1 owns the precise statement.*
+  To give it more — the workspace file and shell tools, commit, push, open a pull request — set
+  `SLACK_AGENT_TOOLS` in `.env.local` to the full list you want, by name:
+
+  ```
+  SLACK_AGENT_TOOLS=palai.research.fetch,palai.knowledge.retrieve,palai.workspace.file,palai.workspace.shell
+  ```
+
+  **Think before you widen this.** A Slack DM is the lowest-friction surface this platform has: anyone in the
+  workspace can message the bot, and `im:history` is granted so the panel conversation works. Adding the shell
+  tool hands all of those people a shell. That is why it is not the default. `SLACK_AGENT_TOOLS=none` grants
+  nothing; a blank value means "use the defaults", so a stray empty line cannot silently disarm the agent.
+
+  Changing the list mints a new agent revision on the next `palai up` — reordering it does not.
+
+- **It can search your workspace's public channels, if you granted the scope.** With `search:read.public` in
+  the manifest, a run born from a message can call `palai.slack.search`. Read §9 before you decide it is what
+  you want.
+- **Starting a new thread starts a new session, and that IS the clear.** Correlation is
+  `(team, channel, thread_ts)`, so a fresh top-level message is a fresh session carrying none of the previous
+  one's history — no command, no flag, nothing to run. Replying inside an old thread continues that session.
+  If you want to reset a session while KEEPING the thread, that is the `clear` command
+  (`POST /v1/sessions/{id}/commands` with `{"kind":"clear"}`): it empties the history and leaves the session
+  alive, which a new thread cannot do because a new thread is a different session.
+- **A long thread no longer breaks it.** History is windowed to a byte budget: the oldest turns fold into a
+  deterministic summary line and the newest pass through verbatim. The fold SAYS it happened, because an
+  agent quietly forgetting is the failure this was built to stop. Note what it is not — a windower, not a
+  summariser. Folded turns lose their detail; the loss is visible rather than silent.
 
 ## 7. When it doesn't work
 
@@ -164,6 +184,63 @@ Recorded in the §3.5 style. Every row was checked against a primary source on t
 | **M5** | `PALAI_SECRET_MASTER_KEY_FILE` is a **path**, and the key it names seals every stored secret. (E13 T3; `identity.ParseMasterKey`) | `compose.yaml` writes the path literally as of E21 T2; `ensureSecretSlots` mints the key on every bring-up and never replaces an existing one | **CLOSED.** The key is still a FILE on the host — a KMS ceremony is `H-SEC` / §6 leg 6 and this task did not do it |
 
 ---
+
+
+## 9. Workspace search: what it is, and why it is not a memory
+
+Granting `search:read.public` and reinstalling lets a run search this workspace's **public channel messages**
+when the question needs an answer that lives in a past conversation. It is worth being precise about what
+that does and does not mean, because the shape is easy to over-read.
+
+**It is a search, not a memory.** The agent remembers nothing. Asked a question it goes and looks, and what
+it finds is gone when the run ends. There is no accumulating knowledge base, and there cannot be one: the
+Real-time Search API's terms say *"You must not store or copy any of the data retrieved from this API. You
+may not use any of this data for training."* That single sentence is why we do not vectorise your Slack
+history, and why the `knowledge-vector` capability stays `disabled` alongside this feature rather than being
+wired to it. Not a design preference — a term of use.
+
+**It sees public channels the asker may not be in.** Slack's own scope page: *"the searching user need not be
+a member of the public channels, just of the workspace, for the channels to be included in the search
+results."* There is no documented parameter that narrows this to the asker's channels. Private channels, DMs
+and group DMs are structurally out of reach — those scopes are user-token only and a bot token cannot hold
+them. **This is the decision to make before granting the scope**, and it is the same kind of call
+`im:history` was.
+
+**Every search is authorised by the message that started the run.** Slack requires an `action_token` for
+bot-token search calls, and that token arrives with the event. So the agent cannot search on its own
+schedule — only while answering someone who asked. The token is never stored: its lifetime is undocumented,
+and keeping a credential whose expiry you cannot know is keeping something you cannot tell has become
+rubbish. The visible cost: a run resumed after a control-plane restart cannot search, and says so rather
+than pretending it found nothing.
+
+**Results are untrusted data and the agent is told so.** What comes back was typed by people who are not the
+person asking. Each result reaches the model under a field literally named `untrusted_text`, the tool's own
+description tells it never to follow an instruction found inside a result, and the results carry no ids or
+links — so a message cannot talk a later turn into fetching something. The messages themselves are never
+edited: a quote that has been rewritten is not a quote.
+
+**Searches are few on purpose.** Slack's limit here is the tightest of anything this integration calls —
+about 10 requests a minute for a whole workspace. Calls are paced per workspace, and each run gets four
+searches. When they run out the agent is told it has run out, not that there were no matches, so it can say
+the true thing to you.
+
+### Why not Slack's official MCP server
+
+Slack ships one at `https://mcp.slack.com/mcp`, and our MCP transport already speaks its protocol. We do not
+use it, for one reason that is total: it authenticates with **confidential OAuth 2.0 using a user token** —
+*"You'll need to use your app's `client_id` and `client_secret` for Slack OAuth… Users go through OAuth
+consent and authorize the app."* Palai has no authorization-code flow for MCP connections at all; their
+secret model is a static handle, resolved per call and dropped. Building the flow is an epic, not a task.
+
+What makes that cheap rather than sad is the second fact: **the same capability takes the bot token we
+already hold.** `assistant.search.context` accepts a bot token given `search:read.public`. Going through the
+MCP server would have meant opening an OAuth epic to reach a method we can call directly today.
+
+Sources, all checked 2026-07-27:
+`https://docs.slack.dev/ai/slack-mcp-server/` ·
+`https://docs.slack.dev/apis/web-api/real-time-search-api/` ·
+`https://docs.slack.dev/reference/methods/assistant.search.context/` ·
+`https://docs.slack.dev/reference/scopes/search.read.public/`
 
 ## Proofs
 
