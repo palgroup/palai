@@ -368,6 +368,96 @@ func TestSlackAFileLessDeliveryFetchesNothing(t *testing.T) {
 	}
 }
 
+// TestSlackEditingACaptionKeepsTheImageAndDeletingTheTurnTakesItAway is where E20's image leg meets ff67139's
+// retraction: an image is part of a TURN, so what happens to the turn happens to the image. The two verbs pull
+// in opposite directions and both are asserted through the SHIPPED history query, which is what the provider
+// is actually assembled from — a column read would prove a flag was written, not that a picture stopped (or
+// kept) reaching the model.
+//
+//   - AN EDIT changes the words and nothing else. The file is still in the thread and the human can still see
+//     it, so a rewrite that blanked the content array would make the model blind to the very thing being
+//     discussed.
+//   - A DELETION takes the whole turn, image included. This one matters most: model_dispatch resolves
+//     image_refs across the WHOLE conversation, so a retracted screenshot left in history would be re-sent to
+//     the provider on every later turn in the thread.
+func TestSlackEditingACaptionKeepsTheImageAndDeletingTheTurnTakesItAway(t *testing.T) {
+	f := newSlackFixture(t)
+	const shot, followUp = "1700000096.000100", "1700000096.000200"
+
+	// A DM carrying a screenshot, then a SECOND turn in the same thread: history is "everything before this
+	// response", so without a later turn there is no vantage point to prove anything from.
+	f.deliver(t, withChannelType(f.eventFileShare("EvImg6", "D96", shot, "bunda ne hata var",
+		slackFile("F6", "shot.png", "image/png", len(componentPNG))), "im"), time.Now(), "", "").Body.Close()
+	f.answerRuns(t, "ilk cevap")
+	f.deliver(t, withChannelType(f.eventText(t, "EvImg7", "message", "Umapped", "D96", followUp, shot,
+		"peki şimdi?"), "im"), time.Now(), "", "").Body.Close()
+	f.answerRuns(t, "ikinci cevap")
+
+	_, writes, _ := f.artifacts.snapshot()
+	if len(writes) != 1 {
+		t.Fatalf("artifact writes = %d, want the one screenshot", len(writes))
+	}
+	artifact := writes[0].id
+	ids, inputs := f.responseIDs(t)
+	if len(ids) != 2 {
+		t.Fatalf("the thread holds %v, want two turns", inputs)
+	}
+	session, second := f.threadSessionID(t), ids[1]
+
+	// POSITIVE CONTROL, without which everything below is vacuous: the image IS in the history the second run
+	// was shown, named by the artifact the fetch wrote.
+	prior := f.modelHistory(t, session, second)
+	if len(prior) != 1 || !strings.Contains(string(prior[0].Input), artifact) {
+		t.Fatalf("the second run's history = %v, want the first turn carrying image_ref %s", prior, artifact)
+	}
+
+	// 1. THE EDIT. The caption is superseded; the image_ref survives it.
+	f.deliver(t, mustJSON(map[string]any{
+		"type": "event_callback", "team_id": f.team, "event_id": "EvImg8",
+		"event": map[string]any{"type": "message", "subtype": "message_changed", "channel": "D96",
+			"channel_type": "im",
+			"message":      map[string]any{"user": "Umapped", "ts": shot, "thread_ts": shot, "text": "hangi renk yanlış"}},
+	}), time.Now(), "", "").Body.Close()
+
+	if n := f.runCount(t); n != 2 {
+		t.Fatalf("the edit brought the run total to %d, want 2 — a correction supersedes a turn", n)
+	}
+	prior = f.modelHistory(t, session, second)
+	if len(prior) != 1 {
+		t.Fatalf("history after the edit = %v, want the one superseded turn", prior)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(prior[0].Input, &items); err != nil {
+		t.Fatalf("the superseded turn is no longer a content array (%s) — the edit took the image out with the words", prior[0].Input)
+	}
+	if len(items) != 2 || items[0]["text"] != "(edited) hangi renk yanlış" {
+		t.Fatalf("the superseded turn = %v, want the corrected caption as item 0", items)
+	}
+	if items[1]["type"] != "image_ref" || items[1]["artifact_id"] != artifact {
+		t.Fatalf("the superseded turn's second item = %v, want image_ref %s — editing a caption does not un-share the file", items[1], artifact)
+	}
+
+	// 2. THE DELETION. The turn goes, and the image goes with it.
+	f.deliver(t, mustJSON(map[string]any{
+		"type": "event_callback", "team_id": f.team, "event_id": "EvImg9",
+		"event": map[string]any{"type": "message", "subtype": "message_deleted", "channel": "D96",
+			"channel_type":     "im",
+			"previous_message": map[string]any{"user": "Umapped", "ts": shot, "thread_ts": shot, "text": "hangi renk yanlış"}},
+	}), time.Now(), "", "").Body.Close()
+
+	if n := f.runCount(t); n != 2 {
+		t.Fatalf("the deletion brought the run total to %d, want 2 — a deletion answers nothing", n)
+	}
+	if prior := f.modelHistory(t, session, second); len(prior) != 0 {
+		t.Fatalf("history after the deletion = %v, want nothing — the image must leave with the turn that carried it", prior)
+	}
+	// The bytes are NOT deleted, and that is deliberate: the artifact belongs to a run that really happened and
+	// leaves through retention (§22.2), which reaches it because the admission attached it to that run.
+	if _, _, attaches := f.artifacts.snapshot(); attaches[artifact] == "" {
+		t.Fatalf("artifact %s is unattached after the retraction — retention would never reach the bytes", artifact)
+	}
+}
+
 // withChannelType stamps channel_type onto an already-built inner event, so a fixture body can be a DM
 // (Slack's own field is the ONLY authority for that — never the "D…" id prefix).
 func withChannelType(body []byte, channelType string) []byte {

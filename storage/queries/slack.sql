@@ -247,3 +247,69 @@ WHERE connection_id = $1 AND organization_id = $2 AND project_id = $3;
 DELETE FROM slack_connections
 WHERE id = $1 AND organization_id = $2 AND project_id = $3
 RETURNING id;
+
+-- ============================================================================
+-- The TURN HANDLE (000042): which turn a Slack message became, so an edit can supersede it and a deletion
+-- can retract it. SLK-005 classified both kinds from the start; these are what let the classification DO
+-- something other than shape a prompt.
+-- ============================================================================
+
+-- RecordSlackMessageTurn writes the handle for one admitted message. ON CONFLICT DO NOTHING is load bearing
+-- twice over: a redelivery replays onto the SAME response (SLK-002) and must not re-point the handle, and
+-- Slack delivers a top-level mention TWICE (app_mention plus its message.channels twin) under ONE message
+-- ts — the first one is the turn, the second is not a second turn.
+-- name: RecordSlackMessageTurn
+INSERT INTO slack_message_turns (
+    id, organization_id, project_id, connection_id, team_id, channel_id, message_ts, response_id, session_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (organization_id, project_id, team_id, channel_id, message_ts) DO NOTHING;
+
+-- RetractSlackMessageTurn withdraws the turn a deleted message opened: the response stays (what was said and
+-- that it was withdrawn are both facts an operator may need), but SessionHistory stops carrying it, so the
+-- model is no longer shown words the human took back.
+--
+-- The tenant appears on BOTH sides of the join. The turn row is already tenant-scoped by RLS, but a query
+-- that writes to responses through a join must say whose responses it may write, or it is trusting a join
+-- key to be a scope check.
+-- retracted_at IS NULL keeps it idempotent: a redelivered deletion is a no-op rather than a second timestamp.
+-- name: RetractSlackMessageTurn
+UPDATE responses r
+SET retracted_at = clock_timestamp(), updated_at = clock_timestamp()
+FROM slack_message_turns t
+WHERE t.organization_id = $1 AND t.project_id = $2
+  AND t.team_id = $3 AND t.channel_id = $4 AND t.message_ts = $5
+  AND r.id = t.response_id AND r.organization_id = $1 AND r.project_id = $2
+  AND r.retracted_at IS NULL
+RETURNING r.id;
+
+-- SupersedeSlackMessageTurn rewrites the stored turn to the corrected text. The turn is REPLACED rather than
+-- appended to, because that is what an edit is: the human did not say a second thing, they changed what they
+-- said, and SLK-005 has called it a correction since E17 T1.
+--
+-- to_jsonb($6::text) is what keeps the column a JSON STRING. responses.input IS the prompt (run.start hands
+-- it to the engine verbatim and model_dispatch serialises anything that is not a string), so writing an
+-- object here would put raw JSON in front of the model — the defect ed44544 fixed on the way in.
+--
+-- A TURN THAT CARRIES AN IMAGE IS STORED AS A CONTENT ARRAY (E20), and there the words are one ITEM of it, so
+-- the whole value cannot be overwritten: an edit rewrites the caption, and blanking the array would take the
+-- image out of the conversation while it is still sitting in the thread for everyone to see. jsonb_set
+-- replaces the text of item 0 and leaves the image_ref items alone. Item 0 is the words by construction —
+-- slackRunInput puts them first and is the only writer of these rows — and the CASE keeps a plain text turn
+-- on the string path, so this is not the "raw JSON at the model" defect: a content array is a shape
+-- model_dispatch decodes (decodeContentParts), not an envelope it stringifies.
+--
+-- A RETRACTED turn is left alone: the words were withdrawn, and an edit arriving afterwards must not put
+-- them back. Slack does not send one, but the guard is one predicate and the alternative is unrecoverable.
+-- name: SupersedeSlackMessageTurn
+UPDATE responses r
+SET input = CASE jsonb_typeof(r.input)
+                WHEN 'array' THEN jsonb_set(r.input, '{0,text}', to_jsonb($6::text))
+                ELSE to_jsonb($6::text)
+            END,
+    updated_at = clock_timestamp()
+FROM slack_message_turns t
+WHERE t.organization_id = $1 AND t.project_id = $2
+  AND t.team_id = $3 AND t.channel_id = $4 AND t.message_ts = $5
+  AND r.id = t.response_id AND r.organization_id = $1 AND r.project_id = $2
+  AND r.retracted_at IS NULL
+RETURNING r.id;

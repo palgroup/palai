@@ -182,6 +182,13 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	// `ours`, not `requested != nil`: a thread whose session has died is still ours, and threadSessionOrNil has
 	// just cleared its correlation so this delivery can open a fresh one.
 	if !slackBirthsRun(ev, ours) {
+		// Not a new turn — but two of the kinds that are not new turns still CHANGE one. An edit supersedes the
+		// turn it names and a deletion retracts it; everything else here is other people talking, and is acked
+		// in silence. reviseTurn owns both, and finds nothing when the message never became a turn of ours.
+		switch ev.Kind {
+		case slack.KindCorrection, slack.KindTombstone:
+			return a.reviseTurn(ctx, conn, ev)
+		}
 		return api.SlackAdmitOutcome{Ignored: true}, nil
 	}
 
@@ -329,6 +336,19 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 				session, canonical, conn.ID, ev.SourceEventID)
 		}
 	}
+	// THE TURN HANDLE (000042): remember which turn this MESSAGE became, so the human can still edit or delete
+	// it afterwards and have that mean something. It is written for every admitted message, not just the first
+	// in a thread, because every one of them can be edited.
+	//
+	// Best-effort, and deliberately so: the run is already durable and the reservation committed, so failing
+	// the ack here would earn a redelivery that can only replay onto the same response. The cost of the lost
+	// row is that a later deletion of THIS message retracts nothing — bad, and still much less bad than
+	// refusing a message that was already answered.
+	if err := a.store.RecordSlackMessageTurn(ctx, conn.Org, conn.Project, conn.ID,
+		ev.TeamID, ev.ChannelID, ev.MessageTS, out.ResponseID, session); err != nil {
+		log.Printf("slack: could not record the turn message %s opened on connection %s; a later edit or deletion of it will not reach the conversation: %v",
+			ev.MessageTS, conn.ID, err)
+	}
 	// THE RUN IS BORN; now let the thread watch it work (E20 T1). Gated on Replayed for one reason and it is
 	// the whole exactly-once argument: a redelivery replays the SAME reservation onto the SAME run, so it
 	// arrives here with Replayed == true and starts nothing. One run, at most one StartStream, guaranteed by
@@ -342,6 +362,71 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	return api.SlackAdmitOutcome{ResponseID: out.ResponseID, SessionID: session, Replayed: out.Replayed}, nil
 }
 
+// reviseTurn is what a CORRECTION and a TOMBSTONE do instead of birthing a run, and the two verbs SLK-005 has
+// used since E17 T1 are the whole specification:
+//
+//   - A TOMBSTONE RETRACTS. The turn stops being part of the conversation the model is shown. That is not
+//     tidiness: history carries the USER's prior turns (ed44544 — before it the model saw its own replies with
+//     nothing they replied to), so a message the human deleted goes on shaping every later answer in the
+//     thread until something takes it out. Someone who deletes a message expects it to stop influencing the
+//     agent. The response row survives, marked; only the history query drops it.
+//   - A CORRECTION SUPERSEDES. The stored turn becomes the corrected words. It does NOT re-answer, and that
+//     is the honest limit rather than a shortcut: the previous answer is already posted in the thread, this
+//     tree has no way to withdraw a posted answer, and re-running would leave two answers to one question
+//     with nothing saying which is current. From the next turn on, the model is shown what the human now says
+//     they asked. If someone wants the new question answered, they can ask it — which is a message, and
+//     messages are what births runs.
+//
+// NEITHER ANSWERS, and that is the defect this fixes: a deletion inside a held thread satisfied the run-birth
+// rule, birthed a run, and the model — handed "(the user deleted their message…)" as its prompt — replied
+// "it seems you deleted your message, would you like help with something else?" in the owner's workspace.
+//
+// A message that never became a turn here (ordinary channel chatter, a message from before this connection
+// existed, one whose handle was lost) revises NOTHING and is simply acked. The handle lookup is the scope
+// check: only messages this tenant admitted have a row, so an edit in a channel we merely sit in finds none.
+//
+// AN IMAGE GOES WITH ITS TURN (E20), and the two verbs take it in opposite directions on purpose:
+//
+//   - RETRACTED, so the image goes too. The turn's stored input is the content array that NAMES the artifact,
+//     and SessionHistory stops carrying that row entirely — so the image_ref never enters another assembled
+//     conversation. That is load-bearing rather than incidental: model_dispatch resolves image_refs across the
+//     WHOLE conversation, so a screenshot somebody deleted would otherwise keep being sent to the provider on
+//     every later turn in the thread.
+//   - SUPERSEDED, and the image STAYS. Only the words are replaced, in place, leaving the image_ref items
+//     where they are (SupersedeSlackMessageTurn does that in one statement). Editing a caption does not
+//     un-share the file — it is still in the thread, and the human can still see it — so a rewrite that
+//     dropped it would make the model blind to the thing being talked about.
+//
+// CEILING, named because it is reachable: a correction to a message whose run is still IN FLIGHT does not
+// reach that run — it already carries the old input, and steering it needs the command spine. It answers the
+// question as asked, and the correction takes effect from the next turn.
+func (a *SlackAdmitter) reviseTurn(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) (api.SlackAdmitOutcome, error) {
+	var (
+		response string
+		err      error
+		verb     string
+	)
+	if ev.Kind == slack.KindTombstone {
+		verb = "retracted"
+		response, err = a.store.RetractSlackMessageTurn(ctx, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.MessageTS)
+	} else {
+		verb = "superseded"
+		response, err = a.store.SupersedeSlackMessageTurn(ctx, conn.Org, conn.Project, ev.TeamID, ev.ChannelID, ev.MessageTS,
+			slackTurnText(ev, nil, 0))
+	}
+	if err != nil {
+		return api.SlackAdmitOutcome{}, err
+	}
+	if response != "" {
+		// Logged, unlike ordinary ignored chatter: the conversation a model is shown just changed, and an
+		// operator reading a session afterwards needs to be able to see that it did. The WORDS are not logged
+		// — a retraction that echoes the retracted message into the log retracts nothing.
+		log.Printf("slack: %s the turn response %s (connection %s, event %s); no run is born by an edit or a deletion",
+			verb, response, conn.ID, ev.SourceEventID)
+	}
+	return api.SlackAdmitOutcome{Ignored: true}, nil
+}
+
 // slackBirthsRun decides whether an event opens a run. correlated is whether this thread already has a
 // canonical session in THIS connection's tenant — i.e. whether the app is already talking in it.
 //
@@ -350,8 +435,17 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 // deleted message opened one too — the second of those then spent three refused API calls on a thread that no
 // longer existed (slack_stream.go's setStatus owns that half).
 //
+// THAT FIRST FIX WAS ONLY HALF, and the second half was found the same way — live, minutes later. The rule
+// below was about WHERE an event happened, so a DELETION inside a thread the app held cleared it, birthed a
+// run, and the app replied to the deletion: "it seems you deleted your message, would you like help with
+// something else?". WHAT arrived matters as much as where.
+//
 // THE RULE, and each clause is a different question the event answers:
 //
+//   - AN EDIT AND A DELETION ARE NEVER A TURN, wherever they land — not in a held thread, not in a DM, not
+//     when the edited text mentions the app. They act on something already said: a correction SUPERSEDES that
+//     turn and a tombstone RETRACTS it, which is what SLK-005's two Kinds have meant since E17 T1 and what
+//     reviseTurn now does. This clause is FIRST because it is the only one that outranks a DM.
 //   - A DM IS ALWAYS A TURN. That is the whole agent panel: there is nothing else a direct message to the app
 //     could be addressed to. Slack's own channel_type is the authority (slack.Event.IsDM), never the "D…"
 //     prefix.
@@ -364,6 +458,12 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 //     admitted too, because the mention has by then correlated the thread, and one mention would become two
 //     runs.
 //
+// A FILE SHARE IS A TURN and takes no clause of its own: SLK-005 classifies it so the fetch can be scoped,
+// which is a statement about what to DO with the file, not about whether the human was talking. So it follows
+// the ordinary where-rule above — a file dropped into a thread we hold is a turn, one dropped in a channel we
+// merely sit in is not. (Its honest ceiling is unchanged and lives elsewhere: the scoped fetch+scan is not
+// wired, so a file share with no comment still reaches the model as "the user sent a message with no text".)
+//
 // WHAT IT DELIBERATELY DOES NOT DO: it does not unsubscribe from message.channels. SLK-002 (redelivery) and
 // SLK-005 (edits, deletes, file shares) need those events, and they still arrive — an edit inside a thread we
 // are in is still a correction, a delete inside one is still a tombstone. What changed is what BIRTHS A RUN.
@@ -375,6 +475,8 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 // over the MESSAGE rather than over Slack's event_id, and that is a change to SLK-002's dedupe identity.
 func slackBirthsRun(ev slack.Event, correlated bool) bool {
 	switch {
+	case ev.Kind == slack.KindCorrection, ev.Kind == slack.KindTombstone:
+		return false
 	case ev.IsDM(), ev.Type == "app_mention":
 		return true
 	default:
@@ -588,7 +690,7 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 // the app_context names gate NOTHING; they are a description of what the human has on screen, and they enter
 // as trailing, explicitly untrusted text in the same class as model output. See slackContextNote.
 func slackRunInput(ev slack.Event, images []slackImageAttachment, skippedFiles int) any {
-	text := slackContextNote(ev.Context) + slackMessageInput(ev, len(images) > 0) + slackImageNote(images, skippedFiles)
+	text := slackTurnText(ev, images, skippedFiles)
 	if len(images) == 0 {
 		return text // the bare string, bit-identical to every input this bridge produced before images
 	}
@@ -602,15 +704,38 @@ func slackRunInput(ev slack.Event, images []slackImageAttachment, skippedFiles i
 	return items
 }
 
-// slackMessageInput is the human's half. hasImage says whether this turn actually carries an attached image,
-// which only changes the WORDLESS case — and it changes it because the old answer became a lie the moment an
-// image could be attached: "the user sent a message with no text" describes an empty message, while somebody
-// dropping a screenshot in with no caption has said something quite specific.
+// slackTurnText is the WORDS half of a turn, and it exists because a CORRECTION needs exactly this half and
+// no other: it REPLACES what a stored turn says while leaving what that turn SHOWED alone (see reviseTurn and
+// SupersedeSlackMessageTurn). An edit carries no files of its own — Slack puts them on the original message,
+// and the two kinds that revise a turn never birth a run and so never fetch — so images are nil there, which
+// is exactly right: the words change, the picture the human is still looking at does not.
+func slackTurnText(ev slack.Event, images []slackImageAttachment, skippedFiles int) string {
+	return slackContextNote(ev.Context) + slackMessageInput(ev, len(images) > 0) + slackImageNote(images, skippedFiles)
+}
+
+// slackMessageInput is the human's half.
+//
+// A TOMBSTONE NO LONGER RENDERS ANYTHING A MODEL READS. It used to produce "(the user deleted their message;
+// treat the request it carried as withdrawn)", which is a prompt — so the model answered it, in the owner's
+// workspace, with "it seems you deleted your message, would you like help with something else?". A deletion
+// is not something to say to a model: it retracts a turn (reviseTurn) and says nothing. No caller renders one
+// any more, and the branch below is the GUARD that keeps it that way: MapEvent already drops the retracted
+// words, and this is the last gate before a prompt, so a tombstone that somehow arrived here with text on it
+// must still not be able to replay it.
+//
+// A CORRECTION KEEPS ITS BRANCH, but it is now the SUPERSEDING TEXT rather than a fresh turn's prompt: this
+// is what replaces the stored turn, so a later run is shown the corrected question, marked as edited because
+// that is what happened.
+//
+// hasImage says whether this turn actually carries an attached image, and it only changes the WORDLESS case —
+// because the old answer became a lie the moment an image could be attached: "the user sent a message with no
+// text" describes an empty message, while somebody dropping a screenshot in with no caption has said
+// something quite specific. It never reaches the two kinds above: neither births a run, so neither fetches.
 func slackMessageInput(ev slack.Event, hasImage bool) string {
-	switch ev.Kind {
-	case slack.KindTombstone:
-		return "(the user deleted their message; treat the request it carried as withdrawn)"
-	case slack.KindCorrection:
+	if ev.Kind == slack.KindTombstone {
+		return "(a message was withdrawn)"
+	}
+	if ev.Kind == slack.KindCorrection {
 		if ev.Text == "" {
 			return "(the user cleared the text of their message)"
 		}

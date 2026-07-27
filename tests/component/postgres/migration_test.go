@@ -72,6 +72,9 @@ var allTables = []string{
 	// and the return leg's order-to-post outbox (000041). The first two were never registered here; a table
 	// this ledger does not name is a table its drop can go unnoticed.
 	"slack_connections", "slack_thread_sessions", "slack_reply_deliveries",
+	// The E20 turn handle (000042): which turn a Slack message became, so an edit can supersede it and a
+	// deletion can retract it.
+	"slack_message_turns",
 	"schema_migrations",
 }
 
@@ -1824,5 +1827,73 @@ func TestMigration41SlackReplies(t *testing.T) {
 	}
 	if left != 0 {
 		t.Fatalf("%d delivery row(s) outlived their connection, want 0", left)
+	}
+}
+
+// TestMigration42SlackMessageTurns is 000042: the handle from a Slack MESSAGE to the turn it became, and the
+// withdrawn marker the history query filters on. Both exist because of one live defect and its mirror image —
+// the app answered a deleted message, and a deleted message that stays in the history goes on shaping every
+// later answer in the thread.
+func TestMigration42SlackMessageTurns(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// A second boot re-runs the whole chain; every object is IF NOT EXISTS / idempotent.
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	if !tableExists(t, pool, "slack_message_turns") {
+		t.Fatal("after apply, slack_message_turns is missing")
+	}
+	if !columnExists(t, pool, "responses", "retracted_at") {
+		t.Fatal("after apply, responses.retracted_at is missing — nothing could withdraw a turn from history")
+	}
+	var version42 int
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM schema_migrations WHERE version = 42`).Scan(&version42); err != nil {
+		t.Fatalf("count version 42 error = %v", err)
+	}
+	if version42 != 1 {
+		t.Fatalf("schema_migrations records version 42 %d times, want 1", version42)
+	}
+
+	tenant, sessionID, _ := seedRun(t, pool)
+	connID := newID("slkc")
+	exec(t, pool,
+		`INSERT INTO slack_connections (id, organization_id, project_id, team_id, signing_secret_ref)
+		 VALUES ($1,$2,$3,$4,'slack/signing')`,
+		connID, tenant.Organization, tenant.Project, strings.ToUpper(newID("T")))
+	responseID := newID("resp")
+	exec(t, pool, `INSERT INTO responses (id, organization_id, project_id, session_id) VALUES ($1,$2,$3,$4)`,
+		responseID, tenant.Organization, tenant.Project, sessionID)
+
+	insert := func() error {
+		_, err := pool.Exec(storage.WithSystemScope(ctx),
+			`INSERT INTO slack_message_turns
+			   (id, organization_id, project_id, connection_id, team_id, channel_id, message_ts, response_id, session_id)
+			 VALUES ($1,$2,$3,$4,'T1','C1','100.0',$5,$6)`,
+			newID("slkmt"), tenant.Organization, tenant.Project, connID, responseID, sessionID)
+		return err
+	}
+	if err := insert(); err != nil {
+		t.Fatalf("first slack_message_turns insert error = %v", err)
+	}
+	// ONE TURN PER MESSAGE. Slack delivers a top-level mention twice (app_mention plus its message.channels
+	// twin) under a single message ts, and a redelivery replays onto the same response: the unique index is
+	// what makes the FIRST response the turn instead of the last writer winning.
+	if err := insert(); err == nil {
+		t.Fatal("a SECOND turn was accepted for one message ts; the handle would then point at whichever event arrived last")
+	}
+
+	// A reaped response takes its handle with it, so nothing is left pointing at a turn that no longer exists.
+	exec(t, pool, `DELETE FROM responses WHERE id = $1`, responseID)
+	var left int
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM slack_message_turns WHERE response_id = $1`, responseID).Scan(&left); err != nil {
+		t.Fatalf("count orphaned turn handles: %v", err)
+	}
+	if left != 0 {
+		t.Fatalf("%d turn handle(s) outlived their response, want 0", left)
 	}
 }
