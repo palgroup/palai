@@ -44,6 +44,16 @@ var (
 	// anchors dedupe and tenant correlation. The caller maps it to a 400 (authenticated client error), the
 	// ParseInbound malformed shape.
 	ErrMalformed = errors.New("slack: event envelope is malformed")
+	// ErrNoRun is ErrIgnored's sibling and the whole of E20 T2's "few new Kinds" decision: a well-formed event
+	// from the agent PANEL SURFACE — app_home_opened, app_context_changed — that is HANDLED but births no run.
+	// It is an error rather than a Kind on purpose, and the purpose is fail-closed: every caller already has an
+	// `err != nil` arm that refuses to admit, so a transport that never learns about the panel still cannot
+	// turn a panel open into a run. A Kind would have needed every caller to remember a new branch.
+	//
+	// UNLIKE ErrIgnored, the Event IS returned alongside it, populated: the caller acknowledges the delivery
+	// and logs which surface moved (Type, Tab, ChannelID). Returning a value with an error is unusual enough
+	// that TestMapEventPanelSurfaceEventsBirthNoRun asserts it rather than leaving it to a reader's goodwill.
+	ErrNoRun = errors.New("slack: panel surface event handled; no run is born")
 )
 
 // Event is a Slack event normalized to the canonical inbound identity PLUS the Slack correlation fields the
@@ -64,6 +74,18 @@ type Event struct {
 	ChannelID    string
 	ThreadTS     string // the thread root (thread_ts, or the message ts when it starts a thread) — the correlation key
 	UserID       string
+	// Type is the INNER event type verbatim ("app_mention", "message", "app_home_opened", …). Kind is the
+	// coarse classification the run-shaping branches on; this is the identity a log line and the panel's
+	// no-run branch need in order to name what arrived, and neither should be inferring it back out of Data.
+	Type string
+	// ChannelType is Slack's own `channel_type` on a message event — "im" for a direct message, "channel" for
+	// a public channel, and so on. It is the ONLY authority for "this conversation is a DM" (see IsDM): the
+	// "D…" id prefix is a convention no Slack page commits to, and a scope exemption may not rest on one.
+	// Empty for events that carry no channel_type; empty is NOT a DM.
+	ChannelType string
+	// Tab is app_home_opened's `tab` — "home" or "messages". Only "messages" is the agent panel; the App Home
+	// *home* tab is a separate surface this app subscribes to no behaviour for. Empty on every other event.
+	Tab string
 	// Text is WHAT THE HUMAN WROTE, with the app's own mention removed (see stripMention). It is the only
 	// field of an event that belongs in a prompt: everything beside it — channel, user, team — is scope the
 	// control plane enforces server-side, and repeating scope into the conversation would invite a model to
@@ -99,6 +121,8 @@ type innerEvent struct {
 	User            string          `json:"user"`
 	BotID           string          `json:"bot_id"`
 	Channel         string          `json:"channel"`
+	ChannelType     string          `json:"channel_type"` // "im" on a DM (message.im) — see Event.ChannelType
+	Tab             string          `json:"tab"`          // app_home_opened only: "home" | "messages"
 	TS              string          `json:"ts"`
 	ThreadTS        string          `json:"thread_ts"`
 	Text            string          `json:"text"`
@@ -203,7 +227,7 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 	if thread == "" {
 		thread = ts // a top-level message starts its own thread; ts is the correlation root
 	}
-	return Event{
+	ev := Event{
 		Source:        Source,
 		SourceTenant:  outer.TeamID,
 		SourceEventID: outer.EventID,
@@ -213,10 +237,48 @@ func MapEvent(body []byte, botUserID string, retry bool) (Event, error) {
 		ChannelID:     inner.Channel,
 		ThreadTS:      thread,
 		UserID:        user,
+		Type:          inner.Type,
+		ChannelType:   inner.ChannelType,
+		Tab:           inner.Tab,
 		Text:          stripMention(text, botUserID),
 		Kind:          classify(inner.Type, inner.Subtype),
 		Retry:         retry,
-	}, nil
+	}
+	if noRun(inner.Type) {
+		return ev, ErrNoRun
+	}
+	return ev, nil
+}
+
+// IsDM reports whether the event came from a direct message with the app — the ONE fact E20 T2's scope
+// widening turns on (SlackAuthorizationPolicy.ChannelAllowed exempts a DM from allowed_channels, because a
+// DM's scope is Slack's own invitation model: whoever can DM the bot is already a workspace member).
+//
+// CONTRACT: https://docs.slack.dev/reference/events/message.im/ (checked 2026-07-27) — the message.im inner
+// event carries "channel_type":"im" beside a "D…" channel id, and the event requires the `im:history` scope.
+// The FIELD is the authority, never the id prefix: no Slack page commits to "D…" meaning DM, and an
+// exemption resting on an undocumented prefix is an exemption resting on nothing.
+func (e Event) IsDM() bool { return e.ChannelType == "im" }
+
+// noRun names the agent panel's SURFACE events — the ones that describe what a human is LOOKING AT rather
+// than something they said. They carry no message, so admitting one would spend a model call on an empty
+// prompt, and they arrive every time the panel is opened.
+//
+// CONTRACT: https://docs.slack.dev/ai/developing-agents/ (checked 2026-07-27) — the agent messaging
+// experience subscribes to app_home_opened, app_context_changed and message.im. Only the third is a
+// conversation. app_home_opened requires no scopes at all
+// (https://docs.slack.dev/reference/events/app_home_opened/, checked 2026-07-27) and app_context_changed
+// carries neither a channel nor a user (https://docs.slack.dev/reference/events/app_context_changed/,
+// checked 2026-07-27), which is a second way of saying neither one is a turn in a conversation.
+//
+// message.im is DELIBERATELY ABSENT from this list: a DM message is a message, so it keeps KindMessage /
+// KindCorrection / KindTombstone and travels the unchanged admission bridge.
+func noRun(innerType string) bool {
+	switch innerType {
+	case "app_home_opened", "app_context_changed":
+		return true
+	}
+	return false
 }
 
 // stripMention removes the app's OWN mention from a message and trims what is left. A user addressing the

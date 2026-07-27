@@ -105,7 +105,13 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 	// thread above was correlated while its channel was in scope, so an operator NARROWING the allow-list —
 	// which is what containing an incident looks like — would otherwise leave every already-posted button in
 	// the excluded channels still live. A narrowing has to take the in-flight threads with it.
-	if !policy.ChannelAllowed(intent.ChannelID) {
+	//
+	// isDM is FALSE and cannot honestly be anything else: a block_actions payload carries `channel` as
+	// `{id, name}` with no channel_type anywhere
+	// (https://docs.slack.dev/reference/interaction-payloads/block_actions-payload/, checked 2026-07-27), so
+	// the DM exemption the EVENT path gained (E20 T2) has no authority to stand on here. A scope that cannot
+	// be checked is not met. See ChannelAllowed for the consequence and the operator's escape hatch.
+	if !policy.ChannelAllowed(intent.ChannelID, false) {
 		return api.SlackDecisionOutcome{SessionID: session, Rejected: "the click's channel is outside the connection's allowed channels"}, nil
 	}
 	if !policy.ApproverAuthorized(intent.UserID) {

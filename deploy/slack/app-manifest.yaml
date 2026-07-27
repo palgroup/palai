@@ -14,8 +14,31 @@
 #   - request_url under event_subscriptions / interactivity: Socket Mode does not use it.
 #     Add one only if you deliberately switch to the HTTP transport, in which case it is
 #     <public-https-base>/v1/slack/events and .../v1/slack/interactions.
-#   - groups:history, im:history: private channels and DMs are out of scope for the first
-#     run. Do not grant them "just in case" — an unused scope is standing read access.
+#   - groups:history: private channels are out of scope. Do not grant it "just in case" —
+#     an unused scope is standing read access.
+#   - features.agent_view.actions[]: an INVOCABLE surface. Every actionable element in this
+#     integration is minted by interactions.go and passes the approval chain; an action the
+#     model or the panel can invoke would need its own authorization path, so it is not
+#     declared until one exists (E20 plan §5).
+#   - links.embed:write: a video block cannot show a Slack-hosted file at all (the url must
+#     be public, on one of the app's unfurl domains and iframe-embeddable), so the scope has
+#     nothing to do here. An unused scope is standing access (E20 plan §3.5 S13).
+#
+# im:history — A POSTURE CHANGE, GRANTED DELIBERATELY (E20 plan §0.2, decided 2026-07-27).
+# E19's manifest refused this scope and said so: "private channels and DMs are out of scope
+# for the first run." The agent panel cannot exist without reversing that, because the panel
+# conversation IS a DM: it arrives as message.im, and message.im requires im:history
+# (https://docs.slack.dev/reference/events/message.im/, checked 2026-07-27).
+#
+# WHAT IS BEING GRANTED, in plain words, because a scope nobody understood is a scope nobody
+# revokes: im:history is STANDING READ ACCESS to every DM conversation the bot is a party to.
+# It is narrower than it sounds — it does not cover DMs between other people — and it is wider
+# than a single feature — it does not expire when the panel is closed. The decision is the
+# workspace owner's and it takes effect at REINSTALL, which is where it belongs.
+#
+# NOT granting it is a supported outcome, not a failure: leave im:history and message.im out,
+# and the app keeps working exactly as E19 shipped it (mentions in channels). The panel then
+# greets with the agent_description and suggested_prompts below but carries no conversation.
 #
 # LOW-CONFIDENCE, stated rather than assumed (plan §3.5): users:read vs users:profile.read.
 # The scope page we fetched is a navigation index, so which one backs Slack-user → principal
@@ -23,7 +46,7 @@
 # users:profile.read and reinstall. This uncertainty is deliberately NOT baked into the code.
 _metadata:
   major_version: 1
-  minor_version: 1
+  minor_version: 2
 
 display_information:
   name: Palai
@@ -35,21 +58,54 @@ features:
     display_name: Palai
     always_online: false
 
+  # The AGENT PANEL (E20 T2). https://docs.slack.dev/reference/app-manifest/ (checked 2026-07-27).
+  #
+  # ONE-WAY DOOR, and it is the manifest's own words rather than our caution: "New apps can only
+  # use agent_view. Apps that already use assistant_view can continue to do so for now, but
+  # assistant_view will eventually be deprecated... Switching an app from assistant_view to
+  # agent_view CANNOT BE REVERSED." This app is new, so agent_view was never a choice — but the
+  # sentence is copied here so the next reader does not go looking for a way back.
+  agent_view:
+    # REQUIRED when agent_view is present; maximum 300 characters (manifest reference).
+    agent_description: >-
+      Palai runs your agents where the work already is. Ask a question here and it starts a
+      real run against this workspace's configured agent; high-risk steps come back as an
+      approval only a listed approver can grant.
+    # STATIC prompts, rendered by Slack itself — no API call, no runtime, no scope. The dynamic
+    # form (assistant.threads.setSuggestedPrompts, at most four, `assistant:write`) is NOT wired:
+    # nothing here needs a per-thread suggestion yet.
+    suggested_prompts:
+      - title: "What can you do?"
+        message: "What can you do in this workspace, and what will you ask me to approve?"
+      - title: "Check the release"
+        message: "What is still open on the current release?"
+
 oauth_config:
   scopes:
     bot:
       - app_mentions:read   # SLK-001, SLK-003 — the app_mention event
+      - assistant:write     # SLK-010 — agent_view's own scope. Slack ADDS THIS AUTOMATICALLY when the
+                            # feature is enabled; it is written out so it is visible rather than implied.
+                            # It backs assistant.threads.setSuggestedPrompts / setTitle and the
+                            # app_context_changed event. NOTE (plan §3.5 S3): status and streaming do NOT
+                            # need it — chat.startStream/appendStream/stopStream and setStatus are chat:write.
       - channels:history    # SLK-002, SLK-005 — message events in channels the bot is in
       - chat:write          # SLK-006, SLK-007 — chat.postMessage AND chat.update
       - files:read          # SLK-005 — fetch a shared file's content
+      - im:history          # SLK-010 — the ONLY way to receive message.im, i.e. the panel conversation.
+                            # A POSTURE CHANGE: see the block at the top of this file before granting it.
       - users:read          # SLK-004 — Slack user id → mapped principal (see note above)
 
 settings:
   socket_mode_enabled: true
   event_subscriptions:
     bot_events:
+      - app_context_changed # SLK-010/011 — what the human is LOOKING AT. Births NO run.
+      - app_home_opened     # SLK-010 — the panel was opened (tab: home | messages). Births NO run.
+                            # Requires no scope at all (app_home_opened reference, 2026-07-27).
       - app_mention
       - message.channels
+      - message.im          # SLK-010 — the panel conversation. Requires im:history, above.
   interactivity:
     is_enabled: true
   org_deploy_enabled: false      # Enterprise Grid / org-wide install is out of scope

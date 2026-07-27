@@ -130,7 +130,13 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	if err != nil {
 		return api.SlackAdmitOutcome{}, fmt.Errorf("read slack channel scope: %w", err)
 	}
-	if !policy.ChannelAllowed(ev.ChannelID) {
+	//
+	// E20 T2 widened it in exactly one place: a DIRECT MESSAGE (Slack's own channel_type == "im") is exempt
+	// from the list, because a DM's scope is Slack's invitation model rather than an operator's allow-list.
+	// The widening, what it does and does not open, is argued at ChannelAllowed. Nothing else about this
+	// function moved: the run target is still the connection's default_policy, and a DM run is still admitted
+	// under the connection's principal.
+	if !policy.ChannelAllowed(ev.ChannelID, ev.IsDM()) {
 		// Terminal by construction: no redelivery can move a channel into the allow-list. The channel id IS
 		// logged — unlike the team id on the resolve path, this body's signature has already been verified, and
 		// an operator reconciling their allow-list needs to know which channel was turned away.

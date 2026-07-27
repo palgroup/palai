@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/adapters/integrations/slack"
+	"github.com/palgroup/palai/tests/uat"
 )
 
 // need returns an env var's value or skips, naming where §0 says to get it.
@@ -207,11 +208,9 @@ func TestLiveSlackMentionBirthsExactlyOneRun(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Everything born from here on. Slack-sourced responses are identified by the input projection the
-	// admission bridge writes (source=slack + the workspace), so this cannot count someone else's traffic.
-	const bornSince = `SELECT COALESCE(input->>'event_id',''), id
-	                     FROM responses
-	                    WHERE input->>'source' = 'slack' AND input->>'team_id' = $1 AND created_at > $2`
+	// Everything born from here on, keyed on the ADMISSION RESERVATION rather than on the stored input —
+	// see uat.SlackBornRunsByTeam for why the old input-projection predicate can no longer match anything.
+	const bornSince = uat.SlackBornRunsByTeam
 	start := time.Now().UTC()
 	t.Logf("watching for a Slack-born run in workspace %s — @-mention the bot in a channel it has been invited to", team)
 

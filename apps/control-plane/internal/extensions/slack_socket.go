@@ -416,6 +416,17 @@ func (s *SlackSocket) dispatch(ctx context.Context, conn api.SlackConnectionRef,
 			// SLK-008, the self-loop guard: our own bot's message. Acknowledged (it was delivered), admitted
 			// nowhere.
 			return
+		case errors.Is(err, slack.ErrNoRun):
+			// E20 T2's agent panel surface: app_home_opened / app_context_changed. HANDLED — acknowledged above
+			// like every other envelope — but no run, and no outbound call. The HTTP route (api/slack.go) does
+			// the identical thing; the two transports may not diverge on which surfaces are conversation.
+			//
+			// tab == "home" is App Home's *home* tab, a surface this app subscribes to no behaviour for; only
+			// tab == "messages" is the agent panel. Neither births a run, so the tab is LOGGED rather than
+			// branched on — a branch whose arms did the same thing would be a lie about what the code does.
+			s.log("slack socket: acknowledged panel surface event %q (tab=%q channel=%s) on connection %s and birthed no run",
+				ev.Type, ev.Tab, ev.ChannelID, conn.ID)
+			return
 		case err != nil:
 			s.log("slack socket: a malformed events_api envelope arrived on connection %s", conn.ID)
 			return

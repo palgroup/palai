@@ -231,6 +231,15 @@ func (h *slackHandler) receive(w http.ResponseWriter, r *http.Request) {
 		// Slack redelivering an event we will keep ignoring.
 		w.WriteHeader(http.StatusOK)
 		return
+	case errors.Is(err, slack.ErrNoRun):
+		// E20 T2's agent panel surface: app_home_opened / app_context_changed. HANDLED but not conversation —
+		// acked so Slack stops redelivering, and no run. Socket Mode's dispatch does the identical thing; the
+		// two transports may not disagree about which surfaces are conversation. tab=="home" and
+		// tab=="messages" are both no-run, so the tab is logged rather than branched on.
+		h.log("slack events: acknowledged panel surface event %q (tab=%q channel=%s) on connection %s and birthed no run",
+			ev.Type, ev.Tab, ev.ChannelID, conn.ID)
+		w.WriteHeader(http.StatusOK)
+		return
 	case err != nil:
 		slackTerminal(w, r, http.StatusBadRequest, "invalid_request", "the event envelope is malformed")
 		return
