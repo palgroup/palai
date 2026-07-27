@@ -65,6 +65,25 @@ WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
   AND state IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
   AND purged_at IS NULL;
 
+-- ClearSessionHistory withdraws every settled turn of a session from the conversation, so the next
+-- run starts from nothing while the session itself keeps living (E21 T1). It is the sibling of
+-- fork_session that does NOT copy: a fork branches the history, a clear drops it.
+--
+-- retracted_at is REUSED rather than reinvented. It already means exactly this — "the row survives,
+-- SessionHistory stops carrying it" (migration 000042, RetractSlackMessageTurn) — and SessionHistory
+-- is already the only reader that filters on it. So a clear destroys nothing: an operator asking
+-- what was said in this thread still has every word.
+--
+-- SETTLED turns only, and the state list is ForkCopyResponses' own: an in-flight response is not
+-- history yet, and retracting it would take an answer away from the person still waiting for it.
+-- retracted_at IS NULL keeps it idempotent — a redelivered clear is a no-op, not a second timestamp.
+-- name: ClearSessionHistory
+UPDATE responses
+SET retracted_at = clock_timestamp(), updated_at = clock_timestamp()
+WHERE session_id = $1 AND organization_id = $2 AND project_id = $3
+  AND state IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded')
+  AND retracted_at IS NULL;
+
 -- ActiveRootRun resolves a session's live (non-terminal) run and its response, so an accepted
 -- command targets the loop the pump will steer and the response its journal events belong to. No
 -- live run (all terminal) yields no row, which the accept path renders as a typed rejection (no

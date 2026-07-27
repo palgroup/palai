@@ -43,7 +43,7 @@ func mustCommandEvent(from statemachines.CommandState, cmd statemachines.Command
 // the command's own content (e.g. the send_message text) as customer content.
 type CommandInput struct {
 	CommandID string
-	Kind      string // send_message | change_config | approve | deny | pause | resume | fork_session | close_session
+	Kind      string // send_message | change_config | approve | deny | pause | resume | fork_session | close_session | clear
 	Delivery  string // queue | steer | interrupt (send_message only)
 	Payload   []byte
 	// ForkSessionID is the freshly minted child session id a fork_session opens; the store adapter
@@ -155,6 +155,10 @@ func (s *Store) AcceptCommand(ctx context.Context, tenant Tenant, sessionID stri
 		}
 	} else if in.Kind == "fork_session" {
 		if err := applyForkSessionTx(ctx, tx, tenant, sessionID, in.ForkSessionID, in.CommandID); err != nil {
+			return Command{}, err
+		}
+	} else if in.Kind == "clear" {
+		if err := applyClearSessionTx(ctx, tx, tenant, sessionID, in.CommandID); err != nil {
 			return Command{}, err
 		}
 	} else if in.Kind == "resume" {
@@ -340,6 +344,31 @@ func applyForkSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, parentSes
 	if _, err := tx.Exec(ctx, storage.Query("SetCommandResult"),
 		commandID, tenant.Organization, tenant.Project, mustMarshal(map[string]any{"session_id": childSessionID})); err != nil {
 		return fmt.Errorf("set fork command result: %w", err)
+	}
+	return nil
+}
+
+// applyClearSessionTx applies a clear command (E21 T1): it withdraws the session's settled turns
+// from the conversation and marks the command applied, in the accept transaction — so the reset is
+// durable the moment the caller is told it happened, and a control plane restarted a second later
+// reads the same emptiness.
+//
+// FIRST, THE FREE ANSWER, because most people want it and it needs no command at all: on Slack a
+// NEW THREAD IS ALREADY A CLEAR. Correlation is (team, channel, thread_ts), so a new thread is a new
+// session and carries nothing across. This command is for the person who wants to stay in THIS
+// thread and start over.
+//
+// It is fork_session's sibling that does not copy: a fork branches the history into a child, a clear
+// drops it in place. And it is NOT close_session — the session stays active, which is the entire
+// point. Nothing is deleted (see ClearSessionHistory), so an operator's record is intact.
+func applyClearSessionTx(ctx context.Context, tx pgx.Tx, tenant Tenant, sessionID, commandID string) error {
+	if _, err := tx.Exec(ctx, storage.Query("ClearSessionHistory"), sessionID, tenant.Organization, tenant.Project); err != nil {
+		return fmt.Errorf("clear session history: %w", err)
+	}
+	// Session-scoped (no response), like close_session: the clear is a fact about the thread, not
+	// about any one answer in it.
+	if _, err := applyCommandInTx(ctx, tx, tenant, sessionID, "", commandID); err != nil {
+		return err
 	}
 	return nil
 }

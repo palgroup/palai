@@ -145,12 +145,16 @@ func (h *sessionHandler) command(w http.ResponseWriter, r *http.Request) {
 // commandKinds and deliveryModes are the command surface. send_message carries queue/steer/
 // interrupt delivery (spec §9.2); change_config a model and/or tool-set change (spec §9.3); the
 // lifecycle kinds pause/resume (run wait/resume — spec §22.3), fork_session (§22.8), and
-// close_session (§22.1) arrive with T4. cancel stays the response-scoped endpoint, not a command
-// kind. approve/deny are accepted but rejected (no approval source until E09 — the store rejects
-// them typed).
+// close_session (§22.1) arrive with T4. clear resets a session's history WITHOUT closing it
+// (E21 T1) — fork_session's sibling that does not copy. cancel stays the response-scoped endpoint,
+// not a command kind. approve/deny are accepted but rejected (no approval source until E09 — the
+// store rejects them typed).
+//
+// This map IS the surface: a kind the store handles but this list omits is a kind no HTTP caller can
+// ever send, so adding one here is not bookkeeping.
 var commandKinds = map[string]bool{
 	"send_message": true, "change_config": true, "approve": true, "deny": true,
-	"pause": true, "resume": true, "fork_session": true, "close_session": true,
+	"pause": true, "resume": true, "fork_session": true, "close_session": true, "clear": true,
 }
 var deliveryModes = map[string]bool{"queue": true, "steer": true, "interrupt": true}
 
@@ -163,7 +167,7 @@ func validateCommand(req contracts.CommandCreateRequest) error {
 		return errors.New("command_id is required")
 	}
 	if !commandKinds[req.Kind] {
-		return errors.New("kind must be one of send_message, change_config, approve, deny")
+		return errors.New("kind must be one of send_message, change_config, approve, deny, pause, resume, fork_session, close_session, clear")
 	}
 	if req.Kind == "send_message" {
 		if !deliveryModes[req.Delivery] {

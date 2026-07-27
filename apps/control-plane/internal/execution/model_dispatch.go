@@ -234,8 +234,14 @@ func (o *Orchestrator) dispatchModel(ctx context.Context, st *attemptState, fram
 	// step: with per-project credentials a rejected credential is an ordinary tenant-caused condition, and
 	// the tenant has to see it. The sanitized message carries no credential, so it is safe to surface.
 	if result.Error != nil {
-		return false, fmt.Errorf("model request %s: provider_error: %s (code %s, status %d)",
+		failure := fmt.Errorf("model request %s: provider_error: %s (code %s, status %d)",
 			requestID, result.Error.Message, result.Error.Code, result.Error.Status)
+		// An oversized request is named rather than left to the retry ladder (E21 T1): compaction
+		// makes it rare, not impossible — the budget is a byte estimate, not the provider's tokenizer.
+		if isContextOverflow(result.Error) {
+			return false, fmt.Errorf("%w: %w", errContextOverflow, failure)
+		}
+		return false, failure
 	}
 	st.usage = addUsage(st.usage, result.Usage)
 	st.model = result.Model
