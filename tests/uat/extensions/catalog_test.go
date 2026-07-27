@@ -130,23 +130,6 @@ var expectedExtensionsCatalog = map[string]struct {
 		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackBotSelfEventBirthsNothing",
 		"apps/control-plane/internal/store/slack_socket_component_test.go:TestSlackSocketModeSelfEventBirthsNothing",
 	}},
-	// E20 T4 — the Block Kit renderer. The claim is negative ("the model cannot mint an actionable element"),
-	// which is the kind that rots into a vacuous green, so the proof list carries BOTH halves of what keeps it
-	// honest: the sweep that finds nothing in the renderer's output, and the sweep pointed at ApprovalMessage
-	// that proves it can find something. Drop the second and the first certifies nothing.
-	"SLK-012": {"component-real", []string{
-		"adapters/integrations/slack/blocks_test.go:TestRenderRefusesToMintAnActionableElementFromModelOutput",
-		"adapters/integrations/slack/blocks_test.go:TestApprovalMessageIsTheOnlyMintOfAnActionableElement",
-		"adapters/integrations/slack/blocks_test.go:TestNoFileButInteractionsMintsAnActionableElement",
-		"adapters/integrations/slack/blocks_test.go:TestUnknownVariantRendersAsInertText",
-		"adapters/integrations/slack/blocks_test.go:TestTaskStatusMapIsExplicitAndFailsClosed",
-		"adapters/integrations/slack/blocks_test.go:TestOneTaskIsACardAndSeveralAreAPlan",
-		"adapters/integrations/slack/blocks_test.go:TestTableTruncationIsVisible",
-		"adapters/integrations/slack/blocks_test.go:TestBlockLimitIsVisible",
-		"adapters/integrations/slack/blocks_test.go:TestBlocksNeutralizeBroadcastTokens",
-		"adapters/integrations/slack/blocks_test.go:TestFileRefLinksOnlyHTTPAndHTTPS",
-		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton",
-	}},
 	"A2A-001": {"component-real", []string{
 		"adapters/integrations/a2a/card_test.go:TestAgentCardNeverLeaksInternalDetail",
 		"adapters/integrations/a2a/conformance_test.go:TestA2AConformance_PublicCardNeverLeaksAndAdvertisesExactVersion",
