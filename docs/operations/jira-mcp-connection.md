@@ -45,8 +45,17 @@ shell history, or a log:
 printf %s 'Basic <the base64 from above>' | palai secret create --name jira-api-token
 ```
 
-> Palai sends a secret that names its own scheme verbatim, and defaults a bare secret to `Bearer`. Storing
-> the scheme with the credential is what lets one connection type serve both token kinds.
+The connection's `secret_ref` is that **name**. It resolves through the DB-backed secret store, which needs a
+master key configured on the stack. Without one, the resolver falls back to an env-file bridge — the env var
+holds a **file path**, never the secret inline:
+
+```sh
+PALAI_MCP_SECRET_FILE_<ORG>__JIRA_API_TOKEN=/run/secrets/jira-api-token
+```
+
+> Palai sends a secret that names its own scheme verbatim (case-insensitively) and defaults a bare secret to
+> `Bearer`. Storing the scheme with the credential is what lets one connection type serve both token kinds.
+> A trailing newline in a secret file is trimmed, so a file written by `echo` will not corrupt the header.
 
 ## 3. Register, discover, approve, grant
 
