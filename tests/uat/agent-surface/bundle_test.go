@@ -424,3 +424,41 @@ func TestAgentSurfaceLedgerRefusesToCarryTheUnconfirmedRow(t *testing.T) {
 		}
 	}
 }
+
+// TestTheUnconfirmedRequirementsAreInKnownGaps is the other side of the row above: refusing S16 from the
+// ledger is only honest if the five uncertainties LANDED somewhere a reader meets them. An uncertainty's
+// home is the triage table, not a code comment — so this checks they arrived, by content rather than by an
+// id somebody could rename.
+//
+// The S12 vendor contradiction and the stream's restart ceiling ride the same rule and are checked here too:
+// all four were left to this gate by the plan, and a gate that trusted them to have been written is exactly
+// the shape of documentation debt this table exists to prevent.
+func TestTheUnconfirmedRequirementsAreInKnownGaps(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "docs", "operations", "known-gaps-1.0.md"))
+	if err != nil {
+		t.Fatalf("read the triage table: %v", err)
+	}
+	doc := string(raw)
+	for _, required := range []struct{ what, needle string }{
+		{"the im:history posture change, with the E19 sentence it reverses", "standing read access"},
+		{"the owner's date on that decision", "2026-07-27"},
+		{"the narrowed alternative, so declining it later costs nothing", "static `suggested_prompts`"},
+		{"the stream's restart ceiling", "NON-DURABLE"},
+		{"the migration that fixes it, and its TRIGGER rather than a wish", "with owner approval"},
+		{"the S12 vendor contradiction, both pages named", "chat.appendStream"},
+		{"S16(a) — an unstopped stream", "`chat.stopStream` is never called on"},
+		{"S16(b) — chat.update on a streaming message", "`chat.update` works on a message in streaming state"},
+		{"S16(c) — a Socket-Mode-only app calling the streaming Web API", "Socket-Mode-only app may call the streaming Web API"},
+		{"S16(d) — the video block's Events-API exception", "video block's"},
+		{"S16(e) — whether our approval buttons render in the panel", "render inside the `agent_view` panel"},
+	} {
+		if !strings.Contains(doc, required.needle) {
+			t.Errorf("the triage table does not carry %s (looked for %q) — an uncertainty's home is that table, not a code comment", required.what, required.needle)
+		}
+	}
+	// And the count the E18 T10 gate machine-reads must be untouched by all of it: none of these four rows
+	// is an RC-blocker, and saying so here stops a future edit from quietly grading one down.
+	if !strings.Contains(doc, "RC-BLOCKERS: 0") {
+		t.Error("the machine-read RC-blocker count is no longer 0 — E20 added four rows and NONE of them is a blocker; if that changed, it must be argued in the table rather than discovered here")
+	}
+}
