@@ -34,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/palgroup/palai/adapters/integrations/slack"
+	"github.com/palgroup/palai/tests/uat"
 )
 
 // TestLiveSlackSocketProtocol opens a REAL Socket Mode connection with a REAL app-level token and checks the
@@ -226,8 +227,8 @@ func TestLiveSlackSocketMentionBirthsExactlyOneRun(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Keyed on the admission reservation; BornRunsByTeam records why the input projection stopped working.
-	const bornSince = BornRunsByTeam
+	// Keyed on the admission reservation; uat.SlackBornRunsByTeam records why the input projection stopped working.
+	const bornSince = uat.SlackBornRunsByTeam
 	start := time.Now().UTC()
 	t.Logf("watching for a Socket-Mode-born run in workspace %s. The control plane must be running with PALAI_SLACK_SOCKET_TEAM_ID=%s and the workspace registered with a resolvable app_token_ref. @-mention the bot now.",
 		team, team)

@@ -13,7 +13,7 @@ import (
 	"github.com/palgroup/palai/adapters/integrations/slack"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/storage"
-	live "github.com/palgroup/palai/tests/live/slack"
+	"github.com/palgroup/palai/tests/uat"
 )
 
 // slack_connections.allowed_channels, ENFORCED — E19 T2 follow-up. Until this file existed the column was
@@ -413,7 +413,7 @@ func TestSlackBornRunsAreFoundByTheLiveLegsPredicate(t *testing.T) {
 	f.terminateRuns(t)
 	f.deliver(t, f.dmEvent("EvLive2", "Uoutsider", "D024BE91L", "1700000091.000100", "", "and in the panel"), time.Now(), "", "").Body.Close()
 
-	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()), live.BornRunsByTeam, f.team, start)
+	rows, err := f.pool.Query(storage.WithSystemScope(context.Background()), uat.SlackBornRunsByTeam, f.team, start)
 	if err != nil {
 		t.Fatalf("the live legs' predicate does not even execute: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestSlackBornRunsAreFoundByTheLiveLegsPredicate(t *testing.T) {
 	}
 	// And it must not sweep up another workspace's traffic: the key is prefixed by the team, so a different
 	// team id finds nothing at all.
-	other, err := f.pool.Query(storage.WithSystemScope(context.Background()), live.BornRunsByTeam, "T_SOMEONE_ELSE", start)
+	other, err := f.pool.Query(storage.WithSystemScope(context.Background()), uat.SlackBornRunsByTeam, "T_SOMEONE_ELSE", start)
 	if err != nil {
 		t.Fatalf("re-run the predicate for a foreign team: %v", err)
 	}
