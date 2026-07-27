@@ -50,7 +50,13 @@ var dockerBoundClasses = map[string]bool{"component-real": true, "live-provider"
 // them cannot escape proof resolution. SUB- is deliberately absent (SUB-006 belongs to the E08 coding slice);
 // SUB-007 is named in the catalog map explicitly instead. AUT- is absent for the same reason — AUT-009/010/013
 // are pre-E17 cases that GAINED a queue/orchestrator leg (§T7/§T8) and are listed explicitly.
-var extensionIDPrefixes = []string{"SLK-", "A2A-", "KNO-", "QUA-", "UI-", "WRK-"}
+//
+// TLM- (E21) joined the list even though NO TLM- case is in expectedExtensionsCatalog and none ever will be.
+// That is the point: this sweep is the ONLY place in the tree that walks the cases DIRECTORY, so a prefix
+// left outside it is a family whose dirs nothing checks — the quiet way of piercing a guard that still
+// reports green. Ownership is allowed to live elsewhere (uat.AgentSurfaceCaseIDs, uat.ToolsMemoryCaseIDs);
+// escaping the sweep is not.
+var extensionIDPrefixes = []string{"SLK-", "A2A-", "KNO-", "QUA-", "TLM-", "UI-", "WRK-"}
 
 // expectedExtensionsCatalog is the E17 UAT catalog: every case this epic materializes (plan §T11 + §7) mapped
 // to the proof class its case.yaml must declare and the in-tree proof(s) that prove it. A missing dir, a drifted
@@ -464,8 +470,9 @@ func TestExtensionsCatalogMaterialized(t *testing.T) {
 		for _, prefix := range extensionIDPrefixes {
 			if strings.HasPrefix(e.Name(), prefix) {
 				_, e17 := expectedExtensionsCatalog[e.Name()]
-				if !e17 && !slices.Contains(uat.AgentSurfaceCaseIDs, e.Name()) {
-					t.Errorf("%s: a case dir under an E17-family prefix is in NEITHER expectedExtensionsCatalog nor uat.AgentSurfaceCaseIDs (add it to one, or it escapes proof resolution entirely)", e.Name())
+				if !e17 && !slices.Contains(uat.AgentSurfaceCaseIDs, e.Name()) &&
+					!slices.Contains(uat.ToolsMemoryCaseIDs, e.Name()) {
+					t.Errorf("%s: a case dir under a guarded prefix is in NONE of expectedExtensionsCatalog, uat.AgentSurfaceCaseIDs or uat.ToolsMemoryCaseIDs (add it to one, or it escapes proof resolution entirely)", e.Name())
 				}
 				break
 			}
@@ -473,14 +480,26 @@ func TestExtensionsCatalogMaterialized(t *testing.T) {
 	}
 }
 
-// TestTheSLKCatalogsAreDisjoint is the other half of the split ownership above. Two catalogs resolving the
-// same id would both report green while each assumed the other was the authority — and worse, a case could
-// be quietly moved from the gate that actually runs its proofs to one that does not. Exactly one owner, and
-// the E20 side (tests/uat/agent-surface) asserts every id in its list has a directory.
+// TestTheSLKCatalogsAreDisjoint is the other half of the split ownership above, now THREE-WAY. Two catalogs
+// resolving the same id would both report green while each assumed the other was the authority — and worse, a
+// case could be quietly moved from the gate that actually runs its proofs to one that does not. Exactly one
+// owner, and each downstream side (tests/uat/agent-surface, tests/uat/tools-memory) asserts every id in its
+// own list has a directory.
 func TestTheSLKCatalogsAreDisjoint(t *testing.T) {
+	owners := map[string][]string{
+		"uat.AgentSurfaceCaseIDs": uat.AgentSurfaceCaseIDs,
+		"uat.ToolsMemoryCaseIDs":  uat.ToolsMemoryCaseIDs,
+	}
+	for name, ids := range owners {
+		for _, id := range ids {
+			if _, both := expectedExtensionsCatalog[id]; both {
+				t.Errorf("%s is claimed by BOTH expectedExtensionsCatalog and %s — two owners is no owner", id, name)
+			}
+		}
+	}
 	for _, id := range uat.AgentSurfaceCaseIDs {
-		if _, both := expectedExtensionsCatalog[id]; both {
-			t.Errorf("%s is claimed by BOTH expectedExtensionsCatalog and uat.AgentSurfaceCaseIDs — two owners is no owner", id)
+		if slices.Contains(uat.ToolsMemoryCaseIDs, id) {
+			t.Errorf("%s is claimed by BOTH uat.AgentSurfaceCaseIDs and uat.ToolsMemoryCaseIDs — two owners is no owner", id)
 		}
 	}
 }
