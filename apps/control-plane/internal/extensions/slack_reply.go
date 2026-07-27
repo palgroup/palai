@@ -225,9 +225,14 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 		return true
 	}
 
+	// E21 T6: the plain-post path is where the model's markdown was being LOST — chat.stopStream carries
+	// prose in markdown_text, but this call carried it in `text`, which is Slack's narrower mrkdwn dialect.
+	// ReplyMessage keeps `text` exactly as it was (Slack uses it as the notification fallback once blocks are
+	// present, so no push preview changes) and puts the answer in a markdown block underneath. Same closed
+	// union, same requester, same neutralisation — see adapters/integrations/slack/blocks.go.
 	res, err := slack.PostMessage(ctx, a.doer, slack.PostRequest{
 		MethodURL: a.apiBase + "/chat.postMessage", Token: token,
-		Body: slack.ThreadReply(o.channelID, o.threadTS, answer, o.responseID),
+		Body: slack.ReplyMessage(o.channelID, o.threadTS, answer, o.responseID, o.requesterUserID),
 	}, slack.PostOptions{})
 	if err != nil {
 		log.Printf("slack: reply for run %s failed on attempt %d/%d after %d call(s): %v",

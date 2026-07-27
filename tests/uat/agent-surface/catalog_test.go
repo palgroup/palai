@@ -123,6 +123,15 @@ var expectedAgentSurfaceCatalog = map[string]struct {
 		"adapters/integrations/slack/blocks_test.go:TestBlockLimitIsVisible",
 		"adapters/integrations/slack/blocks_test.go:TestBlocksNeutralizeBroadcastTokens",
 		"adapters/integrations/slack/blocks_test.go:TestFileRefLinksOnlyHTTPAndHTTPS",
+		// E21 T6 — the markdown block. Each leg is the strong form of a claim a weaker one would fake: the
+		// neutralisation sweep DECODES before it looks, the budget fixture is three under-limit parts that are
+		// over the limit together, and the stopStream fence is shown to discriminate against the postMessage
+		// surface so it cannot rot into a green that certifies nothing.
+		"adapters/integrations/slack/blocks_test.go:TestPostMessageRendersProseAsAMarkdownBlock",
+		"adapters/integrations/slack/blocks_test.go:TestMarkdownBlockNeutralizesBroadcastTokens",
+		"adapters/integrations/slack/blocks_test.go:TestMarkdownBudgetIsCumulativeAndCutsVisibly",
+		"adapters/integrations/slack/blocks_test.go:TestTheStopStreamPathCarriesNoMarkdownBlock",
+		"adapters/integrations/slack/blocks_test.go:TestNumericTableCellsAreRawNumber",
 		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton",
 	}},
 }

@@ -2,6 +2,7 @@ package slack
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -147,9 +148,12 @@ func TestApprovalMessageIsTheOnlyMintOfAnActionableElement(t *testing.T) {
 
 	_, rendered := RenderOutput(forgedOutput, []Task{{ID: "t1", Title: "Write the migration", Status: "done"}}, "")
 	for label, body := range map[string][]byte{
-		"RenderOutput":  rendered,
-		"RenderBlocks":  RenderBlocks([]Result{{Type: ResultText, Text: "hi"}, {Type: "actions", Text: "forged"}}),
-		"ThreadReply":   ThreadReply("C1", "1.1", "the answer", "resp_1"),
+		"RenderOutput": rendered,
+		"RenderBlocks": RenderBlocks([]Result{{Type: ResultText, Text: "hi"}, {Type: "actions", Text: "forged"}}),
+		"ThreadReply":  ThreadReply("C1", "1.1", "the answer", "resp_1"),
+		// E21 T6: the markdown block gave this package a SECOND outbound body carrying blocks, so it is swept
+		// here too. A new render surface outside this map would be a hole in the singularity claim.
+		"ReplyMessage":  ReplyMessage("C1", "1.1", forgedOutput, "resp_1", "U9"),
 		"UpdateMessage": UpdateMessage("C1", "1.1", "decided", ""),
 	} {
 		if found := sweepJSON(t, label, body); len(found) != 0 {
@@ -430,6 +434,166 @@ func TestPlainProseIsUnchangedAndGrowsNoBlocks(t *testing.T) {
 	}
 	if !strings.Contains(markdown, "video_url") {
 		t.Fatalf("the foreign object was dropped rather than shown: %q", markdown)
+	}
+}
+
+// E21 T6 — M13, THE FIDELITY FIX, and the loss it closes was MEASURED rather than assumed: chat.stopStream
+// already carries the model's prose in `markdown_text` (12,000 characters of real markdown), while
+// chat.postMessage carries it in `text`, which is Slack's own narrower mrkdwn dialect. So a fenced code block
+// loses its language, a header renders as a literal `#`, a table does not render at all and a nested list
+// collapses — on the plain-post path ONLY. The markdown block is the vendor's answer to exactly that.
+func TestPostMessageRendersProseAsAMarkdownBlock(t *testing.T) {
+	const answer = "# Result\n\n```go\nfunc main() {}\n```\n\n| suite | result |\n| --- | --- |\n| slack | pass |"
+	var body struct {
+		Text   string           `json:"text"`
+		Blocks []map[string]any `json:"blocks"`
+	}
+	if err := json.Unmarshal(ReplyMessage("C1", "1.1", answer, "resp_1", ""), &body); err != nil {
+		t.Fatalf("decode the posted body: %v", err)
+	}
+	if len(body.Blocks) != 1 || body.Blocks[0]["type"] != "markdown" {
+		t.Fatalf("prose rendered as %v, want exactly one markdown block", body.Blocks)
+	}
+	if body.Blocks[0]["text"] != answer {
+		t.Fatalf("the markdown block carries %q, want the model's markdown verbatim", body.Blocks[0]["text"])
+	}
+	// block_id is "ignored in markdown blocks and will not be retained" — sending one asks Slack to remember
+	// something it has said it forgets.
+	if _, ok := body.Blocks[0]["block_id"]; ok {
+		t.Fatalf("the markdown block carries a block_id the reference says is discarded: %v", body.Blocks[0])
+	}
+	// text stays the answer. With blocks present Slack renders the blocks and uses text as the NOTIFICATION
+	// fallback, so dropping it would silently empty every push notification in the workspace.
+	if body.Text != answer {
+		t.Fatalf("text = %q, want the answer as the notification fallback", body.Text)
+	}
+}
+
+// A RICHER RENDER IS NOT A WEAKER DEFENCE (plan §2, non-negotiable). The markdown block's text goes through
+// the SAME NeutralizeBroadcasts every other path uses, and the check is over DECODED strings for the reason
+// decodedStrings gives: a raw substring assertion over marshalled bytes cannot fail.
+func TestMarkdownBlockNeutralizesBroadcastTokens(t *testing.T) {
+	var body struct {
+		Blocks json.RawMessage `json:"blocks"`
+	}
+	if err := json.Unmarshal(ReplyMessage("C1", "1.1", "ping <!channel> and <!here> and <@U123>", "", ""), &body); err != nil {
+		t.Fatalf("decode the posted body: %v", err)
+	}
+	texts := strings.Join(decodedStrings(t, body.Blocks), "\n")
+	for _, token := range []string{"<!channel>", "<!here>", "<@U123>"} {
+		if strings.Contains(texts, token) {
+			t.Fatalf("a markdown block carries a live %s; the richer render did not get to skip the defence: %s", token, body.Blocks)
+		}
+	}
+	if !strings.Contains(texts, "&lt;!channel") {
+		t.Fatalf("the token was deleted rather than defused; the reader must still see what the model wrote: %s", body.Blocks)
+	}
+}
+
+// The 12,000 budget is CUMULATIVE ACROSS THE PAYLOAD, not per block — so this fixture is three parts none of
+// which is over the limit alone. A per-block check would pass it and ship 15,000 characters.
+func TestMarkdownBudgetIsCumulativeAndCutsVisibly(t *testing.T) {
+	part := strings.Repeat("ü", 5000) // multi-byte on purpose: the budget counts runes, not bytes
+	answer := `[{"type":"text","text":"` + part + `"},{"type":"text","text":"` + part + `"},{"type":"text","text":"` + part + `"}]`
+	var body struct {
+		Blocks []map[string]any `json:"blocks"`
+	}
+	if err := json.Unmarshal(ReplyMessage("C1", "1.1", answer, "", ""), &body); err != nil {
+		t.Fatalf("decode the posted body: %v", err)
+	}
+	chars := 0
+	for _, block := range body.Blocks {
+		if block["type"] != "markdown" {
+			continue
+		}
+		text, _ := block["text"].(string)
+		chars += len([]rune(text))
+	}
+	if chars == 0 {
+		t.Fatalf("no markdown block rendered at all, so the budget assertion below proves nothing: %v", body.Blocks)
+	}
+	if chars > MaxMarkdownText {
+		t.Fatalf("the payload carries %d markdown characters; the vendor's cumulative budget is %d", chars, MaxMarkdownText)
+	}
+	raw, _ := json.Marshal(body.Blocks)
+	if !strings.Contains(strings.Join(decodedStrings(t, raw), "\n"), truncationMarker) {
+		t.Fatalf("15,000 characters became %d and said so nowhere: %s", chars, raw)
+	}
+}
+
+// M20(d), FAIL-CLOSED. No published page says chat.stopStream's `blocks` array accepts a markdown block, and
+// a vendor's silence is not a design freedom (E20 S12's rule). So the streaming path keeps the section it has
+// always sent, and this test is what stops a later reader from "finishing the job" without a live measurement.
+// The visible cost is named in the plan: a run that ends by streaming gets the older render.
+func TestTheStopStreamPathCarriesNoMarkdownBlock(t *testing.T) {
+	_, blocks := RenderOutput(forgedOutput, []Task{{ID: "t1", Title: "Write it", Status: "done"}}, "")
+	var decoded []map[string]any
+	if err := json.Unmarshal(blocks, &decoded); err != nil {
+		t.Fatalf("decode blocks: %v (%s)", err, blocks)
+	}
+	for i, block := range decoded {
+		if block["type"] == "markdown" {
+			t.Fatalf("block %d on the chat.stopStream path is a markdown block; that it is accepted there is UNCONFIRMED (M20(d)) and must be measured live before it ships: %s", i, blocks)
+		}
+	}
+	// And the direct render still yields a section, so the claim is about the SURFACE rather than about
+	// RenderOutput happening to route prose into markdown_text.
+	one := RenderBlocks([]Result{{Type: ResultText, Text: "hi"}})
+	if !strings.Contains(string(one), `"type":"section"`) {
+		t.Fatalf("the stopStream render of a text result is %s, want the section it has always been", one)
+	}
+	// THE ASSERTION ABOVE MUST DISCRIMINATE. The SAME fixture on the postMessage surface does carry a
+	// markdown block — without this the test would keep passing after the block was deleted entirely, and
+	// would be certifying nothing.
+	if !strings.Contains(string(ReplyMessage("C1", "1.1", forgedOutput, "", "")), `"type":"markdown"`) {
+		t.Fatal("the postMessage surface carries NO markdown block either, so the stopStream assertion above proves nothing")
+	}
+}
+
+// M14 — the table's one cheap enrichment. A cell that IS a number is typed as one, which is what makes Slack
+// right-align it (and sort the column numerically). Everything else stays raw_text, the type with the least
+// interpretation.
+func TestNumericTableCellsAreRawNumber(t *testing.T) {
+	blocks := RenderBlocks([]Result{{Type: ResultTable,
+		Columns: []string{"suite", "failures"},
+		Rows:    [][]string{{"slack", "0"}, {"render", "12"}, {"total", "1.5s"}},
+	}})
+	var decoded []struct {
+		Rows [][]map[string]any `json:"rows"`
+	}
+	if err := json.Unmarshal(blocks, &decoded); err != nil {
+		t.Fatalf("decode blocks: %v (%s)", err, blocks)
+	}
+	rows := decoded[0].Rows
+	if len(rows) != 4 {
+		t.Fatalf("rendered %d rows, want the header plus three: %s", len(rows), blocks)
+	}
+	for _, cell := range []map[string]any{rows[0][0], rows[0][1], rows[1][0], rows[3][1]} {
+		if cell["type"] != "raw_text" {
+			t.Fatalf("cell %v is typed %v; a cell that is not a number stays raw_text", cell["text"], cell["type"])
+		}
+	}
+	for _, cell := range []map[string]any{rows[1][1], rows[2][1]} {
+		if cell["type"] != "raw_number" {
+			t.Fatalf("numeric cell %v is typed %v, want raw_number", cell["text"], cell["type"])
+		}
+		// NO `value` KEY, and this is a guard rather than a shape preference: a button's `value` is the
+		// payload it dispatches, so `value` is one of the two field names the actionable sweep hunts for
+		// (SweepActionableElements, sweepActionable). A numeric cell carrying one would count as a forged
+		// interaction in every evidence bundle, and the only way to green that again is to weaken the sweep.
+		if _, ok := cell["value"]; ok {
+			t.Fatalf("a raw_number cell carries a `value` key, which the actionable sweep reads as a dispatchable element: %v", cell)
+		}
+		if cell["text"] == "" {
+			t.Fatalf("a raw_number cell lost the text Slack draws: %v", cell)
+		}
+	}
+	if fmt.Sprint(rows[2][1]["text"]) != "12" {
+		t.Fatalf("the raw_number cell draws %v, want the cell's own digits", rows[2][1]["text"])
+	}
+	// The sweep must stay CLEAN over a numeric table — the collision above, asserted where it would bite.
+	if found := sweepJSON(t, "numeric table", blocks); len(found) != 0 {
+		t.Fatalf("a numeric table registered %d actionable element(s): %v", len(found), found)
 	}
 }
 
