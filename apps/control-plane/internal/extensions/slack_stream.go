@@ -226,6 +226,11 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 	var (
 		steps    int
 		streamTS string
+		// silenced means a Slack failure took the decoration away. The follower KEEPS WATCHING anyway, and
+		// that is deliberate: the status indicator is the part of this task that helps most, and giving up on
+		// the whole follower because an append was refused would clear the spinner while the run is still
+		// working — telling the human it finished when it has not.
+		silenced bool
 		deadline = time.Now().Add(f.budget)
 	)
 	for time.Now().Before(deadline) {
@@ -248,6 +253,9 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 			if slackRunTerminalEvents[event.Type] {
 				return // the reply pump closes the stream with the answer
 			}
+			if silenced {
+				continue // still watching for the terminal, no longer writing
+			}
 			line := slackStreamLine(event, &steps)
 			if line == "" {
 				continue
@@ -262,7 +270,8 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 					// No stream. The run is undecorated and its answer posts plainly — the same outcome as
 					// being over the concurrency cap, reached a different way.
 					log.Printf("slack: could not open a stream for run %s: %v", tg.runID, err)
-					return
+					silenced = true
+					continue
 				}
 				streamTS = ts
 				f.remember(tg.runID, tg.channel, ts)
@@ -276,12 +285,16 @@ func (f *SlackStreamFollower) tail(ctx context.Context, tg slackStreamTarget) {
 				}
 			}
 			if err := slack.AppendStream(ctx, a.doer, a.apiBase, token, tg.channel, streamTS, line); err != nil {
+				silenced = true
 				if slack.APIErrorCode(err) == slack.CodeStoppedByUser {
 					f.stoppedByUser(ctx, tg, token)
-					return
+					continue
 				}
+				// The stream is NOT forgotten here: it is still open on Slack's side, so the answer should
+				// still close it. Only a user-stopped stream is forgotten, because appends AND stops are
+				// refused on one forever.
 				log.Printf("slack: could not append to run %s's stream: %v", tg.runID, err)
-				return
+				continue
 			}
 		}
 		if len(batch) < slackStreamBatch {

@@ -1769,6 +1769,34 @@ var WiringLiveLegs = []LiveLeg{
 		HandoverRow:       "§0.1 — the app-level token and the team id, plus the running stack's Postgres URL",
 		WithoutCredential: "skip",
 	},
+	// E20 T1's legs. The first is the cheapest receipt in the whole epic and the one to run first: if
+	// setStatus works on chat:write alone (S3), the owner's EXISTING installation can already show a working
+	// indicator — no reinstall, no agent_view, no new permission. If it does not, that claim is wrong and the
+	// task needs a scope it does not ask for.
+	{
+		Test:              "TestLiveSlackStatusNeedsNoNewScope",
+		EnvVars:           []string{"SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL"},
+		HandoverRow:       "§0.1 — the bot token and a test channel, UNCHANGED from E19: E20 T1 asks for no new credential and no new scope (S3 — setStatus and the whole chat.*Stream family are chat:write)",
+		WithoutCredential: "skip",
+	},
+	{
+		Test:              "TestLiveSlackStreamingWorksFromASocketModeApp",
+		EnvVars:           []string{"SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL", "SLACK_TEAM_ID", "SLACK_APPROVER_IDS", "SLACK_TEST_USER_ID"},
+		HandoverRow:       "§0.1/§0.3 — the bot token, a test channel, the team id, and a real user id for the stream's recipient (the approver allow-list's first entry; SLACK_TEST_USER_ID overrides). This leg answers S16(c): can a Socket-Mode-only app call the streaming Web API at all",
+		WithoutCredential: "skip",
+	},
+	{
+		Test:              "TestLiveSlackUnstoppedStreamIsMeasured",
+		EnvVars:           []string{"SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL", "SLACK_TEAM_ID", "SLACK_APPROVER_IDS", "SLACK_TEST_USER_ID"},
+		HandoverRow:       "§0.1/§0.3 — same four as above. This leg MEASURES S16(a) (what a never-stopped stream does) and deliberately leaves one open: it is exactly what a control-plane restart leaves behind, so the operator can judge whether the ceiling is worth migration 000042",
+		WithoutCredential: "skip",
+	},
+	{
+		Test:              "TestLiveSlackStreamRefusesWithoutARecipient",
+		EnvVars:           []string{"SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL"},
+		HandoverRow:       "§0.1 — the bot token and a test channel. This leg turns S9 into a receipt by making the recipient-less call our own client refuses to make",
+		WithoutCredential: "skip",
+	},
 	{
 		Test:              "TestLiveA2APushReachesFilteredThroughTheRealPolicy",
 		EnvVars:           []string{"A2A_PUSH_WEBHOOK_URL"},

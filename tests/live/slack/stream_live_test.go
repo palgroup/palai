@@ -37,18 +37,6 @@ import (
 	"github.com/palgroup/palai/adapters/integrations/slack"
 )
 
-// streamRecipient is the user the stream is addressed to. S9 requires it for a CHANNEL stream, and the
-// handover already supplies a user id: SLACK_APPROVER_IDS is the §0.1 allow-list, whose first entry is a real
-// member of the workspace. SLACK_TEST_USER_ID overrides it for an operator who would rather not use theirs.
-func streamRecipient(t *testing.T) string {
-	t.Helper()
-	if id := os.Getenv("SLACK_TEST_USER_ID"); id != "" {
-		return id
-	}
-	ids := need(t, "SLACK_APPROVER_IDS", "§0.1 — a comma-separated allow-list of Slack user ids; the first is used as the stream's recipient. SLACK_TEST_USER_ID overrides it")
-	return strings.TrimSpace(strings.Split(ids, ",")[0])
-}
-
 // openThread posts the message a stream will hang under and returns its ts. A channel stream needs a
 // thread_ts (it is REQUIRED on chat.startStream), and in production that thread root is the human's own
 // mention — here it is a message saying what this is.
@@ -94,7 +82,14 @@ func TestLiveSlackStreamingWorksFromASocketModeApp(t *testing.T) {
 	token := []byte(need(t, "SLACK_BOT_TOKEN", "§0.1 — App → OAuth & Permissions → Bot User OAuth Token; scope chat:write"))
 	channel := need(t, "SLACK_TEST_CHANNEL", "§0.1 — the ID of a test channel the bot has been invited to")
 	team := need(t, "SLACK_TEAM_ID", "§0.3 — the workspace's team id (T…), unchanged from E19")
-	user := streamRecipient(t)
+	// S9's recipient, read HERE rather than through a helper so the live-leg inventory's env-var scan reads
+	// what this test actually needs. SLACK_APPROVER_IDS is §0.1's allow-list; its first entry is a real member
+	// of the workspace, and SLACK_TEST_USER_ID overrides it for an operator who would rather not use theirs.
+	user := os.Getenv("SLACK_TEST_USER_ID")
+	if user == "" {
+		user = strings.TrimSpace(strings.Split(need(t, "SLACK_APPROVER_IDS",
+			"§0.1 — the approver allow-list; its first entry is the stream's recipient. SLACK_TEST_USER_ID overrides it"), ",")[0])
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), liveWindow(t))
 	defer cancel()
 
@@ -160,7 +155,14 @@ func TestLiveSlackUnstoppedStreamIsMeasured(t *testing.T) {
 	token := []byte(need(t, "SLACK_BOT_TOKEN", "§0.1 — App → OAuth & Permissions → Bot User OAuth Token; scope chat:write"))
 	channel := need(t, "SLACK_TEST_CHANNEL", "§0.1 — the ID of a test channel the bot has been invited to")
 	team := need(t, "SLACK_TEAM_ID", "§0.3 — the workspace's team id (T…), unchanged from E19")
-	user := streamRecipient(t)
+	// S9's recipient, read HERE rather than through a helper so the live-leg inventory's env-var scan reads
+	// what this test actually needs. SLACK_APPROVER_IDS is §0.1's allow-list; its first entry is a real member
+	// of the workspace, and SLACK_TEST_USER_ID overrides it for an operator who would rather not use theirs.
+	user := os.Getenv("SLACK_TEST_USER_ID")
+	if user == "" {
+		user = strings.TrimSpace(strings.Split(need(t, "SLACK_APPROVER_IDS",
+			"§0.1 — the approver allow-list; its first entry is the stream's recipient. SLACK_TEST_USER_ID overrides it"), ",")[0])
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), liveWindow(t))
 	defer cancel()
 
