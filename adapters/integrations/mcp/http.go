@@ -26,8 +26,10 @@ var errHTTPRedirectDenied = fmt.Errorf("%w: redirect not followed", ErrProtocol)
 
 // HTTPOptions configures a Streamable HTTP transport. Bearer is the connection's OWN upstream credential,
 // resolved from its secret_ref at REQUEST time by the manager — it is the ONLY Authorization the transport
-// ever sends, and it is never the platform's token (no confused-deputy). AllowPrivate opens loopback for
-// the local test harness ONLY (the webhook-sender discipline); production leaves it false.
+// ever sends, and it is never the platform's token (no confused-deputy). It may name its own scheme
+// ("Basic ...", "Bearer ..."), which is then sent verbatim; a bare value is sent as a Bearer token (see
+// authorizationHeader). AllowPrivate opens loopback for the local test harness ONLY (the webhook-sender
+// discipline); production leaves it false.
 type HTTPOptions struct {
 	URL          string
 	Bearer       string
@@ -43,14 +45,49 @@ type HTTPOptions struct {
 // Mcp-Session-Id carried across requests, redirects denied, and the connection pinned to a vetted resolved
 // IP so a rebind cannot swap the target between vet and connect (egress.PinnedDialer, TOCTOU closed). origin
 // is the Origin header value derived from url (a server's DNS-rebinding defence has something to pin).
+// authorization is the fully rendered Authorization header value (scheme included), built ONCE at construction
+// so the per-request path neither re-derives it nor re-validates it.
 type httpTransport struct {
-	client    *http.Client
-	url       string
-	origin    string
-	bearer    string
-	sessionID atomic.Pointer[string]
-	nextID    atomic.Int64
-	sampling  SamplingHandler // nil ⇒ default-deny (a server sampling/createMessage gets a JSON-RPC error)
+	client        *http.Client
+	url           string
+	origin        string
+	authorization string
+	sessionID     atomic.Pointer[string]
+	nextID        atomic.Int64
+	sampling      SamplingHandler // nil ⇒ default-deny (a server sampling/createMessage gets a JSON-RPC error)
+}
+
+// authSchemes are the Authorization schemes a connection secret may name for ITSELF. A secret whose first
+// token is one of these is sent verbatim; anything else is a bare credential and keeps the historical
+// "Bearer " prefix, so every connection registered before this existed is bit-unchanged.
+//
+// The scheme belongs to the UPSTREAM, not to Palai: the Atlassian Rovo MCP server wants
+// "Basic base64(email:api_token)" for a personal API token but "Bearer <key>" for a service-account key
+// (support.atlassian.com/atlassian-rovo-mcp-server/docs/configuring-authentication-via-api-token/, fetched
+// 2026-07-27). Letting the secret carry it keeps the credential in the ONE place that is already resolved at
+// request time and never journaled; a scheme column on the connection row would be a migration, an API field,
+// and a second thing to keep in sync with the secret it describes.
+var authSchemes = []string{"Bearer ", "Basic "}
+
+// authorizationHeader renders a resolved credential into its Authorization header value. The control-character
+// reject is not cosmetic: this is the one boundary that ships the credential off-box, and a secret carrying
+// CR/LF would splice attacker-chosen headers into the request. The secret is NEVER echoed into the error —
+// a credential must not reach an error string, a log, or a test name.
+func authorizationHeader(secret string) (string, error) {
+	if secret == "" {
+		return "", nil
+	}
+	for i := 0; i < len(secret); i++ {
+		if c := secret[i]; (c < 0x20 && c != '\t') || c == 0x7f {
+			return "", fmt.Errorf("%w: connection secret is not a valid Authorization header value (control character at byte %d)", ErrProtocol, i)
+		}
+	}
+	for _, scheme := range authSchemes {
+		if strings.HasPrefix(secret, scheme) {
+			return secret, nil
+		}
+	}
+	return "Bearer " + secret, nil
 }
 
 // NewHTTPTransport builds a Streamable HTTP transport after statically vetting the URL (https-only, no
@@ -90,7 +127,13 @@ func NewHTTPTransport(opts HTTPOptions) (Transport, error) {
 			return errHTTPRedirectDenied
 		},
 	}
-	return &httpTransport{client: client, url: opts.URL, origin: origin, bearer: opts.Bearer}, nil
+	// Render the Authorization value now: an unusable credential is a terminal construction error, never a
+	// silent unauthenticated dial to a server that expects auth.
+	authorization, err := authorizationHeader(opts.Bearer)
+	if err != nil {
+		return nil, err
+	}
+	return &httpTransport{client: client, url: opts.URL, origin: origin, authorization: authorization}, nil
 }
 
 // setSampling binds the per-call sampling handler after dialing (the manager sets it from Config.Sampling +
@@ -170,8 +213,8 @@ func (t *httpTransport) post(ctx context.Context, msg map[string]any) (*http.Res
 		// migrates cross-origin (redirects are denied, so every hop stays on the vetted host).
 		req.Header.Set("Origin", t.origin)
 	}
-	if t.bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+t.bearer)
+	if t.authorization != "" {
+		req.Header.Set("Authorization", t.authorization)
 	}
 	if sid := t.sessionID.Load(); sid != nil {
 		req.Header.Set("Mcp-Session-Id", *sid)
