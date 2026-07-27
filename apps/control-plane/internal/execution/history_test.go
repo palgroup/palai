@@ -28,7 +28,7 @@ func TestHistoryMessagesRetainedPurgedAndPending(t *testing.T) {
 		{Output: []byte(`{"output":[]}`)}, // terminal-less / no output yet
 		{Output: nil},                     // queued prior, nothing stored
 	}
-	msgs := historyMessages(prior)
+	msgs := historyMessages(prior, defaultHistoryBudgetChars)
 	if len(msgs) != 2 {
 		t.Fatalf("history has %d messages, want 2 (empty/pending priors skipped): %v", len(msgs), msgs)
 	}
@@ -65,7 +65,7 @@ func TestHistoryMessagesCarryTheQuestionsAndPlainText(t *testing.T) {
 	prior := []coordinator.PriorResponse{
 		{Input: []byte(`"2+2 kaç"`), Output: []byte(`{"output":[{"type":"message","content":"2 + 2 = 4."}]}`)},
 	}
-	msgs := historyMessages(prior)
+	msgs := historyMessages(prior, defaultHistoryBudgetChars)
 	if len(msgs) != 2 {
 		t.Fatalf("one prior turn assembled %d messages, want 2 (the question AND the answer): %v", len(msgs), msgs)
 	}

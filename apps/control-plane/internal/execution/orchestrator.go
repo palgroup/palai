@@ -444,7 +444,14 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		return fmt.Errorf("assemble session history: %w", err)
 	}
 	runStart := map[string]any{"input": inputValue}
-	if messages := historyMessages(prior); len(messages) > 0 {
+	// Compaction budget (E21 T1). The budget IS a model's context window, and the run's resolved
+	// route is where such a window would come from — except that measured against this tree on
+	// 2026-07-27 nothing stores one: not model_routes, not the broker, not either provider adapter.
+	// So there is no per-model window to resolve, every run folds at the conservative default, and
+	// calling effectiveRoute here to read a field that does not exist would be theatre. This is the
+	// line that reads it the day a route revision carries one; until then the default IS the
+	// fail-closed answer.
+	if messages := historyMessages(prior, defaultHistoryBudgetChars); len(messages) > 0 {
 		runStart["messages"] = messages
 	}
 	// Seed required delegations (spec §25.18): the engine emits one child.request per spec at the
