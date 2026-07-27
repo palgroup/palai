@@ -173,16 +173,47 @@ func (p SlackAuthorizationPolicy) ApproverAuthorized(userID string) bool {
 	return slices.Contains(p.AllowedUsers, userID)
 }
 
-// ChannelAllowed reports whether the integration may act in a channel. An EMPTY list means every channel —
-// the opposite of ApproverAuthorized's emptiness, deliberately, for the reason documented at the type. An
+// ChannelAllowed reports whether the integration may act in a conversation. An EMPTY list means every channel
+// — the opposite of ApproverAuthorized's emptiness, deliberately, for the reason documented at the type. An
 // unknown channel id ("") against a NON-empty list is refused: a scope that cannot be checked is not met.
 //
-// Both callers are on the paths where a channel first becomes actionable — SlackAdmitter.Admit (an inbound
-// event, and so both transports: the Events API route and Socket Mode) and SlackAdmitter.Decide (an
-// interactive click). Decide is not redundant with Admit: an allow-list NARROWED after a thread was
+// isDM EXEMPTS a direct message from the list, and THIS IS A WIDENING (E20 T2). Naming it as one:
+//
+//   - WHAT IT OPENS. Before it, a connection with a non-empty allowed_channels refused EVERY DM, so the agent
+//     panel — whose conversation is literally a DM (message.im) — died silently on any install that had ever
+//     narrowed its channel scope. After it, a workspace member who can open a DM with the app can start a run
+//     in that DM even though no channel of theirs is listed.
+//   - WHY IT IS DEFENSIBLE. A DM's scope is Slack's OWN invitation model: the app can only be DM'd by a member
+//     of the workspace it was installed into, and the conversation has exactly two parties. allowed_channels
+//     narrows a gate that already exists (which channels the bot was invited to); for a DM that prior gate is
+//     workspace membership, not an invitation anyone can widen. This is the same reasoning that makes an EMPTY
+//     allowed_channels mean "every channel" rather than "none".
+//   - WHAT IT DOES NOT OPEN, and none of these is a promise — each is structural. default_policy is still the
+//     ONLY run target (SlackAdmitter.runTarget reads it off the connection row). AllowedUsers is still the ONLY
+//     approval gate, and it is still deny-by-default. A DM run carries NO extra authority: the Slack user id
+//     stays out of the prompt entirely (slackRunInput) and never becomes a principal (SLK-004).
+//
+// The parameter is EXPLICIT rather than derived in here, because the two callers have genuinely different
+// evidence and a function that guessed would hide that:
+//
+//	SlackAdmitter.Admit   — passes slack.Event.IsDM(), i.e. Slack's own `channel_type == "im"` (authoritative).
+//	SlackAdmitter.Decide  — passes FALSE, because it cannot know. A block_actions payload carries `channel`
+//	                        with `{id, name}` and NO channel_type anywhere
+//	                        (https://docs.slack.dev/reference/interaction-payloads/block_actions-payload/,
+//	                        checked 2026-07-27). A scope that cannot be checked is not met, so a click inside a
+//	                        DM is still governed by the list. CONSEQUENCE, stated rather than discovered later:
+//	                        under a NON-EMPTY allowed_channels a DM run's approval buttons are refused; the
+//	                        operator's escape hatch is to list that DM's channel id, and the durable fix is to
+//	                        record the conversation's DM-ness on the correlation row — a migration, and not one
+//	                        this task takes.
+//
+// Decide is not redundant with Admit for the ordinary case either: an allow-list NARROWED after a thread was
 // correlated must take that thread's in-flight buttons with it.
-func (p SlackAuthorizationPolicy) ChannelAllowed(channelID string) bool {
+func (p SlackAuthorizationPolicy) ChannelAllowed(channelID string, isDM bool) bool {
 	if len(p.AllowedChannels) == 0 {
+		return true
+	}
+	if isDM {
 		return true
 	}
 	return slices.Contains(p.AllowedChannels, channelID)

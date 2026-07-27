@@ -4,7 +4,9 @@ package store_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,7 +136,7 @@ func TestSlackEmptyAllowListsMeanOppositeThingsOnPurpose(t *testing.T) {
 	if emptied.ApproverAuthorized("Umapped") {
 		t.Fatal("an EMPTY allowed_users authorized a user — deny-by-default is the only safe reading for the list with no gate behind it")
 	}
-	if !emptied.ChannelAllowed("C_ANY") {
+	if !emptied.ChannelAllowed("C_ANY", false) {
 		t.Fatal("an EMPTY allowed_channels refused a channel — the two lists must keep their DIFFERENT emptiness meanings, each justified by what sits behind it")
 	}
 }
@@ -175,5 +177,156 @@ func TestSlackChannelAllowListRefusesAClickOutsideIt(t *testing.T) {
 	defer ok.Body.Close()
 	if state := f.publicationState(t, thread.publicationID); state != "approved" {
 		t.Fatalf("with the channel back in scope the click left the publication %q, want approved — the allow-list must discriminate, not refuse everything", state)
+	}
+}
+
+// ---- E20 T2: the agent panel's DM, and the surface events that are not conversation --------------------
+
+// dmEvent builds a message.im envelope — the agent panel's conversation.
+//
+// CONTRACT: https://docs.slack.dev/reference/events/message.im/ (checked 2026-07-27). The example payload is
+// {"type":"event_callback","team_id":…,"event_id":…,"event":{"type":"message","channel":"D024BE91L",
+// "user":…,"text":…,"ts":…,"event_ts":…,"channel_type":"im"}} and the event requires the `im:history` scope.
+// Built from THAT page rather than from our own mapper, so a drift in MapEvent cannot drag the fixture along.
+func (f *slackFixture) dmEvent(eventID, user, channel, ts, text string) []byte {
+	raw, _ := json.Marshal(map[string]any{
+		"type": "event_callback", "team_id": f.team, "api_app_id": "A0001",
+		"event_id": eventID, "event_time": 1700000000,
+		"event": map[string]any{
+			"type": "message", "channel": channel, "user": user, "text": text,
+			"ts": ts, "event_ts": ts, "channel_type": "im",
+		},
+	})
+	return raw
+}
+
+// panelEvent builds one of the agent panel's SURFACE events.
+//
+// CONTRACT: https://docs.slack.dev/reference/events/app_home_opened/ (checked 2026-07-27) —
+// {"type":"app_home_opened","user":…,"channel":"D…","event_ts":…,"tab":"home"|"messages"}, no scopes required.
+// https://docs.slack.dev/reference/events/app_context_changed/ (checked 2026-07-27) —
+// {"type":"app_context_changed","context":{"entities":[{type,value,team_id}]}}, and an empty context object
+// when there are no entities. Neither carries a message.
+func (f *slackFixture) panelEvent(eventID string, inner map[string]any) []byte {
+	raw, _ := json.Marshal(map[string]any{
+		"type": "event_callback", "team_id": f.team, "api_app_id": "A0001",
+		"event_id": eventID, "event_time": 1700000000, "event": inner,
+	})
+	return raw
+}
+
+// TestSlackDMIsExemptFromTheConfiguredChannelAllowList is E20 T2's core security decision, proved end to end
+// against real Postgres through the shipped route — and it is a WIDENING, so all three of its legs run in one
+// test rather than in three that could drift apart.
+//
+// THE DECISION: allowed_channels governs CHANNEL conversations; a DM (Slack's own channel_type == "im") is
+// EXEMPT, because a DM's scope is Slack's invitation model — whoever can DM the app is already a member of
+// the workspace it was installed into. Before this, a non-empty allowed_channels refused every DM, so the
+// agent panel died silently on any install that had ever narrowed its channel scope.
+//
+// THE THREE LEGS, and the third is the one that keeps the widening from becoming a privilege grant:
+//
+//	(1) a non-empty allowed_channels no longer refuses a DM;
+//	(2) that SAME list still refuses a CHANNEL event — the exemption is about DMs, not about the list;
+//	(3) the DM run's principal is still the CONNECTION's, never the human who opened the DM.
+func TestSlackDMIsExemptFromTheConfiguredChannelAllowList(t *testing.T) {
+	f := newSlackFixture(t)
+	f.scopeToChannels(t, "C40") // an operator who has narrowed their scope: the state that used to kill the panel
+
+	// (1) The panel's DM is admitted despite being nowhere in the list.
+	const dmChannel, dmOpener = "D024BE91L", "Uoutsider"
+	dm := f.deliver(t, f.dmEvent("EvDM1", dmOpener, dmChannel, "1700000050.000100", "ship the release notes"), time.Now(), "", "")
+	if dm.StatusCode/100 != 2 {
+		t.Fatalf("a panel DM under allowed_channels=[C40] = %d, want a 2xx ack — a DM is scoped by Slack's invitation model, not by the operator's channel list", dm.StatusCode)
+	}
+	dm.Body.Close()
+	if n := f.runCount(t); n != 1 {
+		t.Fatalf("the panel DM birthed %d runs, want 1", n)
+	}
+
+	// (2) The same list still refuses a CHANNEL event. The exemption must discriminate, or it has repealed
+	// allowed_channels rather than carved a DM out of it.
+	out := f.deliver(t, f.event("EvDM2", "app_mention", "Umapped", "C41", "1700000051.000100", ""), time.Now(), "", "")
+	defer out.Body.Close()
+	if out.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("a CHANNEL event outside allowed_channels = %d, want 422 — the DM exemption must not widen the list itself", out.StatusCode)
+	}
+	if n := f.runCount(t); n != 1 {
+		t.Fatalf("%d runs after the out-of-scope channel event, want still 1", n)
+	}
+
+	// (3) The DM run carries NO extra authority. Its principal and pinned revision are the CONNECTION's — the
+	// same two the channel path gets — and the Slack user who opened the DM is nowhere near either.
+	var revision, principal, input string
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT COALESCE(r.agent_revision_id,''), COALESCE(i.principal_id,''), COALESCE(resp.input::text,'')
+		   FROM runs r
+		   JOIN idempotency_records i
+		     ON i.organization_id = r.organization_id AND i.project_id = r.project_id
+		   JOIN responses resp
+		     ON resp.organization_id = r.organization_id AND resp.project_id = r.project_id
+		  WHERE r.organization_id=$1 AND r.project_id=$2`, f.org, f.project).
+		Scan(&revision, &principal, &input); err != nil {
+		t.Fatalf("read the DM-born run: %v", err)
+	}
+	if principal != f.principal || revision != f.revision {
+		t.Fatalf("the DM run ran as principal %q revision %q, want the CONNECTION's %q/%q — a DM must not choose who it runs as",
+			principal, revision, f.principal, f.revision)
+	}
+	if principal == dmOpener || strings.Contains(input, dmOpener) {
+		t.Fatalf("the DM opener %q reached the run's identity or its prompt (principal=%q input=%q) — a Slack user is data, never authority (SLK-004)",
+			dmOpener, principal, input)
+	}
+	if !strings.Contains(input, "ship the release notes") {
+		t.Fatalf("the DM run's input = %q, want the human's message", input)
+	}
+}
+
+// TestSlackPanelSurfaceEventsBirthNoRun is the RED-first half of the panel: app_home_opened and
+// app_context_changed are things a human LOOKED AT, not things they said. Before E20 T2 they classified as
+// KindOther and mapped cleanly, so subscribing to them — which the agent panel REQUIRES — would have birthed
+// a run with an empty prompt every time somebody opened the panel.
+//
+// Both tabs are asserted: tab=="home" is App Home's own surface, tab=="messages" is the agent panel, and
+// NEITHER is conversation. The delivery is still acked (2xx) — an unacknowledged event is one Slack redelivers
+// forever.
+func TestSlackPanelSurfaceEventsBirthNoRun(t *testing.T) {
+	f := newSlackFixture(t)
+	for _, tc := range []struct {
+		name  string
+		inner map[string]any
+	}{
+		{"app_home_opened messages tab", map[string]any{
+			"type": "app_home_opened", "user": "U9", "channel": "D42", "event_ts": "1515449522.000016", "tab": "messages"}},
+		{"app_home_opened home tab", map[string]any{
+			"type": "app_home_opened", "user": "U9", "channel": "D42", "event_ts": "1515449522.000016", "tab": "home",
+			"view": map[string]any{"id": "V1", "type": "home"}}},
+		{"app_context_changed", map[string]any{
+			"type": "app_context_changed", "context": map[string]any{"entities": []any{
+				map[string]any{"type": "slack#/types/channel_id", "value": "C01234ABDCE", "team_id": "T0ABCDE6543"}}}}},
+		{"app_context_changed with an empty context", map[string]any{
+			"type": "app_context_changed", "context": map[string]any{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := f.deliver(t, f.panelEvent("EvPanel-"+tc.name, tc.inner), time.Now(), "", "")
+			defer resp.Body.Close()
+			if resp.StatusCode/100 != 2 {
+				t.Fatalf("a panel surface event = %d, want a 2xx ack — it was delivered, it is simply not a turn in a conversation", resp.StatusCode)
+			}
+		})
+	}
+	if n := f.runCount(t); n != 0 {
+		t.Fatalf("the panel surface events birthed %d runs, want 0 — opening a panel is not asking for anything", n)
+	}
+	if n := f.sessionCount(t); n != 0 {
+		t.Fatalf("the panel surface events correlated %d threads, want 0", n)
+	}
+	var reservations int
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT count(*) FROM idempotency_records WHERE organization_id=$1 AND project_id=$2`, f.org, f.project).Scan(&reservations); err != nil {
+		t.Fatalf("count reservations: %v", err)
+	}
+	if reservations != 0 {
+		t.Fatalf("the panel surface events took %d idempotency reservations, want 0 — they are refused BEFORE admission, in the mapper", reservations)
 	}
 }

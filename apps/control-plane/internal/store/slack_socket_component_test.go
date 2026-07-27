@@ -315,3 +315,84 @@ func TestSlackSocketModeIsNotMountedWithoutAWorkspace(t *testing.T) {
 		t.Fatal("the bridge no longer exposes SocketMode")
 	}
 }
+
+// ---- E20 T2: the agent panel is a THIRD ENTRANCE into the SAME admission bridge ------------------------
+
+// TestSlackPanelDMEntersTheSameAdmissionBridge extends E19 T3's transport-invariance to the surface E20 adds.
+// The panel is not a third TRANSPORT — it is a third ENTRANCE: a conversation that arrives as message.im
+// rather than as app_mention, over either of the two transports that already exist. The claim is that it
+// changes nothing about identity.
+//
+// It asserts what a new entrance could plausibly have broken, in order:
+//
+//	the panel DM births a real run through the UNCHANGED Admit — same route constant, same team+event_id key;
+//	under the CONNECTION's principal and pinned revision, neither of which the DM chose;
+//	and the SAME event_id arriving over the OTHER transport REPLAYS onto that one reservation — no second run,
+//	no idempotency conflict (which is what a surface that composed its request differently would produce).
+//
+// Together with the app_mention pair above, that is the three-entrance guarantee: {HTTP mention, Socket Mode
+// mention, panel DM} all land in ONE Admit, and one source event yields one run whichever way it arrives.
+func TestSlackPanelDMEntersTheSameAdmissionBridge(t *testing.T) {
+	f := newSlackFixture(t)
+	conn := f.startSocketMode(t)
+
+	// The panel's DM over HTTP first.
+	dm := f.dmEvent("EvPanelDM", "Uoutsider", "D024BE91L", "1700000060.000100", "what is left on the release?")
+	resp := f.deliver(t, dm, time.Now(), "", "")
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("the panel DM over HTTP = %d, want a 2xx ack", resp.StatusCode)
+	}
+	resp.Body.Close()
+	f.waitForRuns(t, 1, "a panel DM must birth a real run through the unchanged admission bridge")
+
+	var revision, principal, route, key string
+	if err := f.pool.QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT COALESCE(r.agent_revision_id,''), COALESCE(i.principal_id,''), i.route, i.idempotency_key
+		   FROM runs r
+		   JOIN idempotency_records i
+		     ON i.organization_id = r.organization_id AND i.project_id = r.project_id
+		  WHERE r.organization_id=$1 AND r.project_id=$2`, f.org, f.project).
+		Scan(&revision, &principal, &route, &key); err != nil {
+		t.Fatalf("read the panel-born run: %v", err)
+	}
+	if revision != f.revision || principal != f.principal {
+		t.Fatalf("panel-born run = revision %q principal %q, want the connection's %q/%q — a new surface must not widen what a payload may choose",
+			revision, principal, f.revision, f.principal)
+	}
+	if route != "/v1/slack/events" || key != f.team+":EvPanelDM" {
+		t.Fatalf("panel reservation = (%q,%q), want (/v1/slack/events, %s:EvPanelDM) — the panel must reserve in the SAME idempotency namespace, under the SAME key",
+			route, key, f.team)
+	}
+
+	// The identical event over Socket Mode: a REPLAY, not a second run and not a conflict.
+	f.deliverOverSocket(t, conn, "env-panel-dm", dm)
+	f.waitForRuns(t, 1, "the same panel DM over the other transport must replay onto the one reservation")
+	assertOneCleanReservation(t, f, 1, "panel DM over both transports")
+}
+
+// TestSlackSocketModePanelSurfaceEventsBirthNothing is the Socket Mode half of the no-run guarantee. The
+// mapper is what refuses, so both transports inherit it — but "it should" is not evidence, and this is the
+// transport the owner actually runs (Socket Mode needs no public URL). The envelope must still be
+// ACKNOWLEDGED: an unacknowledged envelope is one Slack goes on treating as undelivered.
+func TestSlackSocketModePanelSurfaceEventsBirthNothing(t *testing.T) {
+	f := newSlackFixture(t)
+	conn := f.startSocketMode(t)
+
+	f.deliverOverSocket(t, conn, "env-home", f.panelEvent("EvHome", map[string]any{
+		"type": "app_home_opened", "user": "U9", "channel": "D42", "event_ts": "1515449522.000016", "tab": "messages"}))
+	f.deliverOverSocket(t, conn, "env-ctx", f.panelEvent("EvCtx", map[string]any{
+		"type": "app_context_changed", "context": map[string]any{"entities": []any{
+			map[string]any{"type": "slack#/types/channel_id", "value": "C01234ABDCE", "team_id": "T0ABCDE6543"}}}}))
+
+	// The acknowledgement precedes the work (D4), so waiting on it proves nothing about admission: give the
+	// admission that never happened time to have happened, then assert it did not.
+	time.Sleep(500 * time.Millisecond)
+	if n := f.runCount(t); n != 0 {
+		t.Fatalf("panel surface events over Socket Mode birthed %d runs, want 0", n)
+	}
+	for _, id := range []string{"env-home", "env-ctx"} {
+		if !f.socket.acked(id) {
+			t.Fatalf("panel envelope %s was never acknowledged; Slack goes on treating it as undelivered", id)
+		}
+	}
+}

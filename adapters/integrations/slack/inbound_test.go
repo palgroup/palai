@@ -216,3 +216,115 @@ func quote(s string) string {
 	}
 	return string(raw)
 }
+
+// ---- E20 T2: the agent panel's three events ----------------------------------------------------------
+
+// TestMapEventPanelSurfaceEventsBirthNoRun is the RED-first guarantee the panel could not ship without: the
+// two SURFACE events are not conversation, and before this they classified as KindOther and mapped CLEANLY —
+// so every panel open would have birthed a run with an empty prompt. They must now be a typed "handled, no
+// run" outcome, ErrIgnored's sibling, on BOTH tabs and on both transports (the caller branches on the error,
+// so neither transport can forget).
+//
+// CONTRACT: https://docs.slack.dev/reference/events/app_home_opened/ (checked 2026-07-27) — the payload is
+// {type, user, channel, event_ts, tab, view}; tab is "home" or "messages"; "No scopes required!".
+// https://docs.slack.dev/reference/events/app_context_changed/ (checked 2026-07-27) — the payload is
+// {type, context:{entities:[…]}}; it carries NO channel and NO user at all.
+func TestMapEventPanelSurfaceEventsBirthNoRun(t *testing.T) {
+	for _, tc := range []struct {
+		name, inner string
+		wantType    string
+		wantTab     string
+		wantChannel string
+	}{
+		{
+			name:     "app_home_opened messages tab",
+			inner:    `{"type":"app_home_opened","user":"U9","channel":"D42","event_ts":"1515449522.000016","tab":"messages"}`,
+			wantType: "app_home_opened", wantTab: "messages", wantChannel: "D42",
+		},
+		{
+			name:     "app_home_opened home tab",
+			inner:    `{"type":"app_home_opened","user":"U9","channel":"D42","event_ts":"1515449522.000016","tab":"home","view":{"id":"V1","type":"home"}}`,
+			wantType: "app_home_opened", wantTab: "home", wantChannel: "D42",
+		},
+		{
+			name:     "app_context_changed",
+			inner:    `{"type":"app_context_changed","context":{"entities":[{"type":"slack#/types/channel_id","value":"C01234ABDCE","team_id":"T0ABCDE6543"}]}}`,
+			wantType: "app_context_changed", wantTab: "", wantChannel: "",
+		},
+		{
+			name:     "app_context_changed with an empty context object",
+			inner:    `{"type":"app_context_changed","context":{}}`,
+			wantType: "app_context_changed", wantTab: "", wantChannel: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev-panel","event":` + tc.inner + `}`)
+			ev, err := MapEvent(body, "Ubot", false)
+			if !errors.Is(err, ErrNoRun) {
+				t.Fatalf("MapEvent err = %v, want ErrNoRun — a panel surface event must never reach admission", err)
+			}
+			// The event is still returned, populated: the caller acknowledges it and logs WHICH surface moved.
+			// An error that also carries its value is unusual, so it is asserted rather than assumed.
+			if ev.Type != tc.wantType || ev.Tab != tc.wantTab || ev.ChannelID != tc.wantChannel {
+				t.Fatalf("no-run event = (%q,%q,%q), want (%q,%q,%q)",
+					ev.Type, ev.Tab, ev.ChannelID, tc.wantType, tc.wantTab, tc.wantChannel)
+			}
+			if ev.SourceEventID != "Ev-panel" {
+				t.Fatalf("no-run event lost its identity: SourceEventID = %q", ev.SourceEventID)
+			}
+		})
+	}
+}
+
+// TestMapEventCarriesTheDMChannelType: the DM exemption in SlackAuthorizationPolicy.ChannelAllowed turns on
+// this one field, so it has to come from the PAYLOAD Slack actually sends rather than from a "D" prefix
+// nobody documented. A channel message must NOT report itself as a DM, or the exemption would swallow the
+// allow-list whole.
+//
+// CONTRACT: https://docs.slack.dev/reference/events/message.im/ (checked 2026-07-27) — the inner event is
+// {"type":"message","channel":"D024BE91L","user":…,"text":…,"ts":…,"event_ts":…,"channel_type":"im"} and the
+// event requires the `im:history` scope.
+func TestMapEventCarriesTheDMChannelType(t *testing.T) {
+	dm := []byte(`{"type":"event_callback","team_id":"T123ABC456","api_app_id":"A0PNCHHK2","event_id":"Ev0PV52K21","event":{
+		"type":"message","channel":"D024BE91L","user":"U2147483697","text":"Hello hello can you hear me?",
+		"ts":"1355517523.000005","event_ts":"1355517523.000005","channel_type":"im"}}`)
+	ev, err := MapEvent(dm, "Ubot", false)
+	if err != nil {
+		t.Fatalf("message.im: err = %v, want a normal mapped event — a DM message IS a message", err)
+	}
+	if !ev.IsDM() || ev.ChannelType != "im" {
+		t.Fatalf("message.im: ChannelType = %q IsDM = %t, want im/true", ev.ChannelType, ev.IsDM())
+	}
+	if ev.Kind != KindMessage {
+		t.Fatalf("message.im Kind = %q, want %q — a DM message earns no new Kind", ev.Kind, KindMessage)
+	}
+	if ev.ThreadTS != "1355517523.000005" || ev.Text != "Hello hello can you hear me?" {
+		t.Fatalf("message.im correlation/text = %q/%q", ev.ThreadTS, ev.Text)
+	}
+
+	channel := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev-chan","event":{
+		"type":"message","channel":"C1","channel_type":"channel","user":"U9","ts":"5.5","text":"hi"}}`)
+	ev, err = MapEvent(channel, "Ubot", false)
+	if err != nil {
+		t.Fatalf("channel message: err = %v", err)
+	}
+	if ev.IsDM() {
+		t.Fatal("a channel message reported IsDM() — the allowed_channels exemption would then cover everything")
+	}
+}
+
+// TestMapEventDropsTheBotsOwnDM is SLK-008 in a DM. The loop guard lives in MapEvent so it is
+// transport- AND surface-independent, but "it should" is not evidence: an app answering itself inside the
+// panel is a loop with no channel members to notice it.
+func TestMapEventDropsTheBotsOwnDM(t *testing.T) {
+	selfDM := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev-selfdm","event":{
+		"type":"message","channel":"D024BE91L","channel_type":"im","user":"Ubot","ts":"7.7","text":"my own answer"}}`)
+	if _, err := MapEvent(selfDM, "Ubot", false); !errors.Is(err, ErrIgnored) {
+		t.Fatalf("the app's own DM: err = %v, want ErrIgnored", err)
+	}
+	botDM := []byte(`{"type":"event_callback","team_id":"T1","event_id":"Ev-botdm","event":{
+		"type":"message","channel":"D024BE91L","channel_type":"im","bot_id":"B1","ts":"8.8","text":"another bot"}}`)
+	if _, err := MapEvent(botDM, "Ubot", false); !errors.Is(err, ErrIgnored) {
+		t.Fatalf("another bot's DM: err = %v, want ErrIgnored", err)
+	}
+}
