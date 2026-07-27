@@ -756,17 +756,23 @@ func resolveRunTarget(api *apiClient, get func(string) string) (slackRunTarget, 
 		how = append(how, fmt.Sprintf("as principal %s (this stack's bootstrap-key principal — set SLACK_PRINCIPAL_ID to bind a different one)", p))
 	}
 	if t.revision == "" {
-		rev, minted, err := api.ensureSlackAgentRevision()
+		tools := slackAgentTools(get)
+		rev, minted, err := api.ensureSlackAgentRevision(tools)
 		if err != nil {
 			return slackRunTarget{}, err
 		}
 		t.revision = rev
+		// What the agent can DO is the part an operator most needs to see, so it is named rather than
+		// counted: "2 tools" tells nobody whether they just granted a web fetch or a shell.
+		grant := "NO tools — it can answer and nothing else, so its runs are single-step (set SLACK_AGENT_TOOLS to widen)"
+		if len(tools) > 0 {
+			grant = "tools: " + strings.Join(tools, ", ")
+		}
 		switch {
 		case minted:
-			how = append(how, fmt.Sprintf("running agent revision %s, created and published by this bring-up "+
-				"(it carries NO tool set, so Slack runs are single-step until one is bound to it)", rev))
+			how = append(how, fmt.Sprintf("running agent revision %s, created and published by this bring-up — %s", rev, grant))
 		default:
-			how = append(how, fmt.Sprintf("running agent revision %s, reused from the %q profile an earlier bring-up created", rev, slackAgentProfileName))
+			how = append(how, fmt.Sprintf("running agent revision %s, reused from the %q profile an earlier bring-up created — %s", rev, slackAgentProfileName, grant))
 		}
 	}
 	t.resolved = "Slack run target: " + strings.Join(how, ", ")
@@ -1042,13 +1048,13 @@ func (c *apiClient) bootstrapPrincipal() (string, error) {
 // step in front of it. The reuse lookup is by profile NAME because `palai up` is re-run constantly,
 // and a bring-up that minted a fresh lineage each time would move the workspace's binding underneath
 // the operator and leave a pile of orphan revisions behind.
-func (c *apiClient) ensureSlackAgentRevision() (id string, minted bool, err error) {
+func (c *apiClient) ensureSlackAgentRevision(tools []string) (id string, minted bool, err error) {
 	profileID, err := c.findAgentProfile(slackAgentProfileName)
 	if err != nil {
 		return "", false, err
 	}
 	if profileID != "" {
-		if rev, err := c.publishedAgentRevision(profileID); err != nil {
+		if rev, err := c.publishedAgentRevision(profileID, tools); err != nil {
 			return "", false, err
 		} else if rev != "" {
 			return rev, false, nil
@@ -1067,13 +1073,32 @@ func (c *apiClient) ensureSlackAgentRevision() (id string, minted bool, err erro
 		profileID = created.ID
 	}
 
-	// An EMPTY executable config on purpose: the revision inherits the deployment's model and imposes
-	// no tool ceiling. Guessing an instruction or a model here would bake a `palai up` opinion into
-	// every Slack run, invisibly, and the operator would have no idea where it came from.
+	// The model and instructions stay EMPTY on purpose: the revision inherits the deployment's model, and
+	// guessing an instruction here would bake a `palai up` opinion into every Slack run, invisibly, with the
+	// operator having no idea where it came from.
+	//
+	// TOOLS ARE DIFFERENT, and E21 T4 is where they arrive. A revision with an empty effective tool set is
+	// single-step — it can answer, and it can do nothing else — so leaving the list empty was not neutrality,
+	// it was a ceiling nobody had chosen either. What IS a real choice is which tools, and the default is
+	// deliberately the narrow one:
+	//
+	//   READ-ONLY BY DEFAULT. A Slack DM is the lowest-friction surface this platform has — anyone in the
+	//   workspace can reach it, and E20 granted im:history so the panel conversation works at all. Binding
+	//   the workspace and publish tools here would hand every one of those people a shell and a push, as a
+	//   standing capability nobody opted into. That is the same class of decision as im:history itself, and
+	//   it belongs to the workspace owner, at install time, in the open.
+	//
+	//   SLACK_AGENT_TOOLS widens it, explicitly and by name. An operator who wants the agent to write code
+	//   from Slack sets it — and can see in one line what they granted. Explicit configuration always wins,
+	//   the same rule the revision and principal ids follow above.
+	//
+	// mcp_connections is NOT set, and its absence is the fail-closed default for EXTERNAL tools: a Slack run
+	// reaches no MCP server until the operator registers one and names it on the revision. The rider is the
+	// capability ceiling (extensions/lookup.go), so an empty one is a run that cannot reach outward at all.
 	var rev struct {
 		ID string `json:"id"`
 	}
-	status, err := c.do(http.MethodPost, "/v1/agents/"+profileID+"/revisions", map[string]any{}, &rev)
+	status, err := c.do(http.MethodPost, "/v1/agents/"+profileID+"/revisions", map[string]any{"tools": tools}, &rev)
 	if err != nil {
 		return "", false, fmt.Errorf("create an agent revision under %s: %w", profileID, err)
 	}
@@ -1115,11 +1140,16 @@ func (c *apiClient) findAgentProfile(name string) (string, error) {
 }
 
 // publishedAgentRevision returns a published revision of this profile, or "" when it has none.
-func (c *apiClient) publishedAgentRevision(profileID string) (string, error) {
+// It reuses a published revision ONLY when that revision already carries the wanted tool list. Reusing one
+// with a different list would make SLACK_AGENT_TOOLS silently inert on every bring-up after the first — the
+// operator would set it, see a green `palai up`, and get the old toolless revision anyway. That is the same
+// silent-skip shape E21 T2 removed from this file, so it is not reintroduced one function down.
+func (c *apiClient) publishedAgentRevision(profileID string, wantTools []string) (string, error) {
 	var page struct {
 		Data []struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
+			ID     string   `json:"id"`
+			Status string   `json:"status"`
+			Tools  []string `json:"tools"`
 		} `json:"data"`
 	}
 	status, err := c.do(http.MethodGet, "/v1/agents/"+profileID+"/revisions", nil, &page)
@@ -1130,12 +1160,60 @@ func (c *apiClient) publishedAgentRevision(profileID string) (string, error) {
 		return "", fmt.Errorf("GET /v1/agents/%s/revisions = %d, want 200", profileID, status)
 	}
 	for _, r := range page.Data {
-		if r.Status == "published" {
+		if r.Status == "published" && sameTools(r.Tools, wantTools) {
 			return r.ID, nil
 		}
 	}
 	return "", nil
 }
+
+// sameTools compares two tool lists as SETS: the API's order is not a promise, and an operator who reorders
+// SLACK_AGENT_TOOLS has not asked for a new revision.
+func sameTools(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, t := range a {
+		seen[t]++
+	}
+	for _, t := range b {
+		seen[t]--
+		if seen[t] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// slackAgentTools is the tool list bound to the revision `palai up` creates. The default is READ-ONLY on
+// purpose (see ensureSlackAgentRevision); SLACK_AGENT_TOOLS replaces it wholesale, by name, so what an
+// operator granted is legible in one line rather than assembled from a default plus a delta.
+//
+// "Give this agent nothing" is a real posture and needs to stay reachable, so it has an explicit spelling:
+// SLACK_AGENT_TOOLS=none. Blank is treated as unset, because a variable that got emptied by a stray line in
+// .env.local should not silently disarm the agent.
+func slackAgentTools(get func(string) string) []string {
+	raw := strings.TrimSpace(get("SLACK_AGENT_TOOLS"))
+	if raw == "" {
+		return slackDefaultTools
+	}
+	if strings.EqualFold(raw, "none") {
+		return nil
+	}
+	var out []string
+	for _, name := range strings.Split(raw, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// slackDefaultTools: read-only, side-effect-free, and functional on a plain compose stack — no workspace
+// root, no repository, no sandbox driver required. palai.research.fetch carries its own egress guards;
+// palai.knowledge.retrieve is ACL-first and fail-closed to KB-wide sources.
+var slackDefaultTools = []string{"palai.research.fetch", "palai.knowledge.retrieve"}
 
 // putSecretRef stores one credential VALUE under its handle through the E13 T3 secret store — the
 // SAME write-path a production tenant uses, envelope-encrypted at rest and resolved fresh, so the

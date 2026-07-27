@@ -2,6 +2,7 @@ package stack
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -261,6 +262,11 @@ func fakeProvisioningAPI(t *testing.T) (*apiClient, *[]string) {
 	t.Helper()
 	var calls []string
 	profileID, revisionID, published := "", "", false
+	// The revision remembers the tools it was created with. A fake that forgets them is not modelling this
+	// API: `palai up` reuses a published revision only when its tool list already matches what was asked
+	// for, so a forgetful fixture would prove reuse that the real server never performs.
+	var revisionTools []string
+	revisionSeq := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
 		write := func(code int, v any) {
@@ -283,11 +289,20 @@ func fakeProvisioningAPI(t *testing.T) (*apiClient, *[]string) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/agents/"+profileID+"/revisions":
 			data := []any{}
 			if revisionID != "" && published {
-				data = append(data, map[string]any{"id": revisionID, "status": "published"})
+				data = append(data, map[string]any{"id": revisionID, "status": "published", "tools": revisionTools})
 			}
 			write(http.StatusOK, map[string]any{"object": "list", "data": data})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/agents/"+profileID+"/revisions":
-			revisionID = "arev_fake"
+			var body struct {
+				Tools []string `json:"tools"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			revisionTools = body.Tools
+			// A DISTINCT id per revision, as the real server issues: a fixture that reuses one id cannot
+			// show the difference between reusing a revision and minting a replacement.
+			revisionSeq++
+			revisionID = fmt.Sprintf("arev_fake_%d", revisionSeq)
+			published = false
 			write(http.StatusCreated, map[string]any{"id": revisionID, "status": "draft"})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/agents/"+profileID+"/revisions/"+revisionID+"/publish":
 			published = true
