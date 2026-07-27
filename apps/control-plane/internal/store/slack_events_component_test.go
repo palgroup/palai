@@ -96,6 +96,10 @@ type slackCall struct {
 	path string
 	auth string
 	body string
+	// query is the URL's raw query string. Every WRITE this stack makes is a POST carrying JSON, so it is
+	// empty for those; a READ (conversations.replies) is a documented GET, and its arguments are the only
+	// place the channel and thread it addressed can be seen.
+	query string
 }
 
 // scriptedReply is one queued answer for a method: an HTTP status plus the envelope body ("" takes the
@@ -114,7 +118,8 @@ func (s *fakeSlackWebAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if len(s.statuses) > 0 {
 		status = s.statuses[len(s.statuses)-1]
 	}
-	s.calls = append(s.calls, slackCall{path: r.URL.Path, auth: r.Header.Get("Authorization"), body: string(body)})
+	s.calls = append(s.calls, slackCall{path: r.URL.Path, auth: r.Header.Get("Authorization"),
+		body: string(body), query: r.URL.RawQuery})
 	ts := fmt.Sprintf("9%02d.000100", len(s.calls))
 	after := s.retryAfter
 	var scripted *scriptedReply
@@ -159,10 +164,15 @@ func (s *fakeSlackWebAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //   - https://docs.slack.dev/reference/methods/chat.appendStream/ → {"ok":true,"channel":…,"ts":…}
 //   - https://docs.slack.dev/reference/methods/chat.stopStream/   → {"ok":true,"channel":…,"ts":…,"message":{…}}
 //   - https://docs.slack.dev/reference/methods/assistant.threads.setStatus/ → {"ok":true}
+//   - https://docs.slack.dev/reference/methods/conversations.replies/ → {"ok":true,"messages":[…],"has_more":…}
 func slackOKEnvelope(path, ts string) string {
 	switch path {
 	case "/assistant.threads.setStatus":
 		return `{"ok":true}`
+	case "/conversations.replies":
+		// An EMPTY thread by default, which is the honest shape for a fixture that scripted no history: the
+		// read succeeded and the thread had nothing in it. A test that wants messages scripts them.
+		return `{"ok":true,"messages":[],"has_more":false}`
 	case "/chat.startStream", "/chat.appendStream":
 		return `{"ok":true,"channel":"C1","ts":"` + ts + `"}`
 	case "/chat.stopStream":

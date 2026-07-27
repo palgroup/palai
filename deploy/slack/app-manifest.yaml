@@ -89,7 +89,12 @@ oauth_config:
                             # It backs assistant.threads.setSuggestedPrompts / setTitle and the
                             # app_context_changed event. NOTE (plan §3.5 S3): status and streaming do NOT
                             # need it — chat.startStream/appendStream/stopStream and setStatus are chat:write.
-      - channels:history    # SLK-002, SLK-005 — message events in channels the bot is in
+      - channels:history    # SLK-002, SLK-005 — message events in channels the bot is in.
+                            # ALSO the one READ this app makes: conversations.replies, for a thread it was
+                            # invited into after the discussion started (SLK-003). Removing this scope would
+                            # look like it only stopped a delivery; it would also silently make that read
+                            # `missing_scope`. groups:history and mpim:history are deliberately NOT granted,
+                            # so a private channel and a group DM stay unreadable.
       - chat:write          # SLK-006, SLK-007 — chat.postMessage AND chat.update
       - files:read          # SLK-005 — fetch a shared file's content
       - im:history          # SLK-010 — the ONLY way to receive message.im, i.e. the panel conversation.

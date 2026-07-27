@@ -158,6 +158,12 @@ func TestMapEventCarriesTheAffectedMessageTS(t *testing.T) {
 			`{"type":"event_callback","team_id":"T1","event_id":"Ev3","event":{"type":"message","subtype":"message_changed","channel":"C1","ts":"9.9","message":{"user":"U1","ts":"3.3","thread_ts":"3.0","text":"edited"}}}`, "3.3"},
 		{"a delete names the message it removes",
 			`{"type":"event_callback","team_id":"T1","event_id":"Ev4","event":{"type":"message","subtype":"message_deleted","channel":"C1","ts":"9.9","previous_message":{"user":"U1","ts":"4.4","thread_ts":"4.0","text":"gone"}}}`, "4.4"},
+		// A REPLY NAMES ITSELF, NOT ITS THREAD ROOT — and this row is the one the thread-history read depends
+		// on. Every row above has ThreadTS falling back to the message's own ts, so they cannot tell the two
+		// fields apart; here they genuinely differ (5.5 inside thread 5.0), which is what makes "skip the turn
+		// that triggered the read" an id comparison rather than a coincidence.
+		{"a reply names itself, not the root it hangs from",
+			`{"type":"event_callback","team_id":"T1","event_id":"Ev5","event":{"type":"app_mention","user":"U1","channel":"C1","ts":"5.5","thread_ts":"5.0","text":"özetle"}}`, "5.5"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev, err := MapEvent([]byte(tc.body), "Ubot", false)
@@ -166,6 +172,10 @@ func TestMapEventCarriesTheAffectedMessageTS(t *testing.T) {
 			}
 			if ev.MessageTS != tc.want {
 				t.Fatalf("MessageTS = %q, want %q — without it a correction and a tombstone name no turn", ev.MessageTS, tc.want)
+			}
+			if ev.InThread && ev.MessageTS == ev.ThreadTS {
+				t.Fatalf("a threaded event has MessageTS == ThreadTS (%q) — the two are different questions, and "+
+					"collapsing them retracts the wrong turn and quotes the current one back as history", ev.MessageTS)
 			}
 		})
 	}

@@ -89,10 +89,33 @@ var expectedExtensionsCatalog = map[string]struct {
 		"apps/control-plane/internal/automation/dedupe_component_test.go:TestDuplicateDeliveryLinksOriginalSingleAction",
 		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackRetryStormRunsTheEffectOnce",
 	}},
+	// The post-E20 live fix EXTENDED this case rather than opening an id, and the reason is that it is the SAME
+	// invariant read from the other side: the thread↔session correlation is what decides whether a thread's
+	// earlier messages are read. A thread with a session is never read (run.start replays it); a REPLY in a
+	// thread without one is read exactly once. Both halves are listed, because the negative is the kind of claim
+	// that rots into a vacuous green — drop the "does not fetch twice" leg and the remaining one is satisfied by
+	// a build that fetches on every single message.
 	"SLK-003": {"component-real", []string{
+		"adapters/integrations/slack/history_test.go:TestThreadRepliesCarriesTheDocumentedArguments",
+		"adapters/integrations/slack/history_test.go:TestThreadRepliesRefusesAnUnboundedOrUnaddressedRead",
+		"adapters/integrations/slack/history_test.go:TestThreadRepliesDropsSubtypedAndEmptyMessages",
+		"adapters/integrations/slack/history_test.go:TestThreadRepliesTypesTheAPIRefusal",
+		"adapters/integrations/slack/history_test.go:TestThreadRepliesDoesNotRetryARateLimit",
+		"adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheAffectedMessageTS",
+		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteIsEmptyWhenThereIsNothingToQuote",
+		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteLeadsWithTheUntrustedLabelAndEndsBeforeTheRequest",
+		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteAttributesWithoutNamingAnyone",
+		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteMakesBothTruncationsVisible",
+		"apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteQuotesAnInjectionAsData",
 		"apps/control-plane/internal/extensions/slack_component_test.go:TestSlackThreadSessionCorrelation",
 		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackThreadCorrelatesToOneSession",
 		"apps/control-plane/internal/store/slack_events_component_test.go:TestSlackConcurrentFirstEventsNeverSplitAThread",
+		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsFetchedOnceForAThreadWeWereInvitedInto",
+		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackTopLevelMentionReadsNoThread",
+		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadReadAddressesTheEventNotTheContext",
+		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsNotReadOutsideTheChannelAllowList",
+		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRefusalStillAdmitsTheRun",
+		"apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRedeliveryStillReplays",
 	}},
 	// E19 T2 gave ApproverAuthorized its FIRST production caller, which is what earns deleting E17 T11's
 	// "UNWIRED DECISION PATH" note: the allow-list is now enforced on the shipped interactivity route.
