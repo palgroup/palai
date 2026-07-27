@@ -2,9 +2,26 @@ id: SLK-003
 name: thread-correlates-to-one-canonical-session
 proof_class: component-real
 provider: fake
-input: "two events in the same (team, channel, thread_ts) resolve the SAME canonical session, and a later event (or a web-console attach) joins that one session, not a second; a different thread gets its own session; a concurrent race collapses at the unique index to a single session. WIRED (E19 T1): the correlation is now driven by the SHIPPED route — two real callbacks in one thread resolve one session, and a concurrent first-event race collapses at the unique index. component-real against a real Postgres slack_thread_sessions table. §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — the local seam is the FAKE Slack peer, so `slack` closes PREVIEW, not stable."
+input: "two events in the same (team, channel, thread_ts) resolve the SAME canonical session, and a later event (or a web-console attach) joins that one session, not a second; a different thread gets its own session; a concurrent race collapses at the unique index to a single session. WIRED (E19 T1): the correlation is now driven by the SHIPPED route — two real callbacks in one thread resolve one session, and a concurrent first-event race collapses at the unique index. THE OTHER SIDE OF THE CORRELATION (post-E20 live fix): a thread that has NO session is a thread the app was invited into after the discussion started, and the correlation is what decides whether its earlier messages are read. The live observation was a mention in an existing thread answered with 'please share the text you want summarised', because the run's whole input was the word 'özetle'. So the read is keyed on the correlation itself — a REPLY in a thread with no session is read exactly once via conversations.replies (channels:history, granted), and a thread whose session the event chains onto is NEVER read, because run.start already replays it and a second copy would disagree with the first. Bounded by 100 messages and 12,000 characters with both truncations stated in the prompt (nothing in this tree compacts a prompt), and by 1.2s against the 2s ack budget; every failure costs the CONTEXT and never the run. The read is addressed by the ADMITTED EVENT's own channel and thread and by nothing else — an app_context entity is still never a fetch target, now proven against real outbound traffic rather than against its absence — and the fetched text rides the PROMPT, never the request hash, or a redelivery (which reads nothing) would turn SLK-002's replay into an idempotency conflict. Other people's words enter as UNTRUSTED DESCRIPTIVE TEXT with no Slack ids in it, and a retracted message does not come back: a tombstone subtype is dropped. component-real against a real Postgres slack_thread_sessions table. §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — the local seam is the FAKE Slack peer, so `slack` closes PREVIEW, not stable."
 expect_status: completed
 proof:
+  - adapters/integrations/slack/history_test.go:TestThreadRepliesCarriesTheDocumentedArguments
+  - adapters/integrations/slack/history_test.go:TestThreadRepliesRefusesAnUnboundedOrUnaddressedRead
+  - adapters/integrations/slack/history_test.go:TestThreadRepliesDropsSubtypedAndEmptyMessages
+  - adapters/integrations/slack/history_test.go:TestThreadRepliesTypesTheAPIRefusal
+  - adapters/integrations/slack/history_test.go:TestThreadRepliesDoesNotRetryARateLimit
+  - adapters/integrations/slack/inbound_test.go:TestMapEventCarriesTheMessagesOwnTS
+  - apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteIsEmptyWhenThereIsNothingToQuote
+  - apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteLeadsWithTheUntrustedLabelAndEndsBeforeTheRequest
+  - apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteAttributesWithoutNamingAnyone
+  - apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteMakesBothTruncationsVisible
+  - apps/control-plane/internal/extensions/slack_thread_test.go:TestSlackThreadNoteQuotesAnInjectionAsData
   - apps/control-plane/internal/extensions/slack_component_test.go:TestSlackThreadSessionCorrelation
   - apps/control-plane/internal/store/slack_events_component_test.go:TestSlackThreadCorrelatesToOneSession
   - apps/control-plane/internal/store/slack_events_component_test.go:TestSlackConcurrentFirstEventsNeverSplitAThread
+  - apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsFetchedOnceForAThreadWeWereInvitedInto
+  - apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackTopLevelMentionReadsNoThread
+  - apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadReadAddressesTheEventNotTheContext
+  - apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryIsNotReadOutsideTheChannelAllowList
+  - apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRefusalStillAdmitsTheRun
+  - apps/control-plane/internal/store/slack_thread_history_component_test.go:TestSlackThreadHistoryRedeliveryStillReplays
