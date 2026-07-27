@@ -40,10 +40,12 @@
 # and the app keeps working exactly as E19 shipped it (mentions in channels). The panel then
 # greets with the agent_description and suggested_prompts below but carries no conversation.
 #
-# LOW-CONFIDENCE, stated rather than assumed (plan §3.5): users:read vs users:profile.read.
-# The scope page we fetched is a navigation index, so which one backs Slack-user → principal
-# mapping is not certain. Start with users:read; if a live run reports missing_scope, add
-# users:profile.read and reinstall. This uncertainty is deliberately NOT baked into the code.
+# RESOLVED (2026-07-27), and the record is kept rather than deleted because the uncertainty was
+# real: users:read vs users:profile.read was LOW-CONFIDENCE from plan §3.5, because the scope page
+# we had fetched was a navigation index. users.info's own reference page states `users:read`
+# (https://docs.slack.dev/reference/methods/users.info/, checked 2026-07-27), and the live app
+# reports it granted. It is what adapters/integrations/slack/users.go calls, for thread speaker
+# names — NOT for principal mapping, which still keys on the id alone.
 _metadata:
   major_version: 1
   minor_version: 2
@@ -99,7 +101,10 @@ oauth_config:
       - files:read          # SLK-005 — fetch a shared file's content
       - im:history          # SLK-010 — the ONLY way to receive message.im, i.e. the panel conversation.
                             # A POSTURE CHANGE: see the block at the top of this file before granting it.
-      - users:read          # SLK-004 — Slack user id → mapped principal (see note above)
+      - users:read          # SLK-004 — users.info. Its ONE caller resolves the speakers of a fetched
+                            # thread to display names, so a summary says who said what instead of
+                            # "person 1" / "person 2". A name is DATA: it is rendered inside the
+                            # untrusted quoted block and nothing maps it to a principal (see note above).
 
 settings:
   socket_mode_enabled: true
