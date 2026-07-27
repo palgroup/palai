@@ -1249,6 +1249,52 @@ func TestSlackOnlyMentionsAndFollowUpsBirthRuns(t *testing.T) {
 	}
 }
 
+// TestSlackDeletingAReplyRetractsThatReplyOnly is the wrong-turn guard, and it is the case a real user hits
+// first: they delete a FOLLOW-UP, not the message that opened the thread. Inside a thread the deleted
+// message's ts and the thread's ts are DIFFERENT numbers, and a handle keyed on the thread — the only
+// per-thread key this tree had before 000042 — would retract the conversation's FIRST turn instead. So the
+// claim is not just "a turn was retracted", it is "that one, and only that one".
+func TestSlackDeletingAReplyRetractsThatReplyOnly(t *testing.T) {
+	f := newSlackFixture(t)
+	const root, reply, third = "1700000070.000100", "1700000070.000200", "1700000070.000300"
+
+	f.deliver(t, f.eventText(t, "EvRep1", "app_mention", "Umapped", "C70", root, "",
+		"<@"+f.botUser+"> birinci"), time.Now(), "", "").Body.Close()
+	f.answerRuns(t, "birinci cevap")
+	f.deliver(t, f.eventText(t, "EvRep2", "message", "Umapped", "C70", reply, root, "ikinci"), time.Now(), "", "").Body.Close()
+	f.answerRuns(t, "ikinci cevap")
+	f.deliver(t, f.eventText(t, "EvRep3", "message", "Umapped", "C70", third, root, "üçüncü"), time.Now(), "", "").Body.Close()
+	f.answerRuns(t, "üçüncü cevap")
+
+	ids, inputs := f.responseIDs(t)
+	if len(ids) != 3 {
+		t.Fatalf("the thread holds %v, want three turns", inputs)
+	}
+	session := f.threadSessionID(t)
+	// POSITIVE CONTROL: the third run was shown both earlier turns, in order.
+	if prior := f.modelHistory(t, session, ids[2]); len(prior) != 2 {
+		t.Fatalf("the third run's history = %v, want both earlier turns", prior)
+	}
+
+	// Delete the MIDDLE message — a threaded reply, whose ts is not the thread's.
+	f.deliver(t, mustJSON(map[string]any{
+		"type": "event_callback", "team_id": f.team, "event_id": "EvRep4",
+		"event": map[string]any{"type": "message", "subtype": "message_deleted", "channel": "C70",
+			"previous_message": map[string]any{"user": "Umapped", "ts": reply, "thread_ts": root, "text": "ikinci"}},
+	}), time.Now(), "", "").Body.Close()
+
+	if n := f.runCount(t); n != 3 {
+		t.Fatalf("deleting a reply brought the run total to %d, want 3", n)
+	}
+	prior := f.modelHistory(t, session, ids[2])
+	if len(prior) != 1 {
+		t.Fatalf("history after deleting the reply = %v, want exactly the first turn", prior)
+	}
+	if got := string(prior[0].Input); got != `"birinci"` {
+		t.Fatalf("history kept %s, want the FIRST turn — a handle keyed on the thread would have retracted this one instead of the reply", got)
+	}
+}
+
 // TestSlackEditOrDeleteOutsideOurThreadsBirthsNothing is the run-birth rule applied to the kinds SLK-005
 // classifies. An edit is a correction and a delete is a tombstone — but only of a conversation we are in.
 // Someone editing their own message in a channel the bot merely sits in is not addressing the bot, and the
