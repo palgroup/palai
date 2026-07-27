@@ -737,8 +737,9 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 //     What survives is the DUPLICATION worry, and it is the one that shaped the fix: history is fetched ONLY
 //     when this thread has no session to chain onto, so a conversation the app is already in never gets a
 //     second, disagreeing copy of what run.start replays. See slack_thread.go for the rule, the bounds and the
-//     authority argument; the fetched text arrives as an untrusted PREFIX (slackThreadNote) and never through
-//     this function, which stays a pure function of the event.
+//     authority argument; the fetched text arrives as an untrusted PREFIX (slackThreadNote), passed IN as
+//     threadNote below rather than fetched here — this function stays a pure function of its arguments, and
+//     the call that establishes request identity passes "".
 //
 // KIND-AWARE, because SLK-005 already classifies these and a prompt that ignores the classification lies:
 // an edit is marked as an edit rather than arriving as a brand-new turn, and a DELETION does not echo the
@@ -747,11 +748,13 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 // PURE FUNCTION OF THE EVENT, unchanged and load-bearing: slackRequestHash hashes this, so anything
 // non-deterministic (a clock, the retry hint) would make a redelivery hash differently and turn SLK-002's
 // replay into an idempotency CONFLICT.
+//
 // THE CONTEXT (E20 T3) is the one exception to "scope is not conversation", and the distinction is exact.
 // The channel THIS EVENT CAME FROM stays out, because it is SCOPE — allowed_channels is enforced against it,
 // so naming it in the prompt would put a gate's input in the same channel as a user's words. The channels
 // the app_context names gate NOTHING; they are a description of what the human has on screen, and they enter
 // as trailing, explicitly untrusted text in the same class as model output. See slackContextNote.
+//
 // threadNote is the FETCHED thread history (slack_thread.go) and it LEADS everything, in whichever shape this
 // returns. It is a parameter rather than something the function reaches for because the caller renders this
 // twice on purpose: once with "" for the value slackRequestHash hashes — request identity is the EVENT, and a
