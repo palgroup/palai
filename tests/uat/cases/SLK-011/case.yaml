@@ -1,0 +1,18 @@
+id: SLK-011
+name: app-context-is-payload-not-authority
+proof_class: component-real
+provider: fake
+input: "Slack's `app_context` — what the human is LOOKING AT — arrives inside the message itself (message.im / app_home_opened, changelog 2026-07-02), so it is read as a field rather than kept as state. It is PAYLOAD, not AUTHORITY, and the boundary is that the context describes the USER's view while the run executes with the CONNECTION PRINCIPAL's authority. Four things no entity may do, each with its own proof against real PostgreSQL through the shipped route: select a TENANT (org/project come only from the resolved connection), select a RUN TARGET (default_policy), widen `allowed_channels` (an event from outside the list whose context names an allowed channel is still refused, and an in-scope event whose context names an outside channel is still admitted — a context is not a gate in either direction), or become a FETCH TARGET. The fourth is the heaviest: the bot holds `channels:history`, so reading a channel because a context named it would be a confused-deputy read primitive, and it is proved twice — behaviourally with the run follower mounted so real outbound traffic exists to inspect (a zero-call assertion over an unmounted seam would be vacuous), and structurally by an AST scan proving the Web API read methods appear in no string literal of the Slack seam, so a resolver cannot appear by accident. The context enters the prompt as UNTRUSTED DESCRIPTIVE TEXT — the channel ID verbatim, never a channel NAME, because resolving a name IS the fetch — and an entity carrying a foreign team_id never reaches the description at all. LOCAL seam: component-real against a FAKE Slack peer built from the published contract, plus untagged mapper/prompt units. §6 leg 1: a REAL Slack workspace external receipt is operator work and is NEVER claimed here — `slack` closes PREVIEW, not stable."
+expect_status: accepted
+proof:
+  - adapters/integrations/slack/inbound_test.go:TestMapEventCarriesAppContextInRelevanceOrder
+  - adapters/integrations/slack/inbound_test.go:TestMapEventDropsForeignWorkspaceContextEntities
+  - adapters/integrations/slack/inbound_test.go:TestMapEventSurvivesAStructuredContextValue
+  - apps/control-plane/internal/extensions/slack_admit_test.go:TestSlackRunInputDescribesTheContextAsUntrusted
+  - apps/control-plane/internal/extensions/slack_admit_test.go:TestSlackRunInputDescribesTheChannelIDNotAName
+  - apps/control-plane/internal/extensions/slack_context_guard_test.go:TestSlackNoCodePathResolvesAContextEntity
+  - apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextCannotSelectATenant
+  - apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextCannotSelectARunTarget
+  - apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextCannotWidenTheChannelAllowList
+  - apps/control-plane/internal/store/slack_context_component_test.go:TestSlackContextNeverBecomesAFetchTarget
+  - apps/control-plane/internal/store/slack_context_component_test.go:TestSlackDMCarriesItsOwnContext

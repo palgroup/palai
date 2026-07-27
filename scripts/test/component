@@ -177,9 +177,14 @@ run_postgres() {
   # model used to describe back), and a run driven terminal through the REAL coordinator answers in its
   # thread exactly once -- through repeated ticks, a re-driven terminal transition, a permanently
   # rate-limited Slack, and a disabled connection. TestSlack* already selects all of it.
+  #
+  # TestAgentSurfaceJourney is named EXPLICITLY and that is not decoration: this -run list is an allow-list,
+  # so a test whose name it does not match is a test this tier never runs. The E20 journey does not begin
+  # with "TestSlack", so without this alternation it would have ridden `make test-component` reporting
+  # nothing at all — this repository's signature failure, eleven findings deep.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
-      go test -tags=component -count=1 -v -run 'TestA2ARealAdmitterBirthsRun|TestSlack' ./apps/control-plane/internal/store
+      go test -tags=component -count=1 -v -run 'TestA2ARealAdmitterBirthsRun|TestSlack|TestAgentSurfaceJourney' ./apps/control-plane/internal/store
     status=$?
   fi
   # The E19 last mile: the three *_ref handles a `palai up` registration writes on a REAL

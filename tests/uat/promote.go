@@ -69,7 +69,21 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
 	}
-	// The E19 wiring family is checked FIRST, ahead of E18: it is the most specific policy in the tree (it
+	// The E20 agent-surface family is checked FIRST, ahead of E19: it is now the most specific policy in the
+	// tree and it COMPOSES the wiring gate underneath itself (which composes the E17 tier table, which
+	// composes the eval gate). An agent-surface bundle also carries the E19 wiring claim — it derives its
+	// case set from that release — so without this clause it would reroute to WiringPromoteGate, which knows
+	// nothing about the forgery derivation and would pass it: the crown guard would be optional in practice.
+	//
+	// THE FAMILY IS RECOGNIZED BY THE E20 CASE IDS, NOT BY THE agent_surface_claim THIS GATE ENFORCES.
+	// Dispatching on the claim the gate enforces is exactly how a release drops it and reroutes to a weaker
+	// family that passes — the defect this file's E17 comment describes.
+	for _, c := range m.Cases {
+		if carriesE20AgentSurfaceCase(c) {
+			return AgentSurfacePromoteGate(raw, target)
+		}
+	}
+	// The E19 wiring family is checked next, ahead of E18: it is the most specific policy in the tree (it
 	// governs a single epic's mounts AND composes the E17 tier table underneath it), and — the rule that
 	// matters — the family is recognized by the wiring claim while the gate ENFORCES the mount derivation.
 	// A wiring bundle also carries E17 area claims, so without this clause it would reroute to
@@ -118,7 +132,71 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 			return PromoteGate(raw, target)
 		}
 	}
-	return []Refusal{{Detail: "no promote policy for this release: it carries none of the E19 wiring, E18 stable-release, E17 extensions/eval-gate, E16 SDK-parity or E15 upgrade claims a promote gate recognizes"}}
+	return []Refusal{{Detail: "no promote policy for this release: it carries none of the E20 agent-surface, E19 wiring, E18 stable-release, E17 extensions/eval-gate, E16 SDK-parity or E15 upgrade claims a promote gate recognizes"}}
+}
+
+// AgentSurfacePromoteGate is the mechanical form of the E20 exit-gate sentence (plan §T5, §7): a release
+// cannot be tagged while the FORGERY guard is red. It has three clauses:
+//
+//  1. the bundle must carry EXACTLY ONE complete SlackAgentSurfaceProof, and the actionable-element count is
+//     RE-DERIVED here from the closing blocks the proof carries — this gate does its own sweep rather than
+//     inheriting Complete()'s verdict (the E15 SF-4 shape: the gate that would tag a release derives for
+//     itself). A closing message carrying so much as one `action_id` outside the approval builder REFUSES
+//     the tag, because a model-minted button is indistinguishable to a human from our approval button and
+//     passes through none of ApproverAuthorized → AcceptCommand → ApplyApprovalDecision;
+//  2. NO TIER MAY ADVANCE — enforced by the composed wiring gate against the committed E17 baseline. E20 is
+//     the epic with the STRONGEST claim to a tier bump and the weakest right to one: a real workspace is
+//     connected and a real run completed on 2026-07-26, but that run left NO CAPTURED RECEIPT, it
+//     demonstrated ONE claim rather than the twelve this release carries, and E20 GREW the surface more than
+//     any epic before it. Growing a surface is the moment a tier is least earned;
+//  3. the E19 wiring gate is COMPOSED verbatim — the mount derivation, the cross-bundle tier comparison, the
+//     E17 tier table and the eval numbers underneath it. Composing rather than re-deriving keeps ONE owner
+//     of each rule.
+//
+// A promote BEYOND rc inherits every refusal underneath and adds nothing of its own: no amount of surface
+// promotes this release, because `slack` caps at preview by construction (CapabilityOperatorLegs §6 leg 1)
+// and this epic contacted no workspace.
+func AgentSurfacePromoteGate(raw []byte, target string) []Refusal {
+	var m evidenceManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
+	}
+
+	var refusals []Refusal
+
+	var surface *SlackAgentSurfaceProof
+	claims := 0
+	for _, c := range m.Cases {
+		if c.AgentSurfaceClaim == "" {
+			continue
+		}
+		claims++
+		if surface == nil {
+			surface = c.AgentSurfaceProof
+		}
+	}
+	switch {
+	case claims > 1:
+		refusals = append(refusals, Refusal{Detail: fmt.Sprintf("%d agent_surface_claims in one manifest (want exactly 1): this gate judges the FIRST agent-surface proof, so a second could ride behind an honest one — one release, one forgery derivation (plan §T5)", claims)})
+	case surface == nil || !surface.Complete():
+		refusals = append(refusals, Refusal{Detail: "no COMPLETE SlackAgentSurfaceProof (one visible message per run + the three admission entrances through the ONE Admit + the transport-invariance counter + a context that granted zero authority + zero actionable elements minted outside the approval builder + the canonical vendor contract ledger) — a release whose forgery guard is red cannot be tagged (plan §T5, §7 exit gate)"})
+	default:
+		// The gate's OWN sweep, over the bytes the closing message carried. It duplicates Complete()'s
+		// re-derivation on purpose: a tag decision must not rest on a verdict computed elsewhere.
+		found, err := SweepActionableElements(surface.ClosingBlocks)
+		switch {
+		case err != nil:
+			refusals = append(refusals, Refusal{Detail: "the agent-surface proof's closing blocks cannot be swept, so the forgery count is unverifiable and the tag is REFUSED (fail closed): " + err.Error()})
+		case len(found) != 0:
+			refusals = append(refusals, Refusal{Detail: fmt.Sprintf(
+				"the closing message carries %d actionable element(s) minted outside interactions.go: %v — the model may never mint something a human can press, and a bundle declaring %d over these bytes is fabricated (plan §2, §T5)",
+				len(found), found, surface.ActionableElementsOutsideApprovalBuilder)})
+		case surface.ApprovalBuilderMints < 1:
+			refusals = append(refusals, Refusal{Detail: "the agent-surface proof reports ZERO approval-builder mints, so the forgery sweep never demonstrated it could FIND an actionable element — a guard that has never found one is not a guard (plan §T5)"})
+		}
+	}
+
+	return append(refusals, WiringPromoteGate(raw, target)...)
 }
 
 // WiringPromoteGate is the mechanical form of the E19 exit-gate sentence (plan §T9, §7): a release cannot be
