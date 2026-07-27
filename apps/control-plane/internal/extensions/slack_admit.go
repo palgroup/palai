@@ -199,6 +199,7 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 	//
 	// An already-correlated thread takes no lock at all: a chained admission is already single-winner at the
 	// one-active-root index, and locking it would hold a pooled connection for every message.
+
 	// THE THREAD THE APP WAS INVITED INTO LATE (slack_thread.go owns the rule, the bounds and the authority
 	// argument). It runs HERE, before the thread lock, for a reason the lock's own ceiling note explains: the
 	// lock is held on a POOLED CONNECTION across the whole admission, and the pool (MaxConns 8) is what bounds
