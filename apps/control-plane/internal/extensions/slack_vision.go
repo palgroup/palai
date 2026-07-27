@@ -96,7 +96,7 @@ type slackImageAttachment struct {
 // conversation by attaching a file the bot cannot get. The failure is logged with the file id and the reason;
 // the token is never in either.
 func (a *SlackAdmitter) admitImages(ctx context.Context, conn api.SlackConnectionRef, ev slack.Event) ([]slackImageAttachment, int) {
-	candidates, skipped := slack.ImageCandidates(ev.Files, slackMaxImagesPerMessage)
+	candidates, skipped := slack.ImageCandidates(ev.Files, slackMaxImagesPerMessage, slackMaxImageBytes)
 	if len(candidates) == 0 {
 		return nil, skipped
 	}

@@ -213,7 +213,7 @@ func TestImageCandidatesKeepsOnlyDeclaredImagesAndBoundsTheCount(t *testing.T) {
 		{ID: "F6", MimeType: "image/png", DownloadURL: "u"},
 		{ID: "F7", MimeType: "image/png", DownloadURL: ""}, // no download url: nothing to fetch
 	}
-	kept, skipped := ImageCandidates(files, 3)
+	kept, skipped := ImageCandidates(files, 3, 1<<20)
 	if len(kept) != 3 {
 		t.Fatalf("kept = %d (%+v), want the cap of 3", len(kept), kept)
 	}
@@ -223,5 +223,23 @@ func TestImageCandidatesKeepsOnlyDeclaredImagesAndBoundsTheCount(t *testing.T) {
 	// F2 (not an image), F5+F6 (over the cap), F7 (no url) all count as not-attached.
 	if skipped != 4 {
 		t.Fatalf("skipped = %d, want 4", skipped)
+	}
+}
+
+// A DECLARED oversize must not consume one of the count slots. This was a real bug: the cap ran before the
+// size check, so a message carrying one 50 MiB "image" and three screenshots delivered two of the three.
+func TestImageCandidatesDoesNotSpendASlotOnADeclaredOversizeFile(t *testing.T) {
+	files := []SharedFile{
+		{ID: "HUGE", MimeType: "image/png", Size: 50 << 20, DownloadURL: "u"},
+		{ID: "F1", MimeType: "image/png", Size: 100, DownloadURL: "u"},
+		{ID: "F2", MimeType: "image/png", Size: 100, DownloadURL: "u"},
+		{ID: "F3", MimeType: "image/png", Size: 100, DownloadURL: "u"},
+	}
+	kept, skipped := ImageCandidates(files, 3, 5<<20)
+	if len(kept) != 3 || kept[0].ID != "F1" || kept[2].ID != "F3" {
+		t.Fatalf("kept = %+v, want all three fetchable screenshots — the oversize file must not spend a slot", kept)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 (the oversize file)", skipped)
 	}
 }

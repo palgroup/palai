@@ -63,6 +63,11 @@ type slackFixture struct {
 	apiBase string
 	// socket is the Socket Mode half of that stand-in, nil until a test asks for it (see socketPeer).
 	socket *fakeSocketModePeer
+	// The E20 image leg (slack_image_component_test.go): the local stand-in for Slack's FILE hosts and a
+	// recording stand-in for the object store. Both are mounted on every fixture so a file-less delivery is
+	// PROVEN to touch neither.
+	fileHost  *fakeSlackFileHost
+	artifacts *recordingInboundArtifacts
 	// secrets is the org-scoped secret bridge's backing map, keyed org+"/"+ref. A test that seeds a SECOND
 	// tenant adds that tenant's own ref here, so a cross-tenant proof runs against a resolver that serves both
 	// — otherwise "the other tenant could not verify" would be an artefact of the fixture, not of the code.
@@ -324,8 +329,19 @@ func newSlackFixture(t *testing.T) *slackFixture {
 	f.apiBase = slackAPI.URL
 
 	f.spine = repo.Spine()
+	// The IMAGE leg is mounted on EVERY fixture, not only the image tests, and that is the point: a payload
+	// with no files must produce no fetch, no artifact and a byte-identical input, and the only way that is a
+	// fact rather than a hope is for the leg to be present while the other tests run.
+	//
+	// The file host is a Doer rather than a local httptest server BECAUSE the host allow-list is real: it
+	// admits only https on Slack's own file hosts, so a http://127.0.0.1:PORT fixture would be refused (which
+	// the unit tests in adapters/integrations/slack assert directly). The URL here is therefore a genuine
+	// https://files.slack.com address and only the transport is local — the guard runs for real.
+	f.fileHost = &fakeSlackFileHost{content: componentPNG}
+	f.artifacts = &recordingInboundArtifacts{}
 	bridge := extensions.NewSlackAdmitter(ext, repo, secrets, api.AdmissionLimits{}).
-		WithDecisions(f.spine, http.DefaultClient, slackAPI.URL)
+		WithDecisions(f.spine, http.DefaultClient, slackAPI.URL).
+		WithFileFetch(f.fileHost, f.artifacts)
 	f.bridge = bridge
 	ts := httptest.NewServer(api.NewRouter(nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		api.SSEConfig{}, nil, nil, api.WithSlack(bridge), api.WithSlackInteractions(bridge)))

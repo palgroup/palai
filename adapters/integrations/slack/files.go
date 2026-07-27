@@ -91,15 +91,25 @@ var imageMediaTypes = map[string]bool{
 // tidy: the run input built from it is hashed into the admission's idempotency record, so a redelivery that
 // re-derives a different set would turn SLK-002's replay into a conflict.
 //
+// THE COUNT CAP IS APPLIED LAST, after every disqualification, and the ordering was a real bug caught by
+// TestSlackNonImageAndOversizeFilesAreRefusedVisibly: capping first let a file that was never going to be
+// fetched — a 50 MiB "image" — consume one of the slots, so a message with one huge file and three
+// screenshots delivered two screenshots instead of three. A cap should bound what is ATTEMPTED.
+//
+// maxBytes disqualifies a DECLARED oversize here as well as in FetchImage. That is not redundancy for its own
+// sake: this is the cheap filter that keeps the slot, and that one is the bound a direct caller cannot skip.
+//
 // The skipped COUNT is returned instead of the skipped files because the caller says so in the prompt, and
 // a filename is untrusted text that has no business being quoted into a conversation.
-func ImageCandidates(files []SharedFile, max int) (kept []SharedFile, skipped int) {
+func ImageCandidates(files []SharedFile, max int, maxBytes int64) (kept []SharedFile, skipped int) {
 	for _, f := range files {
 		switch {
 		case f.DownloadURL == "":
 			skipped++ // nothing to fetch: a file object with no private download url
 		case !strings.HasPrefix(strings.ToLower(f.MimeType), "image/"):
 			skipped++ // not offered as an image; the bytes are never fetched to find out
+		case f.Size > maxBytes:
+			skipped++ // declares more than the ceiling: refused without paying for the transfer
 		case len(kept) >= max:
 			skipped++
 		default:
