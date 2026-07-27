@@ -178,11 +178,14 @@ func AgentSurfacePromoteGate(raw []byte, target string) []Refusal {
 	switch {
 	case claims > 1:
 		refusals = append(refusals, Refusal{Detail: fmt.Sprintf("%d agent_surface_claims in one manifest (want exactly 1): this gate judges the FIRST agent-surface proof, so a second could ride behind an honest one — one release, one forgery derivation (plan §T5)", claims)})
-	case surface == nil || !surface.Complete():
+	case surface == nil:
 		refusals = append(refusals, Refusal{Detail: "no COMPLETE SlackAgentSurfaceProof (one visible message per run + the three admission entrances through the ONE Admit + the transport-invariance counter + a context that granted zero authority + zero actionable elements minted outside the approval builder + the canonical vendor contract ledger) — a release whose forgery guard is red cannot be tagged (plan §T5, §7 exit gate)"})
 	default:
-		// The gate's OWN sweep, over the bytes the closing message carried. It duplicates Complete()'s
-		// re-derivation on purpose: a tag decision must not rest on a verdict computed elsewhere.
+		// THE GATE'S OWN SWEEP RUNS FIRST, before Complete() is consulted, and the ORDER is the whole point.
+		// Complete() re-derives the same count, so putting it ahead would make this branch unreachable for
+		// every input it exists to catch — a guard that cannot fire, which is this repository's most-found
+		// defect. Running it first means a tag decision rests on THIS gate's derivation (the E15 SF-4 shape)
+		// and the reader is told WHICH claim failed rather than that something did.
 		found, err := SweepActionableElements(surface.ClosingBlocks)
 		switch {
 		case err != nil:
@@ -193,6 +196,9 @@ func AgentSurfacePromoteGate(raw []byte, target string) []Refusal {
 				len(found), found, surface.ActionableElementsOutsideApprovalBuilder)})
 		case surface.ApprovalBuilderMints < 1:
 			refusals = append(refusals, Refusal{Detail: "the agent-surface proof reports ZERO approval-builder mints, so the forgery sweep never demonstrated it could FIND an actionable element — a guard that has never found one is not a guard (plan §T5)"})
+		}
+		if !surface.Complete() {
+			refusals = append(refusals, Refusal{Detail: "no COMPLETE SlackAgentSurfaceProof (one visible message per run + the three admission entrances through the ONE Admit + the transport-invariance counter + a context that granted zero authority + zero actionable elements minted outside the approval builder + the canonical vendor contract ledger) — a release whose forgery guard is red cannot be tagged (plan §T5, §7 exit gate)"})
 		}
 	}
 
