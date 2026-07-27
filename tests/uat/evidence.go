@@ -2125,7 +2125,9 @@ var AgentSurfaceJournalTasks = []slack.Task{
 // the journey asserts the same bytes actually reached the wire — so the committed evidence cannot drift away
 // from what the renderer produces, in either direction.
 func AgentSurfaceClosingBlocks() json.RawMessage {
-	_, blocks := slack.RenderOutput(AgentSurfaceModelAnswer, AgentSurfaceJournalTasks)
+	// The requester is EMPTY on purpose (E21 T3): the E20 answer carries no mention variant, and a committed
+	// bundle's bytes must stay the bytes that run produced — this recomputes the shipped release, not a new one.
+	_, blocks := slack.RenderOutput(AgentSurfaceModelAnswer, AgentSurfaceJournalTasks, "")
 	return blocks
 }
 

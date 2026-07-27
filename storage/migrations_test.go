@@ -9,10 +9,13 @@ import (
 // TestOrderedMigrationsIsContiguousVersionOrder proves OrderedMigrations parses every embedded
 // forward migration into a gap-free, version-sorted list carrying the SQL and a non-empty checksum —
 // the per-migration source the boot runner iterates (E15 T1). It also pins the chain head so the
-// preflight/journal invariant is anchored: after E17 wave-3 the head is 000040_capability_workers (E17 T9),
-// with 000039_a2a_remote_agents (E17 T3) the penultimate link — strict, no gaps (T1 slack=035 →
-// T4 knowledge=036 → T7 queue=037 → T2 a2a=038 → T3 a2a-client=039 → T9 capability-workers=040, merged in
-// the fixed order §1).
+// preflight/journal invariant is anchored: the head is 000043_slack_requester (E21 T3 — the durable Slack
+// requester the agent's own question is addressed to), with 000042_slack_message_turns (E20) the penultimate
+// link — strict, no gaps.
+//
+// THIS PIN WAS STALE FOR TWO EPICS and the staleness is worth naming: it still read 000040 while 000041 and
+// 000042 had landed, so the one test that anchors the chain head was RED on main rather than guarding it. A
+// head pin nobody updates is a head pin nobody reads.
 func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 	migrations := OrderedMigrations()
 	if len(migrations) == 0 {
@@ -41,15 +44,14 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	// E17 T9 CapabilityWorker contract is the current chain head (built as 000039 in isolation, renumbered
-	// to 000040 at merge — §1 assigns T9 000040, with T3 a2a-client=039 merging first).
+	// E21 T3's Slack requester is the current chain head; E20's turn handle is the link before it.
 	head := migrations[len(migrations)-1]
-	if head.Version != 40 || head.Name != "capability_workers" {
-		t.Fatalf("chain head = %06d_%s, want 000040_capability_workers", head.Version, head.Name)
+	if head.Version != 43 || head.Name != "slack_requester" {
+		t.Fatalf("chain head = %06d_%s, want 000043_slack_requester", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 39 || penultimate.Name != "a2a_remote_agents" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000039_a2a_remote_agents", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 42 || penultimate.Name != "slack_message_turns" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000042_slack_message_turns", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

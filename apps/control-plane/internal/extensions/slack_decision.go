@@ -250,7 +250,12 @@ func (a *SlackAdmitter) repairDecisionMessage(scoped context.Context, conn api.S
 	}
 	// The authoritative detail comes from the PUBLICATION, never from the payload: what was decided is what
 	// the control plane had pending, not what a Slack message claimed.
-	body := slack.UpdateMessage(intent.ChannelID, target, verdict+": "+pub.Display+" (<@"+intent.UserID+">)")
+	//
+	// The display and the ping are passed SEPARATELY (E21 T3, §3.6 D6): pub.Display is built from the run's
+	// own branch name, so it is model-influenced text and is defused inside UpdateMessage, while the decider's
+	// id — read off a click this path already authorized — is minted there. Concatenating them here is what
+	// put a `<!channel>` branch on the wire.
+	body := slack.UpdateMessage(intent.ChannelID, target, verdict+": "+pub.Display, intent.UserID)
 	res, err := slack.PostMessage(scoped, a.doer, slack.PostRequest{
 		MethodURL: a.apiBase + "/chat.update", Token: token, Body: body,
 	}, slack.PostOptions{MaxWait: slackRepairMaxWait})

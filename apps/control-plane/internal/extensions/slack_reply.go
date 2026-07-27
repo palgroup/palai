@@ -87,6 +87,10 @@ type slackReplyOrder struct {
 	runState                       string
 	attempt, maxAttempts           int
 	botTokenRef                    string
+	// requesterUserID is the person this run's answer can address (E21 T3, 000043), frozen at enqueue like
+	// the destination above. EMPTY is the fail-closed value every pre-000043 row carries: the answer goes out
+	// with no mention rather than with an invented one.
+	requesterUserID string
 }
 
 // Tick claims every due reply once and posts it, returning how many were posted. Exported for the component
@@ -109,7 +113,8 @@ func (p *SlackReplyPump) Tick(ctx context.Context) (int, error) {
 	for rows.Next() {
 		var o slackReplyOrder
 		if err := rows.Scan(&o.id, &o.org, &o.project, &o.connectionID, &o.runID, &o.responseID,
-			&o.channelID, &o.threadTS, &o.runState, &o.attempt, &o.maxAttempts, &o.botTokenRef); err != nil {
+			&o.channelID, &o.threadTS, &o.runState, &o.attempt, &o.maxAttempts, &o.botTokenRef,
+			&o.requesterUserID); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scan due slack reply: %w", err)
 		}
@@ -198,7 +203,11 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 		//
 		// Nothing the MODEL wrote can become an actionable element here — that is the render's own invariant
 		// and it is enforced by the sweep in adapters/integrations/slack/blocks_test.go, not by this comment.
-		markdown, blocks := slack.RenderOutput(answer, a.streams.tasksFor(o.runID))
+		//
+		// E21 T3: the requester frozen on THIS row is the one identity the render can address. It is passed
+		// in rather than looked up, so the mention a run asks for can only ever reach the person that run's
+		// own message came from — and a row from before 000043 passes '' and gets an answer with no mention.
+		markdown, blocks := slack.RenderOutput(answer, a.streams.tasksFor(o.runID), o.requesterUserID)
 		a.streams.forget(o.runID)
 		if err := slack.StopStream(ctx, a.doer, a.apiBase, token, channel, ts, markdown, blocks); err != nil {
 			log.Printf("slack: could not close run %s's stream with its answer (attempt %d/%d): %v; the next attempt posts it as a message",

@@ -145,11 +145,25 @@ WHERE organization_id = $1 AND project_id = $2 AND team_id = $3 AND channel_id =
 -- their workspace, including for runs already in flight. A project with no Slack thread for the session (i.e.
 -- every non-Slack run in the deployment) inserts zero rows, which is the common case and why this is one
 -- indexed lookup on slack_thread_sessions (session_id) rather than a scan.
+--
+-- THE REQUESTER IS FROZEN HERE TOO (000043), for the reason the destination is: the source can legitimately
+-- disappear. slack_message_turns hangs off the response with ON DELETE CASCADE, so a retention purge between
+-- this transaction and the eighth delivery attempt would take the id with it, and a mention lost to an
+-- unrelated schedule is a notification nobody can account for. The subquery is scoped to the SAME tenant as
+-- the enqueue and ordered, so it is a deterministic read rather than whichever row the planner returned; no
+-- match — a response that was never a Slack turn, or the empty response id a run with no projection carries —
+-- yields '', which the renderer treats as "send the words, mention nobody".
 -- name: EnqueueTerminalSlackReply
 INSERT INTO slack_reply_deliveries
-    (id, organization_id, project_id, connection_id, run_id, response_id, channel_id, thread_ts, run_state)
+    (id, organization_id, project_id, connection_id, run_id, response_id, channel_id, thread_ts, run_state,
+     requester_user_id)
 SELECT 'sdel_' || replace(gen_random_uuid()::text, '-', ''),
-       t.organization_id, t.project_id, t.connection_id, $3, $4, t.channel_id, t.thread_ts, $6
+       t.organization_id, t.project_id, t.connection_id, $3, $4, t.channel_id, t.thread_ts, $6,
+       COALESCE((SELECT m.requester_user_id
+                   FROM slack_message_turns m
+                  WHERE m.organization_id = $1 AND m.project_id = $2 AND m.response_id = $4
+                  ORDER BY m.created_at, m.id
+                  LIMIT 1), '')
   FROM slack_thread_sessions t
   JOIN slack_connections c ON c.id = t.connection_id AND NOT c.disabled
  WHERE t.organization_id = $1 AND t.project_id = $2 AND t.session_id = $5
@@ -185,7 +199,8 @@ UPDATE slack_reply_deliveries d
             LIMIT $1)
    AND c.id = d.connection_id AND NOT c.disabled
 RETURNING d.id, d.organization_id, d.project_id, d.connection_id, d.run_id, d.response_id,
-          d.channel_id, d.thread_ts, d.run_state, d.attempt_count, d.max_attempts, c.bot_token_ref;
+          d.channel_id, d.thread_ts, d.run_state, d.attempt_count, d.max_attempts, c.bot_token_ref,
+          d.requester_user_id;
 
 -- MarkSlackReplyDelivered closes a delivery and records the ts Slack assigned the visible message — the
 -- handle any later repair of THIS message edits (the SLK-006 idiom).
@@ -258,10 +273,17 @@ RETURNING id;
 -- twice over: a redelivery replays onto the SAME response (SLK-002) and must not re-point the handle, and
 -- Slack delivers a top-level mention TWICE (app_mention plus its message.channels twin) under ONE message
 -- ts — the first one is the turn, the second is not a second turn.
+--
+-- requester_user_id (000043) rides here because this is the ONE write that happens with the event in hand and
+-- names the turn the run belongs to. It is SCOPE, not conversation — it never enters the prompt (slack_admit)
+-- — and it exists so the reply pump, which posts minutes later and across restarts, can address the person
+-- who asked. The ON CONFLICT above means a redelivery does not re-point it either: the FIRST writer of a turn
+-- is its requester, exactly as the first response is its turn.
 -- name: RecordSlackMessageTurn
 INSERT INTO slack_message_turns (
-    id, organization_id, project_id, connection_id, team_id, channel_id, message_ts, response_id, session_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    id, organization_id, project_id, connection_id, team_id, channel_id, message_ts, response_id, session_id,
+    requester_user_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (organization_id, project_id, team_id, channel_id, message_ts) DO NOTHING;
 
 -- RetractSlackMessageTurn withdraws the turn a deleted message opened: the response stays (what was said and

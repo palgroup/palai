@@ -81,7 +81,7 @@ func TestLiveSlackApprovalMessageIsPostedAndRepaired(t *testing.T) {
 	repaired, err := slack.PostMessage(ctx, http.DefaultClient, slack.PostRequest{
 		MethodURL: slackAPIBase() + "/chat.update",
 		Token:     token,
-		Body:      slack.UpdateMessage(channel, posted.MessageTS, "Approved: E19 T2 live smoke (repaired in place)"),
+		Body:      slack.UpdateMessage(channel, posted.MessageTS, "Approved: E19 T2 live smoke (repaired in place)", ""),
 	}, slack.PostOptions{})
 	if err != nil {
 		t.Fatalf("chat.update could not repair the visible message: %v", err)
@@ -211,7 +211,7 @@ func TestLiveSlackButtonClickIsFormEncodedAndVerifies(t *testing.T) {
 	repaired, err := slack.PostMessage(ctx, http.DefaultClient, slack.PostRequest{
 		MethodURL: slackAPIBase() + "/chat.update",
 		Token:     token,
-		Body:      slack.UpdateMessage(channel, posted.MessageTS, "Approved by <@"+clicked.UserID+"> (E19 T2 live click)"),
+		Body:      slack.UpdateMessage(channel, posted.MessageTS, "Approved (E19 T2 live click)", clicked.UserID),
 	}, slack.PostOptions{})
 	if err != nil {
 		t.Fatalf("repair the clicked message: %v", err)

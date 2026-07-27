@@ -135,7 +135,7 @@ func TestLiveSlackStreamingWorksFromASocketModeApp(t *testing.T) {
 	}
 	_, err = slack.PostMessage(ctx, http.DefaultClient, slack.PostRequest{
 		MethodURL: slackAPIBase() + "/chat.update", Token: token,
-		Body: slack.UpdateMessage(channel, ts, "E20 T1 live smoke — S16(b) probe: chat.update on a streamed message"),
+		Body: slack.UpdateMessage(channel, ts, "E20 T1 live smoke — S16(b) probe: chat.update on a streamed message", ""),
 	}, slack.PostOptions{})
 	if err != nil {
 		t.Logf("S16(b) MEASURED: chat.update REFUSED a streamed message (%v). The approval repair must never be pointed at one — which is what slack_reply.go already does.", err)
