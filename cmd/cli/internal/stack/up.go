@@ -903,7 +903,8 @@ func resolveRunTarget(api *apiClient, get func(string) string, hasRepository boo
 	}
 	if t.revision == "" {
 		tools := slackAgentTools(get, hasRepository)
-		rev, minted, err := api.ensureSlackAgentRevision(tools)
+		mcp := slackAgentMCP(get)
+		rev, minted, err := api.ensureSlackAgentRevision(tools, mcp)
 		if err != nil {
 			return slackRunTarget{}, err
 		}
@@ -914,6 +915,11 @@ func resolveRunTarget(api *apiClient, get func(string) string, hasRepository boo
 		if len(tools) > 0 {
 			grant = "tools: " + strings.Join(tools, ", ")
 		}
+		// The MCP rider is said in the SAME line and with the same discipline, because reaching a
+		// third-party server is a grant of exactly the kind an operator must be able to read off the
+		// bring-up. The empty case is stated rather than omitted: "the agent cannot reach Jira" is
+		// otherwise discovered as an agent that answers as if Jira does not exist.
+		grant += "; " + slackMCPGrant(mcp)
 		switch {
 		case minted:
 			how = append(how, fmt.Sprintf("running agent revision %s, created and published by this bring-up — %s", rev, grant))
@@ -1325,13 +1331,13 @@ func (c *apiClient) bootstrapPrincipal() (string, error) {
 // step in front of it. The reuse lookup is by profile NAME because `palai up` is re-run constantly,
 // and a bring-up that minted a fresh lineage each time would move the workspace's binding underneath
 // the operator and leave a pile of orphan revisions behind.
-func (c *apiClient) ensureSlackAgentRevision(tools []string) (id string, minted bool, err error) {
+func (c *apiClient) ensureSlackAgentRevision(tools, mcp []string) (id string, minted bool, err error) {
 	profileID, err := c.findAgentProfile(slackAgentProfileName)
 	if err != nil {
 		return "", false, err
 	}
 	if profileID != "" {
-		if rev, err := c.publishedAgentRevision(profileID, tools); err != nil {
+		if rev, err := c.publishedAgentRevision(profileID, tools, mcp); err != nil {
 			return "", false, err
 		} else if rev != "" {
 			return rev, false, nil
@@ -1369,13 +1375,17 @@ func (c *apiClient) ensureSlackAgentRevision(tools []string) (id string, minted 
 	//   from Slack sets it — and can see in one line what they granted. Explicit configuration always wins,
 	//   the same rule the revision and principal ids follow above.
 	//
-	// mcp_connections is NOT set, and its absence is the fail-closed default for EXTERNAL tools: a Slack run
-	// reaches no MCP server until the operator registers one and names it on the revision. The rider is the
-	// capability ceiling (extensions/lookup.go), so an empty one is a run that cannot reach outward at all.
+	// mcp_connections stays EMPTY unless the operator named connections, and its absence is still the
+	// fail-closed default for EXTERNAL tools: a Slack run reaches no MCP server until somebody registers one
+	// and names it here. The rider is the capability ceiling (extensions/lookup.go), so an empty one is a
+	// run that cannot reach outward at all. E22 T6 gives that decision a spelling — SLACK_AGENT_MCP — rather
+	// than changing the default; a bring-up that guessed a connection would hand every workspace member a
+	// path out to a third party's server, and a Jira ticket's body is written by whoever can file a ticket.
 	var rev struct {
 		ID string `json:"id"`
 	}
-	status, err := c.do(http.MethodPost, "/v1/agents/"+profileID+"/revisions", map[string]any{"tools": tools}, &rev)
+	status, err := c.do(http.MethodPost, "/v1/agents/"+profileID+"/revisions",
+		map[string]any{"tools": tools, "mcp_connections": mcp}, &rev)
 	if err != nil {
 		return "", false, fmt.Errorf("create an agent revision under %s: %w", profileID, err)
 	}
@@ -1417,16 +1427,23 @@ func (c *apiClient) findAgentProfile(name string) (string, error) {
 }
 
 // publishedAgentRevision returns a published revision of this profile, or "" when it has none.
-// It reuses a published revision ONLY when that revision already carries the wanted tool list. Reusing one
-// with a different list would make SLACK_AGENT_TOOLS silently inert on every bring-up after the first — the
-// operator would set it, see a green `palai up`, and get the old toolless revision anyway. That is the same
-// silent-skip shape E21 T2 removed from this file, so it is not reintroduced one function down.
-func (c *apiClient) publishedAgentRevision(profileID string, wantTools []string) (string, error) {
+// It reuses a published revision ONLY when that revision already carries the wanted tool list AND the
+// wanted MCP rider. Reusing one with a different config would make SLACK_AGENT_TOOLS silently inert on
+// every bring-up after the first — the operator would set it, see a green `palai up`, and get the old
+// toolless revision anyway. That is the same silent-skip shape E21 T2 removed from this file, so it is not
+// reintroduced one function down.
+//
+// THE RIDER IS CHECKED FOR THE SAME REASON AND WAS ADDED SECOND (E22 T6), which is worth saying plainly:
+// the tool half of this comparison already existed, and adding SLACK_AGENT_MCP without extending it would
+// have shipped the identical defect a third time — a Jira connection an operator named, on a stack that had
+// been brought up once before, resolving to ErrUnknownTool forever with a green install behind it.
+func (c *apiClient) publishedAgentRevision(profileID string, wantTools, wantMCP []string) (string, error) {
 	var page struct {
 		Data []struct {
-			ID     string   `json:"id"`
-			Status string   `json:"status"`
-			Tools  []string `json:"tools"`
+			ID             string   `json:"id"`
+			Status         string   `json:"status"`
+			Tools          []string `json:"tools"`
+			MCPConnections []string `json:"mcp_connections"`
 		} `json:"data"`
 	}
 	status, err := c.do(http.MethodGet, "/v1/agents/"+profileID+"/revisions", nil, &page)
@@ -1437,15 +1454,15 @@ func (c *apiClient) publishedAgentRevision(profileID string, wantTools []string)
 		return "", fmt.Errorf("GET /v1/agents/%s/revisions = %d, want 200", profileID, status)
 	}
 	for _, r := range page.Data {
-		if r.Status == "published" && sameTools(r.Tools, wantTools) {
+		if r.Status == "published" && sameTools(r.Tools, wantTools) && sameTools(r.MCPConnections, wantMCP) {
 			return r.ID, nil
 		}
 	}
 	return "", nil
 }
 
-// sameTools compares two tool lists as SETS: the API's order is not a promise, and an operator who reorders
-// SLACK_AGENT_TOOLS has not asked for a new revision.
+// sameTools compares two name lists as SETS: the API's order is not a promise, and an operator who reorders
+// SLACK_AGENT_TOOLS or SLACK_AGENT_MCP has not asked for a new revision.
 func sameTools(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -1537,6 +1554,43 @@ var slackRepositoryTools = []string{"palai.workspace.file", "palai.workspace.she
 // resolveGitHubApp warns about exactly that, because silence is the failure mode this file has now paid for
 // three times.
 var slackPublishTools = []string{"palai.publish.push", "palai.publish.pull_request"}
+
+// slackAgentMCP is the mcp_connections rider bound to the revision `palai up` creates (E22 T6): the names
+// of the MCP connections a Slack run may reach. It is the EXTERNAL capability ceiling — a run resolves a
+// connection's tools only when its revision names it (extensions/lookup.go), so an empty rider is a run
+// that cannot reach outward at all.
+//
+// EMPTY IS THE DEFAULT AND STAYS THE DEFAULT. What changes here is only that the operator now has a
+// spelling: SLACK_AGENT_MCP=jira, alongside the tool set that carries the Jira tools. Registering the
+// connection and approving its tools is still a separate, deliberate ceremony
+// (docs/operations/jira-mcp-connection.md) — this variable decides only whether the Slack agent is one of
+// the things allowed to use it.
+//
+// It takes CONNECTION NAMES rather than ids for the same reason SLACK_AGENT_TOOLS takes tool names: an
+// operator writing .env.local has the name they chose at registration, not an `mcpc_…` id they would have
+// to go and look up.
+//
+// `none` and blank both leave the rider empty, which makes them equivalent TODAY — the default is already
+// empty. The word is kept anyway: it means the same thing it means on SLACK_AGENT_TOOLS, and "deliberately
+// nothing" should be sayable without deleting a line.
+func slackAgentMCP(get func(string) string) []string {
+	raw := strings.TrimSpace(get("SLACK_AGENT_MCP"))
+	if raw == "" || strings.EqualFold(raw, "none") {
+		return nil
+	}
+	return splitList(raw)
+}
+
+// slackMCPGrant is the operator-facing sentence for the rider. The empty case is a sentence rather than
+// silence: a Slack agent that cannot reach Jira looks exactly like one whose Jira connection is broken, and
+// the difference is a variable nobody would think to look for.
+func slackMCPGrant(mcp []string) string {
+	if len(mcp) == 0 {
+		return "NO MCP connection — it cannot reach Jira or any other external server (set SLACK_AGENT_MCP to name one)"
+	}
+	return "MCP connections: " + strings.Join(mcp, ", ") +
+		" (their tools must also be approved and pinned into the tool set — see docs/operations/jira-mcp-connection.md)"
+}
 
 // putSecretRef stores one credential VALUE under its handle through the E13 T3 secret store — the
 // SAME write-path a production tenant uses, envelope-encrypted at rest and resolved fresh, so the

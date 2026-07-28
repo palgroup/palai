@@ -153,6 +153,42 @@ func TestAgentRevisionPersistsExtensionFields(t *testing.T) {
 	}
 }
 
+// TestAgentRevisionListCarriesTheMCPRider is E22 T6's read side, and it is the SAME defect E13 T4's `tools`
+// gap turned out to be — found once already on a running stack, so it is pinned rather than re-discovered.
+//
+// There is no per-revision GET. The list is the only way to read a revision's config, and `palai up` reuses
+// its Slack revision only when the config already matches what SLACK_AGENT_MCP asked for. With the rider
+// absent from the list the comparison runs against nil, never matches, and every bring-up mints and
+// publishes a fresh revision — the binding moves underneath the operator and orphan revisions pile up.
+//
+// Listing it is additive: no field changes meaning, and the rider is a list of connection IDS, not secrets
+// (the credential lives on the connection row's secret_ref and never here).
+func TestAgentRevisionListCarriesTheMCPRider(t *testing.T) {
+	s, org, project := openStore(t)
+	ctx := context.Background()
+
+	profileID, err := s.CreateProfile(ctx, org, project, "slack-agent")
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	if _, err := s.CreateRevision(ctx, org, project, profileID,
+		[]byte(`{"model":"m","tools":["palai.research.fetch"],"mcp_connections":["mcpc_jira"]}`)); err != nil {
+		t.Fatalf("create revision: %v", err)
+	}
+	revs, err := s.ListRevisions(ctx, org, project, profileID, ListWindow{Limit: 10})
+	if err != nil || len(revs) != 1 {
+		t.Fatalf("ListRevisions err=%v len=%d, want 1", err, len(revs))
+	}
+	if len(revs[0].MCPConnections) != 1 || revs[0].MCPConnections[0] != "mcpc_jira" {
+		t.Fatalf("the listed revision's mcp_connections = %v, want [mcpc_jira] — without it SLACK_AGENT_MCP "+
+			"cannot recognise the revision it already created", revs[0].MCPConnections)
+	}
+	// The tool ceiling is listed alongside it, as E13 T4 established.
+	if len(revs[0].Tools) != 1 || revs[0].Tools[0] != "palai.research.fetch" {
+		t.Fatalf("the listed revision's tools = %v, want the one it was created with", revs[0].Tools)
+	}
+}
+
 // TestRunTemplateRevisionRejectsIdentityAndDelegation proves the profile-free template surface (AGT-003):
 // a template revision publishes and resolves like an agent revision but rejects identity/delegation
 // fields — it must not impersonate an agent identity (spec §32.2).

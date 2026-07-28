@@ -76,10 +76,16 @@ type AgentRevisionItem struct {
 	// Tools is the revision's executable tool ceiling. It is listed because there is no per-revision GET,
 	// so this is the ONLY read path for a config the API already lets you write — and its absence had a
 	// live consequence (see the comment in store/agents.go's ListAgentRevisions).
-	Tools        []string
-	Instructions string
-	Published    bool
-	CreatedAt    time.Time
+	Tools []string
+	// MCPConnections is the revision's EXTERNAL capability ceiling — the connection ids a run pinned to this
+	// revision may reach (extensions/lookup.go's mcpConnectionForRun joins on it). Listed for the same
+	// reason Tools is, and after the same defect: there is no per-revision GET, so a config the API lets you
+	// write had no read path, and `palai up`'s reuse check compared SLACK_AGENT_MCP against nil and minted a
+	// fresh published revision on every bring-up. Ids only — the credential lives on the connection row.
+	MCPConnections []string
+	Instructions   string
+	Published      bool
+	CreatedAt      time.Time
 }
 
 // ListRevisions returns a tenant-scoped page of one profile's revisions newest-first (spec §10). An
@@ -95,7 +101,7 @@ func (s *Store) ListRevisions(ctx context.Context, org, project, profileID strin
 	var out []AgentRevisionItem
 	for rows.Next() {
 		var it AgentRevisionItem
-		if err := rows.Scan(&it.ID, &it.RevisionNumber, &it.Model, &it.Tools, &it.Instructions, &it.Published, &it.CreatedAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.RevisionNumber, &it.Model, &it.Tools, &it.MCPConnections, &it.Instructions, &it.Published, &it.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan agent revision row: %w", err)
 		}
 		out = append(out, it)
