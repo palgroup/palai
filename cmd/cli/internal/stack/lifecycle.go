@@ -127,38 +127,16 @@ func Up() error {
 		return err
 	}
 
-	env := cfg.composeEnv(p.home, engineImage)
-	upArgs := []string{"up", "-d", "--wait"}
-	if root, fromSource := buildContext(p.compose); fromSource {
-		// Build the reference engine image `local up` hands the runner. It is not a compose
-		// service (the runner launches it per-lease through the Docker socket).
-		if err := runVisible(env, "docker", "build", "-t", engineImage, filepath.Join(root, "engines", "reference")); err != nil {
-			return fmt.Errorf("build reference engine image: %w", err)
-		}
-		// The runner's lease requires an immutable sha256 image, but the locally-built engine is
-		// a mutable tag (release-digest pinning is E18). Resolve the built image's id so the
-		// exec-path hands the runner a digest its lease accepts rather than the tag.
-		engineDigest, err := imageID(engineImage)
-		if err != nil {
-			return err
-		}
-		env = cfg.composeEnv(p.home, engineDigest)
-		upArgs = append(upArgs, "--build")
-	} else {
-		// Packaged: there are no Dockerfiles and no engine source on disk, so nothing here can be
-		// built. Every image must already exist — named by the operator's PALAI_*_IMAGE overrides or
-		// by this build's published defaults — and compose is told explicitly not to try building
-		// one, because its `build.context: ../..` points at a repo root that is not there.
-		if env, err = packagedImageEnv(cfg, p.home); err != nil {
-			return err
-		}
-		upArgs = append(upArgs, "--no-build")
+	env, buildArgs, err := composeRunEnv(cfg, p)
+	if err != nil {
+		return err
 	}
 
 	// A fresh one-use enrollment token for this boot.
 	if err := os.WriteFile(p.runnerToken, []byte(randomHex(24)), 0o600); err != nil {
 		return fmt.Errorf("mint runner token: %w", err)
 	}
+	upArgs := append([]string{"up", "-d", "--wait"}, buildArgs...)
 	if err := runVisible(env, "docker", append([]string{"compose", "-p", cfg.Project, "-f", p.compose}, upArgs...)...); err != nil {
 		return fmt.Errorf("compose up: %w", err)
 	}
@@ -169,6 +147,37 @@ func Up() error {
 	return nil
 }
 
+// composeRunEnv resolves the compose interpolation environment for a bring-up and the build
+// argument that goes with it. It is the ONE place the reference engine image is built and resolved
+// to the digest the runner's lease requires, shared by the container bring-up above and the native
+// one (native.go) — which needs the same digest for a control plane that is not a compose service.
+func composeRunEnv(cfg Config, p paths) (env []string, buildArgs []string, err error) {
+	env = cfg.composeEnv(p.home, engineImage)
+	if root, fromSource := buildContext(p.compose); fromSource {
+		// Build the reference engine image `local up` hands the runner. It is not a compose
+		// service (the runner launches it per-lease through the Docker socket).
+		if err := runVisible(env, "docker", "build", "-t", engineImage, filepath.Join(root, "engines", "reference")); err != nil {
+			return nil, nil, fmt.Errorf("build reference engine image: %w", err)
+		}
+		// The runner's lease requires an immutable sha256 image, but the locally-built engine is
+		// a mutable tag (release-digest pinning is E18). Resolve the built image's id so the
+		// exec-path hands the runner a digest its lease accepts rather than the tag.
+		engineDigest, err := imageID(engineImage)
+		if err != nil {
+			return nil, nil, err
+		}
+		return cfg.composeEnv(p.home, engineDigest), []string{"--build"}, nil
+	}
+	// Packaged: there are no Dockerfiles and no engine source on disk, so nothing here can be
+	// built. Every image must already exist — named by the operator's PALAI_*_IMAGE overrides or
+	// by this build's published defaults — and compose is told explicitly not to try building
+	// one, because its `build.context: ../..` points at a repo root that is not there.
+	if env, err = packagedImageEnv(cfg, p.home); err != nil {
+		return nil, nil, err
+	}
+	return env, []string{"--no-build"}, nil
+}
+
 // Down stops the stack, RETAINING the named volumes so a subsequent Up serves the same
 // data back (spec §44; LP-012).
 func Down() error {
@@ -176,11 +185,30 @@ func Down() error {
 	if err != nil {
 		return err
 	}
+	// The NATIVE control plane first, and unconditionally: it is not a compose service, so
+	// `compose down` cannot see it, and a control plane still holding the runner port after a
+	// teardown is worse than one that never started. A stack that was never native has no record
+	// and this is a no-op (E22 T5).
+	if err := downNative(p); err != nil {
+		return err
+	}
 	if err := runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", p.compose,
 		"down", "--remove-orphans"); err != nil {
 		return err
 	}
 	return sweepEngineContainers(cfg.Project)
+}
+
+// downNative stops a native control plane and says so, or does nothing at all.
+func downNative(p paths) error {
+	stopped, err := stopNative(p)
+	if err != nil {
+		return err
+	}
+	if stopped {
+		fmt.Fprintln(os.Stderr, "stopped the native control plane")
+	}
+	return nil
 }
 
 // Reset tears the stack down and DELETES its volumes — the destructive path. It refuses
@@ -194,6 +222,9 @@ func Reset(confirm bool) error {
 	}
 	if !confirm {
 		return fmt.Errorf("refusing to delete volumes without --confirm")
+	}
+	if err := downNative(p); err != nil {
+		return err
 	}
 	if err := runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", p.compose,
 		"down", "--volumes", "--remove-orphans"); err != nil {

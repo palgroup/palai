@@ -45,7 +45,12 @@ const fakeModel = "fake"
 const credentialEnv = "OPENAI_API_KEY"
 
 // Bootstrap is `palai up`. Steps 1-3 run BEFORE any Docker work so a refusal costs nothing.
-func Bootstrap(envFile string) error {
+//
+// native selects the E22 T5 posture: the control plane runs as a PROCESS ON THIS MACHINE and only
+// Postgres, the object store and the runner stay in Docker (native.go). Everything after the
+// bring-up is identical — the same doctor checks, the same live round-trip, the same report — which
+// is the point: a Mac deployment is a deployment, not a second product.
+func Bootstrap(envFile string, native bool) error {
 	fmt.Fprintln(os.Stderr, "palai up — bring the stack up and PROVE it is live")
 
 	// [1/6] The dotenv file. Only key NAMES are ever printed, and only the PALAI_* knobs below are
@@ -116,9 +121,17 @@ func Bootstrap(envFile string) error {
 	for _, w := range applyGitHubAppEnv(p, get) {
 		fmt.Fprintf(os.Stderr, "        WARNING %s\n", w)
 	}
-	fmt.Fprintln(os.Stderr, "[3/6] stack     docker compose up (this builds on a first run)")
-	if err := Up(); err != nil {
-		return err
+	posture := "container control plane (docker compose)"
+	if native {
+		fmt.Fprintln(os.Stderr, "[3/6] stack     NATIVE: postgres + object-store + runner in docker, control plane on this machine")
+		if posture, err = UpNative(get); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "[3/6] stack     docker compose up (this builds on a first run)")
+		if err := Up(); err != nil {
+			return err
+		}
 	}
 
 	cfg, p, err := loadConfig()
@@ -161,7 +174,12 @@ func Bootstrap(envFile string) error {
 	if err != nil {
 		return fmt.Errorf("read /v1/capabilities for the status table: %w", err)
 	}
-	printReport(cfg, rt, caps, observedFacts(rt, slackFact), red, slackWarns...)
+	if native {
+		// A control plane on a Mac with no declared shell posture has a nil shell runner, so the
+		// whole reason for running natively — the host's own toolchain — is silently absent.
+		slackWarns = appendWarn(slackWarns, nativeShellWarning(get))
+	}
+	printReport(cfg, posture, rt, caps, observedFacts(rt, slackFact), red, slackWarns...)
 	return nil
 }
 
@@ -1144,13 +1162,17 @@ func capabilityRows(caps map[string]string, facts map[string]string) []capRow {
 
 // printReport writes the operator-facing result to stdout. Every line states what was PROVEN, not
 // what was attempted — "stack up" is not a proof.
-func printReport(cfg Config, rt roundTrip, caps map[string]string, facts map[string]string, red []string, warnings ...string) {
+func printReport(cfg Config, posture string, rt roundTrip, caps map[string]string, facts map[string]string, red []string, warnings ...string) {
 	out := os.Stdout
 	fmt.Fprintln(out, "\nPROVEN LIVE")
 	fmt.Fprintf(out, "  round-trip   %s -> %s\n", rt.ResponseID, rt.Status)
 	fmt.Fprintf(out, "  model        %s   (selector %s — NOT the fake adapter)\n", rt.Model, liveSelector)
 	fmt.Fprintf(out, "  usage        %d in / %d out / %d total tokens\n", rt.InputTokens, rt.OutputTokens, rt.TotalTokens)
 	fmt.Fprintf(out, "  api          %s\n", cfg.BaseURL)
+	// WHICH POSTURE THIS BRING-UP ACTUALLY BROUGHT UP. Both postures serve the same API on the same
+	// port, so nothing else on this report distinguishes a control plane in a container from one on
+	// this machine — and the difference is the whole of whether `xcodebuild` is reachable.
+	fmt.Fprintf(out, "  posture      %s\n", posture)
 
 	fmt.Fprintln(out, "\nCAPABILITIES (from GET /v1/capabilities on this running stack)")
 	for _, r := range capabilityRows(caps, facts) {

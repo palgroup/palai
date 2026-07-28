@@ -73,10 +73,15 @@ func dispatch(args []string) error {
 func up(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	envFile := fs.String("env-file", ".env.local", "dotenv file holding the provider credential (values are never printed or passed in argv)")
+	// --native is the Mac deployment (E22 T5): the control plane runs on THIS machine so the agent's
+	// shell reaches this machine's toolchain, and only Postgres, the object store and the runner stay
+	// in Docker. A flag rather than an env var because it changes where a process runs, which is the
+	// kind of thing an operator should be able to read off the command they typed.
+	native := fs.Bool("native", false, "run the control plane as a NATIVE process on this machine (postgres/object-store/runner stay in Docker) — docs/operations/palai-on-a-mac.md")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return stack.Bootstrap(*envFile)
+	return stack.Bootstrap(*envFile, *native)
 }
 
 func local(args []string) error {
@@ -271,11 +276,15 @@ func auditCmd(args []string) error {
 func usage() {
 	fmt.Fprint(os.Stderr, `palai — local stack lifecycle
 
-  palai up [--env-file .env.local]
+  palai up [--env-file .env.local] [--native]
                                   ONE command: credential -> live stack -> PROVEN real round-trip.
                                   Refuses an unrecognised model selector instead of silently
                                   falling back to the deterministic fake adapter, and fails if it
                                   cannot demonstrate a real provider call.
+                                  --native runs the control plane ON THIS MACHINE (the Mac
+                                  deployment): its shell then reaches this machine's own
+                                  xcodebuild/simctl/axe. Needs PALAI_WORKSPACE_ROOT, and declares
+                                  no shell posture of its own — see docs/operations/palai-on-a-mac.md
   palai init                      generate .palai (keys, local CA, ports, config)
   palai local up                  build + start the four-service stack (retains data)
   palai local down                stop the stack, retaining data volumes

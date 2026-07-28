@@ -873,6 +873,12 @@ run_native_shell() {
   # untagged and ride `make verify`; they are re-run here because this suite is what a Mac operator
   # runs before trusting the posture.
   go test -count=1 -v ./adapters/sandboxes/host
+  # The DEPLOYMENT half (E22 T5): the three facts native-control-plane.yml states in prose, refused by
+  # name before any Docker work, and the teardown that stops the native process instead of orphaning
+  # it. Same allow-list discipline — a guard this -run does not name is a guard this tier never runs.
+  go test -count=1 -v \
+    -run 'TestNativeRunnerListener|TestNativeWorkspaceRoot|TestNativeEnvironment|TestNativeStop' \
+    ./cmd/cli/internal/stack
   echo "component_native_shell=PASS"
 }
 
