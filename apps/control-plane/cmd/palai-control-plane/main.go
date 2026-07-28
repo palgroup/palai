@@ -31,6 +31,7 @@ import (
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
 	providertwo "github.com/palgroup/palai/adapters/models/provider_two"
 	"github.com/palgroup/palai/adapters/repositories"
+	"github.com/palgroup/palai/adapters/sandboxes/host"
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	remotehttp "github.com/palgroup/palai/adapters/tools/http"
@@ -62,6 +63,18 @@ func main() {
 	// verified API key, and a claimed job's work is re-scoped to that job's tenant by the worker
 	// (migration 000029).
 	ctx := storage.WithSystemScope(context.Background())
+
+	// The shell posture is resolved BEFORE anything is opened, because a deployment that cannot say
+	// where its shell commands run must not start at all (E22 plan §2). The declaration is printed
+	// once, here, so it is the first thing in the log of a stack that has no sandbox — including a
+	// stack with no workspace root, where the runner is never even bound.
+	nativeShell, err := resolveShellPosture(os.Getenv("PALAI_SANDBOX_IMAGE"), os.Getenv("PALAI_SHELL_NATIVE"))
+	if err != nil {
+		log.Fatalf("shell posture: %v", err)
+	}
+	if nativeShell {
+		log.Print(shellPostureDeclaration)
+	}
 
 	databaseURL := os.Getenv("PALAI_DATABASE_URL")
 	if databaseURL == "" {
@@ -686,13 +699,69 @@ func repositoryBrokerFromEnv() repositories.Broker {
 	return broker
 }
 
-// shellRunnerFromEnv builds the credential-free OCI shell sandbox the workspace shell tool runs through
-// (spec §28.8, SAN-002/003/004), gated on PALAI_SANDBOX_IMAGE (the pinned command image) and a working
-// Docker driver. Absent either it returns nil, so a shell tool call fails cleanly (no runner) rather
-// than escaping — the SetShellRunner discipline. The sandbox mounts no credential/DB/S3: the credential
-// broker stays CP-side (§24), so the engine and the sandbox never see cred/DB/S3.
+// shellPostureNative is the ONLY accepted value of PALAI_SHELL_NATIVE, and it is a sentence rather
+// than a boolean on purpose (E22 plan §2). Switching a security boundary off should not be reachable
+// by the reflex that switches a feature on, and `ps`/`docker inspect`/an env dump should say what
+// the posture IS rather than that some flag is 1.
+const shellPostureNative = "unsandboxed-host"
+
+// shellPostureDeclaration is the one line the control plane prints at boot when it runs its shell
+// tool on the host. It names the posture, what it costs, and the operating rule that replaces the
+// boundary — because that rule is the only thing standing between two customers on one Mac, and it
+// is enforced by an operator, not by this binary.
+const shellPostureDeclaration = "shell posture: UNSANDBOXED HOST — commands run as this uid with no container boundary, " +
+	"no network denial and no resource bound; different customers MUST use different Macs " +
+	"(docs/research/macos-isolation-without-accounts.md §6, docs/operations/palai-on-a-mac.md)"
+
+// resolveShellPosture decides which shell posture a deployment declared, and refuses the two
+// configurations that would make that question unanswerable (E22 plan §2):
+//
+//   - BOTH variables set — a stack runs its shell tool in a container or on the host. "Sometimes
+//     sandboxed" is not a posture; it is a deployment where nobody can say where a call ran.
+//   - PALAI_SHELL_NATIVE set to anything but the exact declaration string — `=1` is what an operator
+//     types to switch on a feature, and deleting the sandbox is not a feature.
+//
+// Neither variable set is the default and is NOT an error: it is how every existing deployment runs.
+func resolveShellPosture(image, native string) (bool, error) {
+	if native == "" {
+		return false, nil
+	}
+	if image != "" {
+		return false, fmt.Errorf("PALAI_SANDBOX_IMAGE and PALAI_SHELL_NATIVE are mutually exclusive: "+
+			"a stack runs its shell tool in the sandbox image or on the host, never both (image=%q, native=%q)", image, native)
+	}
+	if native != shellPostureNative {
+		return false, fmt.Errorf("PALAI_SHELL_NATIVE must be exactly %q (got %q): the value states what the "+
+			"posture IS, because it deletes the sandbox boundary", shellPostureNative, native)
+	}
+	return true, nil
+}
+
+// shellRunnerFromEnv builds the shell runner the workspace shell tool runs through, in whichever
+// posture the deployment DECLARED (resolveShellPosture):
+//
+//   - the credential-free OCI sandbox (spec §28.8, SAN-002/003/004), gated on PALAI_SANDBOX_IMAGE
+//     (the pinned command image) and a working Docker driver. The sandbox mounts no credential/DB/S3:
+//     the credential broker stays CP-side (§24), so the engine and the sandbox never see cred/DB/S3;
+//   - the HOST executor (E22 T1), gated on PALAI_SHELL_NATIVE=unsandboxed-host, which runs the argv
+//     on this machine as this uid — no container, no network denial, no resource bound. That is how
+//     a control plane running on a Mac reaches the Mac's own tools (`xcodebuild`, `simctl`, `axe`)
+//     without Palai typing a single one of them.
+//
+// Absent either posture it returns nil, so a shell tool call fails cleanly (no runner) rather than
+// escaping — the SetShellRunner discipline, unchanged.
 func shellRunnerFromEnv() toolbroker.ShellRunner {
 	image := os.Getenv("PALAI_SANDBOX_IMAGE")
+	native, err := resolveShellPosture(image, os.Getenv("PALAI_SHELL_NATIVE"))
+	if err != nil {
+		// main() already fail-fasts on this at boot; a refused posture here is never a fallback to the
+		// other one.
+		log.Printf("shell posture: %v (shell tool disabled)", err)
+		return nil
+	}
+	if native {
+		return host.NewExecutor(envDuration("PALAI_SANDBOX_WALL_TIME"))
+	}
 	if image == "" {
 		return nil
 	}
