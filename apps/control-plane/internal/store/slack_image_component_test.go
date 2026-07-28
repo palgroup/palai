@@ -91,6 +91,11 @@ type recordingInboundArtifacts struct {
 	writes   []inboundWrite
 	attaches map[string]string
 	failNext bool
+	// The OUTBOUND half (E22 T5): artifacts runs produced, and what the upload leg asked for. One fake serves
+	// both directions because one artifacts.Writer does in production.
+	runArtifacts map[string]runArtifact
+	reads        []string
+	readErr      error
 }
 
 func (r *recordingInboundArtifacts) WriteInboundArtifact(_ context.Context, org, project, id string, content []byte, mediaType string, provenance map[string]any) error {
@@ -114,6 +119,58 @@ func (r *recordingInboundArtifacts) AttachArtifactRun(_ context.Context, _, _, a
 	r.order = append(r.order, "attach:"+artifactID)
 	r.attaches[artifactID] = runID
 	return nil
+}
+
+// runArtifact is one artifact a RUN produced, as the outbound leg reads them back (E22 T5). It is keyed by
+// run as well as id because that pairing IS the guard under test: an artifact belonging to another run must
+// not be publishable into this thread.
+type runArtifact struct {
+	runID   string
+	content []byte
+	// size overrides len(content) so an over-ceiling artifact can be expressed without allocating one. The
+	// production store reads the size off the ROW for exactly this reason — it refuses before it reads.
+	size int64
+}
+
+// ReadRunArtifact stands in for artifacts.Writer.ReadRunArtifact and enforces the same three keys: the
+// tenant, the run, and the ceiling. The guard against a REAL Postgres row lives in the artifacts component
+// suite; this fake exists so the Slack suite can prove the PUMP's behaviour without an object store.
+func (r *recordingInboundArtifacts) ReadRunArtifact(_ context.Context, org, project, runID, artifactID string, maxBytes int64) ([]byte, int64, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reads = append(r.reads, artifactID)
+	if r.readErr != nil {
+		return nil, 0, false, r.readErr
+	}
+	art, ok := r.runArtifacts[org+"/"+project+"/"+artifactID]
+	if !ok || art.runID != runID {
+		return nil, 0, false, nil // unknown, another tenant's, or another run's: one indistinguishable miss
+	}
+	size := art.size
+	if size == 0 {
+		size = int64(len(art.content))
+	}
+	if size > maxBytes {
+		return nil, size, true, nil // exists, too big, no bytes — the seam's documented over-ceiling answer
+	}
+	return art.content, size, true, nil
+}
+
+// putRunArtifact seeds one artifact a run produced.
+func (r *recordingInboundArtifacts) putRunArtifact(org, project, runID, artifactID string, content []byte, size int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.runArtifacts == nil {
+		r.runArtifacts = map[string]runArtifact{}
+	}
+	r.runArtifacts[org+"/"+project+"/"+artifactID] = runArtifact{runID: runID, content: content, size: size}
+}
+
+// readIDs reports which artifact ids the upload leg asked for, so a test can prove it asked for NONE.
+func (r *recordingInboundArtifacts) readIDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.reads...)
 }
 
 func (r *recordingInboundArtifacts) snapshot() ([]string, []inboundWrite, map[string]string) {

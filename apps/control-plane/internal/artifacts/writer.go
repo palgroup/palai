@@ -253,11 +253,6 @@ func (w *Writer) ReadImageArtifact(ctx context.Context, org, project, artifactID
 	return mediaType, content, true, nil
 }
 
-// ErrArtifactTooLarge reports an artifact whose ROW says it is over the caller's ceiling. It is a typed
-// refusal rather than a miss because the caller says so out loud (E22 T5: an artifact too big to publish
-// earns an honest sentence, never a silent drop), and because "absent" and "too big" are different facts.
-var ErrArtifactTooLarge = errors.New("artifacts: the artifact is over the caller's ceiling")
-
 // ReadRunArtifact resolves an artifact THE NAMED RUN PRODUCED, within the tenant scope, refusing to read the
 // bytes of anything over maxBytes.
 //
@@ -272,8 +267,17 @@ var ErrArtifactTooLarge = errors.New("artifacts: the artifact is over the caller
 //     build log is refused for the cost of one SELECT instead of being pulled into the control plane's heap
 //     and then thrown away. That is the difference between a ceiling and a formality.
 //
-// A miss (unknown id, another tenant's id, another run's id, bytes retention already reclaimed) is found=false
-// and no error: the caller renders the same nothing for all of them, which is the §22.6 non-disclosure rule.
+// THE THREE ANSWERS, and they are distinguished by the RETURN VALUES rather than by a sentinel error, because
+// this package cannot export one to its caller: internal/extensions consumes this seam and internal/execution
+// imports extensions, so an extensions -> artifacts import closes a cycle. The contract is therefore explicit:
+//
+//   - found=false, no bytes: unknown id, another tenant's id, another run's id, or bytes retention already
+//     reclaimed. ALL FOUR LOOK IDENTICAL, which is the §22.6 non-disclosure rule applied to a lookup key an
+//     outsider chose.
+//   - found=true, size>maxBytes, NO BYTES: it exists and it is too big. The caller says so out loud (E22 T5 —
+//     an artifact too big to publish earns an honest sentence, never a silent drop), which is why size comes
+//     back rather than being swallowed.
+//   - found=true, size<=maxBytes: the bytes.
 func (w *Writer) ReadRunArtifact(ctx context.Context, org, project, runID, artifactID string, maxBytes int64) ([]byte, int64, bool, error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
 	// run_id is NULLABLE — an inbound artifact is written before the run it belongs to exists
@@ -295,7 +299,7 @@ func (w *Writer) ReadRunArtifact(ctx context.Context, org, project, runID, artif
 		return nil, 0, false, nil
 	}
 	if size > maxBytes {
-		return nil, size, true, ErrArtifactTooLarge
+		return nil, size, true, nil
 	}
 	body, found, err := w.store.Get(ctx, key)
 	if err != nil {

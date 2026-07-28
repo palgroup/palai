@@ -227,3 +227,69 @@ func TestInboundImageIsReachedByRetentionOnlyOnceAttached(t *testing.T) {
 		t.Fatalf("the UNATTACHED artifact was scrubbed — retention has started reaching it, so the ceiling documented in slack_vision.go is closed and its comment (and this test) must be updated")
 	}
 }
+
+// THE UPLOAD-SIDE GUARD (E22 T5) against a REAL row and a REAL object store. The Slack answer that reaches
+// this function names an artifact id a MODEL wrote, so the three things it refuses are the three ways that id
+// could name something it should not: another tenant's artifact, another RUN's artifact, and one too big to
+// put in front of a human.
+//
+// The run in the key is the one that is easy to miss and the one that matters most here: the tenant boundary
+// is real but it is not the boundary in question — a screenshot taken for somebody else's thread is in the
+// SAME org and project, and publishing it into this one is a leak the tenant check cannot see.
+func TestReadRunArtifactRefusesForeignRunsForeignTenantsAndOversize(t *testing.T) {
+	h := openArtifactsHarness(t)
+	ctx := context.Background()
+	org, project, runID := h.seedRun(t)
+	_, _, otherRun := h.seedRun(t)
+	otherOrg, otherProject, _ := h.seedRun(t)
+
+	content := []byte("** BUILD SUCCEEDED **\n")
+	mine, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: runID, Content: content})
+	if err != nil {
+		t.Fatalf("write this run's artifact: %v", err)
+	}
+	theirs, err := h.writer.Write(ctx, WriteRequest{Organization: org, Project: project, RunID: otherRun, Content: content})
+	if err != nil {
+		t.Fatalf("write the other run's artifact: %v", err)
+	}
+
+	// The run's OWN artifact comes back whole.
+	body, size, found, err := h.writer.ReadRunArtifact(ctx, org, project, runID, mine.ID, 8<<20)
+	if err != nil || !found {
+		t.Fatalf("ReadRunArtifact(own) = (found %v, err %v), want the bytes", found, err)
+	}
+	if !bytes.Equal(body, content) || size != int64(len(content)) {
+		t.Fatalf("ReadRunArtifact(own) returned %d byte(s)/size %d, want %d verbatim", len(body), size, len(content))
+	}
+
+	// EVERY REFUSAL IS THE SAME MISS. A caller cannot tell "another run's" from "does not exist", which is the
+	// §22.6 non-disclosure rule applied to a lookup key an outsider chose.
+	for _, tc := range []struct {
+		name                        string
+		org, project, run, artefact string
+	}{
+		{"another run's artifact", org, project, runID, theirs.ID},
+		{"another tenant reading ours", otherOrg, otherProject, runID, mine.ID},
+		{"an id that does not exist", org, project, runID, "art_00000000000000000000000000000000"},
+	} {
+		body, _, found, err := h.writer.ReadRunArtifact(ctx, tc.org, tc.project, tc.run, tc.artefact, 8<<20)
+		if err != nil || found || body != nil {
+			t.Fatalf("%s: ReadRunArtifact = (%d bytes, found %v, err %v), want one indistinguishable miss",
+				tc.name, len(body), found, err)
+		}
+	}
+
+	// THE CEILING IS CHECKED ON THE ROW. The refusal names the size — which the caller turns into an honest
+	// sentence — and returns no bytes, so an artifact far larger than the control plane's memory is refused
+	// for the cost of one SELECT.
+	body, size, found, err = h.writer.ReadRunArtifact(ctx, org, project, runID, mine.ID, 4)
+	if err != nil {
+		t.Fatalf("an over-ceiling read errored (%v); it is a documented ANSWER, not a failure", err)
+	}
+	if body != nil {
+		t.Fatalf("an over-ceiling read still returned %d byte(s)", len(body))
+	}
+	if !found || size != int64(len(content)) {
+		t.Fatalf("an over-ceiling read reported (found %v, size %d); it must say the artifact EXISTS and how big it is", found, size)
+	}
+}

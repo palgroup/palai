@@ -2,13 +2,11 @@ package extensions
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
 
 	"github.com/palgroup/palai/adapters/integrations/slack"
-	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 )
 
 // THE ARTIFACT UPLOAD LEG (E22 T5, spec §36) — the half of the owner's flagship request that makes the work
@@ -65,6 +63,11 @@ const (
 //
 // maxBytes is passed rather than fixed so the ceiling stays where it is decided — slack.MaxUploadBytes, with
 // its reasoning — instead of being duplicated inside the store.
+//
+// THE OVER-CEILING ANSWER IS (found=true, size>maxBytes, NO BYTES) rather than a typed error, and that shape
+// is forced rather than chosen: artifacts.Writer is the implementation, internal/execution imports THIS
+// package, and this package importing artifacts back would close a cycle. So the contract is carried by the
+// return values, and it is stated on both sides (see artifacts.Writer.ReadRunArtifact).
 type RunArtifactStore interface {
 	ReadRunArtifact(ctx context.Context, org, project, runID, artifactID string, maxBytes int64) ([]byte, int64, bool, error)
 }
@@ -113,11 +116,6 @@ func (p *SlackReplyPump) resolveUploads(ctx context.Context, o slackReplyOrder, 
 	for _, ref := range refs {
 		body, size, found, err := a.runArtifacts.ReadRunArtifact(ctx, o.org, o.project, o.runID, ref.id, slack.MaxUploadBytes)
 		switch {
-		case errors.Is(err, artifacts.ErrArtifactTooLarge):
-			log.Printf("slack: artifact %s (%d bytes) is over the %d-byte upload ceiling; run %s's answer says so and links to it instead",
-				ref.id, size, slack.MaxUploadBytes, o.runID)
-			oversize++
-			continue
 		case err != nil:
 			log.Printf("slack: could not read artifact %s for run %s: %v", ref.id, o.runID, err)
 			unreadable++
@@ -126,6 +124,11 @@ func (p *SlackReplyPump) resolveUploads(ctx context.Context, o slackReplyOrder, 
 			// Unknown id, another tenant's, another run's, or bytes retention already reclaimed. All one
 			// answer, deliberately: distinguishing them for the reader would be an existence oracle.
 			unreadable++
+			continue
+		case size > slack.MaxUploadBytes:
+			log.Printf("slack: artifact %s (%d bytes) is over the %d-byte upload ceiling; run %s's answer says so and links to it instead",
+				ref.id, size, slack.MaxUploadBytes, o.runID)
+			oversize++
 			continue
 		}
 		sniffed, ok := slack.SniffUpload(body)

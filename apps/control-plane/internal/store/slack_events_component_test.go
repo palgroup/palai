@@ -95,6 +95,10 @@ type fakeSlackWebAPI struct {
 	// cannot express "the second append is refused" once a run also sets a status and opens a stream, and
 	// E20 T1's cancel and rate-limit proofs need exactly that.
 	scripted map[string][]scriptedReply
+	// baseURL is this fake's own address, set once the httptest server is listening. ONE method needs it:
+	// files.getUploadURLExternal answers with a URL the CLIENT then posts bytes to, so a fake that invented
+	// an address would be testing a hard-coded string instead of the client's obedience to the response.
+	baseURL string
 }
 
 type slackCall struct {
@@ -126,7 +130,7 @@ func (s *fakeSlackWebAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.calls = append(s.calls, slackCall{path: r.URL.Path, auth: r.Header.Get("Authorization"),
 		body: string(body), query: r.URL.RawQuery})
 	ts := fmt.Sprintf("9%02d.000100", len(s.calls))
-	after := s.retryAfter
+	after, base := s.retryAfter, s.baseURL
 	var scripted *scriptedReply
 	if queue := s.scripted[r.URL.Path]; len(queue) > 0 {
 		reply := queue[0]
@@ -142,7 +146,7 @@ func (s *fakeSlackWebAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(scripted.status)
 		if scripted.body == "" {
-			scripted.body = slackOKEnvelope(r.URL.Path, ts)
+			scripted.body = slackOKEnvelope(r.URL.Path, ts, base)
 		}
 		_, _ = w.Write([]byte(scripted.body))
 		return
@@ -157,7 +161,7 @@ func (s *fakeSlackWebAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(slackOKEnvelope(r.URL.Path, ts)))
+	_, _ = w.Write([]byte(slackOKEnvelope(r.URL.Path, ts, base)))
 }
 
 // slackOKEnvelope is the DOCUMENTED success shape of each method this stack calls. It matters that these come
@@ -170,8 +174,21 @@ func (s *fakeSlackWebAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //   - https://docs.slack.dev/reference/methods/chat.stopStream/   → {"ok":true,"channel":…,"ts":…,"message":{…}}
 //   - https://docs.slack.dev/reference/methods/assistant.threads.setStatus/ → {"ok":true}
 //   - https://docs.slack.dev/reference/methods/conversations.replies/ → {"ok":true,"messages":[…],"has_more":…}
-func slackOKEnvelope(path, ts string) string {
+//   - https://docs.slack.dev/reference/methods/files.getUploadURLExternal/ (2026-07-28) →
+//     {"ok":true,"upload_url":…,"file_id":…}
+//   - https://docs.slack.dev/reference/methods/files.completeUploadExternal/ (2026-07-28) →
+//     {"ok":true,"files":[{"id":…}]}
+//   - https://docs.slack.dev/messaging/working-with-files/ (2026-07-28) — the middle POST of the upload flow
+//     answers PLAIN TEXT ("OK - <bytes>"), not an API envelope, and the caller is told to check the status
+//     code. Shaped that way here so a client that tried to decode it as JSON would fail against the fake.
+func slackOKEnvelope(path, ts, baseURL string) string {
 	switch path {
+	case "/files.getUploadURLExternal":
+		// The upload URL points back at this same fake, which is the point: the client must post the bytes to
+		// the address the RESPONSE gave it.
+		return `{"ok":true,"upload_url":"` + baseURL + `/upload/v1/` + ts + `","file_id":"F` + ts + `"}`
+	case "/files.completeUploadExternal":
+		return `{"ok":true,"files":[{"id":"F` + ts + `"}]}`
 	case "/assistant.threads.setStatus":
 		return `{"ok":true}`
 	case "/conversations.replies":
@@ -182,6 +199,9 @@ func slackOKEnvelope(path, ts string) string {
 		return `{"ok":true,"channel":"C1","ts":"` + ts + `"}`
 	case "/chat.stopStream":
 		return `{"ok":true,"channel":"C1","ts":"` + ts + `","message":{"text":"","bot_id":"B1","ts":"` + ts + `","type":"message"}}`
+	}
+	if strings.HasPrefix(path, "/upload/v1/") {
+		return "OK - 0"
 	}
 	return `{"ok":true,"ts":"` + ts + `"}`
 }
@@ -337,6 +357,7 @@ func newSlackFixture(t *testing.T) *slackFixture {
 	slackAPI := httptest.NewServer(f.slackAPIMux())
 	t.Cleanup(slackAPI.Close)
 	f.apiBase = slackAPI.URL
+	f.slack.baseURL = slackAPI.URL
 
 	f.spine = repo.Spine()
 	// The IMAGE leg is mounted on EVERY fixture, not only the image tests, and that is the point: a payload
@@ -349,9 +370,14 @@ func newSlackFixture(t *testing.T) *slackFixture {
 	// https://files.slack.com address and only the transport is local — the guard runs for real.
 	f.fileHost = &fakeSlackFileHost{content: componentPNG}
 	f.artifacts = &recordingInboundArtifacts{}
+	// BOTH file legs are mounted on EVERY fixture, for the reason the inbound one already gives: an answer
+	// with no file_ref must produce no upload, and the only way that is a fact rather than a hope is for the
+	// leg to be present while every other test runs. One fake serves both directions, exactly as one
+	// artifacts.Writer does in the composition root.
 	bridge := extensions.NewSlackAdmitter(ext, repo, secrets, api.AdmissionLimits{}).
 		WithDecisions(f.spine, http.DefaultClient, slackAPI.URL).
-		WithFileFetch(f.fileHost, f.artifacts)
+		WithFileFetch(f.fileHost, f.artifacts).
+		WithArtifactUpload(f.artifacts)
 	f.bridge = bridge
 	ts := httptest.NewServer(api.NewRouter(nil, repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		api.SSEConfig{}, nil, nil, api.WithSlack(bridge), api.WithSlackInteractions(bridge)))
