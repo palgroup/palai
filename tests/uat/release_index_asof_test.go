@@ -68,11 +68,20 @@ func TestABundleCapturedAfterTheIndexCannotDisplaceItsCarrier(t *testing.T) {
 	}
 }
 
-// TestTheAsOfRuleIsABitExactNoOpOverTheCommittedCorpus is what makes the rule a FIX rather than a rewrite of
-// history: over the bundles committed today it changes not one row, so no shipped bundle's anchor moved when
-// it landed. If a future edit makes the dated recompute disagree with the undated one, that is a real change
-// to what the RC bundle says evidenced it and it must be argued, not discovered.
-func TestTheAsOfRuleIsABitExactNoOpOverTheCommittedCorpus(t *testing.T) {
+// TestTheAsOfRuleIsWhatKeepsTheShippedRCGreen is the rule's load-bearing half, and it reads as the record of
+// what was measured. When the rule landed it was a bit-exact no-op: the three bundles committed after the RC
+// (`integration-wiring-`, `slack-agent-surface-`, `tools-memory-`) all sort AFTER the bundles whose case sets
+// they inherit, so none of them ever won a carrier row. `code-and-ship-0.1.0` sorts between
+// `automation-0.1.0` and `coding-0.1.0`, and it does.
+//
+// So this asserts both directions:
+//
+//   - the DATED recompute — the shipped behaviour — reproduces the anchor the RC bundle's committed checksums
+//     were taken against, which is the whole point;
+//   - the UNDATED recompute — the OLD behaviour, reproduced by an as-of far enough in the future to include
+//     everything — DIFFERS. A rule whose removal changed nothing would be decoration, and this one is the
+//     only thing standing between a new bundle's name and eight red checksums in a shipped release.
+func TestTheAsOfRuleIsWhatKeepsTheShippedRCGreen(t *testing.T) {
 	carriers, err := CommittedBundleOutcomes()
 	if err != nil {
 		t.Fatalf("gather the committed bundle outcomes: %v", err)
@@ -85,19 +94,53 @@ func TestTheAsOfRuleIsABitExactNoOpOverTheCommittedCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dated recompute: %v", err)
 	}
-	// "Undated" is the OLD behaviour, reproduced by an as-of far enough in the future to include everything.
 	undated, err := recomputeReleaseIndexFrom(carriers, "9999-12-31T23:59:59Z")
 	if err != nil {
 		t.Fatalf("undated recompute: %v", err)
 	}
-	if len(dated) != len(undated) {
-		t.Fatalf("the two recomputes returned %d and %d entries", len(dated), len(undated))
+
+	// The RC bundle carries the index it was hashed against. The DATED recompute must reproduce its anchor.
+	raw, err := os.ReadFile(filepath.Join(releasesDir(), StableReleaseBundle, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read the RC bundle: %v", err)
 	}
-	for i := range dated {
-		if dated[i] != undated[i] {
-			t.Errorf("%s: dated recompute says %+v, undated says %+v — the as-of rule was introduced as a no-op over this corpus, so a difference here is a change to what a SHIPPED release says evidenced it",
-				dated[i].ID, dated[i], undated[i])
+	var rc struct {
+		Cases []struct {
+			Proof *struct {
+				IndexAnchor string `json:"index_anchor"`
+			} `json:"release_index_proof"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &rc); err != nil {
+		t.Fatalf("decode the RC bundle: %v", err)
+	}
+	committed := ""
+	for _, c := range rc.Cases {
+		if c.Proof != nil && c.Proof.IndexAnchor != "" {
+			committed = c.Proof.IndexAnchor
+			break
 		}
+	}
+	if committed == "" {
+		t.Fatal("the RC bundle carries no release_index_proof anchor — there is nothing for the dated recompute to reproduce")
+	}
+	if got := hashPartsOfIndex(dated); got != committed {
+		t.Errorf("the DATED recompute anchors at %s but the shipped RC bundle was hashed against %s — a release cut after the RC has moved what the RC says evidenced it", got, committed)
+	}
+
+	// And the removal test: without the rule the anchor moves, which is exactly the defect that was measured.
+	moved := 0
+	for i := range dated {
+		if i < len(undated) && dated[i] != undated[i] {
+			moved++
+		}
+	}
+	if moved == 0 {
+		t.Errorf("dropping the as-of rule changes NO index row over today's corpus, so this test no longer demonstrates the rule is load-bearing — that is not automatically wrong (it was true when the rule landed), but it must be re-argued rather than assumed: a bundle named earlier than %q would silently move %d rows the moment it is committed", "coding-0.1.0", len(dated))
+	} else if hashPartsOfIndex(undated) == committed {
+		t.Error("the UNDATED recompute still reproduces the RC's anchor although rows moved — the anchor is not sensitive to the rows, which would make it a weaker anchor than it claims to be")
+	} else {
+		t.Logf("the as-of rule is load-bearing: without it %d of %d index rows move and the shipped RC's %d committed checksums stop recomputing", moved, len(dated), len(rc.Cases))
 	}
 }
 

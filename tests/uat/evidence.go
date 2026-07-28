@@ -292,6 +292,15 @@ type evidenceCase struct {
 	// and every `<@…>` token is re-swept out of the answer's blocks.
 	ToolsMemoryClaim string            `json:"tools_memory_claim"`
 	ToolsMemoryProof *ToolsMemoryProof `json:"tools_memory_proof"`
+	// The E22 T7 code-and-ship claim (plan §T7 — the E22 EXIT gate) extends the same discipline to the
+	// invariants THIS epic owns: a Slack thread bound to a real repository writes code, the model can ask to
+	// publish and cannot publish, the destination is resolved from the binding and appears in no input
+	// schema, a Jira ticket body gains nothing, the agent runs the HOST's tools through a shell call while
+	// workers.Catalog stays one capability and one operation, and an artifact reaches the thread as a file
+	// with nothing on it a human can press. It requires its proof, and six counters are RE-DERIVED rather
+	// than believed.
+	CodeAndShipClaim string            `json:"code_and_ship_claim"`
+	CodeAndShipProof *CodeAndShipProof `json:"code_and_ship_proof"`
 }
 
 type evidenceTerm struct {
@@ -2721,6 +2730,13 @@ var committedBundleSurfaces = map[string]string{
 	// LegacyShapeOnly: this is a bundle written TODAY, and a new release that cannot recompute its own
 	// checksums is the exact history E18 T8 spent a task correcting.
 	ToolsMemoryBundle: SurfaceRecomputed,
+	// The E22 T7 code-and-ship bundle — the SEVENTEENTH entry. Its anchor is the CANONICAL contract and
+	// on-machine-measurement ledger digest (CodeAndShipContractsDigest), derived from the code table in
+	// evidence_code_and_ship.go — so a bundle that dropped or reworded a §3.5 row, or a measurement stamp,
+	// would move every checksum in it. It may NOT be LegacyShapeOnly: this is a bundle written TODAY, and a
+	// new release that cannot recompute its own checksums is the exact history E18 T8 spent a task
+	// correcting.
+	CodeAndShipBundle: SurfaceRecomputed,
 	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the other fifteen committed
 	// bundles + the materialized case corpus, so a checksum here cannot be hand-written: it moves the
 	// moment any bundle or any case.yaml does.
@@ -2792,6 +2808,8 @@ func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 		return []string{c.ID, c.RunID, AgentSurfaceContractsDigest()}
 	case ToolsMemoryBundle: // tests/uat/tools-memory/bundle_test.go
 		return []string{c.ID, c.RunID, ToolsMemoryContractsDigest()}
+	case CodeAndShipBundle: // tests/uat/code-and-ship/bundle_test.go
+		return []string{c.ID, c.RunID, CodeAndShipContractsDigest()}
 	case "extensions-0.1.0": // tests/uat/extensions/bundle_test.go
 		return []string{c.ID, c.RunID, CapabilityClaimsDigest()}
 	case "managed-cloud-0.1.0": // tests/uat/managed-cloud/evidence_test.go
@@ -2978,6 +2996,10 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	// And for E21: a manifest carrying the tools-and-memory CASES must carry the anchor that judges them, or
 	// "nothing was stored" and "only our renderer mints a mention" ship unverified behind five green rows.
 	findings = append(findings, verifyE21ToolsMemoryPresence(m)...)
+	// And for E22: a manifest carrying the code-and-ship CASES must carry the anchor that judges them, or
+	// "nothing was published without an approval", "the model cannot name a destination" and "no ios
+	// operation is typed" ship unverified behind five green rows.
+	findings = append(findings, verifyE22CodeAndShipPresence(m)...)
 
 	// A bundle whose checksums were CORRECTED, or that is shape-only, must SAY SO in the manifest (plan §2
 	// honest-naming): the note is where a reader who opens this file meets the correction or the ceiling.
@@ -3424,6 +3446,21 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "tools_memory_proof (a tools-and-memory claim requires the folded-turn counters with the two BIT-EQUAL fold digests, the tools advertised and dispatched through the REAL Orchestrator, the authority an external tool's output gained (zero), the search bytes STORED (zero, re-derived from the persisted surface), the mentions minted beside the mentions minted outside our renderer (zero), and every vendor requirement's source URL + §3.5 divergence id; a 'searched' marker is not proof — plan §T7)"})
 			case !c.ToolsMemoryProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "tools_memory_proof is incomplete: a peer not honestly named \"" + ToolsMemoryPeer + "\" (this bundle cannot claim a real workspace or a real MCP server — §6 legs 1 and 4), a shrunken/edited vendor contract ledger or a contracts_digest that does not equal the canonical one, a fold that dropped nothing (no budget was reached) or everything (a truncation, not a window), two fold digests that DISAGREE (the determinism history.go's replay contract rests on), a tool surface with nothing advertised or nothing dispatched through the real Orchestrator, an external result that GAINED authority, a search whose results cannot be found in what reached the model (so the stored-zero is vacuous) or CAN be found in what the run persisted (M5: \"You must not store or copy any of the data retrieved from this API\"), a mention token in the answer that is not the delivery row's frozen requester id, or answer blocks that RE-DERIVE an actionable element (plan §T7)"})
+			}
+		}
+
+		// The E22 T7 code-and-ship anchor (plan §T7). Complete() already RE-DERIVES the unapproved-publication
+		// count from the ledger, the model-choosable destinations from the publish tools' schemas, the
+		// authority the ticket body bought from the surfaces it tried to move, the typed-operation ceiling
+		// from workers/catalog.go's own SOURCE, the signing tokens from the host transcript and the actionable
+		// elements from the answer — so a proof that declares a zero over bytes saying otherwise never reaches
+		// this branch clean.
+		if c.CodeAndShipClaim != "" {
+			switch {
+			case c.CodeAndShipProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "code_and_ship_proof (a code-and-ship claim requires the cloned repository's before/after tree, the publications published WITHOUT an approval (zero, re-derived from the ledger), the destination fields the MODEL could fill (zero, re-derived from the two publish tools' input schemas), the authority external text gained (zero), the declared shell posture with workers.Catalog RECOMPUTED from its own source, the Apple signing credentials engaged (zero) beside the identities the host actually holds, the artifacts uploaded beside the actionable elements minted (zero), and every vendor requirement or on-machine measurement with its source and §3.5 divergence id; a 'coded' marker is not proof — plan §T7)"})
+			case !c.CodeAndShipProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "code_and_ship_proof is incomplete: a peer not honestly named \"" + CodeAndShipPeer + "\" (this bundle cannot claim a real workspace, a real GitHub App or a real signed Apple build — §6 legs 1 and 5), a shrunken/edited contract-and-measurement ledger or a contracts_digest that does not equal the canonical one, a repository whose before/after trees are EQUAL (nothing was written) or no commit at all, a publication PUBLISHED without an approval or a ledger with no approve and no deny in it (so the zero is vacuous), a destination field the model could fill in either publish tool's input schema, a ticket body that cannot be found in what reached the model (so the zero is vacuous) or CAN be found in what it tried to move, a shell posture that is not \"" + CodeAndShipShellPosture + "\", a workers.Catalog that no longer recomputes to ONE capability and ONE operation (an `ios.*` operation would land here), a signing token in the host transcript or a host with no identities to refuse, or answer blocks that RE-DERIVE an actionable element (plan §T7)"})
 			}
 		}
 
