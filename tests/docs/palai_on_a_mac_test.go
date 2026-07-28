@@ -93,7 +93,7 @@ func TestPalaiOnAMacQuotesThePostureTheBinaryParses(t *testing.T) {
 func TestPalaiOnAMacKeepsTheHonestCeilingsVisible(t *testing.T) {
 	doc := readDoc(t, macHostDoc)
 	for _, phrase := range []string{
-		"The boundary is the uid", // §1, the whole cost in one clause
+		"the boundary is the uid", // §1, the whole cost in one clause
 		"No egress denial",        // §1, the backstop that is gone
 		"No resource bound",       // §1, the cgroup bounds that are gone
 		"different Macs",          // §2, the operating rule

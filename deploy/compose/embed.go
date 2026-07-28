@@ -22,5 +22,5 @@ import "embed"
 // still uses its own committed copies, so these bytes and those never disagree about which file an
 // operator is debugging.
 //
-//go:embed compose.yaml production.yml production-entrypoint.sh compose.env.example production.env.example compose.observability.yml
+//go:embed compose.yaml production.yml native-control-plane.yml production-entrypoint.sh compose.env.example production.env.example compose.observability.yml
 var Files embed.FS

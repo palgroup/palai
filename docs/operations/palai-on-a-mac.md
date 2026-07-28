@@ -163,13 +163,33 @@ inherits a sane per-user environment and keeps `HOME` pointing at the user whose
 ## 4. What still runs in Docker
 
 Postgres, the object store and the **runner** stay in containers; only the control plane goes native.
-Two consequences:
 
-- `PALAI_WORKSPACE_ROOT` is a **host absolute path**, and the runner container binds **the same
-  absolute path** at the same location. The control plane's own path *is* the host path, so the trap
-  the split deployment had (a named volume the daemon resolves on the host) simply does not arise.
-- `palai up` reads `cfg.BaseURL`, so pointing the CLI at a natively-running control plane is
-  configuration, not code.
+```sh
+docker compose -f deploy/compose/compose.yaml -f deploy/compose/native-control-plane.yml up -d
+```
+
+The overlay does three things, and each is a fact you would otherwise rediscover the hard way:
+
+- **The in-compose control plane moves into a profile**, so it is not started. It is still there
+  behind `--profile container-control-plane`, which is the A/B you want when something breaks.
+- **The runner reaches the native control plane by the name its certificate already carries.** The
+  stack CA mints exactly one SAN — `control-plane` — and the runner pins exactly one, so the fix is
+  DNS rather than certificates: the overlay aliases `control-plane` to `host-gateway`. Two
+  consequences for you: the native control plane must bind its runner listener on a **routable**
+  interface (`PALAI_RUNNER_LISTEN_ADDR=":8443"`, not `127.0.0.1:8443`), and the URL's port must be
+  the port it binds (`PALAI_RUNNER_PORT`).
+- **The workspace is bound at the same absolute path on both sides.** `PALAI_WORKSPACE_ROOT` is a
+  host absolute path; the control plane hands the runner that path, and the runner hands it to the
+  Docker daemon as a bind source the daemon resolves on the host. Because the control plane is
+  native, its own path *is* the host path — the trap the split deployment had (a named volume the
+  daemon cannot resolve) does not arise, but source and target must still be identical.
+
+`palai up` reads `cfg.BaseURL`, so pointing the CLI at a natively-running control plane is
+configuration, not code.
+
+**Honest state of this overlay:** its three properties are guarded
+(`deploy/compose/native_control_plane_test.go`), and a full bring-up of it has **not** been run here.
+Bringing one up is an operator step, not a test.
 
 ---
 
@@ -270,3 +290,4 @@ message.
 | The host's own Xcode answers through the shell tool | `TestNativeShellPostureRunsTheHostsOwnToolchain` (`make test-component TEST=native-shell`) |
 | A real simulator is booted, read, tapped, shot and recorded through argv | `TestLiveMacHostDrivesASimulatorThroughShellCalls` (`make test-live-mac`) |
 | `build-for-testing` / `test-without-building` against a real project | `TestLiveMacHostBuildsAnXcodeProjectThroughShellCalls` (skips without `PALAI_IOS_PROJECT`) |
+| The native overlay starts no second control plane, keeps the certificate's name, binds one path | `TestNativeOverlayDoesNotStartTheContainerControlPlane`, `TestNativeOverlayReachesTheControlPlaneByTheNameOnItsCertificate`, `TestNativeOverlayBindsTheWorkspaceAtTheSameAbsolutePath` |
