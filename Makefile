@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 .PHONY: \
 	bootstrap generate check-generated lint test-unit test-component test-e2e \
-	test-fault test-security test-performance test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-spikes evidence-spikes \
+	test-fault test-security test-performance test-live-provider test-live-hook-deny test-live-tenancy test-live-second-tenant test-live-run-history test-live-mac test-spikes evidence-spikes \
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
 	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-wiring uat-wiring-live \
@@ -122,6 +122,14 @@ test-live-run-history:
 # (MCI-001/TEN-003). A convenience alias for the CASE=second-tenant-provisioning case (PROVIDER=provider-one).
 test-live-second-tenant:
 	@PROVIDER=provider-one CASE=second-tenant-provisioning scripts/test/live-provider
+
+# E22 T1 live leg: the agent drives THIS Mac's own simulator — boot, wait for the accessibility tree,
+# tap, screenshot, record — and every verb is an argv through palai.workspace.shell. No provider and no
+# stack: the thing under test is the HOST. It needs no Docker, because a Mac deployment runs the control
+# plane natively. Each leg skips by the NAME of the variable it is missing (PALAI_SIMULATOR_UDID for the
+# simulator legs, PALAI_IOS_PROJECT + PALAI_IOS_SCHEME for the build/test leg).
+test-live-mac:
+	@go test -tags=live -count=1 -v -timeout 20m -run 'TestLiveMacHost' ./apps/control-plane/internal/execution/tools/live
 
 verify: lint check-generated test-unit test-spikes check-spike-reports
 	@bash scripts/verify/repository-boundary.sh
