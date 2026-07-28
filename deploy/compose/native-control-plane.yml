@@ -28,10 +28,19 @@
 #     the split deployment had (a named volume the daemon cannot resolve) does not arise, but the
 #     identical-path requirement remains and is what this mount states.
 #
-# NOT PROVEN END TO END HERE. The guard in native_control_plane_test.go checks what can be checked
-# without a machine to burn: the profile, the host-gateway alias, and that the workspace bind is the
-# same absolute path on both sides. A real bring-up of this overlay is an operator leg
-# (docs/operations/palai-on-a-mac.md §4), not a test.
+# PROVEN END TO END on 2026-07-28 (E22 T5): `palai up --native` brought this overlay up on a Mac,
+# the runner CONTAINER enrolled with the NATIVE control plane over the host gateway, a live model
+# round-trip completed, and the agent's shell tool ran the host's own `xcodebuild -version`. The
+# transcript is in docs/operations/palai-on-a-mac.md §4.1. The guard in native_control_plane_test.go
+# still checks what can be checked without a machine to burn — the profile, the host-gateway alias,
+# the identical workspace path — and cmd/cli/internal/stack/native.go now REFUSES a bring-up that
+# would violate points 2 or 3 above, by the name of the variable that is wrong.
+#
+# ORDER MATTERS AND IS NOT EXPRESSIBLE HERE: because the runner's depends_on is reset below, compose
+# will happily start it before a native control plane is listening — and cmd/runner/main.go
+# log.Fatalf's on a failed enroll with no restart policy, so that runner is a DEAD container. Driving
+# this file by hand means starting postgres + object-store, then the control plane, then the runner.
+# `palai up --native` does exactly that.
 services:
   control-plane:
     profiles: ["container-control-plane"]
