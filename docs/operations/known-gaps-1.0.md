@@ -16,7 +16,12 @@ verification line is re-checked route by route, `WRK-1` is **corrected** because
 **not approved** and therefore stay `post-1.0`. **Amended again by the same owner on 2026-07-27** in the E21 T7 session, which adds the `TLM-P*` rows:
 the search-posture decision (`TLM-P1`), the Slack MCP server's rejection (`TLM-P2`), compaction's
 information-loss ceiling (`TLM-P3`), the four requirements the documentation does not state (`TLM-P4`)
-and the `markdown` block's unmeasured half (`TLM-P5`). **None is an RC-blocker.** Where a row disagrees
+and the `markdown` block's unmeasured half (`TLM-P5`). **None is an RC-blocker.** **Amended again by the same owner on 2026-07-28** in the E22 T1 session, which adds
+the `MAC-P*` rows: a native shell posture deletes the sandbox boundary (`MAC-P1`), its egress backstop
+(`MAC-P2`) and its resource bounds (`MAC-P3`), records the X21 launch-context measurement and the half of
+it that remains open (`MAC-P4`), and names the third-party private-API dependency the driving tool carries
+(`MAC-P5`). **None is an RC-blocker either — the posture is opt-in and a deployment that does not declare it
+is bit-unchanged.** Where a row disagrees
 with a later finding, the later finding wins and the row is amended — with a new date.
 
 ```
@@ -156,6 +161,22 @@ id + event id + run id from. That design is the leg's own content. `slack` stays
 **preview** and `knowledge-vector` and `apple-build` close **disabled**. Only `knowledge` and
 `capability-workers` close **stable**, and those tiers are recomputed from claim outcomes rather than
 declared. Nothing in this table raises a tier.
+
+## 7. Findings from E22 T1 (Palai running natively on a Mac) that 1.0 carries
+
+The rows below record a **deleted boundary**, not a defect. E22 T1 lets the control plane run on a
+Mac and reach that Mac's own toolchain, and the price is written here rather than in a commit
+message. Nothing in this section is an RC-blocker: the native posture is **opt-in**, declared by an
+exact string, and mutually exclusive with the container posture — a deployment that does not set
+`PALAI_SHELL_NATIVE=unsandboxed-host` is bit-unchanged.
+
+| ID | Finding | Decision | Owner | Expiry | Evidence / where it goes |
+|---|---|---|---|---|---|
+| `MAC-P1` | **IN THE NATIVE SHELL POSTURE THERE IS NO SANDBOX. The boundary is the uid, and nothing else.** `palai.workspace.shell` normally runs in an unprivileged, network-less, cgroup-bounded OCI container; with `PALAI_SHELL_NATIVE=unsandboxed-host` it runs as the control plane's own uid, in the control plane's own filesystem, with no namespace, no resource bound and no read-only mount. `docs/research/macos-isolation-without-accounts.md` §2 measured on this hardware (23 measurements) that under one uid **nothing weaker is a boundary** — Apple's SUPPORTED App Sandbox was escaped with `simctl spawn` | post-1.0 | owner (E22 plan §0(a), taken **2026-07-28**) | — | **The mitigation is an OPERATING RULE, not code, and it is the only one there is: different customers → different Macs (or different uids); same customer → one Mac with per-session directories.** It is printed at boot as a single declaration line and written in `docs/operations/palai-on-a-mac.md` §1-2 and `docs/operations/mac-sessions.md`. What the code DOES enforce: the posture cannot be switched on by accident (`=1`/`true`/`yes` refused — `TestShellPostureAcceptsOnlyTheStringThatSaysWhatItIs`), cannot coexist with the container posture (fatal at boot — `TestShellPostureRefusesBothSandboxImageAndNativeHost`), and cannot silently pretend to contain writes (`TestHostShellRefusesAReadOnlyAttempt`) |
+| `MAC-P2` | **THE EGRESS BACKSTOP IS GONE IN THE NATIVE POSTURE, and the audit finding that sat on top of it is now alone.** In the container the sandbox denied ALL network traffic and `ClassifyEgress` was the record that a denied destination had been named (`execution/tools/shell.go`, *"the sandbox denies all egress at the network layer; the finding is the audit record"*). On the host that sentence is half true: the finding still fires, and a `curl` in an argv really leaves the machine | post-1.0 | owner (E22 plan §3.5 X22, taken **2026-07-28**) | — | **Deliberately NOT hidden:** the finding is kept exactly so the audit trail does not get shorter when the enforcement does. A real per-connection egress boundary for the native posture (a resolving proxy the host commands are pinned to) is unbuilt and unscoped. `docs/operations/palai-on-a-mac.md` §1 states it to operators in the same words |
+| `MAC-P3` | **NO RESOURCE BOUND IN THE NATIVE POSTURE.** The container posture bounds memory, pids and CPU through cgroups and reports a cgroup OOM as a bounded termination; the host posture bounds **only wall time**. `ShellResult.OOMKilled` is therefore always `false` there | post-1.0 | owner (E22 T1, **2026-07-28**) | — | Wall time survives and so does the kill's REACH: the command runs in its own process group and the group is killed, so a reaped `xcodebuild` leaves no compiler behind (`TestHostShellWallTimeKillsTheWholeProcessGroup`). Reporting an OOM nobody measured was rejected as worse than reporting none |
+| `MAC-P4` | **X21 IS MEASURED AND ONE HALF REMAINS OPEN: a Mac with NOBODY logged in graphically was not tested.** Measured 2026-07-28 on macOS 26.3: the control plane drives a simulator identically from an Aqua context (Terminal/LaunchAgent) and from an Aqua-LESS one (a cron job, `launchctl managername=Background`) — the launch context is **not** the discriminator. What is: the accessibility translation service comes up ~7 s AFTER `simctl bootstatus` reports the device booted. **E22 §3.5 X5 is corrected by this: driving needs no Simulator.app window.** Both measurements ran while a user was logged in | §6-leg | owner (E22 T1, **2026-07-28**) | — | Recorded with its transcript in `docs/operations/palai-on-a-mac.md` §3, including the two contexts that were NOT usable without `sudo` (`ssh` — Remote Login off; `launchctl bootstrap user/$UID` — refuses without root). The residual is likely moot (no window is needed at all) and is carried as unmeasured rather than assumed. The agent-facing consequence — **poll `axe describe-ui`, never sleep a guessed interval** — is proven by `TestLiveMacHostDrivesASimulatorThroughShellCalls` |
+| `MAC-P5` | **THE DRIVING TOOL IS THIRD-PARTY AND USES APPLE'S PRIVATE APIs, and one Mac serves one Xcode.** `axe` 1.7.0 (MIT) drives the simulator through private accessibility + HID APIs; an OS update can break it. `idb` is already dead this way — `idb_companion` on this machine is an Aug 2022 build that collides with macOS 26's `FrontBoard` on every call. Separately, `CoreSimulatorService` knows ONE active Xcode; switching it kills booted simulators | post-1.0 | owner (E22 plan §3.5 X4/X6, **2026-07-28**) | — | **Nothing in Palai depends on `axe` existing** — it is a binary on the host's `PATH`, so a break surfaces as an honest exit 127 or an error string from a shell call, never as a silent no-op. Both facts are agent instructions in `docs/operations/palai-on-a-mac.md` §5 |
 
 ## What is not in this table
 
