@@ -200,6 +200,12 @@ type paths struct {
 	// compose-driving command already holds a paths, and because resolving it in each of them
 	// would mean each deciding independently whether this is a checkout or a packaged binary.
 	compose string
+	// The NATIVE control plane's two files (E22 T5). A native bring-up runs the control plane as a
+	// process on this machine rather than a compose service, so the two things compose would
+	// otherwise hold — what is running, and what it said — have to live somewhere: the pid record
+	// `palai local down` stops it by, and the log its boot refusals are written to.
+	nativePID string
+	nativeLog string
 }
 
 func resolvePaths() (paths, error) {
@@ -223,6 +229,8 @@ func resolvePaths() (paths, error) {
 		// production profile; the restore-verify secret canary reads it to prove restored secrets
 		// decrypt under the target's key.
 		masterKey: filepath.Join(h, "secrets", "master-key"),
+		nativePID: filepath.Join(h, "control-plane.pid"),
+		nativeLog: filepath.Join(h, "control-plane.log"),
 	}, nil
 }
 

@@ -160,15 +160,34 @@ inherits a sane per-user environment and keeps `HOME` pointing at the user whose
 
 `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/net.example.palai-control-plane.plist`.
 
-## 4. What still runs in Docker
+## 4. Bringing it up — one command
 
 Postgres, the object store and the **runner** stay in containers; only the control plane goes native.
+
+```sh
+PALAI_WORKSPACE_ROOT=/absolute/host/path \
+PALAI_SHELL_NATIVE=unsandboxed-host \
+palai up --native
+```
+
+`--native` is the whole posture selector, and it selects **where the control plane runs** — nothing
+else. `PALAI_SHELL_NATIVE` is separate and stays the operator's own sentence: switching off a
+security boundary must not be reachable by the reflex that switches on a feature (§1). A
+`--native` bring-up with no posture declared comes up fine, prints a WARNING, and every
+`xcodebuild` call fails cleanly for want of a runner — which is honest, and would be baffling if
+nobody said it.
+
+The compose half of that command is the overlay, if you would rather drive it by hand:
 
 ```sh
 docker compose -f deploy/compose/compose.yaml -f deploy/compose/native-control-plane.yml up -d
 ```
 
-The overlay does three things, and each is a fact you would otherwise rediscover the hard way:
+The overlay does three things, and each is a fact you would otherwise rediscover the hard way —
+`palai up --native` now **checks all three before it touches Docker** and refuses by the name of the
+variable that is wrong (`nativeRunnerListen`, `nativeWorkspaceRoot` in
+`cmd/cli/internal/stack/native.go`), because each one used to surface twenty seconds later as a TLS
+or DNS error inside a container nobody was reading:
 
 - **The in-compose control plane moves into a profile**, so it is not started. It is still there
   behind `--profile container-control-plane`, which is the A/B you want when something breaks.
@@ -184,12 +203,94 @@ The overlay does three things, and each is a fact you would otherwise rediscover
   native, its own path *is* the host path — the trap the split deployment had (a named volume the
   daemon cannot resolve) does not arise, but source and target must still be identical.
 
-`palai up` reads `cfg.BaseURL`, so pointing the CLI at a natively-running control plane is
-configuration, not code.
+A fourth fact belongs to the bring-up rather than the overlay, and it is the one that bit hardest:
+**the runner must start LAST.** The overlay resets its `depends_on`, so compose has nothing left to
+make it wait, and `cmd/runner/main.go` `log.Fatalf`s on a failed enroll with no restart policy behind
+it — a runner started before the control plane listens is a *dead container*, not a retrying one.
+`UpNative` therefore starts Postgres and the object store, then the control plane, then the runner.
 
-**Honest state of this overlay:** its three properties are guarded
-(`deploy/compose/native_control_plane_test.go`), and a full bring-up of it has **not** been run here.
-Bringing one up is an operator step, not a test.
+### 4.1 It was brought up, on this machine, on 2026-07-28
+
+The paragraph that used to sit here said a full bring-up "has not been run". It has now.
+
+```
+$ palai up --native --env-file …
+[1/6] env       …
+[2/6] provider  selector provider-one — credential from OPENAI_API_KEY, written to the 0600 file secret
+[3/6] stack     NATIVE: postgres + object-store + runner in docker, control plane on this machine
+ Container palai-304e4be4-postgres-1      Healthy
+ Container palai-304e4be4-object-store-1  Healthy
+ runner  Built
+ Container palai-304e4be4-runner-1        Healthy
+stack up: api http://127.0.0.1:54787 (native control plane, pid 91593), runner :54788
+[4/6] health    doctor: 14/15 green — NOT green: disk: data dir 6.7% free … (PalaiDiskLow)
+[5/6] proof     one real single-step run...
+
+PROVEN LIVE
+  round-trip   resp_54dd8e34c1ff6c3fcaa3596a19a6354f -> completed
+  model        gpt-4o-mini-2024-07-18   (selector provider-one — NOT the fake adapter)
+  usage        46 in / 1 out / 47 total tokens
+  api          http://127.0.0.1:54787
+  posture      NATIVE control plane, pid 91593, log …/.palai/control-plane.log — postgres/object-store/runner in Docker (native-control-plane.yml)
+```
+
+The one red check is the host's own disk, not the posture (it is red for the container stack on this
+machine too). The control plane's first log line was the §1 declaration, and `lsof` says the runner
+listener is on the wildcard rather than loopback — fact 1, in the only form that counts:
+
+```
+$ lsof -nP -iTCP:54788 -sTCP:LISTEN
+palai-con 91593 salih 6u IPv6 … TCP *:54788 (LISTEN)
+$ palai local doctor | grep runner_identity
+runner_identity  ok  runner runner-local.runners.palai.internal identity valid for another 3m32s, 1 session(s) connected
+```
+
+That line is a **container** that enrolled with a **native** process by the one name its certificate
+carries, through `control-plane:host-gateway`.
+
+**Then the point of the whole thing.** A run bound to a repository, on an agent revision granting
+`palai.workspace.shell`, asked to run `xcodebuild -version`. The model chose the argv; the durable
+tool ledger recorded what the machine answered:
+
+```
+name      | palai.workspace.shell
+state     | completed
+arguments | {"argv": ["xcodebuild", "-version"]}
+result    | {"stdout": "Xcode 26.6\nBuild version 17F113\n", "stderr": "", "exit_code": 0,
+             "timed_out": false, "truncated": false, "oom_killed": false, "duration_ms": 1374}
+```
+
+and the response the API served was that stdout, verbatim. The same argv inside this same stack's
+runner container:
+
+```
+$ docker exec palai-304e4be4-runner-1 sh -c 'xcodebuild -version'
+sh: xcodebuild: not found
+```
+
+`oom_killed: false` is not a claim of good behaviour: in this posture there is no memory ceiling to
+be killed by, which §1 says out loud.
+
+**Teardown left nothing.** `palai local down` printed `stopped the native control plane`, and
+afterwards: 0 containers, the pid record gone, the process gone, `:54788` free. A second
+`palai up --native` over a running one printed `stopped the control plane a previous bring-up left
+running` and there was exactly one control-plane process afterwards. `palai local reset --confirm`
+removed both volumes.
+
+**Two things this bring-up measured that nobody had:**
+
+- **`image_digests` is green here for a reason that will not hold on a clean Mac.** In the native
+  posture compose never builds `palai/control-plane:local` — the service is behind a profile — and
+  doctor's check requires that image to exist. It passed only because a container stack on this
+  machine had built it. On a Mac that has only ever run natively, expect that check red; it is a
+  doctor check written for the container topology, not a broken stack.
+- **A run offered the shell tool with no workspace HANGS rather than failing.** With
+  `config_policy.default_tools` set to `palai.workspace.shell`, `palai up`'s own trivial proof run
+  (which binds no repository) had the model call `{"argv": ["echo","ok"]}`; the tool refused with "no
+  workspace bound for this run", and because the shell tool is `ClassIrreversible` the call went
+  `uncertain` → `manual_resolution` and the run never reached a terminal state. `palai up` then blamed
+  dispatch ("PALAI_DISPATCH_WORKERS must be >= 1"), which was not the cause. This is why the Slack
+  path binds the workspace tools only when a repository exists — measured now, not reasoned about.
 
 ---
 
@@ -291,3 +392,7 @@ message.
 | A real simulator is booted, read, tapped, shot and recorded through argv | `TestLiveMacHostDrivesASimulatorThroughShellCalls` (`make test-live-mac`) |
 | `build-for-testing` / `test-without-building` against a real project | `TestLiveMacHostBuildsAnXcodeProjectThroughShellCalls` (skips without `PALAI_IOS_PROJECT`) |
 | The native overlay starts no second control plane, keeps the certificate's name, binds one path | `TestNativeOverlayDoesNotStartTheContainerControlPlane`, `TestNativeOverlayReachesTheControlPlaneByTheNameOnItsCertificate`, `TestNativeOverlayBindsTheWorkspaceAtTheSameAbsolutePath` |
+| A loopback runner listener, a port the container does not dial, and an unset/relative workspace root are refused **by name**, before Docker | `TestNativeRunnerListenerRefusesALoopbackAddress`, `TestNativeRunnerListenerRefusesAPortTheRunnerContainerDoesNotDial`, `TestNativeWorkspaceRootRefusesUnsetAndRelativePaths` (`make test-component TEST=native-shell`) |
+| The native process reaches the containers by their published ports, and no override is lost behind an inherited value | `TestNativeEnvironmentReachesTheContainersByTheirPublishedPorts`, `TestNativeEnvironmentHasNoDuplicateKeys` |
+| `palai local down` kills the process **group** and refuses a pid running something else | `TestNativeStopKillsTheProcessGroupAndClearsTheRecord`, `TestNativeStopRefusesAPidThatIsNotTheControlPlane` |
+| A full native bring-up, a live round-trip, and the host's Xcode through the shell tool | §4.1 — run on this machine 2026-07-28, output pasted there |
