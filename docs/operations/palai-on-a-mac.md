@@ -268,6 +268,16 @@ or DNS error inside a container nobody was reading:
   native, its own path *is* the host path — the trap the split deployment had (a named volume the
   daemon cannot resolve) does not arise, but source and target must still be identical.
 
+**One refusal belongs to the posture rather than to the overlay: `PALAI_WORKSPACE_ROOT` may not sit
+under a world-writable sticky directory.** `/private/tmp` and `/Users/Shared` are both `drwxrwxrwt`,
+and in the native posture every run's workspace, `HOME`, `TMPDIR` and CoreSimulator device set live
+under this root — there, **any local account**, not merely this uid, can create and replace paths
+beside them, which is a rung below the only boundary this posture has (§1). The bring-up refuses it
+and names the offending directory. The check walks the **resolved** path, because `/tmp` is a symlink
+to `/private/tmp` and a check that reads the name it was handed is one an everyday alias walks
+straight through (`TestNativeWorkspaceRootRefusesAWorldWritableParent`,
+`docs/research/macos-isolation-without-accounts.md` §6).
+
 A fourth fact belongs to the bring-up rather than the overlay, and it is the one that bit hardest:
 **the runner must start LAST.** The overlay resets its `depends_on`, so compose has nothing left to
 make it wait, and `cmd/runner/main.go` `log.Fatalf`s on a failed enroll with no restart policy behind
@@ -477,6 +487,7 @@ message.
 | **`simctl --set` is advice this runner cannot enforce**, and `HOME` does not select the device set (X20) | `TestSimctlSetIsAdvisoryNotEnforced` — the ceiling is in the NAME |
 | The X20 and T21 measurements, re-run against real devices rather than recalled | `TestLiveMacHostHomeDoesNotSelectTheSimulatorDeviceSet` (`make test-live-mac`) |
 | A run's session directory never enters a workspace snapshot | `TestSnapshotSkipsThePerSessionDirectoryAsASubtree` |
+| A workspace root under `/private/tmp` or `/Users/Shared` is refused at bring-up, on the RESOLVED path | `TestNativeWorkspaceRootRefusesAWorldWritableParent` |
 | The operating rule is word-for-word in both operator pages, with its source and date | `TestTheMacOperatingRuleIsVerbatimInBothOperatorPages` |
 | `ReadOnly` refuses rather than running writable | `TestHostShellRefusesAReadOnlyAttempt` |
 | Output bounded, secrets redacted, workspace is the cwd | `TestHostShellBoundsOutput`, `TestHostShellRunsInTheWorkspaceRootAndRedactsSecrets` |
