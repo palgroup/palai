@@ -161,6 +161,17 @@ func TestManifestGrantsTheScopesTheSubscribedEventsRequire(t *testing.T) {
 	if !granted["files:read"] {
 		t.Fatal("the manifest does not grant files:read; the shared-image leg (adapters/integrations/slack/files.go) 403s on every fetch, and the only symptom is a run that quietly says it could not attach the file")
 	}
+	// files:write is the OUTBOUND half and it is required by no event either: nothing delivers a file to us,
+	// we deliver one to the thread. Without it every UploadToThread answers `missing_scope`, the run's answer
+	// still lands (SLK-006) and the artifact is a link nobody can open — a degradation whose only symptom is
+	// a log line, which is exactly the shape this file asserts against.
+	//
+	// CONTRACT: https://docs.slack.dev/reference/methods/files.getUploadURLExternal/ and
+	// https://docs.slack.dev/reference/methods/files.completeUploadExternal/ (both checked 2026-07-28) — both
+	// name `files:write` as the bot-token scope.
+	if !granted["files:write"] {
+		t.Fatal("the manifest does not grant files:write; every artifact upload (adapters/integrations/slack/files.go, UploadToThread) is refused with missing_scope and a run's screenshot or recording never reaches the thread")
+	}
 
 	// THE ONE READ THIS APP MAKES needs a scope too, and it is the same silent failure in the other direction:
 	// these two scopes are granted for the EVENTS above, so unsubscribing an event would look like it only

@@ -194,16 +194,26 @@ func TestSlackImageLegIsMountedWhenThereIsAnObjectStore(t *testing.T) {
 	// The store is a bare value and the pool is nil on purpose: this asserts the MOUNT DECISION and nothing
 	// downstream of it. NewWriter dials nothing until a write, and the write path itself is proven against a
 	// real object store and a real Postgres in the extensions component suite.
-	bridge := mountSlackFileFetch(extensions.NewSlackAdmitter(nil, nil, nil, api.AdmissionLimits{}), &artifacts.Store{}, nil)
+	bridge := mountSlackFileLegs(extensions.NewSlackAdmitter(nil, nil, nil, api.AdmissionLimits{}), &artifacts.Store{}, nil)
 	if !bridge.FileFetchReady() {
 		t.Fatal("an object store is configured and the Slack image leg is not mounted: every shared screenshot " +
 			"is skipped, the run's input says only that a file 'could not be attached', and nothing in the " +
 			"control-plane log says why")
 	}
+	// E22 T5: the OUTBOUND half is mounted by the same decision, and it is asserted here for the same reason
+	// the inbound one is — a leg that is built and not mounted fails silently, and this repository has paid
+	// for that lesson once already.
+	if !bridge.ArtifactUploadReady() {
+		t.Fatal("an object store is configured and the Slack artifact upload leg is not mounted: a run's " +
+			"screenshot or recording is answered as a link nobody in the thread can open")
+	}
 
-	off := mountSlackFileFetch(extensions.NewSlackAdmitter(nil, nil, nil, api.AdmissionLimits{}), nil, nil)
+	off := mountSlackFileLegs(extensions.NewSlackAdmitter(nil, nil, nil, api.AdmissionLimits{}), nil, nil)
 	if off.FileFetchReady() {
 		t.Fatal("the image leg reports ready with no object store behind it: a fetched image would have nowhere to go")
+	}
+	if off.ArtifactUploadReady() {
+		t.Fatal("the upload leg reports ready with no object store behind it: there is nothing to read an artifact out of")
 	}
 }
 
