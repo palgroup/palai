@@ -97,18 +97,10 @@ func Bootstrap(envFile string) error {
 			return err
 		}
 	}
-	switch w := strings.TrimSpace(get("PALAI_DISPATCH_WORKERS")); w {
-	case "":
-		if err := os.Setenv("PALAI_DISPATCH_WORKERS", "1"); err != nil {
-			return err
-		}
-	case "0":
-		return errors.New("PALAI_DISPATCH_WORKERS=0 selects a queued-only stack: nothing executes, so no round-trip can be proven — unset it or set it to 1")
-	default:
-		if err := os.Setenv("PALAI_DISPATCH_WORKERS", w); err != nil {
-			return err
-		}
+	if err := applyConcurrencyEnv(get); err != nil {
+		return err
 	}
+
 	// The Slack knobs the CONTAINER needs must be exported before compose creates it: a running
 	// control-plane never re-reads its environment, so a socket switched on after the fact stays off
 	// until the next bring-up. Failures here are reported and carried — an unusable master key must
@@ -1377,4 +1369,41 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// applyConcurrencyEnv exports BOTH concurrency knobs, because a stack is only as parallel as the smaller of
+// them and compose reads both from the environment. Extracted from Bootstrap so the pairing is testable —
+// the defect it fixes was invisible precisely because nothing could assert it.
+func applyConcurrencyEnv(get func(string) string) error {
+	switch w := strings.TrimSpace(get("PALAI_DISPATCH_WORKERS")); w {
+	case "":
+		if err := os.Setenv("PALAI_DISPATCH_WORKERS", "1"); err != nil {
+			return err
+		}
+	case "0":
+		return errors.New("PALAI_DISPATCH_WORKERS=0 selects a queued-only stack: nothing executes, so no round-trip can be proven — unset it or set it to 1")
+	default:
+		if err := os.Setenv("PALAI_DISPATCH_WORKERS", w); err != nil {
+			return err
+		}
+	}
+	// THE RUNNER'S CONCURRENCY MUST BE EXPORTED TOO, and forgetting it is why a stack could be told to run
+	// four runs at once and still run them one at a time. PALAI_DISPATCH_WORKERS is how many runs the control
+	// plane will dispatch; PALAI_RUNNER_CONCURRENCY is how many engine leases ONE runner identity parks at
+	// once (runner_concurrency_test.go: at the default of 1 "a second concurrent Dial blocks"). Compose reads
+	// the second from the environment and `palai up` never put it there, so it was always 1 whatever
+	// .env.local said — three of four dispatch workers queueing behind one engine, with nothing said about it.
+	//
+	// UNSET FOLLOWS THE DISPATCH COUNT, because the two numbers answer the same question — "how many runs at
+	// once" — and letting them disagree silently is the defect above. An explicit value always wins.
+	runners := strings.TrimSpace(get("PALAI_RUNNER_CONCURRENCY"))
+	if runners == "" {
+		runners = os.Getenv("PALAI_DISPATCH_WORKERS")
+	}
+	if runners != "" {
+		if err := os.Setenv("PALAI_RUNNER_CONCURRENCY", runners); err != nil {
+			return err
+		}
+	}
+	return nil
 }

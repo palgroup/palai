@@ -1,6 +1,7 @@
 package stack
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -130,5 +131,37 @@ func TestReuseNeedsTheListToCarryTools(t *testing.T) {
 	}
 	if !minted {
 		t.Fatal("expected the second bring-up to mint a revision when it cannot read the first one's tools")
+	}
+}
+
+// CONCURRENCY IS TWO NUMBERS AND A STACK IS AS PARALLEL AS THE SMALLER ONE. PALAI_DISPATCH_WORKERS is how
+// many runs the control plane dispatches at once; PALAI_RUNNER_CONCURRENCY is how many engine leases one
+// runner parks at once, and at the default of 1 a second concurrent dial BLOCKS. `palai up` exported the
+// first and not the second, so a .env.local asking for four concurrent runs got four dispatch workers
+// queueing behind one engine — measured on the live stack 2026-07-28, dispatch=4 and runner=1.
+func TestBothConcurrencyKnobsReachTheStack(t *testing.T) {
+	for _, tc := range []struct{ name, dispatch, runner, wantRunner string }{
+		{"explicit runner value wins", "4", "2", "2"},
+		{"unset runner follows the dispatch count", "4", "", "4"},
+		{"a lone runner value is honoured", "", "3", "3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PALAI_DISPATCH_WORKERS", "")
+			t.Setenv("PALAI_RUNNER_CONCURRENCY", "")
+			env := map[string]string{}
+			if tc.dispatch != "" {
+				env["PALAI_DISPATCH_WORKERS"] = tc.dispatch
+			}
+			if tc.runner != "" {
+				env["PALAI_RUNNER_CONCURRENCY"] = tc.runner
+			}
+			if err := applyConcurrencyEnv(envGetter(env)); err != nil {
+				t.Fatalf("applyConcurrencyEnv: %v", err)
+			}
+			if got := os.Getenv("PALAI_RUNNER_CONCURRENCY"); got != tc.wantRunner {
+				t.Fatalf("PALAI_RUNNER_CONCURRENCY = %q, want %q — compose reads this from the environment, so "+
+					"an unexported value leaves the runner at 1 and the stack serial", got, tc.wantRunner)
+			}
+		})
 	}
 }
