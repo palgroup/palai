@@ -141,6 +141,104 @@ func TestLiveMacHostDrivesASimulatorThroughShellCalls(t *testing.T) {
 	t.Logf("recorded %q as %s — the extension the model chose was wrong, as measured", filepath.Base(movie), strings.TrimSpace(string(kind)))
 }
 
+// TestLiveMacHostHomeDoesNotSelectTheSimulatorDeviceSet is E22 X20, live, and it is the measurement
+// that decided how T2 was built. The hypothesis was cheap and wrong: if `CoreSimulatorService`
+// resolved the device set from the CALLING process's `HOME`, then giving each run its own `HOME`
+// would separate simulators for free.
+//
+// MEASURED 2026-07-28 (macOS 26.3 / Xcode 26.6): IT DOES NOT. `simctl` is a thin client; the device
+// set belongs to `com.apple.CoreSimulator.CoreSimulatorService`, a launchd-managed per-user XPC
+// service already running under the LOGIN SESSION's `HOME`. A device created from a shell whose
+// `HOME` was a per-run directory landed in the DEFAULT set and left nothing under that directory.
+//
+// So the fallback is `simctl --set`, which partitions cleanly (research T21) and which this test also
+// re-measures — but it is an ARGV FLAG, so it can be advised and never enforced. That ceiling is
+// carried by the name of TestSimctlSetIsAdvisoryNotEnforced (adapters/sandboxes/host).
+//
+// It creates two devices and DELETES BOTH, in either set, however it exits.
+func TestLiveMacHostHomeDoesNotSelectTheSimulatorDeviceSet(t *testing.T) {
+	if _, err := exec.LookPath("xcrun"); err != nil {
+		t.Skipf("xcrun is not on this host's PATH: %v", err)
+	}
+	root := t.TempDir()
+
+	// The session HOME the production executor derives for THIS allocation — read from the shell it
+	// gives the agent rather than recomputed here, so the test measures what ships.
+	sessionHome, _, code := shellOnHost(t, root, true, `echo "$HOME"`)
+	sessionHome = strings.TrimSpace(sessionHome)
+	if code != 0 || sessionHome == "" {
+		t.Fatalf("the shell reported no HOME (exit %d)", code)
+	}
+	if sessionHome == os.Getenv("HOME") {
+		t.Fatalf("the agent's shell has the operator's own HOME (%q) — E22 T2's separation is not wired", sessionHome)
+	}
+	simctlSet, _, _ := shellOnHost(t, root, true, `echo "$PALAI_SIMCTL_SET"`)
+	simctlSet = strings.TrimSpace(simctlSet)
+	if simctlSet == "" {
+		t.Fatal("the shell received no PALAI_SIMCTL_SET, so the advisory fallback has no directory to name")
+	}
+
+	// (1) Create a device from a shell whose HOME is the per-run one, naming NO --set. If HOME
+	// selected the set, this device would be invisible to the operator's default set.
+	name := "palai-x20-" + strconv.Itoa(int(time.Now().UnixNano()))
+	stdout, stderr, code := shellOnHost(t, root, false, "xcrun", "simctl", "create", name, "iPhone 16")
+	if code != 0 {
+		t.Skipf("this Mac cannot create an `iPhone 16` device (exit %d): %s", code, stderr)
+	}
+	// simctl prints a "No runtime specified, using …" notice BEFORE the udid, so the udid is the LAST
+	// line — measured 2026-07-28, and reading the first line here would delete nothing.
+	inheritedUDID := lastLine(stdout)
+	t.Cleanup(func() { _ = exec.Command("xcrun", "simctl", "delete", inheritedUDID).Run() })
+
+	// The finding, asserted in the direction that hurts: the device is in the DEFAULT set.
+	defaultSet, err := exec.Command("xcrun", "simctl", "list", "devices").Output()
+	if err != nil {
+		t.Fatalf("list the default device set: %v", err)
+	}
+	if !strings.Contains(string(defaultSet), inheritedUDID) {
+		t.Fatalf("a device created under a per-run HOME is ABSENT from the default set — HOME now selects "+
+			"the device set, X20's measurement is stale, and `--set` is no longer the mechanism (%s)", inheritedUDID)
+	}
+	if entries, readErr := os.ReadDir(filepath.Join(sessionHome, "Library", "Developer", "CoreSimulator", "Devices")); readErr == nil && len(entries) > 0 {
+		t.Fatalf("the per-run HOME now holds a device set (%d entries) — X20 is stale", len(entries))
+	}
+	t.Logf("X20 holds: a device created under HOME=%s is in the DEFAULT set (%s)", sessionHome, inheritedUDID)
+
+	// (2) And the fallback that DOES work (research T21): --set partitions, in both directions.
+	stdout, stderr, code = shellOnHost(t, root, false, "xcrun", "simctl", "--set", simctlSet, "create", name+"-set", "iPhone 16")
+	if code != 0 {
+		t.Fatalf("simctl --set create exited %d: %s", code, stderr)
+	}
+	setUDID := lastLine(stdout)
+	t.Cleanup(func() { _ = exec.Command("xcrun", "simctl", "--set", simctlSet, "delete", setUDID).Run() })
+
+	inSet, _, _ := shellOnHost(t, root, false, "xcrun", "simctl", "--set", simctlSet, "list", "devices")
+	if !strings.Contains(inSet, setUDID) {
+		t.Fatalf("the device created in the per-run set is not in it: %s", inSet)
+	}
+	if strings.Contains(inSet, inheritedUDID) {
+		t.Fatalf("the per-run set shows the DEFAULT set's device %s — --set did not partition", inheritedUDID)
+	}
+	defaultSet, err = exec.Command("xcrun", "simctl", "list", "devices").Output()
+	if err != nil {
+		t.Fatalf("re-list the default device set: %v", err)
+	}
+	if strings.Contains(string(defaultSet), setUDID) {
+		t.Fatalf("the default set shows the per-run set's device %s — --set did not partition", setUDID)
+	}
+	t.Logf("T21 holds: --set %s partitions in both directions", simctlSet)
+}
+
+// lastLine returns the final non-empty line of output. simctl prefixes `create` with an advisory
+// notice, so the identifier it produced is the last line rather than the whole of stdout.
+func lastLine(s string) string {
+	fields := strings.Fields(strings.TrimSpace(s))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[len(fields)-1]
+}
+
 // TestLiveMacHostBuildsAnXcodeProjectThroughShellCalls is the build half: the expensive compile runs
 // ONCE (`build-for-testing`) and the tests run off the produced .xctestrun (`test-without-building`),
 // which is a quality property a model has to know rather than a correctness one the code enforces

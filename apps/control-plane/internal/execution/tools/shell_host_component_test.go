@@ -12,13 +12,16 @@
 package tools
 
 import (
+	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/palgroup/palai/adapters/sandboxes/host"
+	"github.com/palgroup/palai/packages/contracts"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
@@ -84,6 +87,89 @@ func TestNativeShellPostureRunsTheHostsOwnToolchain(t *testing.T) {
 	}
 	if strings.Contains(stdout, "Checks device boot status") {
 		t.Fatal("`simctl help <subcommand>` now writes to stdout — palai-on-a-mac.md's stderr note is stale")
+	}
+}
+
+// TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac is E22 T2's component-real proof, and it
+// runs the PRODUCTION path: the production broker, the production `palai.workspace.shell` tool, the
+// production host executor. Two runs at the same time, two allocations, and each one's HOME, TMPDIR
+// and CoreSimulator device set are its own.
+//
+// WHAT THIS IS NOT: a security boundary. Both runs are the same uid; either can open the other's
+// directory by absolute path and nothing stops it. The failure being prevented is a CONFUSED AGENT —
+// two runs booting, wiping or renaming each other's simulators, or clobbering one DerivedData — not
+// a hostile one. The ceiling on the device-set half is carried by the NAME of
+// TestSimctlSetIsAdvisoryNotEnforced (adapters/sandboxes/host).
+func TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac(t *testing.T) {
+	roots := []string{t.TempDir(), t.TempDir()}
+	homes := make([]string, len(roots))
+
+	// Concurrently, because a sequential pair would pass even if the runner handed out one shared
+	// directory and reused it. Each goroutine gets its own broker: the broker caches a completed call
+	// by id, and one shared instance would be a race rather than a proof.
+	var wg sync.WaitGroup
+	errs := make([]error, len(roots))
+	for i, root := range roots {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			broker := toolbroker.New(ShellTool())
+			env := toolbroker.ExecEnv{WorkspaceRoot: root, Shell: host.NewExecutor(2 * time.Minute)}
+			out, err := broker.Execute(t.Context(), contracts.ToolCallID(fmt.Sprintf("call_session_%d", i)),
+				"palai.workspace.shell",
+				// One argv element, because the executor joins argv with spaces before handing it to
+				// `sh -c` — a multi-element form would have its quoting eaten on the way.
+				map[string]any{"argv": []any{`echo "$HOME"; echo "$TMPDIR"; echo "$PALAI_SIMCTL_SET"`}, "shell": true}, 1, env)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			lines := strings.Split(strings.TrimSpace(out.Result["stdout"].(string)), "\n")
+			if len(lines) != 3 {
+				errs[i] = fmt.Errorf("expected three session directories, got %q", out.Result["stdout"])
+				return
+			}
+			for _, dir := range lines {
+				if !strings.HasPrefix(dir, root) {
+					errs[i] = fmt.Errorf("%q is not inside this run's allocation %q", dir, root)
+					return
+				}
+			}
+			homes[i] = lines[0]
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+	}
+	if homes[0] == homes[1] {
+		t.Fatalf("two concurrent runs share one HOME (%q) — they share one CoreSimulator device set, one DerivedData and one cache", homes[0])
+	}
+
+	// The claim that matters is what a run SEES. Run 0 writes a marker in its own HOME; run 1 lists
+	// its own HOME and must not find it — and must find its own, or the listing proves nothing.
+	broker := toolbroker.New(ShellTool())
+	shell := func(id, root, argv string) string {
+		t.Helper()
+		out, err := broker.Execute(t.Context(), contracts.ToolCallID(id), "palai.workspace.shell",
+			map[string]any{"argv": []any{argv}, "shell": true}, 1,
+			toolbroker.ExecEnv{WorkspaceRoot: root, Shell: host.NewExecutor(time.Minute)})
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		stdout, _ := out.Result["stdout"].(string)
+		return stdout
+	}
+	shell("call_marker_0", roots[0], `touch "$HOME/run-0-was-here"`)
+	shell("call_marker_1", roots[1], `touch "$HOME/run-1-was-here"`)
+	listing := shell("call_list_1", roots[1], `ls -A "$HOME"`)
+	if strings.Contains(listing, "run-0-was-here") {
+		t.Fatalf("run 1's HOME shows run 0's file — the two sessions are not separated:\n%s", listing)
+	}
+	if !strings.Contains(listing, "run-1-was-here") {
+		t.Fatalf("run 1's HOME does not show run 1's own file, so the check above proves nothing:\n%s", listing)
 	}
 }
 

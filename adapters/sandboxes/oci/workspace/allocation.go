@@ -28,6 +28,18 @@ const (
 	ArtifactsDir = "artifacts"
 )
 
+// SessionDir is machine-local RUNTIME state, not workspace content: under the NATIVE shell posture
+// (E22 T2) the host executor gives each run its own HOME, TMPDIR and CoreSimulator device set here,
+// so two concurrent runs on one Mac stop sharing them. Prepare does not create it — an OCI run gets
+// its separation from the container and never has one — but Snapshot must know the name, because a
+// snapshot walks the allocation and a booted simulator's device bundle is gigabytes of a run's
+// scratch that would otherwise be read into memory and checksummed as if it were the repository.
+//
+// The host executor carries the same literal (adapters/sandboxes/host/exec.go). It is duplicated
+// rather than imported on purpose: this package pulls in the whole Docker client, and the native
+// posture's executor is the one package that must not. tests/docs keeps the two spellings equal.
+const SessionDir = ".palai-session"
+
 // secretsDir is a staging subdirectory a snapshot always excludes; combined with the credential
 // basenames below it is the create-side exclusion set (spec §29.10). /secrets proper is a sibling
 // mount, never inside the allocation, so it cannot enter a snapshot at all.
@@ -77,14 +89,20 @@ func Snapshot(root string) (Manifest, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !d.Type().IsRegular() {
-			return nil
-		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		// The per-session directory is skipped as a SUBTREE and recorded as ONE exclusion. Enumerating
+		// it would pay exactly the walk the rule exists to avoid.
+		if d.IsDir() && rel == SessionDir {
+			exclusions = append(exclusions, rel)
+			return fs.SkipDir
+		}
+		if d.IsDir() || !d.Type().IsRegular() {
+			return nil
+		}
 		if isExcluded(rel) {
 			exclusions = append(exclusions, rel)
 			return nil

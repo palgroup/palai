@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -36,15 +37,44 @@ import (
 // command writable anyway would report a containment the machine does not have.
 var ErrReadOnlyUnsupported = errors.New("read-only execution has no host equivalent: the native shell posture cannot bound writes, so the attempt is refused rather than run writable")
 
-// envAllowList is the COMPLETE environment a host command receives. In the container the shell
+// envAllowList is what a host command INHERITS from the control plane. In the container the shell
 // inherited nothing; on the host it would inherit the operator's own environment — SLACK_BOT_TOKEN,
 // PALAI_GITHUB_APP_*, the master key, cloud credentials. So the environment is built from this list
 // rather than filtered against a deny-list: a variable nobody thought of cannot arrive.
 //
-// Each entry earns its place: PATH finds the host's tools, HOME is where CoreSimulator keeps its
-// device set and where toolchains cache, TMPDIR is the scratch space, LANG decides how tools encode
-// their output, DEVELOPER_DIR selects the Xcode a `xcrun` resolves against.
-var envAllowList = []string{"PATH", "HOME", "TMPDIR", "LANG", "DEVELOPER_DIR"}
+// Each entry earns its place: PATH finds the host's tools, LANG decides how tools encode their
+// output, DEVELOPER_DIR selects the Xcode a `xcrun` resolves against. Together with sessionDirs
+// below, these are the COMPLETE environment — nothing else reaches the command.
+var envAllowList = []string{"PATH", "LANG", "DEVELOPER_DIR"}
+
+// sessionDir is the allocation subdirectory holding a run's own machine-local state. It is
+// deliberately NOT workspace content — see the Exclusions rule in the oci workspace package, which
+// keeps it out of every snapshot; a captured simulator device set would be gigabytes of a run's
+// scratch masquerading as its repository.
+const sessionDir = ".palai-session"
+
+// sessionDirs are the variables the runner DERIVES from the allocation rather than inheriting, one
+// directory each under <allocation>/.palai-session. Every run already got its own allocation and ran
+// there as its cwd; these three were the state it still shared with every other concurrent run.
+//
+//   - HOME — toolchain caches, DerivedData, and (until E22 T2) the OPERATOR's own ~/.ssh, ~/.aws and
+//     ~/.gitconfig. Deriving it means the agent's `git` has no operator identity to commit as, which
+//     is the correct outcome and is stated in docs/operations/palai-on-a-mac.md §5.
+//   - TMPDIR — the scratch space. It must not fall back to /private/tmp, which is drwxrwxrwt
+//     (docs/research/macos-isolation-without-accounts.md §6).
+//   - PALAI_SIMCTL_SET — a per-run CoreSimulator device set for the agent to pass as
+//     `simctl --set "$PALAI_SIMCTL_SET"`.
+//
+// THE LAST ONE IS ADVISORY AND CANNOT BE OTHERWISE, which is why the proof is named
+// TestSimctlSetIsAdvisoryNotEnforced rather than explained here. MEASURED 2026-07-28 (E22 X20): HOME
+// does NOT select the device set — `simctl` is a thin client and the set belongs to a launchd-managed
+// per-user CoreSimulatorService already running under the login session's HOME. The set is selected
+// by an argv flag, and argv belongs to the model.
+var sessionDirs = [][2]string{
+	{"HOME", "home"},
+	{"TMPDIR", "tmp"},
+	{"PALAI_SIMCTL_SET", "simulators"},
+}
 
 // Executor runs one argv on the host and returns its bounded, redacted result. It implements
 // toolbroker.ShellRunner.
@@ -89,9 +119,14 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 		defer cancel()
 	}
 
+	env, err := allowedEnv(cmd.WorkspaceRoot)
+	if err != nil {
+		return toolbroker.ShellResult{}, err
+	}
+
 	c := exec.CommandContext(ctx, runArgv[0], runArgv[1:]...)
 	c.Dir = cmd.WorkspaceRoot
-	c.Env = allowedEnv()
+	c.Env = env
 	// Setpgid puts the command in its own process group; Cancel kills that GROUP, so a wall-time
 	// expiry reaps the tree a build spawns, not just the shell at its root. WaitDelay bounds the wait
 	// on a descendant that still holds the output pipe open.
@@ -104,7 +139,7 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 	c.Stdout, c.Stderr = stdout, stderr
 
 	start := time.Now()
-	err := c.Run()
+	err = c.Run()
 	result := toolbroker.ShellResult{
 		Stdout:     toolbroker.RedactSecrets(stdout.String()),
 		Stderr:     toolbroker.RedactSecrets(stderr.String()),
@@ -140,17 +175,30 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 	return result, nil
 }
 
-// allowedEnv builds the command's environment from envAllowList. A variable absent from the control
-// plane's own environment is simply absent from the command's — never defaulted, so the command sees
-// the host as the operator configured it.
-func allowedEnv() []string {
-	env := make([]string, 0, len(envAllowList))
+// allowedEnv builds the command's environment: envAllowList inherited from the control plane, plus
+// sessionDirs derived from this run's own allocation. A variable absent from the control plane's own
+// environment is simply absent from the command's — never defaulted, so the command sees the host as
+// the operator configured it.
+//
+// The session directories are created here rather than at allocation time because this is the only
+// posture that has them: an OCI run gets its separation from the container. A directory that could
+// not be created is an ERROR, not a silently-inherited fallback — a HOME pointing nowhere is worse
+// than the shared one it replaced.
+func allowedEnv(workspaceRoot string) ([]string, error) {
+	env := make([]string, 0, len(envAllowList)+len(sessionDirs))
 	for _, name := range envAllowList {
 		if value, ok := os.LookupEnv(name); ok {
 			env = append(env, name+"="+value)
 		}
 	}
-	return env
+	for _, d := range sessionDirs {
+		path := filepath.Join(workspaceRoot, sessionDir, d[1])
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return nil, fmt.Errorf("prepare per-session %s: %w", d[0], err)
+		}
+		env = append(env, d[0]+"="+path)
+	}
+	return env, nil
 }
 
 // cappedBuffer captures at most limit bytes and remembers that it dropped the rest. It always
