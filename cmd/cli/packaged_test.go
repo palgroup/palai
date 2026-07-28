@@ -311,6 +311,51 @@ func TestCheckoutStillBuildsAndMaterialisesNothing(t *testing.T) {
 	}
 }
 
+// TestComposeFileOverrideStillWins pins the precedence the e2e harness, the UAT and every
+// development checkout depend on: PALAI_COMPOSE_FILE is resolved FIRST and verbatim. Embedding is a
+// fallback, so a set override must both be driven and suppress materialisation entirely — an
+// embedded copy that quietly won would point an operator's compose at bytes they never edited.
+func TestComposeFileOverrideStillWins(t *testing.T) {
+	bin := cli(t)
+	work := outsideTheTree(t)
+	home := filepath.Join(work, ".palai")
+	dockerPath, log := fakeDocker(t)
+
+	// A compose file that is neither the checkout's nor the embedded copy's destination.
+	chosen := filepath.Join(work, "elsewhere", "my-compose.yaml")
+	if err := os.MkdirAll(filepath.Dir(chosen), 0o700); err != nil {
+		t.Fatalf("make override dir: %v", err)
+	}
+	src, err := os.ReadFile(filepath.Join(repoRoot(t), "deploy", "compose", "compose.yaml"))
+	if err != nil {
+		t.Fatalf("read the committed compose file: %v", err)
+	}
+	if err := os.WriteFile(chosen, src, 0o600); err != nil {
+		t.Fatalf("write the override compose file: %v", err)
+	}
+
+	env := []string{
+		"PALAI_HOME=" + home,
+		"PATH=" + dockerPath + ":" + os.Getenv("PATH"),
+		"PALAI_COMPOSE_FILE=" + chosen,
+	}
+	if out, err := palai(t, bin, work, env, "init"); err != nil {
+		t.Fatalf("palai init with an override: %v\n%s", err, out)
+	}
+	_, _ = palai(t, bin, work, append(env,
+		"PALAI_CONTROL_PLANE_IMAGE=palai/control-plane:local",
+		"PALAI_RUNNER_IMAGE=palai/runner:local",
+		"PALAI_ENGINE_IMAGE=sha256:"+strings.Repeat("c", 64),
+	), "local", "up")
+
+	if !dockerSaw(t, log, "arg", chosen) {
+		t.Fatalf("PALAI_COMPOSE_FILE was not the file driven. invoked:\n%s", read(t, log))
+	}
+	if _, err := os.Stat(filepath.Join(home, "compose")); err == nil {
+		t.Fatalf("PALAI_COMPOSE_FILE was set and the embedded copies were materialised anyway into %s", home)
+	}
+}
+
 // committedComposeFile is the path a checkout drives, spelled here the way the CLI passes it to
 // compose (relative to cwd) rather than imported, so this file asserts against the contract and not
 // against the implementation's own constant.
