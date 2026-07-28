@@ -271,10 +271,11 @@ func fakeProvisioningAPIWithTools(t *testing.T) (*apiClient, *[]string, *bool) {
 	// The revision remembers the tools it was created with. A fake that forgets them is not modelling this
 	// API: `palai up` reuses a published revision only when its tool list already matches what was asked
 	// for, so a forgetful fixture would prove reuse that the real server never performs.
-	var revisionTools []string
+	var revisionTools, revisionMCP []string
 	revisionSeq := 0
-	// listCarriesTools models the server-side field this fixture depends on. A test can turn it OFF to
-	// reproduce the pre-fix server and prove the reuse check actually needs it.
+	// listCarriesTools models the server-side CONFIG fields this fixture depends on — `tools` since E21 T4
+	// and `mcp_connections` since E22 T6. A test can turn it OFF to reproduce a server that omits them and
+	// prove the reuse check actually needs them.
 	listCarriesTools := true
 	// The repository-binding surface (E22 T3), modelled the way the real one behaves: a re-POST registers a
 	// DISTINCT binding (bindings are durable configuration, not idempotent operations — api/repository_bindings.go
@@ -311,16 +312,18 @@ func fakeProvisioningAPIWithTools(t *testing.T) (*apiClient, *[]string, *bool) {
 				rev := map[string]any{"id": revisionID, "status": "published"}
 				if listCarriesTools {
 					rev["tools"] = revisionTools
+					rev["mcp_connections"] = revisionMCP
 				}
 				data = append(data, rev)
 			}
 			write(http.StatusOK, map[string]any{"object": "list", "data": data})
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/agents/"+profileID+"/revisions":
 			var body struct {
-				Tools []string `json:"tools"`
+				Tools          []string `json:"tools"`
+				MCPConnections []string `json:"mcp_connections"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			revisionTools = body.Tools
+			revisionTools, revisionMCP = body.Tools, body.MCPConnections
 			// A DISTINCT id per revision, as the real server issues: a fixture that reuses one id cannot
 			// show the difference between reusing a revision and minting a replacement.
 			revisionSeq++

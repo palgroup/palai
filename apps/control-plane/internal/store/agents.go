@@ -117,10 +117,16 @@ func (s *Store) ListAgentRevisions(ctx context.Context, scope middleware.Scope, 
 		// against nil, never matched, and minted a fresh published revision on EVERY bring-up. Two bring-ups
 		// left two identical revisions behind. Listing it is additive — no field changes meaning, nothing is
 		// removed — and it closes the read side of a config the API already lets you write.
+		//
+		// `mcp_connections` joins it for E22 T6, and for the same argument one epic later: it is the
+		// EXTERNAL capability ceiling, `palai up` reuses a revision only when the ceiling already matches
+		// what SLACK_AGENT_MCP asked for, and with the field absent that comparison runs against nil
+		// forever. The value is connection IDS; the credential is on the connection row, never here.
 		body := mustJSON(map[string]any{
 			"id": it.ID, "object": "agent_revision", "agent_id": profileID,
 			"revision_number": it.RevisionNumber, "model": it.Model, "tools": it.Tools,
-			"instructions": it.Instructions, "status": status,
+			"mcp_connections": it.MCPConnections,
+			"instructions":    it.Instructions, "status": status,
 		})
 		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
 	}

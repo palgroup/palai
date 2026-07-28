@@ -141,6 +141,12 @@ The reply arrives in a **thread** under your message. If nothing arrives, §7.
 
   Changing the list mints a new agent revision on the next `palai up` — reordering it does not.
 
+- **It can reach an external MCP server only if you name one.** `SLACK_AGENT_MCP=jira` writes the
+  `mcp_connections` rider — the ceiling on which registered connections a Slack run may reach. Unset means
+  EMPTY, and empty means the agent reaches no external server at all. Setting it is half the job; the
+  connection's tools still have to be approved and pinned. See `docs/operations/jira-mcp-connection.md`
+  §4b, which also says what to check first when it appears to do nothing.
+
 - **It can search your workspace's public channels, if you granted the scope.** With `search:read.public` in
   the manifest, a run born from a message can call `palai.slack.search`. Read §9 before you decide it is what
   you want.
