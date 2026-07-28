@@ -24,10 +24,11 @@ import (
 // source is the price of the internal boundary; the alternative is a shared package that exists only to be
 // imported by a test.
 //
-// TWO LISTS SINCE E22 T3, and the guard covers BOTH: slackDefaultTools is what every bring-up binds, and
-// slackRepositoryTools is what a bring-up ADDS when it bound a repository. A name that resolves in neither
-// is a tool the model would be offered and could never be given — the exact defect this file was written for,
-// and a conditional list is a second place for it to happen.
+// THREE LISTS SINCE E22 T4, and the guard covers ALL of them: slackDefaultTools is what every bring-up
+// binds, slackRepositoryTools is the coding half a bring-up ADDS when it bound a repository, and
+// slackPublishTools is the publish half added under the same condition. A name that resolves in none of them
+// is a tool the model would be offered and could never be given — the exact defect this file was written
+// for, and a conditional list is a second place for it to happen.
 func readCLIToolList(t *testing.T, name string) []string {
 	t.Helper()
 	// tools -> execution -> internal -> control-plane -> apps -> repo root
@@ -75,11 +76,17 @@ func TestEverySlackDefaultToolResolves(t *testing.T) {
 		FileTool(),
 		ShellTool(),
 		CommitTool(),
+		// And the publish two, which E22 T4's bring-up binds under the same condition. They are in the SAME
+		// broker for the same reason — main.go builds one (main.go:459-467), and a guard that gave each list
+		// its own hand-picked set would prove less than it appears to.
+		PushTool(),
+		PullRequestTool(),
 	)
 	broker.SetLookup(SlackSearchLookup(nil, authorities, nil))
 
 	names := readCLISlackDefaultTools(t)
 	names = append(names, readCLIToolList(t, "slackRepositoryTools")...)
+	names = append(names, readCLIToolList(t, "slackPublishTools")...)
 	for _, name := range names {
 		if _, found, err := broker.SchemaResolved(t.Context(), env, name); err != nil || !found {
 			t.Fatalf("`palai up` binds %q and this control plane cannot resolve it (found=%v err=%v). "+
@@ -89,15 +96,43 @@ func TestEverySlackDefaultToolResolves(t *testing.T) {
 	}
 }
 
-// TestTheRepositoryToolListStopsShortOfPublishing is the control-plane side of E22 T3's deliberate gap: a
-// bring-up that bound a repository grants the tools that WRITE code and none that PUBLISH it. T4 opens the
-// publish half, and it opens it behind a human's Approve button — so a publish tool appearing in this list
-// would move that boundary by accident, which is exactly how a boundary stops being one.
-func TestTheRepositoryToolListStopsShortOfPublishing(t *testing.T) {
+// TestThePublishToolsAreTheirOwnListAndNeitherPublishes is the control-plane side of E22 T4, and it holds
+// two things a single merged list would have made unreadable.
+//
+// FIRST, the lists stay SEPARATE. `palai up` adds both under one condition, but the coding half is what an
+// agent does to a workspace nobody else can see and the publish half is what leaves the machine. Keeping the
+// second one nameable is what let T3 ship the first without the second at all.
+//
+// SECOND, and this is the invariant the whole task rests on: NEITHER publish tool acts. Each records a
+// pending publication and answers pending_approval, which is why granting them is not granting a push. The
+// assertion reads the shipped tools rather than the comment above them — if someone made pushExec push, the
+// ReplayClass would still say idempotent and this test is what would notice the description stopped being
+// true. The behavioural proof is publish_test.go (the tool returns pending_approval and calls no publisher);
+// what is checked here is that the two names in the CLI's publish list are those two tools and nothing else.
+func TestThePublishToolsAreTheirOwnListAndNeitherPublishes(t *testing.T) {
 	for _, name := range readCLIToolList(t, "slackRepositoryTools") {
 		if strings.HasPrefix(name, "palai.publish.") {
-			t.Fatalf("the repository tool list grants %q: binding a repository must not, on its own, grant the "+
-				"ability to push or open a pull request", name)
+			t.Fatalf("the CODING tool list grants %q: the publish half has its own list (slackPublishTools) so "+
+				"that granting a workspace and granting a publication stay two decisions", name)
+		}
+	}
+	publish := readCLIToolList(t, "slackPublishTools")
+	byName := map[string]toolbroker.Tool{
+		PushTool().Name:        PushTool(),
+		PullRequestTool().Name: PullRequestTool(),
+	}
+	if len(publish) != len(byName) {
+		t.Fatalf("slackPublishTools = %v, want exactly the two publication tools this control plane mounts", publish)
+	}
+	for _, name := range publish {
+		tool, ok := byName[name]
+		if !ok {
+			t.Fatalf("slackPublishTools names %q, which is not one of this control plane's publication tools — a "+
+				"third publish tool is a third approval surface and must be an explicit decision", name)
+		}
+		if !strings.Contains(tool.Description, "approval") {
+			t.Fatalf("%s no longer tells the model its request is gated: %q. The description is what the model "+
+				"reads before it decides to call it", name, tool.Description)
 		}
 	}
 }

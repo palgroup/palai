@@ -2,6 +2,7 @@ package stack
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -107,6 +108,12 @@ func Bootstrap(envFile string) error {
 	// until the next bring-up. Failures here are reported and carried — an unusable master key must
 	// not fail a bring-up whose model round-trip is about to be proven.
 	for _, w := range applySlackEnv(p, get) {
+		fmt.Fprintf(os.Stderr, "        WARNING %s\n", w)
+	}
+	// The publication destination's CREDENTIAL, for the same reason and at the same moment: an approved
+	// push publishes through a GitHub App the control-plane resolves at boot, so a stack brought up without
+	// one has an approval chain that ends in silence (see applyGitHubAppEnv).
+	for _, w := range applyGitHubAppEnv(p, get) {
 		fmt.Fprintf(os.Stderr, "        WARNING %s\n", w)
 	}
 	fmt.Fprintln(os.Stderr, "[3/6] stack     docker compose up (this builds on a first run)")
@@ -371,6 +378,126 @@ func applySlackEnv(p paths, get func(string) string) []string {
 		}
 	}
 	return warnings
+}
+
+// containerGitHubAppKeyPath is where compose mounts the GitHub App private key file secret. compose.yaml
+// writes it LITERALLY, the way it writes the master key's path: the value an operator puts in .env.local is
+// a HOST path, and interpolating a host path into a container is how you get a control-plane looking for a
+// key at a name that means something else on the other side of the mount.
+const containerGitHubAppKeyPath = "/run/secrets/github_app_key"
+
+// gitHubAppKeySlot is the file-secret source compose bind-mounts the key from.
+const gitHubAppKeySlot = "github-app-key"
+
+// applyGitHubAppEnv wires the GitHub App the approval pump publishes THROUGH (§0.2), and removes the
+// silence around it.
+//
+// THE SILENCE IT REMOVES, because it is the whole reason this function exists rather than three more lines
+// in compose: repositoryPublisherFromEnv (main.go) returns nil when any of the three variables is missing,
+// and a nil publisher makes pumpApprovedPublications a no-op. So an operator could grant the publish tools,
+// watch the agent propose a push, press Approve, see the message repaired to "Approved: push agent/… -> …"
+// — and nothing would ever happen. Not an error, not a log line the operator sees, not a retry: an approved
+// row sitting in the database forever. That is E21 T2's silent-skip in its most expensive form, because
+// this one has a human believing they authorized something.
+//
+// WHAT RIDES WHERE. The App id and the installation id are identifiers, so they ride the compose
+// environment like every other knob. The PRIVATE KEY does not: its bytes are copied into the 0600
+// $PALAI_HOME/secrets slot compose mounts as a file secret, and what the control-plane reads from the
+// environment is a PATH. The key value therefore appears in no `docker inspect`, no `compose config`, no
+// argv and no log — the same posture the provider credential and the master key already have, and the
+// reason main.go can say it "only mints short-lived scoped tokens against it".
+//
+// It runs BEFORE `docker compose up` for the reason applySlackEnv gives: a running control-plane never
+// re-reads its environment.
+func applyGitHubAppEnv(p paths, get func(string) string) []string {
+	appID := strings.TrimSpace(get("PALAI_GITHUB_APP_ID"))
+	installID := strings.TrimSpace(get("PALAI_GITHUB_APP_INSTALLATION_ID"))
+	keyFile := strings.TrimSpace(get("PALAI_GITHUB_APP_PRIVATE_KEY_FILE"))
+
+	if appID == "" && installID == "" && keyFile == "" {
+		// Nothing configured. Warn ONLY when this stack is about to grant the publish tools — an operator who
+		// bound no repository did not ask to publish anything, and warning them on every bring-up is the
+		// crying-wolf `palai up` already refuses elsewhere.
+		if strings.TrimSpace(get("PALAI_GIT_CLONE_URL")) == "" || strings.TrimSpace(get("PALAI_GIT_BASE_BRANCH")) == "" {
+			return nil
+		}
+		return []string{"a repository is bound but NO GitHub App is configured, so the agent can propose a push " +
+			"and a human can approve it and NOTHING WILL HAPPEN: the approved publication waits forever with no " +
+			"error anywhere. Fix: set PALAI_GITHUB_APP_ID, PALAI_GITHUB_APP_INSTALLATION_ID and " +
+			"PALAI_GITHUB_APP_PRIVATE_KEY_FILE in .env.local (§0.2) and re-run `palai up`"}
+	}
+	if missing := missingNames(map[string]string{
+		"PALAI_GITHUB_APP_ID": appID, "PALAI_GITHUB_APP_INSTALLATION_ID": installID,
+		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE": keyFile,
+	}); len(missing) > 0 {
+		return []string{"the GitHub App is HALF configured (" + strings.Join(missing, " and ") + " unset), so no " +
+			"publisher is wired at all and an approved push would wait forever. All three are required together"}
+	}
+
+	// The key's BYTES, copied into the slot compose mounts. Read failures are warnings rather than fatal: a
+	// bring-up whose model round-trip is about to be proven must not die on a publication path.
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		return []string{fmt.Sprintf("PALAI_GITHUB_APP_PRIVATE_KEY_FILE=%s could not be read (%v), so no publisher "+
+			"is wired and an approved push would wait forever", keyFile, err)}
+	}
+	if len(bytes.TrimSpace(keyPEM)) == 0 {
+		return []string{"PALAI_GITHUB_APP_PRIVATE_KEY_FILE=" + keyFile + " is empty, so no publisher is wired and " +
+			"an approved push would wait forever"}
+	}
+	if err := os.WriteFile(p.secretPath(gitHubAppKeySlot), keyPEM, 0o600); err != nil {
+		return []string{fmt.Sprintf("could not stage the GitHub App key into %s (%v), so no publisher is wired",
+			p.secretPath(gitHubAppKeySlot), err)}
+	}
+
+	var warnings []string
+	exports := map[string]string{
+		"PALAI_GITHUB_APP_ID":               appID,
+		"PALAI_GITHUB_APP_INSTALLATION_ID":  installID,
+		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE": containerGitHubAppKeyPath,
+	}
+	// owner/repo is what the PULL REQUEST half needs (main.go builds the PR client from it); without it a
+	// push still publishes and every pull request answers "no pull-request client wired". §0.2 asks the
+	// operator for PALAI_GIT_REPO, which is also what the repository binding uses, so the two cannot drift.
+	if slug := repositorySlug(get); slug != "" {
+		exports["PALAI_GITHUB_REPO"] = slug
+	} else {
+		warnings = append(warnings, "the GitHub App is configured but owner/repo is not, so a push will publish and "+
+			"every pull request will answer 'no pull-request client wired'. Fix: set PALAI_GIT_REPO=owner/repo")
+	}
+	for name, value := range exports {
+		if err := os.Setenv(name, value); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not export %s: %v", name, err))
+		}
+	}
+	return warnings
+}
+
+// missingNames returns the names whose value is empty, sorted so the warning reads the same every run.
+func missingNames(values map[string]string) []string {
+	var missing []string
+	for name, v := range values {
+		if v == "" {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+// repositorySlug is owner/repo for the PR client: PALAI_GIT_REPO if the operator set it (§0.2), otherwise
+// derived from the clone URL the SAME way the repository binding derives its identity — one value, one
+// derivation, so the App and the binding can never point at two different repositories.
+func repositorySlug(get func(string) string) string {
+	if slug := strings.TrimSpace(get("PALAI_GIT_REPO")); strings.Contains(slug, "/") {
+		return slug
+	}
+	if cloneURL := strings.TrimSpace(get("PALAI_GIT_CLONE_URL")); cloneURL != "" {
+		if slug := repositoryIdentityFrom(cloneURL); strings.Contains(slug, "/") {
+			return slug
+		}
+	}
+	return ""
 }
 
 // ensureMasterKey makes $PALAI_HOME/secrets/master-key hold a key identity.ParseMasterKey accepts
@@ -1345,14 +1472,16 @@ func sameTools(a, b []string) bool {
 // .env.local should not silently disarm the agent.
 //
 // hasRepository is E22 T3's ONE conditional, and the condition is what makes it honest: the workspace tools
-// are added only when this bring-up actually bound a repository. A tool whose every call ends in "no
-// workspace bound for this run" is worse than an absent tool — it is an advertised capability that cannot
-// work, which is the shape E21 T5 already paid for from the other direction (a real tool no list named).
+// — and, since T4, the publish tools — are added only when this bring-up actually bound a repository. A tool
+// whose every call ends in "no workspace bound for this run" is worse than an absent tool — it is an
+// advertised capability that cannot work, which is the shape E21 T5 already paid for from the other
+// direction (a real tool no list named).
 func slackAgentTools(get func(string) string, hasRepository bool) []string {
 	raw := strings.TrimSpace(get("SLACK_AGENT_TOOLS"))
 	if raw == "" {
 		if hasRepository {
-			return append(append([]string{}, slackDefaultTools...), slackRepositoryTools...)
+			out := append(append([]string{}, slackDefaultTools...), slackRepositoryTools...)
+			return append(out, slackPublishTools...)
 		}
 		return slackDefaultTools
 	}
@@ -1389,12 +1518,25 @@ var slackDefaultTools = []string{"palai.research.fetch", "palai.knowledge.retrie
 // binding them to a connection with no repository would advertise three tools whose every call answers "no
 // workspace bound for this run".
 //
-// palai.publish.push and palai.publish.pull_request are DELIBERATELY ABSENT, and their absence is a
-// statement rather than an omission (E22 T4 owns them). After this bring-up the agent can WRITE code and
-// cannot PUBLISH it, and the boundary between those two is structural — a human's Approve button — not a
-// line in a tool list somebody could have forgotten. Keeping them apart in two epics is how that stays
-// visible.
+// The publish half is the SEPARATE list below, and the two stay separate after E22 T4 opened it: this one
+// is what an agent may do to a workspace nobody else can see, and that one is what leaves the machine.
 var slackRepositoryTools = []string{"palai.workspace.file", "palai.workspace.shell", "palai.workspace.commit"}
+
+// slackPublishTools are the publish half (E22 T4), added under the SAME condition as the coding half and
+// for the same reason: without a binding RunPublicationTarget answers "the run prepared no repository", so
+// offering them would advertise two tools whose every call fails.
+//
+// GRANTING THEM IS NOT GRANTING A PUSH, and that is the whole shape of this task. Neither tool acts: each
+// records a PENDING publication and returns pending_approval (push.go:19, pull_request.go:20), and the
+// operation happens only after a human presses Approve on a message only SLACK_APPROVER_IDS may press. The
+// destination is never in the list either — remote, branch and base come from the binding
+// (RunPublicationTarget), so "open the PR against dev" is the operator's PALAI_GIT_BASE_BRANCH and not
+// something a model can name. What this list decides is whether the agent may ASK.
+//
+// A stack that granted these and configured no GitHub App gets an approved publication that waits forever;
+// resolveGitHubApp warns about exactly that, because silence is the failure mode this file has now paid for
+// three times.
+var slackPublishTools = []string{"palai.publish.push", "palai.publish.pull_request"}
 
 // putSecretRef stores one credential VALUE under its handle through the E13 T3 secret store — the
 // SAME write-path a production tenant uses, envelope-encrypted at rest and resolved fresh, so the
