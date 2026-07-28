@@ -156,12 +156,14 @@ type ReleaseIndexEntry struct {
 	ChecksumSurface string `json:"checksum_surface,omitempty"`
 }
 
-// bundleCarrier is one (release, status, checksum-surface) sighting of an id while scanning the committed
-// bundles.
+// bundleCarrier is one (release, status, checksum-surface, capture time) sighting of an id while scanning
+// the committed bundles. CapturedAt is what makes the release index immune to releases cut AFTER it — see
+// recomputeReleaseIndexFrom.
 type bundleCarrier struct {
-	Release string
-	Status  string
-	Surface string
+	Release    string
+	Status     string
+	Surface    string
+	CapturedAt string
 }
 
 // CommittedBundleOutcomes gathers every committed bundle's per-case outcomes from
@@ -194,9 +196,14 @@ func CommittedBundleOutcomes() (map[string][]bundleCarrier, error) {
 		if m.Release != e.Name() {
 			return nil, fmt.Errorf("bundle directory %s ships a manifest declaring release %q — the index keys off the release name", e.Name(), m.Release)
 		}
+		if strings.TrimSpace(m.CapturedAt) == "" {
+			return nil, fmt.Errorf("bundle %s carries no captured_at — an undated bundle cannot be shown to predate the index it would appear in, and the release index refuses to guess (fail closed)", e.Name())
+		}
 		seen++
 		for _, c := range m.Cases {
-			out[c.ID] = append(out[c.ID], bundleCarrier{Release: m.Release, Status: c.Status, Surface: c.ChecksumSurface})
+			out[c.ID] = append(out[c.ID], bundleCarrier{
+				Release: m.Release, Status: c.Status, Surface: c.ChecksumSurface, CapturedAt: m.CapturedAt,
+			})
 		}
 	}
 	if seen == 0 {
@@ -216,11 +223,70 @@ func RecomputeReleaseIndex() ([]ReleaseIndexEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	asOf, err := releaseIndexAsOf()
+	if err != nil {
+		return nil, err
+	}
+	return recomputeReleaseIndexFrom(carriers, asOf)
+}
+
+// releaseIndexAsOf is the capture time of the release this index BELONGS to — the RC bundle's own
+// captured_at, read from its committed manifest. It fails closed: an index whose owning release cannot be
+// dated would have to fall back to "count everything", which is the behaviour this function exists to end.
+func releaseIndexAsOf() (string, error) {
+	path := filepath.Join(repoRootFromSource(), "evidence", "releases", StableReleaseBundle, "manifest.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s to date the release index: %w", StableReleaseBundle, err)
+	}
+	var m evidenceManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return "", fmt.Errorf("decode %s to date the release index: %w", StableReleaseBundle, err)
+	}
+	if strings.TrimSpace(m.CapturedAt) == "" {
+		return "", fmt.Errorf("%s carries no captured_at, so the index it owns cannot be dated (fail closed)", StableReleaseBundle)
+	}
+	return m.CapturedAt, nil
+}
+
+// recomputeReleaseIndexFrom is RecomputeReleaseIndex's pure half, over carriers already in hand — split for
+// the VerifyReleaseIndexAgainst reason: the as-of rule below is only worth anything if a test can drive it
+// with a carrier captured after the index, and a rule that could only be exercised by committing a future
+// bundle is a rule nobody has ever seen fire.
+//
+// THE AS-OF RULE, AND IT IS A CORRECTNESS FIX RATHER THAN A CONVENIENCE. Carriers are sorted by release name
+// and the FIRST NON-PASS carrier wins when the bundles disagree; picking the green one would let an id that
+// failed in one bundle and passed in another be indexed as passing. But the alphabetical tie-break among
+// ALL-PASS carriers made this index a function of every bundle that would ever be committed, including ones
+// cut LATER — so a future release whose name sorted early would silently rewrite which bundle a SHIPPED
+// release says evidenced an id, and move the anchor its committed checksums recompute against.
+//
+// That is not hypothetical: it was MEASURED (2026-07-28). `code-and-ship-0.1.0` sorts between
+// `automation-0.1.0` and `coding-0.1.0`, so merely committing it displaced `extensions-0.1.0` as the carrier
+// of thirty Appendix-A ids and reddened all eight of release-1.0.0-rc1's committed checksums. Three earlier
+// epics escaped it by naming luck alone (`integration-wiring-`, `slack-agent-surface-`, `tools-memory-` all
+// sort after the bundles they inherit from).
+//
+// A release captured on the 26th cannot have been evidenced by a bundle captured on the 28th, so carriers
+// newer than the index are DROPPED. Over today's corpus the rule changes NOTHING — verified by
+// TestTheAsOfRuleIsABitExactNoOpOverTheCommittedCorpus — which is what makes it a fix rather than a rewrite
+// of history.
+func recomputeReleaseIndexFrom(carriers map[string][]bundleCarrier, asOf string) ([]ReleaseIndexEntry, error) {
+	if strings.TrimSpace(asOf) == "" {
+		return nil, fmt.Errorf("the release index has no as-of date, so a bundle cut after it could not be told apart from one cut before (fail closed)")
+	}
 	casesDir := filepath.Join(repoRootFromSource(), "tests", "uat", "cases")
 	out := make([]ReleaseIndexEntry, 0, len(AppendixAUATIDs))
 	for _, id := range AppendixAUATIDs {
 		entry := ReleaseIndexEntry{ID: id}
-		if seen := carriers[id]; len(seen) > 0 {
+		var seen []bundleCarrier
+		for _, c := range carriers[id] {
+			// RFC3339 with a literal Z sorts lexicographically, which is why the comparison is a string one.
+			if c.CapturedAt <= asOf {
+				seen = append(seen, c)
+			}
+		}
+		if len(seen) > 0 {
 			ordered := slices.Clone(seen)
 			sort.Slice(ordered, func(i, j int) bool { return ordered[i].Release < ordered[j].Release })
 			pick := ordered[0]
