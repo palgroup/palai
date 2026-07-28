@@ -57,6 +57,24 @@ func Resolve() string {
 	return "dev"
 }
 
+// ReleaseTag returns the image tag the release built alongside THIS binary carries, and whether this
+// binary is a release build at all. scripts/release/build.sh is invoked with `--tag <VERSION>` and
+// `--version <VERSION>` (release.yml passes the same input to both), tags its images
+// palai/{control-plane,runner,reference-engine}:<VERSION>, and stamps the binaries
+// "<VERSION>+g<git-describe>" — so the tag is the stamp up to the build-metadata separator. Only `+`
+// is cut: a prerelease VERSION like 1.0.0-rc1 is part of the tag, and cutting at `-` would silently
+// name a different image.
+//
+// ok is false for an unstamped dev/VCS build, which has no released images anywhere; a caller that
+// defaulted an image reference from it would name a tag that was never published.
+func ReleaseTag() (string, bool) {
+	tag, _, _ := strings.Cut(Resolve(), "+")
+	if _, _, ok := parse(tag); !ok {
+		return "", false
+	}
+	return tag, true
+}
+
 // supportedMinorLookback is the §48.2 window depth: a control-plane serves its current minor and the
 // previous this-many minors (current + previous two). A runner more than this many minors behind must
 // hop through an intermediate release first.

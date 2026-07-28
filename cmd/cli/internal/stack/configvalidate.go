@@ -53,7 +53,20 @@ var optionalEnv = map[string]bool{
 // ConfigValidate runs the static posture checks and reports them like doctor. With jsonOut it
 // prints the report as JSON; either way it returns a non-zero-exit error when any check is not
 // green, so `palai config validate` fails an unsafe production config in a script.
+//
+// An empty overlay means "the overlay this binary would bring up": the checkout's committed
+// deploy/compose/production.yml, or — for a packaged binary with no source tree — the embedded copy
+// materialised under ${PALAI_HOME}/compose. loadDevDefaults then finds production-entrypoint.sh
+// beside it either way, which is what keeps config-validate and the fail-closed boot guard reading
+// the same literals.
 func ConfigValidate(envFile, overlay string, jsonOut bool) error {
+	if overlay == "" {
+		dir, err := deployDir()
+		if err != nil {
+			return err
+		}
+		overlay = filepath.Join(dir, "production.yml")
+	}
 	report := validateConfig(envFile, overlay)
 	if jsonOut {
 		raw, err := json.Marshal(report)

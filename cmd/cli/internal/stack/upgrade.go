@@ -145,7 +145,7 @@ func Upgrade(opts UpgradeOptions) error {
 	// the new one boots, applies the idempotent migration chain, and serves. Keep the OLD engine so an
 	// interrupted run re-pins it.
 	swapEnv := upgradeComposeEnv(cfg, p.home, oldEngine, m.Images.ControlPlane.Ref, currentRunnerImage(cfg), preserved)
-	if err := runVisible(swapEnv, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+	if err := runVisible(swapEnv, "docker", "compose", "-p", cfg.Project, "-f", p.compose,
 		"up", "-d", "--wait", "control-plane"); err != nil {
 		return fmt.Errorf("control-plane swap: %w", err)
 	}
@@ -157,7 +157,7 @@ func Upgrade(opts UpgradeOptions) error {
 	// 3. runner drain: swap the runner to N+1. Recreating it drains the old runner; any run interrupted by
 	// the swap is reclaimed and completed by the E10 recovery layer on the new control-plane.
 	drainEnv := upgradeComposeEnv(cfg, p.home, oldEngine, m.Images.ControlPlane.Ref, m.Images.Runner.Ref, preserved)
-	if err := runVisible(drainEnv, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+	if err := runVisible(drainEnv, "docker", "compose", "-p", cfg.Project, "-f", p.compose,
 		"up", "-d", "--wait", "runner"); err != nil {
 		return fmt.Errorf("runner drain/swap: %w", err)
 	}
@@ -171,7 +171,7 @@ func Upgrade(opts UpgradeOptions) error {
 	// 5. new-run engine-alias roll: recreate the control-plane pointing PALAI_ENGINE_IMAGE at the new
 	// engine digest, so runs started FROM NOW pin the new engine. Active runs already drained on the old.
 	rollEnv := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Ref, m.Images.Runner.Ref, preserved)
-	if err := runVisible(rollEnv, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+	if err := runVisible(rollEnv, "docker", "compose", "-p", cfg.Project, "-f", p.compose,
 		"up", "-d", "--wait", "control-plane"); err != nil {
 		return fmt.Errorf("engine-alias roll: %w", err)
 	}
@@ -223,7 +223,7 @@ func UpgradeRollback(opts RollbackOptions) error {
 
 	// Swap the control-plane + runner image back to N and roll the engine alias back to N's engine.
 	env := upgradeComposeEnv(cfg, p.home, m.Images.Engine.Digest, m.Images.ControlPlane.Ref, m.Images.Runner.Ref, preserved)
-	if err := runVisible(env, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+	if err := runVisible(env, "docker", "compose", "-p", cfg.Project, "-f", p.compose,
 		"up", "-d", "--wait", "control-plane", "runner"); err != nil {
 		return fmt.Errorf("rollback swap: %w", err)
 	}

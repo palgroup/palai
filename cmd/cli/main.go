@@ -121,7 +121,10 @@ func config(args []string) error {
 	}
 	fs := flag.NewFlagSet("config validate", flag.ContinueOnError)
 	envFile := fs.String("env-file", "deploy/compose/production.env", "production env file to validate")
-	overlay := fs.String("overlay", "deploy/compose/production.yml", "production compose overlay to validate")
+	// Empty = the overlay this binary would actually bring up: the checkout's committed
+	// production.yml, or the copy a packaged binary materialises under ${PALAI_HOME}/compose. A
+	// literal repo-relative default only ever resolved from inside a clone.
+	overlay := fs.String("overlay", "", "production compose overlay to validate (default: the one this binary would bring up)")
 	jsonOut := fs.Bool("json", false, "emit the report as JSON")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err

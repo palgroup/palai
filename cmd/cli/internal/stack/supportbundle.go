@@ -43,7 +43,7 @@ func SupportBundle(outPath string, tailLines int) error {
 	// subcommand FIRST (e.g. compose("ps")). On error it records the output plus the error text so
 	// the bundle is still produced when the stack is down.
 	compose := func(sub ...string) []byte {
-		full := append([]string{"compose", "-p", cfg.Project, "-f", composeFile()}, sub...)
+		full := append([]string{"compose", "-p", cfg.Project, "-f", p.compose}, sub...)
 		out, err := runCaptured(env, "docker", full...)
 		if err != nil {
 			return []byte(fmt.Sprintf("%s\n(command failed: %v)\n", out, err))

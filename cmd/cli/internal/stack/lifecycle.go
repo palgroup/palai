@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -63,6 +64,13 @@ func Init() error {
 	if err := writeConfig(p.config, cfg); err != nil {
 		return err
 	}
+	// On a packaged binary this writes the embedded deploy files into ${PALAI_HOME}/compose, so the
+	// compose files and the env examples an operator needs are there right after `init` rather than
+	// appearing on the first command that happens to drive compose. In a checkout it resolves to the
+	// committed tree and writes nothing.
+	if _, err := deployDir(); err != nil {
+		return err
+	}
 	fmt.Fprintf(os.Stderr, "initialised %s (project %s, api :%d)\n", p.home, cfg.Project, cfg.APIPort)
 	return nil
 }
@@ -114,26 +122,39 @@ func Up() error {
 		return err
 	}
 
-	// Build the reference engine image `local up` hands the runner. It is not a compose
-	// service (the runner launches it per-lease through the Docker socket).
-	if err := runVisible(cfg.composeEnv(p.home, engineImage), "docker", "build", "-t", engineImage, "engines/reference"); err != nil {
-		return fmt.Errorf("build reference engine image: %w", err)
+	env := cfg.composeEnv(p.home, engineImage)
+	upArgs := []string{"up", "-d", "--wait"}
+	if root, fromSource := buildContext(p.compose); fromSource {
+		// Build the reference engine image `local up` hands the runner. It is not a compose
+		// service (the runner launches it per-lease through the Docker socket).
+		if err := runVisible(env, "docker", "build", "-t", engineImage, filepath.Join(root, "engines", "reference")); err != nil {
+			return fmt.Errorf("build reference engine image: %w", err)
+		}
+		// The runner's lease requires an immutable sha256 image, but the locally-built engine is
+		// a mutable tag (release-digest pinning is E18). Resolve the built image's id so the
+		// exec-path hands the runner a digest its lease accepts rather than the tag.
+		engineDigest, err := imageID(engineImage)
+		if err != nil {
+			return err
+		}
+		env = cfg.composeEnv(p.home, engineDigest)
+		upArgs = append(upArgs, "--build")
+	} else {
+		// Packaged: there are no Dockerfiles and no engine source on disk, so nothing here can be
+		// built. Every image must already exist — named by the operator's PALAI_*_IMAGE overrides or
+		// by this build's published defaults — and compose is told explicitly not to try building
+		// one, because its `build.context: ../..` points at a repo root that is not there.
+		if env, err = packagedImageEnv(cfg, p.home); err != nil {
+			return err
+		}
+		upArgs = append(upArgs, "--no-build")
 	}
-	// The runner's lease requires an immutable sha256 image, but the locally-built engine is
-	// a mutable tag (release-digest pinning is E18). Resolve the built image's id so the
-	// exec-path hands the runner a digest its lease accepts rather than the tag.
-	engineDigest, err := imageID(engineImage)
-	if err != nil {
-		return err
-	}
-	env := cfg.composeEnv(p.home, engineDigest)
 
 	// A fresh one-use enrollment token for this boot.
 	if err := os.WriteFile(p.runnerToken, []byte(randomHex(24)), 0o600); err != nil {
 		return fmt.Errorf("mint runner token: %w", err)
 	}
-	if err := runVisible(env, "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
-		"up", "-d", "--build", "--wait"); err != nil {
+	if err := runVisible(env, "docker", append([]string{"compose", "-p", cfg.Project, "-f", p.compose}, upArgs...)...); err != nil {
 		return fmt.Errorf("compose up: %w", err)
 	}
 	if err := waitForAPI(cfg, p); err != nil {
@@ -150,7 +171,7 @@ func Down() error {
 	if err != nil {
 		return err
 	}
-	if err := runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+	if err := runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", p.compose,
 		"down", "--remove-orphans"); err != nil {
 		return err
 	}
@@ -169,11 +190,53 @@ func Reset(confirm bool) error {
 	if !confirm {
 		return fmt.Errorf("refusing to delete volumes without --confirm")
 	}
-	if err := runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+	if err := runVisible(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project, "-f", p.compose,
 		"down", "--volumes", "--remove-orphans"); err != nil {
 		return err
 	}
 	return sweepEngineContainers(cfg.Project)
+}
+
+// buildContext returns the repo root a from-source bring-up builds from, and whether it is actually
+// there. compose.yaml declares `build.context: ../..` relative to the compose FILE, so the same
+// two-levels-up walk answers for the reference engine too — which also makes the answer independent
+// of cwd, where `docker build engines/reference` used to require the caller to stand at the repo root.
+//
+// Absent (a packaged binary driving the embedded files materialised under ${PALAI_HOME}) means the
+// bring-up MUST NOT pass --build: there is nothing to build from, and compose would otherwise try
+// and fail on a context path that does not exist.
+func buildContext(composePath string) (string, bool) {
+	abs, err := filepath.Abs(composePath)
+	if err != nil {
+		return "", false
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(abs), "..", ".."))
+	if _, err := os.Stat(filepath.Join(root, "engines", "reference", "Dockerfile")); err != nil {
+		return "", false
+	}
+	return root, true
+}
+
+// packagedEngineDigest resolves the reference-engine reference into the form the runner's lease will
+// accept. The lease validator requires a BARE sha256 config digest (packages/runner/session.go's
+// imageDigestPattern) — a repository ref with a tag is rejected — so a reference that is not already
+// one is resolved through the local daemon, pulling it once if it is not present. Getting this wrong
+// is not a bring-up failure: the stack comes up healthy and then every run fails at lease time.
+func packagedEngineDigest() (string, error) {
+	ref, err := stackImage("reference-engine", "PALAI_ENGINE_IMAGE")
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(ref, "sha256:") {
+		return ref, nil
+	}
+	if digest, err := imageID(ref); err == nil {
+		return digest, nil
+	}
+	if err := runVisible(os.Environ(), "docker", "pull", ref); err != nil {
+		return "", fmt.Errorf("pull the engine image %s: %w", ref, err)
+	}
+	return imageID(ref)
 }
 
 // engineSandboxLabel marks a runner-launched engine container, mirroring packages/runner's

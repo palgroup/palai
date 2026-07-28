@@ -13,6 +13,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	composefiles "github.com/palgroup/palai/deploy/compose"
+	"github.com/palgroup/palai/packages/version"
 )
 
 // controllerDNS is the exact DNS identity the runner gateway's server certificate
@@ -51,14 +54,131 @@ func home() (string, error) {
 	return filepath.Abs(h)
 }
 
-// composeFile resolves the compose file path: PALAI_COMPOSE_FILE when set, else the
-// committed deploy/compose/compose.yaml relative to cwd (the operator scripts and the
-// harness both run from the repo root).
-func composeFile() string {
+// committedComposeFile is the repo's own compose file, relative to cwd — the path a checkout has
+// always used, and the one the operator scripts and the e2e harness rely on from the repo root.
+var committedComposeFile = filepath.Join("deploy", "compose", "compose.yaml")
+
+// deployDir resolves the directory holding the deploy/compose files this run drives, in the order
+// that keeps a checkout byte-for-byte the way it was:
+//
+//  1. PALAI_COMPOSE_FILE — the pre-existing override, still first and still absolute law (it is how
+//     the e2e harness, the UAT and the production profile point the CLI at a specific file). The
+//     overlay and the guard script are read from BESIDE it, which is where they live in every tree
+//     that sets it.
+//  2. the committed deploy/compose/compose.yaml relative to cwd — a checkout, unchanged, and
+//     nothing is written anywhere.
+//  3. the EMBEDDED copies materialised under ${PALAI_HOME}/compose — the case that did not exist
+//     before: a `palai` binary with no source tree behind it.
+func deployDir() (string, error) {
 	if f := os.Getenv("PALAI_COMPOSE_FILE"); f != "" {
-		return f
+		return filepath.Dir(f), nil
 	}
-	return filepath.Join("deploy", "compose", "compose.yaml")
+	if _, err := os.Stat(committedComposeFile); err == nil {
+		return filepath.Dir(committedComposeFile), nil
+	}
+	return materialiseComposeFiles()
+}
+
+// resolveComposeFile returns the compose file the CLI drives. PALAI_COMPOSE_FILE is returned
+// verbatim (its basename need not be compose.yaml); otherwise it is compose.yaml in deployDir.
+func resolveComposeFile() (string, error) {
+	if f := os.Getenv("PALAI_COMPOSE_FILE"); f != "" {
+		return f, nil
+	}
+	dir, err := deployDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "compose.yaml"), nil
+}
+
+// materialiseComposeFiles writes the embedded deploy files to ${PALAI_HOME}/compose and returns that
+// directory. They have to be REAL files on disk: `docker compose -f -` accepts stdin only once and a
+// production bring-up passes two files, and config-validate reads the guard script that sits beside
+// the overlay. They are rewritten on every call, so a CLI upgraded in place never keeps driving the
+// previous version's compose file.
+func materialiseComposeFiles() (string, error) {
+	h, err := home()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(h, "compose")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create %s: %w", dir, err)
+	}
+	entries, err := composefiles.Files.ReadDir(".")
+	if err != nil {
+		return "", fmt.Errorf("read the embedded deploy files: %w", err)
+	}
+	for _, e := range entries {
+		raw, err := composefiles.Files.ReadFile(e.Name())
+		if err != nil {
+			return "", fmt.Errorf("read the embedded %s: %w", e.Name(), err)
+		}
+		// The guard script is READ from here, not run (config-validate extracts its literals) — but a
+		// file that looks executable and is not is its own trap, so keep the mode honest.
+		mode := os.FileMode(0o600)
+		if strings.HasSuffix(e.Name(), ".sh") {
+			mode = 0o700
+		}
+		out := filepath.Join(dir, e.Name())
+		if err := os.WriteFile(out, raw, mode); err != nil {
+			return "", fmt.Errorf("write %s: %w", out, err)
+		}
+	}
+	return dir, nil
+}
+
+// publishedRepoPrefix is the registry + namespace the release images are published under (it would
+// read like "ghcr.io/palgroup"). It is EMPTY, and that is a measurement rather than an oversight:
+// nothing has ever been published — release.yml's publish step is scripts/release/publish-dryrun.sh,
+// which holds no credentials and runs every leg against a BLACKHOLED registry (plan §6 leg 2). So
+// there is no reference a packaged bring-up could honestly default to, and stackImage refuses rather
+// than pulling whatever happens to sit under `palai/control-plane:local` in a public registry.
+//
+// Setting this constant is the whole of publication day: the repository names are already the ones
+// scripts/release/build.sh builds, and the tag is already this binary's release stamp.
+const publishedRepoPrefix = ""
+
+// stackImage resolves one image reference for a bring-up that has no source to build from: the
+// operator's pre-existing PALAI_*_IMAGE override first, else this build's published default. name is
+// the repository scripts/release/build.sh produces (control-plane, runner, reference-engine).
+//
+// It refuses rather than letting compose fall through to its `${PALAI_CONTROL_PLANE_IMAGE:-palai/
+// control-plane:local}` default: that tag is only ever produced by a from-source build, so outside a
+// checkout it can only miss — or resolve to something in a public registry that is not this release.
+func stackImage(name, env string) (string, error) {
+	if ref := os.Getenv(env); ref != "" {
+		return ref, nil
+	}
+	tag, released := version.ReleaseTag()
+	if publishedRepoPrefix == "" || !released {
+		return "", fmt.Errorf("this build has no published image default for %s: set %s to an image reference, "+
+			"or run from a checkout, which builds it (docs/operations/install.md)", name, env)
+	}
+	return fmt.Sprintf("%s/%s:%s", publishedRepoPrefix, name, tag), nil
+}
+
+// packagedImageEnv is composeEnv with all three image references resolved for a bring-up with no
+// build context. The engine is resolved to a digest (see packagedEngineDigest) because the runner's
+// lease will not accept a tag.
+func packagedImageEnv(cfg Config, home string) ([]string, error) {
+	cp, err := stackImage("control-plane", "PALAI_CONTROL_PLANE_IMAGE")
+	if err != nil {
+		return nil, err
+	}
+	runner, err := stackImage("runner", "PALAI_RUNNER_IMAGE")
+	if err != nil {
+		return nil, err
+	}
+	engine, err := packagedEngineDigest()
+	if err != nil {
+		return nil, err
+	}
+	return append(cfg.composeEnv(home, engine),
+		"PALAI_CONTROL_PLANE_IMAGE="+cp,
+		"PALAI_RUNNER_IMAGE="+runner,
+	), nil
 }
 
 // paths holds the resolved .palai file locations for one stack.
@@ -75,6 +195,11 @@ type paths struct {
 	secretsDir  string
 	pgPassword  string
 	masterKey   string
+	// compose is the compose file every `docker compose` invocation for this stack is pointed at,
+	// resolved ONCE by loadConfig (see resolveComposeFile). It rides on paths because every
+	// compose-driving command already holds a paths, and because resolving it in each of them
+	// would mean each deciding independently whether this is a checkout or a packaged binary.
+	compose string
 }
 
 func resolvePaths() (paths, error) {
@@ -136,6 +261,12 @@ func loadConfig() (Config, paths, error) {
 	var c Config
 	if err := json.Unmarshal(raw, &c); err != nil {
 		return Config{}, p, fmt.Errorf("decode config.json: %w", err)
+	}
+	// Every command that drives compose loads the config first, so this is the one place the
+	// compose file is resolved — and, on a packaged binary, the one place the embedded deploy files
+	// are written out.
+	if p.compose, err = resolveComposeFile(); err != nil {
+		return Config{}, p, err
 	}
 	return c, p, nil
 }

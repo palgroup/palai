@@ -561,7 +561,7 @@ func recreateControlPlane(cfg Config, p paths) error {
 	if err != nil {
 		return err
 	}
-	if err := runVisible(cfg.composeEnv(p.home, digest), "docker", "compose", "-p", cfg.Project, "-f", composeFile(),
+	if err := runVisible(cfg.composeEnv(p.home, digest), "docker", "compose", "-p", cfg.Project, "-f", p.compose,
 		"up", "-d", "--force-recreate", "--no-deps", "--wait", "control-plane"); err != nil {
 		return fmt.Errorf("recreate the control-plane: %w", err)
 	}
@@ -581,7 +581,7 @@ func observeSlackSocket(cfg Config, p paths, within time.Duration) (bool, string
 	deadline := time.Now().Add(within)
 	for {
 		out, _ := runCaptured(cfg.composeEnv(p.home, engineImage), "docker", "compose", "-p", cfg.Project,
-			"-f", composeFile(), "logs", "--no-color", "control-plane")
+			"-f", p.compose, "logs", "--no-color", "control-plane")
 		connected, detail := readSlackSocketLog(out)
 		if connected || !time.Now().Before(deadline) {
 			return connected, detail
