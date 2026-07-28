@@ -1,7 +1,9 @@
 package slack
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -185,4 +187,296 @@ func trustedFileURL(raw string) error {
 		return fmt.Errorf("%w: only https on a Slack file host is fetched", ErrUntrustedFileHost)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// THE FILE UPLOAD (E22 T5, spec §36) — the other direction, and the half E20 T4 wrote down and deliberately
+// did not build. Its words were exact: "FILE UPLOAD IS NOT BUILT (S14) … files:write is a new standing write
+// access", and the reason given was that no scenario needed it yet. E22 IS that scenario: a run that codes on
+// a Mac produces a screenshot, a screen recording and a build log, and a link to bytes nobody can reach is
+// not a delivery.
+//
+// WHAT THIS CODE IS: three HTTP calls in a documented order. It holds no policy. WHICH artifact is uploaded,
+// WHOSE it is and whether it may be published at all is decided by the caller (extensions/slack_upload.go),
+// which is where the tenant and the run are known. This file's whole job is to be exactly what the vendor
+// documents, and to make three rules structural rather than remembered:
+//
+//  1. THE MODEL'S WORDS TRAVEL IN ONE FIELD. initial_comment, and nothing else. `blocks` is not sent at all
+//     (see completeUpload), so there is exactly one place a caller has to neutralise.
+//  2. THE FILENAME IS A FACT ABOUT THE BYTES. SniffUpload derives it; the caller cannot pass a name a model
+//     chose, because the caller has no name to pass — it asks this file what the bytes are.
+//  3. THE CEILING IS OURS AND IT IS CHECKED BEFORE THE FIRST CALL. An artifact over it costs zero requests.
+
+// MaxUploadBytes is the largest artifact this integration will publish into a thread. IT IS OUR NUMBER, NOT
+// SLACK'S: neither files.getUploadURLExternal nor files.completeUploadExternal prints a maximum anywhere
+// (both checked 2026-07-28), and plan §3.5 X23 records that absence as UNCONFIRMED rather than inventing a
+// vendor limit to hide behind.
+//
+// 8 MiB is chosen against what this actually carries. A simulator screenshot is a few hundred KB; a build log
+// is smaller; a short screen recording is a few MB. Past that the artifact is not a thing a human scrolls
+// past in a channel — it is a download — and the honest answer is a sentence saying where it lives, not a
+// silent drop and not a 300 MB transfer through a control plane holding it in memory.
+//
+// It is a CONSTANT rather than a knob because a per-deployment ceiling would make "why did my video not
+// arrive" a question with a different answer in every workspace.
+const MaxUploadBytes = 8 << 20
+
+// ErrUploadTooLarge refuses an artifact over MaxUploadBytes. It is typed because the caller does not merely
+// log it: it turns it into a sentence the human reads (plan §4 T5 — "never a silent drop").
+var ErrUploadTooLarge = errors.New("slack: the artifact is over the upload ceiling")
+
+// Upload is one artifact on its way to a thread.
+//
+// ThreadTS MUST BE THE PARENT. CONTRACT: https://docs.slack.dev/reference/methods/files.completeUploadExternal/
+// (checked 2026-07-28) — "Never use a reply's `ts` value; use its parent instead." The value this integration
+// passes is the one slack_reply_deliveries froze at enqueue, which IS the parent (it is the thread's root ts,
+// copied from the event that birthed the run), so no new column was needed to hold it.
+//
+// Comment is the ONLY field that may carry text a model wrote, and the caller neutralises it before it
+// arrives. Filename and AltText come from SniffUpload — i.e. from the bytes — and never from a model.
+type Upload struct {
+	ChannelID string
+	ThreadTS  string
+	Filename  string
+	AltText   string
+	Comment   string
+	Body      []byte
+}
+
+// SniffedUpload is what the BYTES are: the extension they earn, the media type they sniffed as, and an alt
+// text describing that type. Every field is derived here so that none of them can be a model's claim.
+type SniffedUpload struct {
+	Extension string
+	MediaType string
+	AltText   string
+}
+
+// uploadKinds is the closed set of things this integration publishes, keyed by SNIFFED media type. A type
+// outside it is refused: an extension we cannot justify is a name that says something false about the bytes,
+// and ".bin" in a Slack thread is worse than an honest refusal.
+//
+// The alt texts are OURS, fixed, and describe the CONTAINER rather than the content — this code has not seen
+// the screenshot and cannot describe it, and inventing a description would be a lie with a screen reader as
+// its audience.
+var uploadKinds = map[string]SniffedUpload{
+	"image/png":       {Extension: ".png", MediaType: "image/png", AltText: "a PNG image produced by this run"},
+	"image/jpeg":      {Extension: ".jpg", MediaType: "image/jpeg", AltText: "a JPEG image produced by this run"},
+	"video/quicktime": {Extension: ".mov", MediaType: "video/quicktime", AltText: "a QuickTime screen recording produced by this run"},
+	"video/mp4":       {Extension: ".mp4", MediaType: "video/mp4", AltText: "an MP4 screen recording produced by this run"},
+	"text/plain":      {Extension: ".txt", MediaType: "text/plain", AltText: "a plain-text log produced by this run"},
+}
+
+// SniffUpload names what bytes are, and returns false for anything this integration will not publish.
+//
+// WHY IT DOES NOT SIMPLY TRUST http.DetectContentType: it cannot see a QuickTime container. The WHATWG mp4
+// signature (https://mimesniff.spec.whatwg.org/#signature-for-mp4, which net/http implements) matches only a
+// brand beginning "mp4", so a file whose major brand is `qt  ` sniffs as application/octet-stream. And a
+// QuickTime container is exactly what `xcrun simctl io recordVideo` writes — INCLUDING with `--codec=h264`,
+// MEASURED on this machine 2026-07-28 (plan §3.5 X2): file(1) answers "ISO Media, Apple QuickTime movie".
+// A model that names that recording "demo.mp4" is not lying on purpose; publishing its name would be.
+//
+// So the stdlib does the families it knows and this adds the one it structurally cannot.
+func SniffUpload(body []byte) (SniffedUpload, bool) {
+	if len(body) == 0 {
+		return SniffedUpload{}, false
+	}
+	mediaType := "video/quicktime"
+	if !isQuickTime(body) {
+		mediaType = strings.TrimSpace(strings.Split(http.DetectContentType(body), ";")[0])
+	}
+	kind, ok := uploadKinds[mediaType]
+	return kind, ok
+}
+
+// isQuickTime reports whether the bytes open with a File Type Compatibility atom whose MAJOR BRAND is `qt  `.
+//
+// CONTRACT: the QuickTime File Format specification's `ftyp` atom — a 4-byte big-endian size, the type
+// `ftyp`, then the major brand — https://developer.apple.com/documentation/quicktime-file-format/ (checked
+// 2026-07-28). Only the major brand is read; compatible brands further in the atom are not consulted,
+// because a file that calls itself QuickTime FIRST is a QuickTime file whatever else it also claims to be.
+func isQuickTime(body []byte) bool {
+	return len(body) >= 12 && string(body[4:8]) == "ftyp" && string(body[8:12]) == "qt  "
+}
+
+// UploadToThread publishes one artifact into a thread as a real file, in the three documented steps. It
+// returns a typed *APIError for a documented refusal (see APIErrorCode) and ErrUploadTooLarge for an artifact
+// over our own ceiling.
+//
+// NO RETRY LAYER LIVES HERE. ratelimit.go owns Slack's 429 for the sending path and the caller paces per
+// channel before calling; a retry here would stack on both, and a 429 answered with an immediate re-upload is
+// how one refused file becomes a burst. A rate-limited upload is a failed upload, and the caller's answer is
+// already safe (SLK-006).
+func UploadToThread(ctx context.Context, doer Doer, apiBase string, token []byte, up Upload) error {
+	if len(up.Body) == 0 {
+		return errors.New("slack: refusing to upload an empty artifact")
+	}
+	// BEFORE the first call, so an over-size artifact costs nothing: not a request, not a transfer, and not a
+	// half-uploaded file on Slack's side.
+	if len(up.Body) > MaxUploadBytes {
+		return fmt.Errorf("%w: %d bytes, ceiling is %d", ErrUploadTooLarge, len(up.Body), MaxUploadBytes)
+	}
+
+	uploadURL, fileID, err := getUploadURL(ctx, doer, apiBase, token, up)
+	if err != nil {
+		return err
+	}
+	if err := putUploadBytes(ctx, doer, uploadURL, up.Body); err != nil {
+		return err
+	}
+	return completeUpload(ctx, doer, apiBase, token, fileID, up)
+}
+
+// getUploadURL is step one: reserve a one-shot upload URL for a file of a known name and length.
+//
+// CONTRACT: https://docs.slack.dev/reference/methods/files.getUploadURLExternal/ (checked 2026-07-28) —
+// POST, `application/x-www-form-urlencoded` or `application/json`, scope `files:write`. REQUIRED: `filename`
+// ("Name of the file being uploaded") and `length` ("Size in bytes of the file being uploaded"). OPTIONAL:
+// `alt_txt` ("Description of image for screen-reader") and `snippet_type`. Success is
+// {"ok":true,"upload_url":…,"file_id":…}; a refusal is {"ok":false,"error":…}.
+//
+// THE LENGTH IS REQUIRED UP FRONT, and that is a design constraint rather than a parameter: there is no
+// streaming upload, so an artifact has to be sized — and therefore held — before this call (plan §3.5 X10).
+// That is why the ceiling above is a memory decision as much as a taste one.
+//
+// alt_txt is sent from SniffUpload's fixed text, never from a model: it is a field that reaches a human
+// through a screen reader, and it is not initial_comment.
+func getUploadURL(ctx context.Context, doer Doer, apiBase string, token []byte, up Upload) (uploadURL, fileID string, err error) {
+	body, err := json.Marshal(map[string]any{
+		"filename": up.Filename,
+		"length":   len(up.Body),
+		"alt_txt":  up.AltText,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("slack: build upload reservation: %w", err)
+	}
+	raw, err := postSlackJSON(ctx, doer, apiBase+"/files.getUploadURLExternal", token, body, "reserve an upload url")
+	if err != nil {
+		return "", "", err
+	}
+	var env struct {
+		UploadURL string `json:"upload_url"`
+		FileID    string `json:"file_id"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return "", "", fmt.Errorf("slack: decode the upload reservation: %w", err)
+	}
+	if env.UploadURL == "" || env.FileID == "" {
+		return "", "", errors.New("slack: the upload reservation carried no upload_url/file_id")
+	}
+	return env.UploadURL, env.FileID, nil
+}
+
+// putUploadBytes is step two: the bytes themselves, to the URL step one returned.
+//
+// CONTRACT: https://docs.slack.dev/messaging/working-with-files/ (checked 2026-07-28) — POST the raw file
+// data (`Content-Type: application/octet-stream`, `--data-binary`), with NO token: "the upload URL from step
+// one already contains the necessary authorization". The answer is a plain-text body ("OK - <bytes>"), not an
+// API envelope — "Check the HTTP status code to verify the file's successful upload."
+//
+// NO Authorization HEADER IS SET, and that is the rule rather than an omission: this URL comes from a
+// response body, and presenting the bot token to a URL we did not compose is how a credential leaves a
+// system. The status code is the whole signal; the body is read only to drain the connection.
+func putUploadBytes(ctx context.Context, doer Doer, uploadURL string, content []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(content))
+	if err != nil {
+		return fmt.Errorf("slack: build the upload: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := doer.Do(req)
+	if err != nil {
+		return fmt.Errorf("slack: upload the artifact: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	if resp.StatusCode != http.StatusOK {
+		// The body is NOT echoed: it is bytes from a URL that arrived in a response, and an error string is a
+		// place values get logged.
+		return fmt.Errorf("slack: the artifact upload answered HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// completeUpload is step three: share the uploaded file into ONE thread.
+//
+// CONTRACT: https://docs.slack.dev/reference/methods/files.completeUploadExternal/ (checked 2026-07-28) —
+// POST, JSON accepted, scope `files:write`. REQUIRED `files` ("Array of file ids and their corresponding
+// (optional) titles"). OPTIONAL `channel_id`, `thread_ts` ("Provide another message's `ts` value to upload
+// this file as a reply"), `initial_comment` ("The message text introducing the file in specified channels"),
+// `blocks`, `channels`, and the three chat:write.customize fields. Verbatim warnings, all three honoured
+// here: "Never use a reply's `ts` value; use its parent instead", "make sure to provide only one channel when
+// using `thread_ts`", and "This method can only be called once."
+//
+// WHAT IS DELIBERATELY NOT SENT:
+//
+//   - `blocks`. No published page states that this method's blocks array accepts a `markdown` block, and a
+//     vendor's silence is not a design freedom (plan §3.5 X23). This is the same fail-closed reading E21 T6
+//     held for chat.stopStream. The consequence is small and honest: the introducing text is plain.
+//   - `channels`. The reference offers a comma-separated multi-channel form, which the thread warning above
+//     forbids anyway; `channel_id` alone makes "only one channel" structural instead of remembered.
+//   - a file `title`. It is optional, Slack shows the filename without it, and a title is one more field a
+//     caller could put a model's words in.
+//   - `username`/`icon_url`/`icon_emoji`. They need chat:write.customize, which is not requested — an app
+//     that can repaint its own identity per message is a phishing surface.
+//
+// "CALLED ONCE" is not a retry problem here: the caller uploads only after the reply row is marked delivered,
+// so a claimed-and-delivered row is never re-claimed and this method is never called twice for one artifact.
+func completeUpload(ctx context.Context, doer Doer, apiBase string, token []byte, fileID string, up Upload) error {
+	payload := map[string]any{
+		"files":      []any{map[string]any{"id": fileID}},
+		"channel_id": up.ChannelID,
+		"thread_ts":  up.ThreadTS,
+	}
+	if up.Comment != "" {
+		payload["initial_comment"] = up.Comment
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("slack: build the upload completion: %w", err)
+	}
+	_, err = postSlackJSON(ctx, doer, apiBase+"/files.completeUploadExternal", token, body, "complete the upload")
+	return err
+}
+
+// postSlackJSON is the one round trip the two API steps share: a JSON POST with the bot token in the
+// Authorization header, an envelope decoded to {ok,error}, and a typed *APIError for a documented refusal.
+//
+// It is NOT PostMessage: that function decodes a chat `ts` and owns the bounded 429 repair for the sending
+// path, and neither fits here (these methods return different envelopes, and see UploadToThread on why no
+// retry lives in this file).
+func postSlackJSON(ctx context.Context, doer Doer, methodURL string, token []byte, body []byte, what string) (json.RawMessage, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, methodURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("slack: build the request to %s: %w", what, err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	if len(token) > 0 {
+		req.Header.Set("Authorization", "Bearer "+string(token)) // the sole use of the credential
+	}
+	resp, err := doer.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("slack: %s: %w", what, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("slack: read the answer to %s: %w", what, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// Includes 429; see UploadToThread. Not retried, and the body is not echoed.
+		return nil, fmt.Errorf("slack: %s answered HTTP %d", what, resp.StatusCode)
+	}
+	var env struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("slack: decode the answer to %s: %w", what, err)
+	}
+	if !env.OK {
+		if env.Error == "" {
+			env.Error = "unknown"
+		}
+		return nil, fmt.Errorf("slack: %s failed: %w", what, &APIError{Code: env.Error})
+	}
+	return raw, nil
 }
