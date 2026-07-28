@@ -69,7 +69,25 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
 	}
-	// The E21 tools-and-memory family is checked FIRST, ahead of E20: it is now the most specific policy in
+	// The E22 code-and-ship family is checked FIRST, ahead of E21: it is now the most specific policy in the
+	// tree and it COMPOSES the tools-memory gate underneath itself (which composes agent-surface, which
+	// composes wiring, which composes the E17 tier table, which composes the eval gate). An E22 bundle also
+	// carries the E21 tools-memory claim, the E20 agent-surface claim and the E19 wiring claim — it DERIVES
+	// its case set from those releases — so without this clause it would reroute to ToolsMemoryPromoteGate,
+	// which knows nothing about the unapproved-publication sweep, the destination sweep or the typed-operation
+	// ceiling, and would pass it: all three crown guards would be optional in practice.
+	//
+	// THE FAMILY IS RECOGNIZED BY THE E22 CASE IDS, NOT BY THE code_and_ship_claim THIS GATE ENFORCES. This is
+	// also why E22's ids carry the `CAS-` prefix rather than `SLK-` or `TLM-`: an id inside AgentSurfaceCaseIDs
+	// or ToolsMemoryCaseIDs would have matched an EARLIER family marker and dispatched to a WEAKER gate, and
+	// an `SLK-` id outside both would have regenerated a shipped bundle — the promote-gate-family-dispatch
+	// defect, reachable from a naming choice in two different directions.
+	for _, c := range m.Cases {
+		if carriesE22CodeAndShipCase(c) {
+			return CodeAndShipPromoteGate(raw, target)
+		}
+	}
+	// The E21 tools-and-memory family is checked next, ahead of E20: it is the next most specific policy in
 	// the tree and it COMPOSES the agent-surface gate underneath itself (which composes wiring, which
 	// composes the E17 tier table, which composes the eval gate). An E21 bundle also carries the E20
 	// agent-surface claim and the E19 wiring claim — it DERIVES its case set from those releases — so without

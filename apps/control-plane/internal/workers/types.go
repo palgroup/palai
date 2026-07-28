@@ -16,11 +16,22 @@
 //     job, expires with the job deadline, and its VALUE never lands in a receipt, a log, or an evidence
 //     bundle.
 //
-// HONEST CEILING (the plan's most important, §6 leg 3): NO macOS/iOS BUILD is claimed. There is no signing
-// cert, no provisioning profile, no store credential anywhere — the apple-build capability is DISABLED in
-// discovery and has NO entry in Catalog, so no apple-build job can even be dispatched. What is proven here is
-// the outbound-enrolled typed-operation + private-network + no-tunnel + fenced-job invariants. A real signed
-// Apple build (ephemeral keychain, result bundle, store publication) is a separate capability + operator leg.
+// HONEST CEILING (the plan's most important, §6 leg 3): NO macOS/iOS BUILD is claimed. No signing credential
+// is wired into any Palai DEPLOYMENT, and no apple-build operation is typed in Catalog — THE SECOND IS THE
+// STRONGER CLAIM AND THE ONE THIS PACKAGE ENFORCES. What is proven here is the outbound-enrolled
+// typed-operation + private-network + no-tunnel + fenced-job invariants. A real signed Apple build (ephemeral
+// keychain, result bundle, store publication) is a separate capability + operator leg.
+//
+// THE SENTENCE THIS REPLACED WAS FALSE, and E22 T7 corrected it rather than leaving it to be believed. It
+// read "there is no signing cert, no provisioning profile, no store credential anywhere", and it also said
+// there was "no real Xcode". Measured on the development machine 2026-07-28: `security find-identity -v -p
+// codesigning` reports FOUR valid identities (three Apple Development, one Apple Distribution), five
+// provisioning profiles are installed, and `xcodebuild -version` answers Xcode 26.6. So the old claim was an
+// INVENTORY claim about one machine, and inventories change. The claim above is STRUCTURAL: `Catalog` types
+// exactly one capability with one operation, `KnownCapability("apple-build")` is false, and an operation
+// absent from Catalog is refused at dispatch, at claim and at submit. Absence by construction, not absence by
+// inventory — and uat.CodeAndShipProof re-derives it from this file's own source rather than trusting this
+// comment.
 package workers
 
 import (

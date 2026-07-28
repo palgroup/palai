@@ -23,7 +23,16 @@ import (
 // rather than a silence: without it, a bundle that LOST its family claims would quietly move from "passes
 // its own gate" to "no gate recognizes it" and the sweep below would still be green.
 var promoteFamilies = map[string]string{
-	// E21's family is checked FIRST of all in PromoteGateFor, one level above E20 and for the same reason a
+	// E22's family is checked FIRST of all in PromoteGateFor, one level above E21, and this bundle is the
+	// hardest in the tree to dispatch correctly: it carries the E21 tools-memory claim, the E20 agent-surface
+	// claim, the E19 wiring claim AND E17 area claims, because it derives its inherited case set from those
+	// releases. Dispatching on any of them would reroute it to a gate that knows nothing about the
+	// unapproved-publication sweep, the destination sweep or the typed-operation ceiling. It is recognized by
+	// the E22 CASE IDS — and their `CAS-` prefix is part of that decision in BOTH directions: an id already
+	// inside AgentSurfaceCaseIDs or ToolsMemoryCaseIDs would have matched an EARLIER family marker, and an
+	// `SLK-` id outside both would have regenerated a shipped bundle.
+	"code-and-ship-0.1.0": "E22 code-and-ship (the unapproved-publication sweep over the ledger + the destination sweep over the two publish tools' schemas + the typed-operation ceiling recomputed from workers/catalog.go's source + the composed tools-memory/agent-surface/wiring/extensions/eval gates)",
+	// E21's family is checked next, one level above E20 and for the same reason a
 	// level down: a tools-and-memory bundle also carries the E20 agent-surface claim (it derives its
 	// inherited case set from that release), so dispatching on that would reroute it to a gate that knows
 	// nothing about the stored-search-byte or mention re-derivations. It is recognized by the E21 CASE IDS —

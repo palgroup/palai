@@ -25,4 +25,4 @@ proof:
   - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackUploadRefusesAnOversizeArtifactAndSaysSo
   - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackUploadFailureLeavesTheAnswerAndTheRunAlone
   - apps/control-plane/internal/store/slack_upload_component_test.go:TestSlackOrdinaryAnswerUploadsNothing
-  - tests/live/slack/upload_live_test.go:TestLiveSlackUploadsAScreenshotAndARecording
+  - tests/live/code-and-ship/upload_live_test.go:TestLiveSlackUploadsAScreenshotAndARecording
