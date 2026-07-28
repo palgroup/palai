@@ -156,7 +156,7 @@ func TestExplicitRunTargetAlwaysWins(t *testing.T) {
 	target, err := resolveRunTarget(api, envGetter(map[string]string{
 		"SLACK_AGENT_REVISION_ID": "arev_explicit",
 		"SLACK_PRINCIPAL_ID":      "prin_explicit",
-	}))
+	}), false)
 	if err != nil {
 		t.Fatalf("resolve the run target: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestExplicitRunTargetAlwaysWins(t *testing.T) {
 // bound. A binding the operator is not told about is the same silence in a new place.
 func TestMissingRunTargetIsProvisionedAndSaidOutLoud(t *testing.T) {
 	api, calls := fakeProvisioningAPI(t)
-	target, err := resolveRunTarget(api, envGetter(nil))
+	target, err := resolveRunTarget(api, envGetter(nil), false)
 	if err != nil {
 		t.Fatalf("resolve the run target: %v", err)
 	}
@@ -207,12 +207,12 @@ func TestMissingRunTargetIsProvisionedAndSaidOutLoud(t *testing.T) {
 // the workspace is bound to on each run.
 func TestProvisionedRunTargetIsReusedOnASecondBringUp(t *testing.T) {
 	api, calls := fakeProvisioningAPI(t)
-	first, err := resolveRunTarget(api, envGetter(nil))
+	first, err := resolveRunTarget(api, envGetter(nil), false)
 	if err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
 	before := len(*calls)
-	second, err := resolveRunTarget(api, envGetter(nil))
+	second, err := resolveRunTarget(api, envGetter(nil), false)
 	if err != nil {
 		t.Fatalf("second resolve: %v", err)
 	}
@@ -276,6 +276,11 @@ func fakeProvisioningAPIWithTools(t *testing.T) (*apiClient, *[]string, *bool) {
 	// listCarriesTools models the server-side field this fixture depends on. A test can turn it OFF to
 	// reproduce the pre-fix server and prove the reuse check actually needs it.
 	listCarriesTools := true
+	// The repository-binding surface (E22 T3), modelled the way the real one behaves: a re-POST registers a
+	// DISTINCT binding (bindings are durable configuration, not idempotent operations — api/repository_bindings.go
+	// says so), so a bring-up that does not look before it creates will visibly pile them up here.
+	var bindings []map[string]any
+	bindingSeq := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
 		write := func(code int, v any) {
@@ -325,6 +330,30 @@ func fakeProvisioningAPIWithTools(t *testing.T) (*apiClient, *[]string, *bool) {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/agents/"+profileID+"/revisions/"+revisionID+"/publish":
 			published = true
 			write(http.StatusOK, map[string]any{"id": revisionID, "status": "published"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/repository-bindings":
+			write(http.StatusOK, map[string]any{"object": "list", "data": bindings})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/repository-bindings":
+			var body struct {
+				Provider           string `json:"provider"`
+				RepositoryIdentity string `json:"repository_identity"`
+				CloneURL           string `json:"clone_url"`
+				DefaultBranch      string `json:"default_branch"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			// The real handler's own refusal (provider, repository_identity and clone_url are required), so a
+			// bring-up that derives an empty identity fails HERE rather than passing against a lenient fake.
+			if body.Provider == "" || body.RepositoryIdentity == "" || body.CloneURL == "" {
+				write(http.StatusBadRequest, map[string]any{"detail": "provider, repository_identity, and clone_url are required"})
+				return
+			}
+			bindingSeq++
+			binding := map[string]any{
+				"id": fmt.Sprintf("repo_fake_%d", bindingSeq), "object": "repository_binding",
+				"provider": body.Provider, "repository_identity": body.RepositoryIdentity,
+				"clone_url": body.CloneURL, "default_branch": body.DefaultBranch,
+			}
+			bindings = append(bindings, binding)
+			write(http.StatusCreated, binding)
 		default:
 			write(http.StatusNotFound, map[string]any{"detail": "no such route " + r.URL.Path})
 		}
