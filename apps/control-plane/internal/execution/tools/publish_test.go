@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
@@ -63,5 +64,61 @@ func TestPushToolRecordsPendingPublicationAtWorkspaceHead(t *testing.T) {
 func TestPushToolFailsCleanlyWithoutRegistry(t *testing.T) {
 	if _, err := pushExec(context.Background(), toolbroker.ExecEnv{WorkspaceRoot: t.TempDir()}, nil); err == nil {
 		t.Fatal("pushExec with no registry = nil error, want a clean failure")
+	}
+}
+
+// destinationFields are the words a publication destination is spelled with. None may ever appear in either
+// publish tool's input schema.
+var destinationFields = []string{"base", "head", "branch", "remote", "repo", "repository", "ref", "url",
+	"target", "clone_url", "origin", "upstream", "into", "onto"}
+
+// TestNoPublishToolLetsTheModelNameTheDestination is E22 T4's structural anchor (plan §3.5 X17), and it is
+// the reason "open the PR against dev" needed NO code change: the base comes from the binding's
+// default_branch through RunPublicationTarget, so `dev` is a value an operator set in .env.local and not a
+// constant anybody typed. That only holds while the model cannot name a destination.
+//
+// A `base` property on the pull-request tool would break it in the quietest possible way. Nothing would
+// fail: the schema would accept it, pullRequestExec would ignore it today, and the next person to wire it
+// through would be implementing a field the tool already advertised. By then the approval message a human
+// pressed — "open draft pull request X -> dev" — would be showing a base the model chose, which is the one
+// thing an approval cannot survive. So the refusal lives here, at the schema, where it is one line to check
+// and impossible to add by accident.
+//
+// It sweeps the whole property set rather than looking for "base" alone, because `target_branch`,
+// `head_ref` and `remote` are the same field with different spellings.
+func TestNoPublishToolLetsTheModelNameTheDestination(t *testing.T) {
+	for _, tool := range []toolbroker.Tool{PushTool(), PullRequestTool()} {
+		props, ok := tool.InputSchema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s has no `properties` object in its input schema: %#v — a schema this guard cannot read "+
+				"is a schema it cannot hold", tool.Name, tool.InputSchema)
+		}
+		if extra, _ := tool.InputSchema["additionalProperties"].(bool); extra {
+			t.Fatalf("%s sets additionalProperties=true, so a destination can be smuggled past the property "+
+				"sweep below by simply not being declared", tool.Name)
+		}
+		for field := range props {
+			for _, banned := range destinationFields {
+				if strings.Contains(strings.ToLower(field), banned) {
+					t.Fatalf("%s accepts %q from the model. The destination is resolved from the run's binding "+
+						"(RunPublicationTarget: clone_url, the preparation receipt's branch, default_branch) — a "+
+						"base the model can choose is a base the approver did not approve", tool.Name, field)
+				}
+			}
+		}
+	}
+	// The push tool takes NOTHING at all, and that is stronger than "no destination": there is no per-call
+	// argument for a policy pass to have to filter later.
+	if props, _ := PushTool().InputSchema["properties"].(map[string]any); len(props) != 0 {
+		t.Fatalf("the push tool's input schema grew properties %v; it takes no arguments — what to push is the "+
+			"run's own committed head, and where to push it is the binding's", props)
+	}
+	// The pull-request tool takes exactly the two the model is allowed to PROPOSE. They are recorded on the
+	// publication's args for a later policy-filtered pass and are not the destination (E09 publishes with a
+	// deterministic title/body), so their presence is not a hole — but a THIRD field would need a reason.
+	props, _ := PullRequestTool().InputSchema["properties"].(map[string]any)
+	if len(props) != 2 || props["title"] == nil || props["body"] == nil {
+		t.Fatalf("the pull-request tool's input schema is %v, want exactly title + body — prose the model may "+
+			"propose, and nothing that decides where the change lands", props)
 	}
 }

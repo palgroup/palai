@@ -949,11 +949,24 @@ func startMCPOrphanSweep(ctx context.Context, supervisor *coordinator.Supervisor
 // var it returns nil, so an approved publication simply waits — no push without a configured
 // destination. ponytail: env gating like modelBrokerFromEnv; the live wave sets these, the deterministic
 // tier proves the pump with a fake publisher.
+//
+// "SIMPLY WAITS" IS THE PART THAT NEEDED A VOICE (E22 T4). A nil publisher makes pumpApprovedPublications
+// a no-op, which is the right refusal — but it is INDISTINGUISHABLE from success on every surface a human
+// looks at: the model got its pending_approval, the approver pressed Approve, the Slack message says
+// "Approved: push agent/… -> …", the publication row says approved. Nothing anywhere says the push cannot
+// happen. So a HALF-configured App now says so at boot, once, naming the variables — the same reason
+// `palai up` warns before the stack is even built. A stack that configured NOTHING stays silent: it never
+// asked to publish.
 func repositoryPublisherFromEnv() execution.Publisher {
 	appID := os.Getenv("PALAI_GITHUB_APP_ID")
 	installID := os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID")
 	keyFile := os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE")
 	if appID == "" || installID == "" || keyFile == "" {
+		if appID != "" || installID != "" {
+			log.Printf("repository publisher: PALAI_GITHUB_APP_ID/PALAI_GITHUB_APP_INSTALLATION_ID/" +
+				"PALAI_GITHUB_APP_PRIVATE_KEY_FILE are required TOGETHER; one is missing, so publication is " +
+				"disabled and an APPROVED push will wait forever")
+		}
 		return nil
 	}
 	keyPEM, err := os.ReadFile(keyFile)
@@ -961,8 +974,15 @@ func repositoryPublisherFromEnv() execution.Publisher {
 		log.Printf("repository publisher: read app key file: %v (publication disabled)", err)
 		return nil
 	}
+	// owner/repo for the pull-request client. PALAI_GITHUB_REPO is this binary's own name for it;
+	// PALAI_GIT_REPO is the one §0.2 asks the operator for and the repository binding already uses, so both
+	// are read rather than letting a stack be configured correctly and publish nothing.
 	owner, repo := "", ""
-	if slug := os.Getenv("PALAI_GITHUB_REPO"); strings.IndexByte(slug, '/') > 0 {
+	slug := os.Getenv("PALAI_GITHUB_REPO")
+	if slug == "" {
+		slug = os.Getenv("PALAI_GIT_REPO")
+	}
+	if strings.IndexByte(slug, '/') > 0 {
 		i := strings.IndexByte(slug, '/')
 		owner, repo = slug[:i], slug[i+1:]
 	}
@@ -976,7 +996,14 @@ func repositoryPublisherFromEnv() execution.Publisher {
 		return nil
 	}
 	publisher := &execution.RepositoryPublisher{Broker: broker}
-	if owner != "" && repo != "" {
+	switch {
+	case owner == "" || repo == "":
+		// A push publishes without this (its remote comes from the binding); a pull request cannot, and
+		// answers "no pull-request client wired" at the pump. Said out loud, because the operator's only
+		// other symptom is an approved PR that never opens.
+		log.Printf("repository publisher: no owner/repo (set PALAI_GIT_REPO=owner/repo) — pushes publish, " +
+			"pull requests do NOT")
+	default:
 		if prClient, err := repositories.NewGitHubPullRequestClient(cfg, owner, repo); err != nil {
 			log.Printf("repository publisher: pr client: %v (pull requests disabled)", err)
 		} else {

@@ -29,7 +29,8 @@ func TestABringUpGrantsWorkspaceToolsOnlyWithARepositoryBinding(t *testing.T) {
 	}
 
 	with := slackAgentTools(envGetter(nil), true)
-	for _, want := range []string{"palai.workspace.file", "palai.workspace.shell", "palai.workspace.commit"} {
+	for _, want := range []string{"palai.workspace.file", "palai.workspace.shell", "palai.workspace.commit",
+		"palai.publish.push", "palai.publish.pull_request"} {
 		if !contains(with, want) {
 			t.Fatalf("a bring-up that bound a repository did NOT grant %q, so the agent cannot write code in a "+
 				"workspace that exists: %v", want, with)
@@ -43,14 +44,32 @@ func TestABringUpGrantsWorkspaceToolsOnlyWithARepositoryBinding(t *testing.T) {
 	}
 }
 
-// THE APPROVAL BOUNDARY IS STRUCTURAL, NOT A CONFIGURATION ACCIDENT (E22 T4 owns publishing). After T3 the
-// agent can write a commit and cannot push it, and that is asserted here rather than left to the reader of a
-// var: it is the single most valuable thing a human can watch this bring-up NOT do.
-func TestABringUpWithARepositoryStillGrantsNoPublishTool(t *testing.T) {
+// THE APPROVAL BOUNDARY IS STRUCTURAL, NOT A CONFIGURATION ACCIDENT — and E22 T4 is where that sentence
+// gets tested from the other side. T3 asserted that binding a repository granted NO publish tool, because
+// publishing had no approval path wired from Slack yet. It has one now, so the assertion is INVERTED rather
+// than deleted, and what it holds is the part that never moved:
+//
+//   - a bring-up with a repository grants the two publish tools, so the agent can ASK to push;
+//   - a bring-up WITHOUT one grants neither, because a publication with no binding has no destination;
+//   - and neither tool is a push. Both record a pending publication and return pending_approval; the push
+//     happens in the approval pump, after a human in SLACK_APPROVER_IDS presses Approve.
+//
+// So the boundary is still a human's button. What changed is that the button is now reachable.
+func TestABringUpWithARepositoryGrantsThePublishToolsAndOneWithoutGrantsNone(t *testing.T) {
+	var granted []string
 	for _, name := range slackAgentTools(envGetter(nil), true) {
 		if strings.HasPrefix(name, "palai.publish.") {
-			t.Fatalf("a repository binding granted %q: writing code and PUBLISHING it are separated by a human's "+
-				"Approve button, and that separation must not arrive as a side effect of binding a repo", name)
+			granted = append(granted, name)
+		}
+	}
+	if len(granted) != 2 || !contains(granted, "palai.publish.push") || !contains(granted, "palai.publish.pull_request") {
+		t.Fatalf("a repository binding granted publish tools %v, want exactly push + pull_request — the agent "+
+			"must be able to ASK, and asking is all either tool does", granted)
+	}
+	for _, name := range slackAgentTools(envGetter(nil), false) {
+		if strings.HasPrefix(name, "palai.publish.") {
+			t.Fatalf("a bring-up that bound NO repository granted %q: with no binding RunPublicationTarget "+
+				"answers 'the run prepared no repository', so the tool could only ever fail", name)
 		}
 	}
 }
