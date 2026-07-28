@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -119,5 +120,68 @@ func TestSnapshotCreateChecksumsAndExclusions(t *testing.T) {
 	}
 	if mutated.TreeChecksum == manifest.TreeChecksum {
 		t.Fatalf("tree checksum unchanged after a file edit: %q", mutated.TreeChecksum)
+	}
+}
+
+// TestSnapshotSurvivesAFileThatVanishesMidWalk pins the behaviour a LIVE tree forces on us. The case that
+// found it was git's own background maintenance: it creates `.git/objects/maintenance.lock`, WalkDir sees
+// the entry, maintenance finishes and removes it, and the checksum then opens nothing. Before the fix the
+// whole snapshot failed, so whether a snapshot succeeded depended on what git happened to be doing.
+//
+// IT DRIVES THE CHECKSUMMER, not the filesystem, and that is deliberate. The first version of this test
+// deleted the file before calling Snapshot — which means the walk never saw it, the branch never ran, and
+// the test passed with the fix disabled. Mutating `fs.ErrNotExist` to `fs.ErrPermission` proved it: still
+// green. A guard that cannot fail is worse than none, so the checksummer is injected and the vanish is
+// made to happen exactly where the race puts it.
+func TestSnapshotSurvivesAFileThatVanishesMidWalk(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "kept.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatalf("write kept: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "maintenance.lock"), []byte("lock"), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	// The checksummer answers as the filesystem would for a file removed between the walk and the read.
+	vanishing := func(path string) (string, error) {
+		if filepath.Base(path) == "maintenance.lock" {
+			return "", &os.PathError{Op: "open", Path: path, Err: fs.ErrNotExist}
+		}
+		return checksumFile(path)
+	}
+
+	m, err := snapshotWith(root, vanishing)
+	if err != nil {
+		t.Fatalf("a file that vanished between the walk and the read failed the whole snapshot: %v", err)
+	}
+	if _, ok := m.FileChecksums["kept.txt"]; !ok {
+		t.Fatalf("the file that stayed is missing: %+v", m.FileChecksums)
+	}
+	if _, ok := m.FileChecksums["maintenance.lock"]; ok {
+		t.Fatal("the vanished file was given a checksum it could not have")
+	}
+
+	// RECORDED, not dropped: present at walk and absent at read is exactly what an operator reading a
+	// manifest needs to see, and silence would be indistinguishable from a file nobody looked at.
+	var recorded bool
+	for _, e := range m.Exclusions {
+		if e == "maintenance.lock" {
+			recorded = true
+		}
+	}
+	if !recorded {
+		t.Fatalf("the vanished file is absent from Exclusions %v — dropping it silently hides it", m.Exclusions)
+	}
+
+	// A checksum failure that is NOT a vanish must still fail the snapshot: this branch tolerates one
+	// specific accident, not every read error.
+	denied := func(path string) (string, error) {
+		if filepath.Base(path) == "maintenance.lock" {
+			return "", &os.PathError{Op: "open", Path: path, Err: fs.ErrPermission}
+		}
+		return checksumFile(path)
+	}
+	if _, err := snapshotWith(root, denied); err == nil {
+		t.Fatal("a permission error was tolerated: the tolerance must be for a vanished file only")
 	}
 }

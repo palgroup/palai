@@ -10,6 +10,7 @@ package workspace
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -83,6 +84,14 @@ type Manifest struct {
 // SAN-005). Non-regular entries (symlinks, devices, sockets) are not snapshot content and are
 // skipped. RESTORE is E10.
 func Snapshot(root string) (Manifest, error) {
+	return snapshotWith(root, checksumFile)
+}
+
+// snapshotWith is Snapshot with the per-file checksummer injected. It exists for ONE reason: the
+// vanished-file branch below is otherwise unreachable in a test — the race it handles is git deleting a
+// lock between the walk and the read, and a test that deletes the file BEFORE the walk never enters the
+// branch at all. That is how the first version of this guard passed while the fix was disabled.
+func snapshotWith(root string, checksum func(string) (string, error)) (Manifest, error) {
 	files := map[string]string{}
 	var exclusions []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -107,7 +116,21 @@ func Snapshot(root string) (Manifest, error) {
 			exclusions = append(exclusions, rel)
 			return nil
 		}
-		sum, err := checksumFile(path)
+		sum, err := checksum(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			// THE FILE WENT AWAY BETWEEN THE WALK AND THE READ, and a snapshot of a LIVE tree has to
+			// survive that. The case that found it is git's own background maintenance: it creates
+			// `.git/objects/maintenance.lock`, the walk sees it, maintenance finishes and removes it, and
+			// the checksum opens nothing. Failing the whole snapshot for a lock file that was never
+			// content would make every snapshot a coin toss on what git happened to be doing.
+			//
+			// It is RECORDED rather than dropped. A file present at walk time and absent at read time is
+			// exactly the kind of thing an operator reading a manifest should be able to see, and the
+			// exclusions list already exists to say "this was not captured, and here is why". Silence
+			// here would be indistinguishable from a file we never looked at.
+			exclusions = append(exclusions, rel)
+			return nil
+		}
 		if err != nil {
 			return err
 		}
