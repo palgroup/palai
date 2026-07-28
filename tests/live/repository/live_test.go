@@ -401,8 +401,8 @@ func TestLiveApprovedPushAndDraftPullRequest(t *testing.T) {
 	}
 	pr, err := repositories.OpenPullRequest(ctx, prClient, repositories.OpenPRInput{
 		HeadBranch: branch, Base: base,
-		Title:      "Agent changes: " + branch,
-		Body:       "open draft pull request " + branch + " -> " + base,
+		Title: "Agent changes: " + branch,
+		Body:  "open draft pull request " + branch + " -> " + base,
 	})
 	if err != nil {
 		t.Fatalf("OpenPullRequest() error = %v", err)
