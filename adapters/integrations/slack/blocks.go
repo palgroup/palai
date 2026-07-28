@@ -129,7 +129,32 @@ type Task struct {
 	Title  string `json:"title"`
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`
+	// Sources are the places a reader can go to check the task — E22's are the pull request and the Jira
+	// ticket a coding run worked from. E21 T6 left this field out with a reason ("no user today"); E22 is the
+	// user, so it lands with the same trust boundary every other link in this file has.
+	Sources []TaskSource `json:"sources,omitempty"`
 }
+
+// TaskSource is one URL source element on a task card.
+//
+// CONTRACT: https://docs.slack.dev/reference/block-kit/blocks/task-card-block/ (checked 2026-07-28) —
+// `sources` is an "Array of URL source elements", and the page's own example shows the element as
+// {"type":"url","url":"https://weather.com/","text":"weather.com"}.
+//
+// IT IS NOT ACTIONABLE, and that is why it may exist at all: a URL source is a link, so it needs no
+// authorization path of its own (unlike a button, which E20 §2 confines to interactions.go). The claim is
+// held by a test rather than by this sentence — blocks_test.go's sweep runs over a rendered card carrying
+// these and stays green, and the AST scan still finds a mint in exactly one file.
+type TaskSource struct {
+	URL  string `json:"url"`
+	Text string `json:"text,omitempty"`
+}
+
+// MaxTaskSources caps how many links one card carries. IT IS OUR NUMBER: the reference prints no limit
+// (checked 2026-07-28), and a card with two hundred links is not a card. The cut is silent HERE and only
+// here, because a source element has no room for a truncation marker and the sources are corroboration
+// rather than the answer — the answer itself is never truncated silently (see truncationMarker).
+const MaxTaskSources = 10
 
 // taskStatus is S10's mapping table, and it is EXPLICIT because the two vocabularies do not overlap: ours is
 // a free string (the palai.task tool documents `open | in_progress | done | canceled` and the store defaults
@@ -562,6 +587,9 @@ func taskBlocks(result Result) []any {
 		if detail := NeutralizeBroadcasts(task.Detail); detail != "" {
 			card["details"] = richText(detail)
 		}
+		if sources := taskSources(task.Sources); len(sources) > 0 {
+			card["sources"] = sources
+		}
 		cards = append(cards, card)
 	}
 	if len(cards) == 0 {
@@ -635,16 +663,54 @@ func richText(text string) any {
 // Slack's `<url|label>` syntax, renders as inert text instead of a clickable target.
 //
 // SOURCE for the syntax: https://docs.slack.dev/messaging/formatting-message-text/ (checked 2026-07-27).
+// E22 T5 CHANGES THE DELIVERY, NOT THIS RENDER. An artifact a run produced now also ARRIVES in the thread as
+// a real file (extensions/slack_upload.go resolves what this link names and uploads the bytes), and the block
+// below is byte-identical to what it was before that: same link, same validation, same inert-text fallback.
+// A reader sees the link they always saw, plus the file it points at.
 func fileRefBlock(result Result) any {
 	label := NeutralizeBroadcasts(result.Label)
 	if label == "" {
 		label = "artifact"
 	}
 	label = strings.NewReplacer("<", "&lt;", ">", "&gt;", "|", "&#124;").Replace(label)
-	parsed, err := url.Parse(result.URL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
-		strings.ContainsAny(result.URL, "<>| \t\n") {
+	if !linkableURL(result.URL) {
 		return section(label + ": " + NeutralizeBroadcasts(result.URL))
 	}
 	return section("<" + result.URL + "|" + label + ">")
+}
+
+// linkableURL is the trust boundary every model-supplied link in this file crosses: plain http(s), a real
+// host, and no character that would break out of Slack's `<url|label>` syntax. Shared by fileRefBlock and
+// taskSources rather than copied, because two copies of a security predicate is one copy that will be fixed.
+func linkableURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" &&
+		!strings.ContainsAny(raw, "<>| \t\n")
+}
+
+// taskSources builds the card's URL source elements. A source whose URL does not survive linkableURL is
+// DROPPED rather than rendered as text: unlike a file_ref — which IS the answer, so it falls back to inert
+// text — a source is corroboration hanging off a card that already says what happened, and a card carrying
+// "here is where to check: javascript:…" as prose is worse than a card carrying nothing.
+//
+// The text is neutralised like every other string this renderer emits, and defaults to the URL's host when a
+// model supplied none: a bare link with no words is still a place to click, and the host is the honest label
+// for it.
+func taskSources(sources []TaskSource) []any {
+	out := make([]any, 0, len(sources))
+	for _, src := range sources {
+		if len(out) >= MaxTaskSources {
+			break
+		}
+		if !linkableURL(src.URL) {
+			continue
+		}
+		text := NeutralizeBroadcasts(src.Text)
+		if text == "" {
+			parsed, _ := url.Parse(src.URL)
+			text = parsed.Host
+		}
+		out = append(out, map[string]any{"type": "url", "url": src.URL, "text": text})
+	}
+	return out
 }

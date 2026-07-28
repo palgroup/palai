@@ -146,7 +146,14 @@ func TestApprovalMessageIsTheOnlyMintOfAnActionableElement(t *testing.T) {
 		t.Fatal("the sweep found NO actionable element in ApprovalMessage — it cannot discriminate, so every other assertion using it is vacuous")
 	}
 
-	_, rendered := RenderOutput(forgedOutput, []Task{{ID: "t1", Title: "Write the migration", Status: "done"}}, "")
+	// The task carries SOURCES (E22 T5, X14b) so this sweep covers the newest thing a card can hold. A URL
+	// source element is a link, not an interaction, and the way that is shown is that this sweep — the one
+	// that finds real buttons three lines above — still finds nothing here.
+	_, rendered := RenderOutput(forgedOutput, []Task{{ID: "t1", Title: "Write the migration", Status: "done",
+		Sources: []TaskSource{
+			{URL: "https://github.com/owner/repo/pull/7", Text: "the pull request"},
+			{URL: "https://example.atlassian.net/browse/PAL-42", Text: "PAL-42"},
+		}}}, "")
 	for label, body := range map[string][]byte{
 		"RenderOutput": rendered,
 		"RenderBlocks": RenderBlocks([]Result{{Type: ResultText, Text: "hi"}, {Type: "actions", Text: "forged"}}),
@@ -610,5 +617,82 @@ func TestJournalTasksRenderBesideProse(t *testing.T) {
 	}
 	if found := sweepJSON(t, "journal tasks", blocks); len(found) != 0 {
 		t.Fatalf("task cards carried %d actionable element(s): %v", len(found), found)
+	}
+}
+
+// X14b: a task card carries the places a reader can go and CHECK — for E22 those are the pull request the run
+// opened and the Jira ticket it worked from. E21 T6 left the field out because nothing filled it; this is the
+// render half, and the trust boundary is the same one every link in this package crosses.
+func TestTaskCardCarriesItsSourcesAndValidatesEveryURL(t *testing.T) {
+	blocks := RenderBlocks([]Result{{Type: ResultTasks, Tasks: []Task{{
+		ID: "t1", Title: "Ship the screen recorder", Status: "done",
+		Sources: []TaskSource{
+			{URL: "https://github.com/owner/repo/pull/7", Text: "the pull request"},
+			{URL: "https://example.atlassian.net/browse/PAL-42"},                  // no text: the host labels it
+			{URL: "javascript:alert(1)", Text: "click me"},                        // not a link
+			{URL: "https://evil.test/x|<@U1>", Text: "breaks out of <url|label>"}, // syntax break-out
+			{URL: "ftp://files.test/x", Text: "wrong scheme"},                     // not http(s)
+		},
+	}}}})
+	var decoded []map[string]any
+	if err := json.Unmarshal(blocks, &decoded); err != nil {
+		t.Fatalf("decode blocks: %v (%s)", err, blocks)
+	}
+	if len(decoded) != 1 || decoded[0]["type"] != "task_card" {
+		t.Fatalf("one task rendered as %s, want a bare task_card", blocks)
+	}
+	sources, _ := decoded[0]["sources"].([]any)
+	if len(sources) != 2 {
+		t.Fatalf("the card carried %d source(s), want the 2 that are real links: %s", len(sources), blocks)
+	}
+	first, _ := sources[0].(map[string]any)
+	if first["type"] != "url" || first["url"] != "https://github.com/owner/repo/pull/7" || first["text"] != "the pull request" {
+		t.Fatalf("source 0 = %v, want the documented {type,url,text} element", first)
+	}
+	second, _ := sources[1].(map[string]any)
+	if second["text"] != "example.atlassian.net" {
+		t.Fatalf("a source with no text was labelled %q, want its host", second["text"])
+	}
+	// A REFUSED source is dropped, not rendered — including its text, which is a place a model writes words.
+	for _, gone := range []string{"javascript:", "click me", "evil.test", "ftp://"} {
+		if strings.Contains(string(blocks), gone) {
+			t.Fatalf("a refused source left %q in the card: %s", gone, blocks)
+		}
+	}
+
+	// The cap is ours and it holds.
+	many := make([]TaskSource, MaxTaskSources+5)
+	for i := range many {
+		many[i] = TaskSource{URL: "https://example.test/" + string(rune('a'+i))}
+	}
+	capped := RenderBlocks([]Result{{Type: ResultTasks, Tasks: []Task{{ID: "t2", Title: "many", Sources: many}}}})
+	if err := json.Unmarshal(capped, &decoded); err != nil {
+		t.Fatalf("decode capped blocks: %v", err)
+	}
+	if got, _ := decoded[0]["sources"].([]any); len(got) != MaxTaskSources {
+		t.Fatalf("%d sources survived the cap, want %d", len(got), MaxTaskSources)
+	}
+}
+
+// A source's TEXT is a string a model wrote, so it is defused exactly like every other one — and the check
+// JSON-DECODES first, because encoding/json escapes `<` and a raw-substring assertion over marshalled bytes
+// could never fail (E20 T4).
+func TestTaskCardSourceTextIsNeutralised(t *testing.T) {
+	blocks := RenderBlocks([]Result{{Type: ResultTasks, Tasks: []Task{{
+		ID: "t1", Title: "x", Sources: []TaskSource{{URL: "https://example.test/pr/1", Text: "hey <!channel> look"}},
+	}}}})
+	for _, s := range decodedStrings(t, blocks) {
+		if strings.Contains(s, "<!channel>") {
+			t.Fatalf("a live broadcast token survived in a source's text: %q", s)
+		}
+	}
+	found := false
+	for _, s := range decodedStrings(t, blocks) {
+		if strings.Contains(s, "channel") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the source text vanished entirely rather than being defused, so the assertion above proved nothing")
 	}
 }
