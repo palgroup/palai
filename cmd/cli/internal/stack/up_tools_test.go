@@ -12,7 +12,7 @@ import (
 // a DM, and the widening is a posture change the operator makes on purpose.
 
 func TestABringUpBindsOnlyReadOnlyToolsByDefault(t *testing.T) {
-	got := slackAgentTools(envGetter(nil))
+	got := slackAgentTools(envGetter(nil), false)
 	if len(got) == 0 {
 		t.Fatal("a default bring-up bound NO tools — the Slack agent would be single-step out of the box")
 	}
@@ -31,7 +31,7 @@ func TestABringUpBindsOnlyReadOnlyToolsByDefault(t *testing.T) {
 func TestAnOperatorWidensTheToolListByName(t *testing.T) {
 	got := slackAgentTools(envGetter(map[string]string{
 		"SLACK_AGENT_TOOLS": " palai.workspace.shell , palai.workspace.file ",
-	}))
+	}), false)
 	if len(got) != 2 || got[0] != "palai.workspace.shell" || got[1] != "palai.workspace.file" {
 		t.Fatalf("SLACK_AGENT_TOOLS = %v, want exactly the two named tools with whitespace trimmed", got)
 	}
@@ -40,10 +40,10 @@ func TestAnOperatorWidensTheToolListByName(t *testing.T) {
 // The narrowest posture has to stay reachable, and it needs a spelling that a stray blank line cannot
 // produce by accident.
 func TestNoneGrantsNothingAndBlankFallsBackToTheDefaults(t *testing.T) {
-	if got := slackAgentTools(envGetter(map[string]string{"SLACK_AGENT_TOOLS": "none"})); len(got) != 0 {
+	if got := slackAgentTools(envGetter(map[string]string{"SLACK_AGENT_TOOLS": "none"}), true); len(got) != 0 {
 		t.Fatalf("SLACK_AGENT_TOOLS=none granted %v, want nothing", got)
 	}
-	if got := slackAgentTools(envGetter(map[string]string{"SLACK_AGENT_TOOLS": "  "})); len(got) == 0 {
+	if got := slackAgentTools(envGetter(map[string]string{"SLACK_AGENT_TOOLS": "  "}), false); len(got) == 0 {
 		t.Fatal("a blank SLACK_AGENT_TOOLS disarmed the agent — blank is unset, and disarming needs the word none")
 	}
 }
@@ -54,11 +54,11 @@ func TestNoneGrantsNothingAndBlankFallsBackToTheDefaults(t *testing.T) {
 // silent registration SKIP E21 T2 removed from this file.
 func TestChangingTheToolListMintsANewRevisionRatherThanSilentlyReusingTheOld(t *testing.T) {
 	api, _ := fakeProvisioningAPI(t)
-	first, err := resolveRunTarget(api, envGetter(nil))
+	first, err := resolveRunTarget(api, envGetter(nil), false)
 	if err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
-	second, err := resolveRunTarget(api, envGetter(map[string]string{"SLACK_AGENT_TOOLS": "palai.workspace.shell"}))
+	second, err := resolveRunTarget(api, envGetter(map[string]string{"SLACK_AGENT_TOOLS": "palai.workspace.shell"}), false)
 	if err != nil {
 		t.Fatalf("second resolve: %v", err)
 	}
@@ -77,13 +77,13 @@ func TestChangingTheToolListMintsANewRevisionRatherThanSilentlyReusingTheOld(t *
 func TestReorderingTheToolListIsNotAChange(t *testing.T) {
 	api, calls := fakeProvisioningAPI(t)
 	env := map[string]string{"SLACK_AGENT_TOOLS": "palai.research.fetch,palai.knowledge.retrieve"}
-	first, err := resolveRunTarget(api, envGetter(env))
+	first, err := resolveRunTarget(api, envGetter(env), false)
 	if err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
 	before := len(*calls)
 	env["SLACK_AGENT_TOOLS"] = "palai.knowledge.retrieve,palai.research.fetch"
-	second, err := resolveRunTarget(api, envGetter(env))
+	second, err := resolveRunTarget(api, envGetter(env), false)
 	if err != nil {
 		t.Fatalf("second resolve: %v", err)
 	}
@@ -110,12 +110,12 @@ func TestReuseNeedsTheListToCarryTools(t *testing.T) {
 	api, calls, listCarriesTools := fakeProvisioningAPIWithTools(t)
 	*listCarriesTools = false // the server as it behaved before this was fixed
 
-	first, err := resolveRunTarget(api, envGetter(nil))
+	first, err := resolveRunTarget(api, envGetter(nil), false)
 	if err != nil {
 		t.Fatalf("first resolve: %v", err)
 	}
 	before := len(*calls)
-	second, err := resolveRunTarget(api, envGetter(nil))
+	second, err := resolveRunTarget(api, envGetter(nil), false)
 	if err != nil {
 		t.Fatalf("second resolve: %v", err)
 	}

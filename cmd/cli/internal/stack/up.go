@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -146,14 +147,14 @@ func Bootstrap(envFile string) error {
 	}
 
 	// [6/6] Slack, if and only if the workspace values are present. Never fatal.
-	slackFact, slackLine, slackWarn := wireSlack(api, cfg, p, get)
+	slackFact, slackLine, slackWarns := wireSlack(api, cfg, p, get)
 	fmt.Fprintf(os.Stderr, "[6/6] slack     %s\n", slackLine)
 
 	caps, err := api.capabilities()
 	if err != nil {
 		return fmt.Errorf("read /v1/capabilities for the status table: %w", err)
 	}
-	printReport(cfg, rt, caps, observedFacts(rt, slackFact), red, slackWarn)
+	printReport(cfg, rt, caps, observedFacts(rt, slackFact), red, slackWarns...)
 	return nil
 }
 
@@ -458,16 +459,17 @@ func slackReport(o slackOutcome) (fact string, line string) {
 // whether Slack actually opened a socket. It never fails the bring-up — an absent Slack app is a
 // normal state, and a Slack hiccup does not un-prove the live round-trip above.
 //
-// It returns (fact, line, warn). fact is the observed-state string the capability table shows for
-// `slack`, line is the operator-facing step result, and warn is a non-fatal condition the final
-// report must repeat because the operator would otherwise only meet it as silence.
+// It returns (fact, line, warns). fact is the observed-state string the capability table shows for
+// `slack`, line is the operator-facing step result, and warns are non-fatal conditions the final
+// report must repeat because the operator would otherwise only meet them as silence.
 //
-// warn is a SEPARATE return rather than more prose on line, and that separation is the point: the
-// two carry different truths about the same connection — whether anything can ARRIVE from Slack
-// (the socket, on line) and whether anything can be APPROVED once it does (the allow-list, on
-// warn). Folding one into the other would let a connected socket read as a working integration
-// while every Approve click is silently refused, which is the same over-claiming in a new place.
-func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fact string, line string, warn string) {
+// warns is a SEPARATE return rather than more prose on line, and that separation is the point: they
+// carry different truths about the same connection — whether anything can ARRIVE from Slack (the
+// socket, on line), whether anything can be APPROVED once it does (the allow-list), and whether the
+// agent can touch CODE at all (the repository binding, E22 T3). Folding one into the other would let
+// a connected socket read as a working integration while every Approve click is silently refused,
+// which is the same over-claiming in a new place.
+func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fact string, line string, warns []string) {
 	body, skip := slackRegistration(get)
 	if skip != "" {
 		o := slackOutcome{skip: skip}
@@ -481,21 +483,36 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 		// carried out, though: a half-configured install that silently does nothing is what item 3
 		// of this task exists to end.
 		fact, line = slackReport(o)
-		return fact, line, slackSkipWarning(get, skip)
+		return fact, line, appendWarn(nil, slackSkipWarning(get, skip))
 	}
 	team, _ := body["team_id"].(string)
 	o := slackOutcome{team: team}
 
+	// AGAINST WHAT REPOSITORY (E22 T3). It runs BEFORE resolveRunTarget because the answer decides the tool
+	// list: the workspace tools are bound only when a repository actually exists to use them on. Absent
+	// configuration is a WARNING rather than a silent skip — see resolveRepository.
+	repo := resolveRepository(api, get)
+	if repo.resolved != "" {
+		fmt.Fprintf(os.Stderr, "        %s\n", repo.resolved)
+	}
+	warns = appendWarn(warns, repo.warn)
+
 	// WHAT to run and AS WHOM. Resolved against the running stack (explicit config wins, otherwise
 	// provisioned) rather than demanded from .env.local — see resolveRunTarget. It runs AFTER the
 	// team/signing checks above so a stack with no Slack app provisions nothing at all.
-	target, err := resolveRunTarget(api, get)
+	target, err := resolveRunTarget(api, get, repo.id != "")
 	if err != nil {
 		o.problem = "NOT registered: " + err.Error()
 		fact, line = slackReport(o)
-		return fact, line, ""
+		return fact, line, warns
 	}
-	body["default_policy"] = map[string]any{"agent_revision_id": target.revision, "principal_id": target.principal}
+	policy := map[string]any{"agent_revision_id": target.revision, "principal_id": target.principal}
+	if repo.id != "" {
+		// The repository rides the CONNECTION, exactly like the revision and the principal beside it: every
+		// event on this workspace admits against this binding, and no Slack payload can name a different one.
+		policy["repository_binding_id"] = repo.id
+	}
+	body["default_policy"] = policy
 	if target.resolved != "" {
 		fmt.Fprintf(os.Stderr, "        %s\n", target.resolved)
 	}
@@ -504,10 +521,11 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 	// the state this task exists to end, so the redemption path is filled before the row names it.
 	for name, value := range slackSecretValues(get) {
 		if err := api.putSecretRef(name, value); err != nil {
-			// No connection row was created, so there is no allow-list to warn about yet.
+			// No connection row was created, so there is no allow-list to warn about yet. The repository
+			// warning still rides: it is about what this stack CAN do, not about a row that got written.
 			o.problem = "NOT wired: " + err.Error()
 			fact, line = slackReport(o)
-			return fact, line, ""
+			return fact, line, warns
 		}
 		o.stored++
 	}
@@ -517,7 +535,7 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 	case err != nil:
 		o.problem = "NOT registered: " + err.Error()
 		fact, line = slackReport(o)
-		return fact, line, ""
+		return fact, line, warns
 	case status == http.StatusConflict:
 		// The workspace is already bound (possibly from an earlier run). The refs it was bound with
 		// are the same handles — derived from the team id — so the values just stored still apply.
@@ -528,7 +546,7 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 		o.connectionID = id
 		// A row was written from THIS body, so what it does and does not authorize is known. Derived
 		// from the body actually sent, never from an assumption about what `palai up` usually does.
-		warn = slackApproverWarning(body)
+		warns = appendWarn(warns, slackApproverWarning(body))
 	}
 
 	// The connect loop resolves its workspace ONCE, at boot (extensions.SlackSocket's documented
@@ -541,15 +559,24 @@ func wireSlack(api *apiClient, cfg Config, p paths, get func(string) string) (fa
 		if err := recreateControlPlane(cfg, p); err != nil {
 			o.detail = fmt.Sprintf("the control-plane could not be recreated to pick up the registration: %v", err)
 			fact, line = slackReport(o)
-			return fact, line, warn
+			return fact, line, warns
 		}
 		o.connected, o.detail = observeSlackSocket(cfg, p, 45*time.Second)
 	}
-	// warn rides alongside whatever the socket turned out to be. A connected socket does not retire
-	// it — that is the case it matters MOST in, because the events now arriving are the ones whose
-	// Approve buttons will be refused.
+	// warns ride alongside whatever the socket turned out to be. A connected socket does not retire
+	// them — that is the case they matter MOST in, because the events now arriving are the ones whose
+	// Approve buttons will be refused, or whose agent has no repository to work in.
 	fact, line = slackReport(o)
-	return fact, line, warn
+	return fact, line, warns
+}
+
+// appendWarn adds a non-empty warning to the list. Empty warnings are dropped here rather than at every
+// call site, because a "" in the report renders as a blank WARNING block.
+func appendWarn(warns []string, w string) []string {
+	if w == "" {
+		return warns
+	}
+	return append(warns, w)
 }
 
 // recreateControlPlane replaces the control-plane container in place, leaving Postgres, the object
@@ -724,7 +751,7 @@ type slackRunTarget struct {
 // EXPLICIT CONFIGURATION ALWAYS WINS, per id: anything the operator named is used verbatim and
 // nothing is provisioned for it. It opens NO new path — both halves come off the existing
 // provisioning API (§4 T2), and neither writes a credential.
-func resolveRunTarget(api *apiClient, get func(string) string) (slackRunTarget, error) {
+func resolveRunTarget(api *apiClient, get func(string) string, hasRepository bool) (slackRunTarget, error) {
 	t := slackRunTarget{
 		revision:  strings.TrimSpace(get("SLACK_AGENT_REVISION_ID")),
 		principal: strings.TrimSpace(get("SLACK_PRINCIPAL_ID")),
@@ -748,7 +775,7 @@ func resolveRunTarget(api *apiClient, get func(string) string) (slackRunTarget, 
 		how = append(how, fmt.Sprintf("as principal %s (this stack's bootstrap-key principal — set SLACK_PRINCIPAL_ID to bind a different one)", p))
 	}
 	if t.revision == "" {
-		tools := slackAgentTools(get)
+		tools := slackAgentTools(get, hasRepository)
 		rev, minted, err := api.ensureSlackAgentRevision(tools)
 		if err != nil {
 			return slackRunTarget{}, err
@@ -769,6 +796,137 @@ func resolveRunTarget(api *apiClient, get func(string) string) (slackRunTarget, 
 	}
 	t.resolved = "Slack run target: " + strings.Join(how, ", ")
 	return t, nil
+}
+
+// slackRepository is the repository this bring-up bound to the Slack connection, or the reason it bound
+// none. id empty means the agent can talk and search and cannot touch code — a legitimate posture, and the
+// one every stack had before E22.
+type slackRepository struct {
+	id       string
+	resolved string // operator-facing prose: what was created or reused, printed as it happens
+	warn     string // a condition the final report must repeat, because its only other symptom is silence
+}
+
+// resolveRepository creates (or reuses) the repository binding a Slack thread codes against, from the two
+// values §0.2 asks the operator for.
+//
+// IT WARNS RATHER THAN SKIPPING SILENTLY, and that is E21 T2's lesson arriving in the same file for the
+// second time: a bring-up that quietly does nothing is indistinguishable from one that worked. An operator
+// who wired Slack and expected the agent to write code would otherwise meet the gap only as an agent that
+// keeps answering "no workspace bound for this run", with no line anywhere connecting that to a variable
+// they never set.
+//
+// ponytail: no PALAI_REPOSITORY_BINDING_ID override. Every other id in this file has one because the
+// operator may already hold it; a binding is created BY this command, so an operator holding one can pass
+// its clone_url and get it reused by the lookup below. Add the override when someone has a binding they
+// cannot describe.
+func resolveRepository(api *apiClient, get func(string) string) slackRepository {
+	cloneURL := strings.TrimSpace(get("PALAI_GIT_CLONE_URL"))
+	branch := strings.TrimSpace(get("PALAI_GIT_BASE_BRANCH"))
+	switch {
+	case cloneURL == "" && branch == "":
+		return slackRepository{warn: "no repository is bound to this Slack workspace: PALAI_GIT_CLONE_URL and " +
+			"PALAI_GIT_BASE_BRANCH are unset, so the agent can read and search but CANNOT clone, edit or commit " +
+			"anything. Its tool list is the read-only three; set both in .env.local and re-run `palai up` to bind one."}
+	case cloneURL == "":
+		return slackRepository{warn: "PALAI_GIT_BASE_BRANCH is set but PALAI_GIT_CLONE_URL is not: a binding needs " +
+			"BOTH — the clone URL says WHICH repository, the base branch says which branch a pull request will " +
+			"target. No repository was bound, and the agent keeps the read-only tool list."}
+	case branch == "":
+		return slackRepository{warn: "PALAI_GIT_CLONE_URL is set but PALAI_GIT_BASE_BRANCH is not: a binding needs " +
+			"BOTH, and the base branch is not a default worth guessing — it is the branch every pull request from " +
+			"this workspace will target. No repository was bound."}
+	}
+	// The provider repository identity is the authoritative name (spec §30.1); the clone URL is not trusted as
+	// identity. PALAI_GIT_REPO is what §0.2 asks for; deriving it from the URL is the fallback so an operator
+	// who set only the URL still gets a binding rather than a 400.
+	identity := strings.TrimSpace(get("PALAI_GIT_REPO"))
+	if identity == "" {
+		identity = repositoryIdentityFrom(cloneURL)
+	}
+	id, reused, err := api.ensureRepositoryBinding(identity, cloneURL, branch)
+	if err != nil {
+		return slackRepository{warn: "no repository was bound: " + err.Error() +
+			". The Slack agent keeps the read-only tool list until this is fixed."}
+	}
+	verb := "registered"
+	if reused {
+		verb = "reused"
+	}
+	return slackRepository{
+		id: id,
+		// The BASE BRANCH is named because it is the whole of "open the PR against dev": the publication
+		// destination is resolved from this binding's default_branch and is never asked of the model.
+		resolved: fmt.Sprintf("Slack repository: %s %s for %s (clone %s, base branch %s — a pull request from this "+
+			"workspace targets %s, and no model chooses that)", verb, id, identity, cloneURL, branch, branch),
+	}
+}
+
+// repositoryIdentityFrom derives owner/repo from a clone URL. A best-effort fallback for the operator who
+// set only PALAI_GIT_CLONE_URL; PALAI_GIT_REPO overrides it. Returns the trimmed path, or the URL itself
+// when it parses to nothing — the store requires a non-empty identity and an honest echo beats an empty one.
+func repositoryIdentityFrom(cloneURL string) string {
+	u, err := url.Parse(cloneURL)
+	if err != nil {
+		return cloneURL
+	}
+	if path := strings.TrimSuffix(strings.Trim(u.Path, "/"), ".git"); path != "" {
+		return path
+	}
+	return cloneURL
+}
+
+// ensureRepositoryBinding returns the id of a binding for this clone URL + base branch, reusing one this
+// project already has. Reuse is by (clone_url, default_branch) because those two ARE the binding an operator
+// described in .env.local: `palai up` is re-run constantly, and a fresh binding each time would leave a pile
+// of duplicates and — worse — move the connection's repository underneath a thread mid-conversation.
+//
+// It matches on default_branch too rather than clone_url alone, so an operator who retargets
+// PALAI_GIT_BASE_BRANCH from `main` to `dev` gets a binding that says `dev` instead of a silently inert
+// change. Same discipline publishedAgentRevision applies to the tool list, one function up.
+func (c *apiClient) ensureRepositoryBinding(identity, cloneURL, branch string) (id string, reused bool, err error) {
+	var page struct {
+		Data []struct {
+			ID            string `json:"id"`
+			CloneURL      string `json:"clone_url"`
+			DefaultBranch string `json:"default_branch"`
+		} `json:"data"`
+	}
+	status, err := c.do(http.MethodGet, "/v1/repository-bindings", nil, &page)
+	switch {
+	case err != nil:
+		return "", false, fmt.Errorf("list repository bindings: %w", err)
+	case status == http.StatusNotFound:
+		return "", false, fmt.Errorf("GET /v1/repository-bindings = 404: this control-plane mounts no repository " +
+			"binding surface, so a repository cannot be bound to a Slack workspace on this stack")
+	case status != http.StatusOK:
+		return "", false, fmt.Errorf("GET /v1/repository-bindings = %d, want 200", status)
+	}
+	for _, b := range page.Data {
+		if b.CloneURL == cloneURL && b.DefaultBranch == branch {
+			return b.ID, true, nil
+		}
+	}
+	var created struct {
+		ID     string `json:"id"`
+		Detail string `json:"detail"`
+	}
+	// allowed_operations is left empty on purpose and it is NOT a permission grant this omits: nothing in the
+	// tree reads that column today (it is stored and projected, never evaluated), so writing a list here would
+	// be a security-shaped string that enforces nothing. What actually bounds this agent is the tool list.
+	status, err = c.do(http.MethodPost, "/v1/repository-bindings", map[string]any{
+		"provider":            "github",
+		"repository_identity": identity,
+		"clone_url":           cloneURL,
+		"default_branch":      branch,
+	}, &created)
+	switch {
+	case err != nil:
+		return "", false, fmt.Errorf("register the repository binding: %w", err)
+	case status != http.StatusCreated || created.ID == "":
+		return "", false, fmt.Errorf("POST /v1/repository-bindings = %d, want 201 with an id: %s", status, created.Detail)
+	}
+	return created.ID, false, nil
 }
 
 // slackSkipWarning turns a registration skip into the report's WARNING section — but only when the
@@ -1185,9 +1343,17 @@ func sameTools(a, b []string) bool {
 // "Give this agent nothing" is a real posture and needs to stay reachable, so it has an explicit spelling:
 // SLACK_AGENT_TOOLS=none. Blank is treated as unset, because a variable that got emptied by a stray line in
 // .env.local should not silently disarm the agent.
-func slackAgentTools(get func(string) string) []string {
+//
+// hasRepository is E22 T3's ONE conditional, and the condition is what makes it honest: the workspace tools
+// are added only when this bring-up actually bound a repository. A tool whose every call ends in "no
+// workspace bound for this run" is worse than an absent tool — it is an advertised capability that cannot
+// work, which is the shape E21 T5 already paid for from the other direction (a real tool no list named).
+func slackAgentTools(get func(string) string, hasRepository bool) []string {
 	raw := strings.TrimSpace(get("SLACK_AGENT_TOOLS"))
 	if raw == "" {
+		if hasRepository {
+			return append(append([]string{}, slackDefaultTools...), slackRepositoryTools...)
+		}
 		return slackDefaultTools
 	}
 	if strings.EqualFold(raw, "none") {
@@ -1216,6 +1382,19 @@ func slackAgentTools(get func(string) string) []string {
 // TestEverySlackDefaultToolResolves is the guard, and it lives control-plane-side because that is the only
 // place that can see both this list and the real broker.
 var slackDefaultTools = []string{"palai.research.fetch", "palai.knowledge.retrieve", "palai.slack.search"}
+
+// slackRepositoryTools are added to the list above ONLY when this bring-up bound a repository to the Slack
+// connection (E22 T3). They are the coding half — read a file, run a command, commit — and every one of them
+// refuses cleanly without a workspace root, which is precisely why they are conditional rather than default:
+// binding them to a connection with no repository would advertise three tools whose every call answers "no
+// workspace bound for this run".
+//
+// palai.publish.push and palai.publish.pull_request are DELIBERATELY ABSENT, and their absence is a
+// statement rather than an omission (E22 T4 owns them). After this bring-up the agent can WRITE code and
+// cannot PUBLISH it, and the boundary between those two is structural — a human's Approve button — not a
+// line in a tool list somebody could have forgotten. Keeping them apart in two epics is how that stays
+// visible.
+var slackRepositoryTools = []string{"palai.workspace.file", "palai.workspace.shell", "palai.workspace.commit"}
 
 // putSecretRef stores one credential VALUE under its handle through the E13 T3 secret store — the
 // SAME write-path a production tenant uses, envelope-encrypted at rest and resolved fresh, so the

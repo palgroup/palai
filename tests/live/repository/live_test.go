@@ -185,3 +185,93 @@ func envOr(key, def string) string {
 	}
 	return def
 }
+
+// ============================================================================
+// E22 T3 leg: the repository a SLACK THREAD was bound to, cloned for real.
+// ============================================================================
+//
+// WHAT THIS ADDS TO THE FILE ABOVE, and it is one decision rather than one more clone: a Slack
+// connection's default_policy carries repository_binding_id and — optionally — repository_ref, and T3
+// leaves the ref EMPTY on purpose. Empty falls back to the binding's default_branch (Request.DefaultBranch
+// here), which is ALSO the base a publication targets (RunPublicationTarget reads rb.default_branch). One
+// value, so the branch the agent edits and the branch its pull request targets cannot disagree.
+//
+// That fallback is asserted against a REAL remote, because it is the kind of claim a fake remote agrees
+// with whatever it does: this is where PALAI_GIT_BASE_BRANCH is proven to be the branch actually checked
+// out. It runs no control plane and no Slack — it proves the seam under the connection's policy.
+func TestLiveSlackBoundRepositoryClonesAtItsBaseBranch(t *testing.T) {
+	cloneURL := os.Getenv("PALAI_GIT_CLONE_URL")
+	if cloneURL == "" {
+		t.Skip("PALAI_GIT_CLONE_URL is required for the live Slack-bound repository leg (E22 §0.2)")
+	}
+	base := os.Getenv("PALAI_GIT_BASE_BRANCH")
+	if base == "" {
+		t.Skip("PALAI_GIT_BASE_BRANCH is required for the live Slack-bound repository leg (E22 §0.2)")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+	ctx := context.Background()
+	broker, tier := liveBroker(t, cloneURL)
+	t.Logf("live Slack-bound repository tier: %s (base branch %s)", tier, base)
+
+	target := t.TempDir()
+	repoDir := filepath.Join(target, "repo")
+	res, err := repositories.Prepare(ctx, broker, repositories.Request{
+		CloneURL: cloneURL,
+		// EMPTY — the whole point. A Slack connection that names no repository_ref must land on the
+		// binding's default_branch, which is what §0.2's PALAI_GIT_BASE_BRANCH becomes.
+		RequestedRef:  "",
+		DefaultBranch: base,
+		TargetDir:     repoDir,
+		SecretsDir:    t.TempDir(),
+		WorkBranch:    "agent/live_ses_e22t3/live_run_e22t3",
+		Audience: repositories.Audience{
+			Organization: "org_live", Project: "prj_live", Run: "run_live_e22t3", AttemptFence: 1, ToolCall: "provision",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Prepare() with an EMPTY requested ref error = %v — a Slack connection that names no "+
+			"repository_ref must still clone", err)
+	}
+	if res.Receipt.RequestedRef != "" {
+		t.Fatalf("receipt.requested_ref = %q, want empty: the receipt must record that NO ref was asked for, "+
+			"or the provenance claims a choice nobody made", res.Receipt.RequestedRef)
+	}
+	// The exact commit the empty ref resolved to must BE the base branch's tip on the remote. Read from the
+	// remote rather than from the local clone: the local checkout is what we are testing, so believing it
+	// would make the assertion circular.
+	tip := gitOutput(t, target, "ls-remote", cloneURL, "refs/heads/"+base)
+	if tip == "" {
+		t.Fatalf("the remote has no refs/heads/%s: PALAI_GIT_BASE_BRANCH names a branch that does not exist, "+
+			"so every pull request from this workspace would target nothing", base)
+	}
+	if head := strings.Fields(tip)[0]; head != res.Receipt.BaseCommit {
+		t.Fatalf("an empty requested ref resolved to %s but refs/heads/%s is %s: the branch the agent edits and "+
+			"the branch its pull request targets have diverged, which is exactly what leaving the ref empty "+
+			"exists to prevent", res.Receipt.BaseCommit, base, head)
+	}
+	// NO WORKTREE CREDENTIAL SCAN HERE, and the omission is measured rather than lazy: scanWorktree greps
+	// the CLONED SOURCE for credential SHAPES, which is sound for REP-003's fixed repository and a false
+	// positive generator for an arbitrary customer one. Run against this very repository on 2026-07-28 it
+	// failed on adapters/integrations/a2a/pusher_test.go, whose fixture contains a `://user:pass@host` URL.
+	// The credential-absence claim is TestLiveRepositoryCloneCredentialAbsent's and is not weakened by
+	// leaving it there; this leg's claim is the BRANCH, and a test that fails on the contents of the
+	// customer's repository proves nothing about either.
+	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
+		t.Fatalf("no .git in the prepared tree at %s: %v", repoDir, err)
+	}
+}
+
+// gitOutput runs git in dir and returns its trimmed stdout, failing the test on error.
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	var out, errBuf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errBuf
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git %s: %v (%s)", strings.Join(args, " "), err, errBuf.String())
+	}
+	return strings.TrimSpace(out.String())
+}

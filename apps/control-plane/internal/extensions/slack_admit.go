@@ -351,8 +351,15 @@ func (a *SlackAdmitter) Admit(ctx context.Context, conn api.SlackConnectionRef, 
 		Body:               body,
 		Store:              true,
 		AgentRevisionID:    target.agentRevisionID,
-		MaxConcurrentRuns:  a.limits.MaxConcurrentRuns,
-		MaxQueuedRuns:      a.limits.MaxQueuedRuns,
+		// THE REPOSITORY, and it comes from the CONNECTION exactly like the revision above it (E22 T3). This
+		// is the one line that makes a Slack thread a place code can be written: admission attaches the
+		// session's coding workspace from it, provisionRootWorkspace clones into that allocation, and the
+		// five workspace tools stop answering "no workspace bound for this run". Empty leaves the run
+		// non-coding — the pre-E22 behaviour, unchanged to the byte.
+		RepositoryBindingID: target.repositoryBindingID,
+		RepositoryRef:       target.repositoryRef,
+		MaxConcurrentRuns:   a.limits.MaxConcurrentRuns,
+		MaxQueuedRuns:       a.limits.MaxQueuedRuns,
 	})
 	if err != nil {
 		return api.SlackAdmitOutcome{}, err
@@ -678,19 +685,32 @@ func (a *SlackAdmitter) lockThread(ctx context.Context, key string) (release fun
 	}, true, nil
 }
 
-// slackRunTarget is what a connection's default_policy says to run and as whom. Both come from the CONNECTION
-// row; neither can be influenced by a payload.
+// slackRunTarget is what a connection's default_policy says to run, as whom, and — since E22 T3 — AGAINST
+// WHICH REPOSITORY. All of them come from the CONNECTION row; none can be influenced by a payload.
+//
+// The repository half is what makes a Slack thread able to touch code at all. Before it, a Slack-born run was
+// STRUCTURALLY non-coding: this struct carried nothing that could name a repo, so the AdmitRequest below left
+// RepositoryBindingID empty, no coding workspace was attached to the session, and every workspace tool
+// answered "no workspace bound for this run" however completely the deployment was configured.
 type slackRunTarget struct {
 	agentRevisionID string
 	principal       string
+	// repositoryBindingID / repositoryRef are OPTIONAL: a connection that binds no repository is valid and
+	// behaves exactly as it did before E22. When set, the binding is verified to exist IN THIS TENANT during
+	// admission (RepositoryBindingExists) — a foreign id is refused there, with the same answer an unknown id
+	// gets, rather than becoming a clone that fails minutes later.
+	repositoryBindingID string
+	repositoryRef       string
 }
 
 // runTarget decodes and validates default_policy. Fail-closed on every branch: no principal, no revision, or
 // a principal belonging to another tenant all refuse the admission rather than guess a default.
 func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionRef) (slackRunTarget, error) {
 	var policy struct {
-		AgentRevisionID string `json:"agent_revision_id"`
-		PrincipalID     string `json:"principal_id"`
+		AgentRevisionID     string `json:"agent_revision_id"`
+		PrincipalID         string `json:"principal_id"`
+		RepositoryBindingID string `json:"repository_binding_id"`
+		RepositoryRef       string `json:"repository_ref"`
 	}
 	if len(conn.RunPolicy) > 0 {
 		if err := json.Unmarshal(conn.RunPolicy, &policy); err != nil {
@@ -714,7 +734,15 @@ func (a *SlackAdmitter) runTarget(ctx context.Context, conn api.SlackConnectionR
 	case err != nil:
 		return slackRunTarget{}, fmt.Errorf("resolve slack run principal: %w", err)
 	}
-	return slackRunTarget{agentRevisionID: policy.AgentRevisionID, principal: policy.PrincipalID}, nil
+	// The repository is NOT resolved here, and that is deliberate rather than an omission: admission already
+	// verifies a binding against the tenant inside its own transaction (RepositoryBindingExists), so checking
+	// it a second time here would be a read that can disagree with the one that counts.
+	return slackRunTarget{
+		agentRevisionID:     policy.AgentRevisionID,
+		principal:           policy.PrincipalID,
+		repositoryBindingID: policy.RepositoryBindingID,
+		repositoryRef:       policy.RepositoryRef,
+	}, nil
 }
 
 // slackRunInput is the run's input, and the run's input IS THE PROMPT. That is not a design choice made

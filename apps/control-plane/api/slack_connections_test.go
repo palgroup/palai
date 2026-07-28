@@ -393,3 +393,123 @@ func TestSlackConnectionDeleteUnbindsTheWorkspace(t *testing.T) {
 		t.Fatalf("delete = %q under %q, want slkc_1 under the bearer's org", fake.deletedID, fake.repairOrg)
 	}
 }
+
+// ============================================================================
+// E22 T3: the repository half of default_policy.
+// ============================================================================
+//
+// A Slack-born run was STRUCTURALLY non-coding until this shape grew: nothing a connection could say named a
+// repository, so the admission bridge left RepositoryBindingID empty and the run provisioned no workspace.
+// The two fields are the WHOLE of that change on this surface — and the interesting requirement is not that
+// they are accepted, it is that the struct did not open and that a connection which names neither is
+// byte-for-byte the connection it was before.
+
+// TestSlackDefaultPolicyAcceptsARepositoryAndStaysClosed: the two new keys are accepted and canonicalised,
+// and an unknown key beside them is still a 400. Growing a closed shape must not be the same as opening it.
+func TestSlackDefaultPolicyAcceptsARepositoryAndStaysClosed(t *testing.T) {
+	fake := &fakeSlackConnectionAPI{}
+	base := slackConnTestServer(t, fake)
+	resp := do(t, "POST", base+"/v1/slack-connections",
+		`{"team_id":"T1","signing_secret_ref":"r","default_policy":{"agent_revision_id":"arev_1",
+		  "principal_id":"prin_1","repository_binding_id":"repo_1","repository_ref":"feature/x"}}`, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("a policy naming a repository = %d, want 201", resp.StatusCode)
+	}
+	var forwarded struct {
+		DefaultPolicy slackDefaultPolicy `json:"default_policy"`
+	}
+	if err := json.Unmarshal(fake.createdBody, &forwarded); err != nil {
+		t.Fatalf("the store seam did not receive JSON: %v", err)
+	}
+	if forwarded.DefaultPolicy.RepositoryBindingID != "repo_1" || forwarded.DefaultPolicy.RepositoryRef != "feature/x" {
+		t.Fatalf("the repository did not reach the store: %+v", forwarded.DefaultPolicy)
+	}
+
+	// The closure is still real: a key beside the four is refused, exactly as it was when there were two.
+	fake = &fakeSlackConnectionAPI{}
+	base = slackConnTestServer(t, fake)
+	resp2 := do(t, "POST", base+"/v1/slack-connections",
+		`{"team_id":"T1","signing_secret_ref":"r","default_policy":{"agent_revision_id":"a","principal_id":"p",
+		  "repository_binding_id":"repo_1","clone_url":"https://evil.test/x.git"}}`, nil)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("an unknown key beside the repository = %d, want 400 — a destination must never be settable "+
+			"from a policy document, only resolvable from a registered binding", resp2.StatusCode)
+	}
+	if fake.createdBody != nil {
+		t.Fatalf("the refused body still reached the store: %q", fake.createdBody)
+	}
+}
+
+// TestSlackDefaultPolicyWithoutARepositoryIsBitUnchanged is the compatibility claim, asserted on the BYTES
+// rather than on behaviour: a registration that names no repository must hand the store the same two-key
+// document it always did. `omitempty` is what makes that true, and this test is what makes it stay true.
+func TestSlackDefaultPolicyWithoutARepositoryIsBitUnchanged(t *testing.T) {
+	fake := &fakeSlackConnectionAPI{}
+	base := slackConnTestServer(t, fake)
+	resp := do(t, "POST", base+"/v1/slack-connections", goodSlackBody, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+	var forwarded struct {
+		DefaultPolicy json.RawMessage `json:"default_policy"`
+	}
+	if err := json.Unmarshal(fake.createdBody, &forwarded); err != nil {
+		t.Fatalf("the store seam did not receive JSON: %v", err)
+	}
+	const want = `{"agent_revision_id":"arev_1","principal_id":"prin_1"}`
+	if string(forwarded.DefaultPolicy) != want {
+		t.Fatalf("canonical default_policy = %s, want %s — a connection that binds no repository must be "+
+			"byte-identical to the one it was before E22, or every stored row moves for a feature it does not use",
+			forwarded.DefaultPolicy, want)
+	}
+}
+
+// TestSlackDefaultPolicyRefusesARefWithNoBinding: a ref with nothing to check it out of would be accepted,
+// stored, and ignored forever — the settable-but-inert field this repository keeps paying for (a tool no list
+// named, a handle that resolved nowhere). Refused on BOTH write paths, since a revise may not reach a state a
+// create forbids.
+func TestSlackDefaultPolicyRefusesARefWithNoBinding(t *testing.T) {
+	fake := &fakeSlackConnectionAPI{}
+	base := slackConnTestServer(t, fake)
+	resp := do(t, "POST", base+"/v1/slack-connections",
+		`{"team_id":"T1","signing_secret_ref":"r","default_policy":{"agent_revision_id":"a","principal_id":"p",
+		  "repository_ref":"feature/x"}}`, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a ref with no binding = %d, want 400", resp.StatusCode)
+	}
+	if fake.createdBody != nil {
+		t.Fatalf("the refused body still reached the store: %q", fake.createdBody)
+	}
+	patch := do(t, "PATCH", base+"/v1/slack-connections/slkc_1",
+		`{"default_policy":{"agent_revision_id":"a","principal_id":"p","repository_ref":"feature/x"}}`, nil)
+	defer patch.Body.Close()
+	if patch.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a ref with no binding on PATCH = %d, want 400 — a revise may not widen what a create refused",
+			patch.StatusCode)
+	}
+	if fake.patchedID != "" {
+		t.Fatalf("the refused revision reached the store as %q", fake.patchedID)
+	}
+}
+
+// The repair path accepts the repository too: a workspace bound before E22 must be able to GAIN one without
+// being deleted and re-registered — the "a surface without a revise can only ever be wrong once" rule that
+// this file's repair half exists for.
+func TestSlackDefaultPolicyPatchBindsARepositoryToAnExistingConnection(t *testing.T) {
+	fake := &fakeSlackConnectionAPI{}
+	base := slackConnTestServer(t, fake)
+	resp := do(t, "PATCH", base+"/v1/slack-connections/slkc_1",
+		`{"default_policy":{"agent_revision_id":"arev_1","principal_id":"prin_1","repository_binding_id":"repo_1"}}`, nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	const want = `{"agent_revision_id":"arev_1","principal_id":"prin_1","repository_binding_id":"repo_1"}`
+	if string(fake.patched.DefaultPolicy) != want {
+		t.Fatalf("canonical patched policy = %s, want %s", fake.patched.DefaultPolicy, want)
+	}
+}

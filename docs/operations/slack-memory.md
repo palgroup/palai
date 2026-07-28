@@ -100,12 +100,35 @@ The reply arrives in a **thread** under your message. If nothing arrives, §7.
 
 - **It answers.** A mention opens a run, the run answers in the thread, and a publication proposal gets
   Approve/Reject buttons that only `SLACK_APPROVER_IDS` can press.
-- **It has tools, and they are read-only by default.** `palai up` binds `palai.research.fetch` and
-  `palai.knowledge.retrieve` to the revision it creates. Both are read-only, side-effect-free, and work on a
-  plain compose stack. A run whose effective tool set is EMPTY is single-step; this one is not.
+- **It has tools, and they are read-only until you bind a repository.** `palai up` binds
+  `palai.research.fetch`, `palai.knowledge.retrieve` and `palai.slack.search` to the revision it creates. All
+  three are read-only, side-effect-free, and work on a plain compose stack. A run whose effective tool set is
+  EMPTY is single-step; this one is not.
 
-  To give it more — the workspace file and shell tools, commit, push, open a pull request — set
-  `SLACK_AGENT_TOOLS` in `.env.local` to the full list you want, by name:
+- **It can WRITE CODE once a repository is bound, and only then.** Set both of these and `palai up` registers
+  a repository binding, writes it onto the Slack connection, and prints what it made:
+
+  ```
+  PALAI_GIT_CLONE_URL=https://github.com/owner/repo.git
+  PALAI_GIT_BASE_BRANCH=dev
+  PALAI_GIT_REPO=owner/repo          # optional; derived from the clone URL when unset
+  ```
+
+  With a binding the tool list GAINS `palai.workspace.file`, `palai.workspace.shell` and
+  `palai.workspace.commit` — the agent can clone, read, run commands and commit. Without one it does not
+  grow, on purpose: a tool whose every call answers *"no workspace bound for this run"* is worse than a tool
+  that is not offered, because the model keeps trying it. Set only one of the two values and `palai up`
+  WARNS rather than skipping quietly.
+
+  **`PALAI_GIT_BASE_BRANCH` is the branch a pull request will target**, and it is also the branch the agent's
+  clone starts from — one value, so those two cannot disagree. No model is ever asked for it.
+
+  **It can write and it cannot publish.** `palai.publish.push` and `palai.publish.pull_request` are NOT
+  granted by binding a repository; publishing goes through a human's **Approve** button and is configured
+  separately. That separation is deliberate, not an oversight.
+
+  To choose the list yourself — including the publish tools — set `SLACK_AGENT_TOOLS` in `.env.local` to the
+  full list you want, by name. It replaces the default wholesale, repository or not:
 
   ```
   SLACK_AGENT_TOOLS=palai.research.fetch,palai.knowledge.retrieve,palai.workspace.file,palai.workspace.shell
@@ -142,6 +165,7 @@ print differently on purpose:
 | What it says | What is true |
 |---|---|
 | `SKIPPED — …` **plus a WARNING** | `SLACK_TEAM_ID` is set but something else is missing. Nothing was registered. The warning names which value |
+| `registered …` **plus a repository WARNING** | The workspace is wired; no repository is bound, so the agent can read and search but cannot clone, edit or commit. Set `PALAI_GIT_CLONE_URL` + `PALAI_GIT_BASE_BRANCH` |
 | `registered … but NOT CONNECTED: …` | The row exists; Slack never sent `hello`. Almost always the app-level token: check `SLACK_APP_TOKEN` is an `xapp-` with `connections:write`, and that the app is installed |
 | `registered … Socket Mode CONNECTED` | Everything is wired. If it still does not answer, the bot is not **in** the channel — `/invite @Palai` |
 
