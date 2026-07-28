@@ -193,3 +193,12 @@ func indexChecksum(root string) string {
 	}
 	return sum
 }
+
+// RecomputeTreeChecksum restates a manifest's tree checksum from its CURRENT file checksums. It exists for
+// exactly one caller: snapshot.Archive, when a file vanished between the walk and the tar write and had to
+// be removed from the manifest. Leaving the tree checksum as Snapshot computed it would leave the manifest
+// internally inconsistent — the tree would still describe a file the checksums no longer list — and Restore
+// re-derives the tree, so the mismatch surfaces there as corruption rather than as the transient it was.
+func RecomputeTreeChecksum(m *Manifest) {
+	m.TreeChecksum = treeChecksum(m.FileChecksums)
+}

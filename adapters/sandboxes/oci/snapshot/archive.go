@@ -9,8 +9,10 @@ package snapshot
 
 import (
 	"archive/tar"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,6 +33,13 @@ import (
 // This is safe for the restore contract: a capture-order mutation of a captured file is CAUGHT at restore
 // as a checksum mismatch, never silent corruption; only never-captured non-regular entries are omitted.
 func Archive(root string, w io.Writer) (workspace.Manifest, error) {
+	return archiveWith(root, w, archiveFile)
+}
+
+// archiveWith is Archive with the per-file step injected. It exists so the vanished-file branch below is
+// REACHABLE in a test: the race it handles is a file disappearing between Snapshot and the tar write, and
+// a test that deletes the file beforehand never enters the branch at all.
+func archiveWith(root string, w io.Writer, archive func(*tar.Writer, string, string) error) (workspace.Manifest, error) {
 	manifest, err := workspace.Snapshot(root)
 	if err != nil {
 		return workspace.Manifest{}, err
@@ -43,10 +52,31 @@ func Archive(root string, w io.Writer) (workspace.Manifest, error) {
 
 	tw := tar.NewWriter(w)
 	for _, rel := range paths {
-		if err := archiveFile(tw, root, rel); err != nil {
+		err := archive(tw, root, rel)
+		if errors.Is(err, fs.ErrNotExist) {
+			// THE SECOND HALF OF THE SAME RACE workspace.Snapshot handles, and it needs the opposite
+			// remedy. Snapshot checksums a live tree; Archive then re-reads what Snapshot recorded, and a
+			// file can disappear in between — git's background maintenance removing
+			// `.git/objects/maintenance.lock` is the case that found both halves.
+			//
+			// Here the file WAS captured in the manifest, so tolerating it silently would leave the
+			// manifest claiming a file the archive does not contain, and restore checks exactly that
+			// correspondence. So it is removed from BOTH: dropped from the checksums and recorded as an
+			// exclusion, which keeps the invariant restore relies on — the manifest describes precisely
+			// what the archive holds — and keeps the disappearance visible instead of silent.
+			delete(manifest.FileChecksums, rel)
+			manifest.Exclusions = append(manifest.Exclusions, rel)
+			continue
+		}
+		if err != nil {
 			return workspace.Manifest{}, err
 		}
 	}
+	sort.Strings(manifest.Exclusions)
+	// The tree checksum was computed by Snapshot over the files it saw. Any removal above makes it describe
+	// a file the checksums no longer list, and Restore re-derives the tree — so it is restated here or the
+	// transient disappearance arrives at restore looking like corruption.
+	workspace.RecomputeTreeChecksum(&manifest)
 	if err := tw.Close(); err != nil {
 		return workspace.Manifest{}, fmt.Errorf("close snapshot tar: %w", err)
 	}
