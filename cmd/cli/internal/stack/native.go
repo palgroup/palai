@@ -160,7 +160,40 @@ func nativeWorkspaceRoot(get func(string) string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve PALAI_WORKSPACE_ROOT %s: %w", root, err)
 	}
+	if shared, err := worldWritableAncestor(real); err != nil {
+		return "", fmt.Errorf("inspect PALAI_WORKSPACE_ROOT %s: %w", real, err)
+	} else if shared != "" {
+		return "", fmt.Errorf("PALAI_WORKSPACE_ROOT=%s sits under %s, which is world-writable and sticky (drwxrwxrwt): in the native "+
+			"posture every run's workspace, HOME, TMPDIR and CoreSimulator device set live under this root, and there ANY local "+
+			"account — not merely this uid — can create and replace paths beside them, which is weaker than the only boundary this "+
+			"posture has (docs/research/macos-isolation-without-accounts.md §6) — fix: put it somewhere only this user can write, "+
+			"e.g. $HOME/palai/workspaces", real, shared)
+	}
 	return real, nil
+}
+
+// worldWritableAncestor returns the first directory at or above dir that is world-writable AND
+// sticky — the `/private/tmp` and `/Users/Shared` shape — or "" if there is none. It walks the
+// RESOLVED path, because on macOS /tmp is a symlink to /private/tmp and a check that reads the name
+// it was handed is one an everyday alias walks straight through (known-gaps `SUP-2`).
+//
+// Sticky is required, not incidental: it is what distinguishes a shared drop-box from an ordinary
+// directory an operator deliberately made group- or world-writable for their own reasons.
+func worldWritableAncestor(dir string) (string, error) {
+	for {
+		info, err := os.Stat(dir)
+		if err != nil {
+			return "", err
+		}
+		if mode := info.Mode(); mode&os.ModeSticky != 0 && mode.Perm()&0o002 != 0 {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", nil
+		}
+		dir = parent
+	}
 }
 
 // nativeEnv is the environment the native control plane runs with: everything the compose service

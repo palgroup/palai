@@ -75,31 +75,96 @@ host it is a child of the control-plane process, so without an explicit list it 
 operator's own environment: `SLACK_BOT_TOKEN`, `PALAI_GITHUB_APP_*`, the master key, cloud
 credentials.
 
-The command receives exactly these, and **nothing else**:
+The command receives exactly these six, and **nothing else** — three **inherited** from the control
+plane, three **derived** from the run's own workspace allocation:
 
 ```
-PATH  HOME  TMPDIR  LANG  DEVELOPER_DIR
+inherited:  PATH  LANG  DEVELOPER_DIR
+derived:    HOME  TMPDIR  PALAI_SIMCTL_SET
 ```
 
-It is built *from* that list rather than filtered *against* a deny-list, so a variable nobody thought
-of cannot arrive (`TestHostShellDropsTheOperatorsEnvironment` runs `env` and fails on any name
-outside the list). A variable unset on the control plane is unset for the command too — never
-defaulted.
+The inherited half is built *from* that list rather than filtered *against* a deny-list, so a
+variable nobody thought of cannot arrive (`TestHostShellDropsTheOperatorsEnvironment` runs `env` and
+fails on any name outside the list). A variable unset on the control plane is unset for the command
+too — never defaulted.
 
-Consequence for operators: **the control plane's own `PATH` is the agent's `PATH`.** A LaunchAgent
-gets a minimal one, so Homebrew tools (`axe`) are missing unless you set it. See §3.
+The derived half is §2's per-session separation, and it points at
+`<allocation>/.palai-session/{home,tmp,simulators}`. Two runs at once get two of each
+(`TestHostShellGivesConcurrentAllocationsDisjointSessionDirectories`,
+`TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac`). They are **created by the runner**, so
+a variable never points at a directory that does not exist; a directory that cannot be created is an
+error rather than a fallback to the operator's own.
+
+Two consequences an operator should expect, both deliberate:
+
+- **The control plane's own `PATH` is the agent's `PATH`.** A LaunchAgent gets a minimal one, so
+  Homebrew tools (`axe`) are missing unless you set it. See §3.
+- **The agent's `git` has no `~/.gitconfig`**, because `HOME` is no longer yours. `git commit` in a
+  workspace therefore fails with *"Author identity unknown"* unless the argv sets one
+  (`git -c user.name=… -c user.email=…`). That is the correct outcome — a run should not commit as
+  the operator — and publishing does not go through this path anyway: `push`/`pull_request` are the
+  repositories adapter, which carries its own identity.
 
 ## 2. The operating rule
 
 Not code. An operating rule, and it is the only thing between two customers on one machine:
 
-> **Different customers → different Macs** (or, at the very least, different uids).
-> **Same customer → one Mac** is fine: per-session directories plus a per-session `simctl --set`.
+> **Different customers → different Macs (or different uids). Same customer → one Mac, per-session directories plus `simctl --set`.**
 
 Source: `docs/research/macos-isolation-without-accounts.md` §6 (measured 2026-07-27/28). The
 per-session half is accident-prevention, **not a security boundary** — any process under the same uid
-can point `--set` at another session's device set. `docs/operations/mac-sessions.md` is the operator
-page for that half.
+can point `--set` at another session's device set (research T22). `docs/operations/mac-sessions.md`
+is the operator page for the density half of it, and `docs/operations/known-gaps-1.0.md` carries the
+same sentence as row `MAC-P6`.
+
+### 2.1 What the runner separates, and what it cannot — MEASURED 2026-07-28
+
+The second half of that rule is now partly mechanical. Every run already had its own workspace
+allocation and ran there as its working directory; what it *also* had, until E22 T2, was the control
+plane's own `HOME` and `TMPDIR` — so two concurrent runs shared one home directory, one DerivedData,
+one set of toolchain caches, and the operator's `~/.ssh` and `~/.gitconfig` sat in it. Now each run
+gets `<allocation>/.palai-session/{home,tmp,simulators}` (§1.1).
+
+**The question that decided the design (E22 X20) was measured before anything was built, and the
+answer was not the convenient one.**
+
+> **Does `CoreSimulatorService` resolve the device set from the calling process's `HOME`?**
+> **No.** Measured on this machine on **2026-07-28** (macOS 26.3 / Xcode 26.6): a device created from
+> a shell whose `HOME` was a scratch directory landed in the **default** set
+> (`~/Library/Developer/CoreSimulator/Devices`), was listed identically from both `HOME`s, and left
+> **nothing at all** under the scratch directory (`find` → 0 entries).
+
+The mechanism is why it will not change: `simctl` is a thin client. The device set belongs to
+`com.apple.CoreSimulator.CoreSimulatorService`, a **launchd-managed per-user XPC service** that is
+already running under the login session's own `HOME` — the calling process's `HOME` never reaches
+it.
+
+So the free version of this isolation does not exist, and the fallback is the one the research
+measured (T21): `simctl --set <dir>` partitions device sets cleanly, in both directions. **But
+`--set` is an argv flag, and argv belongs to the model.** The runner rewrites no argv, so it can
+*offer* a per-session device set and can never *enforce* one. That is stated in the name of the
+proof rather than in a comment: **`TestSimctlSetIsAdvisoryNotEnforced`**, which re-runs the X20
+measurement rather than recalling it, so the day `HOME` starts partitioning device sets the test
+fails and this section is what gets fixed.
+
+**What an agent must therefore do** — this is §5's rule, restated here because it is the operator's
+concern too:
+
+```
+xcrun simctl --set "$PALAI_SIMCTL_SET" create "run-device" "iPhone 16"
+xcrun simctl --set "$PALAI_SIMCTL_SET" bootstatus <udid> -b
+```
+
+Omit `--set` and the device goes into the machine-wide default set, where another run can boot, wipe
+or rename it. Nothing stops that; nothing can.
+
+Two ceilings beyond the boundary one, both unmeasured rather than solved:
+
+- **Concurrency is subject to whatever the driving constraint turns out to be.** Whether two runs can
+  `axe tap` at the same time on one Mac **has not been measured**, and this epic does not measure it.
+  Until it is, treat "one driving run per Mac" as the number you can defend.
+- **One Xcode per Mac** (§5). `CoreSimulatorService` knows one active Xcode; switching it kills
+  booted simulators in every session at once, `--set` or not.
 
 ## 3. Launch context — MEASURED 2026-07-28, and the answer was not the expected one
 
@@ -202,6 +267,16 @@ or DNS error inside a container nobody was reading:
   Docker daemon as a bind source the daemon resolves on the host. Because the control plane is
   native, its own path *is* the host path — the trap the split deployment had (a named volume the
   daemon cannot resolve) does not arise, but source and target must still be identical.
+
+**One refusal belongs to the posture rather than to the overlay: `PALAI_WORKSPACE_ROOT` may not sit
+under a world-writable sticky directory.** `/private/tmp` and `/Users/Shared` are both `drwxrwxrwt`,
+and in the native posture every run's workspace, `HOME`, `TMPDIR` and CoreSimulator device set live
+under this root — there, **any local account**, not merely this uid, can create and replace paths
+beside them, which is a rung below the only boundary this posture has (§1). The bring-up refuses it
+and names the offending directory. The check walks the **resolved** path, because `/tmp` is a symlink
+to `/private/tmp` and a check that reads the name it was handed is one an everyday alias walks
+straight through (`TestNativeWorkspaceRootRefusesAWorldWritableParent`,
+`docs/research/macos-isolation-without-accounts.md` §6).
 
 A fourth fact belongs to the bring-up rather than the overlay, and it is the one that bit hardest:
 **the runner must start LAST.** The overlay resets its `depends_on`, so compose has nothing left to
@@ -367,8 +442,35 @@ QuickTime movie"*. Name it `.mov`. Calling it `.mp4` publishes a lie about bytes
 **One Xcode per Mac.** `CoreSimulatorService` knows one active Xcode; switching it kills booted
 simulators.
 
-**Your own environment is five variables** (§1.1). Anything else you expect to inherit is not there,
-and that is deliberate.
+**Always pass `--set "$PALAI_SIMCTL_SET"` to every `simctl` call.** It is your run's own device set,
+it already exists, and it is the only thing keeping another run from booting, wiping or renaming your
+simulators. Omit it and your device goes into the machine-wide default set with everybody else's.
+
+```
+xcrun simctl --set "$PALAI_SIMCTL_SET" create "run-device" "iPhone 16"
+xcrun simctl --set "$PALAI_SIMCTL_SET" bootstatus <udid> -b
+xcrun simctl --set "$PALAI_SIMCTL_SET" io <udid> screenshot shot.png
+```
+
+`--set` must be passed to **every** call in the chain, including the `create` that made the device —
+a device created without it is not in your set and no later `--set` will find it. It is **advice, not
+a fence**: nothing in Palai rewrites your argv, and `HOME` does not do this for you (§2.1, measured).
+`xcodebuild -destination` takes the plain `id=<udid>`; it has no `--set` of its own, which is fine
+because a udid is unambiguous once the device exists.
+
+**Delete what you create.** The set lives inside your allocation and goes away with it, but a device
+still *booted* when that happens leaves a `CoreSimulatorService` process holding a directory that no
+longer exists. End with `xcrun simctl --set "$PALAI_SIMCTL_SET" shutdown all`.
+
+**Your own environment is six variables** (§1.1) — `PATH`, `LANG`, `DEVELOPER_DIR` inherited, and
+`HOME`, `TMPDIR`, `PALAI_SIMCTL_SET` derived from your own workspace allocation. Anything else you
+expect to inherit is not there, and that is deliberate.
+
+**`HOME` is yours, not the operator's**, so nothing you write there touches another run — and nothing
+you *expect* to be there is. There is no `~/.gitconfig`, so `git commit` fails with *"Author identity
+unknown"* until your argv supplies one (`git -c user.name=… -c user.email=…`). There is no `~/.ssh`
+either. Publishing a branch is `push`/`pull_request`, not `git push` — those go through the
+repositories adapter and carry their own credentials.
 
 **Nothing here is a Palai operation.** Every line above is an argv for `palai.workspace.shell`. If a
 command exists on the machine, you can run it; if it does not, you get exit 127 and the machine's own
@@ -380,7 +482,13 @@ message.
 
 | Claim | Proof |
 |---|---|
-| Environment is an allow-list | `TestHostShellDropsTheOperatorsEnvironment` |
+| Environment is an allow-list, and `HOME` is **not** the operator's | `TestHostShellDropsTheOperatorsEnvironment` |
+| Two concurrent runs get disjoint `HOME`/`TMPDIR`/`PALAI_SIMCTL_SET`, and neither sees the other's files | `TestHostShellGivesConcurrentAllocationsDisjointSessionDirectories`, `TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac` (`make test-component TEST=native-shell`) |
+| **`simctl --set` is advice this runner cannot enforce**, and `HOME` does not select the device set (X20) | `TestSimctlSetIsAdvisoryNotEnforced` — the ceiling is in the NAME |
+| The X20 and T21 measurements, re-run against real devices rather than recalled | `TestLiveMacHostHomeDoesNotSelectTheSimulatorDeviceSet` (`make test-live-mac`) |
+| A run's session directory never enters a workspace snapshot | `TestSnapshotSkipsThePerSessionDirectoryAsASubtree` |
+| A workspace root under `/private/tmp` or `/Users/Shared` is refused at bring-up, on the RESOLVED path | `TestNativeWorkspaceRootRefusesAWorldWritableParent` |
+| The operating rule is word-for-word in both operator pages, with its source and date | `TestTheMacOperatingRuleIsVerbatimInBothOperatorPages` |
 | `ReadOnly` refuses rather than running writable | `TestHostShellRefusesAReadOnlyAttempt` |
 | Output bounded, secrets redacted, workspace is the cwd | `TestHostShellBoundsOutput`, `TestHostShellRunsInTheWorkspaceRootAndRedactsSecrets` |
 | Wall time kills the process **group** | `TestHostShellWallTimeKillsTheWholeProcessGroup` |

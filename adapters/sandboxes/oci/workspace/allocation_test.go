@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +16,45 @@ func writeFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// TestSnapshotSkipsThePerSessionDirectoryAsASubtree covers the consequence E22 T2 created for this
+// package. The native posture gives every run its own HOME, TMPDIR and CoreSimulator device set
+// under <allocation>/.palai-session — and Snapshot walks the ALLOCATION, so without this rule a
+// snapshot would os.ReadFile a booted simulator's device bundle into the control plane's memory and
+// checksum it as if it were the run's repository.
+//
+// It is skipped as a SUBTREE with ONE exclusion entry, not enumerated: listing each cache file as an
+// exclusion would cost the walk it is meant to avoid.
+func TestSnapshotSkipsThePerSessionDirectoryAsASubtree(t *testing.T) {
+	root := t.TempDir()
+	if err := Prepare(root); err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	writeFile(t, filepath.Join(root, RepoDir, "app.go"), "package main\n")
+	writeFile(t, filepath.Join(root, SessionDir, "home", "Library", "Caches", "big"), "machine-local runtime state")
+	writeFile(t, filepath.Join(root, SessionDir, "simulators", "device", "data"), "a simulator device bundle")
+
+	manifest, err := Snapshot(root)
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if _, ok := manifest.FileChecksums["repo/app.go"]; !ok {
+		t.Fatalf("the workspace's own file went missing: %v", manifest.FileChecksums)
+	}
+	for path := range manifest.FileChecksums {
+		if strings.HasPrefix(path, SessionDir+"/") {
+			t.Fatalf("per-session runtime state %q was checksummed into the snapshot", path)
+		}
+	}
+	if !slices.Contains(manifest.Exclusions, SessionDir) {
+		t.Fatalf("the skipped subtree is not recorded in the exclusion manifest %v — a snapshot must say what it left out", manifest.Exclusions)
+	}
+	for _, e := range manifest.Exclusions {
+		if strings.HasPrefix(e, SessionDir+"/") {
+			t.Fatalf("the session subtree was ENUMERATED (%q) rather than skipped; the walk paid the cost the rule exists to avoid", e)
+		}
 	}
 }
 

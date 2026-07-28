@@ -17,6 +17,39 @@ import (
 
 const macHostDoc = "docs/operations/palai-on-a-mac.md"
 
+// macOperatingRule is the whole of E22 T2's answer to "can two customers share a Mac". It is asserted
+// WORD FOR WORD in both operator pages because the two halves are not separable: the second sentence
+// reads as a general permission without the first, and the first reads as a prohibition on
+// concurrency without the second.
+const macOperatingRule = "Different customers → different Macs (or different uids). " +
+	"Same customer → one Mac, per-session directories plus `simctl --set`."
+
+// collapse folds every whitespace run to a single space, so a rule quoted verbatim may still be
+// WRAPPED to fit a markdown page. Wrapping is not an edit; a changed word is.
+func collapse(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// TestTheMacOperatingRuleIsVerbatimInBothOperatorPages is the one guard E22 T2 needs most, because
+// the deliverable is a SENTENCE rather than a mechanism. The per-session separation this task builds
+// is accident prevention and nothing more (research T22: any same-uid process can point `simctl
+// --set` at another session's device set), so the rule is the only thing standing between two
+// customers on one machine. A page that carries the code but drops the sentence has shipped the
+// weaker half and kept the stronger name.
+func TestTheMacOperatingRuleIsVerbatimInBothOperatorPages(t *testing.T) {
+	want := collapse(macOperatingRule)
+	for _, page := range []string{macHostDoc, "docs/operations/known-gaps-1.0.md"} {
+		doc := collapse(readDoc(t, page))
+		if !strings.Contains(doc, want) {
+			t.Errorf("%s does not carry the operating rule verbatim:\n\t%s", page, want)
+		}
+		// A rule with no provenance is an opinion. Both pages must name the measurement and its date.
+		for _, cite := range []string{"docs/research/macos-isolation-without-accounts.md", "2026-07-28"} {
+			if !strings.Contains(doc, cite) {
+				t.Errorf("%s states the operating rule without citing %q", page, cite)
+			}
+		}
+	}
+}
+
 // TestPalaiOnAMacCitesTestsThatExist walks every `TestX` the page names and fails on one this tree
 // cannot produce. The page's evidence table is its whole claim to being true rather than merely
 // confident.
@@ -75,15 +108,29 @@ func TestPalaiOnAMacQuotesThePostureTheBinaryParses(t *testing.T) {
 	}
 
 	// The allow-list is the page's sharpest promise to an agent AND its sharpest promise to an
-	// operator; it must match the runner's own list, name for name.
+	// operator; it must match the runner's own list, name for name. Since E22 T2 the list has two
+	// halves — three variables INHERITED from the control plane and three DERIVED from the run's own
+	// allocation — and the page states both, because an agent that believes HOME is the operator's
+	// home writes argv against the wrong directory.
 	exec := readDoc(t, "adapters/sandboxes/host/exec.go")
-	for _, name := range []string{"PATH", "HOME", "TMPDIR", "LANG", "DEVELOPER_DIR"} {
+	for _, name := range []string{"PATH", "LANG", "DEVELOPER_DIR", "HOME", "TMPDIR", "PALAI_SIMCTL_SET"} {
 		if !strings.Contains(exec, `"`+name+`"`) {
 			t.Errorf("%s promises the command receives %s and the host runner does not pass it", macHostDoc, name)
 		}
+		if !strings.Contains(doc, name) {
+			t.Errorf("%s does not name %s, which the host runner puts in every command's environment", macHostDoc, name)
+		}
 	}
-	if !strings.Contains(doc, "PATH  HOME  TMPDIR  LANG  DEVELOPER_DIR") {
-		t.Errorf("%s no longer states the environment allow-list verbatim", macHostDoc)
+	if !strings.Contains(doc, "PATH  LANG  DEVELOPER_DIR") || !strings.Contains(doc, "HOME  TMPDIR  PALAI_SIMCTL_SET") {
+		t.Errorf("%s no longer states the environment allow-list verbatim, inherited half and derived half", macHostDoc)
+	}
+
+	// The per-session directory name is DUPLICATED rather than imported: the oci workspace package
+	// pulls in the whole Docker client and the native posture's executor is the one package that must
+	// not. Two spellings that drift silently would put a run's HOME back into every snapshot.
+	if !strings.Contains(exec, `sessionDir = ".palai-session"`) ||
+		!strings.Contains(readDoc(t, "adapters/sandboxes/oci/workspace/allocation.go"), `SessionDir = ".palai-session"`) {
+		t.Error("the per-session directory name no longer agrees between the host executor and the snapshot walker")
 	}
 }
 

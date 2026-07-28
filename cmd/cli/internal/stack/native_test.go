@@ -70,6 +70,56 @@ func TestNativeWorkspaceRootRefusesUnsetAndRelativePaths(t *testing.T) {
 	}
 }
 
+// TestNativeWorkspaceRootRefusesAWorldWritableParent is E22 T2's half of fact 3, and it is the one
+// place this epic can refuse something rather than merely document it.
+//
+// In the native posture the boundary is the uid, and every run's workspace, HOME, TMPDIR and
+// CoreSimulator device set live under this root. `/private/tmp` and `/Users/Shared` are `drwxrwxrwt`
+// — world-writable with the sticky bit — so a root under either puts all of that where ANY local
+// account, not merely this uid, can create and replace paths alongside it. That is a rung BELOW the
+// only boundary the posture claims, so it is refused at bring-up rather than written down
+// (docs/research/macos-isolation-without-accounts.md §6).
+//
+// The ancestors are checked on the RESOLVED path: /tmp is a symlink to /private/tmp on macOS, and a
+// check that reads the name it was given is a check an ordinary alias walks straight through.
+func TestNativeWorkspaceRootRefusesAWorldWritableParent(t *testing.T) {
+	// A sticky world-writable directory, built rather than borrowed so the case runs anywhere.
+	shared := filepath.Join(t.TempDir(), "shared")
+	if err := os.MkdirAll(shared, 0o777); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(shared, 0o777|os.ModeSticky); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	// Refused when the root IS the sticky directory, and when it is merely UNDER one: an attacker who
+	// can create `<shared>/palai` before the operator does owns every allocation minted inside it.
+	for name, root := range map[string]string{
+		"the root itself":  shared,
+		"a child of it":    filepath.Join(shared, "workspaces"),
+		"a grandchild":     filepath.Join(shared, "palai", "workspaces"),
+		"through /tmp-ish": filepath.Join(shared, ".", "workspaces"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := nativeWorkspaceRoot(getFrom(map[string]string{"PALAI_WORKSPACE_ROOT": root}))
+			if err == nil {
+				t.Fatal("accepted a workspace root under a world-writable sticky directory — every run's HOME, TMPDIR and device set would sit where any local account can plant a path")
+			}
+			if !strings.Contains(err.Error(), "PALAI_WORKSPACE_ROOT") {
+				t.Fatalf("the refusal does not name the variable: %v", err)
+			}
+			if !strings.Contains(err.Error(), shared) {
+				t.Fatalf("the refusal does not name the offending directory %q, so the operator cannot act on it: %v", shared, err)
+			}
+		})
+	}
+
+	// It must still ACCEPT an ordinary root, or it is a check that refuses everything.
+	if _, err := nativeWorkspaceRoot(getFrom(map[string]string{"PALAI_WORKSPACE_ROOT": filepath.Join(t.TempDir(), "workspaces")})); err != nil {
+		t.Fatalf("an ordinary private path was refused, so the check discriminates nothing: %v", err)
+	}
+}
+
 // TestNativeWorkspaceRootResolvesToOneRealPathOnBothSides is the macOS half of fact 3: /tmp is a
 // symlink to /private/tmp, so a control plane that names one and a daemon that resolves the other
 // bind two different strings for the same directory.
