@@ -53,8 +53,9 @@ palai init
 `palai init` mints, under `${PALAI_HOME}`: the local CA + edge server certificate
 (`ca/ca.crt`, `ca/server.crt`, `ca/server.key`), the bootstrap API key (`api-key`), the
 Postgres password (`secrets/pg-password`), a secret-store master key (`secrets/master-key`), an
-empty provider secret slot — **and `compose/`**, holding `compose.yaml`, `production.yml`,
-`production-entrypoint.sh` and the two `*.env.example` files the binary carries.
+empty provider secret slot, an empty GitHub App key slot (`secrets/github-app-key`) — **and
+`compose/`**, holding `compose.yaml`, `production.yml`, `production-entrypoint.sh` and the two
+`*.env.example` files the binary carries.
 
 ### 2. Regenerate the secret master key and mint the runner token
 
@@ -67,6 +68,15 @@ chmod 600 "${PALAI_HOME}/secrets/master-key"
 
 The boot guard refuses an unset/empty file, an all-zero key, and the placeholder
 `REPLACE_WITH_OPENSSL_RAND_HEX_32`.
+
+A hand-run compose must also create the GitHub App key slot, because compose mounts it on every
+stack and a missing mount source fails `compose up` outright. Empty is the correct value until you
+configure an App — the control-plane never reads the file while `PALAI_GITHUB_APP_ID` is unset:
+
+```sh
+touch "${PALAI_HOME}/secrets/github-app-key"
+chmod 600 "${PALAI_HOME}/secrets/github-app-key"
+```
 
 Mint the one-use runner enrollment token as well — a hand-run compose (unlike `palai local up`)
 does NOT create it, and its bind-mount source must exist as a file:

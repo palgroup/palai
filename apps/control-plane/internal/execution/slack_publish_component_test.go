@@ -133,8 +133,8 @@ func newPublishHarness(t *testing.T) *publishHarness {
 		tenant:    coordinator.Tenant{Organization: redeliveryID("org"), Project: redeliveryID("prj")},
 		sessionID: redeliveryID("ses"), runID: redeliveryID("run"), respID: redeliveryID("resp"),
 		bindingID: redeliveryID("bnd"), remote: "https://github.test/acme/widgets.git",
-		team:      strings.ToUpper(redeliveryID("T")), channel: "C" + redeliveryID("chan"),
-		thread:    "1700000900.000100",
+		team: strings.ToUpper(redeliveryID("T")), channel: "C" + redeliveryID("chan"),
+		thread: "1700000900.000100",
 	}
 	h.botMessageTS = h.thread
 	h.branch = "agent/" + h.sessionID + "/" + h.runID
@@ -533,6 +533,57 @@ func TestPublicationFromSlackTargetsTheBindingsBaseBranch(t *testing.T) {
 		if c.auth != "" && !strings.HasPrefix(c.auth, "Bearer ") {
 			t.Fatalf("outbound Authorization on %s is %q", c.path, c.auth)
 		}
+	}
+}
+
+// TestPublicationFromSlackCeilingAnApproveAfterTheRunEndsDecidesNothing records what E22 T4 does NOT close,
+// because it was MEASURED here rather than reasoned about, and a ceiling nobody wrote down is a ceiling the
+// next task discovers in production.
+//
+// A publication tool returns pending_approval and the model KEEPS GOING: nothing in this tree parks a run on
+// its own pending approval (the only paths to `waiting` are an explicit pause command — coordinator
+// PauseRun — and detach). So the ordinary Slack shape is that the run finishes its answer before any human
+// has looked at Slack. And ApplyApprovalDecision runs under guardRunActive, so the click that arrives after
+// that is not merely refused: Decide returns an ERROR, which the interactivity route answers with a 503 —
+// the human sees Slack report a failure, and the publication stays pending forever.
+//
+// The other half of the same gap is not testable here because the code does not exist: NOTHING in this tree
+// POSTS an approval message. ApprovalMessage has no production caller (E19 T2 wrote that ceiling down in
+// slack_decision.go and it is still true) — the buttons are minted by the live Slack leg and by whatever
+// composes approval UX later. So T4's chain is complete and a human's path to the button is not.
+//
+// This test therefore asserts the CURRENT behaviour so that closing either half is a deliberate change that
+// has to come here and edit it, rather than something that quietly starts working while a stale comment
+// claims otherwise.
+func TestPublicationFromSlackCeilingAnApproveAfterTheRunEndsDecidesNothing(t *testing.T) {
+	ctx := context.Background()
+	h := newPublishHarness(t)
+	h.propose(tools.PushTool(), nil)
+	hash := h.requestHash()
+
+	// The run finishes — which is what a run whose model called a publication tool does today.
+	if _, err := h.spine.ApplyRunTransition(ctx, h.tenant, h.runID, statemachines.RunCmdComplete); err != nil {
+		t.Fatalf("complete the run: %v", err)
+	}
+	_, err := h.bridge.Decide(ctx, h.conn, slack.ApprovalIntent{
+		TeamID: h.team, UserID: "Uapprover", RequestHash: hash, Decision: "approve",
+		ActionID: slack.ActionApprove, ChannelID: h.channel, ThreadTS: h.thread, MessageTS: h.botMessageTS,
+	})
+	if err == nil {
+		t.Fatal("an approve after the run terminated now SUCCEEDS. That is an improvement, not a failure — but " +
+			"this test is the record that it used to 503, so update it (and the honest ceiling in CAS-002) " +
+			"rather than deleting it")
+	}
+	if !strings.Contains(err.Error(), "run_terminal") {
+		t.Fatalf("the post-terminal approve failed with %v, want the guardRunActive refusal — if the failure "+
+			"changed shape, the route's answer to the human changed with it", err)
+	}
+	// Nothing was decided and nothing was published: the refusal is safe, it is just not usable.
+	if _, state, _, _, _, _ := h.publicationRow("push_branch"); state != "pending_approval" {
+		t.Fatalf("the publication is %q after a refused post-terminal click, want still pending_approval", state)
+	}
+	if n := h.pump(); n != 0 {
+		t.Fatalf("the publisher was called %d time(s) for a publication no live run could approve", n)
 	}
 }
 
