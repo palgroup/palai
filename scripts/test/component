@@ -859,6 +859,23 @@ run_packaged() {
   echo "component_packaged=PASS"
 }
 
+# The native-shell suite is the ONE component suite that needs no Docker and no Postgres, and that is
+# the measurement it exists to carry (E22 T1): a Mac deployment runs the control plane NATIVELY, so
+# the proof that the agent reaches the host's own toolchain must not itself require a container.
+#
+# -run names the tests EXPLICITLY, and the list below is the allow-list: a proof this list does not
+# name is a proof that never runs, and this tier has shipped green-by-omission before.
+run_native_shell() {
+  go test -tags=component -count=1 -v \
+    -run 'TestNativeShellPostureRunsTheHostsOwnToolchain|TestShellToolStillFailsCleanlyWithNoPostureConfigured' \
+    ./apps/control-plane/internal/execution/tools
+  # The host executor's own guards (environment allow-list, ReadOnly refusal, process-group kill) are
+  # untagged and ride `make verify`; they are re-run here because this suite is what a Mac operator
+  # runs before trusting the posture.
+  go test -count=1 -v ./adapters/sandboxes/host
+  echo "component_native_shell=PASS"
+}
+
 case "$suite" in
   postgres) run_postgres ;;
   packaged) run_packaged ;;
@@ -871,8 +888,9 @@ case "$suite" in
   mcp) run_mcp ;;
   skills) run_skills ;;
   hooks) run_hooks ;;
+  native-shell) run_native_shell ;;
   *)
-    echo "unknown component suite: $suite (known: postgres, packaged, queue, runner, artifacts, repository, remote-tools, tool-sdk, mcp, skills, hooks)" >&2
+    echo "unknown component suite: $suite (known: postgres, packaged, queue, runner, artifacts, repository, remote-tools, tool-sdk, mcp, skills, hooks, native-shell)" >&2
     exit 2
     ;;
 esac
