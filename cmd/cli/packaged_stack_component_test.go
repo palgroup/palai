@@ -38,6 +38,30 @@ func TestPackagedStackComesUpOutsideTheTree(t *testing.T) {
 	if out, err := palai(t, bin, work, env, "init"); err != nil {
 		t.Fatalf("palai init outside the tree: %v\n%s", err, out)
 	}
+	// Armed HERE, before anything that could bring a stack up — including the refusal case below,
+	// which by definition is asserting that a stack does NOT come up and therefore leaks one on
+	// exactly the regression it exists to catch. It ran late once and leaked a four-container
+	// project. Reset is a no-op on a stack that was never created.
+	t.Cleanup(func() {
+		// Deletes this stack's volumes and sweeps its engine sandboxes; it is scoped to the compose
+		// project `init` minted, so a concurrent stack on this host is untouched.
+		if out, err := palai(t, bin, work, env, "local", "reset", "--confirm"); err != nil {
+			t.Errorf("tear the packaged stack down: %v\n%s", err, out)
+		}
+	})
+
+	// The default has to stay honest, and THIS is the machine that can prove it: the suite just
+	// built palai/{control-plane,runner,reference-engine}:local, so those tags are present in the
+	// local daemon right now. With no PALAI_*_IMAGE set, the packaged path must still REFUSE — a
+	// locally-built image that happens to be lying around must never make this path look like it
+	// works for an operator who has no such image. Asserted here rather than in the Docker-free
+	// tier, where "the images are present" is exactly what cannot be established.
+	if out, err := palai(t, bin, work, env, "local", "up"); err == nil {
+		t.Fatalf("packaged `local up` succeeded with no image override, on a host where the :local tags exist — the default is resolving to a locally-built image:\n%s", out)
+	} else if !strings.Contains(out, "no published image default") {
+		t.Fatalf("packaged `local up` refused for the wrong reason (want the published-default refusal):\n%s", out)
+	}
+
 	// The engine ref is handed over as a TAG on purpose: the runner's lease validator accepts only a
 	// bare sha256 config digest, so a packaged bring-up that passed the tag through would come up
 	// healthy here and fail every run afterwards. Passing the tag is what exercises the resolution.
@@ -46,14 +70,6 @@ func TestPackagedStackComesUpOutsideTheTree(t *testing.T) {
 		"PALAI_RUNNER_IMAGE="+refs[1],
 		"PALAI_ENGINE_IMAGE="+refs[2],
 	)
-	t.Cleanup(func() {
-		// Deletes this stack's volumes and sweeps its engine sandboxes; it is scoped to the compose
-		// project `init` minted, so a concurrent stack on this host is untouched.
-		if out, err := palai(t, bin, work, up, "local", "reset", "--confirm"); err != nil {
-			t.Errorf("tear the packaged stack down: %v\n%s", err, out)
-		}
-	})
-
 	if out, err := palai(t, bin, work, up, "local", "up"); err != nil {
 		t.Fatalf("packaged `local up` outside the tree: %v\n%s", err, out)
 	}
