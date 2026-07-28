@@ -834,8 +834,34 @@ run_queue() {
   echo "component_queue=PASS containers=$containers_after volumes=$volumes_after"
 }
 
+# The packaged suite proves the outside-the-tree bring-up: a `palai` binary whose working directory
+# has no deploy/ above it brings up a real stack and every doctor check goes green.
+#
+# It builds the three images HERE because nothing is published — release.yml's publish step is the
+# credential-less dry run (plan §6 leg 2) — so a packaged bring-up can only be driven with locally
+# built ones. They are built SERIALLY and for the host platform only: no buildx, no --platform, no
+# emulation. The Dockerfile paths and contexts are compose.yaml's own (context ../.. from
+# deploy/compose is this repo root).
+#
+# The engine tag is handed to the test as a TAG, not a digest. That is deliberate: resolving it to
+# the bare sha256 config digest the runner's lease requires is part of what the packaged path does,
+# and passing a digest here would test around it.
+run_packaged() {
+  docker build -q -f deploy/compose/control-plane.Dockerfile -t palai/control-plane:local . >/dev/null
+  docker build -q -f deploy/compose/runner.Dockerfile -t palai/runner:local . >/dev/null
+  docker build -q -t palai/reference-engine:local engines/reference >/dev/null
+
+  # -run names the test EXPLICITLY, and the name below is the allow-list: a bring-up proof this
+  # list does not name is a proof that never runs.
+  PALAI_PACKAGED_IMAGES="palai/control-plane:local,palai/runner:local,palai/reference-engine:local" \
+    go test -tags=component -count=1 -v \
+      -run 'TestPackagedStackComesUpOutsideTheTree' ./cmd/cli
+  echo "component_packaged=PASS"
+}
+
 case "$suite" in
   postgres) run_postgres ;;
+  packaged) run_packaged ;;
   queue) run_queue ;;
   runner) run_runner ;;
   artifacts) run_artifacts ;;
@@ -846,7 +872,7 @@ case "$suite" in
   skills) run_skills ;;
   hooks) run_hooks ;;
   *)
-    echo "unknown component suite: $suite (known: postgres, queue, runner, artifacts, repository, remote-tools, tool-sdk, mcp, skills, hooks)" >&2
+    echo "unknown component suite: $suite (known: postgres, packaged, queue, runner, artifacts, repository, remote-tools, tool-sdk, mcp, skills, hooks)" >&2
     exit 2
     ;;
 esac
