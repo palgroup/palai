@@ -27,6 +27,7 @@ import (
 	"time"
 
 	providerone "github.com/palgroup/palai/adapters/models/provider_one"
+	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/adapters/sandboxes/oci"
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/packages/contracts"
@@ -280,4 +281,85 @@ func safePrefix(id string) string {
 		return id[:16]
 	}
 	return id
+}
+
+// ============================================================================
+// E22 T3 leg: what a Slack thread's agent actually reads.
+// ============================================================================
+//
+// THE SENTENCE THIS PROVES is the smallest end-to-end thing a human can watch T3 do: "read the README".
+// Between the connection's repository binding and that sentence sits a layout claim nothing else asserts
+// live — provisionRootWorkspace clones into <allocation>/repo (workspace.RepoDir), and every workspace
+// tool addresses files relative to the ALLOCATION ROOT. If those two disagree, the binding is carried
+// correctly, the clone succeeds, and the agent still cannot find a single file.
+//
+// It runs no control plane, no engine and no model: this is the FILESYSTEM half, deliberately narrow.
+// The provider half is TestLiveWorkspaceMountRealProviderRun above; the admission half is the component
+// tier (TestSlackRunCarriesTheConnectionsRepositoryBinding).
+func TestLiveSlackBoundRepositoryLandsWhereTheWorkspaceToolsLook(t *testing.T) {
+	cloneURL := os.Getenv("PALAI_GIT_CLONE_URL")
+	if cloneURL == "" {
+		t.Skip("PALAI_GIT_CLONE_URL is required for the live Slack-bound workspace leg (E22 §0.2)")
+	}
+	base := os.Getenv("PALAI_GIT_BASE_BRANCH")
+	if base == "" {
+		t.Skip("PALAI_GIT_BASE_BRANCH is required for the live Slack-bound workspace leg (E22 §0.2)")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+
+	allocDir := newAllocation(t)
+	if err := workspace.Prepare(allocDir); err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	// The SAME target directory provisionRootWorkspace computes: filepath.Join(dir, workspace.RepoDir).
+	// Written as that expression rather than "repo" so a change to the constant moves this leg with it.
+	repoDir := filepath.Join(allocDir, workspace.RepoDir)
+	res, err := repositories.Prepare(context.Background(), repositories.NewLocalBroker(), repositories.Request{
+		CloneURL:      cloneURL,
+		DefaultBranch: base,
+		TargetDir:     repoDir,
+		SecretsDir:    filepath.Join(allocDir, "secrets"),
+		WorkBranch:    "agent/live_ses_e22t3/live_run_e22t3",
+		Audience: repositories.Audience{
+			Organization: "org_live", Project: "prj_live", Run: "run_live_e22t3", AttemptFence: 1, ToolCall: "provision",
+		},
+	})
+	if err != nil {
+		t.Fatalf("clone %s at %s into the allocation: %v", cloneURL, base, err)
+	}
+	if res.Receipt.BaseCommit == "" {
+		t.Fatalf("no exact-commit provenance for the cloned tree: %+v", res.Receipt)
+	}
+
+	// A REAL file, addressed the way a workspace tool addresses one: a path RELATIVE TO THE ALLOCATION
+	// ROOT. "repo/README.md" is what the model would name after being told to read the README, and a
+	// checkout that put the tree anywhere else makes that path a 'no such file' the agent cannot debug.
+	entries, err := os.ReadDir(repoDir)
+	if err != nil {
+		t.Fatalf("the clone did not land under %s (workspace.RepoDir): %v — every workspace tool resolves "+
+			"paths against the allocation root, so a tree elsewhere is a tree the agent cannot reach", repoDir, err)
+	}
+	var readable string
+	for _, e := range entries {
+		if !e.IsDir() && e.Name() != ".git" {
+			readable = filepath.Join(workspace.RepoDir, e.Name())
+			break
+		}
+	}
+	if readable == "" {
+		t.Fatalf("the cloned tree under %s has no readable top-level file: %d entries", repoDir, len(entries))
+	}
+	body, err := os.ReadFile(filepath.Join(allocDir, readable))
+	if err != nil {
+		t.Fatalf("read %q relative to the allocation root: %v", readable, err)
+	}
+	t.Logf("a Slack-bound agent can read %q (%d bytes) from allocation %s", readable, len(body), allocDir)
+
+	// The secrets staging area is what provisionRootWorkspace REMOVES before the sandbox sees the tree
+	// (§24 defence-in-depth). Removing it here too keeps this leg's allocation the shape a real run leaves.
+	if err := os.RemoveAll(filepath.Join(allocDir, "secrets")); err != nil {
+		t.Fatalf("remove the secrets staging area: %v", err)
+	}
 }
