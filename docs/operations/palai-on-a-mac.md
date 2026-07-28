@@ -1,0 +1,293 @@
+# Palai on a Mac
+
+A Mac is not a Palai feature. It is a **deployment**. The control-plane binary compiles for
+`darwin/arm64` (25.6 MB, no `//go:build linux` anywhere under `apps/control-plane` or `packages`), so
+the thing that goes to a Mac is **the stack itself** — not a protocol, not a worker, not a typed
+`xcode-simulator` capability.
+
+What follows from that is the whole idea, and it is worth stating flatly:
+
+> **The agent's capabilities are whatever the machine it runs on has.** `xcodebuild`, `xcrun simctl`
+> and `axe` are binaries on a `PATH`. Palai runs an argv. It knows nothing about iOS, and adding an
+> iOS operation to it would be adding a thing that already works.
+
+This page has two readers. An **operator** needs §1–§4: how to run it, what posture it declares, and
+what that posture costs. A **model** needs §5: the host facts that decide whether a session works,
+every one of them measured on this machine rather than recalled.
+
+---
+
+## 1. The posture, and the boundary that is gone
+
+The shell tool runs in one of two postures, and a deployment declares which:
+
+| Variable | Posture | Boundary |
+|---|---|---|
+| `PALAI_SANDBOX_IMAGE=<pinned digest>` | Container | unprivileged uid, **no network**, read-only rootfs, all capabilities dropped, cgroup memory/pid/cpu bounds, process-group destroy |
+| `PALAI_SHELL_NATIVE=unsandboxed-host` | **Host** | **the uid.** Nothing else. |
+
+In the host posture **the boundary is the uid**, and there is nothing behind it.
+
+Setting **both is fatal at boot**. There is no "sometimes sandboxed" state, because in that state
+nobody can read off a deployment where a given call ran
+(`TestShellPostureRefusesBothSandboxImageAndNativeHost`).
+
+`PALAI_SHELL_NATIVE=1` is **refused**. Only the exact string `unsandboxed-host` is accepted, and it
+is a sentence rather than a boolean on purpose: switching off a security boundary should not be
+reachable by the reflex that switches on a feature, and `ps`, `docker inspect` and an env dump should
+say what the posture *is* (`TestShellPostureAcceptsOnlyTheStringThatSaysWhatItIs`).
+
+A stack in the host posture prints **one line** at boot, before anything else:
+
+```
+shell posture: UNSANDBOXED HOST — commands run as this uid with no container boundary, no network
+denial and no resource bound; different customers MUST use different Macs
+(docs/research/macos-isolation-without-accounts.md §6, docs/operations/palai-on-a-mac.md)
+```
+
+**What is actually gone**, stated without softening:
+
+- **No filesystem boundary.** The command runs as the control plane's own uid, in the control plane's
+  own filesystem. `docs/research/macos-isolation-without-accounts.md` measured this on this machine
+  (§2, 23 measurements): under one uid nothing weaker is a boundary — Apple's **supported** App
+  Sandbox was escaped with `simctl spawn`.
+- **No egress denial.** In the container the sandbox denied all network traffic and
+  `ClassifyEgress` was an *audit record on top of* that denial. On the host the finding remains and
+  **the denial does not**: a `curl` in an argv really leaves the machine. The finding is kept
+  precisely so the audit trail does not quietly get shorter.
+- **No resource bound.** No memory ceiling, no pid ceiling, no CPU share. `OOMKilled` is therefore
+  always `false` in this posture — reporting an OOM nobody observed would be worse than reporting
+  none.
+
+**What survives, because it is a property of the result rather than of the container:** bounded
+output (1 MiB stdout / 64 KiB stderr) with a truncation flag, secret redaction over the captured
+bytes, wall-time expiry classified as `TimedOut`, and a **process-group kill** so a reaped
+`xcodebuild` leaves no compiler running.
+
+**And one thing is refused rather than faked:** a `ReadOnly` attempt. That was a read-only bind
+mount; a host has no equivalent, so the runner refuses the call instead of running it writable under
+a read-only name (`TestHostShellRefusesAReadOnlyAttempt`).
+
+### 1.1 The environment is an allow-list
+
+This is the sharpest edge of the swap. In a container the agent's shell inherited **nothing**. On the
+host it is a child of the control-plane process, so without an explicit list it would inherit the
+operator's own environment: `SLACK_BOT_TOKEN`, `PALAI_GITHUB_APP_*`, the master key, cloud
+credentials.
+
+The command receives exactly these, and **nothing else**:
+
+```
+PATH  HOME  TMPDIR  LANG  DEVELOPER_DIR
+```
+
+It is built *from* that list rather than filtered *against* a deny-list, so a variable nobody thought
+of cannot arrive (`TestHostShellDropsTheOperatorsEnvironment` runs `env` and fails on any name
+outside the list). A variable unset on the control plane is unset for the command too — never
+defaulted.
+
+Consequence for operators: **the control plane's own `PATH` is the agent's `PATH`.** A LaunchAgent
+gets a minimal one, so Homebrew tools (`axe`) are missing unless you set it. See §3.
+
+## 2. The operating rule
+
+Not code. An operating rule, and it is the only thing between two customers on one machine:
+
+> **Different customers → different Macs** (or, at the very least, different uids).
+> **Same customer → one Mac** is fine: per-session directories plus a per-session `simctl --set`.
+
+Source: `docs/research/macos-isolation-without-accounts.md` §6 (measured 2026-07-27/28). The
+per-session half is accident-prevention, **not a security boundary** — any process under the same uid
+can point `--set` at another session's device set. `docs/operations/mac-sessions.md` is the operator
+page for that half.
+
+## 3. Launch context — MEASURED 2026-07-28, and the answer was not the expected one
+
+The open question (E22 X21) was whether the control plane must run in a **logged-in user's GUI
+session** to drive a simulator, with a LaunchAgent named in advance as the fallback. The probe ran the
+same three checks in two launch contexts on this machine (macOS 26.3 / Xcode 26.6 / AXe 1.7.0), with
+no `sudo`:
+
+| | (a) Terminal, `launchctl managername = Aqua` | (b) cron job, `launchctl managername = Background` |
+|---|---|---|
+| `xcrun simctl bootstatus <udid> -b` | ✅ | ✅ |
+| `xcrun simctl io <udid> screenshot` | ✅ | ✅ |
+| `open -a Simulator --args -CurrentDeviceUDID` | ✅ (app appeared) | ✅ (app appeared) |
+| `axe describe-ui` / `axe tap` after that | ✅ | ✅ |
+
+Context (b) is a **cron job**: cron runs under a LaunchDaemon in the system bootstrap namespace, so
+its children have **no Aqua session** — the same situation a LaunchDaemon or an `ssh` login gives.
+`ssh` itself was not usable here (Remote Login is off and enabling it needs `sudo`), and
+`launchctl bootstrap user/$UID` refuses without root (`Bootstrap failed: 5: Input/output error`), so
+cron is what supplied the Aqua-less context.
+
+**Result: the launch context is not the discriminator.** Both contexts drove the simulator
+identically. What *is* the discriminator is **time**, and finding that corrected the belief this task
+started from:
+
+- `xcrun simctl bootstatus <udid> -b` returned after **8 s**.
+- `axe describe-ui` **immediately** after that: `Error: No translation object returned for simulator`.
+- **7 s later** the same command returned the tree — **with no Simulator.app window open at all**.
+
+So E22 §3.5 **X5 is wrong as stated**: driving does not need an Aqua window. It needs the device's
+accessibility translation service, which comes up *after* `bootstatus` reports the device booted. The
+original X5 experiment opened a window and waited 12 s; the wait was doing the work.
+
+**What is therefore still untested:** a Mac with **nobody logged in graphically at all**. Both
+contexts above ran while a user was logged in. `open -a Simulator` in context (b) launched the app
+into that logged-in session — with no GUI login there is no session to launch into. Since no window
+is needed, this is likely moot; it is recorded as unmeasured rather than assumed.
+
+**Recommendation, unchanged in shape and now cheaper:** run the control plane as a **LaunchAgent** of
+a logged-in user. Not because a daemon cannot drive a simulator — it can — but because a LaunchAgent
+inherits a sane per-user environment and keeps `HOME` pointing at the user whose
+`~/Library/Developer/CoreSimulator` holds the devices.
+
+```xml
+<!-- ~/Library/LaunchAgents/net.example.palai-control-plane.plist -->
+<key>ProgramArguments</key>
+<array><string>/usr/local/bin/palai-control-plane</string></array>
+<key>EnvironmentVariables</key>
+<dict>
+  <!-- The agent's PATH is this PATH. A LaunchAgent's default has no /opt/homebrew/bin, so `axe`
+       would be missing and every drive call would honestly fail with 127. -->
+  <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin</string>
+  <key>PALAI_SHELL_NATIVE</key><string>unsandboxed-host</string>
+  <key>PALAI_WORKSPACE_ROOT</key><string>/Users/&lt;user&gt;/palai/workspaces</string>
+</dict>
+<key>RunAtLoad</key><true/>
+```
+
+`launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/net.example.palai-control-plane.plist`.
+
+## 4. What still runs in Docker
+
+Postgres, the object store and the **runner** stay in containers; only the control plane goes native.
+
+```sh
+docker compose -f deploy/compose/compose.yaml -f deploy/compose/native-control-plane.yml up -d
+```
+
+The overlay does three things, and each is a fact you would otherwise rediscover the hard way:
+
+- **The in-compose control plane moves into a profile**, so it is not started. It is still there
+  behind `--profile container-control-plane`, which is the A/B you want when something breaks.
+- **The runner reaches the native control plane by the name its certificate already carries.** The
+  stack CA mints exactly one SAN — `control-plane` — and the runner pins exactly one, so the fix is
+  DNS rather than certificates: the overlay aliases `control-plane` to `host-gateway`. Two
+  consequences for you: the native control plane must bind its runner listener on a **routable**
+  interface (`PALAI_RUNNER_LISTEN_ADDR=":8443"`, not `127.0.0.1:8443`), and the URL's port must be
+  the port it binds (`PALAI_RUNNER_PORT`).
+- **The workspace is bound at the same absolute path on both sides.** `PALAI_WORKSPACE_ROOT` is a
+  host absolute path; the control plane hands the runner that path, and the runner hands it to the
+  Docker daemon as a bind source the daemon resolves on the host. Because the control plane is
+  native, its own path *is* the host path — the trap the split deployment had (a named volume the
+  daemon cannot resolve) does not arise, but source and target must still be identical.
+
+`palai up` reads `cfg.BaseURL`, so pointing the CLI at a natively-running control plane is
+configuration, not code.
+
+**Honest state of this overlay:** its three properties are guarded
+(`deploy/compose/native_control_plane_test.go`), and a full bring-up of it has **not** been run here.
+Bringing one up is an operator step, not a test.
+
+---
+
+## 5. Host facts an agent needs
+
+Everything below was measured on this machine on **2026-07-28** (macOS 26.3 / 25D125, Xcode 26.6 /
+17F113, AXe 1.7.0). It is written for a model reading a run's context, so it is phrased as rules.
+
+**Boot deterministically, never with a fixed sleep.**
+
+```
+xcrun simctl bootstatus <udid> -b
+```
+
+`simctl boot` returns long before the device is usable (25 s after boot the screen was still the Apple
+logo). `bootstatus -b` boots if needed and waits.
+
+**`xcrun simctl help` does NOT list `bootstatus`.** It is a real subcommand with its own help, and it
+is missing from the subcommand list — a model that enumerates capabilities from `help` will never
+find the one command that makes a boot deterministic. Also: **`simctl help <subcommand>` prints to
+stderr**, so reading only stdout makes a working subcommand look absent. Both are pinned by
+`TestNativeShellPostureRunsTheHostsOwnToolchain`.
+
+**After `bootstatus`, the device is booted but not yet drivable.** The accessibility translation
+service comes up seconds later (measured: 7 s after an 8 s `bootstatus`). Until it does, `axe`
+answers `Error: No translation object returned for simulator`. **Poll `axe describe-ui` until it
+returns a JSON array; do not sleep a guessed number of seconds.**
+
+**A Simulator.app window is NOT required** to boot, screenshot, record, describe or tap (§3). Opening
+one costs ~12–20 s and is only useful for a human watching.
+
+**`simctl` has no input verbs.** Its 40 subcommands are device management — `boot`, `install`,
+`launch`, `io`, `spawn`, `privacy`, `status_bar`, `ui`, … There is **no** `tap`, `swipe`, `scroll`,
+`press` or `drag`. Driving a UI is `axe`.
+
+**`axe` is the driving tool** (`/opt/homebrew/bin/axe`, MIT, https://github.com/cameroncooke/AXe):
+
+| Need | Command |
+|---|---|
+| read the UI | `axe describe-ui --udid <udid>` |
+| tap a point / an element | `axe tap -x 100 -y 200 --udid <udid>` · `axe tap --label "Sign in" --udid <udid>` |
+| scroll | `axe gesture scroll-down --udid <udid>` (presets: `scroll-up/down/left/right`) |
+| swipe / drag | `axe swipe …` · `axe drag …` |
+| type | `axe type "hello" --udid <udid>` · `axe key`, `axe key-combo` |
+| hardware button | `axe button home --udid <udid>` |
+| several steps, one session | `axe batch …` |
+
+**Ceiling:** `axe` is a third-party tool over Apple's **private** accessibility and HID APIs. An OS
+update can break it; when it breaks, the shell call fails honestly rather than silently doing
+nothing. **Do not use `idb`**: `idb_companion` on this machine is a 2022 build and collides with
+macOS 26's `FrontBoard` on every call, and Meta's WebDriverAgent is archived.
+
+**Build once, test many.** `xcodebuild test` = build + run every time. Prefer:
+
+```
+xcodebuild build-for-testing   -project X.xcodeproj -scheme S -destination 'platform=iOS Simulator,id=<udid>' -derivedDataPath DD CODE_SIGNING_ALLOWED=NO
+xcodebuild test-without-building -xctestrun DD/Build/Products/*.xctestrun -destination 'platform=iOS Simulator,id=<udid>'
+```
+
+`-destination` requires `platform`; `name`/`id` and `OS` narrow it. A **simulator build needs no
+signing identity** — measured: `** BUILD SUCCEEDED **` with `CODE_SIGNING_ALLOWED=NO`, and the
+product is `Signature=adhoc`, `linker-signed`, `TeamIdentifier=not set`.
+
+**Recording is stopped by a signal, and the file is not what you named it.**
+
+```
+xcrun simctl io <udid> recordVideo --codec=h264 --force out.mov & REC=$!; sleep 10; kill -INT $REC; wait $REC
+```
+
+The shell tool returns **one** result and has no signal channel, so the stop belongs in your argv.
+And **`--codec=h264` still writes a QuickTime container**: `file(1)` reports *"ISO Media, Apple
+QuickTime movie"*. Name it `.mov`. Calling it `.mp4` publishes a lie about bytes you produced.
+
+**One Xcode per Mac.** `CoreSimulatorService` knows one active Xcode; switching it kills booted
+simulators.
+
+**Your own environment is five variables** (§1.1). Anything else you expect to inherit is not there,
+and that is deliberate.
+
+**Nothing here is a Palai operation.** Every line above is an argv for `palai.workspace.shell`. If a
+command exists on the machine, you can run it; if it does not, you get exit 127 and the machine's own
+message.
+
+---
+
+## 6. Evidence
+
+| Claim | Proof |
+|---|---|
+| Environment is an allow-list | `TestHostShellDropsTheOperatorsEnvironment` |
+| `ReadOnly` refuses rather than running writable | `TestHostShellRefusesAReadOnlyAttempt` |
+| Output bounded, secrets redacted, workspace is the cwd | `TestHostShellBoundsOutput`, `TestHostShellRunsInTheWorkspaceRootAndRedactsSecrets` |
+| Wall time kills the process **group** | `TestHostShellWallTimeKillsTheWholeProcessGroup` |
+| Missing command is exit 127, not an infrastructure error | `TestHostShellReportsAMissingCommandAsExit127` |
+| Both postures at once is fatal; `=1` refused | `TestShellPostureRefusesBothSandboxImageAndNativeHost`, `TestShellPostureAcceptsOnlyTheStringThatSaysWhatItIs` |
+| No posture ⇒ nil runner ⇒ clean tool failure (unchanged) | `TestShellRunnerFromEnvKeepsItsNilDiscipline`, `TestShellToolStillFailsCleanlyWithNoPostureConfigured` |
+| Boot line names the operating rule and cites the measurement | `TestNativeShellPostureDeclarationNamesTheOperatingRule` |
+| The host's own Xcode answers through the shell tool | `TestNativeShellPostureRunsTheHostsOwnToolchain` (`make test-component TEST=native-shell`) |
+| A real simulator is booted, read, tapped, shot and recorded through argv | `TestLiveMacHostDrivesASimulatorThroughShellCalls` (`make test-live-mac`) |
+| `build-for-testing` / `test-without-building` against a real project | `TestLiveMacHostBuildsAnXcodeProjectThroughShellCalls` (skips without `PALAI_IOS_PROJECT`) |
+| The native overlay starts no second control plane, keeps the certificate's name, binds one path | `TestNativeOverlayDoesNotStartTheContainerControlPlane`, `TestNativeOverlayReachesTheControlPlaneByTheNameOnItsCertificate`, `TestNativeOverlayBindsTheWorkspaceAtTheSameAbsolutePath` |

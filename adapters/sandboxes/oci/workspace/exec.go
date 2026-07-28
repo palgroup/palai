@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -363,22 +362,7 @@ func shellEnv() []string {
 	return []string{"HOME=" + shellMountTarget, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 }
 
-// secretPatterns are the secret shapes masked in shell output before it is displayed or returned
-// (spec §28.8 secret redaction). ponytail: a focused set (provider keys, bearer tokens, GitHub
-// tokens) mirroring the supervisor's stderr redaction; extend it for a new shape rather than
-// reaching for a full-entropy scanner.
-var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`sk-[A-Za-z0-9._-]{6,}`),
-	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._-]{8,}`),
-	regexp.MustCompile(`gh[posu]_[A-Za-z0-9]{20,}`),
-	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),
-}
-
-// redactSecrets masks secret-shaped tokens in captured shell output. The command's own output is
-// untrusted; the executor does not rely on it having redacted itself.
-func redactSecrets(s string) string {
-	for _, pattern := range secretPatterns {
-		s = pattern.ReplaceAllString(s, "***")
-	}
-	return s
-}
+// redactSecrets masks secret-shaped tokens in captured shell output. The patterns and the function
+// live in the broker package beside ShellResult (packages/tool-broker/redact.go) so the host
+// executor masks the SAME shapes: redaction is a property of the result, not of the container.
+func redactSecrets(s string) string { return toolbroker.RedactSecrets(s) }

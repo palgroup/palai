@@ -1,0 +1,51 @@
+# Overlay: the control plane runs NATIVELY on this machine; everything else stays in Docker.
+#
+#   docker compose -f compose.yaml -f native-control-plane.yml up -d
+#
+# This is what a Mac deployment is (E22 T1). The control-plane binary compiles for darwin/arm64, so
+# reaching a Mac's own toolchain — `xcodebuild`, `xcrun simctl`, `axe` — needs no worker protocol and
+# no typed capability: it needs the control plane to BE on the Mac, with the host shell posture
+# declared (`PALAI_SHELL_NATIVE=unsandboxed-host`). Read docs/operations/palai-on-a-mac.md first; it
+# states what that posture deletes.
+#
+# THREE THINGS THIS OVERLAY DOES, and each is one line of why:
+#
+#  1. The in-compose control plane moves into a profile, so it is NOT started. `!reset` would remove
+#     the service and leave the runner's `depends_on` dangling; a profile keeps the definition around
+#     for `--profile container-control-plane`, which is exactly the A/B an operator wants when
+#     something breaks.
+#
+#  2. The runner reaches the native control plane by the name its certificate ALREADY carries.
+#     `cmd/cli/internal/stack/certs.go` mints ONE SAN, `control-plane`, and the runner pins exactly
+#     one (packages/runner/session.go). So the fix is DNS, not certificates: `control-plane` resolves
+#     to the host gateway, and the URL is unchanged. The native control plane must therefore bind its
+#     runner listener on a routable interface — PALAI_RUNNER_LISTEN_ADDR=":${PALAI_RUNNER_PORT}", not
+#     127.0.0.1 — or the container's connection is refused.
+#
+#  3. The workspace is bound at the SAME ABSOLUTE PATH on both sides. The control plane hands the
+#     runner a host path; the runner passes it to the Docker daemon as a bind source, which the daemon
+#     resolves on the HOST. When the control plane is native, its own path IS the host path — the trap
+#     the split deployment had (a named volume the daemon cannot resolve) does not arise, but the
+#     identical-path requirement remains and is what this mount states.
+#
+# NOT PROVEN END TO END HERE. The guard in native_control_plane_test.go checks what can be checked
+# without a machine to burn: the profile, the host-gateway alias, and that the workspace bind is the
+# same absolute path on both sides. A real bring-up of this overlay is an operator leg
+# (docs/operations/palai-on-a-mac.md §4), not a test.
+services:
+  control-plane:
+    profiles: ["container-control-plane"]
+
+  runner:
+    # The native control plane is not a compose service, so there is no health condition to wait on.
+    depends_on: !reset {}
+    environment:
+      # Same DNS name the certificate carries; only the resolution changes (see 2 above).
+      PALAI_CONTROLLER_URL: "https://control-plane:${PALAI_RUNNER_PORT}"
+    extra_hosts:
+      - "control-plane:host-gateway"
+    volumes:
+      # Same absolute path on both sides (see 3 above). PALAI_WORKSPACE_ROOT is the host directory the
+      # native control plane mints allocations under, so the runner sees a run's workspace at exactly
+      # the path the control plane named.
+      - "${PALAI_WORKSPACE_ROOT}:${PALAI_WORKSPACE_ROOT}"
