@@ -176,6 +176,13 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 	}
 	answer := renderSlackReply(o.runState, projection)
 
+	// E22 T5: the artifacts this run's answer POINTS AT are resolved now, before anything is posted, because
+	// a refusal has to be visible in the message a human reads — an artifact over the ceiling is linked and
+	// SAID, never silently dropped. The bytes are published after the answer lands (see below): nothing here
+	// can cost the run its answer (SLK-006).
+	uploads, note := p.resolveUploads(ctx, o, answer)
+	answer += note
+
 	// The documented per-channel rate, held BEFORE the call rather than recovered from after a 429 (the
 	// E19 T2 pacer, reused verbatim — a second pacer would pace against a second budget and neither would
 	// be the workspace's).
@@ -218,6 +225,7 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 		if _, err := a.store.pool.Exec(scoped, storage.Query("MarkSlackReplyDelivered"), o.id, ts); err != nil {
 			log.Printf("slack: closed run %s's stream but could not record its delivery: %v", o.runID, err)
 		}
+		p.publishUploads(ctx, o, token, uploads)
 		// last_bot_message_ts is deliberately NOT moved to a streaming message's ts. That column is the
 		// approval repair's chat.update handle, and whether chat.update works on a message that was streamed
 		// is UNCONFIRMED (S16(b)) — handing the repair a handle we cannot promise is editable would trade a
@@ -246,6 +254,10 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 		// is logged loudly — but there is nothing to undo, and un-posting is not a thing Slack offers.
 		log.Printf("slack: posted the reply for run %s but could not record its delivery: %v", o.runID, err)
 	}
+	// The files go up only now: the row is settled, so a claimed-and-delivered delivery is never re-claimed
+	// and files.completeUploadExternal — "This method can only be called once" — is called once per artifact.
+	p.publishUploads(ctx, o, token, uploads)
+
 	// The answer is now the newest visible bot message in the thread, so it becomes the SLK-006 repair
 	// handle. Best-effort: the message landed either way.
 	if _, err := a.store.pool.Exec(scoped, storage.Query("UpdateThreadMessageTS"),

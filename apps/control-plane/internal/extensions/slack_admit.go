@@ -83,6 +83,11 @@ type SlackAdmitter struct {
 	// The search half (E21 T5), nil until WithSearch. A nil authorizer means the search tool is never
 	// offered to any run, which is the same posture a workspace that never granted search:read.public has.
 	searchAuthorities SearchAuthorizer
+
+	// The artifact UPLOAD half (E22 T5, slack_upload.go), nil until WithArtifactUpload: the read side of the
+	// object store, so an artifact a run produced can reach the thread as a real file. Nil ⇒ a file_ref stays
+	// the link it has always been, which is exactly how this shipped through E20 and E21.
+	runArtifacts RunArtifactStore
 }
 
 // SearchAuthorizer is where a run's Slack-search authority is handed over. It is declared HERE, as the

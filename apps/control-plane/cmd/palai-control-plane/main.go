@@ -248,7 +248,7 @@ func main() {
 		// workspace's PUBLIC channels. Nothing it finds is stored — the Real-time Search API's terms forbid
 		// copying retrieved data, which is the same reason knowledge-vector stays disabled.
 		WithSearch(slackSearchAuthorities)
-	slackBridge = mountSlackFileFetch(slackBridge, artStore, repo.Spine().Pool())
+	slackBridge = mountSlackFileLegs(slackBridge, artStore, repo.Spine().Pool())
 	routerOpts = append(routerOpts, api.WithSlack(slackBridge), api.WithSlackInteractions(slackBridge),
 		api.WithSlackConnections(extensions.NewSlackRegistry(slackStore)))
 	// The queue bridges (E19 T6, spec §34.1-34.5). ONE store serves all three halves: the admin surface
@@ -1206,11 +1206,19 @@ func envDurationOr(name string, def time.Duration) time.Duration {
 	return def
 }
 
-// mountSlackFileFetch mounts the Slack IMAGE leg (E20, extensions/slack_vision.go) onto the bridge: a
-// screenshot dropped in a thread is fetched with the bot token and named by the run's input, so the model can
-// see it. It is gated on the object store because that is where the bytes go — without one there is nothing
-// to put an image in, and a shared file is admitted text-only. `files:read` is the only scope it needs and
-// this app already holds it.
+// mountSlackFileLegs mounts BOTH directions of the Slack file path onto the bridge, because both are gated
+// on the same thing — the object store — and splitting them into two functions would mean two chances to
+// forget one.
+//
+// INBOUND is the IMAGE leg (E20, extensions/slack_vision.go): a screenshot dropped in a thread is fetched
+// with the bot token and named by the run's input, so the model can see it. `files:read`.
+//
+// OUTBOUND is the ARTIFACT UPLOAD leg (E22 T5, extensions/slack_upload.go): an artifact the run produced —
+// a screenshot, a screen recording, a build log — reaches the thread as a real FILE rather than a link.
+// `files:write`, which this app requests for the first time in E22 (deploy/slack/app-manifest.yaml).
+//
+// Without an object store there is nothing to put an inbound image IN and nothing to read an outbound
+// artifact OUT of, so both are off and both say so.
 //
 // IT IS A FUNCTION RATHER THAN THREE LINES IN run() FOR TWO REASONS, both of them things that already went
 // wrong:
@@ -1223,14 +1231,22 @@ func envDurationOr(name string, def time.Duration) time.Duration {
 //     the mount fails a test instead of quietly costing the model its eyes.
 //
 // pool may be nil only in that test: NewWriter stores it and dials nothing until a write.
-func mountSlackFileFetch(bridge *extensions.SlackAdmitter, artStore *artifacts.Store, pool *pgxpool.Pool) *extensions.SlackAdmitter {
+func mountSlackFileLegs(bridge *extensions.SlackAdmitter, artStore *artifacts.Store, pool *pgxpool.Pool) *extensions.SlackAdmitter {
 	if artStore != nil {
-		bridge = bridge.WithFileFetch(http.DefaultClient, artifacts.NewWriter(artStore, pool))
+		// ONE writer serves both legs: it is the same object store and the same pool, and a second instance
+		// would only be a second thing to configure differently by accident.
+		writer := artifacts.NewWriter(artStore, pool)
+		bridge = bridge.WithFileFetch(http.DefaultClient, writer).WithArtifactUpload(writer)
 	}
 	if !bridge.FileFetchReady() {
 		log.Printf("palai control-plane: the Slack image leg is OFF — no object store is configured " +
 			"(PALAI_S3_ENDPOINT is unset), so a screenshot shared in a thread is admitted as text and the run " +
 			"cannot see it")
+	}
+	if !bridge.ArtifactUploadReady() {
+		log.Printf("palai control-plane: the Slack artifact upload leg is OFF — no object store is configured " +
+			"(PALAI_S3_ENDPOINT is unset), so a screenshot or recording a run produces is answered as a link " +
+			"rather than delivered as a file in the thread")
 	}
 	return bridge
 }

@@ -253,6 +253,60 @@ func (w *Writer) ReadImageArtifact(ctx context.Context, org, project, artifactID
 	return mediaType, content, true, nil
 }
 
+// ErrArtifactTooLarge reports an artifact whose ROW says it is over the caller's ceiling. It is a typed
+// refusal rather than a miss because the caller says so out loud (E22 T5: an artifact too big to publish
+// earns an honest sentence, never a silent drop), and because "absent" and "too big" are different facts.
+var ErrArtifactTooLarge = errors.New("artifacts: the artifact is over the caller's ceiling")
+
+// ReadRunArtifact resolves an artifact THE NAMED RUN PRODUCED, within the tenant scope, refusing to read the
+// bytes of anything over maxBytes.
+//
+// It exists as its own method rather than as Read plus two checks at the call site, and both halves of that
+// are deliberate:
+//
+//   - THE RUN IS PART OF THE KEY. Its caller is handed an artifact id that a MODEL wrote into its answer, and
+//     tenant scoping alone would let one run publish another run's artifact — same tenant, different
+//     conversation, and a screenshot from somebody else's thread posted into this one. The run id comes from
+//     the delivery row, which the model never touched.
+//   - THE SIZE IS CHECKED BEFORE THE BYTES ARE READ. The row already knows how big the object is, so a 2 GB
+//     build log is refused for the cost of one SELECT instead of being pulled into the control plane's heap
+//     and then thrown away. That is the difference between a ceiling and a formality.
+//
+// A miss (unknown id, another tenant's id, another run's id, bytes retention already reclaimed) is found=false
+// and no error: the caller renders the same nothing for all of them, which is the §22.6 non-disclosure rule.
+func (w *Writer) ReadRunArtifact(ctx context.Context, org, project, runID, artifactID string, maxBytes int64) ([]byte, int64, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	// run_id is NULLABLE — an inbound artifact is written before the run it belongs to exists
+	// (WriteInboundArtifact) — so it is scanned as a pointer. A NULL owner matches no run, which is the
+	// fail-closed answer: an artifact attached to nothing is not this run's to publish.
+	var owner *string
+	var key, checksum string
+	var size int64
+	err := w.pool.QueryRow(ctx, storage.Query("GetArtifact"), artifactID, org, project).
+		Scan(&owner, &key, &size, &checksum)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, 0, false, nil
+	}
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("read artifact row: %w", err)
+	}
+	if owner == nil || *owner != runID || key == "" {
+		// A foreign run's artifact, or a row retention has scrubbed of its bytes. Both are a miss.
+		return nil, 0, false, nil
+	}
+	if size > maxBytes {
+		return nil, size, true, ErrArtifactTooLarge
+	}
+	body, found, err := w.store.Get(ctx, key)
+	if err != nil {
+		return nil, size, false, err
+	}
+	if !found {
+		return nil, 0, false, nil
+	}
+	return body, size, true, nil
+}
+
 // objectKey lays out the S3 key tenant-first so keys never collide across tenants and a
 // bucket listing groups an org's objects together. The DB read is the authoritative
 // tenant gate; this layout is defense in depth.

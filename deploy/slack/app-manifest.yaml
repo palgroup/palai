@@ -24,6 +24,27 @@
 #     be public, on one of the app's unfurl domains and iframe-embeddable), so the scope has
 #     nothing to do here. An unused scope is standing access (E20 plan §3.5 S13).
 #
+# files:write — GRANTED IN E22, AND THE PRECONDITION E20 NAMED IS WHAT OPENED IT (E22 plan §0.1,
+# decided 2026-07-28).
+#
+# E20 T4 refused this scope in as many words: "FILE UPLOAD IS NOT BUILT (S14) … files:write is a new
+# standing write access, and the iOS scenario does not exist yet." E22 IS that scenario — a run
+# that writes code on a Mac produces a screenshot, a screen recording and a build log, and a link
+# to bytes nobody in the thread can open is not a delivery. So the door opens because the condition
+# written on it came true, not because somebody asked again.
+#
+# WHAT IS BEING GRANTED, in plain words: the app may CREATE files in this workspace and share them
+# into conversations it is already in. It is a WRITE scope, not a read one — it does not let the app
+# see files other people uploaded (that is files:read, granted separately for SLK-005) and it does
+# not let it delete or edit anybody else's. What it does mean is that the bot can put bytes in front
+# of humans, so the bytes it puts there are bounded (8 MiB, our ceiling, not Slack's), named from
+# their own content rather than from anything a model typed, and read only from artifacts the run
+# that is answering actually produced.
+#
+# NOT granting it is a supported outcome, not a failure: leave files:write out, and a run's answer
+# still lands with the artifact as a LINK, exactly as E20 and E21 shipped it. The upload simply
+# fails with `missing_scope`, which is logged, and the answer is untouched.
+#
 # im:history — A POSTURE CHANGE, GRANTED DELIBERATELY (E20 plan §0.2, decided 2026-07-27).
 # E19's manifest refused this scope and said so: "private channels and DMs are out of scope
 # for the first run." The agent panel cannot exist without reversing that, because the panel
@@ -110,6 +131,8 @@ oauth_config:
                             # so a private channel and a group DM stay unreadable.
       - chat:write          # SLK-006, SLK-007 — chat.postMessage AND chat.update
       - files:read          # SLK-005 — fetch a shared file's content
+      - files:write         # SLK-012 (E22 T5) — put a run's own artifact IN the thread. See the block
+                            # at the top of this file before granting it.
       - im:history          # SLK-010 — the ONLY way to receive message.im, i.e. the panel conversation.
                             # A POSTURE CHANGE: see the block at the top of this file before granting it.
       - search:read.public  # TLM-005 — assistant.search.context, the Real-time Search API. THE SECOND POSTURE
