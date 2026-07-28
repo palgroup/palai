@@ -23,8 +23,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/palgroup/palai/adapters/repositories"
 )
@@ -274,4 +276,158 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v (%s)", strings.Join(args, " "), err, errBuf.String())
 	}
 	return strings.TrimSpace(out.String())
+}
+
+// ============================================================================
+// E22 T4 leg: a REAL push and a REAL DRAFT pull request, through a REAL GitHub App.
+// ============================================================================
+//
+// WHAT ONLY A REAL PROVIDER CAN ANSWER, and it is why this leg exists at all: whether the pull request
+// GitHub actually created is a DRAFT. Every deterministic tier around it agrees that it is — the fake PR
+// client in the coding journey returns `in.Draft`, and OpenPullRequest sets `in.Draft = true` a line before
+// calling it (publish.go:233) — so a fake can only ever echo our own belief back. Draft is a state on
+// GitHub's side, and this is the one test that reads it from there.
+//
+// It also closes the destination claim at its far end: the branch appears on the real remote at exactly the
+// approved head, and the pull request's base is the branch §0.2's PALAI_GIT_BASE_BRANCH named.
+//
+// THE CEILING, stated because the shapes are so close: this drives repositories.PushBranch +
+// OpenPullRequest — the BODY of execution.RepositoryPublisher.Publish — rather than the publisher type
+// itself, because Go's internal rule forbids tests/ importing apps/control-plane/internal. What the
+// publisher adds on top (the operation switch, the per-publish temp secrets dir, the receipt shape) is
+// proven against a real spine by the component tier. What is NOT proven anywhere is a merge, a review
+// request or a CI wait: E22 opens a draft and stops.
+//
+// IT WRITES TO A REAL REPOSITORY. The branch is unique per run (nothing is overwritten) and the pull
+// request is a draft against PALAI_GIT_BASE_BRANCH — never main unless the operator pointed the base
+// there. The branch and the PR are LEFT BEHIND on purpose: deleting them would need delete scopes this
+// App is not asked for, and a test that quietly deletes a pull request is worse than one that leaves a
+// visible artifact named after itself.
+func TestLiveApprovedPushAndDraftPullRequest(t *testing.T) {
+	for _, name := range []string{"PALAI_GITHUB_APP_ID", "PALAI_GITHUB_APP_INSTALLATION_ID",
+		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE", "PALAI_GIT_CLONE_URL", "PALAI_GIT_BASE_BRANCH", "PALAI_GIT_REPO"} {
+		if os.Getenv(name) == "" {
+			t.Skipf("%s is required for the live push + draft-PR leg (E22 §0.2)", name)
+		}
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+	cloneURL, base := os.Getenv("PALAI_GIT_CLONE_URL"), os.Getenv("PALAI_GIT_BASE_BRANCH")
+	owner, repo, ok := strings.Cut(os.Getenv("PALAI_GIT_REPO"), "/")
+	if !ok || owner == "" || repo == "" {
+		t.Skip("PALAI_GIT_REPO must be owner/repo for the live push + draft-PR leg")
+	}
+	ctx := context.Background()
+
+	keyPEM, err := os.ReadFile(os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE"))
+	if err != nil {
+		t.Fatalf("read GitHub App private key: %v", err)
+	}
+	cfg := repositories.GitHubAppConfig{
+		AppID:          os.Getenv("PALAI_GITHUB_APP_ID"),
+		InstallationID: os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID"),
+		PrivateKeyPEM:  keyPEM,
+		Repositories:   []string{repo},
+	}
+	broker, err := repositories.NewGitHubAppBroker(cfg)
+	if err != nil {
+		t.Fatalf("NewGitHubAppBroker() error = %v", err)
+	}
+
+	// 1. Prepare the workspace the way a run does: clone at the binding's base branch onto a work branch.
+	run := "run_e22t4_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	branch := "agent/live_e22t4/" + run
+	target := t.TempDir()
+	repoDir := filepath.Join(target, "repo")
+	audience := repositories.Audience{
+		Organization: "org_live", Project: "prj_live", Run: run, AttemptFence: 1, ToolCall: "publish",
+	}
+	if _, err := repositories.Prepare(ctx, broker, repositories.Request{
+		CloneURL: cloneURL, RequestedRef: "", DefaultBranch: base, TargetDir: repoDir,
+		SecretsDir: t.TempDir(), WorkBranch: branch, Audience: audience,
+	}); err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+
+	// 2. A real commit on the work branch — the head an approver would have approved.
+	marker := "palai live E22 T4 " + run + "\n"
+	if err := os.WriteFile(filepath.Join(repoDir, "PALAI_LIVE_E22T4.md"), []byte(marker), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repoDir, "add", "PALAI_LIVE_E22T4.md")
+	commit := exec.Command("git", "commit", "-q", "-m", "palai live E22 T4 "+run)
+	commit.Dir = repoDir
+	commit.Env = append(os.Environ(), "GIT_AUTHOR_NAME=palai-live", "GIT_AUTHOR_EMAIL=palai-live@example.test",
+		"GIT_COMMITTER_NAME=palai-live", "GIT_COMMITTER_EMAIL=palai-live@example.test")
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v: %s", err, out)
+	}
+	head := gitOutput(t, repoDir, "rev-parse", "HEAD")
+
+	// 3. The push — the side effect an Approve authorizes. Its receipt is the remote ref itself.
+	secrets := t.TempDir()
+	receipt, err := repositories.PushBranch(ctx, broker, repositories.PushRequest{
+		Remote: cloneURL, RepoDir: repoDir, Branch: branch, HeadSHA: head,
+		SecretsDir: secrets, Audience: audience,
+	})
+	if err != nil {
+		t.Fatalf("PushBranch() error = %v", err)
+	}
+	if receipt.RemoteSHA != head {
+		t.Fatalf("push receipt remote sha = %q, want the approved head %q", receipt.RemoteSHA, head)
+	}
+	// Read the remote back rather than believing the receipt: the receipt is our own code's account of what
+	// happened, and what this tier exists for is what the PROVIDER says.
+	if tip := gitOutput(t, target, "ls-remote", cloneURL, "refs/heads/"+branch); tip == "" ||
+		strings.Fields(tip)[0] != head {
+		t.Fatalf("refs/heads/%s on the remote is %q, want the approved head %s", branch, tip, head)
+	}
+	// The credential the push minted left no file behind (§30.3 step 9) and no shape on the receipt.
+	_ = filepath.WalkDir(secrets, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasPrefix(d.Name(), "git-credentials-") {
+			t.Fatalf("push credential helper file survived: %s", path)
+		}
+		return nil
+	})
+	receiptJSON, _ := json.Marshal(receipt)
+	scanForCredentialShape(t, "push receipt", receiptJSON)
+
+	// 4. The pull request. DRAFT is not an argument here — OpenPullRequest sets it, §30.8 policy — and the
+	// base is the binding's, never the model's.
+	prClient, err := repositories.NewGitHubPullRequestClient(cfg, owner, repo)
+	if err != nil {
+		t.Fatalf("NewGitHubPullRequestClient() error = %v", err)
+	}
+	pr, err := repositories.OpenPullRequest(ctx, prClient, repositories.OpenPRInput{
+		HeadBranch: branch, Base: base,
+		Title:      "Agent changes: " + branch,
+		Body:       "open draft pull request " + branch + " -> " + base,
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest() error = %v", err)
+	}
+	if !pr.Draft {
+		t.Fatalf("GitHub created pull request %s as a NON-DRAFT (%+v): every deterministic tier around this one "+
+			"can only echo our own `in.Draft = true` back, so this is the only place the claim is tested. A "+
+			"non-draft PR is a change requesting review the approver did not ask for", pr.URL, pr)
+	}
+	if pr.URL == "" || pr.Number == 0 {
+		t.Fatalf("the opened pull request carries no url/number: %+v", pr)
+	}
+	t.Logf("live E22 T4: pushed %s @ %s and opened DRAFT pull request #%d (%s) against %s",
+		branch, head, pr.Number, pr.URL, base)
+
+	// 5. Idempotency against the real provider (REP-008): a second request for the SAME head->base adopts
+	// the existing pull request rather than opening a second one.
+	again, err := repositories.OpenPullRequest(ctx, prClient, repositories.OpenPRInput{
+		HeadBranch: branch, Base: base, Title: "Agent changes: " + branch, Body: "duplicate request",
+	})
+	if err != nil {
+		t.Fatalf("second OpenPullRequest() error = %v", err)
+	}
+	if again.Number != pr.Number {
+		t.Fatalf("a duplicate request opened pull request #%d beside #%d — one approval, one pull request",
+			again.Number, pr.Number)
+	}
 }
