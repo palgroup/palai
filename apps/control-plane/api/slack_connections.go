@@ -106,13 +106,29 @@ type slackRegistrationBody struct {
 }
 
 // slackDefaultPolicy is the ONLY shape default_policy may carry. The column is documented as "the default
-// run policy for events on this connection" and extensions/slack_admit.go reads exactly these two keys out
+// run policy for events on this connection" and extensions/slack_admit.go reads exactly these keys out
 // of it. Pinning the shape is a security property rather than tidiness: it is tenant-supplied JSONB that
 // the admission bridge reads a RUN TARGET out of, so an open shape is precisely where a bearer token or a
 // second "organization_id" would be parked.
+//
+// E22 T3 added the repository half, and the STRUCT STAYS CLOSED: an unknown field is still a 400. The two
+// new fields are OPTIONAL and `omitempty`, which is what keeps a repository-less connection BIT-unchanged —
+// its canonical policy bytes are the same two keys they have always been, so no stored row moves and no
+// admission behaves differently. A connection that names one binds every event on it to that repository:
+// the run's coding workspace is attached at admission (spec §30.1), exactly as the `repository` field on
+// POST /v1/responses does. It is CONNECTION configuration on purpose — a Slack payload can no more choose a
+// repository than it can choose a principal.
 type slackDefaultPolicy struct {
 	AgentRevisionID string `json:"agent_revision_id"`
 	PrincipalID     string `json:"principal_id"`
+	// RepositoryBindingID names a binding registered in THIS tenant (POST /v1/repository-bindings). It is
+	// verified to exist in scope at admission, so an unknown or foreign id refuses the event rather than
+	// birthing a run that fails when the clone cannot resolve it.
+	RepositoryBindingID string `json:"repository_binding_id,omitempty"`
+	// RepositoryRef is the branch/tag/commit to check out. Empty falls back to the binding's default_branch
+	// (adapters/repositories/prepare.go), which is ALSO the base a publication targets — leaving it empty is
+	// how those two stay one value rather than two that can disagree.
+	RepositoryRef string `json:"repository_ref,omitempty"`
 }
 
 // createConnection registers a workspace binding (POST /v1/slack-connections). Durable config, server-minted
@@ -178,18 +194,9 @@ func vetSlackRegistration(raw []byte) ([]byte, string) {
 	if len(bytes.TrimSpace(in.DefaultPolicy)) == 0 {
 		return nil, "default_policy is required: it carries the run target every event on this connection admits with"
 	}
-	var policy slackDefaultPolicy
-	pdec := json.NewDecoder(bytes.NewReader(in.DefaultPolicy))
-	pdec.DisallowUnknownFields()
-	if err := pdec.Decode(&policy); err != nil {
-		return nil, "default_policy accepts only agent_revision_id and principal_id"
-	}
-	if policy.AgentRevisionID == "" || policy.PrincipalID == "" {
-		return nil, "default_policy.agent_revision_id and default_policy.principal_id are required — a binding that has not been told what to run, or as whom, admits nothing"
-	}
-	canonicalPolicy, err := json.Marshal(policy)
-	if err != nil {
-		return nil, "default_policy could not be encoded"
+	canonicalPolicy, detail := vetSlackDefaultPolicy(in.DefaultPolicy)
+	if detail != "" {
+		return nil, detail
 	}
 	in.DefaultPolicy = canonicalPolicy
 	out, err := json.Marshal(in)
@@ -409,23 +416,42 @@ func vetSlackPatch(raw []byte) (SlackConnectionPatch, string) {
 		}
 	}
 	if len(bytes.TrimSpace(in.DefaultPolicy)) > 0 {
-		// The same pinned shape the create path enforces, and for the same reason: this JSONB is where the
-		// admission bridge reads a RUN TARGET from, so an open shape is exactly where a foreign principal or
-		// a second "organization_id" would be parked. A revise may not widen what a create refused.
-		var policy slackDefaultPolicy
-		pdec := json.NewDecoder(bytes.NewReader(in.DefaultPolicy))
-		pdec.DisallowUnknownFields()
-		if err := pdec.Decode(&policy); err != nil {
-			return SlackConnectionPatch{}, "default_policy accepts only agent_revision_id and principal_id"
-		}
-		if policy.AgentRevisionID == "" || policy.PrincipalID == "" {
-			return SlackConnectionPatch{}, "default_policy.agent_revision_id and default_policy.principal_id are required — a binding that has not been told what to run, or as whom, admits nothing"
-		}
-		canonical, err := json.Marshal(policy)
-		if err != nil {
-			return SlackConnectionPatch{}, "default_policy could not be encoded"
+		// The same pinned shape the create path enforces, through the SAME function — a revise may not widen
+		// what a create refused, and one decoder is the only way that stays true as the shape grows.
+		canonical, detail := vetSlackDefaultPolicy(in.DefaultPolicy)
+		if detail != "" {
+			return SlackConnectionPatch{}, detail
 		}
 		out.DefaultPolicy = canonical
+	}
+	return out, ""
+}
+
+// vetSlackDefaultPolicy strict-decodes a run policy and returns its CANONICAL bytes. Shared by create and
+// revise: this JSONB is where the admission bridge reads a RUN TARGET from, so an open shape is exactly where
+// a foreign principal, a second "organization_id" or a bearer token would be parked, and two copies of the
+// rule are two chances for one of them to widen.
+func vetSlackDefaultPolicy(raw []byte) (canonical []byte, detail string) {
+	const accepts = "default_policy accepts only agent_revision_id, principal_id, repository_binding_id and repository_ref"
+	var policy slackDefaultPolicy
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&policy); err != nil {
+		return nil, accepts
+	}
+	if policy.AgentRevisionID == "" || policy.PrincipalID == "" {
+		return nil, "default_policy.agent_revision_id and default_policy.principal_id are required — a binding that has not been told what to run, or as whom, admits nothing"
+	}
+	// A ref with no binding is a field that does nothing: the admission attaches a workspace only when a
+	// binding is named, so the ref would be accepted, stored, and silently ignored forever. This repository
+	// has paid for that shape often enough (a tool nobody could advertise, a registration that resolved
+	// nowhere) that a settable-but-inert field is refused rather than documented.
+	if policy.RepositoryRef != "" && policy.RepositoryBindingID == "" {
+		return nil, "default_policy.repository_ref names a ref with no repository_binding_id to check it out of; set the binding too, or drop the ref"
+	}
+	out, err := json.Marshal(policy)
+	if err != nil {
+		return nil, "default_policy could not be encoded"
 	}
 	return out, ""
 }
