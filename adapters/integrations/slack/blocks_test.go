@@ -187,13 +187,11 @@ func TestApprovalMessageIsTheOnlyMintOfAnActionableElement(t *testing.T) {
 // not struct tags, which is what an inbound payload is PARSED with (approval.go reads `actions`,
 // `action_id` and `trigger_id` off a click, and reading them is the opposite of minting them).
 //
-// THE CEILING IS IN THE NAME BECAUSE A COMMENT WOULD NOT SURVIVE THE NEXT READER (plan §3.6 D13). The scan
-// is os.ReadDir(".") — ONE directory, not recursive, not the module. Today every outbound body this system
-// builds is built in this package, so "interactions.go is the only mint" is true; but E23 T4 adds a MODAL
-// VIEW, and a view constructed under apps/control-plane/internal/extensions would leave this test green
-// while the claim it certifies was false. That is why ToolApprovalModal is built in interactions.go, and
-// why the assertion below names it: the mitigation is a location, and a location can be checked.
-func TestNoFileButInteractionsMintsAnActionableElementAndThisScanIsPackageLocalOnly(t *testing.T) {
+// THE CEILING HAS ITS OWN TEST AND ITS OWN NAME (plan §3.6 D13) — see
+// TestTheActionableElementScanIsPackageLocalOnlyAndTheModalIsBuiltInsideIt below. This one keeps the name
+// three shipped UAT cases cite as proof (SLK-007, SLK-012, TLM-003), because a proof reference that no
+// longer resolves is a case claiming something the tree cannot show.
+func TestNoFileButInteractionsMintsAnActionableElement(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read the package directory: %v", err)
@@ -241,16 +239,31 @@ func TestNoFileButInteractionsMintsAnActionableElementAndThisScanIsPackageLocalO
 		t.Fatal("interactions.go no longer builds an actionable element — either the mint moved (and this test must follow it) or the scan stopped working")
 	}
 
-	// D13's mitigation, asserted: the modal view is built HERE, inside the one directory this scan can see.
-	// A view built anywhere else would be invisible to the loop above — the scan would still pass and the
-	// singularity would still be broken — so the location is checked rather than trusted.
+}
+
+// THE CEILING, WRITTEN IN A TEST'S NAME BECAUSE A COMMENT WOULD NOT SURVIVE THE NEXT READER (plan §3.6 D13).
+//
+// The scan above is os.ReadDir(".") — ONE directory, not recursive, not the module. Today every outbound
+// body this system builds is built in this package, so "interactions.go is the only mint" holds; but E23 T4
+// adds a MODAL VIEW, and a view constructed under apps/control-plane/internal/extensions would leave that
+// scan GREEN while the claim it certifies was false. So the mitigation is a LOCATION, and a location is
+// something a test can check — which is what this does. Nothing here can catch a mint in another package;
+// that limit is real, and naming it is the honest half of the guarantee.
+func TestTheActionableElementScanIsPackageLocalOnlyAndTheModalIsBuiltInsideIt(t *testing.T) {
+	scan, err := os.ReadFile("blocks_test.go")
+	if err != nil {
+		t.Fatalf("read blocks_test.go: %v", err)
+	}
+	if !strings.Contains(string(scan), `os.ReadDir(".")`) {
+		t.Fatal("the singularity scan no longer reads the package directory; if it grew a wider reach this ceiling is stale and should be rewritten, not deleted")
+	}
 	source, err := os.ReadFile("interactions.go")
 	if err != nil {
 		t.Fatalf("read interactions.go: %v", err)
 	}
-	for _, minted := range []string{"func ToolApprovalModal(", "func ToolApprovalMessage("} {
+	for _, minted := range []string{"func ToolApprovalModal(", "func ToolApprovalMessage(", "func ApprovalMessage("} {
 		if !strings.Contains(string(source), minted) {
-			t.Fatalf("%s is not built in interactions.go; this scan is package-local (os.ReadDir(\".\")) and cannot see a mint that moved out of it", minted)
+			t.Fatalf("%s is not built in interactions.go; the singularity scan is package-local and cannot see a mint that moved out of it", minted)
 		}
 	}
 }

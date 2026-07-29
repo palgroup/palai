@@ -77,6 +77,15 @@ type SlackInteractionsAPI interface {
 	// Decide runs the authorization + one-shot approval chain for a VERIFIED interactive approval, scoped
 	// ONLY by the resolved connection's org/project.
 	Decide(ctx context.Context, conn SlackConnectionRef, intent slack.ApprovalIntent) (SlackDecisionOutcome, error)
+	// OpenApprovalArguments re-derives the approval screen from the ledger and opens it as a modal (E23 T4).
+	// It runs the SAME authorization chain Decide runs and DECIDES NOTHING; the string it returns is a typed
+	// refusal ("" when the modal opened), and an error means the receiver itself failed.
+	//
+	// IT IS CALLED INSIDE THE ACK BUDGET AND THAT IS THE CONTRACT, not an implementation note: a trigger_id
+	// expires three seconds after Slack sends it (https://docs.slack.dev/surfaces/modals/, §3.5 P10, fetched
+	// 2026-07-29) and the 200 below is owed in the same three seconds. Deferring this to a goroutine would
+	// answer Slack faster and open nothing.
+	OpenApprovalArguments(ctx context.Context, conn SlackConnectionRef, intent slack.ShowArgumentsIntent) (string, error)
 }
 
 // slackInteractionsHandler serves POST /v1/slack/interactions.
@@ -141,6 +150,30 @@ func (h *slackInteractionsHandler) receive(w http.ResponseWriter, r *http.Reques
 	if err := h.slack.VerifySignature(ctx, conn, r.Header.Get(slack.HeaderTimestamp), r.Header.Get(slack.HeaderSignature), body); err != nil {
 		h.log("slack interactions: signature rejected: connection=%s reason=%v", conn.ID, err) // typed reason only
 		middleware.WriteProblem(w, r, http.StatusUnauthorized, "invalid_signature", "the interaction signature did not verify")
+		return
+	}
+
+	// 5a. THE MODAL BRANCH, AND ITS POSITION IN THIS FUNCTION IS THE THREE-SECOND RULE (E23 T4, §3.5 P10).
+	// It sits after authentication and BEFORE the 200, because `trigger_id` dies three seconds after Slack
+	// sends it and the ack is owed inside the same three seconds — so views.open has to happen here, in the
+	// budget, or not at all. Handing it to a goroutine would ack faster and open nothing.
+	//
+	// It runs before the approval mapping only because the two are disjoint by action id; a Show-arguments
+	// click can never map to an approval (MapInteractiveApproval's switch refuses it) and an approve click
+	// can never map to a modal request. Neither ordering can leak into the other.
+	if show, serr := slack.MapShowArgumentsClick(payload); serr == nil {
+		rejected, oerr := h.slack.OpenApprovalArguments(ctx, conn, show)
+		if oerr != nil {
+			h.log("slack interactions: opening the argument modal failed: connection=%s", conn.ID)
+			middleware.WriteProblem(w, r, http.StatusServiceUnavailable, "internal_error", "the receiver is temporarily unavailable")
+			return
+		}
+		if rejected != "" {
+			// 200 with nothing opened, the same asymmetry a refused decision has: telling the clicker would
+			// make "you are not an approver" a signal an unmapped user can read off the UI.
+			h.log("slack interactions: argument modal refused: connection=%s reason=%s", conn.ID, rejected)
+		}
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
