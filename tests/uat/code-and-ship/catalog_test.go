@@ -83,14 +83,23 @@ var expectedCodeAndShipCatalog = map[string]struct {
 		"tests/live/repository/live_test.go:TestLiveSlackBoundRepositoryClonesAtItsBaseBranch",
 		"tests/live/workspace/live_test.go:TestLiveSlackBoundRepositoryLandsWhereTheWorkspaceToolsLook",
 	}},
-	// E22 T4 — the publication. The load-bearing pair is the FIRST two: an approve that publishes exactly
-	// once, and a deny after which the publisher is never asked for anything at all. The schema guard is
-	// third because it is the structural half — a base the model can choose is a base nobody approved.
+	// E22 T4 — the publication, EXTENDED BY E23 T3. The load-bearing pair is still the FIRST two: an approve
+	// that publishes exactly once, and a deny after which the publisher is never asked for anything at all.
+	// The schema guard is third because it is the structural half — a base the model can choose is a base
+	// nobody approved. The four E23 entries are what turned E22's two measured ceilings into behaviour: the
+	// approval message is POSTED, the run PARKS so the approve lands instead of answering 503, a deny
+	// releases the run, and a delivery Slack refuses costs the button and never the approval or the run. The
+	// LAST one is the half of E22's ceiling that is still true and is asserted on its own rather than
+	// dropped — a genuinely terminal run still refuses the click.
 	"CAS-002": {"component-real", []string{
 		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackWaitsForAnApproveAndThenPublishes",
 		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDenialPreventsThePushEntirely",
 		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackTargetsTheBindingsBaseBranch",
-		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackCeilingAnApproveAfterTheRunEndsDecidesNothing",
+		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackPostsAnApprovalMessageIntoTheThread",
+		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackParksTheRunSoTheApproveLands",
+		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDenyWakesTheParkedRunAndPublishesNothing",
+		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackDeliveryFailureKeepsTheApprovalAndReleasesTheRun",
+		"apps/control-plane/internal/execution/slack_publish_component_test.go:TestPublicationFromSlackCeilingATerminalRunStillRefusesTheClick",
 		"apps/control-plane/internal/execution/tools/publish_test.go:TestNoPublishToolLetsTheModelNameTheDestination",
 		"apps/control-plane/internal/execution/tools/publish_test.go:TestPushToolRecordsPendingPublicationAtWorkspaceHead",
 		"apps/control-plane/internal/execution/tools/default_set_test.go:TestThePublishToolsAreTheirOwnListAndNeitherPublishes",

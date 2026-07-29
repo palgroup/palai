@@ -44,14 +44,14 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	// E21 T3's Slack requester is the current chain head; E20's turn handle is the link before it.
+	// E23 T1's tool approvals is the current chain head; E21 T3's Slack requester is the link before it.
 	head := migrations[len(migrations)-1]
-	if head.Version != 43 || head.Name != "slack_requester" {
-		t.Fatalf("chain head = %06d_%s, want 000043_slack_requester", head.Version, head.Name)
+	if head.Version != 44 || head.Name != "tool_approvals" {
+		t.Fatalf("chain head = %06d_%s, want 000044_tool_approvals", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 42 || penultimate.Name != "slack_message_turns" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000042_slack_message_turns", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 43 || penultimate.Name != "slack_requester" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000043_slack_requester", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path
