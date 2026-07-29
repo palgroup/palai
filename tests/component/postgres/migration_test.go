@@ -33,6 +33,9 @@ var allTables = []string{
 	"session_sequences", "events", "commands",
 	"config_revisions",
 	"durable_jobs", "job_attempts", "outbox", "inbox",
+	// The runner tables 000001 created as empty skeletons; E24 T1's migration 000045 gives the first two
+	// a shape (a pool has a posture, a runner has a server-minted identity) and leaves runner_leases as
+	// it found it. They have been listed here since the beginning, which is why 000045 creates NEITHER.
 	"runner_pools", "runners", "runner_leases",
 	"model_connections", "model_routes", "model_route_revisions",
 	"tool_calls",
@@ -78,6 +81,10 @@ var allTables = []string{
 	// The E23 T1 approval delivery (000044 R4): the order to POST one approval question, keyed
 	// UNIQUE (approval_id) because a single run can owe a human several separate answers.
 	"slack_approval_deliveries",
+	// The E24 T1 runner-fleet tables (000045): the hashed per-pool enrolment credential and the
+	// APPEND-ONLY issuance journal (self-re-asserting REVOKE). These two ARE new; runner_pools and
+	// runners above are not.
+	"runner_pool_keys", "runner_enrollments",
 	"schema_migrations",
 }
 
@@ -1983,5 +1990,208 @@ func TestMigration43SlackRequester(t *testing.T) {
 	}
 	if left != 0 {
 		t.Fatalf("%d requester id(s) outlived the turn they describe, want 0", left)
+	}
+}
+
+// TestMigration45RunnerFleet is 000045, and the first thing it pins is a CORRECTION: runner_pools,
+// runners and runner_leases are NOT new tables. 000001_core.up.sql:201-227 created all three as empty
+// skeletons, so 000029's catalogue sweep already secured them and its blanket GRANT already covered
+// them — which means this migration's job on those two is to CHANGE THEIR SHAPE, and the shape change
+// that matters is runners.project_id: it flips the has_project half of the policy expression 000029
+// derives, and 29 has already run by the time 45 applies. Without 45's own re-CALL the table would
+// carry the org-only rule for a whole boot.
+//
+// The rest is what the registry has to be true for: an APPEND-ONLY journal that survives the blanket
+// grants re-running (the secret_refs/capability_jobs reboot proof, applied to runner_enrollments), a
+// runner_dns that cannot be issued twice, a state CHECK that rejects a value nothing types, and the
+// seeded default pool without which an upgrading install's runner has nowhere to enrol.
+func TestMigration45RunnerFleet(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	pool := cs.Pool()
+
+	// The SECOND boot: main.go re-runs the whole chain on every start, and it is this boot that
+	// re-exposes 000001's and 000029's blanket grants to the now-existing runner_enrollments.
+	if err := cs.Migrate(ctx); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+	for _, table := range []string{"runner_pools", "runner_pool_keys", "runners", "runner_enrollments"} {
+		if !tableExists(t, pool, table) {
+			t.Fatalf("after apply, %s is missing", table)
+		}
+	}
+	for _, col := range [][2]string{
+		{"runner_pools", "posture"}, {"runner_pools", "strict_enrollment"},
+		{"runners", "project_id"}, {"runners", "label"}, {"runners", "runner_dns"},
+		{"runners", "state"}, {"runners", "last_seen_at"}, {"runners", "enrolled_via_key_id"},
+		{"runs", "pool_id"},
+	} {
+		if !columnExists(t, pool, col[0], col[1]) {
+			t.Fatalf("after apply, %s.%s is missing", col[0], col[1])
+		}
+	}
+	// status is GONE and that is the assertion, not a detail: two columns meaning "what state is this
+	// runner in" is how a later reader writes to the one nothing reads.
+	if columnExists(t, pool, "runners", "status") {
+		t.Fatal("runners.status survived; the 000001 column it replaces must not coexist with state")
+	}
+	var version45 int
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM schema_migrations WHERE version = 45`).Scan(&version45); err != nil {
+		t.Fatalf("count version 45 error = %v", err)
+	}
+	if version45 != 1 {
+		t.Fatalf("schema_migrations records version 45 %d times, want 1", version45)
+	}
+
+	// THE POLICY EXPRESSION, read out of the catalogue. `runners` gained a project_id in THIS migration,
+	// so its tenant_isolation policy must narrow on project_id — the whole reason 45 re-CALLs the
+	// procedure 29 already called. Asserting on the rendered expression rather than on ENABLE/FORCE is
+	// what makes this test catch the failure the tenancy corpus cannot: that corpus checks a table is
+	// secured, not that it is secured by the RIGHT rule.
+	for _, table := range []string{"runner_pools", "runners", "runner_pool_keys", "runner_enrollments"} {
+		var qual string
+		if err := pool.QueryRow(storage.WithSystemScope(ctx),
+			`SELECT qual FROM pg_policies WHERE schemaname = 'public' AND tablename = $1 AND policyname = 'tenant_isolation'`,
+			table).Scan(&qual); err != nil {
+			t.Fatalf("read %s tenant_isolation policy: %v", table, err)
+		}
+		if !strings.Contains(qual, "project_id") {
+			t.Fatalf("%s tenant_isolation does not narrow on project_id: %s", table, qual)
+		}
+		// ENABLE and FORCE, read per table and LOGGED. tests/security/tenancy sweeps the whole catalogue
+		// and demands both, which is the gate — but it names no table on the way past, so a reader
+		// checking that THESE four are secured has nowhere to look. Under -v this is that place.
+		var enabled, forced bool
+		if err := pool.QueryRow(storage.WithSystemScope(ctx),
+			`SELECT c.relrowsecurity, c.relforcerowsecurity FROM pg_class c
+			   JOIN pg_namespace n ON n.oid = c.relnamespace
+			  WHERE n.nspname = 'public' AND c.relname = $1`, table).Scan(&enabled, &forced); err != nil {
+			t.Fatalf("read %s row-security flags: %v", table, err)
+		}
+		if !enabled || !forced {
+			t.Fatalf("%s: row security enabled=%v forced=%v, want both true", table, enabled, forced)
+		}
+		t.Logf("RLS %-20s enabled=%v forced=%v qual=%s", table, enabled, forced, qual)
+	}
+
+	tenant, _, runID := seedRun(t, pool)
+	poolID := newID("pool")
+	exec(t, pool,
+		`INSERT INTO runner_pools (id, organization_id, project_id, name, posture) VALUES ($1,$2,$3,'macs','unsandboxed-host')`,
+		poolID, tenant.Organization, tenant.Project)
+
+	// A posture nothing implements is refused by the database, not by a switch statement somebody
+	// remembers to update.
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
+		`INSERT INTO runner_pools (id, organization_id, project_id, name, posture) VALUES ($1,$2,$3,'weird','windows-vm')`,
+		newID("pool"), tenant.Organization, tenant.Project))); got != "23514" {
+		t.Fatalf("an unknown posture was accepted (code %q, want 23514)", got)
+	}
+	// One pool per name per project.
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
+		`INSERT INTO runner_pools (id, organization_id, project_id, name) VALUES ($1,$2,$3,'macs')`,
+		newID("pool"), tenant.Organization, tenant.Project))); got != "23505" {
+		t.Fatalf("a second pool named `macs` was accepted in one project (code %q, want 23505)", got)
+	}
+
+	insertRunner := func(id, dns string) error {
+		_, err := pool.Exec(storage.WithSystemScope(ctx),
+			`INSERT INTO runners (id, organization_id, project_id, pool_id, label, runner_dns, state)
+			 VALUES ($1,$2,$3,$4,'runner-local',$5,'active')`,
+			id, tenant.Organization, tenant.Project, poolID, dns)
+		return err
+	}
+	firstID, secondID := newID("rnr"), newID("rnr")
+	if err := insertRunner(firstID, firstID+".runners.palai.internal"); err != nil {
+		t.Fatalf("first runner insert error = %v", err)
+	}
+	// TWO MACHINES, ONE LABEL — the compose default (runner-entrypoint.sh:10 hardcodes "runner-local",
+	// so `--scale runner=3` is three machines with one name). Both rows must be accepted: the label is
+	// not the identity, and a registry that refused the second would have re-created the single slot it
+	// exists to replace.
+	if err := insertRunner(secondID, secondID+".runners.palai.internal"); err != nil {
+		t.Fatalf("a second machine sharing the label `runner-local` was refused: %v", err)
+	}
+	// The DNS is the identity, and the CA cannot be asked to issue one name twice.
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
+		`INSERT INTO runners (id, organization_id, project_id, pool_id, runner_dns, state)
+		 VALUES ($1,$2,$3,$4,$5,'active')`,
+		newID("rnr"), tenant.Organization, tenant.Project, poolID, firstID+".runners.palai.internal"))); got != "23505" {
+		t.Fatalf("two runners were accepted for one certificate DNS (code %q, want 23505)", got)
+	}
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
+		`INSERT INTO runners (id, organization_id, project_id, pool_id, state) VALUES ($1,$2,$3,$4,'zombie')`,
+		newID("rnr"), tenant.Organization, tenant.Project, poolID))); got != "23514" {
+		t.Fatalf("an unknown runner state was accepted (code %q, want 23514)", got)
+	}
+
+	// R5: a run records where it was placed, and it CANNOT name a pool that does not exist.
+	exec(t, pool, `UPDATE runs SET pool_id = $1 WHERE id = $2`, poolID, runID)
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
+		`UPDATE runs SET pool_id = 'pool_nonexistent' WHERE id = $1`, runID))); got != "23503" {
+		t.Fatalf("a run was placed into a pool that does not exist (code %q, want 23503)", got)
+	}
+
+	// R6: the bootstrap tenant's default pool. seedRun's org is a fresh one, so this reads the row the
+	// migration seeded for org_local/prj_local — the population an UPGRADE from 000044 is.
+	var seeded int
+	if err := pool.QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM runner_pools WHERE id = 'pool_default' AND organization_id = 'org_local'`).Scan(&seeded); err != nil {
+		t.Fatalf("count the seeded default pool: %v", err)
+	}
+	// The harness migrates a database with no identity bootstrap, so org_local does not exist and the
+	// guarded SELECT correctly seeds nothing. What must hold either way is that it never seeded a
+	// SECOND one — the ON CONFLICT half, across the two boots above.
+	if seeded > 1 {
+		t.Fatalf("the default pool was seeded %d times across two boots, want at most 1", seeded)
+	}
+
+	// R4 — THE APPEND-ONLY JOURNAL, across the reboot that re-ran both blanket grants.
+	assertPriv := func(priv string, want bool) {
+		t.Helper()
+		var got bool
+		if err := pool.QueryRow(storage.WithSystemScope(ctx),
+			`SELECT has_table_privilege('palai_app', 'runner_enrollments', $1)`, priv).Scan(&got); err != nil {
+			t.Fatalf("has_table_privilege(%s) error = %v", priv, err)
+		}
+		if got != want {
+			t.Fatalf("palai_app %s on runner_enrollments = %v, want %v (append-only grant eroded across reboots)", priv, got, want)
+		}
+	}
+	assertPriv("SELECT", true)
+	assertPriv("INSERT", true)
+	assertPriv("UPDATE", false)
+	assertPriv("DELETE", false)
+
+	entryID := newID("renr")
+	exec(t, pool,
+		`INSERT INTO runner_enrollments (id, organization_id, project_id, runner_id, pool_id, entry_kind, entry_seq)
+		 VALUES ($1,$2,$3,$4,$5,'issued',1)`,
+		entryID, tenant.Organization, tenant.Project, firstID, poolID)
+	if got := pgCode(mustFail(pool.Exec(storage.WithSystemScope(ctx),
+		`INSERT INTO runner_enrollments (id, organization_id, project_id, runner_id, pool_id, entry_kind, entry_seq)
+		 VALUES ($1,$2,$3,$4,$5,'revoked',1)`,
+		newID("renr"), tenant.Organization, tenant.Project, firstID, poolID))); got != "23505" {
+		t.Fatalf("two entries were accepted at seq 1 for one runner (code %q, want 23505)", got)
+	}
+
+	// The BEHAVIOURAL half: as the runtime role itself, rewriting or erasing an entry is refused by the
+	// privilege check (42501) before RLS is consulted. A journal a compromised runner could rewrite — to
+	// change which key issued its certificate — or delete — to erase its own revocation — is not a journal.
+	conn, err := pool.Acquire(storage.WithSystemScope(ctx))
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET ROLE palai_app`); err != nil {
+		t.Fatalf("SET ROLE palai_app error = %v", err)
+	}
+	defer func() { _, _ = conn.Exec(ctx, `RESET ROLE`) }()
+	if got := pgCode(mustFail(conn.Exec(ctx, `UPDATE runner_enrollments SET key_id = 'other'`))); got != "42501" {
+		t.Fatalf("runner_enrollments UPDATE code = %q, want 42501 (append-only: UPDATE withheld)", got)
+	}
+	if got := pgCode(mustFail(conn.Exec(ctx, `DELETE FROM runner_enrollments`))); got != "42501" {
+		t.Fatalf("runner_enrollments DELETE code = %q, want 42501 (append-only: DELETE withheld)", got)
 	}
 }

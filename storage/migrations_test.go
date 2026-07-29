@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -44,14 +45,16 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	// E23 T1's tool approvals is the current chain head; E21 T3's Slack requester is the link before it.
+	// E24 T1's runner fleet is the current chain head; E23 T1's tool approvals is the link before it.
+	// E24 has exactly ONE migration and exactly one task owns it, so this pin stays true for the whole
+	// epic — that is the structural half of "two parallel tasks cannot both take 000045".
 	head := migrations[len(migrations)-1]
-	if head.Version != 44 || head.Name != "tool_approvals" {
-		t.Fatalf("chain head = %06d_%s, want 000044_tool_approvals", head.Version, head.Name)
+	if head.Version != 45 || head.Name != "runner_fleet" {
+		t.Fatalf("chain head = %06d_%s, want 000045_runner_fleet", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 43 || penultimate.Name != "slack_requester" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000043_slack_requester", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 44 || penultimate.Name != "tool_approvals" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000044_tool_approvals", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path
@@ -62,5 +65,67 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		if !strings.Contains(full, m.Up) {
 			t.Fatalf("MigrationUp() is missing the body of migration %06d_%s", m.Version, m.Name)
 		}
+	}
+}
+
+// TestEveryLateTenantTableCarriesItsOwnPolicyAndGrant is a STATIC guard, and it exists because the
+// runtime one cannot work. Measured on 2026-07-29 while landing 000045:
+//
+// Deleting `CALL palai_apply_tenant_policy('runner_pool_keys', ...)` from 000045 left
+// tests/security/tenancy GREEN. The reason is structural, not a bug in that corpus: 000029's sweep is
+// catalogue-driven and the whole chain re-runs on every boot, so a table 45 creates without a policy
+// IS swept by 29 on the NEXT boot — and every harness in this repository migrates more than once
+// (tenancy's newSuite applies the chain per TEST, and the component package shares one database across
+// dozens of openHarness calls). So no runtime tier can ever observe the state the omission produces.
+//
+// That state is real and it is not harmless: on the FIRST boot of a fresh install, between 45 creating
+// the table and the next restart, the table exists with row-level security not enabled at all. Every
+// row in it is visible to every tenant for that window.
+//
+// So the rule is checked where it is checkable: in the SQL. A migration after 000029 that creates a
+// table carrying organization_id must carry its own policy CALL and its own GRANT — 29's sweep and 29's
+// blanket grant both run BEFORE it and the table does not exist yet.
+func TestEveryLateTenantTableCarriesItsOwnPolicyAndGrant(t *testing.T) {
+	createTable := regexp.MustCompile(`(?s)CREATE TABLE IF NOT EXISTS (\w+) \((.*?)\n\);`)
+	grantOn := regexp.MustCompile(`GRANT [A-Z, ]+ ON ([\w, ]+?) TO palai_app`)
+
+	checked := 0
+	for _, m := range OrderedMigrations() {
+		// 000029 is where the procedure and the blanket grant are defined; everything before it is
+		// covered by its sweep, which runs after those tables exist.
+		if m.Version <= 29 {
+			continue
+		}
+		granted := map[string]bool{}
+		for _, g := range grantOn.FindAllStringSubmatch(m.Up, -1) {
+			for _, table := range strings.Split(g[1], ",") {
+				granted[strings.TrimSpace(table)] = true
+			}
+		}
+		for _, c := range createTable.FindAllStringSubmatch(m.Up, -1) {
+			name, body := c[1], c[2]
+			if !strings.Contains(body, "organization_id") {
+				continue
+			}
+			checked++
+			if !strings.Contains(m.Up, "palai_apply_tenant_policy('"+name+"'") {
+				t.Errorf("migration %06d_%s creates tenant table %s without its own CALL palai_apply_tenant_policy('%s', ...): "+
+					"000029's sweep ran before this file and the table did not exist yet, so the table is unsecured "+
+					"until the next boot", m.Version, m.Name, name, name)
+			}
+			if !granted[name] {
+				t.Errorf("migration %06d_%s creates tenant table %s without its own GRANT ... ON %s TO palai_app: "+
+					"000029's blanket grant ran before this file, so the runtime role fails closed with "+
+					"\"permission denied\" rather than with the row-scoped policy", m.Version, m.Name, name, name)
+			}
+		}
+	}
+	// NON-VACUITY: this guard is a regexp over SQL, so a pattern that silently stops matching would make
+	// it pass for every future migration. 000045 alone contributes two tables; the chain contributed 26
+	// when this was written, and a floor well under that catches a broken pattern without turning every
+	// new migration into an edit here.
+	if checked < 20 {
+		t.Fatalf("the CREATE TABLE pattern matched only %d late tenant tables; it has stopped parsing the chain "+
+			"and this guard is now vacuous", checked)
 	}
 }

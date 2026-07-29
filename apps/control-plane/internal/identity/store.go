@@ -31,6 +31,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/apps/control-plane/internal/fleet"
 	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/storage"
 )
@@ -54,8 +55,9 @@ const (
 	firstKey       = "key_local"
 )
 
-// tenantSeed is the four rows a provisioned organization is born with: the organization, its default
-// project, a service principal, and an admin API key (stored as a hash — the bearer value never persists).
+// tenantSeed is the five rows a provisioned organization is born with: the organization, its default
+// project, a service principal, an admin API key (stored as a hash — the bearer value never persists),
+// and its default runner pool.
 type tenantSeed struct {
 	orgID, orgName         string
 	projectID, projectName string
@@ -63,6 +65,13 @@ type tenantSeed struct {
 	keyID, keyHash         string
 	scopes                 []string
 	expiresAt              *time.Time
+	// poolID is the tenant's default runner pool (E24 T1, migration 000045 R6). A runner enrolls INTO
+	// a pool, so a tenant with none is a tenant whose runner cannot enroll — which is why this is
+	// seeded here, in the transaction that makes the tenant exist, rather than lazily on first
+	// enrollment. Migration 000045 seeds the same row for an installation UPGRADING from 000044; it
+	// cannot serve a FRESH stack, because migrations run before this bootstrap and there is no
+	// organization to reference yet. Two populations, two statements, one ON CONFLICT DO NOTHING each.
+	poolID string
 }
 
 // provision inserts a tenant seed in one system-scoped transaction. Organization creation must run under
@@ -90,6 +99,12 @@ func (s *Store) provision(ctx context.Context, seed tenantSeed) error {
 		seed.keyID, seed.orgID, seed.projectID, seed.principalID, seed.keyHash, seed.scopes, seed.expiresAt); err != nil {
 		return fmt.Errorf("insert api key: %w", err)
 	}
+	// The default runner pool. posture 'sandboxed-linux' and strict_enrollment false are today's
+	// deployment stated as data: a new tenant behaves exactly as every tenant does now.
+	if _, err := tx.Exec(ctx, storage.Query("InsertDefaultRunnerPool"),
+		seed.poolID, seed.orgID, seed.projectID); err != nil {
+		return fmt.Errorf("insert default runner pool: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit provision: %w", err)
 	}
@@ -107,6 +122,10 @@ func (s *Store) ProvisionFirstOrg(ctx context.Context, bootstrapKey string) erro
 		keyID:       firstKey,
 		keyHash:     coordinator.HashAPIKey(bootstrapKey),
 		scopes:      []string{},
+		// The fixed bootstrap pool id, in the same spirit as the four ids above: stable so a re-boot
+		// against a retained volume is a no-op, and identical to the id migration 000045 R6 seeds for
+		// an upgrading install — the two populations must not end up with two different default pools.
+		poolID: fleet.DefaultPoolID,
 	})
 }
 
@@ -135,6 +154,7 @@ func (s *Store) CreateOrganization(ctx context.Context, _ middleware.Scope, body
 		principalID: middleware.NewID("prin"),
 		keyID:       middleware.NewID("key"),
 		scopes:      []string{},
+		poolID:      middleware.NewID("pool"),
 	}
 	secret := newSecret()
 	seed.keyHash = coordinator.HashAPIKey(secret)

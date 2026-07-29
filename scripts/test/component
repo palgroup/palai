@@ -170,6 +170,13 @@ run_postgres() {
   # REGISTERED revision's operator label reaches the screen through the same lookup the executor uses.
   # This is the hole the epic's own exit gate found and filed as HIL-P8.
   #
+  # TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool is E24 T1's §2 proof — "TEK RUNNER'LI
+  # DEPLOYMENT BİT-DEĞİŞMEZDİR" — and it needs its own alternative for the fourth time this list has had
+  # to say so: it is the only component-tagged test in this package whose name starts with "TestBootstrap",
+  # and none of the words above is a substring of it. It is the ONLY thing that proves migration 000045's
+  # R6 seed plus identity.provision's actually let a runner that names no pool enrol at all; without this
+  # word an upgraded install whose runner can no longer enrol would report the same green as a passing tier.
+  #
   # TestHTTPToolApproval* is E23 T9 — the SLACK-LESS decision surface — and it needs its OWN alternative
   # for the third time this list has had to say so: `TestToolApproval` does not match
   # `TestHTTPToolApprovalListShows…` and neither does `TestSlackToolApproval`. Without this word, the eight
@@ -184,7 +191,7 @@ run_postgres() {
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval' \
+        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool' \
         ./apps/control-plane/internal/execution
     status=$?
   fi
@@ -254,6 +261,18 @@ run_postgres() {
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v -run 'TestA2ARealAdmitterBirthsRun|TestSlack|TestAgentSurfaceJourney' ./apps/control-plane/internal/store
+    status=$?
+  fi
+  # The E24 T1 runner registry against a REAL Postgres with RLS enforced (apps/control-plane/internal/fleet
+  # is an internal package, so its component tests cannot live under tests/). It has its OWN leg rather
+  # than a name on a -run list because the package has no other tests: two machines sharing the compose
+  # default label are two rows with two SERVER-minted ids, an unknown pool REFUSES instead of writing a
+  # dangling reference, the enrolment journal entry commits with the row it describes, a pre-registry
+  # runner's certificate is found=false rather than an error (or an upgraded stack would refuse its own
+  # runner), and neither tenant can read or address the other's machines.
+  if test "$status" -eq 0; then
+    PALAI_COMPONENT_POSTGRES_URL="$url" \
+      go test -tags=component -count=1 -v ./apps/control-plane/internal/fleet
     status=$?
   fi
   # The E19 last mile: the three *_ref handles a `palai up` registration writes on a REAL

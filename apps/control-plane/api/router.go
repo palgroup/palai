@@ -319,6 +319,14 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("DELETE /v1/slack-connections/{connection_id}", sch.deleteConnection)
 	}
 
+	// The runner registry (E24 T1): the read surface for the fleet. Bearer-scoped and RLS-confined, so
+	// a caller sees its own tenant's machines and nothing else. No write route — see api/runners.go.
+	if cfg.runners != nil {
+		rh := &runnerHandler{runners: cfg.runners}
+		mux.HandleFunc("GET /v1/runners", rh.listRunners)
+		mux.HandleFunc("GET /v1/runners/{runner_id}", rh.getRunner)
+	}
+
 	var root http.Handler = mux
 	root = middleware.Auth(verifier)(root)
 	// The §20.12 request-rate limiter sits INSIDE RequestContext (so a shed 429 still carries the

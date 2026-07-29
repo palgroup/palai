@@ -48,6 +48,11 @@ type enrollmentRequest struct {
 
 type enrollmentResponse struct {
 	Certificate string `json:"certificate"`
+	// RunnerID is the id the CONTROL PLANE minted (E24 T1). The runner_id this runner sent is a label
+	// — the compose entrypoint hardcodes it, so it is not unique across machines — and the server's is
+	// the one that names this machine everywhere else. A control plane too old to send it leaves this
+	// empty and the runner keeps its own name, which is what makes an old control plane still work.
+	RunnerID string `json:"runner_id"`
 }
 
 // Enroll exchanges the one-use bootstrap token for a short-lived client identity over
@@ -116,8 +121,14 @@ func Enroll(ctx context.Context, config BootstrapConfig) (Identity, error) {
 		return Identity{}, errors.New("control plane issued an already-expired certificate")
 	}
 
+	// Adopt the server's id when it sent one. Falling back to the requested name is not a courtesy —
+	// it is what lets this runner enroll against a control plane built before E24 T1.
+	runnerID := decoded.RunnerID
+	if runnerID == "" {
+		runnerID = config.RunnerID
+	}
 	return Identity{
-		RunnerID:    config.RunnerID,
+		RunnerID:    runnerID,
 		Certificate: tls.Certificate{Certificate: [][]byte{certDER}, PrivateKey: privateKey, Leaf: leaf},
 		NotAfter:    leaf.NotAfter,
 	}, nil

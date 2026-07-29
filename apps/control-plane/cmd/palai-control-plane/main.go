@@ -42,6 +42,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	tools "github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
+	"github.com/palgroup/palai/apps/control-plane/internal/fleet"
 	"github.com/palgroup/palai/apps/control-plane/internal/identity"
 	"github.com/palgroup/palai/apps/control-plane/internal/knowledge"
 	"github.com/palgroup/palai/apps/control-plane/internal/metering"
@@ -131,7 +132,12 @@ func main() {
 		dbSecretStore = secretStore
 	}
 
-	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"))
+	// The runner registry (E24 T1, migration 000045): the durable inventory of enrolled machines. It
+	// rides the durable spine's pool and is handed to the gateway, which records an enrollment and
+	// advances a liveness stamp on connect/renew. It is ALSO the read surface below (WithRunners).
+	runnerRegistry := fleet.NewStore(repo.Spine().Pool(), middleware.NewID, nil)
+
+	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"), runnerRegistry)
 
 	// The capability-worker gateway (E17 T9, spec §31): the outbound-enrolled enroll/claim/redeem/result
 	// surface an out-of-process worker dials. Built here so the secret store above (nil unless a master key
@@ -288,6 +294,11 @@ func main() {
 	// It advertises NOTHING in discovery: /v1/capabilities' word list is the E17 T11 recompute's, and a new
 	// key here would be a claim no proof had recomputed.
 	routerOpts = append(routerOpts, api.WithApprovals(repo))
+	// The runner registry READ surface (E24 T1). Mounted unconditionally beside the approval surface and
+	// for the same reason: it needs only the durable spine, which this binary always has. It advertises
+	// NOTHING in discovery — /v1/capabilities' word list is the E17 T11 recompute's, and exposing a table
+	// is not a capability.
+	routerOpts = append(routerOpts, api.WithRunners(runnerRegistry))
 	// Discovery advertises `capability-workers` ONLY where the gateway above actually BOUND its listener —
 	// the option is passed off the returned value, never off the env var, so the claim cannot outlive the
 	// mount (§2; E19 T8a closed the static "stable" that a binary not importing internal/workers was serving).
@@ -1441,7 +1452,7 @@ func withSupervisorStatus(next http.Handler, supervisor *coordinator.Supervisor,
 // itself. It returns the gateway so startDispatch can drive the production exec-path over it
 // as the orchestrator's EngineDialer. addr empty disables the gateway (returns nil) — the
 // public router carries a nil runner handler and dispatch stays assignment-only.
-func startRunnerGateway(addr string) *execution.RunnerGateway {
+func startRunnerGateway(addr string, registry fleet.Registry) *execution.RunnerGateway {
 	if strings.TrimSpace(addr) == "" {
 		return nil
 	}
@@ -1471,6 +1482,11 @@ func startRunnerGateway(addr string) *execution.RunnerGateway {
 	// is rate-limited to one certificate per issued lifetime, so a leaked token mints no fleet.
 	tokens := execution.NewFileEnrollmentTokens(mustGatewayEnv("PALAI_ENROLLMENT_TOKEN_FILE"), issuer.TTL())
 	gateway := execution.NewRunnerGateway(issuer, tokens)
+	// The registry is what makes a SECOND runner nameable: without it the gateway's only record is the
+	// last certificate it saw (one slot, last writer wins), so `--scale runner=3` was three machines and
+	// one observable identity. Wired here rather than passed to the constructor so every existing caller
+	// — the conformance tier, every wire proof — compiles and behaves unchanged.
+	gateway.SetRegistry(registry)
 
 	srv := &http.Server{
 		Addr:              addr,
