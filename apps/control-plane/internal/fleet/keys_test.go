@@ -151,6 +151,54 @@ func TestEveryPresentedCredentialIsComparedInConstantTime(t *testing.T) {
 	}
 }
 
+// TestThePoolKeySurfaceHasAProductionCaller is the fence this repository has earned. E19 T9's exit gate
+// found `CreateSlackConnection` fully built, fully tested and reachable from NOTHING — no route, no
+// binary — and E23 T2 found `DecideToolApproval` in the same state. A credential surface that no
+// production path constructs is a security feature that does not exist, and every test in this package
+// would still pass.
+//
+// It names three sites, because three is what a working pool key needs: the store is CONSTRUCTED, it is
+// handed to the gateway (so a presented key is resolved at enrolment), and it is handed to the router (so
+// an operator can mint and revoke one). Any two of the three is a half-built feature.
+func TestThePoolKeySurfaceHasAProductionCaller(t *testing.T) {
+	const mainFile = "../../cmd/palai-control-plane/main.go"
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, mainFile, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", mainFile, err)
+	}
+	// Each site is identified by the call the composition root has to make, matched on the selector's
+	// NAME rather than on a line number or a source substring — a rename must break this, and a
+	// reformat must not.
+	sites := map[string]bool{
+		"NewPoolEnrollmentKeys": false, // the store is constructed
+		"SetPoolKeys":           false, // the gateway resolves presented keys
+		"NewRegistryAPI":        false, // the router can mint and revoke one
+	}
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fn := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			if _, tracked := sites[fn.Sel.Name]; tracked {
+				sites[fn.Sel.Name] = true
+			}
+		case *ast.Ident:
+			if _, tracked := sites[fn.Name]; tracked {
+				sites[fn.Name] = true
+			}
+		}
+		return true
+	})
+	for site, wired := range sites {
+		if !wired {
+			t.Errorf("%s: nothing calls %s — the pool key surface is unreachable from the shipped binary, which is how two fully-tested surfaces shipped dead in this tree", mainFile, site)
+		}
+	}
+}
+
 // mentionsCredential reports whether either side of a comparison names one of the credential-bearing
 // identifiers. It walks the operand rather than matching an identifier at the top, so
 // `strings.TrimSpace(string(raw)) != token` — the exact expression this guard was written for — is caught.
