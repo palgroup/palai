@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -429,5 +430,143 @@ func TestLiveApprovedPushAndDraftPullRequest(t *testing.T) {
 	if again.Number != pr.Number {
 		t.Fatalf("a duplicate request opened pull request #%d beside #%d — one approval, one pull request",
 			again.Number, pr.Number)
+	}
+}
+
+// TestLiveApprovedMergeRefusesAMovedHead is E23 T6's live leg, and it is OPT-IN twice over: the GitHub App
+// env AND `PALAI_GIT_LIVE_MERGE=1`, because this is the only test in the tree that can change what a real
+// repository IS. Credentials being present is not consent to merge into somebody's base branch.
+//
+// TWO THINGS ARE MEASURED AGAINST THE REAL PROVIDER, and only the first is a claim.
+//
+// (1) THE RACE, and it is a hard assertion: a merge sent with a `sha` the pull request head no longer
+// matches MUST NOT MERGE. GitHub documents `sha` as optional and 409 as its answer to a mismatch, which
+// means this guard was available to anybody who read the page and using it was a decision. This is where
+// the decision is confirmed against github.com rather than against a double we wrote.
+//
+// (2) THE MERGE ITSELF, and it is a MEASUREMENT rather than a claim, for a reason worth stating in full:
+// **Palai only ever opens DRAFT pull requests** (OpenPullRequest sets `in.Draft = true` unconditionally,
+// §30.8 policy, where the comment already says non-draft promotion is a separate capability), and GitHub
+// documents verbatim that "No one can merge the pull request until you mark the pull request as ready for
+// review again" (https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/changing-the-stage-of-a-pull-request,
+// fetched 2026-07-29). So a pull request THIS SYSTEM OPENED cannot be merged by this system until a human
+// marks it ready — one more human gate, provided by GitHub, on top of the approval button. That is the
+// fourth honest ceiling of this task (`HIL-P6`), and this leg is where it stops being an argument and
+// becomes a logged provider answer.
+func TestLiveApprovedMergeRefusesAMovedHead(t *testing.T) {
+	if os.Getenv("PALAI_GIT_LIVE_MERGE") != "1" {
+		t.Skip("PALAI_GIT_LIVE_MERGE=1 is required for the live merge leg: it can change a real repository")
+	}
+	for _, name := range []string{"PALAI_GITHUB_APP_ID", "PALAI_GITHUB_APP_INSTALLATION_ID",
+		"PALAI_GITHUB_APP_PRIVATE_KEY_FILE", "PALAI_GIT_CLONE_URL", "PALAI_GIT_BASE_BRANCH", "PALAI_GIT_REPO"} {
+		if os.Getenv(name) == "" {
+			t.Skipf("%s is required for the live merge leg (E23 §0.3)", name)
+		}
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git not found: %v", err)
+	}
+	cloneURL, base := os.Getenv("PALAI_GIT_CLONE_URL"), os.Getenv("PALAI_GIT_BASE_BRANCH")
+	owner, repo, ok := strings.Cut(os.Getenv("PALAI_GIT_REPO"), "/")
+	if !ok || owner == "" || repo == "" {
+		t.Skip("PALAI_GIT_REPO must be owner/repo for the live merge leg")
+	}
+	ctx := context.Background()
+
+	keyPEM, err := os.ReadFile(os.Getenv("PALAI_GITHUB_APP_PRIVATE_KEY_FILE"))
+	if err != nil {
+		t.Fatalf("read GitHub App private key: %v", err)
+	}
+	cfg := repositories.GitHubAppConfig{
+		AppID:          os.Getenv("PALAI_GITHUB_APP_ID"),
+		InstallationID: os.Getenv("PALAI_GITHUB_APP_INSTALLATION_ID"),
+		PrivateKeyPEM:  keyPEM,
+		Repositories:   []string{repo},
+	}
+	broker, err := repositories.NewGitHubAppBroker(cfg)
+	if err != nil {
+		t.Fatalf("NewGitHubAppBroker() error = %v", err)
+	}
+
+	// A real branch with a real commit, pushed — the same shape the push leg above uses.
+	run := "run_e23t6_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	branch := "agent/live_e23t6/" + run
+	target := t.TempDir()
+	repoDir := filepath.Join(target, "repo")
+	audience := repositories.Audience{
+		Organization: "org_live", Project: "prj_live", Run: run, AttemptFence: 1, ToolCall: "merge",
+	}
+	if _, err := repositories.Prepare(ctx, broker, repositories.Request{
+		CloneURL: cloneURL, RequestedRef: "", DefaultBranch: base, TargetDir: repoDir,
+		SecretsDir: t.TempDir(), WorkBranch: branch, Audience: audience,
+	}); err != nil {
+		t.Fatalf("Prepare() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "PALAI_LIVE_E23T6.md"), []byte("palai live E23 T6 "+run+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repoDir, "add", "PALAI_LIVE_E23T6.md")
+	commit := exec.Command("git", "commit", "-q", "-m", "palai live E23 T6 "+run)
+	commit.Dir = repoDir
+	commit.Env = append(os.Environ(), "GIT_AUTHOR_NAME=palai-live", "GIT_AUTHOR_EMAIL=palai-live@example.test",
+		"GIT_COMMITTER_NAME=palai-live", "GIT_COMMITTER_EMAIL=palai-live@example.test")
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v: %s", err, out)
+	}
+	head := gitOutput(t, repoDir, "rev-parse", "HEAD")
+	if _, err := repositories.PushBranch(ctx, broker, repositories.PushRequest{
+		Remote: cloneURL, RepoDir: repoDir, Branch: branch, HeadSHA: head,
+		SecretsDir: t.TempDir(), Audience: audience,
+	}); err != nil {
+		t.Fatalf("PushBranch() error = %v", err)
+	}
+	prClient, err := repositories.NewGitHubPullRequestClient(cfg, owner, repo)
+	if err != nil {
+		t.Fatalf("NewGitHubPullRequestClient() error = %v", err)
+	}
+	pr, err := repositories.OpenPullRequest(ctx, prClient, repositories.OpenPRInput{
+		HeadBranch: branch, Base: base, Title: "Agent changes: " + branch, Body: "live E23 T6",
+	})
+	if err != nil {
+		t.Fatalf("OpenPullRequest() error = %v", err)
+	}
+
+	// (1) THE RACE, against github.com. A stale head must NOT merge — whichever documented refusal comes
+	// back. The security claim is that nothing merged; WHICH refusal is the measurement, and it is logged
+	// rather than asserted because a draft pull request may be refused for being a draft before the sha is
+	// even considered, and no published page states the order those checks run in.
+	movedSHA := "0000000000000000000000000000000000000001"
+	receipt, err := repositories.MergePullRequest(ctx, prClient, repositories.MergeInput{
+		Number: pr.Number, HeadSHA: movedSHA, Method: "merge",
+	})
+	if err == nil || receipt.Merged {
+		t.Fatalf("a merge sent with a sha the head does NOT match MERGED pull request #%d (%+v). The approved "+
+			"commit is the only commit that may be merged", pr.Number, receipt)
+	}
+	switch {
+	case errors.Is(err, repositories.ErrHeadMoved):
+		t.Logf("live E23 T6: a stale sha earned the documented 409 on #%d — the race guard is real", pr.Number)
+	case errors.Is(err, repositories.ErrMergeRefused):
+		t.Logf("live E23 T6: a stale sha earned a 405 on #%d (%v) — nothing merged, and WHICH check fires "+
+			"first on a draft is the §6 measurement this line records", pr.Number, err)
+	default:
+		t.Fatalf("a stale sha earned an UNTYPED failure on #%d: %v — a refusal an operator cannot read is a "+
+			"merge that mysteriously did not happen", pr.Number, err)
+	}
+
+	// (2) THE MERGE AT THE APPROVED HEAD. Measured, and the ceiling is what it measures.
+	switch merged, err := repositories.MergePullRequest(ctx, prClient, repositories.MergeInput{
+		Number: pr.Number, HeadSHA: head, Method: "merge",
+	}); {
+	case err == nil && merged.Merged:
+		t.Logf("live E23 T6: merged pull request #%d at the approved head %s -> %s (%s)", pr.Number, head, merged.SHA, merged.Message)
+	case errors.Is(err, repositories.ErrMergeRefused):
+		t.Logf("live E23 T6 CEILING MEASURED (HIL-P6): GitHub REFUSED to merge #%d at the approved head: %v. "+
+			"Palai opens DRAFT pull requests only (§30.8) and a draft cannot be merged until a human marks it "+
+			"ready for review — so the end-to-end push/PR/merge line has one human gate MORE than the approval "+
+			"button, and it is GitHub's. Non-draft promotion is a separate capability E23 does not open", pr.Number, err)
+	default:
+		t.Fatalf("the merge at the APPROVED head failed in a way that is neither success nor the documented "+
+			"refusal: %v", err)
 	}
 }

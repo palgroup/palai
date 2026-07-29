@@ -142,6 +142,7 @@ components:
         - approval.expired.v1
         - push.completed.v1
         - pull_request.opened.v1
+        - pull_request.merged.v1
         - webhook.delivery.succeeded.v1
         - webhook.delivery.dead_lettered.v1
         - trigger.delivery.received.v1

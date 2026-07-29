@@ -62,8 +62,10 @@ func TestRequestHashBindsHeadForApproval(t *testing.T) {
 // (headBranch->base), so Find returns an existing PR and a duplicate Open is caught — the REP-008
 // find-before-create idempotency provable without a real Git provider.
 type fakePRClient struct {
-	prs   map[string]PullRequest
-	opens int
+	prs      map[string]PullRequest
+	opens    int
+	merges   []MergeInput
+	mergeErr error
 }
 
 func newFakePRClient() *fakePRClient { return &fakePRClient{prs: map[string]PullRequest{}} }
@@ -80,6 +82,15 @@ func (f *fakePRClient) Open(_ context.Context, in OpenPRInput) (PullRequest, err
 	pr := PullRequest{ID: "PR_1", URL: "https://example.test/pr/1", Number: 1, Draft: in.Draft}
 	f.prs[f.key(in.HeadBranch, in.Base)] = pr
 	return pr, nil
+}
+
+// merges records every merge this client was asked for, so a test can assert what reached the provider.
+func (f *fakePRClient) Merge(_ context.Context, in MergeInput) (MergeReceipt, error) {
+	f.merges = append(f.merges, in)
+	if f.mergeErr != nil {
+		return MergeReceipt{}, f.mergeErr
+	}
+	return MergeReceipt{Merged: true, SHA: "merge_" + in.HeadSHA, Message: "Pull Request successfully merged"}, nil
 }
 
 // TestDuplicatePROpenReturnsSinglePR proves REP-008: OpenPullRequest FINDS an existing open PR for

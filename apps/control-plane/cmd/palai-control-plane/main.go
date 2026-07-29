@@ -481,6 +481,7 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			tools.CommitTool(),
 			tools.PushTool(),
 			tools.PullRequestTool(),
+			tools.MergeTool(),         // E23 T6: the third publication operation, gated by the same human button
 			tools.ResearchFetchTool(), // web-research fetch + citations (E12 T3); code-defined, no registry seed
 			tools.KnowledgeRetrievalTool(knowledge.New(repo.Spine().Pool())), // ACL-first, cited knowledge retrieval (E17 T5); untrusted result, server-derived scope, KB-wide (fail-closed)
 		)

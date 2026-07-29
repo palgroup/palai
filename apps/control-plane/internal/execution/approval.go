@@ -255,6 +255,33 @@ func (p *RepositoryPublisher) Publish(ctx context.Context, target PublishTarget)
 			return nil, err
 		}
 		return map[string]any{"pull_request_id": pr.ID, "url": pr.URL, "number": pr.Number, "draft": pr.Draft}, nil
+	case "merge_pull_request":
+		if p.PRClient == nil {
+			return nil, fmt.Errorf("publish merge %s: no pull-request client wired", pub.ID)
+		}
+		// The local protected-branch policy is checked for a merge too — on the HEAD, the same branch and the
+		// same predicate a push checks (DirectWorkAllowed is "may an agent do direct mutable work on this
+		// branch"). It is NOT applied to the base, and that omission is the design rather than an oversight:
+		// the base of a pull request is main by construction in most deployments, and refusing every merge
+		// into a protected branch would not protect it — it would delete the feature and leave the protection
+		// to be turned off. WHAT GUARDS THE BASE IS GITHUB'S OWN BRANCH PROTECTION, which E23 TRUSTS and does
+		// not reimplement: no required-checks query, no review request, no CI wait. Every one of those
+		// refusals arrives as the documented 405 and becomes a visible warning below.
+		if !repositories.DirectWorkAllowed(pub.Branch, p.Protected) {
+			return nil, fmt.Errorf("merge from %q: %w", pub.Branch, repositories.ErrProtectedBranch)
+		}
+		number, _ := pub.Args["pull_request_number"].(float64) // JSONB round-trip: numbers decode as float64
+		method, _ := pub.Args["merge_method"].(string)
+		receipt, err := repositories.MergePullRequest(ctx, p.PRClient, repositories.MergeInput{
+			// The head is the APPROVED publication's own, sent as `sha`. GitHub marks the field optional;
+			// making it mandatory is what buys the race guard for free (P16, 409 on a moved head).
+			Number: int(number), HeadSHA: pub.HeadSHA, Method: method,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"merged": receipt.Merged, "sha": receipt.SHA, "message": receipt.Message,
+			"number": int(number), "merge_method": method}, nil
 	default:
 		return nil, fmt.Errorf("publish %s: unknown operation %q", pub.ID, pub.Operation)
 	}

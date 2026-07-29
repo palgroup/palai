@@ -27,10 +27,26 @@ ON CONFLICT (publication_id) DO NOTHING;
 -- name: GetPublicationByKey
 SELECT p.id, p.session_id, p.run_id, coalesce(p.response_id, ''), p.operation, p.remote, p.branch,
        p.base, p.head_sha, p.idempotency_key, p.display, p.state, coalesce(p.receipt::text, ''),
-       coalesce(a.request_hash, '')
+       coalesce(a.request_hash, ''), coalesce(p.args::text, '{}')
 FROM publications p
 LEFT JOIN approvals a ON a.publication_id = p.id
 WHERE p.organization_id = $1 AND p.project_id = $2 AND p.idempotency_key = $3;
+
+-- RunPublishedPullRequest is E23 T6's destination resolver: the pull request THIS RUN opened and the head
+-- it was opened at, read back off its own published receipt. It is the whole reason the merge tool takes no
+-- arguments — a PR number a model can name is a PR the approver did not approve, so the number comes from a
+-- row the model never touched, written by the publisher from the provider's own answer.
+--
+-- Newest-first with LIMIT 1: a run can legitimately hold several PR publications (a re-proposed request
+-- dedupes, but a rebased branch does not), and the latest published one is the one this run's work is in.
+-- Tenant-scoped like everything here — a foreign run id resolves nothing.
+-- name: RunPublishedPullRequest
+SELECT coalesce((p.receipt->>'number')::int, 0), p.head_sha
+FROM publications p
+WHERE p.run_id = $1 AND p.organization_id = $2 AND p.project_id = $3
+  AND p.operation = 'open_pull_request' AND p.state = 'published'
+ORDER BY p.created_at DESC, p.id DESC
+LIMIT 1;
 
 -- SessionHasPendingApproval reports whether the session has a publication awaiting approval — the
 -- command spine's accept-time gate: with a pending approval an approve/deny is queued for the boundary
@@ -47,7 +63,7 @@ SELECT EXISTS (
 -- name: PendingApprovalForSession
 SELECT p.id, p.session_id, p.run_id, coalesce(p.response_id, ''), p.operation, p.remote, p.branch,
        p.base, p.head_sha, p.idempotency_key, p.display, p.state, coalesce(p.receipt::text, ''),
-       coalesce(a.request_hash, '')
+       coalesce(a.request_hash, ''), coalesce(p.args::text, '{}')
 FROM publications p
 LEFT JOIN approvals a ON a.publication_id = p.id
 WHERE p.session_id = $1 AND p.organization_id = $2 AND p.project_id = $3 AND p.state = 'pending_approval'
@@ -119,7 +135,7 @@ WHERE publication_id = $1;
 -- name: ApprovedPublicationsForRun
 SELECT p.id, p.session_id, p.run_id, coalesce(p.response_id, ''), p.operation, p.remote, p.branch,
        p.base, p.head_sha, p.idempotency_key, p.display, p.state, coalesce(p.receipt::text, ''),
-       coalesce(a.request_hash, '')
+       coalesce(a.request_hash, ''), coalesce(p.args::text, '{}')
 FROM publications p
 LEFT JOIN approvals a ON a.publication_id = p.id
 WHERE p.run_id = $1 AND p.organization_id = $2 AND p.project_id = $3 AND p.state = 'approved'

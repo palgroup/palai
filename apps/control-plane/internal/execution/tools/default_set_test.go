@@ -81,6 +81,7 @@ func TestEverySlackDefaultToolResolves(t *testing.T) {
 		// its own hand-picked set would prove less than it appears to.
 		PushTool(),
 		PullRequestTool(),
+		MergeTool(),
 	)
 	broker.SetLookup(SlackSearchLookup(nil, authorities, nil))
 
@@ -120,9 +121,10 @@ func TestThePublishToolsAreTheirOwnListAndNeitherPublishes(t *testing.T) {
 	byName := map[string]toolbroker.Tool{
 		PushTool().Name:        PushTool(),
 		PullRequestTool().Name: PullRequestTool(),
+		MergeTool().Name:       MergeTool(),
 	}
 	if len(publish) != len(byName) {
-		t.Fatalf("slackPublishTools = %v, want exactly the two publication tools this control plane mounts", publish)
+		t.Fatalf("slackPublishTools = %v, want exactly the %d publication tools this control plane mounts", publish, len(byName))
 	}
 	for _, name := range publish {
 		tool, ok := byName[name]

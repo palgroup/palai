@@ -69,8 +69,11 @@ func TestPushToolFailsCleanlyWithoutRegistry(t *testing.T) {
 
 // destinationFields are the words a publication destination is spelled with. None may ever appear in either
 // publish tool's input schema.
+// E23 T6 adds four spellings, and three of them are the merge tool's own destination: the pull request
+// NUMBER, the repository, and the merge METHOD. The fourth ("pull_request") catches the whole family in one
+// go, since `pull_request_number` and `pr` are the same field asked for differently.
 var destinationFields = []string{"base", "head", "branch", "remote", "repo", "repository", "ref", "url",
-	"target", "clone_url", "origin", "upstream", "into", "onto"}
+	"target", "clone_url", "origin", "upstream", "into", "onto", "number", "pull_request", "merge_method", "method"}
 
 // TestNoPublishToolLetsTheModelNameTheDestination is E22 T4's structural anchor (plan §3.5 X17), and it is
 // the reason "open the PR against dev" needed NO code change: the base comes from the binding's
@@ -87,7 +90,7 @@ var destinationFields = []string{"base", "head", "branch", "remote", "repo", "re
 // It sweeps the whole property set rather than looking for "base" alone, because `target_branch`,
 // `head_ref` and `remote` are the same field with different spellings.
 func TestNoPublishToolLetsTheModelNameTheDestination(t *testing.T) {
-	for _, tool := range []toolbroker.Tool{PushTool(), PullRequestTool()} {
+	for _, tool := range []toolbroker.Tool{PushTool(), PullRequestTool(), MergeTool()} {
 		props, ok := tool.InputSchema["properties"].(map[string]any)
 		if !ok {
 			t.Fatalf("%s has no `properties` object in its input schema: %#v — a schema this guard cannot read "+
@@ -120,5 +123,16 @@ func TestNoPublishToolLetsTheModelNameTheDestination(t *testing.T) {
 	if len(props) != 2 || props["title"] == nil || props["body"] == nil {
 		t.Fatalf("the pull-request tool's input schema is %v, want exactly title + body — prose the model may "+
 			"propose, and nothing that decides where the change lands", props)
+	}
+	// E23 T6's RED #3, and it is the strictest of the three because a merge has the least to negotiate. The
+	// merge tool takes NOTHING: which pull request comes from the run's OWN published receipt
+	// (RunPublishedPullRequest), the head from that publication's row, and merge_method from the binding's
+	// policy. A `pull_request_number` here would let a model aim an approved merge at somebody else's pull
+	// request while the approval message still read like this run's; a `merge_method` would let it choose
+	// squash over the operator's rebase. Neither exists, and this is where a future one dies.
+	if props, _ := MergeTool().InputSchema["properties"].(map[string]any); len(props) != 0 {
+		t.Fatalf("the merge tool's input schema grew properties %v; it takes no arguments at all — WHAT is "+
+			"merged is the pull request this run published, AT which commit is the head a human approved, and "+
+			"HOW is the binding's policy", props)
 	}
 }

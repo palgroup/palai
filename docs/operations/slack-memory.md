@@ -123,9 +123,16 @@ The reply arrives in a **thread** under your message. If nothing arrives, §7.
   **`PALAI_GIT_BASE_BRANCH` is the branch a pull request will target**, and it is also the branch the agent's
   clone starts from — one value, so those two cannot disagree. No model is ever asked for it.
 
-  **It can write and it cannot publish.** `palai.publish.push` and `palai.publish.pull_request` are NOT
-  granted by binding a repository; publishing goes through a human's **Approve** button and is configured
-  separately. That separation is deliberate, not an oversight.
+  **It can ASK to publish, and asking is all it can do.** With a binding the list also gains
+  `palai.publish.push`, `palai.publish.pull_request` and `palai.publish.merge_pull_request` — a separate
+  list, so granting a workspace and granting a publication stay two decisions. None of the three acts: each
+  records a pending publication, the run STOPS, and nothing leaves the machine until somebody in
+  `SLACK_APPROVER_IDS` presses **Approve** on the message that lands in the thread. The destination is never
+  the model's either — which remote, which branch, which base, which pull request and which merge method are
+  all resolved from the binding and from what this run already published.
+
+  (This paragraph used to say publishing was not granted at all. It stopped being true when E22 T4 wired the
+  approval path from Slack, and the correction is recorded rather than quietly applied.)
 
   To choose the list yourself — including the publish tools — set `SLACK_AGENT_TOOLS` in `.env.local` to the
   full list you want, by name. It replaces the default wholesale, repository or not:
