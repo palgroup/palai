@@ -182,6 +182,9 @@ func Bootstrap(envFile string, native bool) error {
 	// WHO MAY APPROVE (E23 T2). Unconditional, not Slack-conditional: the HTTP approve surface exists on
 	// every stack whether or not a workspace was ever wired.
 	slackWarns = appendWarn(slackWarns, approverListWarning(api))
+	// HOW MANY RUNS AT ONCE (§3.6 D11). Unconditional for the same reason: a second machine that nothing
+	// can reach is the shape of a fleet that was bought and is not being used.
+	slackWarns = appendWarn(slackWarns, dispatchWorkerFleetWarning(api, get))
 	printReport(cfg, posture, rt, caps, observedFacts(rt, slackFact), red, slackWarns...)
 	return nil
 }
@@ -1139,6 +1142,62 @@ func approverListWarning(api *apiClient) string {
 	return "no project approver list is configured; the HTTP approve surface is gated only by tenant-scoped key possession — " +
 		"set one with `palai admin project set-policy " + bootstrapProjectID + " --approvers key:<api_key_id>,slack:<team_id>:<user_id>` " +
 		"(see docs/operations/approvals.md). Leaving it unset is a supported posture, not a bug — it is just not a gate"
+}
+
+// dispatchWorkerFleetWarning is §3.6 D11 said out loud, and it is the correction of a MEASURED LIE
+// rather than a code change.
+//
+// Concurrency here is min(PALAI_DISPATCH_WORKERS, the fleet's lease slots), and the FIRST of those
+// defaults to 1. So an operator who enrols a second Mac adds a machine that parks and is never reached,
+// sees no speed-up, and has nowhere to read why: the bound is in the control plane, not in the fleet.
+// That matters more now than when it was measured, because it has since been measured that two sessions
+// DO run concurrently on one Mac once both knobs are raised — the ceiling is real and it is liftable.
+//
+// It reads the live registry rather than counting containers, because "enrolled" is a durable fact about
+// machines that may not be on this host at all, which is the entire point of a fleet. Read failures are
+// reported as such: a warning that silently becomes "no warning" when a read fails is worse than none.
+func dispatchWorkerFleetWarning(api *apiClient, get func(string) string) string {
+	// Empty follows applyConcurrencyEnv, which exports 1 when the operator set nothing — so the default
+	// stack is exactly the case this warning is for.
+	workers := strings.TrimSpace(get("PALAI_DISPATCH_WORKERS"))
+	if workers == "" {
+		workers = "1"
+	}
+	if workers != "1" {
+		return ""
+	}
+	runners, err := api.enrolledRunnerCount()
+	if err != nil {
+		return fmt.Sprintf("could not read the enrolled runner count, so nothing here can tell you whether your fleet is reachable: %v", err)
+	}
+	if runners < 2 {
+		return ""
+	}
+	return fmt.Sprintf("%d runners are enrolled but PALAI_DISPATCH_WORKERS=1 — concurrent runs are bounded by the control plane, not the fleet; "+
+		"raise PALAI_DISPATCH_WORKERS (and PALAI_RUNNER_CONCURRENCY, which `palai up` keeps in step with it) or the extra machines park and are never reached", runners)
+}
+
+// enrolledRunnerCount reads how many machines are enrolled in the caller's tenant. The page limit is
+// deliberately small: the question is "more than one", not "how many exactly", and a fleet of a hundred
+// would answer it on the first page.
+func (c *apiClient) enrolledRunnerCount() (int, error) {
+	var body struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	status, err := c.do(http.MethodGet, "/v1/runners?limit=10", nil, &body)
+	switch {
+	case err != nil:
+		return 0, err
+	case status == http.StatusNotFound:
+		// A stack with no runner gateway does not mount the route. That is a supported posture (a
+		// queued-only stack), and it has no fleet to warn about.
+		return 0, nil
+	case status != http.StatusOK:
+		return 0, fmt.Errorf("GET /v1/runners = %d", status)
+	}
+	return len(body.Data), nil
 }
 
 // projectApprovers reads a project's configured approver principals off the running stack.
