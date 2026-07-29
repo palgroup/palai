@@ -2059,6 +2059,20 @@ func TestMigration45RunnerFleet(t *testing.T) {
 		if !strings.Contains(qual, "project_id") {
 			t.Fatalf("%s tenant_isolation does not narrow on project_id: %s", table, qual)
 		}
+		// ENABLE and FORCE, read per table and LOGGED. tests/security/tenancy sweeps the whole catalogue
+		// and demands both, which is the gate — but it names no table on the way past, so a reader
+		// checking that THESE four are secured has nowhere to look. Under -v this is that place.
+		var enabled, forced bool
+		if err := pool.QueryRow(storage.WithSystemScope(ctx),
+			`SELECT c.relrowsecurity, c.relforcerowsecurity FROM pg_class c
+			   JOIN pg_namespace n ON n.oid = c.relnamespace
+			  WHERE n.nspname = 'public' AND c.relname = $1`, table).Scan(&enabled, &forced); err != nil {
+			t.Fatalf("read %s row-security flags: %v", table, err)
+		}
+		if !enabled || !forced {
+			t.Fatalf("%s: row security enabled=%v forced=%v, want both true", table, enabled, forced)
+		}
+		t.Logf("RLS %-20s enabled=%v forced=%v qual=%s", table, enabled, forced, qual)
 	}
 
 	tenant, _, runID := seedRun(t, pool)

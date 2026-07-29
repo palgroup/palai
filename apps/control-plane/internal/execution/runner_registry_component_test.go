@@ -6,14 +6,15 @@ package execution_test
 // runner that declares no pool falls into pool_default and the deployment behaves as it does today.
 // §2 says that rule "stops with a test, not a comment", so here is the test.
 //
-// It drives the three real pieces end to end with NO pool configuration anywhere: the identity
-// bootstrap that a fresh install runs, the production fleet.Store, and the REAL gateway over REAL
-// mTLS against a REAL packages/runner enrollment. Nothing in it names a pool — that is the point. The
-// only thing that could make it pass is the seed actually existing and the gateway actually resolving
-// it, which is what R6 is for.
+// It drives the real pieces end to end with NO pool configuration anywhere: BOTH of R6's seeding
+// populations (the migration's, for an install upgrading from 000044; identity.provision's, for a
+// tenant born fresh), the production fleet.Store, and the REAL gateway over REAL mTLS against a REAL
+// packages/runner enrollment. Nothing the runner sends names a pool — that is the point. The only
+// thing that could make it pass is the seed actually existing and the gateway actually resolving it.
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -42,11 +43,71 @@ func TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool(t *testing.T) {
 	if err := spine.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	// The identity bootstrap a FRESH install runs. It is idempotent (every insert is ON CONFLICT DO
-	// NOTHING), so re-running it against this shared component database is a no-op — which is also the
-	// re-boot-against-a-retained-volume path in production.
-	if err := identity.New(spine.Pool()).ProvisionFirstOrg(context.Background(), "component-bootstrap-key"); err != nil {
-		t.Fatalf("provision the bootstrap organization: %v", err)
+	// THE STATE AN INSTALL UPGRADING FROM 000044 IS IN: the bootstrap tenant exists (identity/store.go
+	// seeded it on some earlier boot) and there is no pool anywhere, because until 000045 no migration
+	// had ever made one.
+	//
+	// Seeded with plain SQL, and the reason is a bug this test caused and then had to be corrected for:
+	// ProvisionFirstOrg would ALSO mint the SINGLETON bootstrap API key, and this package shares one
+	// Postgres with every other component leg. The identity leg's own TestBootstrapFirstOrgResolvable
+	// provisions that key and verifies it resolves — and because every insert is ON CONFLICT DO NOTHING,
+	// whichever leg gets there first wins and the other's key resolves to nothing. Running this leg first
+	// turned that test red with `VerifyAPIKey(bootstrap key) error = invalid_token`. A test that claims a
+	// singleton on a shared database breaks whichever leg runs after it, so this one claims none: the org
+	// and project are all it needs, and the api_keys/principals rows it does NOT write are what leave the
+	// identity leg's own bootstrap intact.
+	seed := storage.WithSystemScope(context.Background())
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO organizations (id) VALUES ($1) ON CONFLICT DO NOTHING`, []any{"org_local"}},
+		{`INSERT INTO projects (id, organization_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, []any{"prj_local", "org_local"}},
+	} {
+		if _, err := spine.Pool().Exec(seed, stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed the bootstrap tenant: %v", err)
+		}
+	}
+	// Re-run the chain. R6 seeds pool_default for exactly this population — an install that already has
+	// org_local/prj_local and is arriving at 000045 for the first time.
+	if err := spine.Migrate(context.Background()); err != nil {
+		t.Fatalf("re-migrate onto the seeded bootstrap tenant: %v", err)
+	}
+	var seededPosture, seededOrg, seededProject string
+	var strict bool
+	if err := spine.Pool().QueryRow(seed,
+		`SELECT posture, organization_id, project_id, strict_enrollment FROM runner_pools WHERE id = $1`,
+		fleet.DefaultPoolID).Scan(&seededPosture, &seededOrg, &seededProject, &strict); err != nil {
+		t.Fatalf("migration 000045 R6 seeded no default pool for the bootstrap tenant: %v", err)
+	}
+	if seededPosture != "sandboxed-linux" || seededOrg != "org_local" || seededProject != "prj_local" || strict {
+		t.Fatalf("the seeded default pool is (%s, %s, %s, strict=%v), want today's deployment stated as data",
+			seededPosture, seededOrg, seededProject, strict)
+	}
+
+	// R6's OTHER population is identity.provision's — a FRESH stack, where the migrations run before
+	// there is any organization to reference at all. It is asserted here on a NEW tenant rather than on
+	// the bootstrap one, for the same shared-database reason: CreateOrganization runs the SAME provision
+	// transaction ProvisionFirstOrg does, so what it proves about the pool it proves about both.
+	created, err := identity.New(spine.Pool()).CreateOrganization(seed, middleware.Scope{}, []byte(`{"display_name":"fleet-seed"}`))
+	if err != nil {
+		t.Fatalf("create a second organization: %v", err)
+	}
+	var born struct {
+		ID               string `json:"id"`
+		DefaultProjectID string `json:"default_project_id"`
+	}
+	if err := json.Unmarshal(created.Body, &born); err != nil || born.ID == "" {
+		t.Fatalf("decode the created organization: %v (%s)", err, created.Body)
+	}
+	var bornPools int
+	if err := spine.Pool().QueryRow(seed,
+		`SELECT count(*) FROM runner_pools WHERE organization_id = $1 AND project_id = $2 AND posture = 'sandboxed-linux'`,
+		born.ID, born.DefaultProjectID).Scan(&bornPools); err != nil {
+		t.Fatalf("count the new tenant's pools: %v", err)
+	}
+	if bornPools != 1 {
+		t.Fatalf("a tenant born through identity.provision has %d default pool(s), want 1 — a tenant with no pool is a tenant whose runner cannot enrol", bornPools)
 	}
 
 	f := newGatewayFixture(t, newOneUseTokens("bit-unchanged-token"))

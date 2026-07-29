@@ -12,6 +12,21 @@
 
 DROP TABLE IF EXISTS runner_enrollments;
 
+-- THE POLICY COMES OFF FIRST, AND THE ORDER IS THE WHOLE POINT. 000045 gave `runners` a project_id and
+-- re-CALLed palai_apply_tenant_policy so tenant_isolation narrows on it; a POLICY is an "other object"
+-- that ALTER TABLE ... DROP COLUMN refuses to cascade through (2BP01), unlike an index, which Postgres
+-- drops on its own. Written the other way round — the 000001-shape policy re-asserted at the BOTTOM of
+-- this file, after the column was gone — the whole reversal aborted on the first DROP COLUMN, and with
+-- it MigrationDown() for every migration in the chain. Re-asserting the org-only rule here removes the
+-- dependency and leaves the table secured for every instant in between.
+DO $$
+BEGIN
+    IF to_regclass('public.runners') IS NOT NULL THEN
+        CALL palai_apply_tenant_policy('runners', 'organization_id', false);
+    END IF;
+END
+$$;
+
 -- Dropped BEFORE runners loses enrolled_via_key_id would fail on the FK, so the column goes first.
 DO $$
 BEGIN
@@ -68,17 +83,6 @@ END
 $$;
 
 DROP INDEX IF EXISTS runner_pools_name_key;
-
--- runners lost its project_id above, so the policy 000045 installed (the project-narrowing
--- expression) now names a column that is gone. Re-assert the 000001-shape rule so a rolled-back
--- database is not left with a policy that errors on every read.
-DO $$
-BEGIN
-    IF to_regclass('public.runners') IS NOT NULL THEN
-        CALL palai_apply_tenant_policy('runners', 'organization_id', false);
-    END IF;
-END
-$$;
 
 -- Guarded so the reversal stays idempotent even after 000001 has dropped schema_migrations.
 DO $$
