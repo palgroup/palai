@@ -103,7 +103,7 @@ func (o *Orchestrator) parkOnPendingPublication(ctx context.Context, st *attempt
 // plus the exact head that will be pushed. Not one character of it is reachable by the model, which is
 // why the pull-request tool's InputSchema has no destination field at all.
 //
-// DeriveToolApprovalDisplay (approval_display.go, E23 T1) builds ITS screen from the CALL: the identity
+// DeriveToolApprovalDisplay (E23 T1) builds ITS screen from the CALL: the identity
 // resolved through the executing lookup, the operator's registration-time label, and the full argument
 // object — and those arguments are the model's, defused by being labelled as the model's rather than by
 // being infrastructure-derived.
