@@ -571,6 +571,12 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 				// tool.result was sent, so the engine subprocess closes without hanging, and the reconcile
 				// job resolves the row and re-enqueues the run. Not a failure, like a pause.
 				return nil
+			case errors.Is(err, errRunAwaitingApproval):
+				// A gated tool call is waiting on a human (spec §22.4, E23 T1): the run is WAITING, this
+				// attempt ends cleanly and releases its compute — the worker is freed and no engine process
+				// is held while somebody reads — and the decision (or the expiry reaper) opens a fresh
+				// attempt through the one wake. Exactly as a pause ends and resume reopens.
+				return nil
 			case err != nil:
 				return abortIfTerminal(err)
 			}

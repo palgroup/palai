@@ -75,6 +75,9 @@ var allTables = []string{
 	// The E20 turn handle (000042): which turn a Slack message became, so an edit can supersede it and a
 	// deletion can retract it.
 	"slack_message_turns",
+	// The E23 T1 approval delivery (000044 R4): the order to POST one approval question, keyed
+	// UNIQUE (approval_id) because a single run can owe a human several separate answers.
+	"slack_approval_deliveries",
 	"schema_migrations",
 }
 

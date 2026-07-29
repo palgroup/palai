@@ -16,6 +16,11 @@ type ReconcileStore interface {
 	// consume observing it (the idle-expiry half; the consume-time guards catch the rest). Returns the
 	// number expired this pass.
 	SweepExpiredApprovals(ctx context.Context) (int, error)
+	// SweepExpiredToolApprovals is the same sweep for a GATED TOOL CALL, and it carries the half that
+	// publications never needed: it WAKES the parked run. A publication whose approval lapses leaves
+	// nothing waiting — the run finished long before. A tool call's run is parked on the question, so an
+	// expiry that only cancelled the call would leave that run waiting forever (E23 T1).
+	SweepExpiredToolApprovals(ctx context.Context) (int, error)
 }
 
 // Reconciler periodically dead-letters jobs whose lease has lapsed and whose attempts
@@ -51,6 +56,11 @@ func (r *Reconciler) Sweep(ctx context.Context) (int, error) {
 	// forward-declared expiry that no approve/publish consume ever observed. Non-fatal like the rest of
 	// the pass — the next tick retries — so a transient blip never stops the dead-letter safety net.
 	if _, err := r.store.SweepExpiredApprovals(ctx); err != nil {
+		return dead, err
+	}
+	// And the gated-tool half, which RELEASES A PARKED RUN as well as cancelling the call. Non-fatal like
+	// the rest of the pass; a transient blip means the next tick frees the run instead of this one.
+	if _, err := r.store.SweepExpiredToolApprovals(ctx); err != nil {
 		return dead, err
 	}
 	return dead, nil
