@@ -58,11 +58,24 @@ func parkIdentity(t *testing.T, f *gatewayFixture, identity runner.Identity) *pa
 // tier's first leg having migrated the shared database; these tests do it themselves so a single
 // PALAI_SUITE_RUN selection of this file is runnable on its own, which is what made each RED below
 // observable before its fix.
+// It also accepts PALAI_DATABASE_URL, which is this file's ONE deliberate departure from §T4: the plan
+// asks for a separate `//go:build live` leg proving park + wake "on a real Postgres". These tests ARE on a
+// real Postgres — same migration chain, same RLS, same app role — so a live-tagged twin would differ only
+// in which environment variable names the database, and NO live driver in this tree would run a new file
+// under internal/execution (the live tier is explicit `-run`/package targets, not a sweep). A test nothing
+// executes is precisely the failure this task was warned about twice. So the same proofs point at an
+// operator's own stack when they set PALAI_DATABASE_URL, and there is no second, unexecuted copy.
 func newPlacementFixture(t *testing.T) *poolKeyFixture {
 	t.Helper()
 	url := os.Getenv("PALAI_COMPONENT_POSTGRES_URL")
 	if url == "" {
-		t.Skip("PALAI_COMPONENT_POSTGRES_URL is required; run TEST=postgres scripts/test/component")
+		// The operator-supplied database, named so the skip below says which variable to set.
+		if url = os.Getenv("PALAI_DATABASE_URL"); url != "" {
+			t.Setenv("PALAI_COMPONENT_POSTGRES_URL", url)
+		}
+	}
+	if url == "" {
+		t.Skip("PALAI_COMPONENT_POSTGRES_URL (or PALAI_DATABASE_URL, to run against your own stack) is required; run TEST=postgres scripts/test/component")
 	}
 	cs, err := coordinator.Open(context.Background(), url)
 	if err != nil {
