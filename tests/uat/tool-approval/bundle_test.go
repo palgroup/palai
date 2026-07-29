@@ -506,3 +506,26 @@ func TestTheToolApprovalLedgerRefusesTheUnconfirmedRows(t *testing.T) {
 		}
 	}
 }
+
+// TestTheE23UncertaintiesAreInKnownGaps is the other side of the refusal above: three questions kept OUT of
+// the contract ledger have to be written down SOMEWHERE, or "we did not assume it" is indistinguishable from
+// "we did not notice it". Their home is the operator's gap table, with the workaround each was answered by.
+func TestTheE23UncertaintiesAreInKnownGaps(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot(t), "docs", "operations", "known-gaps-1.0.md"))
+	if err != nil {
+		t.Fatalf("read known-gaps-1.0.md: %v", err)
+	}
+	body := string(raw)
+	for _, needle := range []string{
+		"P5/P17/P18",            // the row names the plan's own ids, so a reader can find the question
+		"ToolAnnotations",       // (a) is the field named but not enumerated
+		"interactivity_pointer", // (b) is the alternative that is never used
+		"private_metadata",      // (c) is the field almost nothing is put in
+		"HIL-P8",                // and the epic's own D1, which the exit gate found rather than the task
+		"EXPIRY REAPER",         // stated in the operator's words, not only in a Go comment
+	} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("known-gaps-1.0.md never mentions %q — an unconfirmed vendor question kept out of the contract ledger and out of the gap table is a question nobody triaged", needle)
+		}
+	}
+}
