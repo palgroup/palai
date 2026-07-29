@@ -24,7 +24,7 @@ It checks:
 | `env_contract` | every required key in `production.env` is present; no unknown (typo'd) key |
 | `master_key` | `${PALAI_HOME}/secrets/master-key` is present and **not** a dev-default |
 | `bootstrap_key` | `${PALAI_HOME}/api-key` is not the shipped placeholder |
-| `cert_pair` | the edge TLS `ca/server.crt` + `ca/server.key` are present and readable |
+| `cert_pair` | the edge TLS pair the overlay **actually mounts** is present and readable — `PALAI_EDGE_CERT`/`PALAI_EDGE_KEY` when set, `ca/server.{crt,key}` otherwise. It resolves the same `${PALAI_EDGE_CERT:-…}` default the overlay does, so the validator cannot end up checking a different file than compose mounts. |
 | `dispatch_workers` | `PALAI_DISPATCH_WORKERS >= 1` (production runs the exec-path, not queued-only) |
 | `edge_only_surface` | the TLS edge is the **only** host-published surface, and the Caddyfile proxies **only** `/v1/*` |
 
@@ -75,10 +75,46 @@ palai local doctor            # human table; non-zero exit on any non-green chec
 palai local doctor --json     # the Report contract the UAT harness parses
 ```
 
-> `doctor` reaches the control-plane, Postgres, and object store over host-published ports. Under the
-> **production** overlay those ports are intentionally not published (only the edge is), so doctor is
-> run against the stack it can reach — the same binaries, local posture. Watching a production stack
-> from outside its network is the operator leg (plan §6).
+### `palai doctor` — the same questions, against a PRODUCTION stack
+
+`local doctor` reaches the control-plane, Postgres, and the object store over **host-published**
+ports. The production overlay publishes none of them (`ports: !reset []`; only the edge is published),
+so against a production stack it reported 13 of its 15 checks red for one reason that had nothing to
+do with the stack's health — measured 2026-07-29 (`docs/operations/cloud-smoke-report.md`, Bulgu 5).
+
+```sh
+palai doctor --env-file production.env         # 18 checks; --json for the Report
+```
+
+Same questions, different transports — and both transports were already proven in this CLI:
+
+- **`docker exec` by container name** for Postgres and for the internal `/healthz*` probes, which is
+  exactly what `palai backup`/`restore`/`support-bundle` do and why *they* work against an edge-only
+  stack. The `/healthz*` reads use the busybox `wget` the control-plane's own compose healthcheck
+  uses, so no extra image is pulled and nothing has to be exposed;
+- **the TLS edge** for the public API, which is what install.md step 6 already has you curl.
+
+Every verdict is the shared function `local doctor` applies — `migrationCheck`, `clockCheck`,
+`queueCheck`, `callbackCheck`, `quarantineCheck`, `supervisorCheck`, `runnerIdentityFromBody`,
+`diskCheck`. **No check is weakened to make production green.** Two are stronger, and three are new:
+
+| Check | Difference from `local doctor` |
+|---|---|
+| `api` | proves TLS termination, CA trust and the edge's `/v1/*` path match, not a plaintext localhost port. It verifies against the name **your** certificate carries (system roots + the local CA), never with verification relaxed |
+| `runner`, `runner_tls_reject` | one `openssl s_client` probe from a one-off container on the stack's own network, in the digest-pinned postgres image the stack already has — a verified handshake, then a certificate-less request that must be answered `401` |
+| `edge_cert` | **new** — compares the certificate the edge is **serving** with the file on disk. `docker compose up -d edge` does not reload replaced certificate *contents*; the edge keeps serving the old one with no error anywhere (Bulgu 4). Also fails on an expired certificate |
+| `backup_target` | **new** — `backup`/`restore`/`support-bundle` derive container names from `config.json`'s `project`, not `PALAI_COMPOSE_PROJECT`. Choose a different name and the stack is healthy while every disaster-recovery command fails with `No such container` (Bulgu 2) |
+| `containers` | **new** — what `docker compose ps` was standing in for: every service running, and healthy where compose declares a healthcheck. Catches a crash-looping service under `restart: always`, which looks alive from outside |
+| `object_store` | asks the **control-plane** whether it can reach `PALAI_S3_ENDPOINT` — the reachability the artifact path actually depends on |
+
+A check that this posture genuinely cannot answer reports **`n/a`** with the reason: it is not
+counted as green, the summary line names it, and `--json` carries the status — but it does not fail
+the verdict, because a permanently-unmeasurable check that reddens every run trains an operator to
+ignore the command. In practice the only `n/a` seen is `runner_tls_reject` when the handshake itself
+failed, and then `runner` carries the real failure.
+
+> Honest ceiling: this was measured against a production-overlay stack on Docker Desktop
+> (`darwin/arm64`), not a real cloud VM or `linux/amd64`.
 
 ---
 

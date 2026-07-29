@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -150,9 +151,22 @@ func checkMigration(ctx context.Context, pgURL string) Check {
 	}
 	defer conn.Close(ctx)
 	var version int
-	if err := conn.QueryRow(ctx, "SELECT coalesce(max(version), 0) FROM schema_migrations").Scan(&version); err != nil {
+	if err := conn.QueryRow(ctx, migrationVersionSQL).Scan(&version); err != nil {
 		return fail("read schema_migrations: " + err.Error())
 	}
+	return migrationCheck(version)
+}
+
+// The SQL and the verdict are split out so the production doctor (doctor_production.go), which
+// reaches Postgres by `docker exec` rather than a host port, asks the IDENTICAL question and
+// applies the IDENTICAL boundary. Same for clockCheck/quarantineCheck below.
+const (
+	migrationVersionSQL = "SELECT coalesce(max(version), 0) FROM schema_migrations"
+	quarantineCountSQL  = "SELECT count(*) FROM host_quarantine"
+	dbClockSQL          = "SELECT clock_timestamp()"
+)
+
+func migrationCheck(version int) Check {
 	if version < currentSchemaVersion {
 		return fail(fmt.Sprintf("schema at version %d, want %d", version, currentSchemaVersion))
 	}
@@ -244,10 +258,13 @@ func checkClock(ctx context.Context, pgURL string) Check {
 	defer conn.Close(ctx)
 	host := time.Now()
 	var dbTime time.Time
-	if err := conn.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&dbTime); err != nil {
+	if err := conn.QueryRow(ctx, dbClockSQL).Scan(&dbTime); err != nil {
 		return fail("read db clock: " + err.Error())
 	}
-	skew := dbTime.Sub(host)
+	return clockCheck(dbTime.Sub(host))
+}
+
+func clockCheck(skew time.Duration) Check {
 	if skew < 0 {
 		skew = -skew
 	}
@@ -267,9 +284,13 @@ func checkQuarantine(ctx context.Context, pgURL string) Check {
 	}
 	defer conn.Close(ctx)
 	var count int
-	if err := conn.QueryRow(ctx, "SELECT count(*) FROM host_quarantine").Scan(&count); err != nil {
+	if err := conn.QueryRow(ctx, quarantineCountSQL).Scan(&count); err != nil {
 		return fail("read host_quarantine: " + err.Error())
 	}
+	return quarantineCheck(count)
+}
+
+func quarantineCheck(count int) Check {
 	if count == 0 {
 		return ok("no quarantined hosts")
 	}
@@ -299,10 +320,21 @@ func checkSupervisor(ctx context.Context, cfg Config) Check {
 	if resp.StatusCode != http.StatusOK {
 		return fail(fmt.Sprintf("GET /healthz/supervisor = %d, want 200", resp.StatusCode))
 	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fail("read /healthz/supervisor: " + err.Error())
+	}
+	return supervisorCheck(raw)
+}
+
+// supervisorCheck is the verdict over a /healthz/supervisor body, split from the transport so the
+// production doctor — which reads the same endpoint through `docker exec` on the internal network,
+// because the edge deliberately proxies only /v1/* — applies the identical rule.
+func supervisorCheck(raw []byte) Check {
 	var body struct {
 		Restarts map[string]int `json:"restarts"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(raw, &body); err != nil {
 		return fail("decode /healthz/supervisor: " + err.Error())
 	}
 	total := 0

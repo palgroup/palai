@@ -16,6 +16,10 @@ argv'ye, log'a, evidence'a veya commit'e girmedi.
 
 ## Karar (tek paragraf)
 
+> **Bu karar 2026-07-29 sabahının ölçümüdür ve o haliyle bırakılmıştır.** Aynı gün Bulgu 3, 5 ve 6
+> kapatıldı — ne değiştiğini [Sonrası](#sonrası--3-5-ve-6-kapatıldı-2026-07-29-cloud-fixes-dalı)
+> bölümü söyler.
+
 **Sahibi yarın bunu bir cloud VM'ine kurarsa: stack ayağa kalkar ve gerçekten çalışır — ama tek bir
 şeyi yapmaya kalkarsa, gerçek alan adı için sertifikayı değiştirmeye kalkarsa, stack'i sessizce
 kırar.** Adım 1–6 temiz: beş servis 27 saniyede healthy oluyor, TLS edge tek yayınlanan yüzey,
@@ -60,20 +64,44 @@ Palai edge'inin **önündeki** bir proxy'de (cloud LB / nginx) sonlandırmak.
 |---|---|---|---|---|
 | **1** | Dokümanın sağlık kontrolü vakum: `/healthz` edge üzerinden her zaman `200`/exit 0, control-plane ölüyken bile | `docs/operations/install.md:144` (eski) · Caddyfile `deploy/compose/production.yml:97` | **Düzeltildi** — probe `/v1/capabilities`, gerekçesiyle | **Yüksek** — operatörün "stack sağlıklı" kanıtı yalan; ölü stack'i yeşil raporlar |
 | **2** | `PALAI_COMPOSE_PROJECT` ile `config.json`'daki `project` bağlanmıyor → `backup`/`restore`/`support-bundle` yanlış konteyner adını arıyor | `cmd/cli/internal/stack/install_backup.go:418` · `docs/operations/install.md:94` | **Düzeltildi** — doküman artık iki ismi bağlıyor | **Yüksek** — backup, en kötü gün çalışmadığını öğreneceğin şey. Stack sağlıklı görünürken DR tamamen ölü |
-| **3** | Edge sertifikası runner gateway ile **paylaşılıyor**; runner tam olarak tek SAN (`control-plane`) pin'liyor → gerçek alan adı sertifikası runner'ı kırıyor, **gecikmeli** | `deploy/compose/production.yml:70-71` (edge) + `deploy/compose/compose.yaml:61-62` (runner gw) · pin: `packages/runner/enrollment.go:142`, `session.go:302`, `renewal.go:101` | **Filed** — doküman gerçeği söylüyor, kod değişmedi | **Kritik** — "gerçek alan adı" tam da sahibin istediği şey. Kırılma reboot'a kadar gizli, semptom "run'lar queued kalıyor", hiçbir mesajda sertifika geçmiyor |
+| **3** | Edge sertifikası runner gateway ile **paylaşılıyor**; runner tam olarak tek SAN (`control-plane`) pin'liyor → gerçek alan adı sertifikası runner'ı kırıyor, **gecikmeli** | `deploy/compose/production.yml:70-71` (edge) + `deploy/compose/compose.yaml:61-62` (runner gw) · pin: `packages/runner/enrollment.go:142`, `session.go:302`, `renewal.go:101` | **Düzeltildi** — `PALAI_EDGE_CERT`/`PALAI_EDGE_KEY` (bkz. *Sonrası*) | **Kritik** — "gerçek alan adı" tam da sahibin istediği şey. Kırılma reboot'a kadar gizli, semptom "run'lar queued kalıyor", hiçbir mesajda sertifika geçmiyor |
 | **4** | `up -d edge` sertifikayı reload etmiyor (compose config değişmedi sanıyor); doğrusu `restart edge` | `docs/operations/install.md:170` (eski) | **Düzeltildi** | **Orta** — tek başına da bir tuzak: operatör sertifikayı değiştirir, eski sertifika servis edilmeye devam eder |
-| **5** | Production stack için **sağlık komutu yok**. `palai local doctor` host portlarına bakıyor, overlay onları yayınlamıyor → 15 kontrolün 13'ü yanlış sebeple kırmızı | `cmd/cli/internal/stack/doctor.go:51` · `docs/operations/operability.md:78` | **Filed** — install.md'ye ceiling notu eklendi | **Orta** — `operability.md`'de dürüstçe kabul edilmiş ama install.md'den link yoktu; operatörün elinde `compose ps` + tek curl kalıyor |
-| **6** | Kaynak alt sınırları (RAM/disk/core) **hiçbir dokümanda yazmıyor**; `doctor`'ın disk kontrolü **oran** tabanlı (`free/total < %10`), mutlak değil | `cmd/cli/internal/stack/doctor_v2.go:26` | **Filed** | **Orta** — 20 GB'lık bir VM'de %10 = 2 GB "yeşil"; 460 GB'lık bu host'ta 40.6 GB **kırmızı**. Oran, kaynak tabanı için yanlış şekil |
+| **5** | Production stack için **sağlık komutu yok**. `palai local doctor` host portlarına bakıyor, overlay onları yayınlamıyor → 15 kontrolün 13'ü yanlış sebeple kırmızı | `cmd/cli/internal/stack/doctor.go:51` · `docs/operations/operability.md:78` | **Düzeltildi** — `palai doctor --env-file` (bkz. *Sonrası*) | **Orta** — `operability.md`'de dürüstçe kabul edilmiş ama install.md'den link yoktu; operatörün elinde `compose ps` + tek curl kalıyor |
+| **6** | Kaynak alt sınırları (RAM/disk/core) **hiçbir dokümanda yazmıyor**; `doctor`'ın disk kontrolü **oran** tabanlı (`free/total < %10`), mutlak değil | `cmd/cli/internal/stack/doctor_v2.go:26` | **Düzeltildi** — mutlak taban + `install.md` "Resource minimums" | **Orta** — 20 GB'lık bir VM'de %10 = 2 GB "yeşil"; 460 GB'lık bu host'ta 40.6 GB **kırmızı**. Oran, kaynak tabanı için yanlış şekil |
 | **7** | Route A'nın gerektirdiği imajların nasıl üretileceği yazmıyor; `build.sh` varsayılanı çift mimari | `docs/operations/install.md:44` | **Düzeltildi** | **Düşük** — engelleyici değil ama ilk adımda operatörü durduruyor |
 | **8** | Belgelenen `docker compose config` komutu 4 uyarı basıyor | `deploy/compose/production.env.example` | **Filed** (kozmetik) | **Düşük** — `!reset` edilmiş portlar; zararsız ama gürültü |
 
+### Sonrası — 3, 5 ve 6 kapatıldı (2026-07-29, `cloud-fixes` dalı)
+
+Aşağıdaki transcript **ölçüldüğü haliyle bırakıldı**; bu bölüm o ölçümlerden sonra ne değiştiğini
+söyler.
+
+- **Bulgu 3 — düzeltildi.** `production.yml` artık edge sertifikasını `PALAI_EDGE_CERT` /
+  `PALAI_EDGE_KEY` ile alıyor, varsayılanı `${PALAI_HOME}/ca/server.*`. İkisi de set edilmemişken
+  `docker compose config` çıktısı **bayt bayt aynı**, yani mevcut hiçbir kurulum değişmiyor. Set
+  edilince edge `palai.example.com` sertifikasını sunuyor, runner kendi tek-SAN pin'ini koruyor;
+  canlı olarak control-plane restart'ı **ve** tüm stack restart'ı boyunca runner bağlı kaldı ve
+  run'lar tamamlandı. Aynı stack üzerinde eski yordam (paylaşılan dosyanın üzerine yazmak) kontrol
+  olarak tekrarlandı ve beklenen `certificate is valid for palai.example.com, not control-plane`
+  hatasını üretti — yani ispat vakum değil. `install.md` adım 7 artık çalışan yordamı anlatıyor.
+- **Bulgu 5 — düzeltildi.** Yeni komut: `palai doctor --env-file production.env` (18 kontrol).
+  `local doctor`'ın sorduğu soruların aynısını, bu stack'in ulaşılabildiği yoldan soruyor —
+  konteyner adıyla `docker exec` (backup/restore/support-bundle'ın zaten kullandığı yol) ve TLS
+  edge. Hiçbir kontrol zayıflatılmadı; `api` ve `runner*` daha güçlü, üç kontrol yeni
+  (`edge_cert`, `backup_target`, `containers` — ikisi bu raporun Bulgu 4 ve Bulgu 2'sini ölçüyor).
+  Bu posture'da yanıtlanamayan bir kontrol `n/a` diyor, yeşil saymıyor.
+- **Bulgu 6 — düzeltildi.** `doctor`'ın disk kontrolü artık oran **ve** mutlak taban (5 GiB), hangisi
+  daha talepkârsa o. Sayı ölçümden türetildi (altı imaj 0,88 GiB; boş Postgres volume'ü 70 MB;
+  upgrade iki nesil imajı aynı anda tutuyor; backup arşivi verinin yanına yazılıyor). Kaynak alt
+  sınırları `install.md`'ye "Resource minimums" olarak yazıldı; disk ölçüm, RAM/çekirdek ise açıkça
+  **tahmin** olarak etiketlendi.
+
 ### Düzeltilmeyenlerin gerekçesi
 
-Bulgu 3 ve 5 **tasarım boşluğu**, doküman hatası değil. Bulgu 3'ün doğru düzeltmesi production
-overlay'e `PALAI_EDGE_CERT`/`PALAI_EDGE_KEY` çifti eklemek (varsayılan `${PALAI_HOME}/ca/server.*`),
-böylece runner tam pin'ini korurken edge kendi kimliğini alır — ~4 satır, ama shipped bir production
-posture'ı ve kendi guard test'lerini (`deploy/compose/production_guard_test.go`) etkiliyor. Bulgu 5
-için "doctor'ı production'da yeşil yapmak" ancak kontrolleri zayıflatarak olur; yapılmadı.
+Bulgu 3 ve 5 **tasarım boşluğu**, doküman hatası değil — bu smoke onları ölçtü ve dokümana gerçeği
+yazdı; kod değişikliği ayrı bir iş olarak yapıldı (bkz. *Sonrası*). Bulgu 5 için "doctor'ı
+production'da yeşil yapmak" ancak kontrolleri zayıflatarak olurdu; o yol seçilmedi — ayrı bir komut
+aynı soruları doğru transport üzerinden soruyor.
 `docs/operations/known-gaps-1.0.md`'ye satır **eklenmedi**: o dosya kendi ifadesiyle "decisions, not
 observations" ve sahibinin aldığı kararların kaydı — bir smoke agent'ın gözlemi oraya yazılmaz.
 

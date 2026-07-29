@@ -22,12 +22,12 @@ Same images, different posture: no new server surface is opened.
 > production-compose bring-up on Docker Desktop.
 >
 > **What that leg costs is now measured, not assumed.** Steps 1–6 come up and serve real runs
-> unchanged. But a real domain is **not** a matter of swapping the certificate:
-> `${PALAI_HOME}/ca/server.crt` is shared with the runner gateway, which pins exactly one SAN, so
-> replacing it breaks every run at the next control-plane restart — read
-> [step 7](#7-swap-in-a-real-certificate-operator-leg) before you try it. Terminate your domain on
-> a proxy in front of the edge instead. Full transcript:
-> `docs/operations/cloud-smoke-report.md` (2026-07-29).
+> unchanged, and [step 7](#7-swap-in-a-real-certificate-operator-leg) gives the edge a real-domain
+> certificate through `PALAI_EDGE_CERT` / `PALAI_EDGE_KEY`. What is still yours: the VM, the domain,
+> and ACME/renewal itself — the edge serves the files it is given and runs with `auto_https off`.
+> Do **not** overwrite `${PALAI_HOME}/ca/server.crt`; it is the runner gateway's pinned identity, and
+> step 7 explains what that costs. Full transcript: `docs/operations/cloud-smoke-report.md`
+> (2026-07-29).
 
 > **Honest ceiling (images).** **No Palai image has ever been published.** `release.yml`'s publish
 > step is `scripts/release/publish-dryrun.sh`, which holds no credentials and runs every leg against
@@ -41,6 +41,21 @@ Same images, different posture: no new server surface is opened.
 This is the route for a host that has the `palai` binary and nothing else. The binary **carries the
 compose files inside it** and writes them to `${PALAI_HOME}/compose` at `init`, so there is no
 `deploy/` directory to clone and no path relative to your shell's cwd.
+
+### Resource minimums
+
+A single-node production stack is five containers plus one short-lived engine container per running
+step. Measured 2026-07-29 on `darwin/arm64`, Docker 24.0.2, images built from this tree:
+
+| | Minimum | Recommended | How it was derived |
+|---|---|---|---|
+| **Disk** | **10 GiB free** | **20 GiB free** | Measured: the six images are **0.88 GiB** on disk (postgres 451.7 + seaweedfs 229.6 + reference-engine 137.5 + caddy 47.0 + control-plane 24.6 + runner 14.7 MiB); an empty Postgres volume is **70 MB**; `palai upgrade` holds **two** generations of the three app images at once (+0.17 GiB); a backup writes its whole archive to disk beside the data it dumped. `palai doctor`'s `disk` check fails under **5 GiB free** *or* under 10% — whichever is more demanding. |
+| **RAM** | **2 GiB** | **4 GiB** | Measured: **209 MiB** resident across the five idle services after several runs (object-store 120.5, postgres 56.6, control-plane 8.9, runner 7.5, edge 12.1 MiB). **Estimate, not measured:** the per-run engine container's resident size, and Postgres under real concurrency — both are why the minimum is an order of magnitude above the idle figure rather than 512 MiB. |
+| **Cores** | **2** | **4** | **Estimate.** Idle CPU is a few percent per service; `PALAI_DISPATCH_WORKERS` and `PALAI_RUNNER_CONCURRENCY` are what scale it, and neither was load-tested. Treat this as a starting point, not a measurement. |
+
+The stack was **not** run on a real cloud VM, on `linux/amd64`, or under concurrent load — see the
+"legs not walked" list in `docs/operations/cloud-smoke-report.md`. The disk figures are measurements;
+the RAM and core figures are the idle measurement plus judgement, and are labelled as such above.
 
 ### Prerequisites
 
@@ -221,57 +236,91 @@ palai restore verify --archive ./palai-backup.tar.gz # checksum, migration, tena
 palai support-bundle --out ./bundle.tar.gz   # redacted diagnostics
 ```
 
-`palai local doctor` is the exception: it probes over the **host-published** ports from
-`${PALAI_HOME}/config.json`, which this profile deliberately does not publish, so against a
-production stack it reports almost every check red for the wrong reason. That is a known ceiling, not
-a fault in your install — see `docs/operations/operability.md`. There is **no production health
-command today**; `/v1/capabilities` through the edge (step 6) and `docker compose ps` are what an
-operator has.
+The health command for this profile is `palai doctor` (**not** `palai local doctor`):
+
+```sh
+palai doctor --env-file production.env           # 18 checks; --json for the machine-readable report
+```
+
+It asks the same questions `local doctor` asks and reaches them the way this stack can be reached —
+`docker exec` by container name for Postgres and the internal `/healthz*` probes, and the TLS edge
+for the API. It exits non-zero when a check **fails**, and prints a separate line naming any check
+this posture cannot answer rather than passing it.
+
+`palai local doctor` probes the **host-published** ports from `${PALAI_HOME}/config.json`, which this
+profile deliberately does not publish, so against a production stack it reports almost every check red
+for the wrong reason. Use it against a local-profile stack only — see
+`docs/operations/operability.md`.
 
 ### 7. Swap in a real certificate (operator leg)
 
-> **STOP — this step does not work as it was previously written, and doing it breaks the stack.**
-> Measured 2026-07-29 against a live production-overlay bring-up
-> (`docs/operations/cloud-smoke-report.md`, Bulgu 3). Read this whole section before touching a
-> certificate.
+> **Do not overwrite `${PALAI_HOME}/ca/server.crt`.** That file is the stack's *internal* identity,
+> not the edge's; overwriting it breaks every run at the next restart. Give the edge its **own** pair
+> with the two variables below instead. Why, and what the old advice cost, is at the end of this
+> section.
 
-`${PALAI_HOME}/ca/server.crt` + `server.key` are **not the edge's certificate. They are the stack's
-one server identity, shared by two services with incompatible requirements**:
+Point `PALAI_EDGE_CERT` / `PALAI_EDGE_KEY` at your certificate. Unset, they default to
+`${PALAI_HOME}/ca/server.{crt,key}` and nothing about your install changes.
 
-| Consumer | Mounted at | Requires |
+```sh
+# Put your domain's certificate and key where the stack can read them. Any path works; ca/edge.*
+# is the convention the self-host journey uses (tests/uat/self_host_journey_test.go).
+install -m 644 /path/to/fullchain.pem "${PALAI_HOME}/ca/edge.crt"
+install -m 600 /path/to/privkey.pem   "${PALAI_HOME}/ca/edge.key"
+
+# Name them in production.env (NOT exported ad hoc — `palai config validate` reads this file):
+cat >> production.env <<EOF
+PALAI_EDGE_CERT=${PALAI_HOME}/ca/edge.crt
+PALAI_EDGE_KEY=${PALAI_HOME}/ca/edge.key
+EOF
+
+palai config validate --env-file production.env     # cert_pair now names YOUR file
+
+# Apply. The mount changed, so compose recreates the edge — unlike a swap of the file's CONTENTS,
+# which compose cannot see (`up -d edge` is then a no-op and `restart edge` is what reloads it).
+docker compose --env-file production.env -p "$PALAI_COMPOSE_PROJECT" \
+  -f "${PALAI_HOME}/compose/compose.yaml" -f "${PALAI_HOME}/compose/production.yml" \
+  up -d --no-build edge
+
+palai doctor --env-file production.env              # edge_cert proves what is actually being served
+```
+
+`palai doctor`'s `edge_cert` check compares the certificate the edge is **serving** against the file
+on disk, so "I replaced the certificate and nothing happened" is now a red line rather than a silence.
+The `api` check follows your certificate's name automatically and verifies it fully.
+
+Chain order matters: give the edge the **fullchain** (leaf first, then intermediates). Renewal is
+yours — the edge runs Caddy with `auto_https off` and serves exactly the files it is given, so an
+ACME client that rewrites those two files must be followed by `docker compose ... restart edge`.
+
+**Why the two variables exist.** `${PALAI_HOME}/ca/server.{crt,key}` is **not the edge's certificate.
+It is the stack's internal server identity, and two services with incompatible requirements read it**:
+
+| Consumer | Mounted as | Requires |
 |---|---|---|
-| edge (Caddy) | `production.yml:70-71` → `/etc/palai/edge/edge.{crt,key}` | a cert for **your domain** |
-| control-plane runner gateway `:8443` | `compose.yaml:61-62` → `PALAI_RUNNER_SERVER_CERT` | **exactly one** DNS SAN, equal to `control-plane` |
+| edge (Caddy) | `production.yml` → `/etc/palai/edge/edge.{crt,key}` | a cert for **your domain** |
+| control-plane runner gateway `:8443` | `compose.yaml` → `PALAI_RUNNER_SERVER_CERT` | **exactly one** DNS SAN, equal to `control-plane` |
 
 The runner pins that identity exactly — `len(leaf.DNSNames) != 1 || leaf.DNSNames[0] != ControllerDNS`
 (`packages/runner/enrollment.go:142`, and the same check in `session.go:302` and `renewal.go:101`).
-So **every certificate that satisfies the edge fails the runner**:
+So **every certificate that satisfies the edge fails the runner** if the two share one file:
 
 - a cert for `palai.example.com` → `x509: certificate is valid for palai.example.com, not control-plane`;
 - a cert carrying **both** SANs → `controller certificate DNS identity is not exact` (two SANs is not one).
 
-The failure is also **delayed, which is what makes it dangerous**: the running control-plane holds the
-old cert in memory, so right after the swap the runner still shows `sessions: 1` and everything looks
-fine. It breaks at the **next control-plane restart** — which `restart: always` guarantees on the next
-VM reboot. The symptom then is that **runs queue forever and never complete**, with nothing in the API
-response mentioning a certificate.
+And the failure is **delayed, which is what made it dangerous**: the running control-plane holds the
+old certificate in memory, so right after the swap the runner still reports `sessions: 1` and
+everything looks fine. It breaks at the **next control-plane restart** — which `restart: always`
+guarantees on the next VM reboot. The symptom then is that **runs queue forever and never complete**,
+with nothing in the API response mentioning a certificate. Measured 2026-07-29
+(`docs/operations/cloud-smoke-report.md`, Bulgu 3), and re-measured on the fix: with `PALAI_EDGE_CERT`
+set, the edge serves the domain certificate, the runner keeps enrolling across a control-plane restart
+*and* a whole-stack restart, and runs complete.
 
-(The previously documented `up -d edge` did not reload the cert either — compose sees no config change
-and leaves the container alone, so the edge kept serving the old certificate while the new one sat on
-disk. `restart edge` is what reloads it. This was masking the breakage above, not avoiding it.)
-
-**What to do today.** Leave `${PALAI_HOME}/ca/server.{crt,key}` alone and terminate your real domain
-**in front of** the Palai edge — a cloud load balancer, or your own nginx/Caddy — forwarding to the
-edge and trusting `${PALAI_HOME}/ca/ca.crt` upstream. The edge's Caddyfile sets `auto_https off` with an
-explicit `tls` pair, so it serves its certificate for any SNI and does not care what hostname the front
-proxy used. This is also the normal shape of a cloud deployment (ACME terminates at the LB).
-
-**The gap.** Giving the edge its own identity is a small overlay change — a `PALAI_EDGE_CERT` /
-`PALAI_EDGE_KEY` pair defaulting to `${PALAI_HOME}/ca/server.{crt,key}`, so the runner keeps its exact
-pin and the operator can point the edge somewhere else. It is **not** done, it is deliberately not being
-done here (it touches a shipped production posture with its own guard tests), and until it is, a
-single-certificate real-domain edge is not supported. Filed in
-`docs/operations/cloud-smoke-report.md`, Bulgu 3.
+**The alternative, still valid.** Terminating TLS on a proxy **in front of** the Palai edge — a cloud
+load balancer, or your own nginx/Caddy — also works and is the normal shape of a cloud deployment
+(ACME terminates at the LB). Forward to the edge and trust `${PALAI_HOME}/ca/ca.crt` upstream; the
+edge serves its certificate for any SNI and does not care what hostname the front proxy used.
 
 ### Teardown
 

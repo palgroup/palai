@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"syscall"
 	"time"
@@ -168,15 +169,27 @@ func checkRunnerIdentity(ctx context.Context, cfg Config) Check {
 	if resp.StatusCode != http.StatusOK {
 		return fail(fmt.Sprintf("GET /healthz/runner = %d, want 200", resp.StatusCode))
 	}
-	var body struct {
-		Gateway  bool  `json:"gateway"`
-		Sessions int64 `json:"sessions"`
-		Identity *struct {
-			RunnerDNS string    `json:"runner_dns"`
-			NotAfter  time.Time `json:"not_after"`
-		} `json:"identity"`
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fail("read /healthz/runner: " + err.Error())
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	return runnerIdentityFromBody(raw, time.Now())
+}
+
+// runnerHealth is the /healthz/runner body both doctors decode. The production doctor reads the
+// same endpoint through `docker exec` (the edge proxies only /v1/*), so the shape lives here once.
+type runnerHealth struct {
+	Gateway  bool  `json:"gateway"`
+	Sessions int64 `json:"sessions"`
+	Identity *struct {
+		RunnerDNS string    `json:"runner_dns"`
+		NotAfter  time.Time `json:"not_after"`
+	} `json:"identity"`
+}
+
+func runnerIdentityFromBody(raw []byte, now time.Time) Check {
+	var body runnerHealth
+	if err := json.Unmarshal(raw, &body); err != nil {
 		return fail("decode /healthz/runner: " + err.Error())
 	}
 	if !body.Gateway {
@@ -185,7 +198,7 @@ func checkRunnerIdentity(ctx context.Context, cfg Config) Check {
 	if body.Identity == nil {
 		return runnerIdentityCheck("", time.Time{}, time.Time{}, body.Sessions)
 	}
-	return runnerIdentityCheck(body.Identity.RunnerDNS, body.Identity.NotAfter, time.Now(), body.Sessions)
+	return runnerIdentityCheck(body.Identity.RunnerDNS, body.Identity.NotAfter, now, body.Sessions)
 }
 
 // runnerIdentityCheck is the verdict, kept pure so its boundaries are unit-tested without a

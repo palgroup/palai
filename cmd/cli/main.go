@@ -40,6 +40,8 @@ func dispatch(args []string) error {
 		return response(args[1:])
 	case "config":
 		return config(args[1:])
+	case "doctor":
+		return doctor(args[1:])
 	case "support-bundle":
 		return supportBundle(args[1:])
 	case "org", "project", "apikey", "secret":
@@ -117,6 +119,22 @@ func provider(args []string) error {
 		return errors.New("usage: palai provider add <ref>   (secret value read from stdin)")
 	}
 	return stack.AddProvider(args[1])
+}
+
+// doctor dispatches `palai doctor --env-file production.env` — the health checks against a
+// PRODUCTION stack. `palai local doctor` probes host-published ports, which the production overlay
+// deliberately does not publish, so it reports almost everything red there for one reason that has
+// nothing to do with the stack's health. This reaches the same signals the way that stack can be
+// reached: `docker exec` by container name (as backup/restore/support-bundle already do) and the
+// TLS edge. See docs/operations/operability.md.
+func doctor(args []string) error {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	envFile := fs.String("env-file", "production.env", "the production env file whose PALAI_HOME / PALAI_COMPOSE_PROJECT / PALAI_EDGE_PORT name the stack to check")
+	jsonOut := fs.Bool("json", false, "emit the health report as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return stack.ProductionDoctor(*envFile, *jsonOut)
 }
 
 // config dispatches `palai config validate` — a static, stack-less audit of a production deploy.
@@ -296,6 +314,12 @@ func usage() {
 operability (E14 T3):
   palai config validate [--env-file <p>] [--overlay <p>] [--json]
                                   static production-posture audit (master key, edge-only surface)
+  palai doctor [--env-file <p>] [--json]
+                                  health checks against a PRODUCTION stack (18), reached the way
+                                  that stack can be: docker-exec by container name + the TLS edge.
+                                  "local doctor" probes host ports the production overlay does not
+                                  publish; this one asks the same questions over the right
+                                  transport, and names any it cannot answer rather than passing it.
   palai support-bundle [--out <p>] [--tail <n>]
                                   redacted diagnostics tar.gz (doctor + compose ps/config/logs)
 
