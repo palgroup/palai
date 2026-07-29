@@ -12,8 +12,9 @@ import (
 // TestCleanBootUpDoctorDownRetainsData is the lifecycle proof: `palai init` + `local up`
 // brings the four services healthy, doctor reports every check green, a created response
 // survives a `local down` (volumes retained), and the second `up` serves it back. The
-// body is idempotent under -count=3: each `up` mints a fresh one-use enrollment token, so
-// repeated boots never reuse a spent identity (LP-012).
+// body is idempotent under -count=3: each `up` mints a FRESH enrollment token, so a boot never
+// inherits the previous boot's credential (LP-012). Fresh-per-boot, not one-use: within a boot the
+// runner may re-present it to recover an expired identity (E24 T3 corrected §3.6 D4's fourth copy).
 func TestCleanBootUpDoctorDownRetainsData(t *testing.T) {
 	s := newStack(t)
 	s.run("init")

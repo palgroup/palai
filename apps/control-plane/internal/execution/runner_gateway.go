@@ -42,10 +42,36 @@ type CertIssuer interface {
 	SignRunnerCertificate(publicKeyDER []byte, runnerDNS string) (certificateDER []byte, err error)
 }
 
-// EnrollmentTokens redeems a one-use bootstrap token. Consume returns an error for an
-// unknown or already-spent token, so a stolen or replayed token mints no second identity.
+// EnrollmentTokens redeems the bootstrap credential a machine presents to enrol. Consume returns an
+// error for a credential this control plane does not recognise, or recognises and refuses.
+//
+// IT IS NOT ONE-USE, AND THIS COMMENT USED TO SAY IT WAS (§3.6 D4, corrected in E24 T3). The claim was
+// written when the only implementation spent a token permanently, and it outlived that by a long way:
+// the shipped FileEnrollmentTokens re-reads its file on every call and admits a redemption once per
+// issued-certificate lifetime, deliberately, because renewal runs over the certificate that is expiring
+// and a machine that missed its window would otherwise have NO way back — see the threat model in
+// local_credentials.go, which explains at length why one-use was replaced. Presenting a credential
+// twice is therefore an ordinary event on this path; what a refusal means is "not live", not
+// "already used".
 type EnrollmentTokens interface {
 	Consume(token string) error
+}
+
+// PoolEnrollment is the pool-scoped enrolment credential (E24 T3): a credential that names the ONE pool
+// it admits into, can expire, can be revoked, and is RECORDED against the certificate it minted.
+//
+// It EMBEDS EnrollmentTokens rather than replacing it, and that is the substitutability requirement
+// enforced by the compiler instead of promised in prose: a pool-key implementation has to be usable
+// anywhere the file token is. The gateway nonetheless calls RedeemPoolKey and not Consume, because the
+// pool binding is the entire point and Consume discards it.
+type PoolEnrollment interface {
+	EnrollmentTokens
+	// RedeemPoolKey resolves a presented value into the grant it authorises. runnerID is the
+	// server-minted id a refusal is journalled against; declaredPool is what the MACHINE said it
+	// belongs to and never widens the grant. fleet.ErrUnknownPoolKey — and only that error — means "not
+	// mine", so the gateway may fall through to the file token; every other error is a recognised
+	// credential that was refused.
+	RedeemPoolKey(ctx context.Context, presented, runnerID, declaredPool string) (fleet.PoolGrant, error)
 }
 
 // RunnerGateway is the control-plane counterpart of the runner's outbound-only model:
@@ -57,7 +83,12 @@ type EnrollmentTokens interface {
 type RunnerGateway struct {
 	issuer CertIssuer
 	tokens EnrollmentTokens
-	now    func() time.Time
+	// poolKeys is the FIRST link of the credential chain (E24 T3): a pool key names the pool it admits
+	// into, so a machine presenting one lands in that pool and is recorded against that key. Nil leaves
+	// the chain exactly as it was — file token only, default pool — which is every deployment built
+	// before this task and is what makes `SetPoolKeys` a setter rather than a constructor parameter.
+	poolKeys PoolEnrollment
+	now      func() time.Time
 	// pools is the rendezvous, one queue per pool (E24 T2). It replaced a SINGLE unbuffered channel
 	// every parked runner sent itself down and every Dial received from, which made a Mac pool and a
 	// container pool two names for one queue: any parked machine satisfied any attempt.
@@ -160,6 +191,11 @@ func NewRunnerGateway(issuer CertIssuer, tokens EnrollmentTokens) *RunnerGateway
 // supported posture rather than a fallback. A setter rather than a constructor parameter for the
 // reason SetControlPlaneVersion is one: every existing caller compiles unchanged.
 func (g *RunnerGateway) SetRegistry(r fleet.Registry) { g.registry = r }
+
+// SetPoolKeys wires the pool enrolment keys (E24 T3) ahead of the file bootstrap token in the
+// credential chain. Unset, the gateway admits only the file token and every machine lands in the
+// default pool — the pre-E24 posture, unchanged to the byte.
+func (g *RunnerGateway) SetPoolKeys(k PoolEnrollment) { g.poolKeys = k }
 
 // SetControlPlaneVersion overrides the control-plane version stamp the connect handshake checks the
 // runner's advertised version against (§48.2 window). Defaulted to version.Resolve; a test injects a
@@ -307,6 +343,11 @@ type enrollRequest struct {
 	// Absent declares nothing and enrols exactly as before — see fleet.ErrPostureMismatch for the line
 	// between comparing a claim and verifying one, which this does not cross.
 	Posture string `json:"posture,omitempty"`
+	// PoolID is the pool the machine was CONFIGURED to join (E24 T3). It authorises nothing: the pool a
+	// certificate is minted into comes from the presented KEY, and a declaration that disagrees with the
+	// key REFUSES the enrolment rather than being silently widened or silently overridden. Absent
+	// declares nothing and inherits the key's pool.
+	PoolID string `json:"pool_id,omitempty"`
 }
 
 type enrollResponse struct {
@@ -333,11 +374,15 @@ type enrollResponse struct {
 // certificate is a harmless stale row an operator can see, while a certificate no row records is an
 // identity in the field that no revoke can reach.
 func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
-	token, ok := bearer(r.Header.Get("Authorization"))
-	if !ok || g.tokens.Consume(token) != nil {
+	presented, ok := bearer(r.Header.Get("Authorization"))
+	if !ok {
 		http.Error(w, "invalid enrollment token", http.StatusUnauthorized)
 		return
 	}
+	// THE BODY IS DECODED BEFORE THE CREDENTIAL IS RESOLVED, and the order is deliberate rather than
+	// incidental: the pool the machine DECLARES is part of what the credential is checked against, so a
+	// chain that resolved first would have to resolve twice. Nothing is minted or written until the
+	// credential has been resolved below.
 	var request enrollRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&request); err != nil || request.RunnerID == "" {
 		http.Error(w, "invalid enrollment request", http.StatusBadRequest)
@@ -353,13 +398,19 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	// id the certificate's SAN is built from, and the id returned to the runner — three views of one
 	// machine. Letting the store mint a second one shipped once and made every later lookup miss: the
 	// row recorded the name derived here while the CA signed the store's, and a renew resolves the row
-	// BY THE SAN.
+	// BY THE SAN. It is minted BEFORE the credential is resolved because a refused enrolment is
+	// journalled against a machine, and a record with no subject is not a record.
 	runnerID := g.mintRunnerID()
+	grant, status, err := g.resolveEnrollment(r.Context(), presented, runnerID, request.PoolID)
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
 	if reg := g.registry; reg != nil {
 		if _, err := reg.Register(r.Context(), fleet.Registration{
-			ID: runnerID, PoolID: fleet.DefaultPoolID, Label: request.RunnerID, DNS: runnerDNS(runnerID),
+			ID: runnerID, PoolID: grant.PoolID, Label: request.RunnerID, DNS: runnerDNS(runnerID),
 			PublicKeySHA256: publicKeyFingerprint(publicDER), OS: request.OS, Arch: request.Arch,
-			Posture: request.Posture,
+			Posture: request.Posture, KeyID: grant.KeyID,
 		}); err != nil {
 			// A posture the pool does not have is the machine's mistake and it is told so — an operator
 			// who has handed a Mac the Linux pool's credential needs to read that, not a 503. Every other
@@ -386,6 +437,57 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		Certificate: base64.StdEncoding.EncodeToString(certDER),
 		RunnerID:    runnerID,
 	})
+}
+
+// resolveEnrollment is THE CREDENTIAL CHAIN, tried in one order and in one place: a pool key first, the
+// file bootstrap token second, refusal third.
+//
+// THE FILE TOKEN IS NOT DELETED AND MUST NOT BE. It is the only path that can mint an identity for a
+// machine whose certificate has ALREADY EXPIRED — renewal authenticates with the certificate that is
+// expiring, so a machine that missed its window (a sleeping laptop, a stalled Docker Desktop) has
+// nothing else to present. local_credentials.go explains that at length; deleting it here would brick
+// exactly the machine an operator was least able to reach.
+//
+// ONLY "NOT MINE" FALLS THROUGH. fleet.ErrUnknownPoolKey means the presented value matched no key row,
+// and that is the one case where the file token is asked. A REVOKED or EXPIRED or wrong-pool key is a
+// recognised credential that was refused, and re-asking a different credential about it would turn the
+// chain into a way to shop for an issuer.
+//
+// On failure it returns the status the caller writes: 401 for a credential that is not live, 409 for a
+// key that IS live but does not admit into the pool the machine declared — a Mac pointed at the wrong
+// pool's key needs to read that, and a 401 would send its operator hunting for a typo in the key.
+func (g *RunnerGateway) resolveEnrollment(ctx context.Context, presented, runnerID, declaredPool string) (fleet.PoolGrant, int, error) {
+	if g.poolKeys != nil {
+		grant, err := g.poolKeys.RedeemPoolKey(ctx, presented, runnerID, declaredPool)
+		switch {
+		case err == nil:
+			return grant, http.StatusOK, nil
+		case errors.Is(err, fleet.ErrPoolScopeMismatch):
+			return fleet.PoolGrant{}, http.StatusConflict,
+				errors.New("the presented enrollment key does not admit into the declared pool")
+		case errors.Is(err, fleet.ErrPoolKeyRevoked), errors.Is(err, fleet.ErrPoolKeyExpired):
+			// Deliberately the same words as an unknown credential: which of the three it was is in the
+			// journal, where an operator can read it, and not on the wire, where an attacker could probe
+			// with it. The operator-facing distinction is the 409 above, which is a MISTAKE and not a
+			// credential state.
+			return fleet.PoolGrant{}, http.StatusUnauthorized, errors.New("invalid enrollment token")
+		case !errors.Is(err, fleet.ErrUnknownPoolKey):
+			// A database that cannot answer must not be a fall-through: a store outage would otherwise
+			// silently demote every machine to the file token and the default pool.
+			return fleet.PoolGrant{}, http.StatusServiceUnavailable, errors.New("enrollment could not be resolved")
+		}
+	}
+	if err := g.tokens.Consume(presented); err != nil {
+		return fleet.PoolGrant{}, http.StatusUnauthorized, errors.New("invalid enrollment token")
+	}
+	// The file token admits into the DEFAULT pool and nowhere else, so a machine that declares another
+	// one is refused rather than quietly redirected — the same rule the pool key follows, for the same
+	// reason. It carries no key id: the file token is not a row and cannot be revoked on its own.
+	if declaredPool != "" && declaredPool != fleet.DefaultPoolID {
+		return fleet.PoolGrant{}, http.StatusConflict,
+			errors.New("the presented enrollment key does not admit into the declared pool")
+	}
+	return fleet.PoolGrant{PoolID: fleet.DefaultPoolID}, http.StatusOK, nil
 }
 
 // mintRunnerID mints the server-side runner identity. The `rnr_` prefix follows middleware.NewID's

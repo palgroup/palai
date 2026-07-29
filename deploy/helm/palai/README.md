@@ -41,10 +41,13 @@ To connect a runner to a chart-installed control-plane:
    `runnerGateway.service.nodePort`). The gateway's server certificate pins exactly ONE SAN —
    `control-plane` — so the runner MUST dial with `PALAI_CONTROLLER_DNS=control-plane` regardless of the
    address it connects to (the address is only used for the TCP dial; TLS verifies the SAN).
-2. Provision the runner's CA cert, server cert/key, and a one-use enrollment token into the
+2. Provision the runner's CA cert, server cert/key, and an enrollment token into the
    `runnerGateway.existingSecret` (see below).
 3. On the runner host, install the E14 signed package and set `PALAI_CONTROLLER_URL=https://<addr>:<port>`,
-   `PALAI_CONTROLLER_DNS=control-plane`, `PALAI_RUNNER_CA_CERT=<the CA cert>`, and the one-use token.
+   `PALAI_CONTROLLER_DNS=control-plane`, `PALAI_RUNNER_CA_CERT=<the CA cert>`, and the enrollment token.
+   The token is NOT one-use: the control plane admits it once per issued-certificate lifetime and the
+   runner re-presents it to recover an identity that has already expired. A fleet of runners wants one
+   pool enrolment key each instead (`palai poolkey create --pool <id>`, E24 T3).
 
 See `docs/operations/kubernetes.md` for the full walkthrough.
 

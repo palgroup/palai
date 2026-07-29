@@ -115,9 +115,14 @@ func ensureSecretSlots(p paths) error {
 	return nil
 }
 
-// Up builds the images, mints a fresh one-use runner enrollment token, brings the four
-// services up with compose --wait, and blocks until the API answers. The token is
-// re-minted every Up so a repeated boot never reuses a spent identity (LP-012).
+// Up builds the images, mints a fresh runner enrollment token, brings the four services up with
+// compose --wait, and blocks until the API answers. The token is re-minted every Up so a repeated boot
+// never inherits the previous boot's credential (LP-012).
+//
+// THE TOKEN IS NOT ONE-USE, AND THIS COMMENT USED TO SAY IT WAS (§3.6 D4, corrected in E24 T3): the
+// control plane admits it once per issued-certificate lifetime and the runner re-presents it to recover
+// an identity that has already expired, which is the only path back for a machine that missed its
+// renewal window. See execution.FileEnrollmentTokens.
 func Up() error {
 	cfg, p, err := loadConfig()
 	if err != nil {
@@ -132,7 +137,9 @@ func Up() error {
 		return err
 	}
 
-	// A fresh one-use enrollment token for this boot.
+	// A fresh enrollment token for this boot — re-minted rather than reused, so a credential does not
+	// outlive the stack it was minted for. It is re-presentable within its own boot (the runner's
+	// expired-identity recovery path depends on that), not one-use.
 	if err := os.WriteFile(p.runnerToken, []byte(randomHex(24)), 0o600); err != nil {
 		return fmt.Errorf("mint runner token: %w", err)
 	}
@@ -394,8 +401,8 @@ func writeConfig(path string, cfg Config) error {
 	return os.WriteFile(path, raw, 0o600)
 }
 
-// randomHex returns n random bytes hex-encoded — used for the API key, pg password, and
-// one-use runner token.
+// randomHex returns n random bytes hex-encoded — used for the API key, pg password, and the runner
+// enrollment token.
 func randomHex(n int) string {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {

@@ -47,12 +47,26 @@ type BootstrapConfig struct {
 	// is omitempty below: an undeclared machine's request body is byte-identical to the one this
 	// package has always sent, so no deployment observes the field's existence.
 	Posture string
+	// PoolID is the pool this machine was CONFIGURED to join (E24 T3). It is a declaration, not an
+	// authorisation: the pool a certificate is actually minted into comes from the presented KEY, and a
+	// declaration that disagrees with the key REFUSES the enrolment instead of being silently widened
+	// or silently overridden.
+	//
+	// Why declare it at all, when the key already decides: because the realistic operator mistake is
+	// pasting the wrong pool's key onto a machine, and posture comparison (T2) cannot catch it when
+	// both pools have the same posture. Saying where the machine believes it belongs is what turns that
+	// into a refusal at the door instead of a machine quietly running another pool's work.
+	//
+	// Empty declares nothing and inherits the key's pool, which is what every runner built before E24
+	// sends — hence omitempty, so an unconfigured machine's request body is unchanged to the byte.
+	PoolID string
 }
 
 type enrollmentRequest struct {
 	RunnerID  string `json:"runner_id"`
 	PublicKey string `json:"public_key"`
 	Posture   string `json:"posture,omitempty"`
+	PoolID    string `json:"pool_id,omitempty"`
 }
 
 type enrollmentResponse struct {
@@ -93,6 +107,7 @@ func Enroll(ctx context.Context, config BootstrapConfig) (Identity, error) {
 		RunnerID:  config.RunnerID,
 		PublicKey: base64.StdEncoding.EncodeToString(publicDER),
 		Posture:   config.Posture,
+		PoolID:    config.PoolID,
 	})
 	if err != nil {
 		return Identity{}, fmt.Errorf("encode enrollment request: %w", err)

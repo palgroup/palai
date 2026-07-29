@@ -83,9 +83,9 @@ for name in control-plane runner reference-engine postgres object-store; do
 	eval "digest_$(printf '%s' "$name" | tr '-' '_')=\$rd"
 done
 
-# --- 4. runner enrollment token (one-use; the in-stack runner presents it) ------------------
+# --- 4. runner enrollment token (the in-stack runner presents it; re-presentable, not one-use) ---
 if [ ! -s "$PALAI_HOME/runner-token" ]; then
-	step "mint a one-use runner enrollment token"
+	step "mint a runner enrollment token"
 	openssl rand -hex 24 > "$PALAI_HOME/runner-token"
 	chmod 600 "$PALAI_HOME/runner-token"
 fi

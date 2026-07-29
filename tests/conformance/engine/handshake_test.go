@@ -34,7 +34,10 @@ func TestEnrollmentTokenIsSingleUse(t *testing.T) {
 	}
 
 	if _, err := runner.Enroll(ctx, stub.bootstrap("enroll-token-1")); err == nil {
-		t.Fatal("control plane accepted a reused one-use enrollment token")
+		// The STUB is one-use (see stubControlPlane); production admits one redemption per certificate
+		// lifetime. What this asserts is the runner's side: it does not silently succeed against a control
+		// plane that refuses a re-presentation.
+		t.Fatal("the runner reported success against a control plane that refused its token")
 	}
 }
 
@@ -247,10 +250,11 @@ func TestSessionHasNoInboundListener(t *testing.T) {
 	}
 }
 
-// TestIdentityRetainsNoBootstrapToken proves the one-use token never becomes part of
-// the runner's persisted identity: it is consumed in the enrollment exchange and
+// TestIdentityRetainsNoBootstrapToken proves the bootstrap token never becomes part of
+// the runner's persisted identity: it is presented in the enrollment exchange and
 // discarded, not carried on any Identity field (spec §28 — token is not a retained
-// credential).
+// credential). It matters MORE now that the token is re-presentable: the runner re-reads it from disk
+// at the moment it needs it (cmd/runner/main.go) rather than holding it for the process's life.
 func TestIdentityRetainsNoBootstrapToken(t *testing.T) {
 	identityType := reflect.TypeOf(runner.Identity{})
 	for i := 0; i < identityType.NumField(); i++ {

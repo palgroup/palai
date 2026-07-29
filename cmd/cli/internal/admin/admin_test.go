@@ -61,6 +61,12 @@ func TestSubcommandsHitCorrectEndpoint(t *testing.T) {
 		{"secret list", []string{"secret", "list"}, "", "GET", "/v1/secret-refs", ""},
 		{"secret get", []string{"secret", "get", "db-url"}, "", "GET", "/v1/secret-refs/db-url", ""},
 		{"secret rotate", []string{"secret", "rotate", "db-url"}, "newval", "POST", "/v1/secret-refs/db-url/rotate", `"value":"newval"`},
+		// The runner-pool enrolment key (E24 T3). Note what is NOT in any of these three arg lists: a key
+		// value. `create` returns one, `list` never sees one, and `revoke` names the key by id.
+		{"poolkey create", []string{"poolkey", "create", "--pool", "pool_mac"}, "", "POST", "/v1/runner-pools/pool_mac/keys", ""},
+		{"poolkey create with expiry", []string{"poolkey", "create", "--pool", "pool_mac", "--expires-at", "2030-01-01T00:00:00Z"}, "", "POST", "/v1/runner-pools/pool_mac/keys", `"expires_at":"2030-01-01T00:00:00Z"`},
+		{"poolkey list", []string{"poolkey", "list", "--pool", "pool_mac"}, "", "GET", "/v1/runner-pools/pool_mac/keys", ""},
+		{"poolkey revoke", []string{"poolkey", "revoke", "rpk_1"}, "", "POST", "/v1/runner-pool-keys/rpk_1/revoke", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -235,5 +241,56 @@ func TestAPIKeyFileFlagReadsKeyFromFile(t *testing.T) {
 	}
 	if cap.auth != "Bearer file-borne-key" {
 		t.Fatalf("Authorization = %q, want the file-borne key (overriding env)", cap.auth)
+	}
+}
+
+// TestPoolKeyCreateRequiresAPoolAndPrintsTheValueOnce is the credential-hygiene contract for a pool key.
+// A key admits into exactly ONE pool, so a create with no --pool is refused before any request is made;
+// and the create response's one-time value is printed, which is the only place it can ever be read.
+//
+// The refusal-before-request half matters: a create that defaulted the pool would mint a credential for
+// a fleet the operator did not name.
+func TestPoolKeyCreateRequiresAPoolAndPrintsTheValueOnce(t *testing.T) {
+	var cap capture
+	srv := stubServer(t, http.StatusCreated, `{"id":"rpk_1","object":"runner_pool_key","pool_id":"pool_mac","key_prefix":"rpk_abcd","key":"rpk_abcdthevalue"}`, &cap)
+	t.Setenv("PALAI_BASE_URL", srv.URL)
+	t.Setenv("PALAI_API_KEY", "admin-key-xyz")
+
+	var out bytes.Buffer
+	if err := Run("poolkey", []string{"create"}, &out, strings.NewReader("")); err == nil {
+		t.Fatal("poolkey create with no --pool was accepted")
+	}
+	if cap.method != "" {
+		t.Fatalf("a create with no --pool still issued %s %s", cap.method, cap.path)
+	}
+	out.Reset()
+	if err := Run("poolkey", []string{"create", "--pool", "pool_mac"}, &out, strings.NewReader("")); err != nil {
+		t.Fatalf("poolkey create: %v", err)
+	}
+	if !strings.Contains(out.String(), "rpk_abcdthevalue") {
+		t.Fatalf("create output does not carry the one-time key value: %s", out.String())
+	}
+	// The ADMIN key is a different credential and must not be echoed just because this command prints one.
+	if strings.Contains(out.String(), "admin-key-xyz") {
+		t.Fatalf("create output echoed the admin API key: %s", out.String())
+	}
+}
+
+// TestPoolKeyRevokeRejectsASecondPositional is the fat-finger guard the arity table exists for: a value
+// pasted after the key id must fail loudly, since it may now be in shell history.
+func TestPoolKeyRevokeRejectsASecondPositional(t *testing.T) {
+	var cap capture
+	srv := stubServer(t, http.StatusOK, `{}`, &cap)
+	t.Setenv("PALAI_BASE_URL", srv.URL)
+	t.Setenv("PALAI_API_KEY", "admin-key-xyz")
+	err := Run("poolkey", []string{"revoke", "rpk_1", "rpk_secretvaluepasted"}, io.Discard, strings.NewReader(""))
+	if err == nil {
+		t.Fatal("a second positional was accepted")
+	}
+	if strings.Contains(err.Error(), "rpk_secretvaluepasted") {
+		t.Fatalf("the error echoed the extra positional, which may be a credential: %v", err)
+	}
+	if cap.method != "" {
+		t.Fatalf("the rejected command still issued %s %s", cap.method, cap.path)
 	}
 }

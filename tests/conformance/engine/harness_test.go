@@ -1,4 +1,4 @@
-// Package engine_test proves the runner engine boundary — one-use enrollment, an
+// Package engine_test proves the runner engine boundary — token-authenticated enrollment, an
 // outbound short-lived-identity session, handshake version policy, and frame
 // deduplication — Docker-free against an in-test control-plane stub. The stub is
 // the control-plane counterpart the production runner-gateway task will replace; it
@@ -150,7 +150,13 @@ type relayComplete struct {
 }
 
 // stubControlPlane is an outbound-only counterpart: it serves the enrollment
-// endpoint (bearer, one-use token) and the mutually authenticated session endpoint.
+// endpoint (bearer token) and the mutually authenticated session endpoint.
+//
+// THIS STUB SPENDS A TOKEN ON FIRST USE AND THE PRODUCTION CONTROL PLANE DOES NOT. That is the stub's
+// own strictness, not the contract: FileEnrollmentTokens admits a redemption once per issued-certificate
+// lifetime because a machine whose certificate expired has no other way back (§3.6 D4, corrected in
+// E24 T3). What the runner side is proved to do here — present the token once and retain nothing —
+// holds under either rule, which is why the stub is left alone.
 type stubControlPlane struct {
 	ca       *testCA
 	server   *http.Server

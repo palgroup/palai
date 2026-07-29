@@ -10,7 +10,7 @@
 #   3. Deploy chart-EXTERNAL PostgreSQL + S3 fixtures into the cluster; the chart's external PG/S3
 #      values point at them (proving external-store config, NOT an in-cluster DB in the chart).
 #   4. `palai init` mints the runner-gateway CA + server cert (SAN "control-plane"); load the TLS
-#      material + a one-use runner token + a bootstrap key into Secrets.
+#      material + a runner enrollment token + a bootstrap key into Secrets.
 #   5. `helm install` — the pre-install migration Job (--migrate-and-exit) completes, then the
 #      control-plane Deployment rolls and /healthz goes green.
 #   6. Provision org -> project -> api-key through the `palai` admin CLI over the API NodePort.

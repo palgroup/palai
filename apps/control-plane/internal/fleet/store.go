@@ -94,7 +94,7 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 			return Runner{}, fmt.Errorf("encode refusal detail: %w", err)
 		}
 		if _, err := tx.Exec(ctx, storage.Query("AppendRunnerEnrollment"),
-			s.mintID("renr"), pool.org, pool.project, reg.ID, pool.id, "", "refused", detail); err != nil {
+			s.mintID("renr"), pool.org, pool.project, reg.ID, pool.id, reg.KeyID, "refused", detail); err != nil {
 			return Runner{}, fmt.Errorf("append refusal entry: %w", err)
 		}
 		// Commit the refusal: the record of a machine turned away is the only thing this transaction
@@ -124,19 +124,20 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 	var created time.Time
 	if err := tx.QueryRow(ctx, storage.Query("InsertRunner"),
 		row.ID, row.Organization, row.Project, row.PoolID, row.Label, row.DNS, row.PublicKeySHA256,
-		row.State, row.OS, row.Arch, row.Posture, row.Capacity, nil,
+		row.State, row.OS, row.Arch, row.Posture, row.Capacity, nil, reg.KeyID,
 	).Scan(&created, &row.EnrolledAt, &row.LastSeenAt); err != nil {
 		return Runner{}, fmt.Errorf("insert runner: %w", err)
 	}
 
 	// The journal entry. detail carries the label the machine claimed and the identity it was issued —
-	// both public — and there is no field here a credential could be put in.
+	// both public — and there is no field here a credential could be put in. key_id is the KEY, never the
+	// key's value: an id is what a revocation names.
 	detail, err := json.Marshal(map[string]string{"label": reg.Label, "runner_dns": reg.DNS, "public_key_sha256": reg.PublicKeySHA256})
 	if err != nil {
 		return Runner{}, fmt.Errorf("encode enrollment detail: %w", err)
 	}
 	if _, err := tx.Exec(ctx, storage.Query("AppendRunnerEnrollment"),
-		s.mintID("renr"), row.Organization, row.Project, row.ID, row.PoolID, "", "issued", detail); err != nil {
+		s.mintID("renr"), row.Organization, row.Project, row.ID, row.PoolID, reg.KeyID, "issued", detail); err != nil {
 		return Runner{}, fmt.Errorf("append enrollment entry: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
