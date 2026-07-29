@@ -15,7 +15,10 @@ import (
 type ToolRegistryAPI interface {
 	CreateTool(ctx context.Context, scope middleware.Scope, body []byte) (ToolResult, error)
 	CreateToolRevision(ctx context.Context, scope middleware.Scope, toolID string, body []byte) (ToolResult, error)
-	PublishToolRevision(ctx context.Context, scope middleware.Scope, revisionID string) (ToolResult, error)
+	// PublishToolRevision takes an OPTIONAL body: the operator's approval declaration (E23 T5). It rides
+	// the publish an operator already makes per tool rather than opening a second route, and an empty body
+	// is the shipped bodyless publish.
+	PublishToolRevision(ctx context.Context, scope middleware.Scope, revisionID string, body []byte) (ToolResult, error)
 	CreateToolSetRevision(ctx context.Context, scope middleware.Scope, setName string, body []byte) (ToolResult, error)
 	PublishToolSetRevision(ctx context.Context, scope middleware.Scope, revisionID string) (ToolResult, error)
 	// GetTool + ListTools + ListToolSets are the E13 T4 read side, RLS-scoped. A tool-set has no
@@ -63,13 +66,16 @@ func (h *toolHandler) createRevision(w http.ResponseWriter, r *http.Request) {
 }
 
 // publishRevision publishes a draft tool revision (POST /v1/tools/{tool_id}/revisions/{revision_id}/publish).
+//
+// THE CEREMONY DOES NOT GROW, IT GAINS ONE QUESTION (E23 T5). The optional body carries the operator's
+// approval declaration, on the call they already make once per tool — no new endpoint, no new CLI command.
+// A bodyless publish decodes to the zero value, so every existing caller is bit-unchanged.
 func (h *toolHandler) publishRevision(w http.ResponseWriter, r *http.Request) {
-	scope, ok := middleware.ScopeFrom(r.Context())
+	scope, raw, ok := h.begin(w, r)
 	if !ok {
-		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
 		return
 	}
-	out, err := h.tools.PublishToolRevision(r.Context(), scope, r.PathValue("revision_id"))
+	out, err := h.tools.PublishToolRevision(r.Context(), scope, r.PathValue("revision_id"), raw)
 	h.write(w, r, out, err, http.StatusOK, "")
 }
 

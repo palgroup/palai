@@ -57,9 +57,18 @@ RETURNING revision_number;
 -- PublishToolRevision is the ONE legitimate mutation: it flips published_at exactly once. The
 -- WHERE published_at IS NULL guard makes a re-publish a zero-row no-op, so a published revision never
 -- re-stamps (immutable publish). RETURNING id distinguishes published-now from already-published/unknown.
+--
+-- E23 T5: the operator's approval declaration ($4/$5, 000044 R3) rides the SAME once-only flip, because
+-- publishing IS the per-tool decision an operator already makes (jira-mcp-connection.md §3c) and a second
+-- ceremony would be a second thing to forget. Riding the guarded UPDATE has a consequence worth naming:
+-- a re-publish changes nothing, so a gate cannot be quietly REMOVED from a published revision by calling
+-- this again without the flag. Un-gating a tool means publishing a new revision and re-pinning the set —
+-- visible, immutable, and exactly the shape of every other config change here.
 -- name: PublishToolRevision
 UPDATE tool_revisions
-SET published_at = clock_timestamp()
+SET published_at = clock_timestamp(),
+    approval_required = $4,
+    approval_label = $5
 WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND published_at IS NULL
 RETURNING id;
 

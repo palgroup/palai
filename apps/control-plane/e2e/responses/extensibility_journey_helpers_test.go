@@ -170,7 +170,7 @@ func (h *harness) setupExtensions(t *testing.T, ctx context.Context) *extSetup {
 	if err != nil {
 		t.Fatalf("create echo revision: %v", err)
 	}
-	if _, _, err := reg.PublishToolRevision(ctx, org, proj, echoRev.ID); err != nil {
+	if _, _, err := reg.PublishToolRevision(ctx, org, proj, echoRev.ID, nil); err != nil {
 		t.Fatalf("publish echo revision: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func (h *harness) setupExtensions(t *testing.T, ctx context.Context) *extSetup {
 	if err != nil {
 		t.Fatalf("create remote revision: %v", err)
 	}
-	if _, _, err := reg.PublishToolRevision(ctx, org, proj, remoteRev.ID); err != nil {
+	if _, _, err := reg.PublishToolRevision(ctx, org, proj, remoteRev.ID, nil); err != nil {
 		t.Fatalf("publish remote revision: %v", err)
 	}
 	executor := remotehttp.NewExecutor(ops, remotehttp.WithCallbackBaseURL(callbackServer.URL))
@@ -238,7 +238,7 @@ func (h *harness) setupExtensions(t *testing.T, ctx context.Context) *extSetup {
 		 ORDER BY tr.revision_number DESC LIMIT 1`, "mcp.fixture.echo", org, proj).Scan(&mcpRevID); err != nil {
 		t.Fatalf("read discovered MCP revision id: %v", err)
 	}
-	if _, _, err := reg.PublishToolRevision(ctx, org, proj, mcpRevID); err != nil {
+	if _, _, err := reg.PublishToolRevision(ctx, org, proj, mcpRevID, nil); err != nil {
 		t.Fatalf("publish MCP tool revision: %v", err)
 	}
 

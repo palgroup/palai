@@ -30,7 +30,7 @@ func (f *fakeToolRegistry) CreateToolRevision(_ context.Context, _ middleware.Sc
 	f.lastBody = body
 	return f.createRev, nil
 }
-func (f *fakeToolRegistry) PublishToolRevision(context.Context, middleware.Scope, string) (ToolResult, error) {
+func (f *fakeToolRegistry) PublishToolRevision(context.Context, middleware.Scope, string, []byte) (ToolResult, error) {
 	return f.publishRev, nil
 }
 func (f *fakeToolRegistry) CreateToolSetRevision(_ context.Context, _ middleware.Scope, _ string, body []byte) (ToolResult, error) {

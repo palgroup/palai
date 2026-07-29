@@ -58,9 +58,14 @@ func (s *Store) CreateToolRevision(ctx context.Context, scope middleware.Scope, 
 }
 
 // PublishToolRevision publishes a draft revision; an unknown id is a NotFound (404), a re-publish an
-// idempotent success (200).
-func (s *Store) PublishToolRevision(ctx context.Context, scope middleware.Scope, revisionID string) (api.ToolResult, error) {
-	_, exists, err := s.tools.PublishToolRevision(ctx, scope.Organization, scope.Project, revisionID)
+// idempotent success (200). The optional body carries the operator's approval declaration (E23 T5) — an
+// absent body is the shipped bodyless publish and stays bit-unchanged; a malformed one is a 400 rather
+// than a silently ungated publish.
+func (s *Store) PublishToolRevision(ctx context.Context, scope middleware.Scope, revisionID string, body []byte) (api.ToolResult, error) {
+	_, exists, err := s.tools.PublishToolRevision(ctx, scope.Organization, scope.Project, revisionID, body)
+	if res, mapped := toolReject(err); mapped {
+		return res, nil
+	}
 	return publishToolResult(revisionID, exists, err)
 }
 
@@ -151,6 +156,7 @@ func toolReject(err error) (api.ToolResult, bool) {
 	case errors.Is(err, extensions.ErrUnknownField),
 		errors.Is(err, extensions.ErrInvalidCanonicalName),
 		errors.Is(err, extensions.ErrInvalidReplayClass),
+		errors.Is(err, extensions.ErrApprovalLabelTooLong),
 		errors.Is(err, extensions.ErrOverrideNotStricter):
 		return api.ToolResult{BadField: true}, true
 	case errors.Is(err, extensions.ErrNameCollision),
