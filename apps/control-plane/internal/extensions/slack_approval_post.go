@@ -244,6 +244,25 @@ func (p *SlackApprovalPump) deliver(ctx context.Context, o slackApprovalOrder) b
 		return false
 	}
 
+	// THE SCREEN, CHOSEN FROM THE ROW, and it is built FIRST — before a credential is redeemed and before
+	// any pacer budget is spent — because a message this poster cannot construct is a message it must not
+	// pay for. A publication order gets E19's two-button ApprovalMessage, whose bytes have not moved since
+	// it shipped; a tool-call order gets T4's three-button argument table. The choice is the `kind` the
+	// claim returned, so it is a column and not an inference, and an order whose kind is neither posts
+	// NOTHING rather than defaulting to a screen that would describe it wrongly.
+	//
+	// EVERY ARGUMENT TO BOTH IS INFRASTRUCTURE-DERIVED. The publication detail is publicationDisplay's
+	// resolved destination; the tool identity is the name the EXECUTOR resolved and the arguments are the
+	// ledger row's committed bytes, never the model's frame; and both buttons' values are the one-shot
+	// request hash. Not one character comes from the model — which is what makes interactions.go's
+	// single-mint rule meaningful rather than decorative, since this is the path that puts a mint in front
+	// of a human.
+	body, ok := p.screen(ctx, o)
+	if !ok {
+		p.retire(ctx, o, "the delivery names no screen this poster can build")
+		return false
+	}
+
 	token, err := a.secrets(o.org, o.botTokenRef)
 	if err != nil || len(token) == 0 {
 		// The ref name is NOT echoed — an operator sees which connection cannot write, not the handle.
@@ -260,23 +279,6 @@ func (p *SlackApprovalPump) deliver(ctx context.Context, o slackApprovalOrder) b
 		if err := a.pacer.Wait(ctx, o.channelID); err != nil {
 			return false // cancelled: the row stays claimed and its backoff already scheduled the retry
 		}
-	}
-
-	// THE SCREEN, CHOSEN FROM THE ROW. A publication order gets E19's two-button ApprovalMessage, whose
-	// bytes have not moved since it shipped; a tool-call order gets T4's three-button argument table. The
-	// choice is the `kind` the claim returned, so it is a column and not an inference — and an order whose
-	// kind is neither posts NOTHING rather than defaulting to a screen that would describe it wrongly.
-	//
-	// EVERY ARGUMENT TO BOTH IS INFRASTRUCTURE-DERIVED. The publication detail is publicationDisplay's
-	// resolved destination; the tool identity is the name the EXECUTOR resolved and the arguments are the
-	// ledger row's committed bytes, never the model's frame; and both buttons' values are the one-shot
-	// request hash. Not one character comes from the model — which is what makes interactions.go's
-	// single-mint rule meaningful rather than decorative, since this is the path that puts a mint in front
-	// of a human.
-	body, ok := p.screen(ctx, o)
-	if !ok {
-		p.retire(ctx, o, "the delivery names no screen this poster can build")
-		return false
 	}
 	res, err := slack.PostMessage(ctx, a.doer, slack.PostRequest{
 		MethodURL: a.apiBase + "/chat.postMessage", Token: token, Body: body,
