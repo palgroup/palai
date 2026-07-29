@@ -57,8 +57,13 @@ type SlackDecisionOutcome struct {
 	SessionID     string
 	PublicationID string
 	CommandID     string
-	Decision      string // "approve" | "deny" — the decision that was actually applied
-	Rejected      string
+	// ToolCallID names the GATED CALL a click decided (E23 T8). It and PublicationID are mutually
+	// exclusive, mirroring the approvals row's own CHECK: one click decides one kind of thing. CommandID is
+	// empty on this path and that is structural rather than missing — a gated call's run is PARKED, so the
+	// decision is applied directly instead of queued for a boundary the run will never reach.
+	ToolCallID string
+	Decision   string // "approve" | "deny" — the decision that was actually applied
+	Rejected   string
 	// Repaired reports whether the visible Slack message was edited to reflect the outcome. FALSE is not a
 	// failure of the decision: SLK-006's invariant is that a Slack delivery problem never erases canonical
 	// state, so the decision is durable either way and only the message is stale.
@@ -211,7 +216,7 @@ func (h *slackInteractionsHandler) receive(w http.ResponseWriter, r *http.Reques
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	h.log("slack interactions: decided connection=%s decision=%s session=%s publication=%s command=%s repaired=%t",
-		conn.ID, out.Decision, out.SessionID, out.PublicationID, out.CommandID, out.Repaired)
+	h.log("slack interactions: decided connection=%s decision=%s session=%s publication=%s tool_call=%s command=%s repaired=%t",
+		conn.ID, out.Decision, out.SessionID, out.PublicationID, out.ToolCallID, out.CommandID, out.Repaired)
 	w.WriteHeader(http.StatusOK)
 }

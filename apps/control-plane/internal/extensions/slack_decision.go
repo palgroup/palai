@@ -22,10 +22,20 @@ import (
 //	slack.MapInteractiveApproval  (the route, after verifying the RAW form body)
 //	  → Store.SlackAuthorizationPolicyFor        — the connection's allow-list, tenant-scoped
 //	  → SlackAuthorizationPolicy.ApproverAuthorized — deny-by-default: an unmapped clicker decides NOTHING
+//	  → coordinator.PendingToolApprovalForSession — WHICH KIND: does this hash pin an open GATED CALL?
 //	  → coordinator.PendingApprovalForSession    — the one-shot approval the session actually has open
 //	  → coordinator.AcceptCommand                — exactly ONE durable approve/deny command
 //	  → coordinator.ApplyApprovalDecision        — the transition, bound to the request hash
 //	  → chat.update                              — the visible message repaired in place (SLK-006)
+//
+// AND SINCE E23 T8 THE OTHER HALF OF THE FORK, for a click on a gated tool call:
+//
+//	  → coordinator.DecideToolApproval           — its FIRST production caller: transition, journal, WAKE
+//	  → chat.update                              — the same in-place repair
+//
+// The fork is a lookup, not a guess: 000044's CHECK ((publication_id IS NULL) <> (tool_call_id IS NULL))
+// makes an approvals row say which kind it is, and the button's one-shot hash either pins an open gated
+// call in this session or it does not. A publication click takes the identical path it took before T8.
 //
 // FIVE BINDINGS, all of them server-side, none of them selectable by the payload:
 //
@@ -123,16 +133,34 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 		return api.SlackDecisionOutcome{SessionID: session, Rejected: "the clicking user is not an authorized approver"}, nil
 	}
 
-	// 3. The exact operation. The button's value has to be the hash of the approval the session actually has
-	// open — a stale hash (the head moved, the request was edited) or a hash minted for another operation
-	// decides nothing, and does not even become a command.
+	tenant := coordinator.Tenant{Organization: conn.Org, Project: conn.Project}
+
+	// 3. WHICH KIND OF APPROVAL THIS CLICK DECIDES (E23 T8). The two live in one table and 000044's
+	// CHECK ((publication_id IS NULL) <> (tool_call_id IS NULL)) makes each row say which it is, so the
+	// branch is a lookup rather than a guess: the hash the button carried either pins an OPEN GATED CALL in
+	// this session or it does not.
+	//
+	// The generic read runs FIRST and that ordering is free of consequence, because the two reads cannot
+	// both find something. PendingToolApprovalForSession matches on (session, request_hash) against
+	// tool_calls at `approval_pending`; a publication's hash is not a tool call's, and a session holding
+	// neither falls through to the publication branch exactly as it did before this task. Every publication
+	// click therefore takes the identical path it took at E23 T7, which is the point — the shipped screen
+	// and the shipped decision do not move.
+	if parked, found, terr := a.spine.PendingToolApprovalForSession(ctx, tenant, session, intent.RequestHash); terr != nil {
+		return api.SlackDecisionOutcome{}, fmt.Errorf("read the session's pending tool approval: %w", terr)
+	} else if found {
+		return a.decideToolApproval(scoped, conn, intent, session, lastBotTS, parked)
+	}
+
+	// 3a. The exact operation. The button's value has to be the hash of the approval the session actually
+	// has open — a stale hash (the head moved, the request was edited) or a hash minted for another
+	// operation decides nothing, and does not even become a command.
 	//
 	// "THE" pending approval, singular, and the limit is inherited rather than introduced: both this read and
 	// ApplyApprovalDecision's own LockPendingApprovalForSession take the session's OLDEST pending publication.
 	// So if a session ever holds two open approvals at once, only the older one is decidable — from Slack or
 	// from the native command surface alike. Refusing here is the same verdict the coordinator would reach,
 	// reached one step earlier and without leaving a pointless command behind.
-	tenant := coordinator.Tenant{Organization: conn.Org, Project: conn.Project}
 	pub, found, err := a.spine.PendingApprovalForSession(ctx, tenant, session)
 	if err != nil {
 		return api.SlackDecisionOutcome{}, fmt.Errorf("read the session's pending approval: %w", err)
@@ -220,6 +248,118 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 	}
 	out.Repaired = a.repairDecisionMessage(scoped, conn, intent, lastBotTS, pub)
 	return out, nil
+}
+
+// slackDenyReason is what a Slack Deny hands back to the model. A denial with no reason is a wall; a
+// denial with one is an instruction the agent can act on, which is the whole difference between a gate and
+// an outage. It is a CONSTANT rather than a captured sentence, and that is the honest shape today: the
+// modal's "Reason for denying" field is not routed to a decision (see ToolApprovalModal's ceiling), so
+// there is no human sentence to carry, and inventing one would put words in an approver's mouth. WHO
+// denied is recorded durably on the approval's decided_by, which is where an identity belongs.
+const slackDenyReason = "a human denied this call in Slack. No reason was given — the Deny button carries none. Do not retry the same call; ask, or do something else."
+
+// decideToolApproval answers a click on a GATED TOOL CALL (E23 T8) — the generic twin of the publication
+// branch above, and the FIRST production caller of coordinator.DecideToolApproval.
+//
+// IT PASSES THE SAME FIVE BINDINGS as its publication sibling, because the caller has already applied
+// four of them (tenant, session, channel scope, clicker allow-list) and the fifth — the one-shot hash — is
+// what found this approval in the first place. What it does NOT do is mint a command, and that difference
+// is structural rather than an omission: an approve/deny COMMAND exists so the boundary pump can apply a
+// decision the run has not reached yet, and a publication needs that because its run keeps going. A gated
+// call PARKS its run, so the only thing that can move it is this decision — DecideToolApproval does the
+// transition, the journal and the wake in one transaction, and a queued command would be a second, weaker
+// path to the same place. The audit trail is the approval row's decided_by plus the approval.approved /
+// approval.denied journal entries, written inside that transaction.
+func (a *SlackAdmitter) decideToolApproval(scoped context.Context, conn api.SlackConnectionRef, intent slack.ApprovalIntent,
+	session, lastBotTS string, parked coordinator.ToolApproval) (api.SlackDecisionOutcome, error) {
+
+	tenant := coordinator.Tenant{Organization: conn.Org, Project: conn.Project}
+	// The canonical principal, in the one string form config_policy.approvers ever names. The team id is
+	// part of it because a Slack user id is unique only within its workspace — and both halves come from
+	// the payload Slack SIGNED, which is the only reason a payload field is trusted here at all.
+	approver := coordinator.ApproverPrincipal(coordinator.ApproverSurfaceSlack, intent.TeamID, intent.UserID)
+
+	out := api.SlackDecisionOutcome{SessionID: session, ToolCallID: parked.ToolCallID, Decision: intent.Decision}
+	applied, err := a.spine.DecideToolApproval(scoped, tenant, coordinator.ToolApprovalDecision{
+		ToolCallID:  parked.ToolCallID,
+		RequestHash: intent.RequestHash,
+		DecidedBy:   approver,
+		Approve:     intent.Decision != "deny",
+		Reason:      slackDenyReason,
+	})
+	switch {
+	case errors.Is(err, coordinator.ErrApproverNotAuthorized):
+		// THE SECOND GATE, and it is not the same gate the caller already applied. allowed_users is the
+		// CONNECTION's list and carries channel scope a platform-wide list cannot express; config_policy
+		// .approvers is the PROJECT's and spans every surface. Both have to be passed. The check is inside
+		// DecideToolApproval — the one throat every generic surface passes through — so it cannot be
+		// forgotten by whoever adds the next one, and it is the SAME function the publication path calls.
+		out.Rejected = "the clicking user is not in the project's approver list"
+		return out, nil
+	case err != nil:
+		return api.SlackDecisionOutcome{}, fmt.Errorf("apply slack tool approval decision: %w", err)
+	}
+	if !applied {
+		// VOID, not failed: the call was decided by another click, its deadline passed, or the hash no
+		// longer matches the bytes. The receiver worked; the button was simply no longer live. Answering
+		// non-200 would tell a human their approval FAILED when nothing was wrong with it.
+		out.Rejected = "the gated call was no longer decidable when the click arrived"
+		return out, nil
+	}
+
+	// Draw the outcome on the message the human is looking at. A failure here is NOT a failure of the
+	// decision (SLK-006): the call has already moved and the run has already been woken.
+	//
+	// The detail comes from the LEDGER ROW — the tool the executor resolved — never from the payload, and
+	// it is passed as the defused text argument while the decider's id is minted separately, the E21 T3
+	// split. A tool name is not model-authored today, but it travels the same wire as pub.Display and the
+	// wire is what the split protects.
+	out.Repaired = a.repairToolDecisionMessage(scoped, conn, intent, lastBotTS, parked)
+	return out, nil
+}
+
+// repairToolDecisionMessage edits the visible gated-call question in place to reflect the decision. It is
+// repairDecisionMessage's twin and shares its contract exactly: it reports whether the edit landed, never
+// returns an error, and resolves the bot token at call time. See that function for WHY chat.update rather
+// than response_url, and for which message is edited.
+func (a *SlackAdmitter) repairToolDecisionMessage(scoped context.Context, conn api.SlackConnectionRef,
+	intent slack.ApprovalIntent, lastBotTS string, parked coordinator.ToolApproval) bool {
+
+	target := intent.MessageTS
+	if target == "" {
+		target = lastBotTS
+	}
+	if a.doer == nil || target == "" || conn.BotTokenRef == "" {
+		return false
+	}
+	token, err := a.secrets(conn.Org, conn.BotTokenRef)
+	if err != nil || len(token) == 0 {
+		log.Printf("slack: could not resolve the bot token for connection %s; the tool decision stands but its message is stale", conn.ID)
+		return false
+	}
+	if a.pacer != nil {
+		if err := a.pacer.Wait(scoped, intent.ChannelID); err != nil {
+			return false
+		}
+	}
+	verdict := "Approved"
+	if intent.Decision == "deny" {
+		verdict = "Denied"
+	}
+	body := slack.UpdateMessage(intent.ChannelID, target, verdict+": "+parked.ToolName, intent.UserID)
+	res, err := slack.PostMessage(scoped, a.doer, slack.PostRequest{
+		MethodURL: a.apiBase + "/chat.update", Token: token, Body: body,
+	}, slack.PostOptions{MaxWait: slackRepairMaxWait})
+	if err != nil {
+		log.Printf("slack: the tool decision on connection %s is durable but its message could not be repaired after %d attempt(s): %v",
+			conn.ID, res.Attempts, err)
+		return false
+	}
+	if _, err := a.store.pool.Exec(scoped, storage.Query("UpdateThreadMessageTS"),
+		conn.Org, conn.Project, intent.TeamID, intent.ChannelID, intent.ThreadTS, target); err != nil {
+		log.Printf("slack: repaired the visible tool-decision message on connection %s but could not record its ts: %v", conn.ID, err)
+	}
+	return true
 }
 
 // decidedPublicationState is the publication state a decision produces — what "my decision landed" looks

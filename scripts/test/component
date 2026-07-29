@@ -156,10 +156,23 @@ run_postgres() {
   # TestAToolPinnedTwiceRefuses* is the hole T5 found in its OWN claim: the grant chain can offer TWO
   # bindings for one model-visible name and the lookup used to take whichever the planner emitted first,
   # so a planner's choice could decide whether a human is asked. It refuses now, at every entry point.
+  #
+  # TestSlackToolApproval* is E23 T8 — the DECISION SURFACE for the generic half — and it needs its own
+  # alternative rather than riding one of the names above, which is this list's trap sprung deliberately
+  # rather than by accident: `TestToolApproval` does NOT match `TestSlackToolApprovalAsks...` (Go's -run is
+  # an unanchored regexp and "TestToolApproval" is not a substring of "TestSlackToolApproval"), and neither
+  # does `TestPublicationFromSlack` or `TestApprover`. Without this word the four tests proving that a
+  # gated MCP write tool can be approved AT ALL would report the same green as tests that pass.
+  # What they run: the ask is posted into the correlated thread as T4's three-button ARGUMENT TABLE (not
+  # E19's two-button publication screen — the screen is chosen from the approvals row's own discriminator),
+  # an authorized click routes to DecideToolApproval and WAKES the parked run, an unauthorized one decides
+  # nothing under EITHER approver list, a deny releases the run with a reason and runs nothing, and a
+  # REGISTERED revision's operator label reaches the screen through the same lookup the executor uses.
+  # This is the hole the epic's own exit gate found and filed as HIL-P8.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared' \
+        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared' \
         ./apps/control-plane/internal/execution
     status=$?
   fi

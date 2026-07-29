@@ -140,6 +140,24 @@ func (s *Store) RequestToolApproval(ctx context.Context, tenant Tenant, in ToolA
 		in.ApprovalID, in.ToolCallID, tenant.Organization, tenant.Project, in.RequestHash, "", expires); err != nil {
 		return fmt.Errorf("open tool approval: %w", err)
 	}
+	// THE ORDER TO ASK (E23 T8), committed in the SAME transaction as the approval that parks the run —
+	// RequestPublication's line verbatim, and the SAME statement against the SAME table, because there is
+	// one queue. What tells the pump which SCREEN to post is not this call: it is the approvals row this
+	// row points at, whose 000044 CHECK ((publication_id IS NULL) <> (tool_call_id IS NULL)) already says
+	// which kind of thing is being approved. So the discriminator rides the enqueue for free and no column,
+	// no payload field and no second table was needed to carry it.
+	//
+	// UNTIL THIS TASK NOTHING WROTE THIS ROW FOR A TOOL CALL, and that was the whole of HIL-P8: T1 parked
+	// the run, T4 built the screen, T5 advertised the write tools, and the question was never asked — so
+	// every gated non-publication call was released half an hour later by the expiry reaper, having
+	// interrupted nobody. Writing the order HERE rather than from the poster is the loss-lessness claim:
+	// "a human owes an answer" and "the question is recorded for delivery" become durable together.
+	//
+	// A session with no Slack thread inserts ZERO rows, which is every non-Slack run in the deployment.
+	if _, err := tx.Exec(ctx, storage.Query("EnqueueApprovalMessage"),
+		tenant.Organization, tenant.Project, in.ApprovalID, in.RunID, in.ResponseID, in.SessionID); err != nil {
+		return fmt.Errorf("enqueue tool approval message: %w", err)
+	}
 	// The genesis event carries the BINDING, never a rendered screen: an event stream that repeated the
 	// display would be a second copy of it, and a second copy is the drift this epic refuses.
 	payload := mustMarshal(map[string]any{
@@ -180,16 +198,22 @@ func (s *Store) ToolApprovalForCall(ctx context.Context, tenant Tenant, toolCall
 }
 
 // DecideToolApproval applies one human's answer and WAKES the parked run, in one transaction. It is the
-// single throat both surfaces pass through (Slack's click and the HTTP command path), which is where T2
-// puts the approver check for the same reason: a control placed in each caller is a control the next
-// caller forgets.
+// single throat every generic surface passes through — Slack's click (E23 T8's SlackAdmitter.Decide, its
+// first production caller) and any later command path — which is where the approver check goes for the
+// reason a control placed in each caller is a control the next caller forgets.
 //
-// applied reports whether the decision actually moved the call. FALSE is returned — never an error — for
-// every way a decision can be void: the call was already decided, the deadline passed, or the one-shot
-// hash does not match. That shape is deliberate. The publication path returns an ERROR when a decision
-// cannot land, and the measured consequence was a human watching Slack report a 503 while the operation
-// stayed pending forever (E22's own test recorded it). A void decision is not a server fault; the surface
-// should be able to say "that button is no longer live" and mean it.
+// applied reports whether the decision actually moved the call. FALSE with NO ERROR is returned for every
+// way a decision can be VOID: the call was already decided, the deadline passed, or the one-shot hash does
+// not match. That shape is deliberate. The publication path returns an ERROR when a decision cannot land,
+// and the measured consequence was a human watching Slack report a 503 while the operation stayed pending
+// forever (E22's own test recorded it). A void decision is not a server fault; the surface should be able
+// to say "that button is no longer live" and mean it.
+//
+// THE ONE EXCEPTION IS ErrApproverNotAuthorized (E23 T8), and it is a typed OUTCOME rather than a failure —
+// the publication path's exact convention, documented at ErrApproverNotAuthorized itself. A caller must
+// answer 200 and draw nothing. It is distinguished from the void cases because "you may not decide this"
+// and "this is no longer decidable" are different facts for the operator reading the log, and collapsing
+// them would hide a misconfigured approver list behind what looks like an expired button.
 func (s *Store) DecideToolApproval(ctx context.Context, tenant Tenant, d ToolApprovalDecision) (bool, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
@@ -197,6 +221,20 @@ func (s *Store) DecideToolApproval(ctx context.Context, tenant Tenant, d ToolApp
 		return false, fmt.Errorf("begin decide tool approval: %w", err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	// WHO IS DECIDING (E23 T2), checked FIRST — before the row is even locked, and the ordering is
+	// ApplyApprovalDecision's own reasoning applied to this path. An unauthorized principal must cause NO
+	// state transition at all (not the approve, not the deny, and not the expiry one below), and every
+	// unauthorized caller must get the same answer whatever hash or call id they present, or the refusal
+	// becomes an oracle for which ids are real. It is the SAME function the publication path calls, so a
+	// project's approver list cannot mean one thing for a push and another for a Jira transition.
+	allowed, err := approverAuthorizedTx(ctx, tx, tenant, d.DecidedBy)
+	if err != nil {
+		return false, err
+	}
+	if !allowed {
+		return false, ErrApproverNotAuthorized
+	}
 
 	var state, runID, name, storedHash string
 	switch err := tx.QueryRow(ctx, storage.Query("LockToolCallForDecision"), d.ToolCallID, tenant.Organization, tenant.Project).

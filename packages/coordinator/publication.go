@@ -359,11 +359,11 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 	//
 	// The command is settled anyway (see settleApprovalCommandTx) and the error is returned so a caller
 	// can draw a refusal rather than a decision.
-	policy, err := projectConfigTx(ctx, tx, tenant)
+	allowed, err := approverAuthorizedTx(ctx, tx, tenant, approver)
 	if err != nil {
 		return 0, err
 	}
-	if !policy.ApproverAllowed(approver) {
+	if !allowed {
 		if _, err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
 			return 0, err
 		}
@@ -427,6 +427,25 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		return 0, fmt.Errorf("commit apply approval: %w", err)
 	}
 	return seq, nil
+}
+
+// approverAuthorizedTx is THE approver check (E23 T2), and it is a function rather than two copies of two
+// lines for a reason the tree ENFORCES: TestApproverAllowedHasExactlyOneProductionCallSite walks every
+// non-test .go file in the module and requires ConfigPolicy.ApproverAllowed to be called from exactly one
+// place. That guard is not decoration — "put the check in each caller" is how the next caller forgets it.
+//
+// E23 T8 IS THE SECOND CALLER THE GUARD WAS WRITTEN FOR, and it arrived as the guard predicted: wiring the
+// generic decision surface meant DecideToolApproval had to refuse an unlisted principal too, and the
+// obvious way to write that would have been a second `policy.ApproverAllowed(...)` in approvals.go —
+// turning one throat into two and reddening the guard. Extracting the body instead keeps the call site
+// singular AND the property real: both kinds of approval are refused by the same six lines, so a project's
+// approver list cannot come to mean one thing for a publication and another for a tool call.
+func approverAuthorizedTx(ctx context.Context, tx pgx.Tx, tenant Tenant, approver string) (bool, error) {
+	policy, err := projectConfigTx(ctx, tx, tenant)
+	if err != nil {
+		return false, err
+	}
+	return policy.ApproverAllowed(approver), nil
 }
 
 // settleApprovalCommandTx settles an approve/deny that authorizes NOTHING — no pending approval left, a

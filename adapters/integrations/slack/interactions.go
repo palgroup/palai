@@ -391,12 +391,23 @@ func ToolApprovalModal(triggerID string, req ApprovalRequest) []byte {
 	// The deny reason (P11). `dispatch_action` is never set, so it defaults to false and this element
 	// dispatches nothing — which is what keeps it out of the actionable family E21 refused.
 	//
-	// CEILING, and it is the honest one: NOTHING IN THIS TREE ROUTES view_submission TO A DECISION YET.
-	// coordinator.DecideToolApproval has no production caller at all (measured 2026-07-29), so neither this
-	// field nor the channel's own Deny button decides a tool approval today. The field is therefore labelled
-	// and hinted for what it IS — a reason written next to a decision made on the message — rather than for
-	// what a submit button would imply. The submit exists only because Slack requires one when a view holds
-	// an input block, and it is named accordingly.
+	// CEILING, REWRITTEN BY E23 T8 BECAUSE HALF OF IT STOPPED BEING TRUE. What T4 wrote here — "nothing in
+	// this tree routes view_submission to a decision YET, and DecideToolApproval has no production caller
+	// at all" — was two claims, and T8 falsified the second one: the channel's Deny button now decides,
+	// through SlackAdmitter.Decide → coordinator.DecideToolApproval, and it wakes the parked run.
+	//
+	// WHAT STILL STANDS, exactly: NOTHING ROUTES `view_submission` ANYWHERE. There is no mapper for it, the
+	// interactivity route has no branch for it, and MapInteractiveApproval refuses it by type. So THIS
+	// FIELD'S TEXT REACHES NOTHING — a human who types a reason here and presses Done has written into a
+	// view that is then discarded, and the deny they make on the message carries a constant sentence
+	// (extensions.slackDenyReason) instead. That is why the label and hint below still describe the field as
+	// a reason written NEXT TO a decision made on the message, and why the submit is named "Done" rather
+	// than "Deny": the submit exists only because Slack requires one when a view holds an input block, and
+	// naming it for an action it cannot perform would be the dishonest half of this screen.
+	//
+	// Wiring it is a mapper, a route branch and a re-labelled submit — deliberately NOT done here, because
+	// the epic's headline hole was the ASK and the ANSWER, and a second decision entry point is worth its
+	// own task rather than a rider on this one.
 	blocks = append(blocks, map[string]any{
 		"type":     "input",
 		"block_id": ApprovalDenyReasonBlockID,
