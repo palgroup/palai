@@ -641,6 +641,125 @@ func TestApprovedMCPArgumentsReachThePeerByteForByte(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------------------------------
+// The hole this task found in its own claim.
+// ---------------------------------------------------------------------------------------------------
+
+// TestAToolPinnedTwiceRefusesRatherThanCoinFlippingTheGate closes a hole this task MEASURED in the seam it
+// owns, rather than one the plan named.
+//
+// LookupRunTool resolves a model-visible short name through the run's grant chain, and the chain can
+// genuinely produce TWO candidates: two published revisions of one tool, pinned by two sets the run's agent
+// revision names. That is not a contrived shape — it is what re-discovery plus a second approval leaves
+// behind, since a changed description mints a new draft and publishing it does not unpublish the old one.
+//
+// The query ended `LIMIT 1` with no `ORDER BY`. Measured on 2026-07-29 against real Postgres: TWO candidate
+// rows, and which one won was whatever the planner emitted first — today the gated one, by luck of insertion
+// order rather than by any rule. That was survivable while every candidate ran the same way. It stopped
+// being survivable in this task, because one candidate can carry approval_required and the other not, so a
+// planner's choice would decide WHETHER A HUMAN IS ASKED before an irreversible call.
+//
+// The answer is a refusal rather than a preference. Preferring the gated row would be Palai guessing the
+// operator's intent, which is the one thing this whole epic declines to do (§0(a), and P3's reason).
+func TestAToolPinnedTwiceRefusesRatherThanCoinFlippingTheGate(t *testing.T) {
+	ctx := context.Background()
+	fx := newJiraWriteFixture(t, nil)
+	org, project := fx.tenant.Organization, fx.tenant.Project
+
+	// A SECOND published revision of the same discovered tool — UNGATED — pinned by a second published set
+	// the run's revision also names. SQL, because the point is a state the shipped API can reach and this
+	// test is about what the LOOKUP does with it, not about how it got there.
+	var toolID string
+	if err := fx.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
+		`SELECT id FROM tools WHERE canonical_name='mcp.jira.transitionIssue' AND organization_id=$1 AND project_id=$2`,
+		org, project).Scan(&toolID); err != nil {
+		t.Fatalf("read the tool lineage: %v", err)
+	}
+	rev2, set2 := redeliveryID("trev"), redeliveryID("tsrev")
+	execSQL(t, fx.spine.Pool(), `INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number,
+	        executor, description, input_schema, replay_class, digest, executor_config, published_at, approval_required)
+	    SELECT $1,$2,$3,$4,99,executor,description,input_schema,replay_class,'sha256:second',executor_config,clock_timestamp(),false
+	    FROM tool_revisions WHERE tool_id=$4 LIMIT 1`, rev2, org, project, toolID)
+	execSQL(t, fx.spine.Pool(), `INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name,
+	        revision_number, tool_pins, digest, published_at)
+	    VALUES ($1,$2,$3,'jira-second',1,$4::jsonb,'d',clock_timestamp())`,
+		set2, org, project, `[{"tool_revision_id":"`+rev2+`"}]`)
+	execSQL(t, fx.spine.Pool(), `UPDATE agent_revisions SET tool_sets = $1::jsonb
+	    WHERE id = (SELECT agent_revision_id FROM runs WHERE id=$2)`, `["`+fx.setID+`","`+set2+`"]`, fx.runID)
+
+	// THE AMBIGUITY IS REAL, counted before anything is asserted about it. Without this the refusal below
+	// could be a refusal of a shape that never occurs.
+	var candidates int
+	if err := fx.spine.Pool().QueryRow(storage.WithSystemScope(ctx), `SELECT count(*) FROM runs r
+	    LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
+	    JOIN tool_set_revisions tsr ON tsr.organization_id = r.organization_id AND tsr.project_id = r.project_id
+	        AND tsr.published_at IS NOT NULL
+	        AND tsr.id IN (SELECT jsonb_array_elements_text(COALESCE(ar.tool_sets, '[]'::jsonb)))
+	    CROSS JOIN LATERAL jsonb_array_elements(tsr.tool_pins) AS pin
+	    JOIN tool_revisions trv ON trv.id = (pin->>'tool_revision_id')
+	        AND trv.organization_id = r.organization_id AND trv.project_id = r.project_id
+	    JOIN tools t ON t.id = trv.tool_id AND t.model_visible_name = 'jira__transitionIssue'
+	    WHERE r.id = $1`, fx.runID).Scan(&candidates); err != nil {
+		t.Fatalf("count the candidate bindings: %v", err)
+	}
+	if candidates != 2 {
+		t.Fatalf("the grant chain offers %d candidate binding(s) for one name, want 2 — this test is measuring "+
+			"nothing", candidates)
+	}
+
+	broker := toolbroker.New()
+	broker.SetLookup(registryLookup(fx.registry))
+	env := toolbroker.ExecEnv{Scope: toolbroker.TaskScope{Org: org, Project: project, RunID: fx.runID}}
+
+	// EVERY ENTRY POINT REFUSES, because they all route through the one lookup — which is the reason the
+	// guard is there and not in each caller. A refusal at dispatch with an open advertisement would be a
+	// tool the model is told it has and cannot use.
+	for _, probe := range []struct {
+		what string
+		run  func() error
+	}{
+		{"RequiresApprovalResolved", func() error {
+			_, _, err := broker.RequiresApprovalResolved(ctx, env, "jira__transitionIssue")
+			return err
+		}},
+		{"SchemaResolved (advertisement)", func() error {
+			_, _, err := broker.SchemaResolved(ctx, env, "jira__transitionIssue")
+			return err
+		}},
+		{"ReplayClassResolved", func() error {
+			_, err := broker.ReplayClassResolved(ctx, env, "jira__transitionIssue")
+			return err
+		}},
+	} {
+		err := probe.run()
+		if err == nil {
+			t.Errorf("%s resolved an AMBIGUOUS pin instead of refusing — the planner, not the operator, chose "+
+				"whether a human is asked", probe.what)
+			continue
+		}
+		if !strings.Contains(err.Error(), "pinned twice") {
+			t.Errorf("%s failed with %v, want a refusal that NAMES the ambiguity so an operator can fix it", probe.what, err)
+		}
+	}
+
+	// AND NOTHING RAN. The fail-closed direction is the whole point: an ambiguous grant must not reach the
+	// server on the strength of whichever row sorted first.
+	callID := redeliveryID("tc")
+	if err := fx.dispatch(t, callID, "jira__transitionIssue", 1, map[string]any{"issueKey": "PAL-42"}); err == nil {
+		t.Error("dispatchTool ran an ambiguously-pinned tool")
+	}
+	if n := fx.peer.callCount("transitionIssue"); n != 0 {
+		t.Errorf("%d transition(s) reached Jira through an ambiguous pin", n)
+	}
+
+	// The UNAMBIGUOUS tools on the same run are untouched — the refusal is scoped to the name that is
+	// actually ambiguous, not to the connection or the run.
+	if _, found, err := broker.SchemaResolved(ctx, env, "jira__getJiraIssue"); err != nil || !found {
+		t.Errorf("the unambiguous read tool stopped resolving (found=%v err=%v) — the guard is too wide", found, err)
+	}
+	t.Logf("AMBIGUOUS PIN: %d candidate bindings for one model-visible name; every entry point refuses and the peer saw 0 calls", candidates)
+}
+
+// ---------------------------------------------------------------------------------------------------
 // RED #1 — the five refusals.
 // ---------------------------------------------------------------------------------------------------
 
