@@ -352,10 +352,12 @@ func TestPoolKeyRevocationDoesNotCutAnInFlightLease(t *testing.T) {
 			leaseReady <- ls
 		}
 	}()
-	// The attempt names the pool the machine enrolled into — a Dial on any other pool would not reach
-	// it at all, which is T2's refusal and not this test's subject.
+	// The attempt names the pool the machine enrolled into AND the tenant that pool belongs to — a Dial
+	// on any other pool would not reach it at all (T2's refusal), and since E24 T4 neither would a Dial
+	// that named no tenant, because the rendezvous is keyed by both. Neither is this test's subject.
 	attempt := f.attempt("run_poolkeylease", "att_poolkeylease", 4)
 	attempt.PoolID = pools[0]
+	attempt.Tenant = coordinator.Tenant{Organization: org, Project: project}
 	ch, err := f.gateway.Dial(ctx, attempt)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
