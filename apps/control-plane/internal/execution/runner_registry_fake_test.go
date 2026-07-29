@@ -7,7 +7,7 @@ package execution_test
 
 import (
 	"context"
-	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,7 +20,6 @@ type fakeRegistry struct {
 	// many. byDNS is the RecordSeen index, mirroring the store's lookup by certificate SAN.
 	rows  []*fleet.Runner
 	byDNS map[string]*fleet.Runner
-	seq   int
 	// pools is the set of pool ids this fake knows. Register refuses anything else, so the proof
 	// that an unknown pool is a REFUSAL runs against the same rule the store enforces.
 	pools map[string]bool
@@ -40,9 +39,13 @@ func (f *fakeRegistry) Register(_ context.Context, reg fleet.Registration) (flee
 	if !f.pools[reg.PoolID] {
 		return fleet.Runner{}, fleet.ErrUnknownPool
 	}
-	f.seq++
+	// The store's pairing guard, restated: the fake has to refuse what the real one refuses, or a wire
+	// proof passes against a store that would not have accepted the write.
+	if reg.ID == "" || reg.DNS == "" || !strings.HasPrefix(reg.DNS, reg.ID+".") {
+		return fleet.Runner{}, fleet.ErrIdentityMismatch
+	}
 	row := &fleet.Runner{
-		ID: fmt.Sprintf("rnr_fake%03d", f.seq), Organization: "org_local", Project: "prj_local",
+		ID: reg.ID, Organization: "org_local", Project: "prj_local",
 		PoolID: reg.PoolID, Label: reg.Label, DNS: reg.DNS, PublicKeySHA256: reg.PublicKeySHA256,
 		State: "active", OS: reg.OS, Arch: reg.Arch, Capacity: reg.Capacity,
 		EnrolledAt: time.Now(), LastSeenAt: time.Now(),
@@ -98,21 +101,4 @@ func (f *fakeRegistry) snapshot() []fleet.Runner {
 		out = append(out, *row)
 	}
 	return out
-}
-
-// mintIDs returns a deterministic id minter so a proof can name the id it expects.
-func mintIDs(ids ...string) func(string) string {
-	var mu sync.Mutex
-	i := 0
-	return func(prefix string) string {
-		mu.Lock()
-		defer mu.Unlock()
-		if i < len(ids) {
-			id := ids[i]
-			i++
-			return id
-		}
-		i++
-		return fmt.Sprintf("%s_seq%03d", prefix, i)
-	}
 }

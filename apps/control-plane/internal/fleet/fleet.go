@@ -26,6 +26,13 @@ import (
 // runner in no pool is a machine no decision can reach.
 var ErrUnknownPool = errors.New("fleet: no such runner pool")
 
+// ErrIdentityMismatch is returned by Register when a Registration's DNS is not derived from its ID.
+// It is a structural guard against the divergence that shipped once already: the row is looked up by
+// certificate SAN for the rest of its life, so a row whose recorded SAN names a different machine than
+// its id is a row nothing can ever find again. The store checks the pairing rather than owning the
+// suffix, so the DNS contract stays where the CA and the runner already agree on it.
+var ErrIdentityMismatch = errors.New("fleet: runner DNS is not derived from the runner id")
+
 // DefaultPoolID is the pool every runner enrols into until enrollment carries a tenant of its own.
 //
 // WHY A CONSTANT AND NOT A LOOKUP: today's enrollment request is {runner_id, public_key} — no org,
@@ -67,9 +74,18 @@ type Runner struct {
 	CreatedAt time.Time
 }
 
-// Registration is what the gateway knows at enrol time. It carries no id: minting one is the
-// registry's job and the reason this type has no field for it.
+// Registration is what the gateway knows at enrol time.
+//
+// ID AND DNS ARRIVE TOGETHER AND THE STORE REFUSES THEM APART, which is a correction to how this type
+// was first written. It carried no ID, on the reasoning that minting one is the registry's job — and
+// the result was TWO minters, because the caller still had to derive a certificate name from
+// something before it had a row. The row then recorded one machine's name and the CA signed another's.
+// One minter is the invariant; the caller is it, because the caller is what has to name the
+// certificate, and Register enforces the pairing rather than trusting it.
 type Registration struct {
+	// ID is the SERVER-minted runner id (`rnr_`). It is never anything the enrolling machine sent —
+	// that is Label — and DNS must be derived from it.
+	ID              string
 	PoolID          string
 	Label           string
 	DNS             string
@@ -101,9 +117,10 @@ type ListWindow struct {
 // pool has to be a refusal. Get and List DO take one: they are reached through the public API, where
 // the verified bearer scope is the only tenant authority.
 type Registry interface {
-	// Register mints an id, records the machine, and appends the `issued` enrollment-journal entry
-	// in ONE transaction — a certificate the journal does not record is a certificate no revoke can
-	// find. Returns ErrUnknownPool for a pool that is not there.
+	// Register records the machine under the id the server minted and appends the `issued`
+	// enrollment-journal entry in ONE transaction — a certificate the journal does not record is a
+	// certificate no revoke can find. Returns ErrUnknownPool for a pool that is not there and
+	// ErrIdentityMismatch for a DNS that is not derived from the id.
 	Register(ctx context.Context, reg Registration) (Runner, error)
 	// RecordSeen advances LastSeenAt (and the certificate expiry) for the runner holding dns, and
 	// reports whether such a row exists. It is called on connect and on renew — the two moments a

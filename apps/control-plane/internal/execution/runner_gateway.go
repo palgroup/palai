@@ -152,10 +152,6 @@ func NewRunnerGateway(issuer CertIssuer, tokens EnrollmentTokens) *RunnerGateway
 // reason SetControlPlaneVersion is one: every existing caller compiles unchanged.
 func (g *RunnerGateway) SetRegistry(r fleet.Registry) { g.registry = r }
 
-// SetIDMinter overrides the server-side runner-id minter (production: middleware.NewID). Only a
-// proof that needs a deterministic id calls it.
-func (g *RunnerGateway) SetIDMinter(mint func(prefix string) string) { g.newID = mint }
-
 // SetControlPlaneVersion overrides the control-plane version stamp the connect handshake checks the
 // runner's advertised version against (§48.2 window). Defaulted to version.Resolve; a test injects a
 // concrete version to exercise the OPS-008 skew rejection deterministically.
@@ -292,21 +288,22 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ONE MINTER, and this line is the whole of it. The id minted here is the id the row carries, the
+	// id the certificate's SAN is built from, and the id returned to the runner — three views of one
+	// machine. Letting the store mint a second one shipped once and made every later lookup miss: the
+	// row recorded the name derived here while the CA signed the store's, and a renew resolves the row
+	// BY THE SAN.
 	runnerID := g.mintRunnerID()
 	if reg := g.registry; reg != nil {
-		record, err := reg.Register(r.Context(), fleet.Registration{
-			PoolID: fleet.DefaultPoolID, Label: request.RunnerID, DNS: runnerDNS(runnerID),
+		if _, err := reg.Register(r.Context(), fleet.Registration{
+			ID: runnerID, PoolID: fleet.DefaultPoolID, Label: request.RunnerID, DNS: runnerDNS(runnerID),
 			PublicKeySHA256: publicKeyFingerprint(publicDER), OS: request.OS, Arch: request.Arch,
-		})
-		if err != nil {
+		}); err != nil {
 			// A registry that cannot record the machine must not issue it an identity — that is the
 			// whole point of writing first. The refusal is deliberately unspecific to the caller.
 			http.Error(w, "enrollment could not be recorded", http.StatusServiceUnavailable)
 			return
 		}
-		// The store minted the id inside its transaction, so the certificate is signed for the id the
-		// row actually carries rather than one this handler guessed.
-		runnerID = record.ID
 	}
 
 	certDER, err := g.issuer.SignRunnerCertificate(publicDER, runnerDNS(runnerID))

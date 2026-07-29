@@ -121,6 +121,58 @@ func TestTwoMachinesClaimingOneRunnerIDGetSeparateIdentities(t *testing.T) {
 	}
 }
 
+// TestTheEnrolledRowIsTheOneTheCertificateFindsAgain is the third proof, and it exists because the
+// first two do NOT cover the seam between them. Both assert on what enrolment produces; neither
+// asserts that the thing produced can be found afterwards.
+//
+// It was RED when written, and the bug it caught is the shape "the server mints the id" invites: TWO
+// minters. handleEnroll minted an id, derived the DNS from it, handed that DNS to the registry — and
+// the STORE minted an id of its OWN for the row. The certificate was then signed for the store's id
+// while the row recorded the gateway's, so `runners.runner_dns` and the certificate SAN named
+// different machines. Every later lookup is BY THAT SAN (a renew presents a certificate, not an id),
+// so last_seen_at could never advance for any runner, ever — the registry recorded a fleet it could
+// not then recognise.
+//
+// The assertion is the round trip, not either half: the id the runner comes away holding, the SAN the
+// CA signed, and the row the registry stores must be three views of ONE machine, and a renew has to
+// land on it.
+func TestTheEnrolledRowIsTheOneTheCertificateFindsAgain(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
+	registry := newFakeRegistry()
+	f.gateway.SetRegistry(registry)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	identity, err := runner.Enroll(ctx, f.bootstrap("gw-token-1"))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	rows := registry.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("one machine enrolled but the registry carries %d row(s)", len(rows))
+	}
+	issued := certDNS(t, identity)
+	if rows[0].DNS != issued {
+		t.Fatalf("the registry recorded DNS %q while the CA signed %q: the row and the certificate name different machines, "+
+			"and every later lookup goes through the certificate", rows[0].DNS, issued)
+	}
+	if rows[0].ID != identity.RunnerID {
+		t.Fatalf("the runner came away holding id %q while its row is %q", identity.RunnerID, rows[0].ID)
+	}
+	if runnerDNSFor(rows[0].ID) != rows[0].DNS {
+		t.Fatalf("row %q carries DNS %q, which is not derived from its own id", rows[0].ID, rows[0].DNS)
+	}
+
+	// THE CONSEQUENCE, measured rather than inferred from the fields above: a renew over the enrolled
+	// identity has to land on that row. This is the assertion the divergence actually broke.
+	if _, err := runner.Renew(ctx, identity, f.renewConfig()); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if rows = registry.snapshot(); rows[0].CertNotAfter.IsZero() {
+		t.Fatal("a renew over the enrolled identity recorded nothing: the registry cannot find the machine it just enrolled")
+	}
+}
+
 // certDNS is the DNS identity an issued runner certificate carries — what the gateway signed.
 func certDNS(t *testing.T, identity runner.Identity) string {
 	t.Helper()

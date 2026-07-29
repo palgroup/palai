@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -46,6 +47,12 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 	if reg.PoolID == "" {
 		return Runner{}, ErrUnknownPool
 	}
+	// The id/DNS pairing, checked before anything is written. `runners.runner_dns` is what every later
+	// request resolves this row by, so a row whose SAN does not name its own id is a row that is found
+	// exactly never — see ErrIdentityMismatch.
+	if reg.ID == "" || reg.DNS == "" || !strings.HasPrefix(reg.DNS, reg.ID+".") {
+		return Runner{}, ErrIdentityMismatch
+	}
 	if reg.Capacity <= 0 {
 		reg.Capacity = 1
 	}
@@ -80,7 +87,7 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 	// something else would be a runner in the wrong pool. Its own os/arch are recorded as reported —
 	// they are inventory, and T4 is where a placement decision may compare them.
 	row := Runner{
-		ID: s.mintID("rnr"), Organization: pool.org, Project: pool.project, PoolID: pool.id,
+		ID: reg.ID, Organization: pool.org, Project: pool.project, PoolID: pool.id,
 		Label: reg.Label, DNS: reg.DNS, PublicKeySHA256: reg.PublicKeySHA256,
 		State: "active", OS: reg.OS, Arch: reg.Arch, Posture: pool.posture, Capacity: reg.Capacity,
 	}
