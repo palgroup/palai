@@ -575,6 +575,30 @@ git ls-files | rg '(^|/)(\.env|credentials|secrets)(\.|$)' && exit 1 || true
 
 **Exit gate:** SH-3 Stable.
 
+---
+
+### E19–E23 — `1.0.0-rc1` sonrası: Slack'ten kod yazan bir hat
+
+Bu beş epic master plan yazıldığında yoktu. **Sebep tek bir cümledir:** E18 stable release'i imzaladığında altyapı bir agent'ı çalıştırabiliyordu ama bir insanın onu **kullanabileceği bir yüzeyi yoktu**. E19–E23 o yüzeyi kurar — ve her biri kendi child plan'ında §3.6 tablosuyla **ağacın kendi hakkındaki yanlış inançlarını ölçer**, çünkü bu beşinin her birinde en pahalı bulgular kodun kendisinden değil, kodun kendisi hakkında yazdığı yorumlardan çıktı.
+
+**HİÇBİRİ TIER İLERLETMEDİ** ve gerekçe ortaktır: §6 leg 1 (gerçek bir workspace'ten yakalanmış receipt) hâlâ açık, ve her bundle'ın `Peer` alanı **yapısal olarak** `"fake"`. Bir kontrol eklemek, o kontrolün gerçek bir workspace'te çalıştığının kanıtı değildir.
+
+| Epic | Child plan | Bundle | UAT | Ne kanıtlar |
+|---|---|---|---|---|
+| **E19** | `phase-19-integration-wiring.md` | `integration-wiring-0.1.0` | SLK-001..008 | Slack bağlantısı, event admission, oturum eşleme — bir mesaj bir run'a bağlanır |
+| **E20** | `phase-20-slack-agent-surface.md` | `slack-agent-surface-0.1.0` | SLK-009..012 | Agent yüzeyi bloklarla konuşur; **modelin actionable element mintlemesi yasaklanır** ve yasak bir AST taramasıyla çift yönlü tutulur |
+| **E21** | `phase-21-tools-and-memory.md` | `tools-memory-0.1.0` | TLM-001..005 | Tool'lar ve hafıza; **planın kendisi ağacın on inancını yanlış ölçtü** (E08'in "bir run tek adımdır"ı E12 T1'den beri yanlıştı) |
+| **E22** | `phase-22-code-and-ship.md` | `code-and-ship-0.1.0` | CAS-001..005 | Mac'te native koşum + repo/PR; **on altı sapma** ölçüldü. Merge'ü kendi tavanı olarak adlandırdı |
+| **E23** | `phase-23-tool-approval.md` | `tool-approval-0.1.0` | HIL-001..005 | Yan etkili **her** tool bir insanın butonundan geçebilir (mig **000044**) |
+
+**E23'ün tanımlayıcı kararı bir GENELLEŞTİRMEDİR:** onay bir yayın özelliği değil, bir **tool-call** özelliğidir. Ve merkezi tasarım sorusunun cevabı bizim değil MCP spec'inindir — birebir *"Show tool inputs to the user before calling the server"* ve *"clients MUST consider tool annotations to be untrusted"*. Yani bir insan `jira__transitionIssue`'yu onaylamadan önce bir **açıklama okumaz**: sunucu tarafında çözülmüş kimliği, operatörün kayıt anında yazdığı etiketi ve gönderilecek argümanların tamamını okur; Approve butonu `tool_calls.request_hash`'e bağlıdır, yani onayladığı şey **o baytlardır**. MCP sunucusunun kendi `description`'ı o ekrana giremez, ve bu **gate'in en ucuz güvenlik testiyle** tutulur: ekranın baytlarıyla peer'ın açıklamasının kesişimi yeniden hesaplanır ve boş olmak zorundadır.
+
+**T8 — exit gate'in kendi bulgusu, ve bu bloğun okunmaya en değer satırı.** T7 ölçtü ki `slack.ToolApprovalMessage` ve `coordinator.DecideToolApproval`'ın **hiçbir production caller'ı yoktu**: T1 kapıyı, T4 üç butonlu argüman tablosunu, T5 MCP yazma tool'larını yapmıştı ve **hiçbiri birbirine bağlı değildi**. Gated bir non-publication çağrı run'ını park ediyor, kimseye sormuyor, yarım saat sonra expiry reaper'ıyla salınıyordu. **Fail-CLOSED olduğu için altı task ve her yeşil test bunu kaçırdı.** T7 onu `known-gaps`'e yazdı; bir prose'a yazılmış boşluk hiçbir şeyi reddedemeyeceği için T8 onu **doldurdu** — publication yolunun aynısı, **tek kuyruk, yeni kolon yok, migration yok** (000044'ün `CHECK`'i satırın türünü zaten söylüyor).
+
+**Açık kalan tavan:** `HIL-P10` — hiçbir şey Slack `view_submission`'ı yönlendirmiyor, yani modaldeki "deny sebebi" metni hiçbir yere ulaşmıyor. Deny'ın kendisi mesajdaki butondan çalışır ve run'ı salar; kaybolan şey karar değil, onaylayanın kendi cümlesidir.
+
+**Sırada owner'ın kararı var, kodun değil:** (1) gerçek bir iOS repo ve gerçek bir ticket'la uçtan uca deneme, (2) yayın — registry (Docker Hub vs GHCR), `@palai/sdk` için npm org, ve tek CODEOWNER'la **her zaman reddeden** iki-kişilik `ApprovalGate` kuralı.
+
 ## 9. UAT coverage ve applicability matrisi
 
 | UAT ailesi | Epic | LP-0 | SH Beta | SH Stable | Not |
