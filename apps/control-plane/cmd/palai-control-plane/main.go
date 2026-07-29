@@ -279,6 +279,15 @@ func main() {
 	// the word.
 	queueStore := automation.NewQueueStore(repo.Spine().Pool())
 	routerOpts = append(routerOpts, api.WithQueueConnections(queueStore, nil))
+	// The Slack-less approval surface (E23 T9, spec §22.4). UNCONDITIONAL, and that is the whole point of
+	// the task: E23 T8 gave the generic approval gate a decision surface and gave it only to Slack, so a
+	// deployment that registers no workspace — the self-host story — parked runs on questions nobody could
+	// answer and the expiry reaper released them half an hour later. Mounting it behind a flag would leave
+	// the same hole for anyone who did not set the flag.
+	//
+	// It advertises NOTHING in discovery: /v1/capabilities' word list is the E17 T11 recompute's, and a new
+	// key here would be a claim no proof had recomputed.
+	routerOpts = append(routerOpts, api.WithApprovals(repo))
 	// Discovery advertises `capability-workers` ONLY where the gateway above actually BOUND its listener —
 	// the option is passed off the returned value, never off the env var, so the claim cannot outlive the
 	// mount (§2; E19 T8a closed the static "stable" that a binary not importing internal/workers was serving).

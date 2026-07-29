@@ -169,10 +169,22 @@ run_postgres() {
   # nothing under EITHER approver list, a deny releases the run with a reason and runs nothing, and a
   # REGISTERED revision's operator label reaches the screen through the same lookup the executor uses.
   # This is the hole the epic's own exit gate found and filed as HIL-P8.
+  #
+  # TestHTTPToolApproval* is E23 T9 — the SLACK-LESS decision surface — and it needs its OWN alternative
+  # for the third time this list has had to say so: `TestToolApproval` does not match
+  # `TestHTTPToolApprovalListShows…` and neither does `TestSlackToolApproval`. Without this word, the eight
+  # tests proving that a deployment with NO Slack workspace can see and answer a parked question at all
+  # would report the same green as tests that pass. What they run over the SHIPPED router and a REAL spine:
+  # GET /v1/approvals shows the parked call with its arguments verbatim and the operator's own
+  # registration-time label (resolved through the same lookup the executor uses), an approve carrying the
+  # bound request hash releases the run, a STALE hash and a MISSING hash decide nothing, another tenant's
+  # key sees nothing and gets a non-disclosing 404, a key outside config_policy.approvers is refused on
+  # both approve and deny while the listed one succeeds, a key without the `approve` capability decides
+  # nothing, and a deny releases the run with the human's reason on the ledger.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared' \
+        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval' \
         ./apps/control-plane/internal/execution
     status=$?
   fi

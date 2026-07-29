@@ -65,6 +65,8 @@ type routerConfig struct {
 	queues QueueConnectionAPI
 	// queueResolver vets an outbound destination at registration; nil ⇒ net.DefaultResolver.
 	queueResolver webhook.Resolver
+	// approvals is the Slack-less approval surface (E23 T9); nil ⇒ routes unmounted.
+	approvals ApprovalAPI
 	// capabilityWorkers records that this binary SERVES the capability-worker gateway (E17 T9) — on its own
 	// listener, not on this router (see WithCapabilityWorkers). It carries no handler because there is
 	// nothing for the router to mount; it exists so discovery derives the claim from the live mount.
@@ -188,6 +190,18 @@ func WithSlackInteractions(interactions SlackInteractionsAPI) RouterOption {
 // until §6 leg 1 (a real workspace receipt), and only the E17 T11 recompute writes the word.
 func WithSlackConnections(connections SlackConnectionAPI) RouterOption {
 	return func(c *routerConfig) { c.slackConnections = connections }
+}
+
+// WithApprovals mounts the Slack-less approval surface (E23 T9, spec §22.4): list this project's open
+// gated tool calls and decide one, on the AUTHENTICATED mux beside the other bearer-scoped operator
+// surfaces.
+//
+// It closes the hole E23 T8 left: that task gave the generic approval gate a decision surface and gave it
+// ONLY to Slack, so a deployment without a workspace parked runs on questions nobody could answer and the
+// expiry reaper released them half an hour later. A trailing option like the rest — a tier that wires no
+// approval store leaves the routes unmounted and they 404 rather than 500 on a nil seam.
+func WithApprovals(approvals ApprovalAPI) RouterOption {
+	return func(c *routerConfig) { c.approvals = approvals }
 }
 
 // WithMetrics mounts the Prometheus text-exposition surface (E14 Task 6) at GET /metrics on the

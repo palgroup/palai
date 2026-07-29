@@ -256,3 +256,53 @@ WHERE r.session_id = $1 AND a.request_hash = $2 AND t.state = 'approval_pending'
   AND a.organization_id = $3 AND a.project_id = $4
 ORDER BY a.created_at
 LIMIT 1;
+
+-- PendingToolApprovalsForTenant is the SLACK-LESS READ (E23 T9): every gated call in the caller's project
+-- that a human still owes an answer on. It is the same projection ToolApprovalForCall returns, widened
+-- from one call to a page, because a human cannot decide what they cannot see and the only surface that
+-- ever listed these was a Slack thread.
+--
+-- Keyset-ordered on (created_at, id) so the shared page envelope's cursor is total: created_at alone is a
+-- clock_timestamp() default and two approvals opened in the same transaction can share it. It ORDERS
+-- ASCENDING — unlike the other list surfaces, which are newest-first — because these are questions and the
+-- oldest one is the one closest to expiring; $3/$4 are the cursor and are therefore compared with `>`
+-- rather than the `<` a DESC list uses. An ORDER BY that disagreed with its own cursor predicate is how a
+-- page-2 request comes back holding page 1 forever.
+--
+-- AN ELAPSED-BUT-UNSWEPT ROW IS DELIBERATELY INCLUDED. `t.state` is the authority on whether a question is
+-- open; expires_at is a deadline the reaper (and DecideToolApproval's own consume-time guard) enforces.
+-- Filtering on the clock here would make this read a SECOND opinion about which approvals exist, and the
+-- two would disagree for the seconds between a deadline passing and the sweep — the expires_at field is
+-- carried instead, so the surface can say the question is stale rather than pretend it never existed.
+-- name: PendingToolApprovalsForTenant
+SELECT a.id, t.id, t.run_id, r.session_id, coalesce(r.response_id, ''), t.name,
+       coalesce(t.arguments::text, '{}'), coalesce(a.request_hash, ''), t.state, a.expires_at,
+       a.decided_by, a.created_at
+FROM approvals a
+JOIN tool_calls t ON t.id = a.tool_call_id
+JOIN runs r ON r.id = t.run_id
+WHERE t.state = 'approval_pending' AND a.organization_id = $1 AND a.project_id = $2
+  AND ($3::timestamptz IS NULL OR a.created_at >= $3)
+  AND ($4::timestamptz IS NULL OR a.created_at <= $4)
+  AND ($5::timestamptz IS NULL OR (a.created_at, a.id) > ($5, $6))
+ORDER BY a.created_at, a.id
+LIMIT $7;
+
+-- ToolApprovalByID resolves ONE approval from the id the list surface handed out (E23 T9), so the HTTP
+-- decision route can key on /v1/approvals/{approval_id} while the throat it calls keys on the tool call.
+--
+-- NO ORDER BY AND NO LIMIT, and that is safe here for a structural reason rather than an assumption:
+-- approvals.id is the table's PRIMARY KEY (000013), and both joins are to primary keys too, so this
+-- statement returns at most one row. (Contrast PendingToolApprovalForSession, whose predicate is a
+-- (session, hash) pair that genuinely can match twice and therefore orders and limits.)
+--
+-- A row belonging to another tenant simply does not match, so a foreign id is indistinguishable from an
+-- unknown one and the surface above answers 404 without learning that it exists.
+-- name: ToolApprovalByID
+SELECT a.id, t.id, t.run_id, r.session_id, coalesce(r.response_id, ''), t.name,
+       coalesce(t.arguments::text, '{}'), coalesce(a.request_hash, ''), t.state, a.expires_at,
+       a.decided_by, a.created_at
+FROM approvals a
+JOIN tool_calls t ON t.id = a.tool_call_id
+JOIN runs r ON r.id = t.run_id
+WHERE a.id = $1 AND a.organization_id = $2 AND a.project_id = $3;
