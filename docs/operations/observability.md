@@ -38,7 +38,7 @@ isolation gain (both are internal-only, both unauthenticated).
 | `palai_db_clock_skew_seconds` | gauge | database clock minus control-plane clock | PalaiClockSkew |
 | `palai_runner_sessions` | gauge | runner sessions connected to the gateway (0 = no runner) | PalaiRunnerDown |
 | `palai_supervisor_restarts_total{loop}` | counter | background-loop restart counters | — |
-| `palai_disk_free_bytes` / `palai_disk_total_bytes` | gauge | `statfs(PALAI_METRICS_DISK_PATH)` | PalaiDiskLow |
+| `palai_disk_free_bytes` / `palai_disk_total_bytes` | gauge | `statfs(PALAI_METRICS_DISK_PATH)` | PalaiDiskLow, PalaiDiskFloor |
 | `palai_object_store_up` | gauge | a per-scrape HEAD probe of the object store | PalaiObjectStoreDown |
 | `palai_provider_calls_total` / `palai_provider_errors_total` | counter | provider model calls / failures, counted at the two broker call sites | PalaiProviderErrors |
 
@@ -99,8 +99,13 @@ connection then) is noticed at once rather than only at the next lease dial.
   syntax and a synthetic trigger. Real-load tuning needs an operator's own production telemetry.
 - `palai_disk_*` measures the control-plane container's view of `PALAI_METRICS_DISK_PATH`. A true
   multi-volume host wants one series per mount; single-node alpha has one data volume. A `statfs`
-  failure OMITS the disk series (so `PalaiDiskLow` cannot evaluate) — the `PalaiDiskMetricMissing`
+  failure OMITS the disk series (so neither disk rule can evaluate) — the `PalaiDiskMetricMissing`
   `absent()` rule surfaces that so it is never silently blind.
+- The disk floor is TWO independent rules and the more demanding one fires first: `PalaiDiskLow`
+  (`free/total < 10%`) governs a large disk, `PalaiDiskFloor` (`free < 5GiB`) a small one. A ratio
+  alone gave the smallest machines the weakest floor — 10% of a 20 GiB VM is 2 GiB, less than the
+  stack's images plus one backup. `palai doctor`'s `disk` check fires on the same two boundaries;
+  the 5 GiB derivation is in `docs/operations/install.md` (Resource minimums).
 - The object-store probe is a per-scrape HEAD (fine at single-node scrape intervals); cache it if scrape
   load ever matters.
 - `palai_runner_sessions` is 0 on an assignment-only tier that wires no runner gateway. Only point

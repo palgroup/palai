@@ -41,7 +41,7 @@ func moduleRoot(t *testing.T) string {
 // that ever exported it was `palai up`'s applySlackEnv — which ran ONLY when .env.local held Slack
 // credentials. So a plain `docker compose up -d`, or any `palai up` on a stack with no Slack app,
 // handed the container an EMPTY value, left dbSecretStore nil, unmounted the secret-ref routes, and
-// every handle resolved nowhere. deploy/compose/production.yml:47 writes the path literally and has
+// every handle resolved nowhere. deploy/compose/production.yml writes the path literally and has
 // never had this bug; the local file must match it.
 func TestMasterKeyPointerIsNotInterpolatedFromTheInvokingShell(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(moduleRoot(t), "deploy", "compose", "compose.yaml"))
@@ -63,7 +63,7 @@ func TestMasterKeyPointerIsNotInterpolatedFromTheInvokingShell(t *testing.T) {
 		t.Fatalf("PALAI_SECRET_MASTER_KEY_FILE is interpolated from the invoking shell (%q). "+
 			"A `docker compose up -d` — or a `palai up` on a stack with no Slack credentials — then passes an EMPTY "+
 			"value, dbSecretStore stays nil, and every secret handle resolves nowhere. Write the path literally, "+
-			"as production.yml:47 already does", line)
+			"as production.yml already does", line)
 	}
 	if !strings.Contains(line, containerMasterKeyPath) {
 		t.Fatalf("PALAI_SECRET_MASTER_KEY_FILE = %q, want the compose file-secret mount %s", line, containerMasterKeyPath)

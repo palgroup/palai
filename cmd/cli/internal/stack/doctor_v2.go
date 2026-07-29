@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"syscall"
 	"time"
@@ -24,6 +25,25 @@ import (
 const (
 	// diskFreeFractionFloor mirrors PalaiDiskLow (free/total < 0.10).
 	diskFreeFractionFloor = 0.10
+	// diskFreeAbsoluteFloorBytes mirrors PalaiDiskFloor (palai_disk_free_bytes < 5GiB).
+	//
+	// A ratio ALONE gives the smallest machines the weakest floor: on a 20 GiB cloud VM — a normal
+	// size for this single-node stack — 10% is 2 GiB and reads green. Derived from what the stack
+	// actually consumes, measured 2026-07-29 (docs/operations/install.md "Resource minimums"):
+	//
+	//   0.89 GiB  the six images on disk (postgres 451.7 + seaweedfs 229.6 + engine 137.5 +
+	//             caddy 47.0 + control-plane 24.7 + runner 14.7 MiB)
+	//   0.18 GiB  an upgrade's headroom: `palai upgrade` pulls control-plane+runner+engine N+1
+	//             BEFORE the N images are removed, so both generations are resident at once
+	//   1x data   a backup writes its whole archive to disk beside the Postgres + object-store
+	//             data it just dumped, and dockerCapture buffers the dump in memory too
+	//   the rest  Postgres WAL, per-run engine containers and their workspaces, and container
+	//             logs, which compose leaves unrotated by default
+	//
+	// 5 GiB is the round number above the two fixed costs (1.07 GiB) that still leaves a small
+	// install room to take a backup of itself. It is a FLOOR, not a sizing recommendation — the
+	// documented minimum disk is 20 GiB.
+	diskFreeAbsoluteFloorBytes = uint64(5) << 30
 	// queueOldestReadyMaxSec mirrors PalaiQueueBacklog (palai_queue_oldest_ready_seconds > 300).
 	queueOldestReadyMaxSec = 300.0
 	// webhookPendingMax mirrors PalaiWebhookDeliveryBacklog (pending > 50).
@@ -52,8 +72,15 @@ func diskCheck(freeBytes, totalBytes uint64) Check {
 	}
 	frac := float64(freeBytes) / float64(totalBytes)
 	detail := fmt.Sprintf("data dir %.1f%% free (%s of %s)", frac*100, humanBytes(freeBytes), humanBytes(totalBytes))
+	// Two floors, and the MORE demanding one wins: a big disk is governed by the ratio (10% of
+	// 460GiB is 46GiB), a small one by the absolute floor (10% of 20GiB is 2GiB, which the stack
+	// cannot live on). Report the ratio first when both are breached — it is the older alert and
+	// the bigger number.
 	if frac < diskFreeFractionFloor {
 		return fail(fmt.Sprintf("%s — under the %.0f%% floor (PalaiDiskLow)", detail, diskFreeFractionFloor*100))
+	}
+	if freeBytes < diskFreeAbsoluteFloorBytes {
+		return fail(fmt.Sprintf("%s — under the %s absolute floor (PalaiDiskFloor); the stack's own images are ~0.9GiB and a backup writes a full copy of its data beside it", detail, humanBytes(diskFreeAbsoluteFloorBytes)))
 	}
 	return ok(detail)
 }
@@ -142,15 +169,27 @@ func checkRunnerIdentity(ctx context.Context, cfg Config) Check {
 	if resp.StatusCode != http.StatusOK {
 		return fail(fmt.Sprintf("GET /healthz/runner = %d, want 200", resp.StatusCode))
 	}
-	var body struct {
-		Gateway  bool  `json:"gateway"`
-		Sessions int64 `json:"sessions"`
-		Identity *struct {
-			RunnerDNS string    `json:"runner_dns"`
-			NotAfter  time.Time `json:"not_after"`
-		} `json:"identity"`
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fail("read /healthz/runner: " + err.Error())
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	return runnerIdentityFromBody(raw, time.Now())
+}
+
+// runnerHealth is the /healthz/runner body both doctors decode. The production doctor reads the
+// same endpoint through `docker exec` (the edge proxies only /v1/*), so the shape lives here once.
+type runnerHealth struct {
+	Gateway  bool  `json:"gateway"`
+	Sessions int64 `json:"sessions"`
+	Identity *struct {
+		RunnerDNS string    `json:"runner_dns"`
+		NotAfter  time.Time `json:"not_after"`
+	} `json:"identity"`
+}
+
+func runnerIdentityFromBody(raw []byte, now time.Time) Check {
+	var body runnerHealth
+	if err := json.Unmarshal(raw, &body); err != nil {
 		return fail("decode /healthz/runner: " + err.Error())
 	}
 	if !body.Gateway {
@@ -159,7 +198,7 @@ func checkRunnerIdentity(ctx context.Context, cfg Config) Check {
 	if body.Identity == nil {
 		return runnerIdentityCheck("", time.Time{}, time.Time{}, body.Sessions)
 	}
-	return runnerIdentityCheck(body.Identity.RunnerDNS, body.Identity.NotAfter, time.Now(), body.Sessions)
+	return runnerIdentityCheck(body.Identity.RunnerDNS, body.Identity.NotAfter, now, body.Sessions)
 }
 
 // runnerIdentityCheck is the verdict, kept pure so its boundaries are unit-tested without a

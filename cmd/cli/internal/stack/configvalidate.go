@@ -48,6 +48,11 @@ var optionalEnv = map[string]bool{
 	// like its neighbours, and it is MORE relevant in production than locally: Socket Mode needs no
 	// public callback URL, so it is the one Slack transport that works behind the edge unchanged.
 	"PALAI_SLACK_SOCKET_TEAM_ID": true,
+	// The edge's own TLS pair. Unset, the overlay mounts ${PALAI_HOME}/ca/server.* exactly as it
+	// always did; set, the edge carries the operator's real-domain certificate while the runner
+	// gateway keeps the single-SAN identity it pins (deploy/compose/production.yml, install.md §7).
+	"PALAI_EDGE_CERT": true,
+	"PALAI_EDGE_KEY":  true,
 }
 
 // ConfigValidate runs the static posture checks and reports them like doctor. With jsonOut it
@@ -104,11 +109,11 @@ func validateConfig(envFile, overlay string) Report {
 	} else if ddErr != nil {
 		unread := fail("read dev-default literals from production-entrypoint.sh: " + ddErr.Error())
 		checks["master_key"], checks["bootstrap_key"] = unread, unread
-		checks["cert_pair"] = certPair(home)
+		checks["cert_pair"] = certPair(env)
 	} else {
 		checks["master_key"] = masterKey(home, dd.masterKeys)
 		checks["bootstrap_key"] = bootstrapKey(home, dd.bootstrapKeys)
-		checks["cert_pair"] = certPair(home)
+		checks["cert_pair"] = certPair(env)
 	}
 
 	checks["dispatch_workers"] = dispatchWorkers(env)
@@ -234,12 +239,16 @@ func bootstrapKey(home string, devDefaults []string) Check {
 	return ok("bootstrap api-key present and not a placeholder")
 }
 
-// certPair checks the TLS edge cert/key pair the overlay mounts is present and readable. It does
-// not validate the chain — a self-minted local pair is the honest ceiling (plan §6); the operator
-// swaps a real-domain cert in.
-func certPair(home string) Check {
-	for _, name := range []string{"server.crt", "server.key"} {
-		path := filepath.Join(home, "ca", name)
+// certPair checks the TLS edge cert/key pair the overlay mounts is present and readable. It reads
+// the SAME interpolation the overlay's edge mounts declare — PALAI_EDGE_CERT/KEY, defaulting to
+// ${PALAI_HOME}/ca/server.* — so an operator who pointed the edge at a real-domain certificate is
+// told about a missing or empty file here rather than by an edge container that will not start.
+// It does not validate the chain or the SANs: what the edge needs is the operator's domain, and
+// only the operator knows it.
+func certPair(env map[string]string) Check {
+	home := env["PALAI_HOME"]
+	certPath, keyPath := edgeCertPaths(env)
+	for _, path := range []string{certPath, keyPath} {
 		info, err := os.Stat(path)
 		if err != nil {
 			return fail("edge cert pair: " + err.Error())
@@ -248,7 +257,25 @@ func certPair(home string) Check {
 			return fail("edge cert file is empty: " + path)
 		}
 	}
-	return ok("edge TLS cert/key pair present and readable")
+	if certPath == filepath.Join(home, "ca", "server.crt") {
+		return ok("edge TLS cert/key pair present and readable (" + certPath + ", the `palai init` local-CA default)")
+	}
+	return ok("edge TLS cert/key pair present and readable (" + certPath + ", operator-supplied via PALAI_EDGE_CERT)")
+}
+
+// edgeCertPaths resolves the edge pair exactly as the overlay's `${PALAI_EDGE_CERT:-…}` mounts do.
+// The two must not fork: a validator checking a different file than compose mounts is worse than
+// no validator.
+func edgeCertPaths(env map[string]string) (cert, key string) {
+	home := env["PALAI_HOME"]
+	cert, key = env["PALAI_EDGE_CERT"], env["PALAI_EDGE_KEY"]
+	if cert == "" {
+		cert = filepath.Join(home, "ca", "server.crt")
+	}
+	if key == "" {
+		key = filepath.Join(home, "ca", "server.key")
+	}
+	return cert, key
 }
 
 // dispatchWorkers checks the exec-path is on (PALAI_DISPATCH_WORKERS >= 1): a production stack
