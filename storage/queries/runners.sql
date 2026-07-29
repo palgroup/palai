@@ -22,10 +22,14 @@ SELECT id, organization_id, project_id, posture, os, arch, strict_enrollment
 -- enrolling party: that is the whole property this table exists to hold. state starts 'active'
 -- because a non-strict pool admits on presentation of a valid credential; T6's strict mode is what
 -- makes 'pending' reachable.
+--
+-- $14 is enrolled_via_key_id (E24 T3): WHICH credential admitted this machine. NULL means the file
+-- bootstrap token, which is not a row and cannot be revoked individually — the honest representation
+-- of the pre-pool-key path rather than a sentinel id pointing at nothing.
 INSERT INTO runners (
     id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
-    state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, clock_timestamp(), clock_timestamp())
+    state, os, arch, posture, capacity, cert_not_after, enrolled_via_key_id, enrolled_at, last_seen_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), clock_timestamp(), clock_timestamp())
 RETURNING created_at, enrolled_at, last_seen_at;
 
 -- name: AppendRunnerEnrollment
@@ -98,3 +102,85 @@ SELECT id, organization_id, project_id, name, posture, os, arch, strict_enrollme
    AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
  ORDER BY created_at DESC, id DESC
  LIMIT $7;
+
+-- ---------------------------------------------------------------------------------------------------
+-- POOL ENROLMENT KEYS (E24 T3). The credential a machine presents to enrol into ONE pool.
+--
+-- WHAT IS NEW HERE IS NOT REUSABILITY. The tree's only enrolment credential was already reusable —
+-- FileEnrollmentTokens' own heading says so at length — and what it lacked was scope, an expiry, a
+-- revocation and a RECORD. These statements are those four.
+--
+-- The VALUE never appears in any statement below: the mint takes a digest, the redemption takes a
+-- digest, and the listing returns a PREFIX. There is no parameter here a caller could pass a
+-- credential to except as the sha256 it is compared by.
+-- ---------------------------------------------------------------------------------------------------
+
+-- name: InsertRunnerPoolKey
+-- Mint a key for one pool inside the caller's verified tenant. The pool is re-asserted against the
+-- tenant in the SELECT rather than trusted from the caller: a key minted against another tenant's pool
+-- would be a credential that admits a machine into a fleet its owner never opened. No row means the
+-- pool is not this tenant's (or does not exist), which the caller renders as a 404.
+INSERT INTO runner_pool_keys (id, organization_id, project_id, pool_id, key_sha256, key_prefix, expires_at)
+SELECT $1, p.organization_id, p.project_id, p.id, $5, $6, $7
+  FROM runner_pools p
+ WHERE p.id = $4 AND p.organization_id = $2 AND ($3 = '' OR p.project_id = $3)
+RETURNING id, pool_id, key_prefix, created_at, expires_at;
+
+-- name: ResolveRunnerPoolKey
+-- Resolve a PRESENTED key by its digest. Run SYSTEM-SCOPED and keyed by the digest, for the reason
+-- VerifyAPIKey is: this read is what establishes the tenant, so there is no tenant to publish yet, and
+-- a caller can only reach the row whose secret they already hold.
+--
+-- NO ORDER BY AND NO LIMIT, deliberately: key_sha256 is UNIQUE across the whole installation (000045
+-- R2 chose global-UNIQUE over per-tenant precisely so this lookup cannot be ambiguous), so this
+-- returns at most one row by construction. The tree has decided a security outcome on an unordered
+-- LIMIT 1 twice; there is no ordering here to get wrong.
+--
+-- The row is returned WITH its revoked/expired state rather than filtered by it, because a refused
+-- presentation has to be journalled with the reason it was refused — a statement that returned no row
+-- for a revoked key would leave the caller unable to tell "revoked" from "never existed".
+-- The stored digest comes back with the row even though it WAS the lookup key: the caller compares it
+-- in constant time (api/tool_callbacks.go:98 takes the same position after its own keyed read), so a
+-- credential comparison in this tree never depends on a per-site argument about what leaks.
+SELECT k.id, k.organization_id, k.project_id, k.pool_id, k.key_sha256, k.revoked_at, k.expires_at,
+       p.posture, p.strict_enrollment
+  FROM runner_pool_keys k
+  JOIN runner_pools p ON p.id = k.pool_id
+ WHERE k.key_sha256 = $1;
+
+-- name: TouchRunnerPoolKey
+-- Record that a key was successfully redeemed. It is an OBSERVATION, not a rate limit: a pool key is a
+-- FLEET credential by design (many machines, one key), so bounding redemptions per interval — the rule
+-- FileEnrollmentTokens applies to its single-runner token — would make a ten-Mac pool unenrollable.
+-- What it buys is that the fact survives a restart, which the in-memory map behind minInterval does not
+-- (§3.6 D6).
+UPDATE runner_pool_keys SET last_used_at = $2 WHERE id = $1;
+
+-- name: ListRunnerPoolKeys
+-- The operator's view: metadata only, never the digest and never the value. The PREFIX is here because
+-- telling two keys apart in a list is the whole job of a listing, and a prefix of a credential is not
+-- one — the same bargain `palai apikey list` already makes.
+SELECT k.id, k.pool_id, k.key_prefix, k.created_at, k.expires_at, k.revoked_at, k.last_used_at
+  FROM runner_pool_keys k
+ WHERE k.organization_id = $1
+   AND ($2 = '' OR k.project_id = $2)
+   AND ($3 = '' OR k.pool_id = $3)
+ ORDER BY k.created_at DESC, k.id DESC;
+
+-- name: RevokeRunnerPoolKey
+-- Close the door. Idempotent (the first revoked_at is kept, the api_keys precedent) and tenant-scoped,
+-- so another tenant's key id is simply not found. It touches NOTHING about the machines this key
+-- already admitted: that is the property the whole task rests on, and it is a property of what this
+-- statement does not say.
+UPDATE runner_pool_keys
+   SET revoked_at = coalesce(revoked_at, $4)
+ WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
+RETURNING id, pool_id, key_prefix, created_at, expires_at, revoked_at, last_used_at;
+
+-- name: ListRunnersEnrolledViaKey
+-- The machines a revocation did NOT stop. An operator who revokes a key has to be shown them, or
+-- "revoked" reads as "removed" and they believe one call decommissioned a fleet.
+SELECT id, label, runner_dns, state, pool_id, enrolled_at, last_seen_at
+  FROM runners
+ WHERE enrolled_via_key_id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
+ ORDER BY enrolled_at DESC, id DESC;

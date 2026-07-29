@@ -64,9 +64,14 @@ func main() {
 		defer func() { _ = closer.Close() }()
 	}
 
-	// Renewal rolls the client certificate forward over the runner's existing identity as it
-	// nears expiry; the one-use bootstrap token is spent once (above) and never presented
-	// again. A runner with no renew URL configured serves a single certificate lifetime.
+	// Renewal rolls the client certificate forward over the runner's existing identity as it nears
+	// expiry, and it never presents the bootstrap credential — that is the property that makes revoking
+	// an enrolment key safe for machines already running (E24 T3).
+	//
+	// THE BOOTSTRAP CREDENTIAL IS NOT ONE-USE, AND THIS COMMENT USED TO SAY IT WAS (§3.6 D4, corrected
+	// in E24 T3) — twenty lines above the re-enrolment fallback in this same function, which exists
+	// precisely because it can be presented again. A runner with no renew URL configured serves a single
+	// certificate lifetime and then recovers through that fallback.
 	var renew func(context.Context, runner.Identity) (runner.Identity, error)
 	if renewURL != "" {
 		renewConfig := runner.RenewConfig{RenewURL: renewURL, ControllerCAs: controllerCAs, ControllerDNS: controllerDNS, Now: time.Now}
@@ -167,6 +172,14 @@ func loadConfig() (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, rene
 		// single-runner install bit-unchanged: the request body is byte-identical without it. It is
 		// read with os.Getenv rather than mustEnv for exactly that reason.
 		Posture: os.Getenv("PALAI_RUNNER_POSTURE"),
+		// PALAI_RUNNER_POOL is the pool this machine was CONFIGURED to join (E24 T3). It authorises
+		// nothing — the pool comes from the enrolment KEY — and exists so that pasting the wrong pool's
+		// key onto a machine is refused at the door instead of quietly joining another fleet, which
+		// posture comparison above cannot catch when two pools share a posture.
+		//
+		// Unset declares nothing and inherits the key's pool, which keeps the single-runner install
+		// bit-unchanged for the same reason PALAI_RUNNER_POSTURE does: the body is byte-identical without it.
+		PoolID: os.Getenv("PALAI_RUNNER_POOL"),
 	}
 	return bootstrap, tokenFile, mustEnv("PALAI_SESSION_URL"), os.Getenv("PALAI_RENEW_URL"), controllerDNS, pool
 }

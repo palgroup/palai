@@ -44,7 +44,9 @@ func dispatch(args []string) error {
 		return doctor(args[1:])
 	case "support-bundle":
 		return supportBundle(args[1:])
-	case "org", "project", "apikey", "secret":
+	// poolkey joins the admin family for the reason apikey is in it: it is a thin client over one
+	// existing endpoint each, and a runner-pool enrolment key is tenancy administration.
+	case "org", "project", "apikey", "secret", "poolkey":
 		return admin.Run(args[0], args[1:], os.Stdout, os.Stdin)
 	case "backup":
 		return backup(args[1:])
@@ -344,5 +346,7 @@ admin (thin client over the E13 APIs; base URL + key from flags, env, or .palai)
   palai project create --display-name <n> | list | get <prj_id> | set-policy <prj_id> --allowed-models <a,b>
   palai apikey create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>
   palai secret create --name <n> | list | get <name> | rotate <name>   (secret VALUE on stdin)
+  palai poolkey create --pool <pool_id> [--expires-at <rfc3339>] | list [--pool <pool_id>] | revoke <key_id>
+                                           runner-pool enrolment keys; create PRINTS the value once
 `)
 }

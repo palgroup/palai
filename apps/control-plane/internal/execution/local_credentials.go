@@ -3,6 +3,7 @@ package execution
 import (
 	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -19,7 +20,7 @@ import (
 // short-lived — the runner enrolls and immediately opens its lease session — but comfortably
 // outlives one enroll→connect window and small clock skew on a local host. A long-lived
 // runner rolls its certificate forward before expiry over the cert-authenticated renew
-// endpoint (never the one-use bootstrap token).
+// endpoint (never the bootstrap credential, which is not on that path at all).
 const runnerCertTTL = 5 * time.Minute
 
 // FileCertIssuer implements CertIssuer with the local control-plane CA `palai init`
@@ -118,8 +119,16 @@ func (i *FileCertIssuer) SignRunnerCertificate(publicKeyDER []byte, runnerDNS st
 // identity forward over /v1/runner/renew, which never touches the token, so the interval elapses
 // while that runner is alive and a token holder could mint a second, concurrent identity. It
 // bounds replay VOLUME (no fleet from one leaked token) and it makes a runner restart wait out one
-// certificate lifetime rather than re-minting at will. Bounding concurrent identities per token
-// needs a runner registry the single-runner SH-0 topology does not have; that is the upgrade path.
+// certificate lifetime rather than re-minting at will.
+//
+// AND IT LIVES IN MEMORY, which E24 T3 measured rather than assumed (§3.6 D6): lastIssued is process
+// state, so a control-plane restart resets the counter, and `restart: always` plus a host reboot does
+// that on a schedule. The registry this comment used to name as the missing upgrade path now EXISTS
+// (E24 T1, internal/fleet) and the durable counterpart of this timestamp is runner_pool_keys.last_used_at
+// — but it is deliberately NOT a rate limit there, because a pool key is a fleet credential presented by
+// many machines and one-redemption-per-lifetime would make a ten-machine pool unenrollable. So the
+// honest statement is: nothing anywhere caps the number of concurrent identities one credential can
+// mint. See storage/queries/runners.sql (TouchRunnerPoolKey) and internal/fleet/keys.go.
 type FileEnrollmentTokens struct {
 	path        string
 	minInterval time.Duration
@@ -156,7 +165,13 @@ func (t *FileEnrollmentTokens) Consume(token string) error {
 	if err != nil {
 		return fmt.Errorf("read enrollment token: %w", err)
 	}
-	if strings.TrimSpace(string(raw)) != token {
+	// CONSTANT TIME, because this is a bearer credential and the comparison used to be `!=` (§3.6 D6).
+	// The file token is presented by an unauthenticated caller over the network — that is the whole of
+	// the enrolment endpoint — so the comparison is the one the rest of this tree already makes for a
+	// presented secret (api/tool_callbacks.go:98, api/pagination.go:115). ConstantTimeCompare returns 0
+	// for unequal lengths, which is the standard idiom and is what makes the empty-token guard above the
+	// only length-dependent branch on this path.
+	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(string(raw))), []byte(token)) != 1 {
 		return errors.New("unknown enrollment token")
 	}
 	now := t.now()

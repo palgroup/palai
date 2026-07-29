@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -69,9 +71,45 @@ type RunnerPoolItem struct {
 	CreatedAt        time.Time
 }
 
-// RunnerRegistryAPI is the read seam; internal/fleet.Store implements it through a thin adapter.
+// RunnerPoolKeyItem is one enrolment key's operator-facing projection (E24 T3). Value is set ONLY on
+// the create response — the one time the value is shown — and is `omitempty` so a listing physically
+// cannot carry it. Prefix is the value's first 8 characters: enough to tell two keys apart in a list,
+// which is a listing's whole job, and not a credential.
+type RunnerPoolKeyItem struct {
+	ID         string
+	PoolID     string
+	Prefix     string
+	Value      string
+	CreatedAt  time.Time
+	ExpiresAt  *time.Time
+	RevokedAt  *time.Time
+	LastUsedAt *time.Time
+	// EnrolledRunners is populated on a REVOKE and names the machines the key already admitted — none of
+	// which is stopped. It is on the response because an operator who is not shown them reads "revoked"
+	// as "removed" and believes one call decommissioned a fleet.
+	EnrolledRunners []RunnerPoolKeyEnrollment
+}
+
+// RunnerPoolKeyEnrollment is one machine a revocation did NOT stop.
+type RunnerPoolKeyEnrollment struct {
+	ID         string
+	Label      string
+	DNS        string
+	State      string
+	PoolID     string
+	EnrolledAt time.Time
+}
+
+// RunnerRegistryAPI is the registry seam; internal/fleet implements it through a thin adapter.
 // Tiers that wire no registry pass nil and the routes stay unmounted — the same posture every other
 // optional surface in this router takes.
+//
+// IT GAINED A WRITE HALF IN E24 T3, and the comment it replaces said there would never be one. That
+// was true of what T1/T2 shipped — reading a fleet cannot move a fleet — and it stops being true the
+// moment a fleet has a CREDENTIAL, because minting and revoking one is an operator action with no
+// other home: the runner plane authenticates machines, not people. The three key routes are gated on
+// the `provision` capability, the same as every other org-admin surface, and there is still no route
+// that moves a machine (cordon/drain/revoke is T5's).
 type RunnerRegistryAPI interface {
 	ListRunners(ctx context.Context, org, project string, w RunnerListWindow) ([]RunnerItem, error)
 	// GetRunner reports found=false for an id that is not in the caller's tenant, so the handler
@@ -81,6 +119,14 @@ type RunnerRegistryAPI interface {
 	// rather than an interface of its own because there is one implementation and one mount, and a
 	// second seam would be an abstraction bought before anything asked for it.
 	ListRunnerPools(ctx context.Context, org, project string, w RunnerListWindow) ([]RunnerPoolItem, error)
+	// MintRunnerPoolKey mints an enrolment key for one of this tenant's pools and returns its value
+	// EXACTLY ONCE. found=false is a pool that is not the caller's (or does not exist), rendered 404.
+	MintRunnerPoolKey(ctx context.Context, org, project, poolID string, expiresAt *time.Time) (RunnerPoolKeyItem, bool, error)
+	// ListRunnerPoolKeys lists key metadata — never a value, never a digest.
+	ListRunnerPoolKeys(ctx context.Context, org, project, poolID string) ([]RunnerPoolKeyItem, error)
+	// RevokeRunnerPoolKey closes a key and reports the machines it already admitted, none of which is
+	// stopped. Idempotent; found=false for an unknown or foreign id.
+	RevokeRunnerPoolKey(ctx context.Context, org, project, keyID string) (RunnerPoolKeyItem, bool, error)
 }
 
 type runnerHandler struct{ runners RunnerRegistryAPI }
@@ -169,6 +215,126 @@ func (h *runnerHandler) getRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, runnerView(item))
+}
+
+// THE KEY SURFACE (E24 T3). Three routes, all gated on `provision`, and the value of a key exists on
+// exactly one of them: the create response. There is no route that reads a key back — nothing stores
+// the value to read.
+
+// mintPoolKey mints an enrolment key for a pool (POST /v1/runner-pools/{pool_id}/keys). The value is in
+// the response body and nowhere else, so a caller that loses it mints another and revokes this one.
+func (h *runnerHandler) mintPoolKey(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorizeAdmin(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		ExpiresAt *time.Time `json:"expires_at"`
+	}
+	if r.Body != nil {
+		// A body is optional (a key with no expiry is the default), so a decode failure on an empty body
+		// is not an error. A malformed one is.
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			middleware.WriteProblem(w, r, http.StatusBadRequest, "invalid_request", "the request body could not be read")
+			return
+		}
+	}
+	item, found, err := h.runners.MintRunnerPoolKey(r.Context(), scope.Organization, scope.Project, r.PathValue("pool_id"), body.ExpiresAt)
+	switch {
+	case err != nil:
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	case !found:
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such runner pool in this project")
+		return
+	}
+	writeJSON(w, http.StatusCreated, poolKeyView(item, true))
+}
+
+// listPoolKeys lists a pool's keys (GET /v1/runner-pools/{pool_id}/keys) as metadata.
+func (h *runnerHandler) listPoolKeys(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorizeAdmin(w, r)
+	if !ok {
+		return
+	}
+	items, err := h.runners.ListRunnerPoolKeys(r.Context(), scope.Organization, scope.Project, r.PathValue("pool_id"))
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	views := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		views = append(views, poolKeyView(item, false))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": views})
+}
+
+// revokePoolKey closes a key (POST /v1/runner-pool-keys/{key_id}/revoke) and answers with the machines
+// it already admitted. The key id is in the PATH and the value is nowhere: a revoke that took the value
+// would put a credential in an access log.
+func (h *runnerHandler) revokePoolKey(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorizeAdmin(w, r)
+	if !ok {
+		return
+	}
+	item, found, err := h.runners.RevokeRunnerPoolKey(r.Context(), scope.Organization, scope.Project, r.PathValue("key_id"))
+	switch {
+	case err != nil:
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	case !found:
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such runner pool key in this project")
+		return
+	}
+	writeJSON(w, http.StatusOK, poolKeyView(item, false))
+}
+
+// authorizeAdmin resolves the verified scope and enforces the `provision` capability — the same gate
+// every other org-admin surface uses (api-keys, secret-refs, model-routes, limits).
+func (h *runnerHandler) authorizeAdmin(w http.ResponseWriter, r *http.Request) (middleware.Scope, bool) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return middleware.Scope{}, false
+	}
+	if !scope.HasScope(provisionScope) {
+		middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the provision capability")
+		return middleware.Scope{}, false
+	}
+	return scope, true
+}
+
+// poolKeyView renders a key. withValue is true on exactly one call site — the create response — and the
+// field is omitted rather than emptied everywhere else, so a listing has no key to accidentally carry.
+func poolKeyView(item RunnerPoolKeyItem, withValue bool) map[string]any {
+	view := map[string]any{
+		"id": item.ID, "object": "runner_pool_key", "pool_id": item.PoolID,
+		"key_prefix": item.Prefix, "created_at": item.CreatedAt,
+	}
+	if withValue && item.Value != "" {
+		// THE ONE TIME. The store does not keep the value, so this response is the only thing that has it.
+		view["key"] = item.Value
+	}
+	for key, at := range map[string]*time.Time{
+		"expires_at": item.ExpiresAt, "revoked_at": item.RevokedAt, "last_used_at": item.LastUsedAt,
+	} {
+		if at != nil {
+			view[key] = *at
+		}
+	}
+	if item.EnrolledRunners != nil {
+		machines := make([]map[string]any, 0, len(item.EnrolledRunners))
+		for _, m := range item.EnrolledRunners {
+			machines = append(machines, map[string]any{
+				"id": m.ID, "label": m.Label, "runner_dns": m.DNS, "state": m.State,
+				"pool_id": m.PoolID, "enrolled_at": m.EnrolledAt,
+			})
+		}
+		// Named for what it MEANS, not for what it lists: these machines keep running, and the field name
+		// is where an operator learns that without reading a runbook.
+		view["enrolled_runners_still_running"] = machines
+	}
+	return view
 }
 
 // runnerView is the ONE projection both routes render, so a field cannot appear on the list and go

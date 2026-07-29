@@ -325,10 +325,17 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		rh := &runnerHandler{runners: cfg.runners}
 		mux.HandleFunc("GET /v1/runners", rh.listRunners)
 		mux.HandleFunc("GET /v1/runners/{runner_id}", rh.getRunner)
-		// The pools those machines are in (E24 T2). Read-only for the same reason the runner routes
-		// are: creating a pool and minting its enrolment key are T3/T5/T6's, and a surface that can
-		// only be read cannot be mis-used to move a fleet.
+		// The pools those machines are in (E24 T2). Read-only: creating and deleting a pool is T5/T6's.
 		mux.HandleFunc("GET /v1/runner-pools", rh.listRunnerPools)
+		// The pool's ENROLMENT KEYS (E24 T3) — the one write half of this surface, and the reason it
+		// exists is that a fleet credential has no other home: the runner plane authenticates machines,
+		// not people, so minting and revoking a key is an operator action over the public API or it is
+		// raw SQL. Gated on the `provision` capability like every other org-admin surface. The value is
+		// returned by the create route ONCE and by nothing else; a revoke names the key by id, so no
+		// route anywhere takes a key value as input.
+		mux.HandleFunc("POST /v1/runner-pools/{pool_id}/keys", rh.mintPoolKey)
+		mux.HandleFunc("GET /v1/runner-pools/{pool_id}/keys", rh.listPoolKeys)
+		mux.HandleFunc("POST /v1/runner-pool-keys/{key_id}/revoke", rh.revokePoolKey)
 	}
 
 	var root http.Handler = mux

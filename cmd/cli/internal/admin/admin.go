@@ -1,13 +1,13 @@
-// Package admin is the `palai org|project|apikey|secret` admin CLI: a thin authenticated HTTP client over
-// the E13 provisioning + secret-ref APIs (router.go:152-187). It adds NO server surface — every subcommand
-// maps to one existing endpoint. Until the E17 console it is the only human interface for tenancy admin
-// (spec §47.6).
+// Package admin is the `palai org|project|apikey|secret|poolkey` admin CLI: a thin authenticated HTTP
+// client over the E13 provisioning + secret-ref APIs (router.go:152-187) and the E24 runner-pool key
+// surface. It adds NO server surface — every subcommand maps to one existing endpoint. Until the E17
+// console it is the only human interface for tenancy admin (spec §47.6).
 //
 // CREDENTIAL HYGIENE (the load-bearing rule): the admin API key and any secret VALUE never ride argv. The
 // key comes from --api-key-file (a path, not the value), $PALAI_API_KEY, or the initialised .palai stack;
-// a secret value comes only from stdin. The one place a secret is written to stdout is an `apikey create`
-// response's one-time plaintext key — the API's create-only field — which the CLI prints once and never
-// retains.
+// a secret value comes only from stdin. TWO places write a secret to stdout, both of them a create-only
+// field the API returns exactly once and the CLI prints without retaining: an `apikey create` response's
+// plaintext key, and a `poolkey create` response's runner-pool enrolment key.
 package admin
 
 import (
@@ -82,6 +82,7 @@ type flags struct {
 	defaultTools  string
 	approvers     string
 	name          string
+	pool          string
 }
 
 // multiFlag collects a repeatable string flag (--scope run --scope provision).
@@ -112,6 +113,11 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 		fs.StringVar(&f.expiresAt, "expires-at", "", "RFC3339 expiry, optional (create)")
 	case "secret":
 		fs.StringVar(&f.name, "name", "", "secret name (create) — the VALUE is read from stdin")
+	case "poolkey":
+		// There is deliberately no flag carrying a key value: a pool key only ever comes OUT of `create`,
+		// and everything else names it by id. Nothing here can put a credential in argv.
+		fs.StringVar(&f.pool, "pool", "", "runner pool id (required for create; narrows list)")
+		fs.StringVar(&f.expiresAt, "expires-at", "", "RFC3339 expiry, optional (create) — omitted means the key never expires")
 	}
 }
 
@@ -156,6 +162,9 @@ var positionalArity = map[string]int{
 	"project/create": 0, "project/list": 0, "project/get": 1, "project/set-policy": 1,
 	"apikey/create": 0, "apikey/list": 0, "apikey/get": 1, "apikey/revoke": 1,
 	"secret/create": 0, "secret/list": 0, "secret/get": 1, "secret/rotate": 1,
+	// A pool key is minted with flags and revoked by ID. `create` takes no positional for the same reason
+	// `secret create` takes none: the only string that could go there is a credential.
+	"poolkey/create": 0, "poolkey/list": 0, "poolkey/revoke": 1,
 }
 
 // execute maps (resource, subcommand) to the one E13 endpoint it fronts and dispatches it. It first enforces
@@ -248,6 +257,30 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 				return err
 			}
 			return c.do(http.MethodPost, "/v1/secret-refs/"+esc(pos[0])+"/rotate", body(map[string]any{"value": value}))
+		}
+	// The runner-pool enrolment key (E24 T3). `create` prints the value ONCE — it is the same
+	// create-only field `apikey create` returns, and the same rule applies: the CLI prints it and
+	// retains nothing.
+	case "poolkey":
+		switch sub {
+		case "create":
+			if f.pool == "" {
+				return errors.New("poolkey create requires --pool <pool_id> (a key admits into exactly one pool)")
+			}
+			b := map[string]any{}
+			if f.expiresAt != "" {
+				b["expires_at"] = f.expiresAt
+			}
+			return c.do(http.MethodPost, "/v1/runner-pools/"+esc(f.pool)+"/keys", body(b))
+		case "list":
+			if f.pool == "" {
+				return errors.New("poolkey list requires --pool <pool_id>")
+			}
+			return c.do(http.MethodGet, "/v1/runner-pools/"+esc(f.pool)+"/keys", nil)
+		case "revoke":
+			// By id, never by value: a revoke that took the value would put a credential in argv and in
+			// every access log between here and the control plane.
+			return c.do(http.MethodPost, "/v1/runner-pool-keys/"+esc(pos[0])+"/revoke", nil)
 		}
 	}
 	return usageErr(resource)
@@ -478,6 +511,7 @@ func usageErr(resource string) error {
 		"project": "create --display-name <n> | list | get <prj_id> | set-policy <prj_id> [--allowed-models <a,b>] [--approvers <p,q>]",
 		"apikey":  "create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>",
 		"secret":  "create --name <n> (value on stdin) | list | get <name> | rotate <name> (value on stdin)",
+		"poolkey": "create --pool <pool_id> [--expires-at <rfc3339>] (value printed once) | list --pool <pool_id> | revoke <key_id>",
 	}
 	return fmt.Errorf("usage: palai %s <%s>", resource, subs[resource])
 }

@@ -102,6 +102,14 @@ type Registration struct {
 	// nothing enforces it yet — the gateway's per-pool channels are unbuffered and count nothing
 	// (§3.6 D13). T4 is where a placement decision may read it.
 	Capacity int
+	// KeyID is the pool enrolment key that admitted this machine (E24 T3), written to
+	// runners.enrolled_via_key_id and to the journal entry. EMPTY means the file bootstrap token, which
+	// is not a row and therefore cannot be revoked on its own — that is a fact about the file token, not
+	// a missing value, so it is stored as NULL rather than as a sentinel id pointing at nothing.
+	//
+	// It is the fact §3.6 D5 names as the one missing piece of targeted revocation: revoking a key was
+	// all-or-nothing because nothing recorded which key issued which certificate.
+	KeyID string
 }
 
 // ListWindow is the keyset page window the read surface passes down, the shape api.ListQuery

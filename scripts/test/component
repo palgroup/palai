@@ -177,6 +177,19 @@ run_postgres() {
   # R6 seed plus identity.provision's actually let a runner that names no pool enrol at all; without this
   # word an upgraded install whose runner can no longer enrol would report the same green as a passing tier.
   #
+  # TestPoolKey* is E24 T3 — the POOL ENROLMENT KEY — and it needs its own alternative for the reason the
+  # paragraph above gives one more time: none of the words on this line is a substring of
+  # "TestPoolKeyRevocationLeavesAnEnrolledRunnerRenewing", so without this word the six tests that hold
+  # this task's entire security claim would report the same green as tests that pass. What they run over
+  # the REAL mTLS wire against a REAL Postgres: a key minted for the Mac pool admits into the Mac pool and
+  # REFUSES a machine that declares the Linux pool (journalling the refusal with both pool ids), a revoked
+  # key mints nothing while the machine that enrolled with it renews TWICE afterwards and its in-flight
+  # lease still relays frames (the regression fence — revocation must never be a back door into SAN-011's
+  # hard stop), the same key value on /v1 is a 401 that resolved no scope at all while a real API key on
+  # the SAME route is a 200, and the value appears in no row, no journal detail and no log line — swept by
+  # DECODING every JSONB document rather than grepping bytes, because a byte scan over an escaped or
+  # encoded value can never fail and this repository shipped exactly that mistake once.
+  #
   # TestHTTPToolApproval* is E23 T9 — the SLACK-LESS decision surface — and it needs its OWN alternative
   # for the third time this list has had to say so: `TestToolApproval` does not match
   # `TestHTTPToolApprovalListShows…` and neither does `TestSlackToolApproval`. Without this word, the eight
@@ -191,7 +204,7 @@ run_postgres() {
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool' \
+        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool|TestPoolKey' \
         ./apps/control-plane/internal/execution
     status=$?
   fi
