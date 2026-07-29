@@ -48,7 +48,11 @@ type ApprovalIntent struct {
 // response_url and trigger_id. `response_url` is decoded by NOTHING here on purpose; see below.
 type blockActions struct {
 	Type string `json:"type"`
-	User struct {
+	// TriggerID is the three-second window a modal has to be opened in (§3.5 P10). It is read by
+	// MapShowArgumentsClick and by nothing on the DECISION path — a decision is bound to the request hash
+	// and needs no trigger, so a payload that lost one can still approve.
+	TriggerID string `json:"trigger_id"`
+	User      struct {
 		ID     string `json:"id"`
 		TeamID string `json:"team_id"`
 	} `json:"user"`

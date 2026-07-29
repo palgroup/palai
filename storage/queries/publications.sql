@@ -214,3 +214,27 @@ JOIN runs r ON r.id = t.run_id
 WHERE t.state = 'approval_pending'
   AND a.expires_at IS NOT NULL AND a.expires_at < clock_timestamp()
 ORDER BY a.created_at, a.id;
+
+-- PendingToolApprovalForSession is the MODAL'S ONLY READ (E23 T4). A Show-arguments click carries the
+-- one-shot request hash and nothing else, so the screen it opens is resolved from the hash plus the
+-- session the click's thread correlated to — the same two bindings the decision path checks, one step
+-- shallower.
+--
+-- ORDER BY + LIMIT 1 on created_at follows PendingApprovalForSession's inherited posture: a session's
+-- OLDEST open approval is the decidable one, and the same one is the one shown. A second row can only
+-- exist if a session has two open approvals whose arguments hash identically — literally the same call
+-- twice — so showing the older is not an ambiguity, it is the same document.
+--
+-- It reads and only reads. The modal is opened INSIDE the interactivity ack budget, where a write would
+-- be a write racing a trigger_id that dies in three seconds.
+-- name: PendingToolApprovalForSession
+SELECT a.id, t.id, t.run_id, r.session_id, coalesce(r.response_id, ''), t.name,
+       coalesce(t.arguments::text, '{}'), coalesce(a.request_hash, ''), t.state, a.expires_at,
+       a.decided_by
+FROM approvals a
+JOIN tool_calls t ON t.id = a.tool_call_id
+JOIN runs r ON r.id = t.run_id
+WHERE r.session_id = $1 AND a.request_hash = $2 AND t.state = 'approval_pending'
+  AND a.organization_id = $3 AND a.project_id = $4
+ORDER BY a.created_at
+LIMIT 1;

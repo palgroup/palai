@@ -414,3 +414,33 @@ func wakeParkedRunTx(ctx context.Context, tx pgx.Tx, tenant Tenant, runID string
 	}
 	return nil
 }
+
+// PendingToolApprovalForSession reads the still-open gated call a session has, matched by the one-shot
+// request hash a button carried. It is the read E23 T4's modal is built from, and it is a READ: the modal
+// is opened inside Slack's three-second interactivity budget against a trigger_id that dies in the same
+// three seconds, so anything on that path which took a lock or wrote a row would be trading a working
+// button for a slower one.
+//
+// found is false for an unknown session, a hash that matches nothing open, or another tenant's row — so a
+// hash observed in one workspace shows a human in another workspace nothing at all.
+func (s *Store) PendingToolApprovalForSession(ctx context.Context, tenant Tenant, sessionID, requestHash string) (ToolApproval, bool, error) {
+	if sessionID == "" || requestHash == "" {
+		return ToolApproval{}, false, nil
+	}
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	var (
+		a    ToolApproval
+		args string
+	)
+	switch err := s.pool.QueryRow(ctx, storage.Query("PendingToolApprovalForSession"),
+		sessionID, requestHash, tenant.Organization, tenant.Project).
+		Scan(&a.ApprovalID, &a.ToolCallID, &a.RunID, &a.SessionID, &a.ResponseID, &a.ToolName, &args,
+			&a.RequestHash, &a.State, &a.ExpiresAt, &a.DecidedBy); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ToolApproval{}, false, nil
+	case err != nil:
+		return ToolApproval{}, false, fmt.Errorf("read the session's pending tool approval: %w", err)
+	}
+	a.Arguments = []byte(args)
+	return a, true, nil
+}

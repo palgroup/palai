@@ -41,6 +41,15 @@ type stubSlackDecider struct {
 	outcome   SlackDecisionOutcome
 	decideErr error
 	hang      bool
+
+	// E23 T4's modal branch. openDeadlines records the DEADLINE the route handed the call, which is how the
+	// three-second rule is measured rather than asserted: views.open is only reachable inside the ack budget
+	// if the context it runs under is the budget's.
+	opens         []slack.ShowArgumentsIntent
+	openDeadlines []time.Time
+	openRejected  string
+	openErr       error
+	openHang      bool
 }
 
 func (s *stubSlackDecider) ResolveConnection(_ context.Context, teamID, _ string) (SlackConnectionRef, bool, error) {
@@ -70,6 +79,19 @@ func (s *stubSlackDecider) Decide(ctx context.Context, conn SlackConnectionRef, 
 		return SlackDecisionOutcome{}, ctx.Err()
 	}
 	return s.outcome, s.decideErr
+}
+
+func (s *stubSlackDecider) OpenApprovalArguments(ctx context.Context, conn SlackConnectionRef, intent slack.ShowArgumentsIntent) (string, error) {
+	s.calls = append(s.calls, "open")
+	s.opens = append(s.opens, intent)
+	s.scopes = append(s.scopes, conn.Org+"/"+conn.Project)
+	deadline, _ := ctx.Deadline()
+	s.openDeadlines = append(s.openDeadlines, deadline)
+	if s.openHang {
+		<-ctx.Done() // a stalled ledger read: the route still owes Slack an answer inside the budget
+		return "", ctx.Err()
+	}
+	return s.openRejected, s.openErr
 }
 
 func newSlackDecider(secret []byte) *stubSlackDecider {
