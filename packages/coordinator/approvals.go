@@ -197,6 +197,97 @@ func (s *Store) ToolApprovalForCall(ctx context.Context, tenant Tenant, toolCall
 	return a, true, nil
 }
 
+// PendingToolApproval is one open gated call in the LIST projection (E23 T9): the parked call's own facts
+// plus the row's creation time, which the keyset page envelope orders and cursors on. It embeds
+// ToolApproval rather than widening it, so nothing that reads a single approval gains a field only some
+// readers populate.
+type PendingToolApproval struct {
+	ToolApproval
+	CreatedAt time.Time
+}
+
+// ToolApprovalWindow is one page request over a project's open questions: the two date filters the shared
+// list envelope parses, the keyset position, and the size. Every field is optional except Limit — a nil
+// filter is no filter, a nil AfterCreatedAt is the first page. It exists so PendingToolApprovals does not
+// grow a seven-parameter signature, and so a filter the HTTP edge PARSES cannot be quietly dropped on the
+// way down (a client that believes it filtered must not act on unfiltered rows).
+type ToolApprovalWindow struct {
+	CreatedGTE     *time.Time
+	CreatedLTE     *time.Time
+	AfterCreatedAt *time.Time
+	AfterID        string
+	Limit          int
+}
+
+// PendingToolApprovals reads the gated calls in a project that a human still owes an answer on, OLDEST
+// first, within the window. It is the read a Slack-less decision surface is built from — until E23 T9 the
+// only way to SEE a parked call was a Slack thread, so a deployment without one had a gate nobody could
+// answer.
+//
+// Oldest first because these are questions and the oldest is the one closest to its deadline.
+//
+// It is tenant-scoped like every other read here, so a caller sees its own project and nothing else.
+func (s *Store) PendingToolApprovals(ctx context.Context, tenant Tenant, w ToolApprovalWindow) ([]PendingToolApproval, error) {
+	if w.Limit <= 0 {
+		return nil, nil
+	}
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("PendingToolApprovalsForTenant"),
+		tenant.Organization, tenant.Project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending tool approvals: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingToolApproval
+	for rows.Next() {
+		a, err := scanPendingToolApproval(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read pending tool approvals: %w", err)
+	}
+	return out, nil
+}
+
+// ToolApprovalByID resolves one approval from the id a list surface handed out (E23 T9), so a decision
+// route can key on the approval while the throat it calls keys on the tool call. found is false for an
+// unknown OR a foreign id — the two are indistinguishable on purpose, so a surface built on this cannot
+// become an oracle for which ids exist in another tenant.
+func (s *Store) ToolApprovalByID(ctx context.Context, tenant Tenant, approvalID string) (PendingToolApproval, bool, error) {
+	if approvalID == "" {
+		return PendingToolApproval{}, false, nil
+	}
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	a, err := scanPendingToolApproval(s.pool.QueryRow(ctx, storage.Query("ToolApprovalByID"),
+		approvalID, tenant.Organization, tenant.Project))
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return PendingToolApproval{}, false, nil
+	case err != nil:
+		return PendingToolApproval{}, false, err
+	}
+	return a, true, nil
+}
+
+// scanPendingToolApproval reads one row of the shared list projection. Both statements select the same
+// twelve columns in the same order, so one scanner serves both and a column added to one query without the
+// other fails to compile rather than silently mis-binding.
+func scanPendingToolApproval(row pgx.Row) (PendingToolApproval, error) {
+	var (
+		a    PendingToolApproval
+		args string
+	)
+	if err := row.Scan(&a.ApprovalID, &a.ToolCallID, &a.RunID, &a.SessionID, &a.ResponseID, &a.ToolName,
+		&args, &a.RequestHash, &a.State, &a.ExpiresAt, &a.DecidedBy, &a.CreatedAt); err != nil {
+		return PendingToolApproval{}, fmt.Errorf("scan tool approval: %w", err)
+	}
+	a.Arguments = []byte(args)
+	return a, nil
+}
+
 // DecideToolApproval applies one human's answer and WAKES the parked run, in one transaction. It is the
 // single throat every generic surface passes through — Slack's click (E23 T8's SlackAdmitter.Decide, its
 // first production caller) and any later command path — which is where the approver check goes for the

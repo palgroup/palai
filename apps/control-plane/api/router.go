@@ -240,6 +240,21 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("GET /v1/model-routes/{route_id}/revisions/{revision_id}", mh.getRevision)
 	}
 
+	// The Slack-less approval surface (E23 T9, spec §22.4, §26.7): list the gated tool calls a human still
+	// owes an answer on, and decide one. INSIDE the auth middleware — a decision carries no source signature
+	// of its own (unlike the Slack interactivity receiver, whose auth IS its v0 signature), so the bearer
+	// scope is the only tenant authority and the verified key is the deciding principal.
+	//
+	// Read-only list + two action POSTs, so no Idempotency-Key: a decision carries its own one-shot binding
+	// (the request hash), which is a stronger dedupe than a header — a replayed approve finds the call
+	// already decided and is refused as void.
+	if cfg.approvals != nil {
+		ah := &approvalHandler{approvals: cfg.approvals}
+		mux.HandleFunc("GET /v1/approvals", ah.list)
+		mux.HandleFunc("POST /v1/approvals/{approval_id}/approve", ah.approve)
+		mux.HandleFunc("POST /v1/approvals/{approval_id}/deny", ah.deny)
+	}
+
 	stream := &eventsHandler{reader: events, cfg: sse.withDefaults()}
 	mux.HandleFunc("GET /v1/sessions/{session_id}/events", stream.stream)
 
