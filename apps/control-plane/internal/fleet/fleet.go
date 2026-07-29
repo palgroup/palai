@@ -92,8 +92,14 @@ type Registration struct {
 	PublicKeySHA256 string
 	OS              string
 	Arch            string
+	// Posture is what the enrolling machine SAYS it is ('sandboxed-linux' / 'unsandboxed-host'). It is
+	// compared against the pool's and a mismatch REFUSES the enrolment (ErrPostureMismatch) — see
+	// pools.go for the difference between catching a mismatch and verifying a claim, which is the
+	// ceiling this field carries. Empty declares nothing and is what every runner built before E24
+	// sends, so it inherits the pool's posture and enrols exactly as it did.
+	Posture string
 	// Capacity is the number of concurrent leases the machine says it can hold. It is RECORDED and
-	// nothing enforces it yet — the gateway's `available` channel is unbuffered and counts nothing
+	// nothing enforces it yet — the gateway's per-pool channels are unbuffered and count nothing
 	// (§3.6 D13). T4 is where a placement decision may read it.
 	Capacity int
 }

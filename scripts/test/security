@@ -63,11 +63,13 @@ run_extensions() {
 # zero tenant rows, and a foreign write trips the policy's WITH CHECK. It needs a real database, so it
 # boots the same pinned throwaway Postgres the component tier uses.
 run_tenancy() {
-  local url status
-  url="$(start_postgres 'io.palai.security=tenancy')"
+  local status
+  # NOT a command substitution: that ran start_postgres in a subshell, so the container name
+  # never reached stop_postgres and every run leaked a Postgres while reporting PASS.
+  start_postgres 'io.palai.security=tenancy'
   trap stop_postgres EXIT
   set +e
-  PALAI_SECURITY_POSTGRES_URL="$url" go test -tags=security -count=1 -v ./tests/security/tenancy
+  PALAI_SECURITY_POSTGRES_URL="$PG_URL" go test -tags=security -count=1 -v ./tests/security/tenancy
   status=$?
   set -e
   test "$status" -eq 0 || postgres_logs

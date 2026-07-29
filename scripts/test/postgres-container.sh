@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 # Shared throwaway-Postgres helper for the Docker-bound tiers. `start_postgres <label>`
-# boots the pinned image on a random loopback port and echoes the connection URL;
+# boots the pinned image on a random loopback port and sets PG_URL to the connection URL;
 # `stop_postgres` removes the container + volume and fails if either leaked. The
 # credential is minted per run and never written to a file (same contract as the
 # component tier, which keeps its own inline copy).
+#
+# IT SETS PG_URL RATHER THAN ECHOING IT, and that is a fix rather than a style: the caller
+# used `url="$(start_postgres …)"`, a command substitution, which runs the function in a
+# SUBSHELL — so _pg_container was assigned in the subshell and stayed empty in the parent.
+# stop_postgres then returned on its first line every time, the container and volume were
+# never removed, and the "leaked a container" check below could not fire because it sits
+# after that return. Every `TEST=tenancy scripts/test/security` run left a Postgres behind
+# and reported PASS. scripts/test/performance already carried the correct shape (its own
+# start_postgres exports PERF_PG_URL); this is that shape, in the shared copy.
 
 # shellcheck shell=bash
 
@@ -47,7 +56,7 @@ start_postgres() {
   local binding port
   binding="$(docker port "$_pg_container" 5432/tcp)"
   port="${binding##*:}"
-  echo "postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+  PG_URL="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
 }
 
 postgres_logs() { test -n "$_pg_container" && docker logs "$_pg_container" >&2 || true; }

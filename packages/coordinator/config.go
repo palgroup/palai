@@ -32,6 +32,14 @@ type ConfigPolicy struct {
 	// shipped write path is already exactly that, and a migration for a list of strings would be one
 	// more thing to keep in step with nothing.
 	Approvers []string `json:"approvers,omitempty"`
+	// Pool is the runner pool this project's runs are placed in (E24 T2), and it is the THIRD of
+	// fleet.ResolvePool's four steps — below the run's own placement and the agent revision's binding,
+	// above the default. It lives here for the same reason Approvers does, and E24 owns exactly one
+	// migration (T1's 000045), so a column for one string was never on the table.
+	//
+	// Empty means "no pool configured", which is every project alive today and resolves to
+	// fleet.DefaultPoolID — the same pool every machine in an unconfigured deployment enrols into.
+	Pool string `json:"pool,omitempty"`
 }
 
 // AllowModel reports whether model is permitted. An empty allowlist is unrestricted, and an

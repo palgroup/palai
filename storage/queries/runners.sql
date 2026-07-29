@@ -84,3 +84,17 @@ SELECT id, organization_id, project_id, pool_id, label, runner_dns, public_key_s
 INSERT INTO runner_pools (id, organization_id, project_id, name, posture, strict_enrollment)
 VALUES ($1, $2, $3, 'default', 'sandboxed-linux', false)
     ON CONFLICT DO NOTHING;
+
+-- name: ListRunnerPools
+-- The tenant-scoped keyset page of pools: (created_at, id) DESC, the ordering api/pagination.go mints
+-- its cursor from. $7 is the over-fetch (page size + 1) so the handler detects a further page without a
+-- second round trip. Read-only surface (E24 T2) — creating and deleting a pool is T5/T6's.
+SELECT id, organization_id, project_id, name, posture, os, arch, strict_enrollment, created_at
+  FROM runner_pools
+ WHERE organization_id = $1
+   AND ($2 = '' OR project_id = $2)
+   AND ($3::timestamptz IS NULL OR created_at >= $3)
+   AND ($4::timestamptz IS NULL OR created_at <= $4)
+   AND ($5::timestamptz IS NULL OR (created_at, id) < ($5, $6))
+ ORDER BY created_at DESC, id DESC
+ LIMIT $7;

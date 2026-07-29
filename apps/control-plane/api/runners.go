@@ -56,6 +56,19 @@ type RunnerListWindow struct {
 	Limit          int
 }
 
+// RunnerPoolItem is one pool's read projection (E24 T2): the posture its machines have, the shape it
+// expects, and whether enrolling into it needs a human. A pool has no credential to leak — its
+// enrolment key is a separate row and T3's surface — so every field here is public by construction.
+type RunnerPoolItem struct {
+	ID               string
+	Name             string
+	Posture          string
+	OS               string
+	Arch             string
+	StrictEnrollment bool
+	CreatedAt        time.Time
+}
+
 // RunnerRegistryAPI is the read seam; internal/fleet.Store implements it through a thin adapter.
 // Tiers that wire no registry pass nil and the routes stay unmounted — the same posture every other
 // optional surface in this router takes.
@@ -64,6 +77,10 @@ type RunnerRegistryAPI interface {
 	// GetRunner reports found=false for an id that is not in the caller's tenant, so the handler
 	// answers 404 without ever learning whether it exists elsewhere.
 	GetRunner(ctx context.Context, org, project, id string) (RunnerItem, bool, error)
+	// ListRunnerPools pages this tenant's pools. It is on the SAME interface as the runner reads
+	// rather than an interface of its own because there is one implementation and one mount, and a
+	// second seam would be an abstraction bought before anything asked for it.
+	ListRunnerPools(ctx context.Context, org, project string, w RunnerListWindow) ([]RunnerPoolItem, error)
 }
 
 type runnerHandler struct{ runners RunnerRegistryAPI }
@@ -96,6 +113,43 @@ func (h *runnerHandler) listRunners(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
 	}
 	renderPage(w, r, "runner", scope, rows, q.Limit)
+}
+
+// listRunnerPools returns a tenant-scoped page of pools (GET /v1/runner-pools). It answers the
+// question the runner list raises and cannot settle on its own — a runner's pool_id is an opaque id
+// until something says what that pool IS — and it is the surface an operator reads before deciding
+// which pool a project's `config_policy.pool` should name.
+func (h *runnerHandler) listRunnerPools(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	q, ok := beginList(w, r, "runner_pool", scope)
+	if !ok {
+		return
+	}
+	window := RunnerListWindow{
+		CreatedGTE: q.CreatedGTE, CreatedLTE: q.CreatedLTE, Limit: q.Limit + 1, // +1 over-fetch: renderPage reads it as has_more
+	}
+	if q.After != nil {
+		window.AfterCreatedAt, window.AfterID = &q.After.CreatedAt, q.After.ID
+	}
+	items, err := h.runners.ListRunnerPools(r.Context(), scope.Organization, scope.Project, window)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	rows := make([]ListRow, 0, len(items))
+	for _, it := range items {
+		body, _ := json.Marshal(map[string]any{
+			"id": it.ID, "object": "runner_pool", "name": it.Name, "posture": it.Posture,
+			"os": it.OS, "arch": it.Arch, "strict_enrollment": it.StrictEnrollment,
+			"created_at": it.CreatedAt,
+		})
+		rows = append(rows, ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
+	}
+	renderPage(w, r, "runner_pool", scope, rows, q.Limit)
 }
 
 // getRunner reads one enrolled machine (GET /v1/runners/{runner_id}).
