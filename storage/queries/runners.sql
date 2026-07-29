@@ -251,6 +251,14 @@ UPDATE attempts
 -- ORDER BY (created_at, id) is a TOTAL order and it is here rather than left to LIMIT: an unordered
 -- LIMIT 1 has decided a security outcome in this tree twice. SKIP LOCKED is what makes two machines
 -- arriving at the same moment wake two DIFFERENT runs instead of contending for one.
+--
+-- ponytail: THERE IS NO INDEX FOR THIS PREDICATE AND THIS TASK CANNOT ADD ONE. `runs` carries exactly
+-- two indexes (both on session_id, from 000006/000007) and E24's only migration is T1's 000045, so the
+-- planner filters. It runs once per runner CONNECT — which for a runner is once per lease — so on a
+-- self-host install whose `runs` table is thousands of rows it is a cheap filtered scan, and on a table
+-- of millions it is not. The upgrade is one line in the next epic's migration:
+-- `CREATE INDEX ... ON runs (organization_id, project_id, pool_id) WHERE state = 'waiting'` — a partial
+-- index, because the rows this asks about are a vanishing fraction of the table.
 SELECT r.id
   FROM runs r
  WHERE r.organization_id = $1 AND r.project_id = $2 AND r.pool_id = $3 AND r.state = 'waiting'

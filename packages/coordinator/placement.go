@@ -143,6 +143,10 @@ func (s *Store) ParkRunForCapacity(ctx context.Context, tenant Tenant, runID, at
 // FOR UPDATE SKIP LOCKED with a TOTAL order (created_at, id) — not LIMIT 1 on its own, which has
 // decided a security outcome in this tree twice. SKIP LOCKED is what makes two machines arriving at
 // once wake two DIFFERENT runs instead of contending for one.
+//
+// ponytail: the predicate has no index and this task cannot add one (E24's only migration is T1's), so
+// it is a filtered scan of `runs` once per runner connect — cheap at self-host scale, not at fleet
+// scale. The upgrade path is a partial index and is named in the statement's own comment.
 func (s *Store) WakeRunAwaitingCapacity(ctx context.Context, tenant Tenant, poolID string) (string, error) {
 	if poolID == "" {
 		return "", nil
