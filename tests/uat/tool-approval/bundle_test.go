@@ -208,7 +208,8 @@ func buildToolApprovalManifest(t *testing.T) []byte {
 			"TIER DECISION (2/3), AND IT IS THE RULE RATHER THAN THE CIRCUMSTANCE: ADDING A CONTROL IS NOT EVIDENCE THAT THE CONTROL WORKS IN A REAL WORKSPACE. E22 did not advance a tier for DELETING a boundary; E23 does not advance one for ADDING a boundary — and the symmetry is the whole argument, because both rest on the same fake peer and what this gate measures is evidence rather than claims. A release that promoted itself for installing a control would be certifying its own intentions",
 			"TIER DECISION (3/3): T5's CEILING IS OPEN BY CONSTRUCTION. A misconfigured registration — an MCP write tool published without `approval_required` — silently skips the gate, no warning is printed and nothing in the tree detects it. It cannot be otherwise: automatic classification would have to trust a server's own annotations, which §3.5 P3 forbids in the vendor's own words. A control with a silent bypass is not a control a tier is promoted on, and the bypass is filed as HIL-P5 rather than smoothed over",
 			"WHAT WOULD HAVE HAD TO BE TRUE to move `slack` to `stable`: (i) a CAPTURED, re-derivable receipt from a real workspace; (ii) the removal of Peer's structural \"fake\" constraint; (iii) §6 leg 1 green in ONE run across E19's six legs, E20's four, E21's, E22's and E23's. None of the three exists",
-			"AND THE THING THIS RELEASE REFUSES TO LET A READER MISS, BECAUSE IT IS THIS EPIC'S OWN D1 AND E22 SHIPPED THE SAME SHAPE ONE LAYER DOWN: THE GENERIC HALF HAS NO PRODUCTION DECISION SURFACE. `slack.ToolApprovalMessage` — the three-button argument table T4 built — has NO production caller; the shipped pump posts E19's two-button `slack.ApprovalMessage` for PUBLICATIONS. `coordinator.DecideToolApproval` has NO production caller either; a Slack click decides a publication through ApplyApprovalDecision. So a gated MCP tool call today PARKS ITS RUN AND IS RELEASED BY THE EXPIRY REAPER, and the approved Jira transition this bundle certifies was decided by a component test calling the decision function directly. Measured against the tree 2026-07-29 and filed as HIL-P8. What IS production is the gate itself (nothing runs without a decision), the park, the expiry-and-wake, the approver check, the modal read path and the whole publication line",
+			"THE GENERIC HALF NOW HAS A PRODUCTION DECISION SURFACE, AND THE HISTORY IS KEPT BECAUSE IT IS THIS EPIC'S OWN D1: through T7 it did NOT. `slack.ToolApprovalMessage` had no production caller, `coordinator.DecideToolApproval` had no production caller, the shipped pump posted E19's two-button publication message only, and a gated MCP tool call PARKED ITS RUN AND WAS RELEASED BY THE EXPIRY REAPER having asked nobody — measured by this epic's own exit gate and filed as HIL-P8. E23 T8 joined the pieces that already existed: `RequestToolApproval` commits the order-to-ask in the SAME transaction as the park, through the SAME `EnqueueApprovalMessage` statement into the SAME table (one queue — the delivery row points at an approvals row, and 000044's CHECK ((publication_id IS NULL) <> (tool_call_id IS NULL)) already says which kind it is, so no discriminator column was needed); a second claim reads that off its own join and RETURNS the word, so the pump's choice of screen is a switch on a COLUMN; and a click routes to `DecideToolApproval`, which transitions the call, journals it and WAKES the parked run in one transaction. The approver check moved into `approverAuthorizedTx` so it stays ONE call site for both kinds — `TestApproverAllowedHasExactlyOneProductionCallSite` is the untagged guard that enforces it. Field (i) of the proof re-derives the whole claim from carried bytes: every gated call was asked about, bound to its OWN request hash, on the GENERIC three-button screen. `ApprovalMessage`'s bytes did not move",
+			"AND THE RESIDUE OF THAT SAME D1, WHICH THIS RELEASE DOES NOT CLAIM: NOTHING ROUTES A SLACK `view_submission` ANYWHERE. There is no mapper for it and the interactivity route has no branch for it, so T4's modal \"Reason for denying\" field reaches NO decision — a human who types a reason there and presses Done has written into a view that is discarded, and the deny they make on the MESSAGE carries a constant sentence instead of their own words. The modal's submit is therefore still named \"Done\" rather than \"Deny\", because naming it for an action it cannot perform would be the dishonest half of that screen. Wiring it is a mapper, a route branch and a re-labelled submit; it is deliberately not a rider on the task that fixed the ask and the answer",
 			"MIGRATION: 000044_tool_approvals is this epic's ONLY migration and the chain stops there. Four riders: `approvals` became operation-agnostic (the table's OWN 2023 comment ordered this epic by name — \"a second producer … is when this grows an operation-agnostic target\"), `publications.operation` gained 'merge_pull_request' (merge is a CHECK value, not a code change), `tool_revisions.approval_required`, and `slack_approval_deliveries` — a NEW table rather than a loosened one, because `slack_reply_deliveries` is UNIQUE (run_id) and a run can produce more than one approval, so reusing it would have moved a shipped exactly-once claim",
 			"THREE VENDOR QUESTIONS ARE UNANSWERED AND ARE NOT IN THE CONTRACT LEDGER, WHICH IS THE HONEST ANSWER: §3.5 P5 (whether MCP 2025-11-25 actually defines ToolAnnotations — the field is named, its contents are not enumerated on either page), P17 (whether `interactivity_pointer` shares trigger_id's three seconds, and whether Slack accepts a views.open concurrent with the ack), P18 (a view_submission payload's documented maximum and private_metadata's limit). None entered the code as an assumption: annotations are not decoded at all, `interactivity_pointer` is never used, and private_metadata carries two short strings. Each is a row in docs/operations/known-gaps-1.0.md and each is a §6 measurement",
 		},
@@ -305,6 +306,11 @@ func canonicalToolApprovalProof() uat.ToolApprovalProof {
 		// input element.
 		ActionableElementsMinted:   len(minted),
 		ActionableElementMintFiles: files,
+
+		// (i) E23 T8. The asks are produced by the SHIPPED renderer, one per gated call, so "a human could
+		// have decided this" is re-derived from the bytes a human would actually have been shown.
+		DecisionSurfaceLedger:           uat.ToolApprovalDecisionSurfaceLedger(),
+		GatedCallsWithNoDecisionSurface: 0,
 
 		Contracts:       uat.ToolApprovalContracts,
 		ContractsDigest: uat.ToolApprovalContractsDigest(),
@@ -455,9 +461,18 @@ func TestToolApprovalBundleNeverClaimsARealWorkspaceOrARealMerge(t *testing.T) {
 			}
 		}
 	}
-	// The ceilings a reader must meet IN THE MANIFEST rather than only in this gate's comments. The last two
-	// are this epic's own D1 — the half a summary would drop.
-	for _, required := range []string{"§6 leg 1", "§6 leg 6", "\"fake\"", "NO PRODUCTION DECISION SURFACE",
+	// The ceilings a reader must meet IN THE MANIFEST rather than only in this gate's comments.
+	//
+	// THE D1 PIN CHANGED IN E23 T8 AND THE GUARD IS WHY YOU ARE READING THIS. T7 pinned the literal "NO
+	// PRODUCTION DECISION SURFACE", because that was the true ceiling: the generic half had none. T8 built
+	// one, so the old sentence had to go — and this list went RED rather than letting a manifest quietly
+	// stop describing its own D1. What replaced it is the pair that is true now: the correction itself (so
+	// the fix cannot be silently un-narrated) and the residue that still stands (nothing routes a
+	// `view_submission`, so the modal's reason field reaches no decision). "HIL-P8" and "EXPIRY REAPER"
+	// stay pinned because the HISTORY is what makes the correction legible — a manifest that simply
+	// asserted the surface works, with no record that it did not, would tell a reader less.
+	for _, required := range []string{"§6 leg 1", "§6 leg 6", "\"fake\"",
+		"GENERIC HALF NOW HAS A PRODUCTION DECISION SURFACE", "NOTHING ROUTES A SLACK",
 		"EXPIRY REAPER", "HIL-P8", "silently skips the gate", "MIGRATION: 000044_tool_approvals"} {
 		if !strings.Contains(string(raw), required) {
 			t.Errorf("the bundle never mentions %q — the ceiling has to be legible in the manifest itself, not only in this gate's comments", required)
@@ -521,8 +536,16 @@ func TestTheE23UncertaintiesAreInKnownGaps(t *testing.T) {
 		"ToolAnnotations",       // (a) is the field named but not enumerated
 		"interactivity_pointer", // (b) is the alternative that is never used
 		"private_metadata",      // (c) is the field almost nothing is put in
-		"HIL-P8",                // and the epic's own D1, which the exit gate found rather than the task
-		"EXPIRY REAPER",         // stated in the operator's words, not only in a Go comment
+		// And the epic's own D1. `HIL-P8` no longer has a ROW — T8 built the decision surface, so the gap
+		// table carries its obituary rather than the gap — but the history stays pinned here on purpose: a
+		// reader who knows the surface was missing for seven tasks reads the seven tasks differently, and
+		// "EXPIRY REAPER" is that history in the operator's words rather than only in a Go comment.
+		"HIL-P8",
+		"EXPIRY REAPER",
+		// `HIL-P10` is what is LEFT of that D1 and is a live ceiling: a Slack approver can type a deny
+		// reason into T4's modal that reaches no decision, because nothing routes a `view_submission`.
+		"HIL-P10",
+		"view_submission",
 	} {
 		if !strings.Contains(body, needle) {
 			t.Errorf("known-gaps-1.0.md never mentions %q — an unconfirmed vendor question kept out of the contract ledger and out of the gap table is a question nobody triaged", needle)

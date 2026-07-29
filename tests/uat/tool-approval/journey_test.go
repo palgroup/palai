@@ -13,6 +13,10 @@
 //	the modal READS and writes nothing       internal/extensions TestSlackApprovalModalReadsTheLedgerAndWritesNothing
 //	an unauthorized click decides nothing    internal/store      TestSlackApproverBothListsMustBePassed
 //	...and the HTTP key too, same function   internal/execution  TestApproverAKeyOutsideTheProjectListDecidesNothing
+//	the GENERIC ask, and a click that lands   internal/execution  TestSlackToolApprovalAsksInTheThreadAndAnAuthorizedClickReleasesTheRun
+//	...refused for the unauthorized clicker   internal/execution  TestSlackToolApprovalRefusesAnUnauthorizedClicker
+//	...carrying the operator's own sentence   internal/execution  TestSlackToolApprovalCarriesTheOperatorsOwnLabelForARegisteredTool
+//	...and a deny that runs nothing           internal/execution  TestSlackToolApprovalDenyReleasesTheRunAndRunsNothing
 //	the approved push drives once            internal/execution  TestToolApprovalApprovedCallRunsExactlyOnceAndWakesTheRun
 //	merge sends the APPROVED head            internal/execution  TestMergePullRequestRefusesWhenTheHeadMovedAfterTheApproval
 //	a second approval gates the Jira write   internal/execution  TestApprovedMCPArgumentsReachThePeerByteForByte
@@ -73,6 +77,10 @@ func TestToolApprovalJourneyRunsThroughTheOperatorEntryPoint(t *testing.T) {
 		{"TestSlackApprovalModalReadsTheLedgerAndWritesNothing", "HIL-002 — the modal READS the ledger row and writes nothing"},
 		{"TestSlackApproverBothListsMustBePassed", "HIL-004 — an unauthorized Slack click decides nothing"},
 		{"TestApproverAKeyOutsideTheProjectListDecidesNothing", "HIL-004 — and an unlisted API key decides nothing, in the SAME function"},
+		{"TestSlackToolApprovalAsksInTheThreadAndAnAuthorizedClickReleasesTheRun", "HIL-003 — the GENERIC half's ask and answer: a gated non-publication call produces a real three-button question in the thread and an authorized click releases the parked run (E23 T8; through T7 neither existed, which is what HIL-P8 recorded)"},
+		{"TestSlackToolApprovalRefusesAnUnauthorizedClicker", "HIL-004 — and an unauthorized click on a TOOL approval decides nothing, under BOTH lists, in the same function that refuses a publication"},
+		{"TestSlackToolApprovalCarriesTheOperatorsOwnLabelForARegisteredTool", "HIL-002 — the operator's own sentence reaches the screen for a REGISTERED revision, through the same lookup the executor uses"},
+		{"TestSlackToolApprovalDenyReleasesTheRunAndRunsNothing", "HIL-001 — a deny releases the run with an answer the model can act on, and the effect never happens"},
 		{"TestToolApprovalApprovedCallRunsExactlyOnceAndWakesTheRun", "HIL-001 — an authorized decision drives the call ONCE and wakes the run"},
 		{"TestMergePullRequestRefusesWhenTheHeadMovedAfterTheApproval", "HIL-005 — the merge sends the APPROVED head, so a moved head does not merge"},
 		{"TestApprovedMCPArgumentsReachThePeerByteForByte", "HIL-005 — a second approval, and the peer receives the bytes the screen showed"},

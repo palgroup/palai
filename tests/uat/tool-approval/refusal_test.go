@@ -460,6 +460,103 @@ func TestAFabricatedMintFileListIsRefused(t *testing.T) {
 	}
 }
 
+// --- (i) the decision surface (E23 T8) -------------------------------------------------------------------
+
+// TestAGatedCallNobodyCouldHaveDecidedIsRefused IS THE ROW THAT WOULD HAVE REDDENED THE RELEASE BEFORE THIS
+// ONE, and that is the whole argument for it existing. Through T7 every gated non-publication call had NO
+// production decision surface: the exit gate measured it, wrote HIL-P8, and tagged anyway — because a gap
+// written in prose cannot refuse anything. This row is that prose turned into a derivation.
+//
+// The mutation removes the QUESTION from one row while leaving `gated_calls_with_no_decision_surface` at
+// zero, which is exactly the shape of the shipped defect: the call is parked, the counter says all is well,
+// and only the reaper ever touches it.
+func TestAGatedCallNobodyCouldHaveDecidedIsRefused(t *testing.T) {
+	m := committed(t)
+	_, proof := approvalCaseOf(t, m)
+	rows := listOf(t, proof, "decision_surface_ledger")
+	delete(rows[0].(map[string]any), "ask")
+
+	refusals := uat.PromoteGateFor(marshal(t, m), "rc")
+	if !refusalsMention(refusals, "had NO REACHABLE DECISION SURFACE") {
+		t.Fatalf("a gated call nobody could have decided was accepted — it parks a run only the expiry reaper "+
+			"can release, which is HIL-P8, the defect this epic's own exit gate found in itself: %v", refusals)
+	}
+}
+
+// TestThePublicationScreenPostedForAToolCallIsRefused is the failure mode of getting the PUMP'S
+// DISCRIMINATOR wrong, and it is the subtle one: E19's two-button `ApprovalMessage` is a perfectly valid
+// screen with perfectly valid buttons bound to the right hash — it just shows a human NO ARGUMENTS. Every
+// other check in this file passes over it. This one does not.
+func TestThePublicationScreenPostedForAToolCallIsRefused(t *testing.T) {
+	m := committed(t)
+	_, proof := approvalCaseOf(t, m)
+	rows := listOf(t, proof, "decision_surface_ledger")
+	row := rows[0].(map[string]any)
+	// The publication screen, rendered by the SHIPPED renderer and bound to this very call's hash: only the
+	// third button is missing, and with it every argument a human would have read.
+	var publicationScreen map[string]any
+	if err := json.Unmarshal(uat.ToolApprovalPublicationScreenFor(row["request_hash"].(string)), &publicationScreen); err != nil {
+		t.Fatalf("render the publication screen: %v", err)
+	}
+	row["ask"] = publicationScreen
+
+	refusals := uat.PromoteGateFor(marshal(t, m), "rc")
+	if !refusalsMention(refusals, "had NO REACHABLE DECISION SURFACE") {
+		t.Fatalf("a TOOL call asked about with the two-button PUBLICATION screen was accepted — the buttons "+
+			"work and the hash matches, but the human is shown no arguments at all: %v", refusals)
+	}
+}
+
+// TestAnAskBoundToAnotherCallIsRefused moves the BINDING rather than the screen. The question is posted, it
+// has three buttons, it is the right shape — and its value is another call's hash, so pressing it decides
+// nothing here. `DecideToolApproval` refuses on exactly this mismatch; the gate must too, or the bundle
+// could certify reachability with a corpus of buttons for the wrong calls.
+func TestAnAskBoundToAnotherCallIsRefused(t *testing.T) {
+	m := committed(t)
+	_, proof := approvalCaseOf(t, m)
+	rows := listOf(t, proof, "decision_surface_ledger")
+	rows[0].(map[string]any)["request_hash"] = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+	refusals := uat.PromoteGateFor(marshal(t, m), "rc")
+	if !refusalsMention(refusals, "had NO REACHABLE DECISION SURFACE") {
+		t.Fatalf("a question whose buttons carry ANOTHER call's hash was accepted as a decision surface — "+
+			"pressing it authorizes nothing for this call: %v", refusals)
+	}
+}
+
+// TestADecisionSurfaceLedgerWithNothingDecidedIsRefused and its twin below are the two vacuity halves, and
+// they pull in opposite directions on purpose. If nothing was ever decided, the asks may be screens nobody
+// can press. If nothing was ever left unanswered, the counter has quietly become "everything got clicked" —
+// which is not the claim, because an approval nobody presses is a CORRECT outcome this release already
+// certifies (HIL-003: the reaper cancels the call and wakes the run).
+func TestADecisionSurfaceLedgerWithNothingDecidedIsRefused(t *testing.T) {
+	m := committed(t)
+	_, proof := approvalCaseOf(t, m)
+	for _, r := range listOf(t, proof, "decision_surface_ledger") {
+		r.(map[string]any)["decided_by"] = ""
+	}
+
+	refusals := uat.PromoteGateFor(marshal(t, m), "rc")
+	if !refusalsMention(refusals, "no gated call that was actually DECIDED") {
+		t.Fatalf("a ledger in which nobody ever decided anything was accepted — the asks could be screens no "+
+			"button on which does anything: %v", refusals)
+	}
+}
+
+func TestADecisionSurfaceLedgerWithNothingUnansweredIsRefused(t *testing.T) {
+	m := committed(t)
+	_, proof := approvalCaseOf(t, m)
+	for _, r := range listOf(t, proof, "decision_surface_ledger") {
+		r.(map[string]any)["decided_by"] = "slack:T0E23:U0APPROVER"
+	}
+
+	refusals := uat.PromoteGateFor(marshal(t, m), "rc")
+	if !refusalsMention(refusals, "left UNANSWERED") {
+		t.Fatalf("a ledger in which every question was answered was accepted — the counter is then measuring "+
+			"enthusiasm rather than reachability: %v", refusals)
+	}
+}
+
 // --- the anchor itself -----------------------------------------------------------------------------------
 
 // TestAnUnfakePeerIsRefused pins the structural ceiling: this bundle cannot claim a real workspace, a real

@@ -343,9 +343,16 @@ RETURNING r.id;
 -- ============================================================================
 
 -- EnqueueApprovalMessage runs INSIDE coordinator.RequestPublication's transaction, exactly where
--- EnqueueTerminalSlackReply runs inside the terminal one. That placement is the whole loss-lessness claim:
--- the approval and the order to ask about it commit together, so no crash window exists in which a run is
--- parked waiting for a question nobody recorded.
+-- EnqueueTerminalSlackReply runs inside the terminal one — and, since E23 T8, inside
+-- coordinator.RequestToolApproval's too. That placement is the whole loss-lessness claim: the approval and
+-- the order to ask about it commit together, so no crash window exists in which a run is parked waiting for
+-- a question nobody recorded.
+--
+-- ONE QUEUE, TWO PRODUCERS, AND NO DISCRIMINATOR COLUMN. This statement never learns which kind of thing is
+-- being approved and does not need to: the row it writes points at an approvals row, and 000044's
+-- CHECK ((publication_id IS NULL) <> (tool_call_id IS NULL)) already makes that row say which. The two
+-- claims below read it off the join. A `kind` column here would be a second copy of a fact the schema
+-- already enforces, and a second copy is the one that can disagree.
 --
 -- EXACTLY ONCE is UNIQUE (approval_id) + ON CONFLICT DO NOTHING — keyed on the APPROVAL and not the run,
 -- because one run can owe a human several separate answers and slack_reply_deliveries' UNIQUE (run_id)
@@ -375,13 +382,16 @@ ON CONFLICT (approval_id) DO NOTHING;
 -- run's branch, the exact head), a.request_hash is the one-shot binding the button's value carries, and
 -- p.state is what lets the poster refuse to post a live button for a question already decided.
 --
--- ponytail: the join is to PUBLICATIONS, so a GATED TOOL CALL's approval (000044 R1, publication_id NULL)
--- is never claimed. Nothing enqueues one today — T3 wires the publication producer only, so a second claim
--- now would be a statement with no rows to claim. Whoever wires the second producer gives this a SECOND
--- claim — joining nothing, returning the approval id, the request hash and the ledger row's name and
--- arguments — and posts slack.ToolApprovalMessage. Not one claim serving both: the two screens carry
--- different guarantees (see the note at execution/approval.go), and merging them is the generic display
--- this epic refuses.
+-- The join is to PUBLICATIONS, so this claim serves ONE of the two kinds and the tool-call claim below
+-- serves the other. Not one claim serving both, and E23 T3 wrote down why before either existed: the two
+-- screens carry different guarantees (see the note at execution/approval.go), and merging them is the
+-- generic display this epic refuses. The `kind` literal is RETURNED rather than inferred by the caller, so
+-- the pump's choice of screen is a value that came out of the database.
+--
+-- THE INNER SELECT FILTERS BY KIND TOO (E23 T8), and that is not redundant with the join. The subselect
+-- takes the $1 oldest due rows of ANY kind; without the predicate a backlog of tool-call questions would
+-- fill this claim's batch, be discarded by the join, and delay every publication question behind them —
+-- a shipped path degraded by the arrival of a second producer. Each claim now takes only its own.
 -- name: ClaimDueApprovalMessages
 UPDATE slack_approval_deliveries d
    SET attempt_count = d.attempt_count + 1,
@@ -391,16 +401,56 @@ UPDATE slack_approval_deliveries d
  WHERE d.id IN (
            SELECT q.id
              FROM slack_approval_deliveries q
+             JOIN approvals qa ON qa.id = q.approval_id AND qa.publication_id IS NOT NULL
             WHERE q.state = 'pending' AND q.next_attempt_at <= clock_timestamp()
             ORDER BY q.next_attempt_at
-            FOR UPDATE SKIP LOCKED
+            FOR UPDATE OF q SKIP LOCKED
             LIMIT $1)
    AND c.id = d.connection_id AND NOT c.disabled
    AND a.id = d.approval_id
    AND p.id = a.publication_id
 RETURNING d.id, d.organization_id, d.project_id, d.connection_id, d.run_id,
           d.channel_id, d.thread_ts, d.attempt_count, d.max_attempts, c.bot_token_ref,
-          a.request_hash, p.display, p.state;
+          a.request_hash, p.display, p.state, 'publication';
+
+-- ClaimDueToolApprovalMessages is the SECOND producer's claim (E23 T8), and the two are deliberately
+-- symmetric: same table, same single-winner claim-IS-the-update, same attempt counted at claim time, same
+-- backoff. What differs is what a human reads, and that difference is the point of there being two.
+--
+-- WHAT IT RETURNS IS WHAT THE HUMAN READS, and every field of it is read LIVE off the LEDGER ROW rather
+-- than frozen on the delivery row: t.name is the tool the executor resolved (never the name off the
+-- model's frame), t.arguments are the committed bytes the broker will send, and a.request_hash is the
+-- one-shot binding the buttons carry. Nothing here is a stored screen — the render happens once, in
+-- slack.ToolApprovalMessage, from these columns, which is why the message in the channel and the modal
+-- opened from it cannot disagree.
+--
+-- t.state is the gate: only a call still `approval_pending` is worth asking about. A live Approve button
+-- for a call already decided, denied or expired invites a click that authorizes nothing.
+--
+-- The OPERATOR LABEL is deliberately NOT here. It belongs to the tool REVISION, not to this call, and the
+-- poster resolves it through the same LookupTool the modal and the executor use — so the sentence a human
+-- reads belongs to the tool that will actually run, and a re-registration between the park and the post
+-- shows the current one rather than a stale copy.
+-- name: ClaimDueToolApprovalMessages
+UPDATE slack_approval_deliveries d
+   SET attempt_count = d.attempt_count + 1,
+       next_attempt_at = clock_timestamp() + ($2::int * (d.attempt_count + 1) * interval '1 second'),
+       updated_at = clock_timestamp()
+  FROM slack_connections c, approvals a, tool_calls t
+ WHERE d.id IN (
+           SELECT q.id
+             FROM slack_approval_deliveries q
+             JOIN approvals qa ON qa.id = q.approval_id AND qa.tool_call_id IS NOT NULL
+            WHERE q.state = 'pending' AND q.next_attempt_at <= clock_timestamp()
+            ORDER BY q.next_attempt_at
+            FOR UPDATE OF q SKIP LOCKED
+            LIMIT $1)
+   AND c.id = d.connection_id AND NOT c.disabled
+   AND a.id = d.approval_id
+   AND t.id = a.tool_call_id
+RETURNING d.id, d.organization_id, d.project_id, d.connection_id, d.run_id,
+          d.channel_id, d.thread_ts, d.attempt_count, d.max_attempts, c.bot_token_ref,
+          a.request_hash, a.id, coalesce(t.arguments::text, '{}'), t.name, t.state, 'tool_call';
 
 -- MarkApprovalMessageDelivered closes a delivery and records the ts Slack assigned — the handle the
 -- decision's chat.update repairs in place, so the message a human clicked is the message that changes.

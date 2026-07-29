@@ -25,12 +25,21 @@ package uat
 // real GitHub App. Those are §6 legs 1, 5 and 6, and ToolApprovalPeer is STRUCTURALLY the literal "fake".
 //
 // AND THE ONE THING A READER MUST NOT MISREAD — it is this epic's D1, and it is stated here because a
-// summary would drop it: THE GENERIC HALF HAS NO PRODUCTION DECISION SURFACE YET. `slack.ToolApprovalMessage`
-// (the three-button argument table) and `coordinator.DecideToolApproval` have NO production caller — the
-// shipped posting pump asks about PUBLICATIONS, with E19's two-button message, and a click decides a
-// publication. A gated MCP tool call today parks its run and is released by the EXPIRY REAPER. Measured
-// against the tree 2026-07-29; carried as HIL-P8 rather than smoothed over, because E22 closed with exactly
-// this shape one layer down and the whole reason E23 exists is that nobody read it.
+// summary would drop it. The T7 gate MEASURED that the generic half had no production decision surface:
+// `slack.ToolApprovalMessage` (the three-button argument table) and `coordinator.DecideToolApproval` had NO
+// production caller, the shipped pump asked about PUBLICATIONS with E19's two-button message, and a gated
+// MCP tool call parked its run and was released by the EXPIRY REAPER having asked nobody. It was filed as
+// HIL-P8 rather than smoothed over, because E22 closed with exactly this shape one layer down and the whole
+// reason E23 exists is that nobody read it.
+//
+// E23 T8 CLOSED IT, and this file is where that becomes checkable rather than announced: group (i) below
+// carries one row per gated call with the question that was actually posted about it, and RE-DERIVES from
+// those bytes that a human could have decided every one. HIL-P8 is gone from known-gaps-1.0.md because it
+// is no longer true — a gap row describing a filled hole is worse than no row.
+//
+// WHAT IS STILL NOT CLAIMED, and it is the residue of that same D1: nothing routes a Slack `view_submission`
+// anywhere, so the modal's "Reason for denying" field reaches NO decision and a Slack deny carries a
+// constant sentence rather than the approver's own words.
 
 import (
 	"encoding/json"
@@ -571,6 +580,153 @@ const ToolApprovalDecisionLedger = `[` +
 	`{"principal":"key:key_e23_unlisted","surface":"http","authorized":false,"applied":false},` +
 	`{"principal":"","surface":"ticket-body","authorized":false,"applied":false}]`
 
+// --- (i) THE DECISION SURFACE THE GENERIC HALF DID NOT HAVE (E23 T8) ------------------------------------
+//
+// This group exists because the T7 exit gate measured its absence and the T7 manifest shipped a paragraph
+// saying so. `slack.ToolApprovalMessage` had NO production caller and `coordinator.DecideToolApproval` had
+// NO production caller, so every gated non-publication call parked its run, asked nobody, and was released
+// half an hour later by the reaper. The counter below is what makes the repair CHECKABLE rather than
+// announced: for every gated call in the ledger, could a human actually have decided it?
+//
+// REACHABLE IS NOT THE SAME AS DECIDED, and conflating them would have made this counter a lie in the
+// friendly direction. An approval nobody presses is a correct outcome — the reaper cancels the call and
+// wakes the run, which is HIL-003. What must never happen is a call NOBODY COULD HAVE PRESSED. So the
+// sweep asks four things of each row's ask, and every one of them is re-derived from the ask's own bytes:
+//
+//	1. a question was posted at all;
+//	2. it carries at least one actionable element (a screen with no button decides nothing);
+//	3. one of those elements' values is THIS call's own request hash — a button bound to another call's
+//	   bytes is a button that authorizes nothing here;
+//	4. it is the GENERIC screen — Approve, Deny AND Show-arguments. This is the arm that catches the
+//	   failure mode of getting the pump's discriminator wrong: posting E19's two-button publication screen
+//	   for a tool call would satisfy 1-3 and still show a human a message with no arguments on it.
+
+// toolApprovalAskedFor renders the ask that was actually posted for one gated call, THROUGH THE SHIPPED
+// RENDERER. Carrying the renderer's output rather than a typed copy is what makes rules 2-4 above
+// load-bearing: a change that stopped binding the request hash to the buttons, or dropped the third
+// button, reddens this bundle rather than quietly weakening what a human can do.
+func toolApprovalAskedFor(requestHash, identity, arguments string) json.RawMessage {
+	return json.RawMessage(slack.ToolApprovalMessage("C0E23", "1700000500.000100", slack.ApprovalRequest{
+		ApprovalID:    ToolApprovalID,
+		RequestHash:   requestHash,
+		Identity:      identity,
+		OperatorLabel: ToolApprovalOperatorLabel,
+		Arguments:     []byte(arguments),
+	}))
+}
+
+// The three gated calls' own one-shot bindings. Distinct on purpose: rule 3 is only worth anything if a
+// row's ask could be bound to the WRONG call and be caught.
+const (
+	toolApprovalHashTransition = ToolApprovalRequestHash
+	toolApprovalHashComment    = "sha256:1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809"
+	toolApprovalHashForgotten  = "sha256:90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f"
+)
+
+// ToolApprovalDecisionSurfaceLedger is one row per GATED TOOL CALL the journey parked a run on, carrying
+// the question that was actually asked about it and what came back.
+//
+// THE THIRD ROW IS THE LOAD-BEARING ONE and it is the one a reader should check first: nobody decided it.
+// It was ASKED — a real three-button message, bound to its own hash, in the thread — and then the deadline
+// passed and the reaper cancelled the call. Without a row like it, "zero calls with no decision surface"
+// could be satisfied by a corpus where every call happened to be clicked, which would leave the counter
+// measuring enthusiasm rather than reachability.
+func ToolApprovalDecisionSurfaceLedger() json.RawMessage {
+	rows := []map[string]any{
+		{
+			"tool_call_id": "tc_e23_transition", "request_hash": toolApprovalHashTransition,
+			"ask":        toolApprovalAskedFor(toolApprovalHashTransition, ToolApprovalIdentity, ToolApprovalArguments),
+			"decided_by": "slack:T0E23:U0APPROVER", "final_state": "ready",
+		},
+		{
+			"tool_call_id": "tc_e23_comment", "request_hash": toolApprovalHashComment,
+			"ask": toolApprovalAskedFor(toolApprovalHashComment, "jira.addCommentToJiraIssue",
+				`{"cloudId":"11111111-2222-3333-4444-555555555555","issueIdOrKey":"PAL-42","body":"transitioned by the agent"}`),
+			"decided_by": "slack:T0E23:U0APPROVER", "final_state": "canceled",
+		},
+		{
+			"tool_call_id": "tc_e23_forgotten", "request_hash": toolApprovalHashForgotten,
+			"ask":        toolApprovalAskedFor(toolApprovalHashForgotten, ToolApprovalIdentity, ToolApprovalArguments),
+			"decided_by": "", "final_state": "canceled",
+		},
+	}
+	out, err := json.Marshal(rows)
+	if err != nil {
+		panic("the decision-surface ledger cannot be rendered, so this bundle cannot be written: " + err.Error())
+	}
+	return out
+}
+
+// ToolApprovalPublicationScreenFor renders E19's PUBLICATION screen — the two-button one — bound to the
+// given hash, through the SHIPPED renderer. It exists for the refusal matrix and for nothing else: it is
+// the mutation that proves rule 4 above is load-bearing, because a publication screen posted for a tool
+// call has working buttons, the right binding, and no arguments on it at all. Rendering it here rather than
+// typing a fixture means the negative tracks `ApprovalMessage` if that screen ever changes.
+func ToolApprovalPublicationScreenFor(requestHash string) json.RawMessage {
+	return json.RawMessage(slack.ApprovalMessage("C0E23", "1700000500.000100",
+		"push agent/e23 to github.com/palgroup/palai at 0000000", requestHash))
+}
+
+// SweepUnreachableApprovals RE-DERIVES, from the carried bytes alone, which gated calls a human could not
+// have decided. It returns the unreachable call ids, how many were decided THROUGH the ask, and how many
+// were asked and left unanswered.
+//
+// It reads nothing declared. `decided_by` and `final_state` are used only to classify a row that already
+// passed the four structural rules — they can never make an unreachable row reachable.
+func SweepUnreachableApprovals(ledger json.RawMessage) (unreachable []string, decided, unanswered int, err error) {
+	if len(ledger) == 0 {
+		return nil, 0, 0, fmt.Errorf("no decision-surface ledger: a reachability count over nothing is vacuous")
+	}
+	var rows []struct {
+		ToolCallID  string          `json:"tool_call_id"`
+		RequestHash string          `json:"request_hash"`
+		Ask         json.RawMessage `json:"ask"`
+		DecidedBy   string          `json:"decided_by"`
+		FinalState  string          `json:"final_state"`
+	}
+	if err := json.Unmarshal(ledger, &rows); err != nil {
+		return nil, 0, 0, fmt.Errorf("the decision-surface ledger is not JSON, so nothing can be re-derived from it: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, 0, 0, fmt.Errorf("an empty decision-surface ledger: a reachability count over no calls is vacuous")
+	}
+	for _, row := range rows {
+		id := row.ToolCallID
+		if id == "" {
+			id = "(unnamed gated call)"
+		}
+		if row.ToolCallID == "" || row.RequestHash == "" || len(row.Ask) == 0 {
+			unreachable = append(unreachable, id)
+			continue
+		}
+		// 2. The ask has actionable elements at all.
+		minted, merr := SweepActionableElements(row.Ask)
+		if merr != nil || len(minted) == 0 {
+			unreachable = append(unreachable, id)
+			continue
+		}
+		// 3+4. Bound to THIS call, and the generic screen rather than the publication one.
+		strs, serr := DecodedStrings(row.Ask)
+		if serr != nil {
+			unreachable = append(unreachable, id)
+			continue
+		}
+		if !slices.Contains(strs, row.RequestHash) ||
+			!slices.Contains(strs, slack.ActionApprove) ||
+			!slices.Contains(strs, slack.ActionDeny) ||
+			!slices.Contains(strs, slack.ActionShowArguments) {
+			unreachable = append(unreachable, id)
+			continue
+		}
+		if row.DecidedBy != "" {
+			decided++
+			continue
+		}
+		unanswered++
+	}
+	return unreachable, decided, unanswered, nil
+}
+
 // toolApprovalExpiry is the deadline the modal renders. It is a FIXED instant so the committed bundle's
 // bytes are re-derivable in a clean checkout — the screen below is produced by the SHIPPED renderer, and a
 // time.Now() in it would make this bundle unreproducible by construction.
@@ -642,7 +798,11 @@ func ToolApprovalContractsDigest() string { return hashParts(toolApprovalContrac
 //	    own input schemas, merge included);
 //	(g) ActionableElementsMinted (non-zero: the screen HAS buttons) beside ActionableElementMintFiles, which
 //	    is RECOMPUTED by an AST sweep over two packages and must be exactly interactions.go;
-//	(h) Contracts — every vendor requirement with its source URL, fetch date and §3.5 divergence id.
+//	(h) Contracts — every vendor requirement with its source URL, fetch date and §3.5 divergence id;
+//	(i) DecisionSurfaceLedger / GatedCallsWithNoDecisionSurface (MUST be zero, RE-DERIVED) — E23 T8's, and
+//	    the counter T7 could not have carried without failing: every gated call must have had a real
+//	    question posted about it, bound to its OWN request hash and carrying the GENERIC three-button
+//	    screen rather than the publication one.
 //
 // HONEST CEILING, MECHANICALLY ENFORCED: Peer must be the literal "fake". This bundle is STRUCTURALLY
 // incapable of claiming a real Slack receipt, a real Atlassian tenant or a real merged pull request.
@@ -675,6 +835,10 @@ type ToolApprovalProof struct {
 	// (g) The buttons, and the single file allowed to build one.
 	ActionableElementsMinted   int      `json:"actionable_elements_minted"`
 	ActionableElementMintFiles []string `json:"actionable_element_mint_files"`
+
+	// (i) The decision surface the generic half did not have until E23 T8.
+	DecisionSurfaceLedger           json.RawMessage `json:"decision_surface_ledger"`
+	GatedCallsWithNoDecisionSurface int             `json:"gated_calls_with_no_decision_surface"`
 
 	// (h) The published contracts, anchored to the code table.
 	Contracts       []ContractRequirement `json:"contracts"`
@@ -736,6 +900,18 @@ func (p ToolApprovalProof) Complete() bool {
 		return false
 	}
 	if !toolApprovalSchemasCarryTheThreeTools(p.PublishToolSchemas) {
+		return false
+	}
+	// (i) EVERY GATED CALL COULD ACTUALLY BE DECIDED. This is the counter T7 could not have carried: it
+	// would have been non-zero on every row, which is precisely why the gate filed HIL-P8 instead.
+	unreachable, decidedThroughTheAsk, unanswered, err := SweepUnreachableApprovals(p.DecisionSurfaceLedger)
+	if err != nil || len(unreachable) != 0 || p.GatedCallsWithNoDecisionSurface != 0 {
+		return false
+	}
+	// Both halves, or the zero is free. Without a DECIDED row the asks might be screens nobody can press;
+	// without an UNANSWERED one the counter would be measuring "everything got clicked" rather than
+	// reachability, and an approval nobody presses is a correct outcome this epic already claims (HIL-003).
+	if decidedThroughTheAsk < 1 || unanswered < 1 {
 		return false
 	}
 	// (g) The screen HAS buttons, and only interactions.go builds one.

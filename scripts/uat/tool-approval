@@ -50,11 +50,18 @@
 # policy and not a Slack list; and no byte from outside — not a ticket body, not an MCP server's
 # description — can write its own approval. NO TIER ADVANCES.
 #
-# AND THE PART AN OPERATOR MUST READ BEFORE TRUSTING THIS TARGET: the GENERIC half has no production
-# decision surface yet. `slack.ToolApprovalMessage` and `coordinator.DecideToolApproval` have NO production
-# caller (measured 2026-07-29, filed as HIL-P8) — the shipped pump asks about PUBLICATIONS with E19's
-# two-button message, so a gated MCP tool call parks its run and is released by the EXPIRY REAPER. The gate,
-# the park, the expiry, the approver check and the whole publication line ARE production.
+# AND THE PART AN OPERATOR MUST READ BEFORE TRUSTING THIS TARGET, which E23 T8 rewrote because half of it
+# stopped being true. Through T7 the GENERIC half had no production decision surface at all —
+# `slack.ToolApprovalMessage` and `coordinator.DecideToolApproval` had NO production caller, the shipped
+# pump asked about PUBLICATIONS with E19's two-button message, and a gated MCP tool call parked its run and
+# was released by the EXPIRY REAPER having asked nobody (filed as HIL-P8). T8 built it: the order-to-ask
+# commits with the park, the pump chooses the screen from the approvals row's own discriminator, and a click
+# routes to DecideToolApproval, which wakes the parked run.
+#
+# WHAT AN OPERATOR MUST STILL READ: nothing routes a Slack `view_submission`, so the deny-reason field in
+# the argument modal reaches NO decision — a Slack deny is durable and releases the run, but it carries a
+# constant sentence rather than the approver's own words (HIL-P10). And T5's ceiling is untouched: a write
+# tool published WITHOUT `approval_required` silently skips the gate and nothing detects it (HIL-P5).
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
@@ -145,7 +152,7 @@ else
   # ran in the component tier at all. Every selector below was checked by RUNNING it and reading `=== RUN`,
   # not by reading the string.
   suites=(
-    "./apps/control-plane/internal/execution|TestToolApproval|TestExpiredToolApproval|TestToolWithoutApprovalDeclared|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestPublicationFromSlack"
+    "./apps/control-plane/internal/execution|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestToolWithoutApprovalDeclared|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestPublicationFromSlack"
     "./apps/control-plane/internal/extensions|TestSlackApprovalModal"
     "./apps/control-plane/internal/store|TestSlackApprover"
   )
@@ -207,5 +214,8 @@ echo "  close DISABLED, \`console\` closes PREVIEW. Every counterparty is a FAKE
 echo "  THAT NOTHING DANGEROUS CAN HAPPEN NOW: it claims every side-effecting tool call CAN pass through a" >&2
 echo "  human's button, that the human reads the CALL and not a description, that the run parks without" >&2
 echo "  waiting forever, that the approver is a project policy, and that no byte from outside can write its" >&2
-echo "  own approval. AND ONE CEILING AN OPERATOR MUST READ: the GENERIC half has no production decision" >&2
-echo "  surface yet (HIL-P8) — a gated MCP tool call parks and is released by the EXPIRY REAPER." >&2
+echo "  own approval, and that a gated NON-PUBLICATION call can actually be decided — the ask lands in the" >&2
+echo "  thread and an authorized click releases the parked run (E23 T8; through T7 it could not, HIL-P8)." >&2
+echo "  AND ONE CEILING AN OPERATOR MUST READ: nothing routes a Slack view_submission, so the modal's" >&2
+echo "  deny-reason field reaches no decision — a deny is durable and releases the run, but it carries a" >&2
+echo "  constant sentence rather than the approver's own words (HIL-P10)." >&2
