@@ -94,7 +94,7 @@ func TestToolRevisionImmutableAndDigestPinned(t *testing.T) {
 		t.Fatalf("identical config produced different digests: %s vs %s", v1.Digest, v1b.Digest)
 	}
 
-	published, _, err := s.PublishToolRevision(ctx, org, project, v1.ID)
+	published, _, err := s.PublishToolRevision(ctx, org, project, v1.ID, nil)
 	if err != nil || !published {
 		t.Fatalf("publish v1 = %v err = %v, want published", published, err)
 	}
@@ -113,7 +113,7 @@ func TestToolRevisionImmutableAndDigestPinned(t *testing.T) {
 	}
 
 	// Publish is once-only: re-publishing v1 is a no-op, never a re-stamp.
-	again, _, err := s.PublishToolRevision(ctx, org, project, v1.ID)
+	again, _, err := s.PublishToolRevision(ctx, org, project, v1.ID, nil)
 	if err != nil {
 		t.Fatalf("re-publish v1: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestToolSetPinsExactRevisionsApprovalOnlyStricter(t *testing.T) {
 		t.Fatalf("unknown pin: err = %v, want ErrUnknownToolRevision", err)
 	}
 
-	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID); err != nil {
+	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID, nil); err != nil {
 		t.Fatalf("publish rev: %v", err)
 	}
 
@@ -250,13 +250,13 @@ func TestRegistryToolsLoadIntoBrokerEffectiveSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create rev: %v", err)
 	}
-	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID); err != nil {
+	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID, nil); err != nil {
 		t.Fatalf("publish rev: %v", err)
 	}
 	// A second published tool, NOT pinned into any set.
 	tool2, _ := s.CreateTool(ctx, org, project, "acme.other.lookup")
 	rev2, _ := s.CreateToolRevision(ctx, org, project, tool2.ID, []byte(`{"executor":"control_plane","input_schema":{"type":"object"}}`))
-	if _, _, err := s.PublishToolRevision(ctx, org, project, rev2.ID); err != nil {
+	if _, _, err := s.PublishToolRevision(ctx, org, project, rev2.ID, nil); err != nil {
 		t.Fatalf("publish rev2: %v", err)
 	}
 	// A published set pinning ONLY the first tool.
@@ -346,7 +346,7 @@ func TestRemoteHTTPToolResolvesThroughRegistryLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create remote_http rev: %v", err)
 	}
-	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID); err != nil {
+	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID, nil); err != nil {
 		t.Fatalf("publish rev: %v", err)
 	}
 	set, err := s.CreateToolSetRevision(ctx, org, project, "reviewers", pins(rev.ID, nil))
@@ -428,7 +428,7 @@ func publishEcho(t *testing.T, s *Store, org, project, canonical string) string 
 	if err != nil {
 		t.Fatalf("create rev %s: %v", canonical, err)
 	}
-	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID); err != nil {
+	if _, _, err := s.PublishToolRevision(ctx, org, project, rev.ID, nil); err != nil {
 		t.Fatalf("publish rev %s: %v", canonical, err)
 	}
 	return rev.ID

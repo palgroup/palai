@@ -57,9 +57,18 @@ RETURNING revision_number;
 -- PublishToolRevision is the ONE legitimate mutation: it flips published_at exactly once. The
 -- WHERE published_at IS NULL guard makes a re-publish a zero-row no-op, so a published revision never
 -- re-stamps (immutable publish). RETURNING id distinguishes published-now from already-published/unknown.
+--
+-- E23 T5: the operator's approval declaration ($4/$5, 000044 R3) rides the SAME once-only flip, because
+-- publishing IS the per-tool decision an operator already makes (jira-mcp-connection.md §3c) and a second
+-- ceremony would be a second thing to forget. Riding the guarded UPDATE has a consequence worth naming:
+-- a re-publish changes nothing, so a gate cannot be quietly REMOVED from a published revision by calling
+-- this again without the flag. Un-gating a tool means publishing a new revision and re-pinning the set —
+-- visible, immutable, and exactly the shape of every other config change here.
 -- name: PublishToolRevision
 UPDATE tool_revisions
-SET published_at = clock_timestamp()
+SET published_at = clock_timestamp(),
+    approval_required = $4,
+    approval_label = $5
 WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND published_at IS NULL
 RETURNING id;
 
@@ -118,6 +127,14 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- + remote_name from executor_config and the per-call timeout from timeout_ms. The MCP credential lives on
 -- the CONNECTION (mcp_connections.secret_ref), not the revision, so the revision secret_ref is not selected
 -- here. The control_plane branch ignores these columns.
+--
+-- E23 T5: LIMIT 2, NOT 1, AND THE SECOND ROW IS A REFUSAL RATHER THAN A DISCARD. The chain can genuinely
+-- produce two candidates for one model-visible name — two published revisions of the same tool pinned by
+-- two sets the run's revision names, which is what re-discovery plus a second approval leaves behind — and
+-- a bare LIMIT 1 picked between them by whatever the planner emitted first. Measured 2026-07-29: two rows,
+-- no ORDER BY, no rule. That was survivable while every candidate ran the same way; it stopped being
+-- survivable the moment a revision carries approval_required, because the coin flip decides WHETHER A HUMAN
+-- IS ASKED. The ORDER BY only makes the reported pair stable — the detection is the second row itself.
 -- name: LookupRunTool
 SELECT trv.executor, trv.description, trv.input_schema, trv.output_schema, trv.replay_class,
        trv.executor_config, trv.secret_ref, trv.timeout_ms, t.canonical_name, trv.revision_number,
@@ -133,4 +150,5 @@ JOIN tool_revisions trv ON trv.id = (pin->>'tool_revision_id')
     AND trv.organization_id = r.organization_id AND trv.project_id = r.project_id
 JOIN tools t ON t.id = trv.tool_id AND t.model_visible_name = $4
 WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3
-LIMIT 1;
+ORDER BY trv.revision_number DESC, trv.id
+LIMIT 2;

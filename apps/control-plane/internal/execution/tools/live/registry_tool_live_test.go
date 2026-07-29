@@ -82,7 +82,7 @@ func TestLiveRegistryToolRoundtripForcedPreT1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create tool revision: %v", err)
 	}
-	if _, _, err := reg.PublishToolRevision(ctx, org, project, rev.ID); err != nil {
+	if _, _, err := reg.PublishToolRevision(ctx, org, project, rev.ID, nil); err != nil {
 		t.Fatalf("publish tool revision: %v", err)
 	}
 	set, err := reg.CreateToolSetRevision(ctx, org, project, "reviewers", []byte(`{"tools":[{"tool_revision_id":"`+rev.ID+`"}]}`))

@@ -103,7 +103,7 @@ func TestLiveMCPToolRoundtripSpontaneous(t *testing.T) {
 		t.Fatalf("discover connection: %v", err)
 	}
 	revID := latestMCPRevisionID(t, pool, org, project, "mcp."+mcpConnName+".echo")
-	if _, _, err := reg.PublishToolRevision(ctx, org, project, revID); err != nil {
+	if _, _, err := reg.PublishToolRevision(ctx, org, project, revID, nil); err != nil {
 		t.Fatalf("publish echo revision: %v", err)
 	}
 	set, err := reg.CreateToolSetRevision(ctx, org, project, "mcptools", []byte(`{"tools":[{"tool_revision_id":"`+revID+`"}]}`))

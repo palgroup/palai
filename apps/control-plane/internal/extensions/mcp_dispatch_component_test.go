@@ -93,7 +93,7 @@ func publishDiscoveredIntoSet(t *testing.T, s *Store, org, project, connID, cano
 		t.Fatalf("discover: %v", err)
 	}
 	revID := latestRevisionID(t, s, org, project, canonical)
-	if _, _, err := s.PublishToolRevision(ctx, org, project, revID); err != nil {
+	if _, _, err := s.PublishToolRevision(ctx, org, project, revID, nil); err != nil {
 		t.Fatalf("publish discovered revision: %v", err)
 	}
 	set, err := s.CreateToolSetRevision(ctx, org, project, "mcpset", pins(revID, nil))
@@ -198,7 +198,7 @@ func TestAnnotationChangeRequiresNewRevisionAndReapproval(t *testing.T) {
 		t.Fatalf("first discover = %+v err=%v, want one new revision", first, err)
 	}
 	rev1 := latestRevisionID(t, s, org, project, "mcp.docs.echo")
-	if _, _, err := s.PublishToolRevision(ctx, org, project, rev1); err != nil {
+	if _, _, err := s.PublishToolRevision(ctx, org, project, rev1, nil); err != nil {
 		t.Fatalf("publish v1: %v", err)
 	}
 

@@ -62,6 +62,11 @@ var (
 	// ErrInvalidReplayClass is returned when a revision declares a replay_class outside the five known
 	// kill-recovery classes — so the broker never resolves a registry tool to a class it cannot classify.
 	ErrInvalidReplayClass = errors.New("extensions: replay_class must be one of pure|idempotent|reversible|irreversible|interactive")
+	// ErrApprovalLabelTooLong is returned when a publish body's operator label exceeds the render budget.
+	// It is rejected at the WRITE rather than trimmed at the read for a blunt reason: the label is the one
+	// human sentence on an approval screen, and a screen that will not render is a question nobody can
+	// answer — which is a run parked until its deadline, not a cosmetic defect.
+	ErrApprovalLabelTooLong = errors.New("extensions: approval_label exceeds the maximum length")
 )
 
 // knownReplayClasses is the closed set of kill-recovery classes a revision may declare (mirrors the
@@ -76,6 +81,12 @@ const maxSegmentLen = 128
 // MaxTimeoutMS is the ceiling on a revision's declared timeout_ms (E12 T4 MF3): 5 minutes, matching the
 // executor's runtime maxTimeout. An async remote tool cannot pin a broker slot longer than this.
 const MaxTimeoutMS = 5 * 60 * 1000
+
+// MaxApprovalLabelLen bounds the operator's approval label. 300 is a render budget, not a taste: the label
+// shares a Slack markdown block whose cumulative cap is 12,000 characters (E21 M13) with the tool identity,
+// and the arguments beside it are already allowed 8,000 (approvalArgumentsLimit). One sentence fits; a
+// pasted document does not, and would push the block the arguments need.
+const MaxApprovalLabelLen = 300
 
 // Store is the extensibility management store over the durable spine's pool. reserved holds the
 // code-defined built-in model-visible names a registered tool must not shadow (injected from the flat
@@ -230,10 +241,60 @@ func (s *Store) CreateToolRevision(ctx context.Context, org, project, toolID str
 	return ToolRevision{ID: id, RevisionNumber: number, Executor: in.Executor, Digest: digest}, nil
 }
 
-// PublishToolRevision flips a draft revision to published exactly once (see automation.PublishRevision).
-func (s *Store) PublishToolRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
+// ToolPublishInput is THE ONE QUESTION THE REGISTRATION CEREMONY GAINS (E23 T5, 000044 R3), and the reason
+// it rides publish rather than a new endpoint is that publish is ALREADY the per-tool decision: an operator
+// approving a discovered MCP tool calls POST /v1/tools/{id}/revisions/{rev}/publish once per tool today
+// (docs/operations/jira-mcp-connection.md §3c). A second ceremony would be a second thing to forget, and a
+// forgotten gate is an open one.
+//
+// PALAI DOES NOT DECIDE WHICH TOOL IS DANGEROUS AND DOES NOT TRY. The vendor forbids the shortcut outright
+// — "clients MUST consider tool annotations to be untrusted unless they come from trusted servers"
+// (https://modelcontextprotocol.io/specification/2025-11-25/server/tools, fetched 2026-07-29, plan §3.5 P3)
+// — so `destructiveHint` cannot classify anything, our MCP client does not even decode `annotations`, and
+// the declaration is the operator's. The honest consequence is written in known-gaps-1.0.md: publishing a
+// write tool WITHOUT this flag silently bypasses the gate, and that is the operator's decision, not a bug.
+type ToolPublishInput struct {
+	ApprovalRequired bool `json:"approval_required"`
+	// ApprovalLabel is the ONE human sentence on the approval screen, and its author is a human at
+	// registration — never the MCP server. The server's own `description` stays where it already is, in the
+	// model's prompt labelled untrusted, for the reason P4 measures: the two fields the vendor recommends
+	// FOR display (`title`, `description`) are the two whose author has an interest in the answer.
+	ApprovalLabel string `json:"approval_label"`
+}
+
+// DecodeToolPublishInput strictly decodes the optional publish body. AN EMPTY BODY IS THE SHIPPED BODYLESS
+// PUBLISH, decoded to the zero value — so every caller that publishes without a body, including `palai up`,
+// is bit-unchanged. An unknown field is a reject rather than a silent drop, symmetric with every other
+// revision body here: a typo'd "approvalRequired" that quietly published an UNGATED write tool is the exact
+// failure this flag exists to prevent.
+func DecodeToolPublishInput(raw []byte) (ToolPublishInput, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return ToolPublishInput{}, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var in ToolPublishInput
+	if err := dec.Decode(&in); err != nil {
+		return ToolPublishInput{}, fmt.Errorf("%w: %v", ErrUnknownField, err)
+	}
+	if len(in.ApprovalLabel) > MaxApprovalLabelLen {
+		return ToolPublishInput{}, fmt.Errorf("%w: got %d characters (ceiling %d)", ErrApprovalLabelTooLong, len(in.ApprovalLabel), MaxApprovalLabelLen)
+	}
+	return in, nil
+}
+
+// PublishToolRevision flips a draft revision to published exactly once (see automation.PublishRevision),
+// carrying the operator's approval declaration onto the row in the SAME guarded UPDATE. The guard's
+// consequence is deliberate: a re-publish is a no-op, so a gate cannot be quietly removed from an
+// already-published revision — un-gating means a new revision and a re-pinned set.
+func (s *Store) PublishToolRevision(ctx context.Context, org, project, revisionID string, raw []byte) (published, exists bool, err error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
-	return s.publish(ctx, "PublishToolRevision", "ToolRevisionPublished", revisionID, org, project)
+	in, err := DecodeToolPublishInput(raw)
+	if err != nil {
+		return false, false, err
+	}
+	return s.publish(ctx, "PublishToolRevision", "ToolRevisionPublished", revisionID, org, project,
+		in.ApprovalRequired, in.ApprovalLabel)
 }
 
 // GetToolRevision reads a revision's committed shape (management + the immutability check).
@@ -308,9 +369,12 @@ func (s *Store) pinTarget(ctx context.Context, org, project, revisionID string) 
 }
 
 // publish is the shared once-only flip (the automation.Store.publish twin): try the conditional UPDATE,
-// and on no flip disambiguate an unknown revision from an already-published one via the state read.
-func (s *Store) publish(ctx context.Context, flipQuery, stateQuery, revisionID, org, project string) (published, exists bool, err error) {
-	switch e := s.pool.QueryRow(ctx, storage.Query(flipQuery), revisionID, org, project).Scan(new(string)); {
+// and on no flip disambiguate an unknown revision from an already-published one via the state read. extra
+// carries the flip statement's trailing parameters — the tool-revision flip stamps the operator's approval
+// declaration ($4/$5) alongside published_at, the set-revision flip passes none.
+func (s *Store) publish(ctx context.Context, flipQuery, stateQuery, revisionID, org, project string, extra ...any) (published, exists bool, err error) {
+	flipArgs := append([]any{revisionID, org, project}, extra...)
+	switch e := s.pool.QueryRow(ctx, storage.Query(flipQuery), flipArgs...).Scan(new(string)); {
 	case e == nil:
 		return true, true, nil
 	case !errors.Is(e, pgx.ErrNoRows):

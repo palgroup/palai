@@ -61,15 +61,41 @@ func (s *Store) LookupTool(ctx context.Context, org, project, runID, name string
 		approvalRequired bool
 		approvalLabel    string
 	)
-	err := s.pool.QueryRow(ctx, storage.Query("LookupRunTool"), runID, org, project, name).
-		Scan(&executor, &description, &inputJSON, &outputJSON, &replayClass, &configJSON, &secretRef, &timeoutMS,
-			&canonicalName, &revisionNumber, &approvalRequired, &approvalLabel)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return toolbroker.Tool{}, false, nil
-	}
+	// AN AMBIGUOUS GRANT IS REFUSED, NOT RESOLVED (E23 T5). The query returns up to TWO candidates because
+	// the chain can legitimately produce two — two published revisions of one tool, pinned by two sets the
+	// run's revision names, which is exactly what re-discovery plus a second approval leaves behind. A bare
+	// LIMIT 1 took whichever row the planner emitted first, and that was tolerable only while every
+	// candidate ran identically. It is not tolerable now: one of those rows may carry approval_required and
+	// the other not, so the planner's choice would decide WHETHER A HUMAN IS ASKED before an irreversible
+	// call. Refusing loudly is the only answer that is not a guess about the operator's intent — the fix is
+	// theirs (drop a pin, or re-pin the set on one revision), and a silent miss would hide the need for it.
+	rows, err := s.pool.Query(ctx, storage.Query("LookupRunTool"), runID, org, project, name)
 	if err != nil {
 		return toolbroker.Tool{}, false, fmt.Errorf("lookup registry tool %q: %w", name, err)
 	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return toolbroker.Tool{}, false, fmt.Errorf("lookup registry tool %q: %w", name, err)
+		}
+		return toolbroker.Tool{}, false, nil
+	}
+	if err := rows.Scan(&executor, &description, &inputJSON, &outputJSON, &replayClass, &configJSON, &secretRef, &timeoutMS,
+		&canonicalName, &revisionNumber, &approvalRequired, &approvalLabel); err != nil {
+		return toolbroker.Tool{}, false, fmt.Errorf("lookup registry tool %q: %w", name, err)
+	}
+	if rows.Next() {
+		var otherRevision int
+		if err := rows.Scan(new(string), new(string), new([]byte), new([]byte), new(string), new([]byte),
+			new(*string), new(*int), new(string), &otherRevision, new(bool), new(string)); err != nil {
+			return toolbroker.Tool{}, false, fmt.Errorf("lookup registry tool %q: %w", name, err)
+		}
+		return toolbroker.Tool{}, false, fmt.Errorf(
+			"registry tool %q is pinned twice for run %s (revisions %d and %d of %s): the run's grant chain does "+
+				"not say which binding to run, and one of them may require a human's approval — re-pin the tool "+
+				"set on a single revision", name, runID, revisionNumber, otherRevision, canonicalName)
+	}
+	rows.Close()
 
 	if executor == "mcp" {
 		tool, ok, err := s.mcpTool(ctx, org, project, runID, name, description, inputJSON, outputJSON, replayClass, configJSON, timeoutMS)
