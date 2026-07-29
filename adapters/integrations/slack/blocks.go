@@ -2,7 +2,9 @@ package slack
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -713,4 +715,157 @@ func taskSources(sources []TaskSource) []any {
 		out = append(out, map[string]any{"type": "url", "url": src.URL, "text": text})
 	}
 	return out
+}
+
+// ---------------------------------------------------------------------------------------------------
+// E23 T4 — THE APPROVAL SCREEN'S NON-ACTIONABLE HALF.
+//
+// Everything below builds blocks that DO NOTHING when a human touches them: a table of arguments and an
+// alert. They live in this file rather than in interactions.go on purpose — interactions.go is the single
+// mint of actionable elements, and the AST scan in blocks_test.go is what keeps that true, so a builder
+// that is not a mint belongs on this side of the line and must stay free of `action_id` and `value`.
+// ---------------------------------------------------------------------------------------------------
+
+// AlertLevels are the five the vendor documents; anything else falls to `default` rather than being sent
+// as a level Slack does not know.
+//
+// CONTRACT (§3.5 P12, inherited from E21 M16): the alert block carries `text` (max 200 characters) and
+// `level` ∈ default|info|warning|error|success, and — the sentence that matters — "Alert blocks are
+// currently only supported in modals." E21 recorded that as "structurally dead" and it was RIGHT: this
+// tree had no modal. E23 T4 opens one, so the reason for the rejection is gone and the rejection with it.
+var AlertLevels = map[string]bool{"default": true, "info": true, "warning": true, "error": true, "success": true}
+
+// MaxAlertText is the alert block's own budget (P12). Cut visibly, like every other limit in this file.
+const MaxAlertText = 200
+
+// alertBlock is the WARNING a modal is allowed to carry — "these arguments were cut", "this approval
+// expires in twelve minutes". Both are things a human deciding needs and neither is a thing they should
+// have to infer from an absence.
+func alertBlock(level, text string) any {
+	if !AlertLevels[level] {
+		level = "default"
+	}
+	text = NeutralizeBroadcasts(text)
+	if runes := []rune(text); len(runes) > MaxAlertText {
+		text = string(runes[:MaxAlertText-len([]rune(truncationMarker))]) + truncationMarker
+	}
+	return map[string]any{"type": "alert", "level": level, "text": text}
+}
+
+// ApprovalArgument is one row of the approval screen's argument table: the argument's name and the exact
+// JSON encoding of its value.
+//
+// THE VALUE IS ITS JSON ENCODING AND NOT ITS TEXT, which is the difference between a screen that describes
+// a call and a screen that shows it. A string "3" renders as `"3"` and a number 3 renders as `3`, so a
+// human reading the table is reading the bytes the broker will send — which is the entire claim an
+// approval bound to tool_calls.request_hash is making.
+type ApprovalArgument struct {
+	Name  string
+	Value string
+}
+
+// ApprovalArgumentRows is the CHANNEL message's view: one row per top-level argument, nested values
+// compacted into a single cell. Arguments that are not a JSON object — an array, a scalar, bytes that do
+// not parse — render as one row named `(arguments)` carrying them verbatim, because a strange call is
+// exactly the call a human should be shown rather than shielded from.
+func ApprovalArgumentRows(arguments []byte) []ApprovalArgument {
+	decoded, err := decodeApprovalArguments(arguments)
+	if err != nil {
+		return []ApprovalArgument{{Name: "(arguments)", Value: NeutralizeBroadcasts(string(arguments))}}
+	}
+	object, ok := decoded.(map[string]any)
+	if !ok {
+		return []ApprovalArgument{{Name: "(arguments)", Value: encodeArgumentValue(decoded)}}
+	}
+	names := make([]string, 0, len(object))
+	for name := range object {
+		names = append(names, name)
+	}
+	sort.Strings(names) // the canonical order is the same one encoding/json gives the dump: sorted keys
+	out := make([]ApprovalArgument, 0, len(names))
+	for _, name := range names {
+		out = append(out, ApprovalArgument{
+			Name:  NeutralizeBroadcasts(name),
+			Value: encodeArgumentValue(object[name]),
+		})
+	}
+	return out
+}
+
+// ApprovalArgumentLeaves is the MODAL's view: the same document flattened to one row per LEAF, addressed
+// by the path that reaches it (`fields.assignee`, `fields.labels[0]`). It is what the third button buys —
+// the channel gets a summary that fits in a thread, and the human who wants the whole thing opens it.
+//
+// An empty object or array is a leaf: `{}` says something different from a key that is not there at all.
+func ApprovalArgumentLeaves(arguments []byte) []ApprovalArgument {
+	decoded, err := decodeApprovalArguments(arguments)
+	if err != nil {
+		return []ApprovalArgument{{Name: "(arguments)", Value: NeutralizeBroadcasts(string(arguments))}}
+	}
+	var out []ApprovalArgument
+	var walk func(path string, node any)
+	walk = func(path string, node any) {
+		switch v := node.(type) {
+		case map[string]any:
+			if len(v) == 0 {
+				out = append(out, ApprovalArgument{Name: path, Value: "{}"})
+				return
+			}
+			names := make([]string, 0, len(v))
+			for name := range v {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				child := NeutralizeBroadcasts(name)
+				if path != "" {
+					child = path + "." + child
+				}
+				walk(child, v[name])
+			}
+		case []any:
+			if len(v) == 0 {
+				out = append(out, ApprovalArgument{Name: path, Value: "[]"})
+				return
+			}
+			for i, el := range v {
+				walk(fmt.Sprintf("%s[%d]", path, i), el)
+			}
+		default:
+			if path == "" {
+				path = "(arguments)"
+			}
+			out = append(out, ApprovalArgument{Name: path, Value: encodeArgumentValue(node)})
+		}
+	}
+	walk("", decoded)
+	return out
+}
+
+// encodeArgumentValue marshals one value back to its JSON form with the broadcast escape applied to every
+// string inside it. Marshalling can only fail on values encoding/json cannot represent, and every value
+// here came OUT of encoding/json, so the fallback is unreachable in practice and honest rather than silent
+// if it ever is not.
+func encodeArgumentValue(v any) string {
+	raw, err := encodeCanonicalJSON(neutralizeJSON(v), "")
+	if err != nil {
+		return "(unrenderable)"
+	}
+	return raw
+}
+
+// approvalArgumentTable renders the rows as the vendor's table block, reusing tableBlock so the argument
+// screen inherits E20's limits rather than restating them: 100 rows, 20 columns, 10,000 characters, each
+// one a TRUNCATION POINT with a visible marker row (§3.5 P13). The header names the two columns.
+//
+// The cells go through cell(), which means a value that is a bare JSON number lands in `raw_number` — the
+// vendor's other non-interactive cell type — rather than `raw_text`. That is E20's decision and it is not
+// re-made here: forking a helper that decides how a model's bytes are typed would be two copies of a
+// security-relevant rule, and the second copy is the one that never gets fixed.
+func approvalArgumentTable(args []ApprovalArgument) any {
+	rows := make([][]string, 0, len(args))
+	for _, arg := range args {
+		rows = append(rows, []string{arg.Name, arg.Value})
+	}
+	return tableBlock(Result{Type: ResultTable, Columns: []string{"argument", "value"}, Rows: rows})
 }

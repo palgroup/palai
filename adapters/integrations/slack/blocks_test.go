@@ -142,8 +142,21 @@ func TestRenderRefusesToMintAnActionableElementFromModelOutput(t *testing.T) {
 // pointed at the one function in this tree that legitimately mints one. This is the singularity claim in its
 // strongest form: EVERY outbound body this package builds is swept, and exactly one of them is actionable.
 func TestApprovalMessageIsTheOnlyMintOfAnActionableElement(t *testing.T) {
-	if found := sweepJSON(t, "ApprovalMessage", ApprovalMessage("C1", "1.1", "publish v2", "hash")); len(found) == 0 {
-		t.Fatal("the sweep found NO actionable element in ApprovalMessage — it cannot discriminate, so every other assertion using it is vacuous")
+	// THE DISCRIMINATION IS SHOWN ACROSS EVERY MINTING SURFACE, INCLUDING THE NEW ONES (E23 T4 RED-first 2).
+	// A sweep that has quietly become unable to fail is worse than no sweep at all, and adding a modal view,
+	// a third button and a deny-reason input is exactly the kind of change that could do it — so each new
+	// surface has to be caught HERE before its absence is claimed anywhere else.
+	//
+	// The modal is on this list and not the one below because it IS a mint: its input element carries an
+	// action_id, which is what makes it dispatchable, and interactions.go is where such a thing is built.
+	for label, body := range map[string][]byte{
+		"ApprovalMessage":     ApprovalMessage("C1", "1.1", "publish v2", "hash"),
+		"ToolApprovalMessage": ToolApprovalMessage("C1", "1.1", ApprovalRequest{RequestHash: "hash", Identity: "jira.transitionIssue", Arguments: []byte(`{"issue":"PAL-42"}`)}),
+		"ToolApprovalModal":   ToolApprovalModal("trigger.1", ApprovalRequest{RequestHash: "hash", Identity: "jira.transitionIssue", Arguments: []byte(`{"issue":"PAL-42"}`)}),
+	} {
+		if found := sweepJSON(t, label, body); len(found) == 0 {
+			t.Fatalf("the sweep found NO actionable element in %s — it cannot discriminate, so every other assertion using it is vacuous", label)
+		}
 	}
 
 	// The task carries SOURCES (E22 T5, X14b) so this sweep covers the newest thing a card can hold. A URL
@@ -171,9 +184,16 @@ func TestApprovalMessageIsTheOnlyMintOfAnActionableElement(t *testing.T) {
 
 // The singularity, protected at the SOURCE so a file added later cannot become a second mint without this
 // test noticing. It scans composite literals — the shape an outbound Block Kit element is BUILT from — and
-// not struct tags, which is what an inbound payload is PARSED with (approval.go reads `actions` and
-// `action_id` off a click, and reading them is the opposite of minting them).
-func TestNoFileButInteractionsMintsAnActionableElement(t *testing.T) {
+// not struct tags, which is what an inbound payload is PARSED with (approval.go reads `actions`,
+// `action_id` and `trigger_id` off a click, and reading them is the opposite of minting them).
+//
+// THE CEILING IS IN THE NAME BECAUSE A COMMENT WOULD NOT SURVIVE THE NEXT READER (plan §3.6 D13). The scan
+// is os.ReadDir(".") — ONE directory, not recursive, not the module. Today every outbound body this system
+// builds is built in this package, so "interactions.go is the only mint" is true; but E23 T4 adds a MODAL
+// VIEW, and a view constructed under apps/control-plane/internal/extensions would leave this test green
+// while the claim it certifies was false. That is why ToolApprovalModal is built in interactions.go, and
+// why the assertion below names it: the mitigation is a location, and a location can be checked.
+func TestNoFileButInteractionsMintsAnActionableElementAndThisScanIsPackageLocalOnly(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read the package directory: %v", err)
@@ -219,6 +239,19 @@ func TestNoFileButInteractionsMintsAnActionableElement(t *testing.T) {
 	}
 	if len(minters["interactions.go"]) == 0 {
 		t.Fatal("interactions.go no longer builds an actionable element — either the mint moved (and this test must follow it) or the scan stopped working")
+	}
+
+	// D13's mitigation, asserted: the modal view is built HERE, inside the one directory this scan can see.
+	// A view built anywhere else would be invisible to the loop above — the scan would still pass and the
+	// singularity would still be broken — so the location is checked rather than trusted.
+	source, err := os.ReadFile("interactions.go")
+	if err != nil {
+		t.Fatalf("read interactions.go: %v", err)
+	}
+	for _, minted := range []string{"func ToolApprovalModal(", "func ToolApprovalMessage("} {
+		if !strings.Contains(string(source), minted) {
+			t.Fatalf("%s is not built in interactions.go; this scan is package-local (os.ReadDir(\".\")) and cannot see a mint that moved out of it", minted)
+		}
 	}
 }
 
