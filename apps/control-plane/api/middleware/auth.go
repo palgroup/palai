@@ -16,6 +16,10 @@ type Scope struct {
 	Organization string
 	Project      string
 	Principal    string
+	// APIKeyID is the id of the key this request authenticated with (E23 T2). It is not the same as
+	// Principal — several keys may share a principal — and it is what an approver list names, because a
+	// key is what an operator revokes.
+	APIKeyID string
 	// Scopes is the key's coarse capability set (E13 T2). Empty means unrestricted (the ConfigPolicy
 	// §9.3 idiom); the tenancy provisioning surface requires the `provision` capability. HONEST CEILING:
 	// basic scopes only — named roles, relationships, and OIDC are E13-H/E17.

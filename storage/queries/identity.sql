@@ -5,8 +5,12 @@
 -- indistinguishable from an unknown key — resolved as invalid_token, no oracle. scopes
 -- (E13 T2) carries the key's coarse capability set (empty = unrestricted).
 
+-- id (E23 T2) is the key's OWN id, alongside the principal behind it: an approver list names the key,
+-- because api_keys.principal_id carries no UNIQUE constraint and an operator revokes a key, not a
+-- principal.
+
 -- name: VerifyAPIKey
-SELECT organization_id, project_id, principal_id, scopes
+SELECT id, organization_id, project_id, principal_id, scopes
 FROM api_keys
 WHERE key_hash = $1 AND revoked_at IS NULL
   AND (expires_at IS NULL OR expires_at > now());

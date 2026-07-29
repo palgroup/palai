@@ -26,6 +26,12 @@ type ConfigPolicy struct {
 	AllowedModels []string `json:"allowed_models,omitempty"`
 	AllowedTools  []string `json:"allowed_tools,omitempty"`
 	DefaultTools  []string `json:"default_tools,omitempty"`
+	// Approvers is the project's approver allow-list (E23 T2): the canonical principals — as
+	// ApproverPrincipal renders them — that may drive an approve/deny to a decision, on ANY surface.
+	// It lives here rather than in a table of its own because a project-scoped JSONB policy with a
+	// shipped write path is already exactly that, and a migration for a list of strings would be one
+	// more thing to keep in step with nothing.
+	Approvers []string `json:"approvers,omitempty"`
 }
 
 // AllowModel reports whether model is permitted. An empty allowlist is unrestricted, and an
@@ -49,6 +55,32 @@ func (p ConfigPolicy) DeniedTool(tools []string) string {
 		}
 	}
 	return ""
+}
+
+// ApproverAllowed reports whether principal may decide an approval in this project (E23 T2). The two
+// halves are deliberately asymmetric, and the asymmetry is the whole design:
+//
+//   - NO list ⇒ EVERYTHING is permitted, bit-for-bit as before this check existed. Every deployment that
+//     has not configured an approver list must behave exactly as it did; a security control that changes
+//     behaviour for people who never asked for it is an outage, not a control.
+//   - A list ⇒ deny by default. Only the principals it names decide, and an unidentified caller (a
+//     principal that rendered empty — an unknown surface, a missing id) decides nothing even if the list
+//     happens to carry an empty entry. That last clause is not hypothetical tidiness: `slices.Contains`
+//     would otherwise turn one stray "" in an operator's list into a wildcard for every caller whose
+//     identity failed to resolve.
+//
+// This mirrors AllowModel's "empty allowlist is unrestricted" idiom rather than ApproverAuthorized's
+// "empty means nobody". The difference is which direction the existing deployments sit in: a Slack
+// connection's allowed_users was born deny-by-default and every operator configured it, while every
+// project alive today has no approvers key at all.
+func (p ConfigPolicy) ApproverAllowed(principal string) bool {
+	if len(p.Approvers) == 0 {
+		return true
+	}
+	if principal == "" {
+		return false
+	}
+	return slices.Contains(p.Approvers, principal)
 }
 
 // ProjectConfig reads a project's config policy within the tenant scope. A NULL config_policy

@@ -1,0 +1,6 @@
+id: HIL-004
+name: approver-list-refuses-both-surfaces-in-one-function-and-is-absent-by-default
+proof_class: component-real
+provider: fake
+input: "a project approver list refuses an unlisted Slack user AND an unlisted API key in the SAME function (ApplyApprovalDecision), admits a listed principal on either surface, reaches approvals already in flight when narrowed, and leaves a project with no list bit-unchanged"
+expect_status: completed

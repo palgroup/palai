@@ -80,6 +80,7 @@ type flags struct {
 	allowedModels string
 	allowedTools  string
 	defaultTools  string
+	approvers     string
 	name          string
 }
 
@@ -104,6 +105,7 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 		fs.StringVar(&f.allowedModels, "allowed-models", "", "comma-separated allowed models (set-policy)")
 		fs.StringVar(&f.allowedTools, "allowed-tools", "", "comma-separated allowed tools (set-policy)")
 		fs.StringVar(&f.defaultTools, "default-tools", "", "comma-separated default tools (set-policy)")
+		fs.StringVar(&f.approvers, "approvers", "", "comma-separated approver principals, slack:<team>:<user> or key:<api_key_id> (set-policy)")
 	case "apikey":
 		fs.StringVar(&f.project, "project", "", "project id the key belongs to (create)")
 		fs.Var(&f.scopes, "scope", "capability scope (repeatable; omit for a full-capability admin key)")
@@ -197,8 +199,13 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 			if f.defaultTools != "" {
 				policy["default_tools"] = csv(f.defaultTools)
 			}
+			// The approver allow-list (E23 T2). Setting it turns the approve surfaces deny-by-default;
+			// leaving it unset keeps today's behaviour exactly. docs/operations/approvals.md.
+			if f.approvers != "" {
+				policy["approvers"] = csv(f.approvers)
+			}
 			if len(policy) == 0 {
-				return errors.New("set-policy requires at least one of --allowed-models/--allowed-tools/--default-tools")
+				return errors.New("set-policy requires at least one of --allowed-models/--allowed-tools/--default-tools/--approvers")
 			}
 			return c.do(http.MethodPatch, "/v1/projects/"+esc(pos[0]), body(map[string]any{"config_policy": policy}))
 		}
@@ -468,7 +475,7 @@ func writeLine(w io.Writer, b []byte) error {
 func usageErr(resource string) error {
 	subs := map[string]string{
 		"org":     "create --display-name <n> | list | get <org_id>",
-		"project": "create --display-name <n> | list | get <prj_id> | set-policy <prj_id> --allowed-models <a,b>",
+		"project": "create --display-name <n> | list | get <prj_id> | set-policy <prj_id> [--allowed-models <a,b>] [--approvers <p,q>]",
 		"apikey":  "create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>",
 		"secret":  "create --name <n> (value on stdin) | list | get <name> | rotate <name> (value on stdin)",
 	}

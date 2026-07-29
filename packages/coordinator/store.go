@@ -566,6 +566,10 @@ type Identity struct {
 	Project      string
 	Principal    string
 	Scopes       []string
+	// APIKeyID is the id of the key that authenticated, distinct from the principal behind it: several
+	// keys may share one principal (api_keys.principal_id has no UNIQUE), so the key is the finer and the
+	// revocable identity. E23 T2's approver principal names it.
+	APIKeyID string
 }
 
 // ErrInvalidToken is returned when a bearer key matches no live api_keys row. Its
@@ -592,7 +596,7 @@ func (s *Store) VerifyAPIKey(ctx context.Context, token string) (Identity, error
 	// caller can only reach the row whose secret they already hold.
 	ctx = storage.WithSystemScope(ctx)
 	err := s.pool.QueryRow(ctx, storage.Query("VerifyAPIKey"), HashAPIKey(token)).
-		Scan(&id.Organization, &project, &id.Principal, &id.Scopes)
+		Scan(&id.APIKeyID, &id.Organization, &project, &id.Principal, &id.Scopes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Identity{}, ErrInvalidToken
 	}
