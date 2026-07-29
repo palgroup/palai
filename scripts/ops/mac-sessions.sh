@@ -314,6 +314,29 @@ cmd_plan() {
 			say "  unknown — host RAM cannot be read here"
 		fi
 
+		# THE SECOND AXIS, AND IT IS THE ONE THAT ACTUALLY RUNS THE SESSIONS. Everything above is OS-level
+		# isolation — uids, device sets, home directories. None of it makes the Palai stack execute two runs
+		# at the same time: that is two environment variables on the bring-up, and with their shipped
+		# defaults (dispatch 0 in compose.yaml, 1 in production.yml; runner 1) a Mac prepared for N sessions
+		# still runs them ONE AT A TIME. Measured 2026-07-29 on this hardware: at the defaults two runs
+		# submitted together ran back to back, the second starting 43ms after the first finished.
+		hdr "PALAI CONCURRENCY (the stack knobs — isolation above does NOT provide this)"
+		say "  A stack is only as parallel as the SMALLER of these two, so set both:"
+		say ""
+		printf '    PALAI_DISPATCH_WORKERS=%s   \\\n' "$COUNT"
+		printf '    PALAI_RUNNER_CONCURRENCY=%s \\\n' "$COUNT"
+		say "    PALAI_WORKSPACE_ROOT=/absolute/host/path \\"
+		say "    palai up --native"
+		say ""
+		say "  PALAI_DISPATCH_WORKERS  how many runs the control plane dispatches at once."
+		say "  PALAI_RUNNER_CONCURRENCY  how many engine leases ONE runner parks at once; at 1 every"
+		say "                          dispatch worker but one blocks in Dial, which looks like a hang."
+		say "  Unset, the runner count follows the dispatch count (cmd/cli/internal/stack/up.go)."
+		say ""
+		say "  Prove it actually ran concurrently, against the running stack:"
+		say "    go test -tags=live -count=1 -v ./tests/live/concurrency/"
+		say "  It reads the durable run ledger and FAILS if the runs never overlapped."
+
 		hdr "WOULD ALLOCATE (mode=${MODE:-accounts}, count=$COUNT)"
 		for n in $(seq 1 "$COUNT"); do
 			name="$(session_name "$n")"

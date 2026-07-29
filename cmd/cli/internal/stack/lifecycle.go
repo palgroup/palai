@@ -303,12 +303,40 @@ func sweepEngineContainers(project string) error {
 // waitForAPI polls GET /v1/capabilities with the bootstrap key until it answers 200 or the
 // deadline elapses. compose --wait already gated on the control-plane healthcheck, so this
 // is a short belt-and-suspenders wait for the authenticated surface.
+// readyTimeout is how long a bring-up waits for the control-plane API, default 90s and overridable
+// with PALAI_STACK_READY_TIMEOUT (any time.ParseDuration string). A malformed value is a refusal, not
+// a silent fallback: an operator who set it meant to change this number.
+func readyTimeout() (time.Duration, error) {
+	v := strings.TrimSpace(os.Getenv("PALAI_STACK_READY_TIMEOUT"))
+	if v == "" {
+		return 90 * time.Second, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("PALAI_STACK_READY_TIMEOUT=%q is not a duration (try 90s, 3m): %w", v, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("PALAI_STACK_READY_TIMEOUT=%q must be positive", v)
+	}
+	return d, nil
+}
+
 func waitForAPI(cfg Config, p paths) error {
 	key, err := readTrimmed(p.apiKey)
 	if err != nil {
 		return fmt.Errorf("read api key: %w", err)
 	}
-	deadline := time.Now().Add(30 * time.Second)
+	// THE MACHINE THIS RUNS ON IS THE PRODUCT, so the deadline has to be calibratable. A Mac hosting
+	// concurrent sessions is by definition a LOADED Mac, and a fixed 30s was measured too tight on a
+	// 12-core box under load: the native control plane needed 34s to serve /v1/capabilities (migrations
+	// against a containerised Postgres, plus Slack socket init), so `palai up --native` failed and never
+	// started the runner — leaving a stack that looked broken but was merely slow.
+	// ponytail: one env knob, no config file — a fixed number cannot be right on every box.
+	wait, err := readyTimeout()
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(wait)
 	client := &http.Client{Timeout: 3 * time.Second}
 	for {
 		req, _ := http.NewRequest(http.MethodGet, cfg.BaseURL+"/v1/capabilities", nil)
@@ -321,7 +349,8 @@ func waitForAPI(cfg Config, p paths) error {
 			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("control-plane API did not become ready at %s", cfg.BaseURL)
+			return fmt.Errorf("control-plane API did not become ready at %s within %s "+
+				"(a loaded machine can need longer: set PALAI_STACK_READY_TIMEOUT=3m and re-run)", cfg.BaseURL, wait)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

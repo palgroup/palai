@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // E21 T4: the revision `palai up` creates now carries a tool list, because a revision with an EMPTY
@@ -161,6 +162,44 @@ func TestBothConcurrencyKnobsReachTheStack(t *testing.T) {
 			if got := os.Getenv("PALAI_RUNNER_CONCURRENCY"); got != tc.wantRunner {
 				t.Fatalf("PALAI_RUNNER_CONCURRENCY = %q, want %q — compose reads this from the environment, so "+
 					"an unexported value leaves the runner at 1 and the stack serial", got, tc.wantRunner)
+			}
+		})
+	}
+}
+
+// A BRING-UP ON A LOADED MAC NEEDS LONGER THAN 30s, and that number used to be a constant. The native
+// control plane took 34s to serve /v1/capabilities on a 12-core Mac under load (migrations against a
+// containerised Postgres, plus Slack socket init), so `palai up --native` failed and never started the
+// runner — a stack that looked broken and was merely slow. The default is now 90s and tunable, and a
+// malformed value REFUSES rather than silently falling back to the default: an operator who set this
+// meant to change it, and a typo that quietly restores 90s is the bug they would never find.
+func TestReadyTimeoutIsTunableAndRefusesGarbage(t *testing.T) {
+	for _, tc := range []struct {
+		name, env string
+		want      time.Duration
+		wantErr   bool
+	}{
+		{name: "unset is the generous default", env: "", want: 90 * time.Second},
+		{name: "an explicit duration wins", env: "3m", want: 3 * time.Minute},
+		{name: "a bare number is not a duration", env: "90", wantErr: true},
+		{name: "nonsense refuses", env: "soon", wantErr: true},
+		{name: "zero refuses", env: "0s", wantErr: true},
+		{name: "negative refuses", env: "-5s", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PALAI_STACK_READY_TIMEOUT", tc.env)
+			got, err := readyTimeout()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("readyTimeout() = %s, want an error for %q", got, tc.env)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("readyTimeout(): %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("readyTimeout() = %s, want %s", got, tc.want)
 			}
 		})
 	}
