@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/palgroup/palai/adapters/repositories"
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/packages/coordinator"
+	statemachines "github.com/palgroup/palai/packages/state-machines"
 )
 
 // This file is the approval PUMP — the approval equivalent of command_pump.go (spec §30.9-30.12,
@@ -25,6 +27,67 @@ import (
 // publishTimeout bounds one boundary publish so a hanging remote (git push has no inherent deadline)
 // cannot block the model-loop boundary indefinitely.
 const publishTimeout = 60 * time.Second
+
+// ---------------------------------------------------------------------------------------------------
+// E23 T1 — THE GENERIC HALF: a tool call parks its run on a human. Everything above this line is the
+// publication pump; everything below gates ANY tool call and knows nothing about repositories.
+// ---------------------------------------------------------------------------------------------------
+
+// errRunAwaitingApproval ends an attempt cleanly when a gated tool call is waiting on a human (spec
+// §22.4, §26.7): the run is now WAITING, the attempt ends with no engine process held, and the decision
+// (or the expiry reaper) opens a fresh attempt through coordinator.wakeParkedRunTx. Like errRunPaused and
+// errRunReleased it is NOT a failure — ExecuteAttempt returns nil on it, so the worker is freed even in a
+// single-runner stack and a parked run costs no compute while a human reads.
+var errRunAwaitingApproval = errors.New("run_awaiting_approval")
+
+// defaultApprovalTTL is how long a question stays live with nobody answering it. Thirty minutes is a
+// judgement, and the reasoning is worth the line: it has to outlast a meeting and a lunch, because the
+// cost of expiring too early is a human who clicks Approve and is told the button is dead; and it has to
+// be short enough that a forgotten question releases its run the same working hour, because the cost of
+// expiring too late is a run holding a session slot for a decision nobody will make. Overridable with
+// PALAI_APPROVAL_TTL (any time.ParseDuration value) for deployments whose approvers are asleep in
+// another timezone.
+const defaultApprovalTTL = 30 * time.Minute
+
+// approvalTTL resolves the deadline one approval gets. A malformed override falls back to the default
+// rather than failing the run: an unparseable env var must not be the reason a tool call cannot be asked
+// about, and the fallback is the safe direction (a deadline still exists).
+func approvalTTL() time.Duration {
+	raw := os.Getenv("PALAI_APPROVAL_TTL")
+	if raw == "" {
+		return defaultApprovalTTL
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultApprovalTTL
+	}
+	return d
+}
+
+// parkForApproval releases the run's compute while a human decides (spec §22.4, §26.5). It follows the
+// pause/detach choreography: capture a durable checkpoint of this boundary if a sink is wired, drive the
+// run running→waiting, and hand back errRunAwaitingApproval so the attempt ends without sending a
+// tool.result — the model is given NOTHING to continue on, which is the whole difference between this
+// gate and a tool that returns "pending_approval" as an answer and lets the run finish.
+//
+// IT DOES NOT REFUSE A CHECKPOINT-LESS PARK, and that is a deliberate departure from detach.go, which
+// does. §26.5 forbids releasing with no recoverable boundary, and a detached child HAS no other boundary
+// to come back to: its result must be folded at exactly the point the parent left. A parked approval
+// does: the woken attempt replays the committed transcript, reaches the SAME tool.request, and consults
+// the SAME ledger row — recovery ladder rung 2, which is always available. Requiring a checkpoint sink
+// would make the approval gate unavailable on every deployment without object storage, which is most of
+// them, and an unavailable gate is a gate nobody has.
+func (o *Orchestrator) parkForApproval(ctx context.Context, st *attemptState) error {
+	if o.checkpoints != nil {
+		if err := o.checkpointBeforePause(ctx, st); err != nil {
+			return err
+		}
+	}
+	if _, err := o.spine.ApplyRunTransition(ctx, st.tenant, string(st.attempt.RunID), statemachines.RunCmdWait); err != nil {
+		return err
+	}
+	return errRunAwaitingApproval
+}
 
 // Publisher executes one approved publication against the external repository and returns the receipt to
 // record (spec §30.9-30.10). RepositoryPublisher is the real implementation (push via the broker, PR via

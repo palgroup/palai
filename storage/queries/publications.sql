@@ -130,3 +130,87 @@ ORDER BY p.created_at, p.id;
 UPDATE publications
 SET state = 'published', receipt = $4, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'approved';
+
+-- ===================================================================================================
+-- E23 T1 — THE GENERIC HALF. Everything above gates a PUBLICATION; everything below gates any TOOL
+-- CALL, through the same approvals table (000044 R1) and the §26.7 tool-call machine that has carried
+-- `approval_pending` since 000001 without a single caller.
+--
+-- The split in the projections is deliberate and is NOT duplication to be folded later: a publication's
+-- lifecycle lives on the publications row, a tool call's on tool_calls.state. Forcing one shape would
+-- mean giving one of them a second copy of its own state, and a second copy is a thing that can disagree.
+-- ===================================================================================================
+
+-- BeginToolCallApproval writes the durable PARKED marker: the call is recorded with the exact arguments
+-- and request hash that were approved, at `approval_pending`, BEFORE any human is asked. Ordering matters
+-- for the same reason the pre-write's does — a crash between asking and recording would leave a button
+-- bound to a call that does not exist. ON CONFLICT DO NOTHING makes a re-driven attempt idempotent: the
+-- FIRST park is authoritative, so a redelivered dispatch re-reads the row it already wrote rather than
+-- re-asking a human a question they may have already answered.
+-- name: BeginToolCallApproval
+INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, request_hash, commit_boundary)
+VALUES ($1, $2, $3, $4, $5, 'approval_pending', $6, $7, $8, $9, $10)
+ON CONFLICT (id) DO NOTHING;
+
+-- InsertToolApproval opens the one-shot binding for a parked call (000044 R1). request_hash is
+-- toolbroker.RequestHash(name, args): the button carries it, so an edited argument set is a DIFFERENT
+-- call with no approval (REP-009, inherited for free). expires_at is finally set by somebody — 000013
+-- forward-declared it and until this epic nothing ever wrote a value into it.
+-- name: InsertToolApproval
+INSERT INTO approvals (id, tool_call_id, organization_id, project_id, request_hash, allowed_approver, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (tool_call_id) DO NOTHING;
+
+-- LockToolCallForDecision locks the gated call so a decision is single-winner: two clicks on the same
+-- button, or a click racing the expiry reaper, settle exactly once.
+-- name: LockToolCallForDecision
+SELECT state, run_id, name, coalesce(arguments::text, '{}'), coalesce(request_hash, '')
+FROM tool_calls
+WHERE id = $1 AND organization_id = $2 AND project_id = $3
+FOR UPDATE;
+
+-- ToolApprovalForCall reads the whole parked-call projection: the ledger row's own facts joined to the
+-- binding. It is the read every surface derives the approval SCREEN from — nothing stores a rendered
+-- screen, so this is where one comes from.
+-- name: ToolApprovalForCall
+SELECT a.id, t.id, t.run_id, r.session_id, coalesce(r.response_id, ''), t.name,
+       coalesce(t.arguments::text, '{}'), coalesce(a.request_hash, ''), t.state, a.expires_at,
+       a.decided_by
+FROM approvals a
+JOIN tool_calls t ON t.id = a.tool_call_id
+JOIN runs r ON r.id = t.run_id
+WHERE a.tool_call_id = $1 AND a.organization_id = $2 AND a.project_id = $3;
+
+-- ApproveToolCall advances approval_pending -> ready (§26.7's own transition, unused until now). Single
+-- winner on the source state, so a doubled click approves once.
+-- name: ApproveToolCall
+UPDATE tool_calls
+SET state = 'ready', updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'approval_pending';
+
+-- CancelToolCall drives a gated call to `canceled` and RECORDS THE ANSWER in the result column. It is
+-- the shared exit for the three ways a call can fail to be authorized — a human denied it, its deadline
+-- passed, or a before_tool hook denied it after the human said yes — so all three deliver the model the
+-- same shape and all three survive a kill: the answer is durable before it is spoken.
+-- name: CancelToolCall
+UPDATE tool_calls
+SET state = 'canceled', result = $4, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state IN ('approval_pending', 'ready');
+
+-- SetToolApprovalDecision records WHO decided (audit). The lifecycle stays on the tool_calls row.
+-- name: SetToolApprovalDecision
+UPDATE approvals
+SET decided_by = $2, updated_at = clock_timestamp()
+WHERE tool_call_id = $1;
+
+-- SelectExpiredToolApprovals is the reaper's read: every still-parked call whose deadline passed. System
+-- scoped by construction (a sweep spans tenants), and it carries the run's session/response so the
+-- expiry can be journaled onto the right stream and the parked run woken.
+-- name: SelectExpiredToolApprovals
+SELECT a.tool_call_id, t.organization_id, t.project_id, t.run_id, r.session_id, coalesce(r.response_id, '')
+FROM approvals a
+JOIN tool_calls t ON t.id = a.tool_call_id
+JOIN runs r ON r.id = t.run_id
+WHERE t.state = 'approval_pending'
+  AND a.expires_at IS NOT NULL AND a.expires_at < clock_timestamp()
+ORDER BY a.created_at, a.id;

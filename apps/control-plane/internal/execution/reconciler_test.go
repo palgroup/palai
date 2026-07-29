@@ -13,6 +13,7 @@ type fakeReclaimer struct {
 	swept          int
 	bridgeSweeps   int
 	approvalSweeps int
+	toolSweeps     int
 }
 
 func (f *fakeReclaimer) ReclaimExpired(_ context.Context, maxAttempts int) (int, error) {
@@ -27,6 +28,11 @@ func (f *fakeReclaimer) SweepDeadLetteredRuns(_ context.Context) (int, error) {
 
 func (f *fakeReclaimer) SweepExpiredApprovals(_ context.Context) (int, error) {
 	f.approvalSweeps++
+	return 0, nil
+}
+
+func (f *fakeReclaimer) SweepExpiredToolApprovals(_ context.Context) (int, error) {
+	f.toolSweeps++
 	return 0, nil
 }
 
@@ -48,5 +54,11 @@ func TestReconcilerSweepReportsDeadLetteredWithConfiguredCeiling(t *testing.T) {
 	}
 	if rec.approvalSweeps != 1 {
 		t.Fatalf("expired-approval sweeps = %d, want 1 (each pass must expire idle-elapsed approvals, E10 T7)", rec.approvalSweeps)
+	}
+	// The gated-tool half is not optional and not decorative: it is the only thing that releases a run
+	// parked on a question nobody answered (E23 T1). A pass that skipped it would leave that run waiting
+	// for as long as the deployment lives.
+	if rec.toolSweeps != 1 {
+		t.Fatalf("expired-tool-approval sweeps = %d, want 1 (each pass must release runs parked on lapsed approvals)", rec.toolSweeps)
 	}
 }

@@ -85,6 +85,31 @@ type Tool struct {
 	// not survive the restart either — a resumed run must ask again rather than be served a copy that should
 	// not exist.
 	Unretained bool
+	// RequiresApproval marks a tool NO CALL OF WHICH RUNS UNTIL A HUMAN DECIDES (E23 T1, spec §22.4).
+	// The dispatcher parks the run on it: the ledger row goes to `approval_pending`, an approvals row
+	// binds the decision to this call's request hash, and Execute is not reached until an approve
+	// advances the row to `ready`.
+	//
+	// It is DECLARED ON THE TOOL, not per call, and the reason is ReplayClass's own fork one file over
+	// ("the class lives on the tool, not per-call DB config") plus the operator's existing ceremony: an
+	// MCP tool is already published one at a time, so the gate is a second question beside a decision a
+	// human is already making. The honest ceiling rides with it — "approve the transition to Done but not
+	// to In Progress" cannot be expressed here, and per-call policy is deferred to the before_tool hook's
+	// HookOutcome, which first needs a fail-open/fail-closed answer for a downed hook worker.
+	//
+	// A built-in declares it in Go and stores NOTHING; a registry/MCP tool carries it on its
+	// tool_revisions row (000044 R3), resolved through RequiresApprovalResolved.
+	RequiresApproval bool
+	// ApprovalLabel is THE ONE HUMAN SENTENCE ON THE APPROVAL SCREEN, and it is the operator's, written at
+	// registration (000044 R3). Empty renders as the literal `(no operator label)` rather than as nothing:
+	// a blank line reads like "there is no more to say", and the honest reading is "nobody wrote one".
+	//
+	// It exists as its own column because the two fields a vendor RECOMMENDS for display are the two the
+	// same vendor says not to trust: MCP 2025-11-25 documents `title` and `description` as human-readable
+	// display text and, on the same page, "clients MUST consider tool annotations to be untrusted unless
+	// they come from trusted servers" (§3.5 P3/P4). Reusing tool_revisions.description would put an MCP
+	// SERVER's own sentence on the screen a human reads before authorizing that server's side effect.
+	ApprovalLabel string
 }
 
 // replayClass reports the tool's declared class, defaulting an unset one to ClassPure.
@@ -261,6 +286,36 @@ func (b *Broker) ExternalKeyedResolved(ctx context.Context, env ExecEnv, name st
 		return false, nil
 	}
 	return resolved.ExternalKeyed, nil
+}
+
+// RequiresApprovalResolved reports whether a tool is gated on a human decision, together with the
+// operator's label for the approval screen, falling back to the injected registry lookup for a tool
+// absent from the static set. It mirrors ReplayClassResolved's static-then-registry resolution; a clean
+// miss or no lookup is (false, "").
+//
+// THE GATE AND THE LABEL COME BACK FROM ONE LOOKUP ON PURPOSE. The identity a human authorizes has to be
+// the identity that executes, so resolving "is this gated" here and "what is it called" somewhere else
+// would be two answers that can disagree — and the disagreement would be invisible, because the screen
+// would still render. One call, one row, one answer.
+func (b *Broker) RequiresApprovalResolved(ctx context.Context, env ExecEnv, name string) (bool, string, error) {
+	b.mu.Lock()
+	tool, ok := b.tools[name]
+	lookup := b.lookup
+	b.mu.Unlock()
+	if ok {
+		return tool.RequiresApproval, tool.ApprovalLabel, nil
+	}
+	if lookup == nil {
+		return false, "", nil
+	}
+	resolved, found, err := lookup(ctx, env, name)
+	if err != nil {
+		return false, "", fmt.Errorf("registry lookup %s: %w", name, err)
+	}
+	if !found {
+		return false, "", nil
+	}
+	return resolved.RequiresApproval, resolved.ApprovalLabel, nil
 }
 
 // NeedsPreWrite reports whether a class must be durably marked 'executing' BEFORE it runs so a

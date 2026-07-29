@@ -213,10 +213,18 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- advances the fence to the reclaiming attempt (so a stale late callback is rejected at commit) but
 -- never reopens an already-resolved row.
 -- name: BeginToolCall
+-- The state expression advances ONLY a `ready` row — a call a human approved (E23 T1) — to 'executing',
+-- and leaves every other state exactly as it was. It is written as a CASE rather than a plain assignment
+-- because the WHERE below still admits `uncertain`, and a pre-write that reopened an uncertain row would
+-- undo a reclaiming attempt's decision to stop. Without this branch an approved call would execute and
+-- then lose its result: CommitToolResult only advances executing/leased, so the commit would change 0
+-- rows and be reported a stale commit.
 INSERT INTO tool_calls (id, organization_id, project_id, run_id, fence, state, name, arguments, replay_class, request_hash, external_idempotency_key, lease_owner, commit_boundary)
 VALUES ($1, $2, $3, $4, $5, 'executing', $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (id) DO UPDATE
-   SET fence = GREATEST(tool_calls.fence, EXCLUDED.fence), lease_owner = EXCLUDED.lease_owner, updated_at = clock_timestamp()
+   SET fence = GREATEST(tool_calls.fence, EXCLUDED.fence), lease_owner = EXCLUDED.lease_owner,
+       state = CASE WHEN tool_calls.state = 'ready' THEN 'executing' ELSE tool_calls.state END,
+       updated_at = clock_timestamp()
    WHERE tool_calls.state NOT IN ('completed', 'reconciled_completed', 'reconciled_not_applied');
 
 -- MarkToolCallUncertain drives an in-flight (executing/leased) tool_call to `uncertain` (spec §26.7): a

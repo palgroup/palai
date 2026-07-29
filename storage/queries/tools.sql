@@ -120,7 +120,8 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- here. The control_plane branch ignores these columns.
 -- name: LookupRunTool
 SELECT trv.executor, trv.description, trv.input_schema, trv.output_schema, trv.replay_class,
-       trv.executor_config, trv.secret_ref, trv.timeout_ms, t.canonical_name, trv.revision_number
+       trv.executor_config, trv.secret_ref, trv.timeout_ms, t.canonical_name, trv.revision_number,
+       trv.approval_required, trv.approval_label
 FROM runs r
 LEFT JOIN agent_revisions ar ON ar.id = r.agent_revision_id
 LEFT JOIN run_template_revisions rtr ON rtr.id = r.run_template_revision_id

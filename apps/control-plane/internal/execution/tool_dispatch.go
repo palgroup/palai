@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
@@ -30,14 +32,41 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	args, _ := frame.Data["arguments"].(map[string]any)
 	runID := string(st.attempt.RunID)
 	requestHash := toolbroker.RequestHash(name, args)
+	// The per-attempt sandbox context every tool resolution runs through. Hoisted above the consult
+	// because the approval gate resolves the tool through the SAME lookup the executor uses — the
+	// identity a human authorizes has to be the identity that runs, so it cannot come from the frame.
+	env := o.execEnv(st)
+	// approved marks a call a human already said yes to (the ledger row is `ready`). It is the one state
+	// that RE-ENTERS the execute path from the consult rather than returning from it.
+	approved := false
 
-	// 1. Durable consult (cross-kill dedup + uncertain block).
+	// 1. Durable consult (cross-kill dedup + uncertain block + the approval states, §26.7).
 	state, stored, storedClass, _, storedHash, found, err := o.spine.LookupToolCall(ctx, st.tenant, callID)
 	if err != nil {
 		return err
 	}
 	if found {
 		switch state {
+		case "approval_pending":
+			// A human still owes an answer. This attempt replayed the transcript back to the same request;
+			// park again rather than asking a second time — the first park is authoritative, so the button
+			// already in front of a human stays the live one.
+			return o.parkForApproval(ctx, st)
+		case "ready":
+			// A human approved THESE BYTES. The binding is checked before anything runs: if the request
+			// hash on the row is not this request's, the approval that exists authorizes a different call.
+			// Refusing loudly rather than politely is the TOL-016 shape, and it is the right one here: a
+			// same-id call whose content moved between the question and the answer is not a case for a
+			// gentler denial, it is a case for nothing happening and somebody looking.
+			if storedHash != "" && storedHash != requestHash {
+				return fmt.Errorf("tool_call %q diverged after approval (hash %s != approved %s): a human approved different arguments, so this call has no approval", callID, requestHash, storedHash)
+			}
+			approved = true
+		case "canceled":
+			// Denied by a human, expired, or refused by a hook after the fact. The answer was written to
+			// the ledger row when the decision was made — durable before it is spoken — so deliver it and
+			// let the run continue. Same delivery path as a before_tool deny; no second one exists.
+			return o.deliverToolResult(ctx, st, frame, callID, stored, false)
 		case "completed", "reconciled_completed", "reconciled_not_applied":
 			// A committed row is recognised BY CONTENT (spec §26.7, TOL-016): the same tool_call_id must
 			// carry the same (name, args). A diverged repeat is a protocol violation — replaying the stored
@@ -85,7 +114,14 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 		// the consult above) must NOT leave the row 'executing' forever — nothing reconciles a non-uncertain
 		// executing row, and the effect may have applied once. Mark it uncertain so the reconciler resolves it;
 		// end the attempt like any uncertain block. A FRESH call (no row) delivers the structured denial below.
-		if found {
+		//
+		// An APPROVED row is NOT that case and must not be marked uncertain: nothing ran, so nothing is
+		// uncertain. It takes the fresh-call exit below — the structured denial — and the row is left
+		// `ready`. Leaving it is the honest state: a human's approval is permission, never an override, so
+		// a policy that says no keeps saying no on every replay, and the call runs only if the policy stops
+		// refusing. ponytail: no cancel transition for this path, because a `ready` row is inert until a
+		// hook lets it through, which is exactly the outcome that should let it through.
+		if found && !approved {
 			if _, err := o.spine.MarkToolCallUncertain(ctx, st.tenant, st.sessionID, st.responseID, runID, callID); err != nil {
 				return err
 			}
@@ -111,12 +147,50 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	arguments, _ := json.Marshal(execArgs)
 	// Resolve the class through the SAME lookup the executor uses, so a registered registry tool's DECLARED
 	// class (e.g. irreversible) drives the pre-write marker — not the ClassPure static-miss default (M2).
-	env := o.execEnv(st)
 	class, err := o.tools.ReplayClassResolved(ctx, env, name)
 	if err != nil {
 		return err
 	}
-	if toolbroker.NeedsPreWrite(class) && !found {
+
+	// 2a. THE APPROVAL GATE (E23 T1, spec §22.4). It sits HERE — after before_tool, before the pre-write —
+	// for a reason worth stating: a policy hook that already refuses this call has refused it, and there is
+	// no sense interrupting a human to ask about something the deployment has already said no to. A human's
+	// attention is the scarcest thing this system spends.
+	//
+	// It engages only on a FRESH call. A row that exists has already been through the gate: it is parked,
+	// approved, canceled, or was never gated at all, and the consult above resolved which.
+	if !found {
+		// The label is deliberately DISCARDED here. It belongs to the same row as the gate — which is why
+		// one lookup returns both — but the dispatcher does not render anything, and storing it now would
+		// be the stored display this design refuses. Each surface resolves it again at render time, from
+		// the same lookup, and gets the same answer.
+		required, _, aerr := o.tools.RequiresApprovalResolved(ctx, env, name)
+		if aerr != nil {
+			return aerr
+		}
+		if required {
+			approvalID := newExecID("apr")
+			// The row records the args that will RUN (the patched set, if a transform fired) and the hash of
+			// the model's original — the same split the pre-write uses, so identity and audit keep meaning
+			// exactly what they mean everywhere else. The button binds to the hash; the screen shows the args.
+			if err := o.spine.RequestToolApproval(ctx, st.tenant, coordinator.ToolApprovalRequest{
+				ApprovalID: approvalID, ToolCallID: callID, SessionID: st.sessionID, ResponseID: st.responseID,
+				RunID: runID, Fence: st.attempt.Fence, ToolName: name, Arguments: arguments,
+				ReplayClass: string(class), RequestHash: requestHash,
+				ExpiresAt: time.Now().Add(approvalTTL()), Boundary: st.lastModelRequestID,
+			}); err != nil {
+				return err
+			}
+			return o.parkForApproval(ctx, st)
+		}
+	}
+
+	// An APPROVED call must be pre-written whatever its class. The consult left the row at `ready`, and
+	// CommitToolResult only advances executing/leased — a `ready` row would change 0 rows and be reported a
+	// stale commit, so the result of a call a human authorized would be thrown away. It is also the honest
+	// marker: an approved call is by definition one whose effect somebody wanted looked at, so a kill
+	// between execute and commit must be detectable as uncertain rather than as "never ran".
+	if (toolbroker.NeedsPreWrite(class) && !found) || approved {
 		// TOL-017's fence half is the CommitToolResult fence guard; the async-callback transport half keys
 		// on the durable pre-write (E12 T4). external_idempotency_key = tool_call_id ONLY for a tool that
 		// sends a real external Idempotency-Key (the remote_http invoke); a built-in records none (honest).
@@ -134,6 +208,27 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 			callID, name, arguments, string(class), requestHash, externalKey, st.lastModelRequestID); err != nil {
 			return err
 		}
+	}
+
+	// 2b. WHAT RUNS IS WHAT WAS SHOWN. An approved call executes the arguments off its OWN ledger row —
+	// the bytes the approval screen was derived from and the button was bound to — rather than whatever
+	// this attempt's frame carries or this attempt's transform hook produced. The hash guard in the
+	// consult already refuses a diverged frame; this closes the quieter half, where the frame agrees but a
+	// non-deterministic transform would have substituted something the human never read.
+	if approved {
+		parked, ok, perr := o.spine.ToolApprovalForCall(ctx, st.tenant, callID)
+		if perr != nil {
+			return perr
+		}
+		if !ok {
+			return fmt.Errorf("tool_call %q is ready to run but its approval row is gone: refusing to execute an authorization that cannot be read", callID)
+		}
+		var approvedArgs map[string]any
+		if err := json.Unmarshal(parked.Arguments, &approvedArgs); err != nil {
+			return fmt.Errorf("decode approved arguments for %q: %w", callID, err)
+		}
+		execArgs = approvedArgs
+		arguments = parked.Arguments
 	}
 
 	// 3. Execute + commit + deliver. Execute runs the PATCHED args (a transform hook's replacement, or the

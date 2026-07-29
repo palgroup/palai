@@ -56,9 +56,14 @@ func (s *Store) LookupTool(ctx context.Context, org, project, runID, name string
 		timeoutMS      *int
 		canonicalName  string
 		revisionNumber int
+		// The operator's approval declaration (000044 R3). It is read HERE, in the lookup the executor
+		// itself resolves through, so "is this gated" and "what will run" are one answer from one row.
+		approvalRequired bool
+		approvalLabel    string
 	)
 	err := s.pool.QueryRow(ctx, storage.Query("LookupRunTool"), runID, org, project, name).
-		Scan(&executor, &description, &inputJSON, &outputJSON, &replayClass, &configJSON, &secretRef, &timeoutMS, &canonicalName, &revisionNumber)
+		Scan(&executor, &description, &inputJSON, &outputJSON, &replayClass, &configJSON, &secretRef, &timeoutMS,
+			&canonicalName, &revisionNumber, &approvalRequired, &approvalLabel)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return toolbroker.Tool{}, false, nil
 	}
@@ -70,16 +75,22 @@ func (s *Store) LookupTool(ctx context.Context, org, project, runID, name string
 		tool, ok, err := s.mcpTool(ctx, org, project, runID, name, description, inputJSON, outputJSON, replayClass, configJSON, timeoutMS)
 		if ok {
 			tool.Description = describeExternal(executor, tool.Description)
+			// The gate rides the REVISION, not the discovered tool: an MCP server cannot mark itself
+			// harmless or dangerous. Its own `description` stays where it already was — in the model's
+			// prompt, labelled untrusted — and never reaches the approval screen (§3.5 P3/P4).
+			tool.RequiresApproval, tool.ApprovalLabel = approvalRequired, approvalLabel
 		}
 		return tool, ok, err
 	}
 
 	tool := toolbroker.Tool{
-		Name:         name,
-		Description:  describeExternal(executor, description),
-		InputSchema:  decodeSchema(inputJSON),
-		OutputSchema: decodeSchema(outputJSON),
-		ReplayClass:  toolbroker.ReplayClass(replayClass),
+		Name:             name,
+		Description:      describeExternal(executor, description),
+		InputSchema:      decodeSchema(inputJSON),
+		OutputSchema:     decodeSchema(outputJSON),
+		ReplayClass:      toolbroker.ReplayClass(replayClass),
+		RequiresApproval: approvalRequired,
+		ApprovalLabel:    approvalLabel,
 	}
 	switch executor {
 	case "control_plane":
