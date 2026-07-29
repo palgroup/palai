@@ -7,7 +7,8 @@ SHELL := /bin/bash
 	check-spike-reports verify local-up local-down local-doctor uat-local-live \
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
 	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-wiring uat-wiring-live \
-	uat-agent-surface uat-agent-surface-live uat-tools-memory uat-tools-memory-live uat-code-and-ship uat-code-and-ship-live uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
+	uat-agent-surface uat-agent-surface-live uat-tools-memory uat-tools-memory-live uat-code-and-ship uat-code-and-ship-live \
+	uat-tool-approval uat-tool-approval-live uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
 	release-matrix-smoke provenance-offline-verify
 
 bootstrap:
@@ -367,6 +368,26 @@ uat-code-and-ship:
 uat-code-and-ship-live:
 	@test -x scripts/uat/code-and-ship || { echo "code-and-ship UAT not implemented" >&2; exit 2; }
 	@RUN_LIVE=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/code-and-ship
+
+# E23 T7 exit gate (plan §T7): the tool-approval-0.1.0 bundle, the refusal matrix (the MCP server's own
+# `description` rendered onto the approval screen; a denied call marked as executed; a run left waiting after
+# its approval expired; a merge tool that grew a `pull_request_number`), the promote gate dispatched ahead of
+# E22's, the five case ids this epic opened, and the Docker-bound backing co-run. Every earlier uat-* target
+# above stays untouched.
+uat-tool-approval:
+	@test -x scripts/uat/tool-approval || { echo "tool-approval UAT not implemented" >&2; exit 2; }
+	@SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/tool-approval
+
+# THE ONE COMMAND (plan §T7): the credential-gated live legs — a real approval message posted into a real
+# Slack thread, the Atlassian MCP reachability leg, and an opt-in real merge (PALAI_GIT_LIVE_MERGE) that asks
+# github.com for its own answer to a moved head. Each SKIPS by the NAME of the variable it is missing, so a
+# partial handover reports partial-green rather than a red wall, and no code change is needed to run any of
+# them. E23's §6 contribution is to make leg 1 BIGGER again — it now covers the approval message, the modal,
+# an unauthorized click and a merge — and to OPEN leg 6, an approval expiring in REAL time, which this epic
+# does not close.
+uat-tool-approval-live:
+	@test -x scripts/uat/tool-approval || { echo "tool-approval UAT not implemented" >&2; exit 2; }
+	@RUN_LIVE=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/tool-approval
 
 # E18 T1 image half of the release matrix (Docker-bound, so NOT in `make verify` — like uat-kind): builds
 # linux/amd64 + linux/arm64 for all three images, asserts each indexed tar's digest/image_id/arch against the

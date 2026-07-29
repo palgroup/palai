@@ -173,7 +173,16 @@ func WorkerCatalogDigest() (string, error) {
 // destinationFieldTokens are the substrings a publication-destination field is spelled with. The match is a
 // SUBSTRING one on purpose: `target_branch` and `head_ref` are the same field with different spellings, and
 // a guard that only knew the four exact names E22 happened to think of would be pierced by the fifth.
-var destinationFieldTokens = []string{"base", "head", "remote", "branch", "ref", "url", "repo", "origin", "upstream"}
+//
+// E23 T7 ADDED THE LAST FIVE, AND FINDING THAT THEY WERE MISSING IS WHAT THE REFUSAL MATRIX IS FOR. E22's
+// list covered where a BRANCH lands; E23 T6 made a third destination expressible — WHICH pull request is
+// merged, and BY WHICH METHOD — and `pull_request_number` contains not one of E22's nine tokens, so a merge
+// tool that grew that property would have passed this sweep untouched. The tokens were added HERE rather
+// than in a second E23-local list, because a fork would leave the E22 sweep permanently weaker and the next
+// destination would be missed by whichever copy the reader did not open. Widening cannot loosen anything:
+// the E22 schemas carry only `title` and `body`, and this sweep only ever ADDS findings.
+var destinationFieldTokens = []string{"base", "head", "remote", "branch", "ref", "url", "repo", "origin", "upstream",
+	"number", "pull_request", "merge_method", "method", "target"}
 
 // SweepDestinationFields returns every property name in the carried tool schemas that a model could fill with
 // a publication destination. It is the RECOMPUTE behind the first crown claim of this release — the model

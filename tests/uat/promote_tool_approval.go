@@ -101,6 +101,7 @@ func ToolApprovalPromoteGate(raw []byte, target string) []Refusal {
 		refusals = append(refusals, toolApprovalGateRefusals(ta)...)
 		refusals = append(refusals, toolApprovalScreenRefusals(ta)...)
 		refusals = append(refusals, toolApprovalParkRefusals(ta)...)
+		refusals = append(refusals, toolApprovalDestinationRefusals(ta)...)
 		refusals = append(refusals, toolApprovalMintRefusals(ta)...)
 		if !ta.Complete() {
 			refusals = append(refusals, Refusal{Detail: toolApprovalIncomplete})
@@ -206,6 +207,30 @@ func toolApprovalParkRefusals(ta *ToolApprovalProof) []Refusal {
 		return []Refusal{{Detail: fmt.Sprintf(
 			"the decision ledger refuses an unauthorized principal on %v and applies %d authorized decision(s) — it must show BOTH surfaces refusing and at least one legitimate approval, or the check is consistent with a guard bolted onto a single caller rather than placed in the one function both pass through (plan §T2, §T7)",
 			refusedOn, applied)}}
+	}
+	return nil
+}
+
+// toolApprovalDestinationRefusals re-derives (f) from the three publish tools' own schemas — E22's sweep,
+// now over merge as well. Merge is the operation where a model-chosen destination would be least
+// recoverable: a push adds a branch and a pull request adds a conversation, but a merge changes what the
+// repository IS, and an approved merge aimed at somebody else's pull request would carry a human's decision
+// onto a change that human never read.
+func toolApprovalDestinationRefusals(ta *ToolApprovalProof) []Refusal {
+	// THE SWEEP RUNS BEFORE THE STRUCTURAL CHECK, and the order is not cosmetic: the sweep NAMES the field,
+	// the structural check only says the shape is wrong. A merge tool that grew `pull_request_number` fails
+	// both, and the reader should be told which property did it.
+	destinations, err := SweepDestinationFields(ta.PublishToolSchemas)
+	if err != nil {
+		return []Refusal{{Detail: "the tool-approval proof's publish tool schemas cannot be swept, so \"the model cannot name a destination\" is unverifiable and the tag is REFUSED (fail closed): " + err.Error()}}
+	}
+	if len(destinations) != 0 {
+		return []Refusal{{Detail: fmt.Sprintf(
+			"the publish tools expose %d destination field(s) the MODEL could fill: %v — which pull request is merged comes from the run's OWN published receipt, at which commit from the approved publication's head_sha, and by which method from the binding's policy; the proof declares %d (plan §2, §T6, §T7)",
+			len(destinations), destinations, ta.ModelChosenDestinations)}}
+	}
+	if !toolApprovalSchemasCarryTheThreeTools(ta.PublishToolSchemas) {
+		return []Refusal{{Detail: "the tool-approval proof does not carry all THREE publish tools' input schemas with an EMPTY property set on palai.publish.merge_pull_request — a destination sweep over schemas that are not theirs proves nothing about them, and the merge tool taking no arguments at all is the strongest form of this claim rather than a coincidence (plan §T6, §T7)"}}
 	}
 	return nil
 }
