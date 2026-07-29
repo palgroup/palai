@@ -11,8 +11,15 @@
 // logs.
 //
 // HONEST CEILING: this is NOT a macOS/iOS build. swift.build-check is a type-check only — no codegen, no
-// linking, no signing. There is no signing cert / provisioning profile / store credential anywhere. A real
-// signed Apple build is a separate capability (apple-build, disabled) and the §6 leg 3 operator work.
+// linking, no signing. No signing credential is wired into any Palai DEPLOYMENT and no apple-build operation
+// is typed in workers.Catalog — absence by construction, not absence by inventory. A real signed Apple build
+// is a separate capability (apple-build, disabled) and the §6 leg 3 operator work.
+//
+// D7, CORRECTED BY E23 T7 — AND THIS IS THE COPY THE PLAN DID NOT COUNT. The plan named two remaining
+// copies of the false sentence "there is no signing cert / provisioning profile / store credential
+// anywhere"; there were THREE, and this was the third. Measured on the development machine 2026-07-28:
+// `security find-identity -v -p codesigning` reports FOUR valid identities and five provisioning profiles
+// are installed.
 package main
 
 import (

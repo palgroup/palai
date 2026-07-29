@@ -133,6 +133,21 @@ var expectedAgentSurfaceCatalog = map[string]struct {
 		"adapters/integrations/slack/blocks_test.go:TestTheStopStreamPathCarriesNoMarkdownBlock",
 		"adapters/integrations/slack/blocks_test.go:TestNumericTableCellsAreRawNumber",
 		"apps/control-plane/internal/store/slack_stream_component_test.go:TestSlackStopStreamCarriesRenderedBlocksAndNoForgedButton",
+		// E23 T4 — the WIDGET HALF of this epic's approval screen, and it EXTENDS this case rather than
+		// opening an id: what E20 proved is that the model cannot mint an actionable element, and E23 added
+		// the largest set of actionable elements this tree has ever built beside that claim. A third button
+		// (Show arguments) is minted with the other two and carries the SAME one-shot request hash; it can
+		// never become a decision, because MapInteractiveApproval's switch matches approve/deny alone, and
+		// that is asserted from BOTH directions rather than trusted. The rejected blocks — card (its `body`
+		// is 200 characters), carousel, container, feedback_buttons, icon_button, context_actions — are
+		// asserted ABSENT from both surfaces, so a rejection recorded in a plan is also a rejection a test
+		// can see. And the singularity scan's own CEILING gets a test with a NAME (§3.6 D13: it reads one
+		// directory, not the module), because the modal view could have been built one package over and left
+		// that scan green while the claim it certifies was false.
+		"adapters/integrations/slack/approval_widgets_test.go:TestApprovalMessageMintsThreeButtonsAllBoundToTheRequestHash",
+		"adapters/integrations/slack/approval_widgets_test.go:TestShowArgumentsIsMappedButCanNeverBecomeADecision",
+		"adapters/integrations/slack/approval_widgets_test.go:TestTheRejectedBlocksAreAbsentFromBothSurfaces",
+		"adapters/integrations/slack/blocks_test.go:TestTheActionableElementScanIsPackageLocalOnlyAndTheModalIsBuiltInsideIt",
 	}},
 }
 

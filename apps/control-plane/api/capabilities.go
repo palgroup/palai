@@ -51,10 +51,20 @@ func capabilities(cfg routerConfig) http.HandlerFunc {
 			// it names a surface this deployment does NOT serve — so unlike the tiers below it needs no mount
 			// to derive from and is honest exactly because it is static.
 			"knowledge-vector": "disabled",
-			// apple-build stays DISABLED: there is no signing certificate, provisioning profile or store
-			// credential anywhere (§6 leg 3), so discovery never claims a macOS/iOS BUILD this deployment
-			// cannot serve — WRK-006 proves the capability is ABSENT from the worker catalog rather than
-			// merely unadvertised.
+			// apple-build stays DISABLED, and the reason is STRUCTURAL rather than an inventory: no
+			// apple-build operation is typed in workers.Catalog and KnownCapability("apple-build") is false,
+			// so an operation absent from the catalog is refused at dispatch, at claim and at submit —
+			// WRK-006 proves the capability is ABSENT rather than merely unadvertised, and
+			// uat.CodeAndShipProof re-derives it from the catalog's own SOURCE rather than trusting this
+			// comment (§6 leg 3).
+			//
+			// D7, CORRECTED BY E23 T7: this comment used to read "there is no signing certificate,
+			// provisioning profile or store credential anywhere" — the same false sentence E22 T7 corrected
+			// in workers/types.go and left standing in two other files, of which this one is the MOST READ,
+			// because it is the discovery surface. Measured on the development machine 2026-07-28:
+			// `security find-identity -v -p codesigning` reports FOUR valid identities and five provisioning
+			// profiles are installed. The old claim was an inventory claim about one machine, and
+			// inventories change; the claim above cannot be falsified by a keychain.
 			"apple-build": "disabled",
 			// The open-core console (E17 T10): the public-API-only admin + live-run surface (apps/web-console).
 			// It stays PREVIEW and the T11 exit gate KEPT it there: UI-001/UI-002 are green (axe-clean,
