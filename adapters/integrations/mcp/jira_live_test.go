@@ -141,4 +141,32 @@ func TestLiveJiraMCPServerReachableAndEnumerable(t *testing.T) {
 	// The tool names are the ones to register a connection against; the descriptions are UNTRUSTED and are
 	// deliberately not printed.
 	t.Logf("%s advertised %d tools, Jira among them: %v", url, len(tools), names)
+
+	// E23 T5: THE WRITE TOOLS, BY NAME. Palai can now publish these behind a human's button (§3b of
+	// docs/operations/jira-mcp-connection.md), and whether this tenant's credential can even SEE them is a
+	// question only the real server answers. It is asserted by NAME rather than by a successful call for
+	// the J5 reason above — an unaccepted credential does not 401, it silently drops to the anonymous set,
+	// so "the call succeeded" and "the tool exists" are different measurements and only the second one is
+	// available read-only.
+	//
+	// This leg STOPS HERE by construction. Actually transitioning an issue is an irreversible change to
+	// somebody's tracker, and this file is documented as safe to run against a production Atlassian site;
+	// the post-approval write is proven against a fake peer built to the published protocol, in
+	// apps/control-plane/internal/execution/mcp_write_approval_component_test.go, which drives the REAL
+	// orchestrator and counts the requests that reach the server.
+	var writeTools []string
+	for _, tool := range tools {
+		switch tool.Name {
+		case "transitionJiraIssue", "transitionIssue", "addCommentToJiraIssue":
+			writeTools = append(writeTools, tool.Name)
+		}
+	}
+	if len(writeTools) == 0 {
+		t.Logf("NOTE: no Jira WRITE tool is advertised to this credential (looked for transitionJiraIssue, "+
+			"transitionIssue, addCommentToJiraIssue among %v). Read tools work; publishing a gated write tool "+
+			"would have nothing to bind to. That is an Atlassian permission question, not a Palai one.", names)
+	} else {
+		t.Logf("WRITE TOOLS AVAILABLE: %v — publish each with {\"approval_required\":true} and an operator "+
+			"label; see docs/operations/jira-mcp-connection.md §3b", writeTools)
+	}
 }
