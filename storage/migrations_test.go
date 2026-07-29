@@ -44,14 +44,16 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	// E23 T1's tool approvals is the current chain head; E21 T3's Slack requester is the link before it.
+	// E24 T1's runner fleet is the current chain head; E23 T1's tool approvals is the link before it.
+	// E24 has exactly ONE migration and exactly one task owns it, so this pin stays true for the whole
+	// epic — that is the structural half of "two parallel tasks cannot both take 000045".
 	head := migrations[len(migrations)-1]
-	if head.Version != 44 || head.Name != "tool_approvals" {
-		t.Fatalf("chain head = %06d_%s, want 000044_tool_approvals", head.Version, head.Name)
+	if head.Version != 45 || head.Name != "runner_fleet" {
+		t.Fatalf("chain head = %06d_%s, want 000045_runner_fleet", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 43 || penultimate.Name != "slack_requester" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000043_slack_requester", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 44 || penultimate.Name != "tool_approvals" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000044_tool_approvals", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path

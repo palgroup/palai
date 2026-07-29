@@ -67,6 +67,8 @@ type routerConfig struct {
 	queueResolver webhook.Resolver
 	// approvals is the Slack-less approval surface (E23 T9); nil ⇒ routes unmounted.
 	approvals ApprovalAPI
+	// runners is the runner registry READ surface (E24 T1); nil => routes unmounted.
+	runners RunnerRegistryAPI
 	// capabilityWorkers records that this binary SERVES the capability-worker gateway (E17 T9) — on its own
 	// listener, not on this router (see WithCapabilityWorkers). It carries no handler because there is
 	// nothing for the router to mount; it exists so discovery derives the claim from the live mount.
@@ -190,6 +192,17 @@ func WithSlackInteractions(interactions SlackInteractionsAPI) RouterOption {
 // until §6 leg 1 (a real workspace receipt), and only the E17 T11 recompute writes the word.
 func WithSlackConnections(connections SlackConnectionAPI) RouterOption {
 	return func(c *routerConfig) { c.slackConnections = connections }
+}
+
+// WithRunners mounts the runner registry READ surface (E24 T1): which machines have enrolled, under
+// which pool, and when each last authenticated. A trailing option for the reason WithSecretRefs is —
+// only production and its dedicated tests wire a registry, so every other caller compiles unchanged
+// and a stack with no database leaves the routes unmounted.
+//
+// READ ONLY, and that is the whole option: T5 opens cordon/drain/revoke and T6 the strict-mode
+// approval. Mounting this does not move any tier — it exposes a table, it does not add a capability.
+func WithRunners(runners RunnerRegistryAPI) RouterOption {
+	return func(c *routerConfig) { c.runners = runners }
 }
 
 // WithApprovals mounts the Slack-less approval surface (E23 T9, spec §22.4): list this project's open

@@ -272,7 +272,13 @@ func TestGatewayEnrollmentConsumesTokenOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first enrollment: %v", err)
 	}
-	if identity.RunnerID != gwRunnerID || identity.Certificate.Leaf == nil {
+	// Since E24 T1 the SERVER mints the identity: the runner comes away holding the control plane's
+	// `rnr_` id, not the name it asked for. That substitution is the assertion, not an incidental
+	// change — the name a machine chooses cannot be the name a revoke targets.
+	if identity.RunnerID == gwRunnerID || !strings.HasPrefix(identity.RunnerID, "rnr_") {
+		t.Fatalf("enrollment returned the client's own name rather than a server-minted id: %q", identity.RunnerID)
+	}
+	if identity.Certificate.Leaf == nil {
 		t.Fatalf("enrollment returned no usable identity: %+v", identity)
 	}
 	if !identity.NotAfter.After(time.Now()) {

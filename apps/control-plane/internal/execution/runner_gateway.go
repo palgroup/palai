@@ -2,19 +2,24 @@ package execution
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/apps/control-plane/internal/fleet"
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/runner"
 	"github.com/palgroup/palai/packages/version"
@@ -81,6 +86,15 @@ type RunnerGateway struct {
 	// forward — the expired-identity condition, named where the operator meets it. Nil until the
 	// first runner presents a certificate.
 	identity atomic.Pointer[RunnerIdentity]
+	// registry is the durable multi-runner inventory (E24 T1). `identity` above stays exactly what it
+	// was — the LAST certificate seen, which is what /healthz/runner and `palai local doctor` read —
+	// and the registry is the thing that can answer for MORE THAN ONE machine. Nil leaves the gateway
+	// behaving as it did: a stack that wires no database still enrols runners and serves leases, which
+	// is what the Docker-free conformance tier and every wire proof depend on.
+	registry fleet.Registry
+	// newID mints the SERVER-side runner id. Injected so a proof can make an id deterministic;
+	// production passes middleware.NewID.
+	newID func(prefix string) string
 }
 
 // RunnerIdentity is the client certificate a runner last presented to the gateway: who it
@@ -128,8 +142,19 @@ func NewRunnerGateway(issuer CertIssuer, tokens EnrollmentTokens) *RunnerGateway
 		now:       time.Now,
 		available: make(chan *pendingRunner),
 		cpVersion: version.Resolve(),
+		newID:     middleware.NewID,
 	}
 }
+
+// SetRegistry wires the durable runner inventory (E24 T1). Unset, the gateway records nothing and
+// behaves exactly as it did before the registry existed — see the field comment for why that is a
+// supported posture rather than a fallback. A setter rather than a constructor parameter for the
+// reason SetControlPlaneVersion is one: every existing caller compiles unchanged.
+func (g *RunnerGateway) SetRegistry(r fleet.Registry) { g.registry = r }
+
+// SetIDMinter overrides the server-side runner-id minter (production: middleware.NewID). Only a
+// proof that needs a deterministic id calls it.
+func (g *RunnerGateway) SetIDMinter(mint func(prefix string) string) { g.newID = mint }
 
 // SetControlPlaneVersion overrides the control-plane version stamp the connect handshake checks the
 // runner's advertised version against (§48.2 window). Defaulted to version.Resolve; a test injects a
@@ -216,18 +241,40 @@ func (g *RunnerGateway) Routes() http.Handler {
 }
 
 type enrollRequest struct {
+	// RunnerID is what the enrolling machine calls ITSELF. Since E24 T1 it is a LABEL and decides
+	// nothing: the gateway mints the identity. It is still accepted (and still required non-empty) so
+	// a pre-E24 runner enrolls unchanged, and it is recorded so an operator can recognise the machine.
 	RunnerID  string `json:"runner_id"`
 	PublicKey string `json:"public_key"`
+	// The machine's reported shape. Absent on every runner built before E24, which is why neither is
+	// required and neither decides anything here — they are inventory (T4 may compare them).
+	OS   string `json:"os,omitempty"`
+	Arch string `json:"arch,omitempty"`
 }
 
 type enrollResponse struct {
 	Certificate string `json:"certificate"`
+	// RunnerID is the id the SERVER minted, returned so the runner carries it from here. It is the
+	// backward-compatibility half of "the server mints the id": an old runner that sent its own name
+	// still learns the real one, and a runner too old to read this field still works, because its
+	// certificate's SAN carries the same id and that is what renew matches on.
+	RunnerID string `json:"runner_id,omitempty"`
 }
 
-// handleEnroll exchanges a one-use bearer token for a short-lived client certificate: it
-// spends the token, signs the runner's public key with the local CA, and returns the
-// certificate. The token is authenticated before the key is signed, so an invalid token
-// mints nothing.
+// handleEnroll exchanges a bearer bootstrap token for a short-lived client certificate: it spends the
+// token, MINTS the runner's identity, signs the runner's public key with the local CA under that
+// identity, records the machine in the registry, and returns both.
+//
+// THE IDENTITY IS THE SERVER'S (E24 T1, §2). Before, the gateway signed whatever name the enrolling
+// party asked for — runnerDNS(request.RunnerID) with no verification — while
+// deploy/compose/runner-entrypoint.sh:10 hardcoded PALAI_RUNNER_ID="runner-local", so
+// `docker compose up --scale runner=3` was three machines holding one name and one certificate
+// identity. "Revoke runner X" cannot mean anything while X is a name the runner chose.
+//
+// The token is authenticated before anything is minted, so an invalid token mints nothing. The
+// REGISTRY is written BEFORE the certificate is signed: a recorded runner that failed to get a
+// certificate is a harmless stale row an operator can see, while a certificate no row records is an
+// identity in the field that no revoke can reach.
 func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	token, ok := bearer(r.Header.Get("Authorization"))
 	if !ok || g.tokens.Consume(token) != nil {
@@ -244,14 +291,53 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid public key", http.StatusBadRequest)
 		return
 	}
-	certDER, err := g.issuer.SignRunnerCertificate(publicDER, runnerDNS(request.RunnerID))
+
+	runnerID := g.mintRunnerID()
+	if reg := g.registry; reg != nil {
+		record, err := reg.Register(r.Context(), fleet.Registration{
+			PoolID: fleet.DefaultPoolID, Label: request.RunnerID, DNS: runnerDNS(runnerID),
+			PublicKeySHA256: publicKeyFingerprint(publicDER), OS: request.OS, Arch: request.Arch,
+		})
+		if err != nil {
+			// A registry that cannot record the machine must not issue it an identity — that is the
+			// whole point of writing first. The refusal is deliberately unspecific to the caller.
+			http.Error(w, "enrollment could not be recorded", http.StatusServiceUnavailable)
+			return
+		}
+		// The store minted the id inside its transaction, so the certificate is signed for the id the
+		// row actually carries rather than one this handler guessed.
+		runnerID = record.ID
+	}
+
+	certDER, err := g.issuer.SignRunnerCertificate(publicDER, runnerDNS(runnerID))
 	if err != nil {
 		http.Error(w, "sign runner certificate", http.StatusBadRequest)
 		return
 	}
 	g.recordIssuedIdentity(certDER)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(enrollResponse{Certificate: base64.StdEncoding.EncodeToString(certDER)})
+	_ = json.NewEncoder(w).Encode(enrollResponse{
+		Certificate: base64.StdEncoding.EncodeToString(certDER),
+		RunnerID:    runnerID,
+	})
+}
+
+// mintRunnerID mints the server-side runner identity. The `rnr_` prefix follows middleware.NewID's
+// convention, so a runner id is recognisable in a log line and cannot be confused with any other
+// resource's opaque id.
+func (g *RunnerGateway) mintRunnerID() string {
+	if g.newID == nil {
+		return middleware.NewID("rnr")
+	}
+	return g.newID("rnr")
+}
+
+// publicKeyFingerprint is the sha256 of the enrolling machine's PUBLIC key DER, recorded so an
+// operator can tell a re-enrolled machine from a different one. A public key is not a credential and
+// its digest is not a secret; the private half never leaves the runner.
+func publicKeyFingerprint(publicDER []byte) string {
+	sum := sha256.Sum256(publicDER)
+	return hex.EncodeToString(sum[:])
 }
 
 // handleRenew re-issues a runner's client certificate over its EXISTING mutually-authenticated
@@ -273,14 +359,55 @@ func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "marshal runner public key", http.StatusBadRequest)
 		return
 	}
-	certDER, err := g.issuer.SignRunnerCertificate(publicDER, renewDNS(leaf))
+	dns := renewDNS(leaf)
+	certDER, err := g.issuer.SignRunnerCertificate(publicDER, dns)
 	if err != nil {
 		http.Error(w, "sign runner certificate", http.StatusBadRequest)
 		return
 	}
 	g.recordIssuedIdentity(certDER)
+	// SECOND HONEST CEILING (§T1): a renew presents a CERTIFICATE, not an id — the protocol has no
+	// field for one — so the registry row is found by the certificate's DNS. That is a NAME match, and
+	// it is deliberately not treated as re-proving anything the enrolment proved: it advances
+	// last_seen_at and the recorded expiry, and it does not touch which key issued the identity (T3's
+	// binding). A runner the registry does not know keeps renewing exactly as before.
+	g.recordSeen(r.Context(), dns, certNotAfter(certDER))
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(enrollResponse{Certificate: base64.StdEncoding.EncodeToString(certDER)})
+	_ = json.NewEncoder(w).Encode(enrollResponse{
+		Certificate: base64.StdEncoding.EncodeToString(certDER),
+		RunnerID:    runnerIDFromDNS(dns),
+	})
+}
+
+// recordSeen advances the registry's liveness stamp, and is a no-op when no registry is wired. It
+// deliberately swallows both the not-found case and any store error: this is an INVENTORY write on
+// the side of a request whose real work (issuing a certificate, accepting a session) has already
+// succeeded or is about to, and failing that request because a bookkeeping row could not be updated
+// would trade a working fleet for a tidy table.
+func (g *RunnerGateway) recordSeen(ctx context.Context, dns string, notAfter time.Time) {
+	reg := g.registry
+	if reg == nil || dns == "" {
+		return
+	}
+	_, _, _ = reg.RecordSeen(ctx, dns, notAfter, g.now())
+}
+
+// certNotAfter reads the expiry out of a DER the CA just produced. A DER that will not parse leaves
+// the recorded expiry where it was — recordIssuedIdentity already takes that position for the same
+// reason: the runner has its certificate either way.
+func certNotAfter(certDER []byte) time.Time {
+	leaf, err := x509.ParseCertificate(certDER)
+	if err != nil {
+		return time.Time{}
+	}
+	return leaf.NotAfter
+}
+
+// runnerIDFromDNS is the inverse of runnerDNS. A DNS name that does not carry the suffix belongs to a
+// runner enrolled before E24 (its SAN is the name it chose), and returning it unchanged is correct:
+// that string IS the only identity that runner has.
+func runnerIDFromDNS(dns string) string {
+	return strings.TrimSuffix(dns, runnerDNSSuffix)
 }
 
 // renewDNS is the runner DNS identity the presented certificate carries — its SAN, or the
@@ -303,6 +430,11 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.recordIdentity(r.TLS.PeerCertificates[0])
+	// Connect is a liveness moment: the machine just authenticated with its certificate. Recorded
+	// BEFORE the revoked check so that a runner turned away still leaves a trace of having tried — an
+	// operator debugging "why is this Mac idle" needs the attempt, not only the successes.
+	leaf := r.TLS.PeerCertificates[0]
+	g.recordSeen(r.Context(), renewDNS(leaf), leaf.NotAfter)
 	// A revoked gateway refuses the session before the upgrade, so a decommissioned runner never even
 	// parks (SAN-011). Cordon does NOT reject the connect — a cordoned runner still parks and finishes an
 	// in-flight lease; it is only Dial that stops offering it NEW work.
@@ -609,11 +741,17 @@ func leaseID(attempt AttemptDescriptor) string {
 	return "lease_" + string(attempt.AttemptID)
 }
 
+// runnerDNSSuffix is the internal zone every runner certificate's SAN sits in.
+const runnerDNSSuffix = ".runners.palai.internal"
+
 // runnerDNS derives the client-certificate DNS identity for an enrolling runner. The
 // session verifies the controller's identity, not its own, so this names the runner in
 // its certificate without being hostname-checked.
+//
+// Since E24 T1 the id it is given is the SERVER's, never the enrolling party's, which is what makes
+// this name an identity rather than a claim.
 func runnerDNS(runnerID string) string {
-	return runnerID + ".runners.palai.internal"
+	return runnerID + runnerDNSSuffix
 }
 
 // helloRunnerVersion extracts the runner's advertised build stamp from a runner.hello payload's
