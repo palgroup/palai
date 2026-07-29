@@ -30,6 +30,53 @@ const (
 	warningRaisedEvent     = "warning.raised.v1"
 )
 
+// The approver surfaces (E23 T2). A surface is WHERE an identity was authenticated, and it is part of the
+// principal rather than a separate field because the two id spaces do not overlap and must never be
+// allowed to: nothing links a Slack account to an API key, so a principal that did not say which one it
+// came from would be an invitation to match one against the other.
+const (
+	ApproverSurfaceSlack = "slack"
+	ApproverSurfaceKey   = "key"
+)
+
+// ApproverPrincipal renders one surface's identity as the canonical approver principal — the only string
+// form config_policy.approvers ever names:
+//
+//	Slack → slack:<team_id>:<user_id>
+//	HTTP  → key:<api_key_id>            (workspace is empty)
+//
+// EVERY surface maps its identity HERE, and that is the point rather than a tidiness preference. The Slack
+// form is WORKSPACE-QUALIFIED because a Slack user id is unique only within its workspace: an unqualified
+// id in an operator's list would admit a stranger from another workspace who happens to share it. The HTTP
+// form names the API KEY, not the principal_id behind it — api_keys.principal_id carries no UNIQUE
+// constraint (000001_core.up.sql:34), so several keys may share one principal, and an operator who revokes
+// a key expects to have revoked what that key could approve.
+//
+// An identity that is not one renders "", which no list can name: an unknown surface, a Slack user with no
+// workspace, an empty id. Combined with ApproverAllowed's refusal to match an empty principal, a caller
+// this function cannot describe decides nothing whenever a list exists.
+//
+// HONEST CEILING, and it is the ceiling of the whole feature: PALAI HAS NO USER IDENTITY. A principal is a
+// Slack account or an API key — it is NOT a person. Nothing here links the same human's two identities
+// across surfaces, and this epic does not build that (TEN-004, end-user token exchange, is still post-1.0).
+// Two-person approval does not exist on this path either: one approval is one principal.
+func ApproverPrincipal(surface, workspace, id string) string {
+	if id == "" {
+		return ""
+	}
+	switch surface {
+	case ApproverSurfaceSlack:
+		if workspace == "" {
+			return ""
+		}
+		return ApproverSurfaceSlack + ":" + workspace + ":" + id
+	case ApproverSurfaceKey:
+		return ApproverSurfaceKey + ":" + id
+	default:
+		return ""
+	}
+}
+
 // PublicationRequest records one decomposed side-effect operation awaiting approval (spec §30.8). The
 // remote/branch/base/head come from the resolved binding + preparation receipt, NOT model output, so the
 // approved operation is exactly what infrastructure computed. IdempotencyKey/RequestHash are formed by
@@ -198,6 +245,12 @@ func (s *Store) PublicationState(ctx context.Context, tenant Tenant, publication
 	return state, true, nil
 }
 
+// ErrApproverNotAuthorized reports that a decision arrived from a principal the project's approver
+// allow-list does not name (E23 T2). The command is SETTLED before this is returned — a refusal that left
+// the command queued would be re-read by the boundary pump at every boundary for the life of the run —
+// so callers treat it as "the receiver worked and the click/POST authorized nothing", never as a failure.
+var ErrApproverNotAuthorized = errors.New("approver_not_authorized")
+
 // ApplyApprovalDecision applies a queued approve/deny command at a safe boundary (spec §22.4-22.5,
 // APV-001). In one transaction it transitions the session's pending publication (approve ->
 // approved, deny -> denied), records who decided, journals approval.approved/denied.v1, and marks the
@@ -205,7 +258,19 @@ func (s *Store) PublicationState(ctx context.Context, tenant Tenant, publication
 // runs under guardRunActive (the pump's fence discipline). requestHash is the one-shot binding from the
 // approve command: a mismatch (a stale approve for a head that moved, or an edited request) authorizes
 // nothing but still settles the command. A missing pending approval is a no-op that settles the command.
-func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, kind, requestHash string) (int64, error) {
+//
+// approver is the canonical principal of whoever is deciding (ApproverPrincipal), and THIS is where the
+// project's approver allow-list is enforced — for BOTH surfaces, because this is the one function both
+// pass through. Slack's Decide calls it directly; the HTTP surface's queued command is applied here by the
+// boundary pump. Putting the check in each caller instead is how the next caller forgets it, and there is
+// an untagged guard (TestApproverAllowedHasExactlyOneProductionCallSite) that counts.
+//
+// The list is read INSIDE this transaction, so it is live at the moment of decision rather than frozen
+// when the approval was created. That is deliberate and the argument is the tree's own, written for
+// allowed_channels at slack_decision.go: an operator NARROWING an allow-list is what containing an
+// incident looks like, and it would otherwise leave every already-posted button still live. Removing an
+// approver takes the pending approvals with it.
+func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessionID, responseID, runID, commandID, kind, requestHash, approver string) (int64, error) {
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -227,6 +292,26 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		return settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID)
 	case err != nil:
 		return 0, fmt.Errorf("lock pending approval: %w", err)
+	}
+
+	// WHO IS DECIDING (E23 T2), checked BEFORE the expiry and hash guards below, and the order matters
+	// twice over. First: an unauthorized principal must cause NO state transition at all — not even the
+	// expiry one — so nothing about this session moves because a stranger pressed a button. Second: it
+	// closes an oracle. Checked after the hash, a stranger could tell a valid request hash from an invalid
+	// one by which refusal came back; checked here, every unauthorized caller gets the same answer
+	// whatever they present.
+	//
+	// The command is settled anyway (see settleApprovalCommandTx) and the error is returned so a caller
+	// can draw a refusal rather than a decision.
+	policy, err := projectConfigTx(ctx, tx, tenant)
+	if err != nil {
+		return 0, err
+	}
+	if !policy.ApproverAllowed(approver) {
+		if _, err := settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID); err != nil {
+			return 0, err
+		}
+		return 0, ErrApproverNotAuthorized
 	}
 
 	// Consume-time expiry guard (spec §22.4, E10 T7): an approve/deny that arrives after the one-shot

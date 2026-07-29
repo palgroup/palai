@@ -179,6 +179,9 @@ func Bootstrap(envFile string, native bool) error {
 		// whole reason for running natively — the host's own toolchain — is silently absent.
 		slackWarns = appendWarn(slackWarns, nativeShellWarning(get))
 	}
+	// WHO MAY APPROVE (E23 T2). Unconditional, not Slack-conditional: the HTTP approve surface exists on
+	// every stack whether or not a workspace was ever wired.
+	slackWarns = appendWarn(slackWarns, approverListWarning(api))
 	printReport(cfg, posture, rt, caps, observedFacts(rt, slackFact), red, slackWarns...)
 	return nil
 }
@@ -871,6 +874,10 @@ const (
 	// ProvisionFirstOrg). It is the key `palai up` itself authenticates with, so its principal is the
 	// identity this operator already acts as. install_backup.go pins the same four bootstrap ids.
 	bootstrapKeyID = "key_local"
+	// bootstrapProjectID is the project that same bootstrap key is scoped to (identity.firstProject).
+	// It is the project whose approver list `palai up` reports on, because it is the only one this
+	// command's own credential can read.
+	bootstrapProjectID = "prj_local"
 	// slackAgentProfileName is the profile lineage a bring-up provisions when the operator named no
 	// SLACK_AGENT_REVISION_ID. Looked up by name so a re-run reuses it instead of piling up lineages.
 	slackAgentProfileName = "slack"
@@ -1105,6 +1112,50 @@ func splitList(raw string) []string {
 		}
 	}
 	return out
+}
+
+// approverListWarning is the platform-level sibling of slackApproverWarning below, and it warns about the
+// OPPOSITE failure. That one exists because a connection with no allowed_users refuses everything in
+// silence; this one exists because a project with no approvers list refuses NOTHING — config_policy.approvers
+// is unrestricted when absent, deliberately (see coordinator.ConfigPolicy.ApproverAllowed: a control that
+// changes behaviour for deployments that never asked for it is an outage). So the open door is the default,
+// and the only honest thing to do is say so out loud rather than let an operator discover it.
+//
+// It names what is actually open, not a generality: the HTTP approve surface. Slack clicks are still gated
+// by the connection's own allowed_users, which is why that half is not claimed here.
+//
+// Derived from what the running stack ACTUALLY serves — GET /v1/projects/{id} — never from an assumption
+// about what `palai up` usually writes. A read that fails warns about the read, because "I could not tell"
+// and "there is no list" are different facts and only one of them is about approvals.
+func approverListWarning(api *apiClient) string {
+	approvers, err := api.projectApprovers(bootstrapProjectID)
+	if err != nil {
+		return fmt.Sprintf("could not read %s's approver list, so nothing here can tell you whether the approve surfaces are gated: %v",
+			bootstrapProjectID, err)
+	}
+	if len(approvers) > 0 {
+		return ""
+	}
+	return "no project approver list is configured; the HTTP approve surface is gated only by tenant-scoped key possession — " +
+		"set one with `palai admin project set-policy " + bootstrapProjectID + " --approvers key:<api_key_id>,slack:<team_id>:<user_id>` " +
+		"(see docs/operations/approvals.md). Leaving it unset is a supported posture, not a bug — it is just not a gate"
+}
+
+// projectApprovers reads a project's configured approver principals off the running stack.
+func (c *apiClient) projectApprovers(projectID string) ([]string, error) {
+	var body struct {
+		ConfigPolicy struct {
+			Approvers []string `json:"approvers"`
+		} `json:"config_policy"`
+	}
+	status, err := c.do(http.MethodGet, "/v1/projects/"+projectID, nil, &body)
+	switch {
+	case err != nil:
+		return nil, err
+	case status != http.StatusOK:
+		return nil, fmt.Errorf("GET /v1/projects/%s = %d", projectID, status)
+	}
+	return body.ConfigPolicy.Approvers, nil
 }
 
 // slackApproverWarning is the line an operator would otherwise only learn from a silently refused Approve

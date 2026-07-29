@@ -286,7 +286,7 @@ func TestBoundaryApprovalRacesTheDirectDecisionPath(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		_, directErr = h.orch.spine.ApplyApprovalDecision(ctx, h.tenant, h.sessionID, h.respID, h.runID, cmdID, "approve", h.pub.RequestHash)
+		_, directErr = h.orch.spine.ApplyApprovalDecision(ctx, h.tenant, h.sessionID, h.respID, h.runID, cmdID, "approve", h.pub.RequestHash, "")
 	}()
 	close(start)
 	wg.Wait()
@@ -334,7 +334,7 @@ func TestBoundaryApprovalPumpWinsAndTheDirectPathSeesASettledCommand(t *testing.
 	if err := h.orch.pumpCommands(ctx, st, "mr_step2"); err != nil {
 		t.Fatalf("pumpCommands() error = %v", err)
 	}
-	_, err := h.orch.spine.ApplyApprovalDecision(ctx, h.tenant, h.sessionID, h.respID, h.runID, cmdID, "approve", h.pub.RequestHash)
+	_, err := h.orch.spine.ApplyApprovalDecision(ctx, h.tenant, h.sessionID, h.respID, h.runID, cmdID, "approve", h.pub.RequestHash, "")
 	if !errors.Is(err, coordinator.ErrCommandNotPending) {
 		t.Fatalf("the direct path after the pump won = %v, want ErrCommandNotPending", err)
 	}
@@ -351,7 +351,7 @@ func TestBoundaryApprovalPumpWinsAndTheDirectPathSeesASettledCommand(t *testing.
 	if _, err := h.orch.spine.ApplyRunTransition(ctx, h.tenant, h.runID, statemachines.RunCmdComplete); err != nil {
 		t.Fatalf("ApplyRunTransition(complete) error = %v", err)
 	}
-	_, err = h.orch.spine.ApplyApprovalDecision(ctx, h.tenant, h.sessionID, h.respID, h.runID, stranded, "approve", h.pub.RequestHash)
+	_, err = h.orch.spine.ApplyApprovalDecision(ctx, h.tenant, h.sessionID, h.respID, h.runID, stranded, "approve", h.pub.RequestHash, "")
 	if err == nil {
 		t.Fatal("the direct path on an EXPIRED command returned nil, want an error — nothing was decided")
 	}

@@ -125,7 +125,7 @@ func TestPendingApprovalApproveProceedsDenyBlocks(t *testing.T) {
 	}
 
 	// 4. Applied at the boundary: the publication reaches the durable approved state the pump drains.
-	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", pub.RequestHash); err != nil {
+	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", pub.RequestHash, ""); err != nil {
 		t.Fatalf("ApplyApprovalDecision(approve) error = %v", err)
 	}
 	approved, err := cs.ApprovedPublicationsForRun(ctx, tenant, runID)
@@ -142,7 +142,7 @@ func TestPendingApprovalApproveProceedsDenyBlocks(t *testing.T) {
 	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, denyCmd); err != nil {
 		t.Fatalf("AcceptCommand(deny) error = %v", err)
 	}
-	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, denyCmd.CommandID, "deny", pub2.RequestHash); err != nil {
+	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, denyCmd.CommandID, "deny", pub2.RequestHash, ""); err != nil {
 		t.Fatalf("ApplyApprovalDecision(deny) error = %v", err)
 	}
 	var state string
@@ -227,7 +227,7 @@ func TestStaleApprovalHashLeavesPublicationPending(t *testing.T) {
 	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, approveCmd); err != nil {
 		t.Fatalf("AcceptCommand(approve) error = %v", err)
 	}
-	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", "req_stale_mismatch"); err != nil {
+	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", "req_stale_mismatch", ""); err != nil {
 		t.Fatalf("ApplyApprovalDecision(stale hash) error = %v", err)
 	}
 
@@ -368,7 +368,7 @@ func TestExpiredApprovalSweepAndConsumeGuard(t *testing.T) {
 	if _, err := cs.AcceptCommand(ctx, tenant, sessionID, approveCmd); err != nil {
 		t.Fatalf("AcceptCommand(approve) error = %v", err)
 	}
-	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", late.RequestHash); err != nil {
+	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", late.RequestHash, ""); err != nil {
 		t.Fatalf("ApplyApprovalDecision(expired) error = %v", err)
 	}
 	var lateState, cmdState string

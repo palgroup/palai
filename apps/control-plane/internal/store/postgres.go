@@ -79,6 +79,7 @@ func (s *Store) VerifyAPIKey(ctx context.Context, token string) (middleware.Scop
 		Organization: id.Organization,
 		Project:      id.Project,
 		Principal:    id.Principal,
+		APIKeyID:     id.APIKeyID,
 		Scopes:       id.Scopes,
 	}, nil
 }
@@ -473,6 +474,22 @@ func (s *Store) AcceptCommand(ctx context.Context, scope middleware.Scope, sessi
 		if req.Immediate {
 			input.Delivery = "interrupt"
 		}
+	case "approve", "deny":
+		// WHO is deciding (E23 T2). Stamped from the VERIFIED scope, never from a body field — and
+		// contracts.CommandCreateRequest has no approver field at all, so there is nothing to override:
+		// a caller can put an identity in `message` and it stays a message.
+		//
+		// It rides the durable command because this surface is ASYNCHRONOUS: the accept only queues,
+		// and the boundary pump applies the decision later, in another process. The principal is
+		// therefore frozen at accept while the LIST it is checked against is read live at apply — which
+		// is the pairing that lets an operator narrow the allow-list and have the narrowing reach
+		// approvals already in flight.
+		//
+		// No request_hash: this surface has never carried one (CommandCreateRequest has no such field),
+		// so a bare approve authorizes the session's sole pending approval exactly as before.
+		input.Payload, err = json.Marshal(map[string]any{
+			"approver": coordinator.ApproverPrincipal(coordinator.ApproverSurfaceKey, "", scope.APIKeyID),
+		})
 	default:
 		input.Payload, err = json.Marshal(map[string]any{"message": req.Message})
 	}

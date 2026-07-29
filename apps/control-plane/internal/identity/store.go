@@ -380,10 +380,17 @@ func (s *Store) readProject(ctx context.Context, id string) (api.ProvisionResult
 
 // configPolicyInput is the strict §14 config_policy schema (spec §9.3). DisallowUnknownFields rejects any
 // field outside it, so a typo or an unsupported knob is a 400 rather than a silently dropped write.
+//
+// Approvers (E23 T2) is the project's approver allow-list. It is named HERE and not only in
+// coordinator.ConfigPolicy because of what the strictness above means: a field this struct does not carry
+// cannot be WRITTEN at all. The plan for this task recorded the write path as already shipped, which was
+// half true — the endpoint ships, the field did not, so `{"config_policy":{"approvers":[…]}}` was a 400
+// and the list had no way in. A control nobody can configure is not a control.
 type configPolicyInput struct {
 	AllowedModels []string `json:"allowed_models"`
 	AllowedTools  []string `json:"allowed_tools"`
 	DefaultTools  []string `json:"default_tools"`
+	Approvers     []string `json:"approvers"`
 }
 
 type organizationView struct {

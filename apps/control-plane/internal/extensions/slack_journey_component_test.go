@@ -360,7 +360,7 @@ func TestSlackJourneyOnFakePeer(t *testing.T) {
 	if err != nil || acc.State != "queued" {
 		t.Fatalf("step 7c: accept approve = (%q,%v), want queued", acc.State, err)
 	}
-	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", intent.RequestHash); err != nil {
+	if _, err := cs.ApplyApprovalDecision(ctx, tenant, sessionID, respID, runID, approveCmd.CommandID, "approve", intent.RequestHash, ""); err != nil {
 		t.Fatalf("step 7c: apply approval: %v", err)
 	}
 	approved, err := cs.ApprovedPublicationsForRun(ctx, tenant, runID)

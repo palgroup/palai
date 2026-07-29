@@ -207,10 +207,18 @@ func (o *Orchestrator) applyPendingSessionConfig(ctx context.Context, st *attemp
 // transaction (spec §22.4-22.5, APV-001). The approve carries the one-shot request hash it authorizes; a
 // stale hash (a moved head or an edited request) settles the command without approving. A command a
 // racing path already applied returns ErrCommandNotPending (a no-op).
+//
+// It also carries WHO accepted the command (E23 T2) — stamped from the verified API key at accept, so the
+// principal the project's approver list is checked against is the one authentication established and never
+// a body field. A principal the list does not name settles the command and decides nothing; that is
+// ErrApproverNotAuthorized, and it is a no-op here for the same reason ErrCommandNotPending is: the pump
+// worked, the run is fine, and the decision simply did not happen. The publication stays pending_approval,
+// which is what a caller reads to learn its own decision did not land.
 func (o *Orchestrator) applyBoundaryApproval(ctx context.Context, st *attemptState, cmd coordinator.PendingCommand) error {
 	switch _, err := o.spine.ApplyApprovalDecision(ctx, st.tenant, st.sessionID, st.responseID,
-		string(st.attempt.RunID), cmd.ID, cmd.Kind, decodeApprovalRequestHash(cmd.Payload)); {
-	case errors.Is(err, coordinator.ErrCommandNotPending):
+		string(st.attempt.RunID), cmd.ID, cmd.Kind, decodeApprovalRequestHash(cmd.Payload),
+		decodeApprovalApprover(cmd.Payload)); {
+	case errors.Is(err, coordinator.ErrCommandNotPending), errors.Is(err, coordinator.ErrApproverNotAuthorized):
 		return nil
 	default:
 		return err
@@ -236,4 +244,17 @@ func decodeApprovalRequestHash(payload []byte) string {
 	}
 	_ = json.Unmarshal(payload, &body)
 	return body.RequestHash
+}
+
+// decodeApprovalApprover reads the canonical approver principal an approve/deny command was accepted
+// under ({"approver": "key:key_…"}) — E23 T2. It is written server-side from the verified identity at
+// accept (store.Store.AcceptCommand), never by the caller, so what is decoded here is who the control
+// plane authenticated. A command accepted before this field existed, or through a path that stamps none,
+// decodes to "" — which no approver list can name, and which an unconfigured project ignores entirely.
+func decodeApprovalApprover(payload []byte) string {
+	var body struct {
+		Approver string `json:"approver"`
+	}
+	_ = json.Unmarshal(payload, &body)
+	return body.Approver
 }

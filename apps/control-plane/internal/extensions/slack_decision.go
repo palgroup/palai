@@ -143,7 +143,14 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 
 	// 4. Exactly ONE durable command. AcceptCommand is the same entry POST /v1/sessions/{id}/commands takes,
 	// so the session-lifecycle gate and the no_pending_approval rule apply identically.
-	payload, err := json.Marshal(map[string]string{"request_hash": intent.RequestHash})
+	//
+	// The command also carries WHO is deciding, in the canonical form an approver list names (E23 T2). The
+	// team id is part of it because a Slack user id is unique only within its workspace — and both halves
+	// come from the payload Slack SIGNED, which is the only reason a payload field is trusted here at all.
+	// It rides the command rather than only the direct call below so that a boundary pump which wins the
+	// race applies the SAME decision under the SAME principal.
+	approver := coordinator.ApproverPrincipal(coordinator.ApproverSurfaceSlack, intent.TeamID, intent.UserID)
+	payload, err := json.Marshal(map[string]string{"request_hash": intent.RequestHash, "approver": approver})
 	if err != nil {
 		return api.SlackDecisionOutcome{}, err
 	}
@@ -175,8 +182,21 @@ func (a *SlackAdmitter) Decide(ctx context.Context, conn api.SlackConnectionRef,
 	// But an EXPIRY sweep settles a queued command too — the run terminalized, or the session closed — and
 	// that one decided NOTHING. The two are indistinguishable from the error alone, so the publication's own
 	// state is what separates them: a click that authorized nothing must never be drawn as approved.
+	// THE SECOND GATE, and it is not the same gate as step 2a/2b. allowed_users is the CONNECTION's list
+	// and carries channel scope a platform-wide list cannot express; config_policy.approvers is the
+	// PROJECT's and spans every surface. Both have to be passed, and a narrowing on either side is a
+	// narrowing. The check itself is inside ApplyApprovalDecision — the one throat this path and the
+	// native command surface both pass through — so it cannot be forgotten by whoever adds the third.
 	switch _, err := a.spine.ApplyApprovalDecision(ctx, tenant, session, pub.ResponseID, pub.RunID,
-		cmdID, intent.Decision, intent.RequestHash); {
+		cmdID, intent.Decision, intent.RequestHash, approver); {
+	case errors.Is(err, coordinator.ErrApproverNotAuthorized):
+		// The receiver worked and the click authorized nothing — a typed refusal, exactly like an unmapped
+		// clicker above, and for the same reason it is not an error: a 503 would tell a human their
+		// approval FAILED when in fact it was refused. The route answers 200 and tells the clicker
+		// nothing (slack_interactions.go: a readable refusal is a signal an unmapped user can probe),
+		// which is why the reason string is written for an operator reading a log, not for the clicker.
+		return api.SlackDecisionOutcome{SessionID: session, CommandID: cmdID,
+			Rejected: "the clicking user is not in the project's approver list"}, nil
 	case errors.Is(err, coordinator.ErrCommandNotPending):
 		state, found, serr := a.spine.PublicationState(ctx, tenant, pub.ID)
 		if serr != nil {
