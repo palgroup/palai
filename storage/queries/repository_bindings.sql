@@ -51,7 +51,11 @@ LIMIT 1;
 -- The destination a run's publications push to (spec §30.9): the clean remote URL + base branch from
 -- the binding, and the work branch from the run's latest preparation receipt. The remote is
 -- infrastructure-owned (never model-supplied), so an agent cannot redirect a push.
-SELECT rb.clone_url, pr.branch, rb.default_branch
+--
+-- merge_method rides the same read since E23 T6, and it rides it for the same reason the base does: HOW a
+-- pull request lands is a deployment decision an operator made once on the binding, not a per-call choice
+-- an agent argues for. Unset reads as '' and MergePullRequest defaults it to `merge`.
+SELECT rb.clone_url, pr.branch, rb.default_branch, coalesce(rb.policy->>'merge_method', '')
 FROM preparation_receipts pr
 JOIN repository_bindings rb ON rb.id = pr.repository_binding_id
 WHERE pr.run_id = $1 AND pr.organization_id = $2 AND pr.project_id = $3

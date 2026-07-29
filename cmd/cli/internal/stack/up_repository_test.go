@@ -30,7 +30,7 @@ func TestABringUpGrantsWorkspaceToolsOnlyWithARepositoryBinding(t *testing.T) {
 
 	with := slackAgentTools(envGetter(nil), true)
 	for _, want := range []string{"palai.workspace.file", "palai.workspace.shell", "palai.workspace.commit",
-		"palai.publish.push", "palai.publish.pull_request"} {
+		"palai.publish.push", "palai.publish.pull_request", "palai.publish.merge_pull_request"} {
 		if !contains(with, want) {
 			t.Fatalf("a bring-up that bound a repository did NOT grant %q, so the agent cannot write code in a "+
 				"workspace that exists: %v", want, with)
@@ -62,9 +62,10 @@ func TestABringUpWithARepositoryGrantsThePublishToolsAndOneWithoutGrantsNone(t *
 			granted = append(granted, name)
 		}
 	}
-	if len(granted) != 2 || !contains(granted, "palai.publish.push") || !contains(granted, "palai.publish.pull_request") {
-		t.Fatalf("a repository binding granted publish tools %v, want exactly push + pull_request — the agent "+
-			"must be able to ASK, and asking is all either tool does", granted)
+	if len(granted) != 3 || !contains(granted, "palai.publish.push") || !contains(granted, "palai.publish.pull_request") ||
+		!contains(granted, "palai.publish.merge_pull_request") {
+		t.Fatalf("a repository binding granted publish tools %v, want exactly push + pull_request + merge — the "+
+			"agent must be able to ASK, and asking is all any of them does", granted)
 	}
 	for _, name := range slackAgentTools(envGetter(nil), false) {
 		if strings.HasPrefix(name, "palai.publish.") {

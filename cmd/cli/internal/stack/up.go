@@ -1626,7 +1626,10 @@ var slackRepositoryTools = []string{"palai.workspace.file", "palai.workspace.she
 // A stack that granted these and configured no GitHub App gets an approved publication that waits forever;
 // resolveGitHubApp warns about exactly that, because silence is the failure mode this file has now paid for
 // three times.
-var slackPublishTools = []string{"palai.publish.push", "palai.publish.pull_request"}
+// E23 T6 adds the third and it belongs on THIS list rather than a fourth: merging is what leaves the
+// machine, exactly like the other two, and it asks the same human the same way. What it does NOT do is
+// widen who decides or what may be named — the pull request it merges is the one this run opened.
+var slackPublishTools = []string{"palai.publish.push", "palai.publish.pull_request", "palai.publish.merge_pull_request"}
 
 // slackAgentMCP is the mcp_connections rider bound to the revision `palai up` creates (E22 T6): the names
 // of the MCP connections a Slack run may reach. It is the EXTERNAL capability ceiling — a run resolves a

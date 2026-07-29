@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -30,6 +31,11 @@ type PublishOperation string
 const (
 	OpPushBranch      PublishOperation = "push_branch"
 	OpOpenPullRequest PublishOperation = "open_pull_request"
+	// OpMergePullRequest is the third side effect the owner asked for, and it is a CHECK value before it is
+	// code: publications.operation was `CHECK (operation IN ('push_branch','open_pull_request'))` until
+	// 000044 R2 widened it. Everything else on this path — the pending row, the one-shot hash, the human's
+	// button, the boundary pump, the receipt — already existed and is reused unchanged.
+	OpMergePullRequest PublishOperation = "merge_pull_request"
 )
 
 // ErrProtectedBranch is returned when a push targets a protected or default branch without an explicit
@@ -47,6 +53,12 @@ var ErrRemoteDiverged = errors.New("remote_diverged")
 // existing ref; a pull request EXCLUDES it — a PR tracks the branch across new commits, so a duplicate
 // request dedupes to ONE PR (REP-008). It is tenant + run scoped so one run's publication never
 // collides with another's. The UNIQUE column on publications enforces the dedupe at the database.
+//
+// A MERGE takes the push's rule (the default arm) rather than the pull request's, and the difference is
+// the whole of E23 T6: a PR is a conversation that follows a branch, but a merge is an act performed on
+// ONE commit. Excluding the head would let a re-proposed merge dedupe onto an approval a human gave for
+// different content — so the head is part of the identity, and a branch that moved needs a new approval
+// to be merged.
 func IdempotencyKey(org, project, runID string, op PublishOperation, remote, branch, base, headSHA string) string {
 	var parts []string
 	switch op {
@@ -209,12 +221,70 @@ type OpenPRInput struct {
 	Draft      bool
 }
 
-// PullRequestClient opens and finds pull requests at the Git provider (spec §30.10). Find returns
-// found=false when no OPEN PR exists for (headBranch -> base). The GitHub implementation is the live
-// tier; a fake proves the find-before-create idempotency deterministically (REP-008).
+// MergeInput is the infrastructure-owned request to merge one pull request (E23 T6). Every field is
+// resolved server-side: Number from the run's OWN published open_pull_request receipt, HeadSHA from that
+// same publication, Method from the binding's policy. None of the three is reachable by the model, which
+// is why the merge tool's input schema is empty.
+type MergeInput struct {
+	Number  int
+	HeadSHA string // sent as `sha`; GitHub answers 409 if the PR head has moved off it
+	Method  string // merge | squash | rebase (binding policy; empty defaults to merge)
+}
+
+// MergeReceipt is the external receipt of a merge (GitHub's own answer): whether it merged, the merge
+// commit sha, and the provider's message.
+type MergeReceipt struct {
+	Merged  bool
+	SHA     string
+	Message string
+}
+
+// ErrMergeRefused is GitHub's documented 405 — "Method Not Allowed if merge cannot be performed"
+// (https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request, fetched 2026-07-29). It is every
+// reason a merge can be refused that E23 deliberately does NOT reimplement: a required check that has not
+// passed, a required review nobody left, a conflict, a closed PR, a branch protection rule. Palai does not
+// query any of them — it asks, and an honest warning is what comes back.
+var ErrMergeRefused = errors.New("merge_refused_by_provider")
+
+// ErrHeadMoved is GitHub's documented 409 — "Conflict if sha was provided and pull request head did not
+// match" — and it is the reason `sha` is MANDATORY here although the API marks it optional. The head a
+// human approved is the only head that may be merged; a branch that moved in the window between the
+// button and the boundary earns a refusal rather than a merge of content nobody read.
+var ErrHeadMoved = errors.New("pull_request_head_moved")
+
+// mergeMethods is the closed set the API documents for merge_method. An unknown method is refused before
+// any call: it comes from operator config, and a typo that silently became "merge" would change how code
+// lands in a repository without anybody being told.
+var mergeMethods = []string{"merge", "squash", "rebase"}
+
+// PullRequestClient opens, finds and merges pull requests at the Git provider (spec §30.10, E23 T6). Find
+// returns found=false when no OPEN PR exists for (headBranch -> base). The GitHub implementation is the
+// live tier; a fake proves the find-before-create idempotency deterministically (REP-008).
 type PullRequestClient interface {
 	Find(ctx context.Context, headBranch, base string) (PullRequest, bool, error)
 	Open(ctx context.Context, in OpenPRInput) (PullRequest, error)
+	Merge(ctx context.Context, in MergeInput) (MergeReceipt, error)
+}
+
+// MergePullRequest merges an approved pull request at exactly the approved head (E23 T6). It validates
+// the operator's merge method and requires both a PR number and a head, then hands the call to the
+// provider — where the `sha` guard lives. There is no find-before-merge and no CI wait: what may be
+// merged is GitHub's decision, and a refusal comes back as ErrMergeRefused for the pump to journal.
+func MergePullRequest(ctx context.Context, client PullRequestClient, in MergeInput) (MergeReceipt, error) {
+	if in.Number <= 0 || in.HeadSHA == "" {
+		return MergeReceipt{}, fmt.Errorf("merge pull request: a pull request number and the approved head are required")
+	}
+	if in.Method == "" {
+		in.Method = "merge"
+	}
+	if !slices.Contains(mergeMethods, in.Method) {
+		return MergeReceipt{}, fmt.Errorf("merge pull request: merge_method %q is not one of %v", in.Method, mergeMethods)
+	}
+	receipt, err := client.Merge(ctx, in)
+	if err != nil {
+		return MergeReceipt{}, fmt.Errorf("merge pull request #%d: %w", in.Number, err)
+	}
+	return receipt, nil
 }
 
 // OpenPullRequest opens a DRAFT pull request idempotently (spec §30.10, REP-008): it FINDS an existing
@@ -307,6 +377,37 @@ func (c *githubPRClient) Open(ctx context.Context, in OpenPRInput) (PullRequest,
 	return pr.toPullRequest(), nil
 }
 
+// Merge performs PUT /repos/{owner}/{repo}/pulls/{n}/merge with `sha` ALWAYS set (E23 T6, P16). The API
+// marks `sha` optional; sending it is what turns "the head moved while a human was reading" from a silent
+// merge of unapproved content into a 409 that merges nothing. The two documented refusals are mapped to
+// typed errors so the pump journals a warning a human can act on rather than an HTTP status.
+func (c *githubPRClient) Merge(ctx context.Context, in MergeInput) (MergeReceipt, error) {
+	token, err := c.token(ctx)
+	if err != nil {
+		return MergeReceipt{}, err
+	}
+	body, _ := json.Marshal(map[string]any{"sha": in.HeadSHA, "merge_method": in.Method})
+	var out struct {
+		SHA     string `json:"sha"`
+		Merged  bool   `json:"merged"`
+		Message string `json:"message"`
+	}
+	endpoint := fmt.Sprintf("%s/pulls/%d/merge", c.base(), in.Number)
+	if err := c.do(ctx, http.MethodPut, endpoint, token, body, http.StatusOK, &out); err != nil {
+		var status *apiStatusError
+		if errors.As(err, &status) {
+			switch status.status {
+			case http.StatusMethodNotAllowed:
+				return MergeReceipt{}, fmt.Errorf("%w: %s", ErrMergeRefused, status.body)
+			case http.StatusConflict:
+				return MergeReceipt{}, fmt.Errorf("%w: head is no longer %s: %s", ErrHeadMoved, in.HeadSHA, status.body)
+			}
+		}
+		return MergeReceipt{}, err
+	}
+	return MergeReceipt{Merged: out.Merged, SHA: out.SHA, Message: out.Message}, nil
+}
+
 func (c *githubPRClient) base() string {
 	return strings.TrimRight(c.cfg.BaseURL, "/") + "/repos/" + c.owner + "/" + c.repo
 }
@@ -336,9 +437,23 @@ func (c *githubPRClient) do(ctx context.Context, method, endpoint, token string,
 	defer resp.Body.Close()
 	if resp.StatusCode != wantStatus {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("%s %s: status %d: %s", method, endpoint, resp.StatusCode, strings.TrimSpace(string(msg)))
+		return &apiStatusError{call: method + " " + endpoint, status: resp.StatusCode, body: strings.TrimSpace(string(msg))}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// apiStatusError carries the status code a GitHub call answered with, so a caller can tell the DOCUMENTED
+// refusals apart from an outage: merge's 405 ("merge cannot be performed") and 409 ("head did not match")
+// mean different things to a human, and a string-matched status is the guard that quietly stops matching.
+// The body is the provider's own message; a brokered installation token never appears in it.
+type apiStatusError struct {
+	call   string
+	status int
+	body   string
+}
+
+func (e *apiStatusError) Error() string {
+	return fmt.Sprintf("%s: status %d: %s", e.call, e.status, e.body)
 }
 
 // githubPR is the subset of the GitHub PR resource the receipt needs.

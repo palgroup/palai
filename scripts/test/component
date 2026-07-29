@@ -141,13 +141,19 @@ run_postgres() {
   # approval screen showed (byte-for-byte, which is the whole meaning of every approval here), and the five
   # refusals a hostile ticket body earns. A security test this list does not name is a security test that
   # reports the same green as one that passes.
+  # TestMergePullRequest* is E23 T6, and naming it here is the whole reason this list has prose: a merge is
+  # the least reversible thing this system does — a push adds a branch, a PR adds a conversation, a merge
+  # changes what the repository IS — so "the publisher was never called without a human" and "the head that
+  # moved after the approval was NOT merged" have to actually run. They drive the real dispatcher, the real
+  # Decide and the real boundary pump over a REAL Postgres; the sha-on-the-wire half is untagged in
+  # adapters/repositories against a server built to GitHub's published contract.
   # TestAToolPinnedTwiceRefuses* is the hole T5 found in its OWN claim: the grant chain can offer TWO
   # bindings for one model-visible name and the lookup used to take whichever the planner emitted first,
   # so a planner's choice could decide whether a human is asked. It refuses now, at every entry point.
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses' \
+        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest' \
         ./apps/control-plane/internal/execution
     status=$?
   fi

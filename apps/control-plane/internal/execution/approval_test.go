@@ -193,6 +193,9 @@ func (stubPRClient) Find(context.Context, string, string) (repositories.PullRequ
 func (stubPRClient) Open(_ context.Context, in repositories.OpenPRInput) (repositories.PullRequest, error) {
 	return repositories.PullRequest{ID: "PR_9", URL: "https://example.test/pr/9", Number: 9, Draft: in.Draft}, nil
 }
+func (stubPRClient) Merge(_ context.Context, in repositories.MergeInput) (repositories.MergeReceipt, error) {
+	return repositories.MergeReceipt{Merged: true, SHA: in.HeadSHA, Message: "Pull Request successfully merged"}, nil
+}
 
 // --- git fixtures ---------------------------------------------------------------------------------
 

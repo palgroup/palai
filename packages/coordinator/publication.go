@@ -27,6 +27,9 @@ const (
 	approvalExpiredEvent   = "approval.expired.v1"
 	pushCompletedEvent     = "push.completed.v1"
 	pullRequestOpenedEvent = "pull_request.opened.v1"
+	// pullRequestMergedEvent is E23 T6's receipt event. A merge journalling push.completed.v1 would have
+	// been the smallest possible edit and a lie in the audit stream — the one place a lie is permanent.
+	pullRequestMergedEvent = "pull_request.merged.v1"
 	warningRaisedEvent     = "warning.raised.v1"
 )
 
@@ -118,6 +121,11 @@ type Publication struct {
 	State          string
 	Receipt        []byte
 	RequestHash    string
+	// Args is the row's own recorded argument object, and E23 T6 is the first thing to READ it. It carries
+	// what a merge needs and the publication columns have no home for — the pull request number the
+	// publisher resolved and the merge method the binding declared. None of it is the model's: the merge
+	// tool takes no arguments at all, and the two values are written by the registry from a store read.
+	Args map[string]any
 	// Replayed marks a duplicate idempotency_key that returned the ORIGINAL row rather than a second
 	// pending approval — the model re-proposing the same push does not stack approvals (spec §30.8).
 	Replayed bool
@@ -130,6 +138,11 @@ type PublicationTarget struct {
 	Remote string
 	Branch string
 	Base   string
+	// MergeMethod is the binding policy's merge_method (E23 T6): merge | squash | rebase, empty meaning
+	// the `merge` default. It is deployment policy rather than a per-PR choice — the honest ceiling — and
+	// it lives beside the base for the same reason: both decide how work lands, and neither is the
+	// model's to name.
+	MergeMethod string
 }
 
 // RunPublicationTarget resolves a run's publication destination — the remote/branch/base a push or PR
@@ -139,7 +152,7 @@ func (s *Store) RunPublicationTarget(ctx context.Context, tenant Tenant, runID s
 	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
 	var t PublicationTarget
 	err := s.pool.QueryRow(ctx, storage.Query("RunPublicationTarget"), runID, tenant.Organization, tenant.Project).
-		Scan(&t.Remote, &t.Branch, &t.Base)
+		Scan(&t.Remote, &t.Branch, &t.Base, &t.MergeMethod)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PublicationTarget{}, false, nil
 	}
@@ -147,6 +160,30 @@ func (s *Store) RunPublicationTarget(ctx context.Context, tenant Tenant, runID s
 		return PublicationTarget{}, false, fmt.Errorf("resolve run publication target: %w", err)
 	}
 	return t, true, nil
+}
+
+// RunPublishedPullRequest resolves the pull request THIS RUN opened — its number and the head it was
+// opened at — from the run's own published open_pull_request receipt (E23 T6). found is false when the run
+// has published no pull request, which is the honest refusal for "merge" before there is anything to merge.
+//
+// It is the whole of the destination guarantee for a merge. The number is the provider's own answer,
+// written by the publisher into the receipt of a publication a human approved; the head is the one that
+// publication carried. A model that wants a different pull request merged has no field to say so in.
+func (s *Store) RunPublishedPullRequest(ctx context.Context, tenant Tenant, runID string) (number int, headSHA string, found bool, err error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	switch err := s.pool.QueryRow(ctx, storage.Query("RunPublishedPullRequest"), runID, tenant.Organization, tenant.Project).
+		Scan(&number, &headSHA); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, "", false, nil
+	case err != nil:
+		return 0, "", false, fmt.Errorf("resolve run published pull request: %w", err)
+	}
+	if number <= 0 {
+		// A published PR whose receipt carries no number is a receipt this code cannot merge from. Refuse
+		// rather than merge "#0" — an operation aimed at nothing is worse than one that did not happen.
+		return 0, "", false, nil
+	}
+	return number, headSHA, true, nil
 }
 
 // RequestPublication records a pending publication + its one-shot approval binding idempotently (spec
@@ -579,8 +616,11 @@ func (s *Store) MarkPublicationPublished(ctx context.Context, tenant Tenant, ses
 	// The event rides the FIRST publish only; a re-drive updates 0 rows and journals nothing.
 	if tag.RowsAffected() > 0 {
 		event := pushCompletedEvent
-		if operation == "open_pull_request" {
+		switch operation {
+		case "open_pull_request":
 			event = pullRequestOpenedEvent
+		case "merge_pull_request":
+			event = pullRequestMergedEvent
 		}
 		payload := mustMarshal(map[string]any{"publication_id": publicationID, "receipt": receipt})
 		if _, err := appendEvent(ctx, tx, tenant, sessionID, responseID, event, payload); err != nil {
@@ -633,15 +673,19 @@ type scanRow interface {
 // scanPublication scans the shared publication projection column list.
 func scanPublication(row scanRow) (Publication, error) {
 	var (
-		pub     Publication
-		receipt string
+		pub           Publication
+		receipt, args string
 	)
 	if err := row.Scan(&pub.ID, &pub.SessionID, &pub.RunID, &pub.ResponseID, &pub.Operation, &pub.Remote,
-		&pub.Branch, &pub.Base, &pub.HeadSHA, &pub.IdempotencyKey, &pub.Display, &pub.State, &receipt, &pub.RequestHash); err != nil {
+		&pub.Branch, &pub.Base, &pub.HeadSHA, &pub.IdempotencyKey, &pub.Display, &pub.State, &receipt,
+		&pub.RequestHash, &args); err != nil {
 		return Publication{}, err
 	}
 	if receipt != "" {
 		pub.Receipt = []byte(receipt)
+	}
+	if args != "" {
+		_ = json.Unmarshal([]byte(args), &pub.Args)
 	}
 	return pub, nil
 }

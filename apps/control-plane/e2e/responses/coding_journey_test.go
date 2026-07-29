@@ -550,6 +550,12 @@ func (c *countingPRClient) Open(_ context.Context, in repositories.OpenPRInput) 
 	return pr, nil
 }
 
+// The coding journeys never merge; the method exists because E23 T6 put merge on the client interface, and
+// a fake that answered one would be asserting something no test here drives.
+func (c *countingPRClient) Merge(context.Context, repositories.MergeInput) (repositories.MergeReceipt, error) {
+	return repositories.MergeReceipt{}, fmt.Errorf("countingPRClient: this journey merges nothing")
+}
+
 // --- faithful Git double + workspace fixtures ------------------------------------------------------
 
 // codingRemote is a real local git remote that serves the exact clone commit by sha AND receives the
