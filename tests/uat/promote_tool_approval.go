@@ -63,11 +63,18 @@ import (
 // real workspace; (ii) the removal of Peer's structural "fake"; (iii) §6 leg 1 green in ONE run across
 // E19's six, E20's four, E21's, E22's and E23's legs. None of the three exists.
 //
-// AND ONE MORE THING THIS GATE REFUSES TO LET A READER MISS, because it is the epic's own D1: the generic
-// decision surface is INCOMPLETE. `slack.ToolApprovalMessage` and `coordinator.DecideToolApproval` have no
-// production caller (measured 2026-07-29) — a gated MCP tool call parks its run and is released by the
-// EXPIRY REAPER, because the shipped posting pump asks about PUBLICATIONS. That is carried as HIL-P8 and it
-// is a second, independent reason no tier moves here.
+// AND THE EPIC'S OWN D1, WHICH THIS GATE NOW ENFORCES RATHER THAN ONLY RECORDING. Through T7 the generic
+// decision surface was INCOMPLETE: `slack.ToolApprovalMessage` and `coordinator.DecideToolApproval` had no
+// production caller, so a gated MCP tool call parked its run and was released by the EXPIRY REAPER because
+// the shipped pump asked about PUBLICATIONS. T7 could only file it (HIL-P8). E23 T8 closed it, and closing
+// it turned a note into a CHECK: toolApprovalDecisionSurfaceRefusals re-derives, from the questions the
+// bundle carries, that every gated call could actually have been decided — bound to its own request hash,
+// on the GENERIC three-button screen. A manifest whose generic half is unreachable is REFUSED here, which
+// is the difference between a gap that was written down and a gap that cannot come back.
+//
+// It is deliberately NOT a tier argument. Reason (3) above still stands untouched, the peer is still
+// structurally "fake", and adding a working decision surface is still adding a control rather than
+// evidence that the control works in a real workspace.
 func ToolApprovalPromoteGate(raw []byte, target string) []Refusal {
 	var m evidenceManifest
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -103,6 +110,7 @@ func ToolApprovalPromoteGate(raw []byte, target string) []Refusal {
 		refusals = append(refusals, toolApprovalParkRefusals(ta)...)
 		refusals = append(refusals, toolApprovalDestinationRefusals(ta)...)
 		refusals = append(refusals, toolApprovalMintRefusals(ta)...)
+		refusals = append(refusals, toolApprovalDecisionSurfaceRefusals(ta)...)
 		if !ta.Complete() {
 			refusals = append(refusals, Refusal{Detail: toolApprovalIncomplete})
 		}
@@ -114,7 +122,34 @@ func ToolApprovalPromoteGate(raw []byte, target string) []Refusal {
 	return append(refusals, CodeAndShipPromoteGate(raw, target)...)
 }
 
-const toolApprovalIncomplete = "no COMPLETE ToolApprovalProof (ZERO side-effecting tool calls that ran without a human, re-derived from a ledger that shows an approve, a deny, an EXPIRY and an ungated call + ZERO characters on the approval screen written by the model or by the server being called, re-derived in both directions over a screen that genuinely shows the identity and the arguments + ZERO runs terminal while a human still owed an answer and ZERO runs left waiting after an expiry + ZERO decisions an unauthorized principal got through, refused on BOTH surfaces + ZERO destination fields the model could fill in the three publish tools' input schemas + every actionable element on the screen built by interactions.go alone, recomputed from the source of two packages + the canonical vendor contract ledger) — a release whose human-in-the-loop gate or untrusted-input fence is red cannot be tagged (plan §T7, §7 exit gate)"
+const toolApprovalIncomplete = "no COMPLETE ToolApprovalProof (ZERO side-effecting tool calls that ran without a human, re-derived from a ledger that shows an approve, a deny, an EXPIRY and an ungated call + ZERO characters on the approval screen written by the model or by the server being called, re-derived in both directions over a screen that genuinely shows the identity and the arguments + ZERO runs terminal while a human still owed an answer and ZERO runs left waiting after an expiry + ZERO decisions an unauthorized principal got through, refused on BOTH surfaces + ZERO destination fields the model could fill in the three publish tools' input schemas + ZERO gated calls with no reachable decision surface, re-derived from the questions actually posted about them + every actionable element on the screen built by interactions.go alone, recomputed from the source of two packages + the canonical vendor contract ledger) — a release whose human-in-the-loop gate or untrusted-input fence is red cannot be tagged (plan §T7, §T8, §7 exit gate)"
+
+// toolApprovalDecisionSurfaceRefusals re-derives E23 T8's claim: a human could ACTUALLY have decided every
+// gated call this bundle certifies.
+//
+// IT IS THE COUNTER THAT WOULD HAVE FAILED ON THE RELEASE THAT SHIPPED BEFORE IT, which is the only real
+// argument for its existence. Through T7 the answer was "none of them, on any shipped surface" — the gate
+// measured it, wrote HIL-P8, and tagged anyway, because nothing in the gate could refuse on the strength of
+// a paragraph. This function is that paragraph turned into a derivation, so the hole cannot come back
+// quietly: it would have to come back as a red gate.
+func toolApprovalDecisionSurfaceRefusals(ta *ToolApprovalProof) []Refusal {
+	unreachable, decided, unanswered, err := SweepUnreachableApprovals(ta.DecisionSurfaceLedger)
+	if err != nil {
+		return []Refusal{{Detail: "the tool-approval proof's decision-surface ledger cannot be swept, so \"a human could have decided every gated call\" is unverifiable and the tag is REFUSED (fail closed): " + err.Error()}}
+	}
+	if len(unreachable) != 0 {
+		return []Refusal{{Detail: fmt.Sprintf(
+			"%d gated tool call(s) had NO REACHABLE DECISION SURFACE: %v — each one parks a run that only the expiry reaper can release, which is HIL-P8, the defect this epic's own exit gate found in itself. A call is reachable only if a question was actually posted about it, carrying an actionable element whose value is THAT call's request hash, on the GENERIC three-button screen (Approve, Deny, Show-arguments). A two-button publication screen posted for a tool call fails HERE, because it shows a human no arguments (plan §T8)",
+			len(unreachable), unreachable)}}
+	}
+	switch {
+	case decided < 1:
+		return []Refusal{{Detail: "the decision-surface ledger contains no gated call that was actually DECIDED through the question posted about it — a corpus of asks nobody ever answered would satisfy the reachability count while proving nothing about whether pressing the button does anything (plan §T8)"}}
+	case unanswered < 1:
+		return []Refusal{{Detail: "the decision-surface ledger contains no gated call that was asked about and left UNANSWERED — without one this counter is measuring \"everything got clicked\" rather than \"everybody could have clicked\", and an approval nobody presses is a CORRECT outcome this release already claims (HIL-003: the reaper cancels the call and wakes the run) (plan §T8)"}}
+	}
+	return nil
+}
 
 // toolApprovalGateRefusals re-derives the crown negative from the carried call ledger: nothing side-effecting
 // ran without a human, and the ledger DEMONSTRATES that an approve runs it, a deny does not, an expiry does
