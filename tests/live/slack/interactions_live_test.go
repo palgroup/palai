@@ -44,6 +44,17 @@ func slackAPIBase() string {
 // one the owner can run with two variables: post the minted approval message into a real channel, then repair
 // that very message in place with chat.update.
 //
+// WHAT THIS MEASURES CHANGED IN E23 T3 WITHOUT A LINE OF IT MOVING, and that is worth writing down. From E19
+// until then, slack.ApprovalMessage had NO production caller: this smoke proved that a body nothing sent was
+// one Slack would accept. slack_approval_post.go now composes exactly this call — the same minter, the same
+// two arguments, the same sender and the same pacer — for every approval a run parks on, so the Block Kit
+// surface this settles is the surface a human is actually shown.
+//
+// THE HONEST GAP, since it would be easy to overclaim: what runs here is still the CALL, not the PUMP. The
+// claim-and-post loop, the exactly-once row and the destination frozen at enqueue are proven against a real
+// PostgreSQL in the component tier; a live leg that drove the pump end to end would need a stack, a
+// registered connection and a correlated thread, which is the E23 T7 journey's job and not this file's.
+//
 // CONTRACT: https://docs.slack.dev/apis/web-api/rate-limits/ (checked 2026-07-26) — chat.postMessage is the
 // Special Tier (~1 message per second per channel), which is why the pacer is exercised here too rather than
 // only in a unit test.
@@ -62,7 +73,9 @@ func TestLiveSlackApprovalMessageIsPostedAndRepaired(t *testing.T) {
 	posted, err := slack.PostMessage(ctx, http.DefaultClient, slack.PostRequest{
 		MethodURL: slackAPIBase() + "/chat.postMessage",
 		Token:     token,
-		Body:      slack.ApprovalMessage(channel, "", "E19 T2 live smoke — nothing is actually approved by this", requestHash),
+		// The same minter and the same two arguments slack_approval_post.go hands it in production; the detail
+		// stands in for publicationDisplay's resolved destination, which needs a run to have one.
+		Body: slack.ApprovalMessage(channel, "", "E19 T2 live smoke — nothing is actually approved by this", requestHash),
 	}, slack.PostOptions{})
 	if err != nil {
 		// A REAL refusal of our Block Kit is exactly what this test exists to surface, so it fails loudly.
