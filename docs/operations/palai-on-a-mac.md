@@ -369,6 +369,102 @@ removed both volumes.
 
 ---
 
+### 4.2 More than one session at a time — MEASURED 2026-07-29
+
+Renting a Mac only pays if it runs **more than one session at once**. It does, and it takes two
+environment variables. With their shipped defaults it does **not**, silently.
+
+**A stack is only as parallel as the smaller of two numbers**, and both default to at most 1:
+
+| variable | what it is | shipped default |
+|---|---|---|
+| `PALAI_DISPATCH_WORKERS` | how many runs the control plane dispatches at once | `0` in `compose.yaml`, `1` in `production.yml` |
+| `PALAI_RUNNER_CONCURRENCY` | how many engine leases **one runner** parks at once | `1` |
+
+Set both, and a native bring-up runs N sessions concurrently:
+
+```sh
+PALAI_DISPATCH_WORKERS=2 PALAI_RUNNER_CONCURRENCY=2 \
+PALAI_WORKSPACE_ROOT=/absolute/host/path \
+palai up --native
+```
+
+`palai up` exports the runner count for you when only the dispatch count is set — they answer the same
+question, and letting them disagree silently was a real defect. `scripts/ops/mac-sessions.sh plan
+--count N` prints this block with N filled in.
+
+**The measurement, on this machine** (M2 Pro, 12 core, 16 GiB). Two sessions submitted at the same
+instant, intervals taken from the durable run ledger (`job_attempts.owner` and `.started_at`,
+`durable_jobs.updated_at` — Postgres timestamps, not log lines):
+
+```
+DISPATCH=1, RUNNER=1 — SERIAL
+ owner                 | started      | ended        | secs
+ control-plane-63655-0 | 15:43:17.456 | 15:43:31.293 | 13.84
+ control-plane-63655-0 | 15:43:31.336 | 15:43:35.893 |  4.56
+ overlapping pairs: 0     distinct dispatch workers: 1     peak concurrent runs: 1
+```
+
+The second run started **43 ms after the first one finished**. That is the default posture.
+
+```
+DISPATCH=2, RUNNER=2 — CONCURRENT
+ owner                 | started      | ended        | secs
+ control-plane-38340-1 | 15:47:27.651 | 15:47:39.593 | 11.94
+ control-plane-38340-0 | 15:47:27.671 | 15:47:39.719 | 12.05
+ overlapping pairs: 1     distinct dispatch workers: 2     peak concurrent runs: 2
+ overlap: 15:47:27.671 -> 15:47:39.593  (11.92s)
+```
+
+Two runs, two different dispatch workers, in flight together for 11.92 s — and `docker ps` showed
+**two engine containers alive at once**.
+
+**Prove it on your own box**, against the running stack:
+
+```sh
+make test-live-concurrency
+```
+
+It reads the ledger and **fails** unless two runs were in flight at the same instant on two different
+dispatch workers. It does not skip a serial stack: a stack that runs sessions one at a time is the
+regression this fences, so it goes red. It skips only when there is no stack at all.
+
+**Two things this measurement settles that were previously assumed:**
+
+- **`runner_leases` is a dead table.** It has no writer anywhere in the tree and is always empty, so
+  "N live leases" cannot be read from it. The observable lease is the dispatch worker holding a job
+  (`durable_jobs.lease_owner`) and, physically, the engine container the runner started.
+- **Nothing serialises the path in code.** The gateway hands out engines over an unbuffered channel
+  with no lock (`RunnerGateway.Dial`), and the runner parks N independent lease loops on one enrolled
+  identity (`packages/runner/serve.go`). Concurrency here was **configuration only** — no code change
+  was needed to make sessions run in parallel.
+
+**What caps N is the machine, not the stack.** On this 16 GiB box the ceiling is low and it is RAM:
+`mac-sessions.sh plan` budgets 8 GiB per *Xcode-class* session, giving a ceiling of 1. Light sessions
+(one model round trip, no simulator) are far cheaper — 2 ran comfortably. A later repeat of the same
+2-session run, taken while the host was thrashing at load 250 with 157 MB free, **failed**: Postgres
+dropped into recovery mode and engines missed their startup handshake. The runs were still dispatched
+concurrently (25.5 s overlap on two workers); the box simply could not finish the work. Size the Mac
+for the sessions, and read §4.3 before assuming a number.
+
+### 4.3 A bring-up on a loaded Mac needs longer than 30 seconds
+
+`palai up` waits for the control-plane API and used to give it a fixed 30 s. On this box under load the
+native control plane needed **34 s** to serve `/v1/capabilities` — migrations against a containerised
+Postgres, plus Slack socket init — so the bring-up failed and, critically, **never started the runner**.
+The stack looked broken; it was merely slow.
+
+The default is now 90 s and it is tunable:
+
+```sh
+PALAI_STACK_READY_TIMEOUT=3m palai up --native
+```
+
+This matters more here than anywhere else: a Mac hosting concurrent sessions is, by definition, a
+loaded Mac.
+
+---
+
 ## 5. Host facts an agent needs
 
 Everything below was measured on this machine on **2026-07-28** (macOS 26.3 / 25D125, Xcode 26.6 /
