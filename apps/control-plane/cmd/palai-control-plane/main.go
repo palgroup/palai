@@ -331,6 +331,11 @@ func main() {
 	// to configure. Its work was committed inside each run's terminal transaction, which is why this loop
 	// being down (or restarting) delays an answer and can never lose one.
 	go supervisor.Supervise(ctx, "slack-reply-pump", extensions.NewSlackReplyPump(slackBridge).Run)
+	// The APPROVAL question's poster (E23 T3). Same posture and the same reason, with one difference worth
+	// the line: a run is PARKED on what this loop delivers, so being down here delays a decision rather than
+	// an answer. It still cannot lose one — the order committed with the approval — and it still cannot
+	// wedge a run, because the expiry reaper releases a question nobody was ever shown.
+	go supervisor.Supervise(ctx, "slack-approval-pump", extensions.NewSlackApprovalPump(slackBridge).Run)
 	drainSlackSocket := startSlackSocket(ctx, slackBridge, supervisor)
 
 	log.Printf("palai control-plane listening on %s", addr)

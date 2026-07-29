@@ -44,12 +44,15 @@ import (
 // are single-winner — SetPublicationState is conditional on the from-state and applyCommandInTx on `queued` —
 // so a pump that races this call finds the command already applied and does nothing.
 //
-// HONEST CEILING, where a reader meets it: nothing in this tree POSTS an approval message yet. This bridge
-// repairs the message a click arrived on and records its ts as the thread's repair handle, so the outbound
-// path (token from bot_token_ref, per-channel pacing, the bounded 429 repair) is exercised by a real caller —
-// but the "post the approval message" half is driven by the credential-gated live leg (tests/live/slack) and
-// by whatever composes approval UX later, which is the console's job. Enterprise Grid / org-wide install is
-// out of scope: ParseInteractionTeam never produces an enterprise id.
+// THE CEILING THAT USED TO STAND HERE IS GONE, and deleting it is the point of E23 T3 rather than a tidy-up.
+// From E19 T2 until this epic these lines read "nothing in this tree POSTS an approval message yet" — and
+// they stayed true through E22, which shipped a publication path whose buttons no human in a real workspace
+// ever saw. slack_approval_post.go is the other half: the order to ask commits with the approval, a
+// single-winner pump posts slack.ApprovalMessage, and this bridge repairs THAT message in place. The way to
+// retire a comment is to make it false.
+//
+// Enterprise Grid / org-wide install remains out of scope: ParseInteractionTeam never produces an
+// enterprise id.
 
 // slackRepairMaxWait clamps ONE Retry-After honoured inside a decision. The route owes Slack an answer within
 // three seconds (https://docs.slack.dev/interactivity/handling-user-interaction/, checked 2026-07-26), so a

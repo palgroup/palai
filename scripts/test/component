@@ -124,6 +124,11 @@ run_postgres() {
   # releases the run it parked. They are named here for the reason the paragraph above gives, and this list
   # is the tripwire that reason exists for: a security test that never runs reports the same green as one
   # that passes.
+  # TestPublicationFromSlack* covers E23 T3 as well as E22 T4 — the prefix already selected them, and the
+  # names are worth reading because the claim changed under it: an approval message is now POSTED into the
+  # thread by production code (ApprovalMessage's first production caller), the run PARKS instead of
+  # answering, the approve that used to 503 lands, a deny releases the run, and a delivery Slack refuses
+  # costs the human a button and never the approval, its deadline, or the run (SLK-006).
   # TestApprover* is the E23 T2 gate: WHO may approve. It drives the REAL HTTP command adapter (a scope from
   # a REAL VerifyAPIKey) into the REAL pump, and it is named here for the reason above — an approver check
   # nothing runs is an approver check nothing enforces. Its Slack twin (TestSlackApprover*) rides the

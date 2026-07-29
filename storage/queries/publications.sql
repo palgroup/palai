@@ -91,7 +91,9 @@ FOR UPDATE OF p;
 -- T7). Ordered so the sweep journals deterministically. The sweep expires each single-winner and emits
 -- approval.expired.v1; this read only names the candidates.
 -- name: SelectExpiredApprovals
-SELECT p.id, p.organization_id, p.project_id, p.session_id, coalesce(p.response_id, ''), p.state
+-- run_id rides the projection since E23 T3: a run PARKS on its own pending approval, so the sweep that
+-- closes the question is also the sweep that has to release the run waiting on it.
+SELECT p.id, p.organization_id, p.project_id, p.session_id, coalesce(p.response_id, ''), p.run_id, p.state
 FROM publications p
 JOIN approvals a ON a.publication_id = p.id
 WHERE p.state IN ('pending_approval', 'approved')

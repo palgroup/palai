@@ -190,9 +190,28 @@ func (s *Store) RequestPublication(ctx context.Context, tenant Tenant, in Public
 		return Publication{}, fmt.Errorf("insert publication: %w", err)
 	}
 
+	// THE DEADLINE, and until E23 T3 nothing ever wrote one. 000013 declared expires_at in 2023 and E10 T7
+	// built both consume-time guards plus the idle sweep around it, all of which were dead code because
+	// every publication approval was born with a NULL deadline. It was harmless while a publication tool
+	// answered the model and the run carried on; it stops being harmless the moment the run PARKS on the
+	// answer, because then "nobody clicked" is a run that waits forever. Same clock as a gated tool call
+	// (ApprovalTTL), because a human reading two kinds of question has one attention span.
+	expiresAt := time.Now().Add(ApprovalTTL())
 	if _, err := tx.Exec(ctx, storage.Query("InsertApproval"),
-		in.ApprovalID, in.PublicationID, tenant.Organization, tenant.Project, in.RequestHash, in.AllowedApprover, nil); err != nil {
+		in.ApprovalID, in.PublicationID, tenant.Organization, tenant.Project, in.RequestHash, in.AllowedApprover, expiresAt); err != nil {
 		return Publication{}, fmt.Errorf("insert approval: %w", err)
+	}
+	// THE ORDER TO POST (E23 T3, 000044 R4), committed in the SAME transaction as the approval it
+	// announces — 000041's discipline verbatim. Until now nothing in this tree posted an approval message,
+	// so a human's path to the button existed only in tests: `ApprovalMessage` had Approve/Deny buttons and
+	// no production caller. Writing the order here rather than from the poster is the loss-lessness claim:
+	// "a human owes an answer" and "the question is recorded for delivery" become durable together, so a
+	// poster that is down, restarting or absent delays the question and can never lose it.
+	//
+	// A session with no Slack thread inserts ZERO rows, which is every non-Slack run in the deployment.
+	if _, err := tx.Exec(ctx, storage.Query("EnqueueApprovalMessage"),
+		tenant.Organization, tenant.Project, in.ApprovalID, in.RunID, in.ResponseID, in.SessionID); err != nil {
+		return Publication{}, fmt.Errorf("enqueue approval message: %w", err)
 	}
 	payload := mustMarshal(map[string]any{
 		"publication_id": in.PublicationID, "operation": in.Operation, "branch": in.Branch,
@@ -323,6 +342,12 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 		if _, err := expirePublicationTx(ctx, tx, tenant, sessionID, responseID, pubID, "pending_approval"); err != nil {
 			return 0, err
 		}
+		// A click that arrives one second late authorizes nothing — and must not be the reason a run parked
+		// on this approval waits forever. Same pairing the gated-call path makes: whatever closes the
+		// question releases what was waiting on it.
+		if err := wakeParkedRunTx(ctx, tx, tenant, runID); err != nil {
+			return 0, err
+		}
 		return settleApprovalCommandTx(ctx, tx, tenant, sessionID, responseID, commandID)
 	}
 
@@ -349,6 +374,16 @@ func (s *Store) ApplyApprovalDecision(ctx context.Context, tenant Tenant, sessio
 	}
 	seq, err := applyCommandInTx(ctx, tx, tenant, sessionID, responseID, commandID)
 	if err != nil {
+		return 0, err
+	}
+	// THE WAKE (E23 T3), and it belongs HERE rather than in Slack's Decide for the reason the approver check
+	// is here: this is the ONE function both surfaces pass through, so a wake written in each caller is a
+	// wake the next caller forgets. It is a no-op for a run that is not parked — which is exactly what the
+	// boundary pump's own application of this command produces, since a run at a boundary is running.
+	//
+	// It is also what turns E22's measured 503 into a 200: the run no longer races the human to a terminal
+	// state, so the decision lands on an ACTIVE run and re-enters it in the same transaction that approved.
+	if err := wakeParkedRunTx(ctx, tx, tenant, runID); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -451,13 +486,14 @@ func (s *Store) SweepExpiredApprovals(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("select expired approvals: %w", err)
 	}
 	type expired struct {
-		pubID, sessionID, responseID, fromState string
-		tenant                                  Tenant
+		pubID, sessionID, responseID, runID, fromState string
+		tenant                                         Tenant
 	}
 	var candidates []expired
 	for rows.Next() {
 		var e expired
-		if err := rows.Scan(&e.pubID, &e.tenant.Organization, &e.tenant.Project, &e.sessionID, &e.responseID, &e.fromState); err != nil {
+		if err := rows.Scan(&e.pubID, &e.tenant.Organization, &e.tenant.Project, &e.sessionID, &e.responseID,
+			&e.runID, &e.fromState); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scan expired approval: %w", err)
 		}
@@ -478,6 +514,15 @@ func (s *Store) SweepExpiredApprovals(ctx context.Context) (int, error) {
 			return 0, err
 		}
 		if expired {
+			// E23 T3 — THE HALF THAT DID NOT EXIST. Expiring the publication was always here; releasing what
+			// was waiting on it was not, because until this epic nothing waited. Now the run PARKS on its own
+			// pending approval, so an unanswered question is a stopped run, and a deadline that cancels the
+			// question without re-entering the run would be a gate that keeps shut forever what it closed.
+			// A run that is not parked is a no-op, which is every `approved`-row expiry (the run was woken by
+			// the approve long before this sweep saw the deadline).
+			if err := wakeParkedRunTx(ctx, tx, e.tenant, e.runID); err != nil {
+				return 0, err
+			}
 			swept++
 		}
 	}
