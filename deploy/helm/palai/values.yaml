@@ -56,7 +56,8 @@ s3:
 
 # The runner gateway (mutually-authenticated mTLS listener on :8443) the OUTSIDE-cluster runner
 # enrolls against. Its CA cert+key (used to sign enrolling runner certs), the gateway server
-# cert+key, and the one-use enrollment token all ride an existing Secret, mounted read-only. The
+# cert+key, and the enrollment token all ride an existing Secret, mounted read-only. The token is
+# re-presentable (it is the runner's expired-identity recovery path), not one-use. The
 # server certificate carries exactly one SAN — the controllerDNS the runner pins ("control-plane").
 runnerGateway:
   enabled: true

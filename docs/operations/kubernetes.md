@@ -42,7 +42,7 @@ connection, while TLS verifies the pinned SAN.
 - An external PostgreSQL and an S3-compatible object store the cluster pods can reach.
 - Secrets provisioned in the target namespace (see the chart README's "Required inputs" table).
 - The runner-gateway TLS material — a CA cert+key, a server cert+key with SAN `control-plane`, and a
-  one-use enrollment token. `palai init` mints a compatible CA + server cert locally
+  runner enrollment token (re-presentable, not one-use). `palai init` mints a compatible CA + server cert locally
   (`cmd/cli/internal/stack/certs.go`); load them into `runnerGateway.existingSecret`.
 - The namespace labelled for restricted Pod Security:
   ```sh

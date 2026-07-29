@@ -91,7 +91,8 @@ sudo usermod -aG docker palai-runner
 sudo mkdir -p /opt/palai-runner /etc/palai/runner
 sudo tar -xzf palai-runner-host-*.tar.gz -C /opt/palai-runner
 
-# 2. Copy the controller CA + a FRESH one-use enrollment token from the control-plane host.
+# 2. Copy the controller CA + a FRESH enrollment token from the control-plane host. The token is
+#    re-presentable (it is how a runner recovers an expired identity), not one-use.
 #    (On the control-plane host: cat ${PALAI_HOME}/ca/ca.crt ; mint a token into ${PALAI_HOME}/runner-token.)
 sudo install -m 0644 ca.crt        /etc/palai/runner/ca.crt
 sudo install -m 0600 runner-token  /etc/palai/runner/runner-token
