@@ -265,9 +265,9 @@ LIMIT 1;
 -- Keyset-ordered on (created_at, id) so the shared page envelope's cursor is total: created_at alone is a
 -- clock_timestamp() default and two approvals opened in the same transaction can share it. It ORDERS
 -- ASCENDING — unlike the other list surfaces, which are newest-first — because these are questions and the
--- oldest one is the one closest to expiring; $3/$4 are the cursor and are therefore compared with `>`
--- rather than the `<` a DESC list uses. An ORDER BY that disagreed with its own cursor predicate is how a
--- page-2 request comes back holding page 1 forever.
+-- oldest one is the one closest to expiring; the cursor ($5/$6) is therefore compared with `>` rather than
+-- the `<` a DESC list uses. An ORDER BY that disagreed with its own cursor predicate is how a page-2
+-- request comes back holding page 1 forever.
 --
 -- AN ELAPSED-BUT-UNSWEPT ROW IS DELIBERATELY INCLUDED. `t.state` is the authority on whether a question is
 -- open; expires_at is a deadline the reaper (and DecideToolApproval's own consume-time guard) enforces.
