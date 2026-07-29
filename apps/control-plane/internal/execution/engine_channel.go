@@ -5,16 +5,29 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/runner"
 )
 
 // AttemptDescriptor is one run attempt the orchestrator executes: the fenced
-// run/attempt identity, the pinned engine image, and the execution bounds. It carries
-// no tenant — the orchestrator resolves scope from the run (spec §39.2).
+// run/attempt identity, the pinned engine image, the execution bounds, and — since E24 T4 — the
+// tenant the attempt belongs to.
 type AttemptDescriptor struct {
-	RunID       contracts.RunID
-	AttemptID   contracts.AttemptID
-	Fence       uint64
+	RunID     contracts.RunID
+	AttemptID contracts.AttemptID
+	Fence     uint64
+	// Tenant is the org/project this attempt runs for, and it is here because the runner plane had NO
+	// tenant on it at all (§3.6 D8): enrolment carried none, this descriptor carried none, the lease
+	// offer carried none, and Dial checked none — so ANY enrolled machine could take ANY tenant's
+	// attempt. In a single-runner topology that is a definition; the moment two customers have Macs it
+	// is a hole. The orchestrator fills it from the run's own scope, which it has already resolved.
+	//
+	// IT IS DELIBERATELY NOT ON THE LEASE OFFER, and that is a correction to how the plan described the
+	// fix: the refusal is a control-plane decision, and adding a field to the offer would tell a machine
+	// something it cannot act on while breaking the byte-identical offer §2 makes non-negotiable.
+	// Empty is the pre-E24 attempt (every wire proof, the conformance tier) and matches a machine whose
+	// tenant is equally unknown — it is not a wildcard.
+	Tenant      coordinator.Tenant
 	ImageDigest string
 	Limits      runner.Limits
 	// WorkspaceHostPath is the host allocation directory this attempt's workspace tools confine to

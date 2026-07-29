@@ -22,8 +22,16 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/apps/control-plane/internal/fleet"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/runner"
 )
+
+// registryTenant is the tenant the fake registry puts every machine in. An attempt has to name it since
+// E24 T4: the rendezvous is keyed by (tenant, pool), so an attempt that names no tenant meets only a
+// machine whose tenant is equally unknown — which is a registry-less stack, not this one.
+func registryTenant() coordinator.Tenant {
+	return coordinator.Tenant{Organization: fakeRegistryOrg, Project: fakeRegistryProject}
+}
 
 // hostPoolID is a pool whose posture is 'unsandboxed-host' — a rented Mac. The gateway never reads a
 // posture (a pool IS one, and the runner plane carries only the pool id), so what the id stands for
@@ -81,6 +89,7 @@ func TestAnUnsandboxedHostAttemptIsNeverOfferedToASandboxedLinuxRunner(t *testin
 	// The run needs a host: it names the unsandboxed-host pool, which has no machine in it.
 	wanted := f.attempt("run_pool_host", "att_pool_host", 1)
 	wanted.PoolID = hostPoolID
+	wanted.Tenant = registryTenant()
 	dialCtx, cancelDial := context.WithTimeout(context.Background(), time.Second)
 	defer cancelDial()
 	if ch, err := f.gateway.Dial(dialCtx, wanted); err == nil {
@@ -103,6 +112,7 @@ func TestAnUnsandboxedHostAttemptIsNeverOfferedToASandboxedLinuxRunner(t *testin
 	// decision and not a broken gateway.
 	own := f.attempt("run_pool_own", "att_pool_own", 2)
 	own.PoolID = fleet.DefaultPoolID
+	own.Tenant = registryTenant()
 	ownCtx, cancelOwn := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelOwn()
 	ch, err := f.gateway.Dial(ownCtx, own)
@@ -302,6 +312,7 @@ func TestDialRefusesAPoolWhoseRunnerNeverComesRatherThanTakingAnother(t *testing
 
 	attempt := f.attempt("run_empty", "att_empty", 1)
 	attempt.PoolID = "pool_second"
+	attempt.Tenant = registryTenant()
 	dialCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	ch, err := f.gateway.Dial(dialCtx, attempt)
@@ -309,8 +320,12 @@ func TestDialRefusesAPoolWhoseRunnerNeverComesRatherThanTakingAnother(t *testing
 		_ = ch.Close()
 		t.Fatal("a Dial for an empty pool was served by another pool's runner")
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Dial on an empty pool = %v, want the wait to expire (T4 turns this wait into a park)", err)
+	// T4 turned this wait into a PARK, which is what this line now pins: the wait is still spent first
+	// (a runner that is merely still starting up is picked up exactly as before), and the ANSWER when it
+	// expires is a NAMED emptiness rather than a context error — because that is what tells the
+	// orchestrator to park the run instead of spending five attempts and dead-lettering it.
+	if !errors.Is(err, execution.ErrPoolHasNoRunner) {
+		t.Fatalf("Dial on an empty pool = %v, want ErrPoolHasNoRunner so the run PARKS rather than dead-lettering", err)
 	}
 	select {
 	case lease := <-occupied.lease:

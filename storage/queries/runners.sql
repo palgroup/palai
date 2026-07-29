@@ -184,3 +184,80 @@ SELECT id, label, runner_dns, state, pool_id, enrolled_at, last_seen_at
   FROM runners
  WHERE enrolled_via_key_id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
  ORDER BY enrolled_at DESC, id DESC;
+
+-- ---------------------------------------------------------------------------------------------------
+-- PLACEMENT AND THE CAPACITY PARK (E24 T4). These statements are about `runs` and `attempts` rather
+-- than about the registry, and they live here because WHERE a run goes is a fleet question — the
+-- alternative was scattering four statements through responses.sql where nothing names them as a set.
+--
+-- No migration: `runs.pool_id` is T1's 000045 R5 and `attempts.state` is 000001's, and 000045 is the
+-- epic's only migration.
+-- ---------------------------------------------------------------------------------------------------
+
+-- name: RunPlacementInputs
+-- The facts one placement decision reads, in ONE round trip: the pool the run was already placed in
+-- (NULL until a decision is recorded — every run before E24), the moment the RUN entered the queue
+-- (what orders a pool's waiting attempts, and deliberately not the attempt's arrival), and the id of
+-- THIS TENANT's own default pool.
+--
+-- The third column exists because fleet.DefaultPoolID is a CONSTANT: it is the bootstrap tenant's pool
+-- id, so before this every other tenant that had configured nothing resolved to a pool belonging to
+-- somebody else. The subselect is the tenant's own 'default' pool — the row identity.Store.provision
+-- seeds with every organization — and '' when it has none, which leaves the constant as the last
+-- resort exactly as it was.
+SELECT r.pool_id, r.created_at,
+       coalesce((SELECT p.id
+                   FROM runner_pools p
+                  WHERE p.organization_id = $2 AND p.project_id = $3 AND p.name = 'default'), '')
+  FROM runs r
+ WHERE r.id = $1 AND r.organization_id = $2 AND r.project_id = $3;
+
+-- name: RecordRunPool
+-- Write the placement decision ONCE (000045 R5). `pool_id IS NULL` is what makes it write-once, so a
+-- resume returns to the SAME pool and cannot be re-placed into another posture.
+--
+-- THE EXISTS IS NOT BELT-AND-BRACES. runs.pool_id has a foreign key, so writing a pool that does not
+-- exist would abort the statement and FAIL the run — meaning one typo in a project's config_policy
+-- would kill every run in that project. Excluding the row instead records NO decision, which is the
+-- honest answer for a pool nobody created, and the run then parks (a pool with no machine) rather than
+-- dying. The tenant predicate is the other half: recording another tenant's pool would claim a
+-- placement into a fleet this tenant does not own.
+UPDATE runs
+   SET pool_id = $4, updated_at = clock_timestamp()
+ WHERE id = $1 AND organization_id = $2 AND project_id = $3
+   AND pool_id IS NULL
+   AND EXISTS (SELECT 1
+                 FROM runner_pools p
+                WHERE p.id = $4 AND p.organization_id = $2
+                  AND (p.project_id IS NULL OR p.project_id = $3));
+
+-- name: MarkAttemptAwaitingCapacity
+-- The POSITIVE marker for the one waiting reason a machine's arrival may wake. `waiting` is four
+-- different conditions (a human's pause, an approval, a detached child, no capacity) and each has its
+-- own waker; a capacity wake fires on every connect, which for a runner is after every lease, so a
+-- predicate of `state = 'waiting'` alone would resume paused runs against their user's decision.
+--
+-- It needs no migration and no new column: attempts.state has only ever held 'assigned' and
+-- 'preempted', nothing reads it for a decision, and the attempt IS the thing that found no machine.
+-- It is cleared by the supersede the next attempt already performs (SupersedeActiveAttempts), so there
+-- is no second write to forget.
+UPDATE attempts
+   SET state = 'awaiting_capacity', updated_at = clock_timestamp()
+ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
+-- name: OldestRunAwaitingCapacity
+-- The pool's oldest run parked for want of a machine, locked for the wake.
+--
+-- ORDER BY (created_at, id) is a TOTAL order and it is here rather than left to LIMIT: an unordered
+-- LIMIT 1 has decided a security outcome in this tree twice. SKIP LOCKED is what makes two machines
+-- arriving at the same moment wake two DIFFERENT runs instead of contending for one.
+SELECT r.id
+  FROM runs r
+ WHERE r.organization_id = $1 AND r.project_id = $2 AND r.pool_id = $3 AND r.state = 'waiting'
+   AND EXISTS (SELECT 1
+                 FROM attempts a
+                WHERE a.run_id = r.id AND a.organization_id = $1 AND a.project_id = $2
+                  AND a.state = 'awaiting_capacity')
+ ORDER BY r.created_at, r.id
+ LIMIT 1
+ FOR UPDATE SKIP LOCKED;

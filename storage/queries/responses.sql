@@ -310,9 +310,14 @@ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 -- ponytail ceiling: a cleanly-SUCCEEDED attempt still has no path writing a terminal state on its row
 -- (attempt-lifecycle terminal writes are T5/T6) — such a row is only reconciled here if a later attempt
 -- supersedes it; the run's final attempt can linger non-terminal. Wire attempt.succeed on finalize in T5/T6.
+-- 'awaiting_capacity' (E24 T4) is in the set for a load-bearing reason: it is the marker a capacity
+-- park leaves on the attempt that found no machine, and this supersede is what CLEARS it — the fresh
+-- attempt this run was woken for is the one that makes the parked one historical. Leaving it out would
+-- have left the marker on the row forever, so every later machine arriving in that pool would try to
+-- wake a run that is already running.
 UPDATE attempts SET state = 'preempted', updated_at = clock_timestamp()
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND id <> $4
-  AND state IN ('assigned', 'starting', 'active', 'draining');
+  AND state IN ('assigned', 'starting', 'active', 'draining', 'awaiting_capacity');
 
 -- name: UpsertAttempt
 -- Record the run attempt row (spec §26.1, E10 T4): the durable anchor the checkpoint /

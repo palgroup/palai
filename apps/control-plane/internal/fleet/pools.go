@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/palgroup/palai/storage"
 )
 
@@ -66,6 +68,31 @@ func refusalDetail(reg Registration, poolPosture string) ([]byte, error) {
 		"pool_posture":     poolPosture,
 		"reason":           "posture_mismatch",
 	})
+}
+
+// Pool resolves one pool by id and reports the tenant it belongs to (E24 T4). It reuses the statement
+// Register already resolves an enrolling machine's pool with — one query, one place, so the pool→tenant
+// answer cannot diverge between enrolment and placement.
+//
+// SYSTEM-SCOPED, and the type comment's rule is why that is not a widening: the read publishes no
+// tenant because on this plane the POOL is what establishes one, and the caller is the gateway, which
+// has no verified tenant to publish. The predicate is the primary key, so there is no ordering
+// ambiguity and nothing a stranger supplies.
+func (s *Store) Pool(ctx context.Context, poolID string) (Pool, bool, error) {
+	if poolID == "" {
+		return Pool{}, false, nil
+	}
+	ctx = storage.WithSystemScope(ctx)
+	var p Pool
+	err := s.pool.QueryRow(ctx, storage.Query("ResolveRunnerPool"), poolID).
+		Scan(&p.ID, &p.Organization, &p.Project, &p.Posture, &p.OS, &p.Arch, &p.StrictEnrollment)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Pool{}, false, nil
+	}
+	if err != nil {
+		return Pool{}, false, fmt.Errorf("resolve runner pool: %w", err)
+	}
+	return p, true, nil
 }
 
 // ListPools returns the tenant-scoped keyset page of pools, newest first — the read behind

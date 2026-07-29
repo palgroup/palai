@@ -141,6 +141,12 @@ type Registry interface {
 	// machine proves liveness by authenticating with its certificate — and it is deliberately NOT a
 	// health check: it writes what just happened, it does not judge what did not.
 	RecordSeen(ctx context.Context, dns string, certNotAfter time.Time, at time.Time) (Runner, bool, error)
+	// Pool resolves one pool by id, SYSTEM-SCOPED, and is the answer to "whose machine is this" for a
+	// machine the registry has no row for — a runner that enrolled before E24 and has not restarted
+	// since (E24 T4). It takes no tenant for the same reason Register does not: on this plane the pool
+	// is what RESOLVES a tenant, so asking for one would be asking the caller to already know the
+	// answer. It is a by-primary-key read of a row an operator created, not caller input.
+	Pool(ctx context.Context, poolID string) (Pool, bool, error)
 	Get(ctx context.Context, org, project, id string) (Runner, bool, error)
 	List(ctx context.Context, org, project string, window ListWindow) ([]Runner, error)
 }
