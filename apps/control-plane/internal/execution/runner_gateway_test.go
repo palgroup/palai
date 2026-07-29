@@ -250,6 +250,30 @@ func (f *gatewayFixture) session(identity runner.Identity) runner.Session {
 	}
 }
 
+// runnerHTTPClient is the mTLS client a runner presents its enrolled identity with, for the proofs
+// that drive the RAW session wire rather than packages/runner's decoded lease.
+func (f *gatewayFixture) runnerHTTPClient(identity runner.Identity) *http.Client {
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{identity.Certificate},
+		RootCAs:      f.ca.pool,
+		ServerName:   gwControllerDNS,
+	}}}
+}
+
+// waitWaiting polls a pool's queue depth until it reaches want, so a proof about the ORDER waiting
+// runs are served in can establish the order they arrived in as a fact rather than as a race.
+func (f *gatewayFixture) waitWaiting(t *testing.T, poolID string, want int) {
+	t.Helper()
+	for i := 0; i < 300; i++ {
+		if f.gateway.Waiting(poolID) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("gateway Waiting(%q) = %d, want %d after 3s", poolID, f.gateway.Waiting(poolID), want)
+}
+
 func (f *gatewayFixture) attempt(runID, attemptID string, fence uint64) execution.AttemptDescriptor {
 	return execution.AttemptDescriptor{
 		RunID:       contracts.RunID(runID),

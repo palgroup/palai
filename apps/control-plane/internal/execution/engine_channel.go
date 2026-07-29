@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"time"
 
 	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/runner"
@@ -30,6 +31,17 @@ type AttemptDescriptor struct {
 	// process is still driving the run (spec §26.3 rung 1, E10 T4). Empty for a direct-drive attempt
 	// with no claimed job (tests) — then any live sibling job wins exact.
 	JobID string
+	// PoolID is the runner pool this attempt must run in (E24 T2). The gateway offers it to a machine
+	// enrolled in THAT pool and to no other — a pool is a posture, so "the nearest runner" is not a
+	// weaker answer, it is the wrong machine. Empty means fleet.DefaultPoolID, which is where a
+	// deployment that has configured no pool places every run, so its behaviour is unchanged.
+	PoolID string
+	// QueuedAt is the moment this attempt's RUN entered the queue — the run's created_at, not this
+	// attempt's. It is what orders a pool's waiting attempts (E24 T2: created_at FIFO), and the
+	// distinction is the whole point: a run that was requeued (a cordon, a retry, a resume) re-dials
+	// with its ORIGINAL timestamp and keeps its place, instead of going to the back of the line every
+	// time it is bounced. Zero means "order me by the moment I reached the gateway".
+	QueuedAt time.Time
 }
 
 // EngineChannel is a handshake-complete, single-attempt frame transport. The first
