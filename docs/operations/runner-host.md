@@ -94,6 +94,21 @@ sudo tar -xzf palai-runner-host-*.tar.gz -C /opt/palai-runner
 # 2. Copy the controller CA + a FRESH enrollment token from the control-plane host. The token is
 #    re-presentable (it is how a runner recovers an expired identity), not one-use.
 #    (On the control-plane host: cat ${PALAI_HOME}/ca/ca.crt ; mint a token into ${PALAI_HOME}/runner-token.)
+#
+#    FOR MORE THAN ONE MACHINE, USE A POOL ENROLMENT KEY INSTEAD (E24 T3). The file token above is the
+#    stack's own bootstrap credential: it admits into the DEFAULT pool, has no expiry, and cannot be
+#    revoked without also closing the recovery path for the machine that holds it. A pool key admits
+#    into ONE pool, can expire, can be revoked — and revoking it stops the next enrolment while every
+#    machine already running keeps its lease and keeps renewing.
+#
+#        # on the control-plane host, per pool (the value is printed ONCE):
+#        palai poolkey create --pool <pool_id>
+#        palai poolkey list   --pool <pool_id>     # prefixes and state, never a value
+#        palai poolkey revoke <key_id>             # answers with the machines it did NOT stop
+#
+#    Write the value into /etc/palai/runner/runner-token on the machine and set PALAI_RUNNER_POOL to
+#    the pool id in step 3. Declaring the pool is optional but worth it: if the wrong pool's key was
+#    pasted here, enrolment is REFUSED at the door instead of the machine quietly joining another fleet.
 sudo install -m 0644 ca.crt        /etc/palai/runner/ca.crt
 sudo install -m 0600 runner-token  /etc/palai/runner/runner-token
 
