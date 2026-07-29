@@ -177,7 +177,7 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 				ApprovalID: approvalID, ToolCallID: callID, SessionID: st.sessionID, ResponseID: st.responseID,
 				RunID: runID, Fence: st.attempt.Fence, ToolName: name, Arguments: arguments,
 				ReplayClass: string(class), RequestHash: requestHash,
-				ExpiresAt: time.Now().Add(approvalTTL()), Boundary: st.lastModelRequestID,
+				ExpiresAt: time.Now().Add(coordinator.ApprovalTTL()), Boundary: st.lastModelRequestID,
 			}); err != nil {
 				return err
 			}
@@ -268,7 +268,29 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 		return err
 	}
 
+	// 4. THE PUBLICATION PARK (E23 T3). A call that left a human OWING AN ANSWER is not answered to the
+	// model: the run parks here, after the commit and before the delivery, so the ledger row is durable (a
+	// woken attempt replays it rather than re-firing the effect) while the model is handed nothing to
+	// continue on. That ordering is what makes the difference from the shipped behaviour — the tool's
+	// receipt is recorded, it is simply not spoken until a human has decided.
+	//
+	// after_tool does NOT fire here, and that is correct rather than convenient: it is DELIVERY-scoped, and
+	// nothing has been delivered. The woken attempt's consult reaches `completed`, fires it there, and the
+	// model sees exactly one delivery.
+	switch parked, perr := o.parkOnPendingPublication(ctx, st); {
+	case perr != nil:
+		return perr
+	case parked:
+		return errRunAwaitingApproval
+	}
+
 	// after_tool fires on the delivery path (fresh here; a committed replay re-fires it in the consult above).
+	//
+	// ponytail: a woken attempt replays the tool's own receipt, which still reads "pending_approval" — true
+	// when it was written, stale by the time a human has decided. Binding the decision back onto the ledger
+	// row (as a gated call's deny does) needs an approvals row carrying BOTH a publication and a tool call,
+	// and 000044's CHECK makes those mutually exclusive by design. Worth a migration the first time an
+	// operator reads "I have requested approval" under a branch that was already pushed.
 	return o.deliverToolResultWithAfterTool(ctx, st, frame, callID, name, string(result), false)
 }
 

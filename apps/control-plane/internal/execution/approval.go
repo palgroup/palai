@@ -40,30 +40,6 @@ const publishTimeout = 60 * time.Second
 // single-runner stack and a parked run costs no compute while a human reads.
 var errRunAwaitingApproval = errors.New("run_awaiting_approval")
 
-// defaultApprovalTTL is how long a question stays live with nobody answering it. Thirty minutes is a
-// judgement, and the reasoning is worth the line: it has to outlast a meeting and a lunch, because the
-// cost of expiring too early is a human who clicks Approve and is told the button is dead; and it has to
-// be short enough that a forgotten question releases its run the same working hour, because the cost of
-// expiring too late is a run holding a session slot for a decision nobody will make. Overridable with
-// PALAI_APPROVAL_TTL (any time.ParseDuration value) for deployments whose approvers are asleep in
-// another timezone.
-const defaultApprovalTTL = 30 * time.Minute
-
-// approvalTTL resolves the deadline one approval gets. A malformed override falls back to the default
-// rather than failing the run: an unparseable env var must not be the reason a tool call cannot be asked
-// about, and the fallback is the safe direction (a deadline still exists).
-func approvalTTL() time.Duration {
-	raw := os.Getenv("PALAI_APPROVAL_TTL")
-	if raw == "" {
-		return defaultApprovalTTL
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil || d <= 0 {
-		return defaultApprovalTTL
-	}
-	return d
-}
-
 // parkForApproval releases the run's compute while a human decides (spec §22.4, §26.5). It follows the
 // pause/detach choreography: capture a durable checkpoint of this boundary if a sink is wired, drive the
 // run running→waiting, and hand back errRunAwaitingApproval so the attempt ends without sending a
@@ -88,6 +64,55 @@ func (o *Orchestrator) parkForApproval(ctx context.Context, st *attemptState) er
 	}
 	return errRunAwaitingApproval
 }
+
+// parkOnPendingPublication is E23 T3, and it builds nothing: it makes E22's closing claim true. E22 said
+// the agent could write code and publish it behind a human's button. The publication was recorded and the
+// decision chain was production — but the tool ANSWERED the model with "pending_approval" and the run
+// carried on to `completed`, so by the time anybody looked at Slack the click hit guardRunActive, Decide
+// returned an error, the route answered 503, and the publication stayed pending forever. E22 measured
+// exactly that and wrote it down (TestPublicationFromSlackCeiling…). The button existed and could not be
+// pressed in the flow that needed it.
+//
+// So the run parks on its own pending publication, through the SAME path a gated tool call parks on
+// (parkForApproval): running→waiting, no tool.result, no engine process held. The fix is the ROOT one and
+// lives in one place — the dispatcher, after any tool commits — rather than in each publication tool, so
+// merge (T6) and whatever the fourth publication operation turns out to be inherit it without a line.
+//
+// THE AUTHORITY IS THE DATABASE, NEVER THE RESULT BYTES. The park is decided by a pending `approvals` row
+// this RUN owns, not by a tool answering `{"status":"pending_approval"}` — an MCP server can write that
+// string, and a tool result is untrusted data (§2). What a remote server says about its own call can
+// therefore never park a run, and the one indexed read this costs is publications_session_pending.
+//
+// INHERITED CEILING, unchanged by this epic: PendingApprovalForSession takes the session's OLDEST pending
+// approval, so a second concurrent one is not decidable until the first clears. The RunID comparison is
+// what keeps that ceiling honest here — a run never parks on a DIFFERENT run's question, because nothing
+// would ever wake it if it did.
+func (o *Orchestrator) parkOnPendingPublication(ctx context.Context, st *attemptState) (bool, error) {
+	pub, found, err := o.spine.PendingApprovalForSession(ctx, st.tenant, st.sessionID)
+	if err != nil || !found || pub.RunID != string(st.attempt.RunID) {
+		return false, err
+	}
+	return true, o.parkForApproval(ctx, st)
+}
+
+// WHY THE PUBLICATION'S APPROVAL DISPLAY STAYS SEPARATE FROM THE GENERIC ONE (E23 T3, and this is the
+// note the plan asks for rather than a merge nobody wrote down):
+//
+// publicationDisplay (publication_registry.go, untouched by this epic) builds its sentence from the
+// RESOLVED DESTINATION — the remote, branch and base the binding and the preparation receipt decided,
+// plus the exact head that will be pushed. Not one character of it is reachable by the model, which is
+// why the pull-request tool's InputSchema has no destination field at all.
+//
+// DeriveToolApprovalDisplay (E23 T1) builds ITS screen from the CALL: the identity
+// resolved through the executing lookup, the operator's registration-time label, and the full argument
+// object — and those arguments are the model's, defused by being labelled as the model's rather than by
+// being infrastructure-derived.
+//
+// The two are the same shape and DIFFERENT guarantees. Folding them into one "generic display" would not
+// average them; it would drag the stronger down to the weaker, because the only signature both fit is the
+// one that carries a name and a bag of arguments — and a push whose destination arrived as an argument is
+// precisely the push this whole path exists to prevent. Two functions is the cost of keeping the stronger
+// claim true.
 
 // Publisher executes one approved publication against the external repository and returns the receipt to
 // record (spec §30.9-30.10). RepositoryPublisher is the real implementation (push via the broker, PR via

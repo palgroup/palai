@@ -261,7 +261,7 @@ func (p *SlackReplyPump) deliver(ctx context.Context, o slackReplyOrder) bool {
 	// The answer is now the newest visible bot message in the thread, so it becomes the SLK-006 repair
 	// handle. Best-effort: the message landed either way.
 	if _, err := a.store.pool.Exec(scoped, storage.Query("UpdateThreadMessageTS"),
-		o.org, o.project, slackTeamOf(ctx, a, o), o.channelID, o.threadTS, res.MessageTS); err != nil {
+		o.org, o.project, slackTeamOf(ctx, a, o.org, o.project, o.connectionID), o.channelID, o.threadTS, res.MessageTS); err != nil {
 		log.Printf("slack: reply for run %s landed but its ts could not be recorded on the thread: %v", o.runID, err)
 	}
 	return true
@@ -287,14 +287,14 @@ func (p *SlackReplyPump) retire(ctx context.Context, o slackReplyOrder, why stri
 func (p *SlackReplyPump) spine() *coordinator.Store { return p.bridge.spine }
 
 // slackTeamOf reads the workspace id the thread belongs to. UpdateThreadMessageTS is keyed by (team,
-// channel, thread) and the delivery row carries the connection rather than the team, so this is one lookup
+// channel, thread) and a delivery row carries the connection rather than the team, so this is one lookup
 // on a row RLS already confines. A failure yields "" — which simply matches no thread and skips the handle
-// update, never a wrong one.
-func slackTeamOf(ctx context.Context, a *SlackAdmitter, o slackReplyOrder) string {
+// update, never a wrong one. Shared with the approval pump, which owns the other kind of delivery row.
+func slackTeamOf(ctx context.Context, a *SlackAdmitter, org, project, connectionID string) string {
 	var team string
-	if err := a.store.pool.QueryRow(storage.ScopeToTenant(ctx, o.org, o.project),
+	if err := a.store.pool.QueryRow(storage.ScopeToTenant(ctx, org, project),
 		`SELECT team_id FROM slack_connections WHERE id = $1 AND organization_id = $2 AND project_id = $3`,
-		o.connectionID, o.org, o.project).Scan(&team); err != nil {
+		connectionID, org, project).Scan(&team); err != nil {
 		return ""
 	}
 	return team

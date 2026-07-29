@@ -335,3 +335,82 @@ WHERE t.organization_id = $1 AND t.project_id = $2
   AND r.id = t.response_id AND r.organization_id = $1 AND r.project_id = $2
   AND r.retracted_at IS NULL
 RETURNING r.id;
+
+-- ============================================================================
+-- The APPROVAL MESSAGE (000044 R4, E23 T3): the question a human answers, posted into the thread the run
+-- was born in. It follows the return leg above STATEMENT FOR STATEMENT on purpose — an operator should be
+-- able to read one delivery model and recognise both.
+-- ============================================================================
+
+-- EnqueueApprovalMessage runs INSIDE coordinator.RequestPublication's transaction, exactly where
+-- EnqueueTerminalSlackReply runs inside the terminal one. That placement is the whole loss-lessness claim:
+-- the approval and the order to ask about it commit together, so no crash window exists in which a run is
+-- parked waiting for a question nobody recorded.
+--
+-- EXACTLY ONCE is UNIQUE (approval_id) + ON CONFLICT DO NOTHING — keyed on the APPROVAL and not the run,
+-- because one run can owe a human several separate answers and slack_reply_deliveries' UNIQUE (run_id)
+-- could not have expressed that without weakening a shipped promise.
+--
+-- The destination is COPIED, for 000041's reason: repairDeadCorrelation legitimately deletes a thread
+-- correlation whose session went bad, and a question that lost its address is a run that waits forever.
+-- A DISABLED connection enqueues nothing, and a session with no Slack thread inserts zero rows — which is
+-- every non-Slack run in the deployment, and why this is one indexed lookup rather than a scan.
+-- name: EnqueueApprovalMessage
+INSERT INTO slack_approval_deliveries
+    (id, organization_id, project_id, connection_id, approval_id, run_id, response_id, channel_id, thread_ts)
+SELECT 'sapr_' || replace(gen_random_uuid()::text, '-', ''),
+       t.organization_id, t.project_id, t.connection_id, $3, $4, $5, t.channel_id, t.thread_ts
+  FROM slack_thread_sessions t
+  JOIN slack_connections c ON c.id = t.connection_id AND NOT c.disabled
+ WHERE t.organization_id = $1 AND t.project_id = $2 AND t.session_id = $6
+ON CONFLICT (approval_id) DO NOTHING;
+
+-- ClaimDueApprovalMessages claims the next due questions AND schedules their retry in ONE statement, so two
+-- posters can never take the same row and a poster that dies mid-post retries after the backoff. The
+-- attempt is counted at CLAIM time for the reply pump's reason: an uncounted attempt is an infinite retry
+-- against a workspace, and a message Slack may already have accepted.
+--
+-- WHAT IT RETURNS IS WHAT THE HUMAN READS, and it is read LIVE from the publication rather than frozen on
+-- the delivery row: p.display is the resolved destination (publicationDisplay — the binding's remote, the
+-- run's branch, the exact head), a.request_hash is the one-shot binding the button's value carries, and
+-- p.state is what lets the poster refuse to post a live button for a question already decided.
+--
+-- ponytail: the join is to PUBLICATIONS, so a GATED TOOL CALL's approval (000044 R1, publication_id NULL)
+-- is never claimed. Nothing enqueues one today — T3 wires the publication producer only. The tool-call
+-- render lives in package execution and extensions cannot import it (that direction is a cycle), so
+-- whoever enqueues the second producer either lifts the render or gives this a second claim.
+-- name: ClaimDueApprovalMessages
+UPDATE slack_approval_deliveries d
+   SET attempt_count = d.attempt_count + 1,
+       next_attempt_at = clock_timestamp() + ($2::int * (d.attempt_count + 1) * interval '1 second'),
+       updated_at = clock_timestamp()
+  FROM slack_connections c, approvals a, publications p
+ WHERE d.id IN (
+           SELECT q.id
+             FROM slack_approval_deliveries q
+            WHERE q.state = 'pending' AND q.next_attempt_at <= clock_timestamp()
+            ORDER BY q.next_attempt_at
+            FOR UPDATE SKIP LOCKED
+            LIMIT $1)
+   AND c.id = d.connection_id AND NOT c.disabled
+   AND a.id = d.approval_id
+   AND p.id = a.publication_id
+RETURNING d.id, d.organization_id, d.project_id, d.connection_id, d.run_id,
+          d.channel_id, d.thread_ts, d.attempt_count, d.max_attempts, c.bot_token_ref,
+          a.request_hash, p.display, p.state;
+
+-- MarkApprovalMessageDelivered closes a delivery and records the ts Slack assigned — the handle the
+-- decision's chat.update repairs in place, so the message a human clicked is the message that changes.
+-- name: MarkApprovalMessageDelivered
+UPDATE slack_approval_deliveries
+   SET state = 'delivered', message_ts = $2, updated_at = clock_timestamp()
+ WHERE id = $1;
+
+-- MarkApprovalMessageDead retires a question Slack never accepted, or one whose publication was decided
+-- before it could be asked. The row STAYS as the audit trail, and SLK-006 holds: the approval is still
+-- recorded, it still expires, and the run parked on it is still released by the reaper. A delivery failure
+-- costs a human the button, never the canonical state.
+-- name: MarkApprovalMessageDead
+UPDATE slack_approval_deliveries
+   SET state = 'dead', updated_at = clock_timestamp()
+ WHERE id = $1;

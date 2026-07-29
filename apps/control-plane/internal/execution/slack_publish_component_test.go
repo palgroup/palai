@@ -5,6 +5,7 @@ package execution
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,12 +15,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/palgroup/palai/adapters/integrations/slack"
 	"github.com/palgroup/palai/adapters/sandboxes/oci/workspace"
 	"github.com/palgroup/palai/apps/control-plane/api"
 	"github.com/palgroup/palai/apps/control-plane/internal/execution/tools"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
+	"github.com/palgroup/palai/packages/contracts"
 	"github.com/palgroup/palai/packages/coordinator"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
@@ -100,6 +103,10 @@ type publishHarness struct {
 	conn      api.SlackConnectionRef
 	publisher *recordingPublisher
 	calls     *[]slackCall
+	// slackRefuses turns the stand-in workspace into one that answers every call with a documented API
+	// error, so SLK-006 can be measured rather than asserted: a question Slack will not take must not cost
+	// the approval, its deadline, or the run.
+	slackRefuses bool
 
 	team, channel, thread, botMessageTS string
 }
@@ -234,7 +241,14 @@ func (h *publishHarness) wireSlack(t *testing.T, cs *coordinator.Store) (*extens
 		body, _ := io.ReadAll(r.Body)
 		calls = append(calls, slackCall{path: r.URL.Path, auth: r.Header.Get("Authorization"), body: string(body)})
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		if h.slackRefuses {
+			// A workspace that will not take the message (E23 T3, SLK-006). `not_in_channel` is a real
+			// documented error and the shape decodeChatResponse reads.
+			_, _ = w.Write([]byte(`{"ok":false,"error":"not_in_channel"}`))
+			return
+		}
+		// A ts, so a posted question has the handle a later chat.update repairs in place.
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1700000999.000200"}`))
 	}))
 	t.Cleanup(slackAPI.Close)
 
@@ -284,6 +298,77 @@ func (h *publishHarness) propose(tool toolbroker.Tool, args map[string]any) map[
 			"the approval boundary cannot survive", tool.Name, status)
 	}
 	return out
+}
+
+// dispatch drives the REAL orchestrator tool dispatcher for one attempt — not the tool in isolation, which
+// is what propose() does. That difference is the whole of E23 T3: what changed is not the tool (it records
+// a pending publication exactly as it did) but what the dispatcher does with the receipt.
+//
+// A fresh broker and a fresh attempt state each time, because a woken attempt is a NEW process and only
+// the durable ledger may carry anything between them.
+func (h *publishHarness) dispatch(tool toolbroker.Tool, callID string, fence uint64, args map[string]any) (*recordingChannel, error) {
+	h.t.Helper()
+	ch := &recordingChannel{}
+	orch := &Orchestrator{
+		spine: h.spine, tools: toolbroker.New(tool), publications: newPublicationRegistry(h.spine),
+	}
+	st := &attemptState{
+		attempt: AttemptDescriptor{
+			RunID: contracts.RunID(h.runID), AttemptID: contracts.AttemptID(redeliveryID("att")),
+			Fence: fence, WorkspaceHostPath: h.root,
+		},
+		tenant: h.tenant, sessionID: h.sessionID, responseID: h.respID, ch: ch,
+	}
+	return ch, orch.dispatchTool(context.Background(), st, toolRequestFrame(callID, tool.Name, args))
+}
+
+// post drives the REAL approval-message pump — the production loop main.go supervises. Its return value is
+// deliberately DISCARDED: the pump is a system loop that claims across every tenant, so on a shared
+// component database its count includes whatever other tests left due. Every assertion below re-derives
+// from approvalMessages(), which is scoped to THIS harness's channel.
+func (h *publishHarness) post() {
+	h.t.Helper()
+	if _, err := extensions.NewSlackApprovalPump(h.bridge).Tick(context.Background()); err != nil {
+		h.t.Fatalf("SlackApprovalPump.Tick: %v", err)
+	}
+}
+
+// approvalMessages returns the decoded bodies of every chat.postMessage THIS harness's channel received
+// that carries an actionable element — the questions, as opposed to the repairs and the answers. The
+// channel filter is not decoration: the pump serves every project, so a delivery another test left behind
+// would otherwise be counted as this one's.
+func (h *publishHarness) approvalMessages() []map[string]any {
+	h.t.Helper()
+	var out []map[string]any
+	for _, c := range *h.calls {
+		if c.path != "/chat.postMessage" {
+			continue
+		}
+		var body map[string]any
+		if err := json.Unmarshal([]byte(c.body), &body); err != nil {
+			h.t.Fatalf("an outbound Slack body is not JSON: %v", err)
+		}
+		if channel, _ := body["channel"].(string); channel != h.channel {
+			continue
+		}
+		var texts []string
+		collectStrings(body, &texts)
+		if containsString(texts, slack.ActionApprove) {
+			out = append(out, body)
+		}
+	}
+	return out
+}
+
+// runState reads the durable run state — `waiting` is the claim this task exists to make true.
+func (h *publishHarness) runState() string {
+	h.t.Helper()
+	var state string
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(context.Background()),
+		`SELECT state FROM runs WHERE id = $1`, h.runID).Scan(&state); err != nil {
+		h.t.Fatalf("read run state: %v", err)
+	}
+	return state
 }
 
 // pump drives the REAL approval pump — the body Orchestrator.pumpApprovedPublications calls at every
@@ -536,54 +621,270 @@ func TestPublicationFromSlackTargetsTheBindingsBaseBranch(t *testing.T) {
 	}
 }
 
-// TestPublicationFromSlackCeilingAnApproveAfterTheRunEndsDecidesNothing records what E22 T4 does NOT close,
-// because it was MEASURED here rather than reasoned about, and a ceiling nobody wrote down is a ceiling the
-// next task discovers in production.
+// TestPublicationFromSlackPostsAnApprovalMessageIntoTheThread is E23 T3's RED #1, and it was born red for
+// the plainest possible reason: no code in this tree posted an approval message. slack.ApprovalMessage has
+// minted Approve and Deny since E19 T2 and every caller of it was a test or a credential-gated live smoke —
+// which is how E22 could close with "the agent publishes behind a human's button" while no human in a real
+// workspace had ever been shown one. The tree said so itself, in two places, and nobody read either.
 //
-// A publication tool returns pending_approval and the model KEEPS GOING: nothing in this tree parks a run on
-// its own pending approval (the only paths to `waiting` are an explicit pause command — coordinator
-// PauseRun — and detach). So the ordinary Slack shape is that the run finishes its answer before any human
-// has looked at Slack. And ApplyApprovalDecision runs under guardRunActive, so the click that arrives after
-// that is not merely refused: Decide returns an ERROR, which the interactivity route answers with a 503 —
-// the human sees Slack report a failure, and the publication stays pending forever.
+// So this drives the production path end to end: the real dispatcher runs the shipped push tool, the real
+// coordinator records the publication AND the order to ask about it in one transaction, and the real pump
+// posts it. What lands in the thread is asserted DECODED, because encoding/json escapes < > & and a raw
+// substring sweep over marshalled Block Kit can never fail (E20 T4's lesson).
+func TestPublicationFromSlackPostsAnApprovalMessageIntoTheThread(t *testing.T) {
+	h := newPublishHarness(t)
+
+	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunAwaitingApproval) {
+		t.Fatalf("dispatchTool error = %v, want the park", err)
+	}
+	// Nothing has been asked yet — the ORDER is durable, the message is not. That split is the loss-lessness
+	// claim: the pump can be down for the whole window and still deliver what the approval committed.
+	if got := len(h.approvalMessages()); got != 0 {
+		t.Fatalf("%d approval message(s) went out before the pump ran", got)
+	}
+
+	h.post()
+	msgs := h.approvalMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("the thread received %d approval message(s), want 1 — this is the half E22 did not have", len(msgs))
+	}
+	_, _, _, _, _, display := h.publicationRow("push_branch")
+	var texts []string
+	collectStrings(msgs[0], &texts)
+	if !containsString(texts, "*Approval requested*\n"+display) {
+		t.Fatalf("the posted question does not carry the resolved destination %q: %v", display, texts)
+	}
+	if !strings.Contains(display, h.head) || !strings.Contains(display, h.remote) {
+		t.Fatalf("the destination a human was shown (%q) does not name the exact head %s and the binding's remote %s",
+			display, h.head, h.remote)
+	}
+	// It went to the THREAD the run was born in, not to a channel of the poster's choosing.
+	if got, _ := msgs[0]["channel"].(string); got != h.channel {
+		t.Fatalf("the question was posted to channel %q, want the correlated %q", got, h.channel)
+	}
+	if got, _ := msgs[0]["thread_ts"].(string); got != h.thread {
+		t.Fatalf("the question was posted to thread %q, want the correlated %q", got, h.thread)
+	}
+	// The button is bound to the BYTES: its value is the one-shot request hash, which is what makes the
+	// click decidable at all (Decide compares it against the session's pending approval).
+	if !containsString(texts, h.requestHash()) {
+		t.Fatalf("no button carries the pending approval's one-shot hash: %v", texts)
+	}
+	// EXACTLY ONCE: a second tick asks nothing, because UNIQUE (approval_id) + a claim that IS the update
+	// leave nothing due. One question, one message, however many posters run.
+	h.post()
+	if got := len(h.approvalMessages()); got != 1 {
+		t.Fatalf("a second pump tick asked the same question again (%d messages in the thread)", got)
+	}
+	// And no credential is on any outbound body; the bot token rides the Authorization header alone.
+	for _, c := range *h.calls {
+		if strings.Contains(c.body, "xoxb-") {
+			t.Fatalf("an outbound Slack body carried a bot token: %s", c.path)
+		}
+		if c.auth != "" && !strings.HasPrefix(c.auth, "Bearer ") {
+			t.Fatalf("outbound Authorization on %s is %q", c.path, c.auth)
+		}
+	}
+}
+
+// TestPublicationFromSlackParksTheRunSoTheApproveLands is E23 T3's RED #2, and it is the UPDATE of E22's
+// TestPublicationFromSlackCeilingAnApproveAfterTheRunEndsDecidesNothing rather than a new test beside it —
+// that test carried an instruction in its body ("an approve after the run terminated now SUCCEEDS … update
+// it, and the honest ceiling in CAS-002, rather than deleting it") and this is the instruction being
+// followed. The record it kept is preserved here in full:
 //
-// The other half of the same gap is not testable here because the code does not exist: NOTHING in this tree
-// POSTS an approval message. ApprovalMessage has no production caller (E19 T2 wrote that ceiling down in
-// slack_decision.go and it is still true) — the buttons are minted by the live Slack leg and by whatever
-// composes approval UX later. So T4's chain is complete and a human's path to the button is not.
+//	WHAT E22 MEASURED. A publication tool returned pending_approval and the model KEPT GOING, because
+//	nothing in this tree parked a run on its own pending approval — the only routes to `waiting` were an
+//	explicit pause and detach. So the ordinary Slack shape was that the run finished its answer before any
+//	human looked at Slack; ApplyApprovalDecision runs under guardRunActive; and the click that arrived
+//	afterwards did not merely refuse — Decide returned an ERROR, the interactivity route answered 503, the
+//	human saw Slack report a failure, and the publication stayed pending forever.
 //
-// This test therefore asserts the CURRENT behaviour so that closing either half is a deliberate change that
-// has to come here and edit it, rather than something that quietly starts working while a stale comment
-// claims otherwise.
-func TestPublicationFromSlackCeilingAnApproveAfterTheRunEndsDecidesNothing(t *testing.T) {
+// WHAT IS TRUE NOW, and the assertions below are that sentence: the run PARKS instead of answering, so the
+// click lands on an ACTIVE run and is a 200. Nothing about guardRunActive changed — a genuinely terminal
+// run still refuses, and the last leg here still proves it. What changed is that the ordinary flow no
+// longer produces one.
+func TestPublicationFromSlackParksTheRunSoTheApproveLands(t *testing.T) {
 	ctx := context.Background()
 	h := newPublishHarness(t)
-	h.propose(tools.PushTool(), nil)
-	hash := h.requestHash()
 
-	// The run finishes — which is what a run whose model called a publication tool does today.
-	if _, err := h.spine.ApplyRunTransition(ctx, h.tenant, h.runID, statemachines.RunCmdComplete); err != nil {
-		t.Fatalf("complete the run: %v", err)
+	ch, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil)
+	if !errors.Is(err, errRunAwaitingApproval) {
+		t.Fatalf("dispatchTool error = %v, want the park — a run that answers here is a run whose approval "+
+			"can no longer be applied", err)
+	}
+	// THE MODEL WAS GIVEN NOTHING TO CONTINUE ON. That is the difference from the shipped behaviour, where
+	// the tool's "pending_approval" receipt was delivered and read as an answer.
+	if got := toolResults(ch); len(got) != 0 {
+		t.Fatalf("the engine was sent %d tool.result frame(s) while a human owes an answer: %+v", len(got), got)
+	}
+	if got := h.runState(); got != string(statemachines.RunWaiting) {
+		t.Fatalf("run state = %q while a human owes an answer, want waiting", got)
+	}
+	// The approval carries a DEADLINE. 000013 declared expires_at in 2023 and nothing ever wrote a value
+	// into it; harmless while nothing waited, and a run parked forever the moment something does.
+	var expiresAt *time.Time
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
+		`SELECT a.expires_at FROM approvals a JOIN publications p ON p.id = a.publication_id WHERE p.run_id = $1`,
+		h.runID).Scan(&expiresAt); err != nil {
+		t.Fatalf("read the approval deadline: %v", err)
+	}
+	if expiresAt == nil {
+		t.Fatal("the publication approval has no expires_at: nothing would ever release a run parked on it")
+	}
+
+	// A click from somebody who is not an approver still moves nothing — the park does not widen who decides.
+	hash := h.requestHash()
+	if got := h.click("Uintruder", "approve", hash); got.Rejected == "" {
+		t.Fatalf("an unmapped user's click was accepted on a parked run: %+v", got)
+	}
+	if got := h.runState(); got != string(statemachines.RunWaiting) {
+		t.Fatalf("an unauthorized click moved the parked run to %q", got)
+	}
+
+	// THE CLICK THAT USED TO 503. Decide returns no error, so the interactivity route answers 200.
+	decision, derr := h.bridge.Decide(ctx, h.conn, slack.ApprovalIntent{
+		TeamID: h.team, UserID: "Uapprover", RequestHash: hash, Decision: "approve",
+		ActionID: slack.ActionApprove, ChannelID: h.channel, ThreadTS: h.thread, MessageTS: h.botMessageTS,
+	})
+	if derr != nil {
+		t.Fatalf("the approver's click on a PARKED run failed with %v — that is the 503 E22 measured, and "+
+			"closing it is what this task exists for", derr)
+	}
+	if decision.Rejected != "" {
+		t.Fatalf("the authorized approver's click was refused: %q", decision.Rejected)
+	}
+	if _, state, _, _, _, _ := h.publicationRow("push_branch"); state != "approved" {
+		t.Fatalf("the publication is %q after an approve, want approved", state)
+	}
+
+	// THE WAKE: waiting -> running, with the response.run job enqueued in the SAME transaction as the
+	// decision, so no worker can pick it up before the approval is durable.
+	if got := h.runState(); got != "running" {
+		t.Fatalf("run state after the approve = %q, want running (the decision did not re-enter the run)", got)
+	}
+	var jobs int
+	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
+		`SELECT count(*) FROM durable_jobs WHERE kind='response.run' AND payload->>'run_id' = $1`, h.runID).Scan(&jobs); err != nil {
+		t.Fatalf("count wake jobs: %v", err)
+	}
+	if jobs != 1 {
+		t.Fatalf("the wake enqueued %d response.run job(s), want exactly 1", jobs)
+	}
+	// And the boundary the woken attempt reaches publishes it — once, to the approved destination.
+	if n := h.pump(); n != 1 {
+		t.Fatalf("the publisher was called %d time(s) after the approve, want exactly 1: %v", n, h.publisher.operations())
+	}
+}
+
+// TestPublicationFromSlackCeilingATerminalRunStillRefusesTheClick is the OTHER half of E22's record, and it
+// is unchanged: guardRunActive still refuses a decision on a terminal run, and the route still answers 503.
+//
+// What E23 T3 changed is not that refusal — it is that the ORDINARY flow no longer walks into it. Before,
+// every publication reached it, because the run answered and finished while the human was still reading.
+// Now the run parks, so reaching this refusal takes a run that terminalized some OTHER way while a question
+// was open: a cancel, a timeout, an exhausted budget. That is a real and much rarer window, it is left open
+// deliberately (a decision applied to a dead run would publish from a workspace nobody holds), and it is
+// asserted here so that closing it later is a deliberate edit rather than a surprise.
+func TestPublicationFromSlackCeilingATerminalRunStillRefusesTheClick(t *testing.T) {
+	ctx := context.Background()
+	h := newPublishHarness(t)
+	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunAwaitingApproval) {
+		t.Fatalf("dispatchTool error = %v, want the park", err)
+	}
+	hash := h.requestHash()
+	if _, err := h.spine.ApplyRunTransition(ctx, h.tenant, h.runID, statemachines.RunCmdCancel); err != nil {
+		t.Fatalf("cancel the parked run: %v", err)
 	}
 	_, err := h.bridge.Decide(ctx, h.conn, slack.ApprovalIntent{
 		TeamID: h.team, UserID: "Uapprover", RequestHash: hash, Decision: "approve",
 		ActionID: slack.ActionApprove, ChannelID: h.channel, ThreadTS: h.thread, MessageTS: h.botMessageTS,
 	})
-	if err == nil {
-		t.Fatal("an approve after the run terminated now SUCCEEDS. That is an improvement, not a failure — but " +
-			"this test is the record that it used to 503, so update it (and the honest ceiling in CAS-002) " +
-			"rather than deleting it")
+	if err == nil || !strings.Contains(err.Error(), "run_terminal") {
+		t.Fatalf("a click on a TERMINAL run failed with %v, want the guardRunActive refusal — if that changed "+
+			"shape, the route's answer to the human changed with it", err)
 	}
-	if !strings.Contains(err.Error(), "run_terminal") {
-		t.Fatalf("the post-terminal approve failed with %v, want the guardRunActive refusal — if the failure "+
-			"changed shape, the route's answer to the human changed with it", err)
-	}
-	// Nothing was decided and nothing was published: the refusal is safe, it is just not usable.
+	// The refusal is SAFE, which is why it is tolerable: nothing was decided and nothing was published.
 	if _, state, _, _, _, _ := h.publicationRow("push_branch"); state != "pending_approval" {
-		t.Fatalf("the publication is %q after a refused post-terminal click, want still pending_approval", state)
+		t.Fatalf("the publication is %q after a refused click on a dead run, want still pending_approval", state)
 	}
 	if n := h.pump(); n != 0 {
 		t.Fatalf("the publisher was called %d time(s) for a publication no live run could approve", n)
+	}
+}
+
+// TestPublicationFromSlackDenyWakesTheParkedRunAndPublishesNothing is the half a decision surface is worth
+// nothing without, asserted on the PARKED path: a deny has to both prevent the side effect and release the
+// run. A gate that refuses the operation and leaves the run waiting forever has replaced one failure with a
+// worse one.
+func TestPublicationFromSlackDenyWakesTheParkedRunAndPublishesNothing(t *testing.T) {
+	h := newPublishHarness(t)
+	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunAwaitingApproval) {
+		t.Fatalf("dispatchTool error = %v, want the park", err)
+	}
+	if got := h.click("Uapprover", "deny", h.requestHash()); got.Rejected != "" {
+		t.Fatalf("the deny click was refused: %q", got.Rejected)
+	}
+	if _, state, _, _, _, _ := h.publicationRow("push_branch"); state != "denied" {
+		t.Fatalf("the publication is %q after a deny, want denied", state)
+	}
+	if got := h.runState(); got == string(statemachines.RunWaiting) {
+		t.Fatal("the run is STILL waiting after its publication was denied: a deny that parks a run forever " +
+			"is a worse outcome than the push")
+	}
+	if n := h.pump(); n != 0 {
+		t.Fatalf("the publisher was called %d time(s) for a DENIED publication: %v", n, h.publisher.operations())
+	}
+}
+
+// TestPublicationFromSlackDeliveryFailureKeepsTheApprovalAndReleasesTheRun is SLK-006 applied to the new
+// surface, and it is the failure this task could most easily have introduced: a run now PARKS on a question,
+// so a workspace that will not take the message could wedge the run forever.
+//
+// It cannot. The canonical result is untouched by a delivery failure — the approval is recorded, its
+// deadline stands, the publication is still pending and still decidable — and the reaper releases the run
+// whether or not anybody was ever shown a button.
+func TestPublicationFromSlackDeliveryFailureKeepsTheApprovalAndReleasesTheRun(t *testing.T) {
+	ctx := context.Background()
+	h := newPublishHarness(t)
+	h.slackRefuses = true
+
+	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunAwaitingApproval) {
+		t.Fatalf("dispatchTool error = %v, want the park", err)
+	}
+	h.post()
+	// The question was attempted and Slack said no. Nothing about the run's state moved because of it.
+	if got := len(h.approvalMessages()); got != 1 {
+		t.Fatalf("the pump made %d attempt(s) at the question, want 1", got)
+	}
+	if _, state, _, _, _, _ := h.publicationRow("push_branch"); state != "pending_approval" {
+		t.Fatalf("a failed delivery moved the publication to %q", state)
+	}
+	if got := h.runState(); got != string(statemachines.RunWaiting) {
+		t.Fatalf("a failed delivery moved the parked run to %q", got)
+	}
+
+	// THE RELEASE. Move the clock rather than wait out the TTL: the deadline is a column, so the component
+	// test edits the column. (A real thirty-minute expiry is an operator leg, §6.)
+	execSQL(t, h.spine.Pool(),
+		`UPDATE approvals a SET expires_at = clock_timestamp() - interval '1 minute'
+		   FROM publications p WHERE p.id = a.publication_id AND p.run_id = $1`, h.runID)
+	swept, err := h.spine.SweepExpiredApprovals(ctx)
+	if err != nil {
+		t.Fatalf("SweepExpiredApprovals error = %v", err)
+	}
+	if swept < 1 {
+		t.Fatalf("the reaper swept %d elapsed approvals, want at least this one", swept)
+	}
+	if _, state, _, _, _, _ := h.publicationRow("push_branch"); state != "expired" {
+		t.Fatalf("the publication is %q after its deadline passed, want expired", state)
+	}
+	if got := h.runState(); got == string(statemachines.RunWaiting) {
+		t.Fatal("the run is STILL waiting after its approval expired: the gate closed something forever, " +
+			"which is the one failure mode worse than having no gate")
+	}
+	if n := h.pump(); n != 0 {
+		t.Fatalf("the publisher was called %d time(s) for an EXPIRED publication", n)
 	}
 }
 

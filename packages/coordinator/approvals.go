@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,31 @@ import (
 // a deny, and the reaper. That is not tidiness — a gate whose closing and opening are written twice is a
 // gate that one day only closes. The worst failure mode of an approval is not "it let something through";
 // it is a run parked forever on a question nobody will ever answer.
+
+// defaultApprovalTTL is how long a question stays live with nobody answering it. Thirty minutes is a
+// judgement, and the reasoning is worth the line: it has to outlast a meeting and a lunch, because the
+// cost of expiring too early is a human who clicks Approve and is told the button is dead; and it has to
+// be short enough that a forgotten question releases its run the same working hour, because the cost of
+// expiring too late is a run holding a session slot for a decision nobody will make. Overridable with
+// PALAI_APPROVAL_TTL (any time.ParseDuration value) for deployments whose approvers are asleep in
+// another timezone.
+const defaultApprovalTTL = 30 * time.Minute
+
+// ApprovalTTL resolves the deadline one approval gets — a gated tool call's (E23 T1) and a publication's
+// (E23 T3) alike, from ONE definition. A malformed override falls back to the default rather than failing
+// the run: an unparseable env var must not be the reason a tool call cannot be asked about, and the
+// fallback is the safe direction (a deadline still exists).
+func ApprovalTTL() time.Duration {
+	raw := os.Getenv("PALAI_APPROVAL_TTL")
+	if raw == "" {
+		return defaultApprovalTTL
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultApprovalTTL
+	}
+	return d
+}
 
 // ToolApprovalRequest opens the gate on one call. The arguments and hash are the ones the executor will
 // run, captured at park time, so the button is bound to the bytes and not to an intention.
