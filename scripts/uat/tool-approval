@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# Tool-approval UAT — the E23 EXIT gate (plan §T7). One target, a Docker-free CORE + a Docker-bound JOURNEY
+# tier + a CREDENTIAL-gated live tier, shaped exactly like E22's `code-and-ship`. The core is the
+# load-bearing gate: it needs no Docker and no credential.
+#
+# WHY THIS TARGET CO-RUNS THE BACKING SUITES (the E17 T11 review's MUST-FIX 1, inherited verbatim through
+# E19..E22): the bundle's per-case `status` is AUTHORED deterministic data. Only the entries carrying a
+# proof block can be judged by a verifier; the rest carry shape fields alone. So `evidence-verify` on its
+# own certifies "UAT declared green", NOT "UAT green". THIS SCRIPT is what makes the authored status honest:
+# the SAME invocation that verifies the bundle also RUNS the suites that back the five cases it certifies. A
+# red backing suite fails this target, and TestARedBackingSuiteFailsTheToolApprovalGate proves that
+# mechanically via PALAI_APPROVAL_FAULT_SUITE.
+#
+#   Docker-free core (always):
+#     1. go test ./tests/uat/tool-approval/... — four gates in one package:
+#        a. the committed tool-approval-0.1.0 bundle is BYTE-identical to its generator and verifies clean
+#           through the SHIPPED verifier;
+#        b. the REFUSAL matrix: shape-consistent manifests claiming a property they did not earn, every one
+#           REFUSED — including the MCP server's own `description` rendered onto the approval screen, a
+#           denied call marked as executed, a run left waiting after its approval expired, and a merge tool
+#           that grew a `pull_request_number`;
+#        c. the promote gate: rc PASSES, stable is REFUSED, and a dropped claim marker still routes HERE;
+#        d. the five cases' catalog, plus the HIL- orphan sweep and the guard that keeps `HIL-` inside the
+#           only sweep in the tree that walks tests/uat/cases.
+#     2. the approval SCREEN's own guards, the two widget surfaces, the modal route's ack budget, the merge
+#        client and the approver principal — all Docker-free, all untagged.
+#     3. evidence-verify RELEASE=tool-approval-0.1.0 through the shipped command (0/0/0/0).
+#     4. the automation catalog corpus (the tenancy half runs in the journey tier — it NEEDS a real Postgres
+#        and reports `ok` over five skips without one). E23 adds FOUR case.yaml files and edits three, so it
+#        is not optional; the operator-doc corpus runs beside it because this epic's ceilings live in
+#        docs/operations/approvals.md and known-gaps-1.0.md.
+#
+#   Journey tier (Docker, no credential — SKIP_JOURNEYS=1 to opt out):
+#     5. against a throwaway Postgres: the E23 narrative where its seams already live — a gated tool call
+#        that never reaches Execute without a human -> a run that PARKS instead of answering -> an approval
+#        nobody presses that EXPIRES and releases the run -> an unauthorized principal who decides nothing
+#        on EITHER surface -> an approved MCP write whose arguments reach the peer byte-for-byte -> a merge
+#        that refuses a head which moved after the approval. Plus the TENANCY corpus, which needs this
+#        tier's real Postgres to run at all (000044 opened a new tenant table).
+#
+#   Live tier (credentials from .env.local — `make uat-tool-approval-live`):
+#     6. every leg E22's target runs, unchanged, PLUS this epic's: a real approval message posted into a
+#        real Slack thread, and an opt-in real merge against a real GitHub App. Each SKIPS with the name of
+#        the missing variable, so a PARTIAL handover reports partial-green rather than a red wall.
+#
+# HONEST CEILING (plan §6). This bundle does NOT claim that nothing dangerous can happen now. It claims:
+# every side-effecting tool call CAN pass through a human's button; that human sees the CALL ITSELF and not
+# a description — identity from the server, label from the operator, arguments verbatim, and the button
+# bound to their hash; the run parks while waiting and does not wait forever; the approver is a project
+# policy and not a Slack list; and no byte from outside — not a ticket body, not an MCP server's
+# description — can write its own approval. NO TIER ADVANCES.
+#
+# AND THE PART AN OPERATOR MUST READ BEFORE TRUSTING THIS TARGET: the GENERIC half has no production
+# decision surface yet. `slack.ToolApprovalMessage` and `coordinator.DecideToolApproval` have NO production
+# caller (measured 2026-07-29, filed as HIL-P8) — the shipped pump asks about PUBLICATIONS with E19's
+# two-button message, so a gated MCP tool call parks its run and is released by the EXPIRY REAPER. The gate,
+# the park, the expiry, the approver check and the whole publication line ARE production.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+echo "uat-tool-approval: [1/4] the E23 bundle + refusal matrix + promote gate + catalog + HIL- orphan sweep" >&2
+go test -count=1 ./tests/uat/tool-approval/...
+
+echo "uat-tool-approval: [2/4] the approval screen, the two widget surfaces, the modal route and the merge client" >&2
+# -v because EXIT 0 IS NOT PROOF. HIL-002's authorship sweep, HIL-005's `sha`-on-the-wire assertion and the
+# modal route's three-second budget all live here, and a reader has to be able to see them RUN — a package
+# that compiled to zero matching tests exits 0 exactly like a package whose tests all passed.
+go test -count=1 -v -run 'TestToolApprovalScreen|TestApproval|TestNeitherSurface|TestAnUnwrittenOperatorLabel|TestShowArguments|TestTheRejectedBlocks|TestTheActionableElementScan|TestNoFileButInteractions|TestGitHubMerge|TestMergeRefuses|TestAStalledModal|TestARefusedModal|TestAShowArgumentsClick|TestApprover|TestConfigPolicyInput' \
+  ./apps/control-plane/internal/execution/ ./adapters/integrations/slack/ ./adapters/repositories/ \
+  ./apps/control-plane/api/ ./packages/coordinator/ ./apps/control-plane/internal/identity/ \
+  ./cmd/cli/internal/stack/
+
+echo "uat-tool-approval: [3/4] evidence-verify RELEASE=tool-approval-0.1.0 (want 0 failed / 0 missing / 0 secret)" >&2
+RELEASE=tool-approval-0.1.0 scripts/evidence/verify
+
+echo "uat-tool-approval: [4/4] the automation catalog corpus + the operator-doc corpus" >&2
+# E23 adds FOUR case.yaml files (HIL-001/002/003/005) and edits three (HIL-004, SLK-012, UI-002), so the
+# catalog corpus is not optional — the re-verify rule this repository learned the hard way, twice.
+go test -count=1 ./tests/uat/automation/... ./tests/docs/...
+# The TENANCY corpus is the other half of the re-verify rule, and it is NOT run here: all of its tests
+# t.Skip without PALAI_SECURITY_POSTGRES_URL, so a plain `go test` reports `ok` over skips — a green that
+# certifies nothing. It runs in the JOURNEY tier below. E23's migration 000044 opened a NEW TENANT TABLE
+# (slack_approval_deliveries), so for this epic it is doubly not optional.
+
+# ---- the journey tier: real PostgreSQL, no credential -------------------------------------------------------
+journeys="the E23 backing suites CO-RUN green (the gate, the park, the expiry, the approver, the MCP write, the merge)"
+if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
+  # Said plainly, because the closing line must never imply a tier that did not run.
+  echo "uat-tool-approval: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — the backing component suites" >&2
+  echo "  did NOT run; this invocation does not back the bundle's authored PASS for them" >&2
+  journeys="Docker-bound backing suites NOT RUN (SKIP_JOURNEYS=1)"
+else
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "uat-tool-approval: docker is not available; the E23 backing suites need a throwaway Postgres" >&2
+    exit 2
+  fi
+  image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  label="io.palai.uat=tool-approval"
+  container="palai-uat-approval-$$-${RANDOM}"
+  # Throwaway local credential, generated per run; never written to a file, never echoed.
+  password="palai-uat-approval-${RANDOM}${RANDOM}"
+  cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+  before="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  trap cleanup EXIT
+
+  docker run --detach --pull=never --name "$container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 "$image" >/dev/null
+  ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "uat-tool-approval: the journey postgres did not become ready" >&2
+    exit 1
+  fi
+  binding="$(docker port "$container" 5432/tcp)"; port="${binding##*:}"
+
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+  # A DEAD Postgres for the fault knob: reachable-looking, connects to nothing.
+  dead_url="postgres://postgres:$password@127.0.0.1:1/palai?sslmode=disable"
+
+  echo "uat-tool-approval: [journey] the tenancy corpus against real PostgreSQL (000044 opened a tenant table)" >&2
+  set +e
+  PALAI_SECURITY_POSTGRES_URL="$url" go test -tags=security -count=1 -v ./tests/security/tenancy
+  tenancy_status=$?
+  set -e
+  if test "$tenancy_status" -ne 0; then
+    echo "uat-tool-approval: the tenancy corpus FAILED — a new tenant table and new case.yaml files must re-run it" >&2
+    cleanup; trap - EXIT
+    exit "$tenancy_status"
+  fi
+
+  # The BACKING suites. The -run selectors are the SHIPPED ones from scripts/test/component, verbatim: these
+  # packages also hold suites this epic does not own, and running them here would make the gate's runtime
+  # somebody else's problem.
+  #
+  # NAMING EACH TEST IS LOAD-BEARING and this epic paid for the comment AGAIN: E23 T7 measured that
+  # `TestToolWithoutApprovalDeclaredIsBitUnchanged` matched NONE of the eight alternatives T1 added to the
+  # allow-list (Go's -run is a regexp match on the NAME, and `TestToolApproval` is not a substring of
+  # `TestToolWithoutApprovalDeclared...`), so the one test proving an ungated tool is bit-unchanged never
+  # ran in the component tier at all. Every selector below was checked by RUNNING it and reading `=== RUN`,
+  # not by reading the string.
+  suites=(
+    "./apps/control-plane/internal/execution|TestToolApproval|TestExpiredToolApproval|TestToolWithoutApprovalDeclared|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestPublicationFromSlack"
+    "./apps/control-plane/internal/extensions|TestSlackApprovalModal"
+    "./apps/control-plane/internal/store|TestSlackApprover"
+  )
+  status=0
+  for entry in "${suites[@]}"; do
+    suite="${entry%%|*}"
+    selector="${entry#*|}"
+    suite_url="$url"
+    if [ "${PALAI_APPROVAL_FAULT_SUITE:-}" = "$suite" ]; then
+      suite_url="$dead_url"
+      echo "uat-tool-approval: FAULT INJECTED — $suite points at a DEAD Postgres; this run MUST fail" >&2
+    fi
+    echo "uat-tool-approval: [journey] backing suite $suite" >&2
+    set +e
+    PALAI_COMPONENT_POSTGRES_URL="$suite_url" \
+      go test -tags=component -count=1 -v -run "$selector" "$suite"
+    status=$?
+    set -e
+    if test "$status" -ne 0; then
+      echo "uat-tool-approval: backing suite $suite FAILED — the bundle's authored PASS for its cases is not honest" >&2
+      docker logs "$container" >&2 || true
+      break
+    fi
+  done
+
+  cleanup
+  trap - EXIT
+  after="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if test "$after" -ne "$before"; then
+    echo "uat-tool-approval: the journey tier leaked a container" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+fi
+
+# ---- the live tier: credential-gated, NO CODE CHANGES --------------------------------------------------------
+live="live legs NOT RUN (RUN_LIVE unset)"
+if [ "${RUN_LIVE:-0}" = "1" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  echo "uat-tool-approval: the credential-gated live legs — each SKIPS by name if its variable is absent" >&2
+  # -v so a SKIP is VISIBLE: this family's signature failure is a green report over legs that never ran. The
+  # merge leg is additionally opt-in behind PALAI_GIT_LIVE_MERGE, because it changes a real repository.
+  go test -tags=live -count=1 -v ./tests/live/slack/... ./tests/live/repository/... \
+    ./adapters/integrations/mcp/
+  live="live legs attempted (read the SKIP lines above: a skip is not a pass)"
+fi
+
+echo "uat-tool-approval=PASS (E23 exit gate: bundle 0/0/0/0, the ungoverned-side-effect count re-derived from" >&2
+echo "  the call ledger, the screen-authorship fence re-derived in BOTH directions, the park and expiry counts" >&2
+echo "  re-derived from the run ledger, and the single mint recomputed from two packages' own source," >&2
+echo "  $journeys, $live)" >&2
+echo "uat-tool-approval: NO TIER ADVANCED — \`slack\` closes PREVIEW, \`knowledge-vector\` and \`apple-build\`" >&2
+echo "  close DISABLED, \`console\` closes PREVIEW. Every counterparty is a FAKE. THIS BUNDLE DOES NOT CLAIM" >&2
+echo "  THAT NOTHING DANGEROUS CAN HAPPEN NOW: it claims every side-effecting tool call CAN pass through a" >&2
+echo "  human's button, that the human reads the CALL and not a description, that the run parks without" >&2
+echo "  waiting forever, that the approver is a project policy, and that no byte from outside can write its" >&2
+echo "  own approval. AND ONE CEILING AN OPERATOR MUST READ: the GENERIC half has no production decision" >&2
+echo "  surface yet (HIL-P8) — a gated MCP tool call parks and is released by the EXPIRY REAPER." >&2

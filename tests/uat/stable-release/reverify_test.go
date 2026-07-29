@@ -23,7 +23,21 @@ import (
 // rather than a silence: without it, a bundle that LOST its family claims would quietly move from "passes
 // its own gate" to "no gate recognizes it" and the sweep below would still be green.
 var promoteFamilies = map[string]string{
-	// E22's family is checked FIRST of all in PromoteGateFor, one level above E21, and this bundle is the
+	// E23's family is checked FIRST of all in PromoteGateFor, one level above E22, and this bundle inherits
+	// the same dispatch hazard one layer deeper: it carries the E22 code-and-ship claim, the E21
+	// tools-memory claim, the E20 agent-surface claim, the E19 wiring claim AND E17 area claims, because it
+	// derives its inherited case set from those releases. Dispatching on any of them would reroute it to a
+	// gate that knows nothing about the ungoverned-side-effect sweep, the screen-authorship fence, the
+	// park/expiry counts or the single-mint recompute. It is recognized by the E23 CASE IDS — and their
+	// `HIL-` prefix is part of that decision in BOTH directions, exactly as `CAS-` was.
+	//
+	// THIS ENTRY IS THE THIRD REGISTRATION POINT A NEW BUNDLE NAME OWES (the other two are
+	// committedBundleSurfaces and the caseChecksumParts branch, both in tests/uat/evidence.go). Without it
+	// the sweep below reports "in neither promoteFamilies nor unfamiliedBundles" — deliberately, because a
+	// bundle that lost its family would otherwise move from "passes its own gate" to "no gate recognizes it"
+	// in silence.
+	"tool-approval-0.1.0": "E23 tool-approval (the ungoverned-side-effect sweep over the call ledger + the screen-authorship fence swept in both directions + the park/expiry counts over the run ledger + the unauthorized-decision sweep across both surfaces + the single-mint recompute over two packages' source + the composed code-and-ship/tools-memory/agent-surface/wiring/extensions/eval gates)",
+	// E22's family is checked next in PromoteGateFor, one level above E21, and this bundle is the
 	// hardest in the tree to dispatch correctly: it carries the E21 tools-memory claim, the E20 agent-surface
 	// claim, the E19 wiring claim AND E17 area claims, because it derives its inherited case set from those
 	// releases. Dispatching on any of them would reroute it to a gate that knows nothing about the

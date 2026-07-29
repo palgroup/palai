@@ -15,7 +15,13 @@
 //
 // HONEST CEILING: the "control plane" here is an in-process httptest gateway, not the compose container; the
 // container-vs-native framing is the operator leg. And swift.build-check is a type-check, NOT a signed macOS/
-// iOS build — no signing credential exists anywhere (apple-build disabled, §6 leg 3).
+// iOS build: no signing credential is wired into any Palai DEPLOYMENT and no apple-build operation is typed
+// in workers.Catalog — absence by construction, not absence by inventory (apple-build disabled, §6 leg 3).
+//
+// D7, CORRECTED BY E23 T7: this line used to read "no signing credential exists anywhere", the same false
+// sentence E22 T7 corrected in types.go and left standing here. Measured on the development machine
+// 2026-07-28: `security find-identity -v -p codesigning` reports FOUR valid identities and five provisioning
+// profiles are installed. A claim about a keychain is falsified by a keychain; the claim above is not.
 package live
 
 import (

@@ -301,6 +301,16 @@ type evidenceCase struct {
 	// than believed.
 	CodeAndShipClaim string            `json:"code_and_ship_claim"`
 	CodeAndShipProof *CodeAndShipProof `json:"code_and_ship_proof"`
+	// The E23 T7 tool-approval claim (plan §T7 — the E23 EXIT gate) extends the same discipline to the
+	// invariants THIS epic owns: a side-effecting tool call cannot run without a human's decision and the
+	// gate is declared at REGISTRATION, the approval screen carries not one character written by the model
+	// or by the server being called, the run PARKS while waiting and an approval nobody presses EXPIRES and
+	// releases it, an unauthorized principal decides nothing on either surface, the destination — including
+	// WHICH pull request is merged — comes from no input schema, and every button on the screen was built
+	// by the one file allowed to build one. It requires its proof, and seven counters are RE-DERIVED rather
+	// than believed.
+	ToolApprovalClaim string             `json:"tool_approval_claim"`
+	ToolApprovalProof *ToolApprovalProof `json:"tool_approval_proof"`
 }
 
 type evidenceTerm struct {
@@ -2730,16 +2740,32 @@ var committedBundleSurfaces = map[string]string{
 	// LegacyShapeOnly: this is a bundle written TODAY, and a new release that cannot recompute its own
 	// checksums is the exact history E18 T8 spent a task correcting.
 	ToolsMemoryBundle: SurfaceRecomputed,
-	// The E22 T7 code-and-ship bundle — the SEVENTEENTH entry. Its anchor is the CANONICAL contract and
-	// on-machine-measurement ledger digest (CodeAndShipContractsDigest), derived from the code table in
-	// evidence_code_and_ship.go — so a bundle that dropped or reworded a §3.5 row, or a measurement stamp,
-	// would move every checksum in it. It may NOT be LegacyShapeOnly: this is a bundle written TODAY, and a
-	// new release that cannot recompute its own checksums is the exact history E18 T8 spent a task
-	// correcting.
+	// The E22 T7 code-and-ship bundle. Its anchor is the CANONICAL contract and on-machine-measurement
+	// ledger digest (CodeAndShipContractsDigest), derived from the code table in evidence_code_and_ship.go —
+	// so a bundle that dropped or reworded a §3.5 row, or a measurement stamp, would move every checksum in
+	// it. It may NOT be LegacyShapeOnly: this is a bundle written TODAY, and a new release that cannot
+	// recompute its own checksums is the exact history E18 T8 spent a task correcting.
+	//
+	// D10, CORRECTED BY E23 T7: this comment called itself "the SEVENTEENTH entry" and the entry below spoke
+	// of "the other fifteen committed bundles". Both were stale, and the first was the worse mistake — THIS
+	// IS A MAP, so no entry has an ordinal at all, and a number that cannot be wrong is a number nobody
+	// re-checks. Counted 2026-07-29: this table holds TWENTY-TWO releases and evidence/releases/ holds
+	// twenty-two directories, which the sweep pins in both directions.
 	CodeAndShipBundle: SurfaceRecomputed,
-	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the other fifteen committed
-	// bundles + the materialized case corpus, so a checksum here cannot be hand-written: it moves the
-	// moment any bundle or any case.yaml does.
+	// The E23 T7 tool-approval bundle. Its anchor is the CANONICAL vendor contract ledger digest
+	// (ToolApprovalContractsDigest), derived from the code table in evidence_tool_approval.go — so a bundle
+	// that dropped or reworded a §3.5 row would move every checksum in it. It may NOT be LegacyShapeOnly,
+	// for the reason stated one entry up.
+	ToolApprovalBundle: SurfaceRecomputed,
+	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the SEVENTEEN committed bundles
+	// that predate its own capture, plus the materialized case corpus — so a checksum here cannot be
+	// hand-written: it moves the moment one of those bundles or the corpus does.
+	//
+	// COUNTED 2026-07-29 rather than remembered (the D10 correction above): twenty-two bundles are
+	// committed, twenty-one of them other than this one, and the as-of rule drops the four cut after this
+	// release's own captured_at (slack-agent-surface, tools-memory, code-and-ship, tool-approval). That rule
+	// is the only thing standing between a new bundle's NAME and eight red checksums here — see
+	// TestTheAsOfRuleIsWhatKeepsTheShippedRCGreen.
 	StableReleaseBundle: SurfaceRecomputed,
 	// Corrected by E18 T8 — each owes a checksum_note stating what its committed values were and why they
 	// were renormalized (automation: fabricated, 0 hits over the declared search; recovery: a REAL but
@@ -2810,6 +2836,8 @@ func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 		return []string{c.ID, c.RunID, ToolsMemoryContractsDigest()}
 	case CodeAndShipBundle: // tests/uat/code-and-ship/bundle_test.go
 		return []string{c.ID, c.RunID, CodeAndShipContractsDigest()}
+	case ToolApprovalBundle: // tests/uat/tool-approval/bundle_test.go
+		return []string{c.ID, c.RunID, ToolApprovalContractsDigest()}
 	case "extensions-0.1.0": // tests/uat/extensions/bundle_test.go
 		return []string{c.ID, c.RunID, CapabilityClaimsDigest()}
 	case "managed-cloud-0.1.0": // tests/uat/managed-cloud/evidence_test.go
@@ -3000,6 +3028,10 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	// "nothing was published without an approval", "the model cannot name a destination" and "no ios
 	// operation is typed" ship unverified behind five green rows.
 	findings = append(findings, verifyE22CodeAndShipPresence(m)...)
+	// And for E23: a manifest carrying the tool-approval CASES must carry the anchor that judges them, or
+	// "nothing side-effecting ran without a human", "no byte from outside reached the approval screen" and
+	// "only interactions.go mints a button" ship unverified behind five green rows.
+	findings = append(findings, verifyE23ToolApprovalPresence(m)...)
 
 	// A bundle whose checksums were CORRECTED, or that is shape-only, must SAY SO in the manifest (plan §2
 	// honest-naming): the note is where a reader who opens this file meets the correction or the ceiling.
@@ -3461,6 +3493,21 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "code_and_ship_proof (a code-and-ship claim requires the cloned repository's before/after tree, the publications published WITHOUT an approval (zero, re-derived from the ledger), the destination fields the MODEL could fill (zero, re-derived from the two publish tools' input schemas), the authority external text gained (zero), the declared shell posture with workers.Catalog RECOMPUTED from its own source, the Apple signing credentials engaged (zero) beside the identities the host actually holds, the artifacts uploaded beside the actionable elements minted (zero), and every vendor requirement or on-machine measurement with its source and §3.5 divergence id; a 'coded' marker is not proof — plan §T7)"})
 			case !c.CodeAndShipProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "code_and_ship_proof is incomplete: a peer not honestly named \"" + CodeAndShipPeer + "\" (this bundle cannot claim a real workspace, a real GitHub App or a real signed Apple build — §6 legs 1 and 5), a shrunken/edited contract-and-measurement ledger or a contracts_digest that does not equal the canonical one, a repository whose before/after trees are EQUAL (nothing was written) or no commit at all, a publication PUBLISHED without an approval or a ledger with no approve and no deny in it (so the zero is vacuous), a destination field the model could fill in either publish tool's input schema, a ticket body that cannot be found in what reached the model (so the zero is vacuous) or CAN be found in what it tried to move, a shell posture that is not \"" + CodeAndShipShellPosture + "\", a workers.Catalog that no longer recomputes to ONE capability and ONE operation (an `ios.*` operation would land here), a signing token in the host transcript or a host with no identities to refuse, or answer blocks that RE-DERIVE an actionable element (plan §T7)"})
+			}
+		}
+
+		// The E23 T7 tool-approval anchor (plan §T7). Complete() already RE-DERIVES the ungoverned-side-effect
+		// count from the call ledger, the untrusted characters on the approval screen from the screen's own
+		// bytes in BOTH directions, the park and expiry counts from the run ledger, the unauthorized
+		// decisions from the decision ledger, the model-choosable destinations from the three publish tools'
+		// schemas, and the single mint from the SOURCE of two packages — so a proof that declares a zero over
+		// bytes saying otherwise never reaches this branch clean.
+		if c.ToolApprovalClaim != "" {
+			switch {
+			case c.ToolApprovalProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "tool_approval_proof (a tool-approval claim requires the tool-call ledger with the side effects that ran WITHOUT a human decision (zero, re-derived), the approval screen beside the untrusted text that arrived from outside and the characters of it that reached the screen (zero, re-derived in both directions), the run ledger with the runs that went terminal while waiting and the runs left waiting after expiry (both zero, re-derived), the decisions an unauthorized principal got through (zero, re-derived, refused on BOTH surfaces), the destination fields the model could fill in the three publish tools' input schemas (zero, re-derived), the actionable elements minted beside the files that built them (recomputed from source), and every vendor requirement with its source URL and §3.5 divergence id; an 'approved' marker is not proof — plan §T7)"})
+			case !c.ToolApprovalProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "tool_approval_proof is incomplete: a peer not honestly named \"" + ToolApprovalPeer + "\" (this bundle cannot claim a real workspace, a real Atlassian tenant or a real merged pull request — §6 legs 1, 5 and 6), a shrunken/edited vendor contract ledger or a contracts_digest that does not equal the canonical one, a gated tool call that RAN without an approve or a ledger with no approve, no deny, no EXPIRY or no ungated call in it (so the zero is vacuous), untrusted text that cannot be found in what arrived from outside (so the fence is vacuous) or CAN be found on the approval screen — an MCP server's `description` or `title` reaching that screen lands HERE — a screen showing neither the resolved identity nor the arguments (showing nothing is the cheapest way to show nothing forbidden), a run that went terminal while its question was open or was left WAITING after its approval expired, an unauthorized decision that applied or a ledger that never refused one on both surfaces, a destination field the model could fill in any of the three publish tools' schemas (a `pull_request_number` on merge would land here), a screen with no actionable element at all or an actionable element built by any file other than interactions.go (plan §T7)"})
 			}
 		}
 

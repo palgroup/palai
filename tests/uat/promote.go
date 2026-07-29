@@ -69,7 +69,26 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
 	}
-	// The E22 code-and-ship family is checked FIRST, ahead of E21: it is now the most specific policy in the
+	// The E23 tool-approval family is checked FIRST, ahead of E22, and for the reason every clause below
+	// repeats one level down: it is now the most specific policy in the tree and it COMPOSES the
+	// code-and-ship gate underneath itself (which composes tools-memory, agent-surface, wiring, the E17 tier
+	// table and the eval gate). An E23 bundle DERIVES its inherited case set from the E22 release, so it
+	// also carries the E22 code-and-ship claim, the E21 tools-memory claim, the E20 agent-surface claim and
+	// E17 area claims — without this clause it would reroute to CodeAndShipPromoteGate, which knows nothing
+	// about the ungoverned-side-effect sweep, the screen-authorship fence, the park/expiry counts or the
+	// single-mint recompute, and would pass it: all four crown guards would be optional in practice.
+	//
+	// THE FAMILY IS RECOGNIZED BY THE E23 CASE IDS, NOT BY THE tool_approval_claim THIS GATE ENFORCES. That
+	// is also why E23's ids carry the `HIL-` prefix: an id already inside CodeAndShipCaseIDs,
+	// ToolsMemoryCaseIDs or AgentSurfaceCaseIDs would have matched an EARLIER family marker and dispatched
+	// to a WEAKER gate, and an `SLK-` id outside all three would have regenerated a shipped bundle — the
+	// promote-gate-family-dispatch defect, reachable from a naming choice in two different directions.
+	for _, c := range m.Cases {
+		if carriesE23ToolApprovalCase(c) {
+			return ToolApprovalPromoteGate(raw, target)
+		}
+	}
+	// The E22 code-and-ship family is checked next, ahead of E21: it is the next most specific policy in the
 	// tree and it COMPOSES the tools-memory gate underneath itself (which composes agent-surface, which
 	// composes wiring, which composes the E17 tier table, which composes the eval gate). An E22 bundle also
 	// carries the E21 tools-memory claim, the E20 agent-surface claim and the E19 wiring claim — it DERIVES
