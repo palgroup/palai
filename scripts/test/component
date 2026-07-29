@@ -190,6 +190,18 @@ run_postgres() {
   # DECODING every JSONB document rather than grepping bytes, because a byte scan over an escaped or
   # encoded value can never fail and this repository shipped exactly that mistake once.
   #
+  # TestPlacement* is E24 T4 — TENANT, PARK and WAKE — and it needs its own alternative because none of
+  # the words on that line is a substring of "TestPlacementParksARunWhosePoolHasNoRunner". What it runs
+  # against a REAL Postgres, the REAL gateway and two fake machines: tenant B's attempt is never offered
+  # tenant A's machine (the runner plane had no tenant on it AT ALL before this — any enrolled runner
+  # could take any tenant's attempt), a run whose pool holds no machine reaches `waiting` with ExecuteAttempt
+  # returning NIL and no live attempt row (so no dispatch worker and no engine is held) instead of
+  # dead-lettering in ~2.5 minutes while a Mac takes 6-20 to boot, a machine joining that pool wakes it
+  # ONCE and a second machine does not wake it again, a wake does NOT reserve the machine it woke, a run
+  # waiting for any OTHER reason is left alone (the guard that keeps this safe to run after every lease —
+  # shown to go red when the marker predicate is removed), and the pool the placement chose is recorded on
+  # the run. Without this word the whole task would report the same green as tests that pass.
+  #
   # TestHTTPToolApproval* is E23 T9 — the SLACK-LESS decision surface — and it needs its OWN alternative
   # for the third time this list has had to say so: `TestToolApproval` does not match
   # `TestHTTPToolApprovalListShows…` and neither does `TestSlackToolApproval`. Without this word, the eight
@@ -204,7 +216,7 @@ run_postgres() {
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool|TestPoolKey' \
+        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool|TestPoolKey|TestPlacement' \
         ./apps/control-plane/internal/execution
     status=$?
   fi

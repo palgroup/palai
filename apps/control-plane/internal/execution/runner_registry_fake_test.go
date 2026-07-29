@@ -32,6 +32,12 @@ type fakePool struct {
 	posture string
 }
 
+// fakeRegistryTenant is the tenant every pool in this fake belongs to. It is the bootstrap install's,
+// restated here rather than invented, because that is whose pool `fleet.DefaultPoolID` names. A proof
+// that needs TWO tenants cannot use this fake at all — it needs the real store, which is why the tenant
+// claim (E24 T4) is a component test against a real Postgres.
+const fakeRegistryOrg, fakeRegistryProject = "org_local", "prj_local"
+
 // defaultPoolPosture is what migration 000045 R6 seeds for the bootstrap tenant's pool, restated here
 // so the fake's default matches the database's rather than being invented.
 const defaultPoolPosture = "sandboxed-linux"
@@ -62,7 +68,7 @@ func (f *fakeRegistry) Register(_ context.Context, reg fleet.Registration) (flee
 		return fleet.Runner{}, fleet.ErrPostureMismatch
 	}
 	row := &fleet.Runner{
-		ID: reg.ID, Organization: "org_local", Project: "prj_local",
+		ID: reg.ID, Organization: fakeRegistryOrg, Project: fakeRegistryProject,
 		PoolID: reg.PoolID, Label: reg.Label, DNS: reg.DNS, PublicKeySHA256: reg.PublicKeySHA256,
 		State: "active", OS: reg.OS, Arch: reg.Arch, Posture: posture, Capacity: reg.Capacity,
 		EnrolledAt: time.Now(), LastSeenAt: time.Now(),
@@ -84,6 +90,23 @@ func (f *fakeRegistry) RecordSeen(_ context.Context, dns string, certNotAfter, a
 		row.CertNotAfter = certNotAfter
 	}
 	return *row, true, nil
+}
+
+// Pool answers whose pool this is — the fallback the gateway takes for a machine no row knows, which is
+// a runner that enrolled before E24 and has not restarted since. The fake has to answer it the way the
+// store does (from the pool row, never from the caller) or a wire proof would pass against a store that
+// resolves a different tenant.
+func (f *fakeRegistry) Pool(_ context.Context, poolID string) (fleet.Pool, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	posture, known := f.pools[poolID]
+	if !known {
+		return fleet.Pool{}, false, nil
+	}
+	return fleet.Pool{
+		ID: poolID, Organization: fakeRegistryOrg, Project: fakeRegistryProject,
+		Name: "default", Posture: posture,
+	}, true, nil
 }
 
 func (f *fakeRegistry) Get(_ context.Context, org, project, id string) (fleet.Runner, bool, error) {

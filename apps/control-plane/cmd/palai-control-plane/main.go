@@ -142,7 +142,7 @@ func main() {
 	// whose certificate has already expired.
 	runnerPoolKeys := fleet.NewPoolEnrollmentKeys(repo.Spine().Pool(), middleware.NewID, nil)
 
-	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"), runnerRegistry, runnerPoolKeys)
+	gateway := startRunnerGateway(os.Getenv("PALAI_RUNNER_LISTEN_ADDR"), runnerRegistry, runnerPoolKeys, repo.Spine())
 
 	// The capability-worker gateway (E17 T9, spec §31): the outbound-enrolled enroll/claim/redeem/result
 	// surface an out-of-process worker dials. Built here so the secret store above (nil unless a master key
@@ -1459,7 +1459,7 @@ func withSupervisorStatus(next http.Handler, supervisor *coordinator.Supervisor,
 // itself. It returns the gateway so startDispatch can drive the production exec-path over it
 // as the orchestrator's EngineDialer. addr empty disables the gateway (returns nil) — the
 // public router carries a nil runner handler and dispatch stays assignment-only.
-func startRunnerGateway(addr string, registry fleet.Registry, poolKeys execution.PoolEnrollment) *execution.RunnerGateway {
+func startRunnerGateway(addr string, registry fleet.Registry, poolKeys execution.PoolEnrollment, waker execution.CapacityWaker) *execution.RunnerGateway {
 	if strings.TrimSpace(addr) == "" {
 		return nil
 	}
@@ -1499,6 +1499,11 @@ func startRunnerGateway(addr string, registry fleet.Registry, poolKeys execution
 	// one observable identity. Wired here rather than passed to the constructor so every existing caller
 	// — the conformance tier, every wire proof — compiles and behaves unchanged.
 	gateway.SetRegistry(registry)
+	// The capacity waker (E24 T4): when a machine joins a pool, the pool's oldest run parked for want of
+	// a machine is re-entered and its response.run job enqueued, in one transaction. Without this line a
+	// run placed in an empty pool waits forever instead of ~2.5 minutes, which is a worse bug than the
+	// one it replaces — so it is fenced by name in a test, for the reason T3 fenced three call sites.
+	gateway.SetCapacityWaker(waker)
 
 	srv := &http.Server{
 		Addr:              addr,

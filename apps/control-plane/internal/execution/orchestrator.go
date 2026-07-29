@@ -382,6 +382,15 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// a fresh attempt (resume) re-leases the same allocation, and edits persist across runs.
 	defer o.releaseWorkspace(tenant, workspaceID, workspaceLeaseID)
 
+	// WHERE this attempt runs, decided here and recorded (E24 T4). It resolves the pool, carries the
+	// tenant onto the descriptor — the runner plane had no tenant on it at all (§3.6 D8) — and orders the
+	// attempt by its RUN's queued-at. Placed immediately before the dial because the dial is what the
+	// decision is FOR: an attempt that stood down above never dialed and records no placement, which is
+	// right, because the attempt that does dial will record it.
+	if err := o.place(ctx, tenant, &attempt); err != nil {
+		return err
+	}
+
 	// Bound the dial + engine.ready handshake with an attempt-scoped deadline: a runner that
 	// connects but whose handshake wedges (or a gateway with no available runner) must fail
 	// the attempt — routed through retry / dead-letter — not hang it silently. The deadline
@@ -391,7 +400,19 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	defer cancelDial()
 
 	ch, err := o.dialer.Dial(dialCtx, attempt)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrPoolHasNoRunner):
+		// The pool held NO machine of this tenant for the whole dial budget (E24 T4, §3.6 D12). The run
+		// PARKS instead of failing: this attempt ends cleanly, the dispatch worker is freed, and the next
+		// machine to join that pool re-enters the run. Failing here spent five attempts and dead-lettered
+		// in ~2.5 minutes, while AWS documents a Mac host taking 6 to 20 minutes to start — so the
+		// behaviour the whole feature needs was not slow, it was unreachable. Exactly as a pause ends and
+		// a resume reopens.
+		if perr := o.parkForCapacity(ctx, tenant, attempt); !errors.Is(perr, errRunAwaitingCapacity) {
+			return perr
+		}
+		return nil
+	case err != nil:
 		return fmt.Errorf("dial engine: %w", err)
 	}
 	defer func() { _ = ch.Close() }()

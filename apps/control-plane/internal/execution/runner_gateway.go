@@ -21,6 +21,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 	"github.com/palgroup/palai/apps/control-plane/internal/fleet"
 	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	"github.com/palgroup/palai/packages/runner"
 	"github.com/palgroup/palai/packages/version"
 )
@@ -34,6 +35,14 @@ var ErrRunnerCordoned = errors.New("runner gateway cordoned: no new leases")
 // decommissioned/compromised runner's new leases AND stale session frames are refused (SAN-011). Revoke
 // is the hard stop cordon is not — a cordoned runner still completes its lease, a revoked one does not.
 var ErrRunnerRevoked = errors.New("runner gateway revoked: leases and session frames refused")
+
+// ErrPoolHasNoRunner is returned by Dial when the attempt's pool held NO machine of the attempt's
+// tenant for the whole dial budget. It is the difference between "everything is busy" and "there is
+// nothing here", and that difference is why it exists as its own error: the orchestrator PARKS the run
+// on it (§3.6 D12) instead of failing the attempt, so a Mac that takes six to twenty minutes to boot
+// still finds its run waiting when it arrives. A pool whose machines are merely all leased returns the
+// context error exactly as before and rides the existing retry ladder.
+var ErrPoolHasNoRunner = errors.New("runner pool has no machine for this tenant")
 
 // CertIssuer signs an enrolling runner's public key into a short-lived client
 // certificate with the local control-plane CA. The CA the gateway binds is injected
@@ -135,6 +144,22 @@ type RunnerGateway struct {
 	// newID mints the SERVER-side runner id. Injected so a proof can make an id deterministic;
 	// production passes middleware.NewID.
 	newID func(prefix string) string
+	// wake re-enters a run that parked for want of a machine when one joins its pool (E24 T4). Nil
+	// leaves handleConnect exactly as it was: a gateway with no durable spine — the conformance tier and
+	// every wire proof — parks machines and serves leases and wakes nothing, because in that posture
+	// there are no durable runs to wake.
+	wake CapacityWaker
+}
+
+// CapacityWaker re-enters the oldest run parked on a pool for want of a machine. *coordinator.Store is
+// the only implementation; the interface exists so the gateway does not depend on the database, exactly
+// as it does not depend on it for the registry.
+type CapacityWaker interface {
+	// WakeRunAwaitingCapacity drives that run waiting->running and enqueues its response.run job in ONE
+	// transaction, and reports the run it woke (empty when there was none). A run parked for any OTHER
+	// reason — a human's pause, an approval, a detached child — is NOT a candidate: those have their own
+	// wakers and waking them here would override a decision somebody else owns.
+	WakeRunAwaitingCapacity(ctx context.Context, tenant coordinator.Tenant, poolID string) (string, error)
 }
 
 // RunnerIdentity is the client certificate a runner last presented to the gateway: who it
@@ -197,6 +222,10 @@ func (g *RunnerGateway) SetRegistry(r fleet.Registry) { g.registry = r }
 // default pool — the pre-E24 posture, unchanged to the byte.
 func (g *RunnerGateway) SetPoolKeys(k PoolEnrollment) { g.poolKeys = k }
 
+// SetCapacityWaker wires the durable wake a machine's arrival performs (E24 T4). Unset, handleConnect
+// wakes nothing — the posture every Docker-free wire proof runs in, where there are no durable runs.
+func (g *RunnerGateway) SetCapacityWaker(w CapacityWaker) { g.wake = w }
+
 // SetControlPlaneVersion overrides the control-plane version stamp the connect handshake checks the
 // runner's advertised version against (§48.2 window). Defaulted to version.Resolve; a test injects a
 // concrete version to exercise the OPS-008 skew rejection deterministically.
@@ -207,16 +236,47 @@ func (g *RunnerGateway) SetControlPlaneVersion(v string) { g.cpVersion = v }
 func (g *RunnerGateway) Connected() int64 { return g.connected.Load() }
 
 // Waiting reports how many attempts are currently queued for a pool with no machine free to take
-// them. It is the number behind the one question an operator of a fleet actually asks — "why is
-// nothing running in my Mac pool" — which before E24 had no answer at all: a blocked Dial was a
-// goroutine parked on a channel and nothing counted it.
-func (g *RunnerGateway) Waiting(poolID string) int { return g.queueFor(poolID).depth() }
+// them, across every tenant that has a machine or an attempt in it. It is the number behind the one
+// question an operator of a fleet actually asks — "why is nothing running in my Mac pool" — which
+// before E24 had no answer at all: a blocked Dial was a goroutine parked on a channel and nothing
+// counted it.
+func (g *RunnerGateway) Waiting(poolID string) int {
+	suffix := "\x00" + poolKey(poolID)
+	total := 0
+	g.poolsMu.RLock()
+	for key, q := range g.pools {
+		if strings.HasSuffix(key, suffix) {
+			total += q.depth()
+		}
+	}
+	g.poolsMu.RUnlock()
+	return total
+}
 
-// queueFor resolves a pool's rendezvous, creating it on first use. Double-checked under the write lock
-// so two concurrent first-uses cannot end up with two queues for one pool — which would be exactly the
-// bug this whole task removes, reintroduced by a map.
-func (g *RunnerGateway) queueFor(poolID string) *poolQueue {
-	key := poolKey(poolID)
+// queueKey is the rendezvous identity: a TENANT and a pool, never a pool alone.
+//
+// THE TENANT IS IN THE KEY BECAUSE THAT IS WHAT MAKES A CROSS-TENANT OFFER UNREACHABLE RATHER THAN
+// REFUSED (§3.6 D8). T2 put the pool here for the same reason and wrote down why: a machine parked in
+// one queue cannot be handed to a waiter on another, so there is no code path left that could later
+// relax the rule into a preference. A comparison inside Dial would have been one `if` away from being
+// softened into "close enough" by somebody debugging an idle Mac at 3am.
+//
+// It is also not merely the pool's tenant restated. A pool id is a durable row and DOES imply a
+// tenant — but `fleet.ResolvePool` falls back to a CONSTANT default pool id, so a tenant that has
+// configured nothing resolves to a string that belongs to the bootstrap tenant. Two tenants therefore
+// collide on one pool id by default, and the pool alone cannot tell them apart.
+//
+// An empty tenant is the pre-E24 attempt and the machine no registry knows: they meet each other and
+// nothing else, which is §2's bit-unchanged rule and not a wildcard.
+func queueKey(tenant coordinator.Tenant, poolID string) string {
+	return tenant.Organization + "\x00" + tenant.Project + "\x00" + poolKey(poolID)
+}
+
+// queueFor resolves a (tenant, pool) rendezvous, creating it on first use. Double-checked under the
+// write lock so two concurrent first-uses cannot end up with two queues for one key — which would be
+// exactly the bug T2 removed, reintroduced by a map.
+func (g *RunnerGateway) queueFor(tenant coordinator.Tenant, poolID string) *poolQueue {
+	key := queueKey(tenant, poolID)
 	g.poolsMu.RLock()
 	q, ok := g.pools[key]
 	g.poolsMu.RUnlock()
@@ -547,25 +607,41 @@ func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// recordSeen advances the registry's liveness stamp and reports the POOL the machine belongs to, and
-// is a no-op returning "" when no registry is wired. It deliberately swallows both the not-found case
-// and any store error: this is an INVENTORY write on the side of a request whose real work (issuing a
-// certificate, accepting a session) has already succeeded or is about to, and failing that request
-// because a bookkeeping row could not be updated would trade a working fleet for a tidy table.
+// recordSeen advances the registry's liveness stamp and reports the POOL and the TENANT the machine
+// belongs to, and is a no-op returning zero values when no registry is wired. It deliberately swallows
+// both the not-found case and any store error: this is an INVENTORY write on the side of a request
+// whose real work (issuing a certificate, accepting a session) has already succeeded or is about to,
+// and failing that request because a bookkeeping row could not be updated would trade a working fleet
+// for a tidy table.
 //
 // The pool it returns is why the swallowing is safe rather than merely convenient: "" is not a guess,
 // it is the DEFAULT pool by way of poolKey — where a deployment with no pool configuration places
 // every machine and every run, so nothing about it is a fallback with different behaviour.
-func (g *RunnerGateway) recordSeen(ctx context.Context, dns string, notAfter time.Time) string {
+//
+// THE TENANT FALLS BACK TO THE DEFAULT POOL'S OWNER, and that clause is load-bearing rather than tidy.
+// A machine the registry has no row for is a runner that enrolled BEFORE E24 and has not restarted
+// since: renewal rolls its certificate forward over its own mTLS identity and never re-enrols, so it
+// stays unknown for as long as it lives. Leaving its tenant empty would have parked every one of that
+// deployment's runs forever the moment the control plane was upgraded — a queue keyed by tenant is
+// exactly as good at excluding your own runner as somebody else's. Reading the tenant off the default
+// pool row gives that machine the tenant a single-runner install has always had.
+func (g *RunnerGateway) recordSeen(ctx context.Context, dns string, notAfter time.Time) (string, coordinator.Tenant) {
 	reg := g.registry
 	if reg == nil || dns == "" {
-		return ""
+		return "", coordinator.Tenant{}
 	}
 	row, found, err := reg.RecordSeen(ctx, dns, notAfter, g.now())
-	if err != nil || !found {
-		return ""
+	if err != nil {
+		return "", coordinator.Tenant{}
 	}
-	return row.PoolID
+	if found {
+		return row.PoolID, coordinator.Tenant{Organization: row.Organization, Project: row.Project}
+	}
+	pool, found, err := reg.Pool(ctx, fleet.DefaultPoolID)
+	if err != nil || !found {
+		return "", coordinator.Tenant{}
+	}
+	return pool.ID, coordinator.Tenant{Organization: pool.Organization, Project: pool.Project}
 }
 
 // certNotAfter reads the expiry out of a DER the CA just produced. A DER that will not parse leaves
@@ -610,12 +686,12 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// BEFORE the revoked check so that a runner turned away still leaves a trace of having tried — an
 	// operator debugging "why is this Mac idle" needs the attempt, not only the successes.
 	leaf := r.TLS.PeerCertificates[0]
-	// The same write reports which POOL this machine enrolled into, which is what decides the queue it
-	// parks on. It comes from the REGISTRY and never from the connecting party: the session wire carries
-	// no pool field and inventing one would let a machine choose its own placement. A stack with no
-	// registry — and a machine the registry does not know, which is a pre-E24 runner reconnecting after
-	// an upgrade — yields "", and poolKey turns that into the default pool: §2's bit-unchanged rule.
-	poolID := g.recordSeen(r.Context(), renewDNS(leaf), leaf.NotAfter)
+	// The same write reports which POOL and which TENANT this machine belongs to, which together decide
+	// the queue it parks on. Both come from the REGISTRY and never from the connecting party: the
+	// session wire carries neither field and inventing one would let a machine choose its own placement
+	// — or, worse, its own tenant. A stack with no registry yields the zero pair, and poolKey turns the
+	// pool half into the default pool: §2's bit-unchanged rule.
+	poolID, tenant := g.recordSeen(r.Context(), renewDNS(leaf), leaf.NotAfter)
 	// A revoked gateway refuses the session before the upgrade, so a decommissioned runner never even
 	// parks (SAN-011). Cordon does NOT reject the connect — a cordoned runner still parks and finishes an
 	// in-flight lease; it is only Dial that stops offering it NEW work.
@@ -653,13 +729,27 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	defer g.connected.Add(-1)
 
 	pr := &pendingRunner{conn: conn, release: make(chan struct{}), disconnected: make(chan struct{}), taken: make(chan struct{})}
+	queue := g.queueFor(tenant, poolID)
+	// A machine is a MEMBER of its queue for the whole session — parked or leased — and membership is
+	// what answers "is there anything here at all". Counted before the park and released on every return
+	// path, because the answer decides whether a run PARKS (nothing here) or rides the retry ladder
+	// (something here, all of it busy), and getting that backwards either dead-letters runs a Mac would
+	// have served or parks runs a busy machine will free in seconds.
+	queue.join()
+	defer queue.leave()
+	// THE WAKE, and it is here rather than anywhere else because this is the only moment the control
+	// plane learns a pool gained capacity. It runs BEFORE the park so a machine that connects into a
+	// pool with a run waiting on it re-enters that run at once. It does NOT reserve this machine for the
+	// run it woke: the woken run dials like any other and may lose the machine to another run, which
+	// parks again — a benign race, proved by a test, and deliberately cheaper than a second durable
+	// notion of "assigned to" alongside the one the job queue already is.
+	g.wakeParkedRun(r.Context(), tenant, poolID)
 	// One goroutine owns the read side for the connection's whole life: while parked it turns a
 	// dropped connection into a disconnected signal (nothing else reads then), and once a lease is
 	// assigned it relays the runner's engine frames. Without it a runner that died while parked-and-
 	// idle would keep the connected count — and so palai_runner_sessions — falsely at its old value.
 	go g.readLoop(pr)
 
-	queue := g.queueFor(poolID)
 	queue.park(pr)
 	select {
 	case <-pr.taken:
@@ -707,7 +797,7 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 	if queuedAt.IsZero() {
 		queuedAt = g.now()
 	}
-	queue := g.queueFor(attempt.PoolID)
+	queue := g.queueFor(attempt.Tenant, attempt.PoolID)
 	waiter := queue.wait(queuedAt)
 	select {
 	case pr := <-waiter.ch:
@@ -750,8 +840,34 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 		// Leave the queue. abandon also covers the race where a machine was handed over between the
 		// cancel and this line: it re-parks it rather than dropping a healthy connection.
 		queue.abandon(waiter)
+		// THE ONE DISTINCTION THIS WHOLE BUDGET EXISTS TO MAKE. The wait is spent first — so a runner
+		// that is merely still starting up (compose brings the control plane up before its runner) is
+		// picked up exactly as it always was, and this path is byte-compatible with the behaviour §2
+		// protects. What changed is the ANSWER when it expires: a pool that held no machine of this
+		// tenant for the whole budget is not a slow pool, it is an absent one, and the orchestrator
+		// parks the run on it rather than spending five attempts and dead-lettering in ~2.5 minutes
+		// while the Mac is still booting (§3.6 D12, P10). A pool whose machines are all leased returns
+		// ctx.Err() and rides the existing ladder, unchanged.
+		if queue.members() == 0 {
+			return nil, ErrPoolHasNoRunner
+		}
 		return nil, ctx.Err()
 	}
+}
+
+// wakeParkedRun re-enters the OLDEST run parked on this pool for want of a machine, in ONE transaction
+// with the response.run job that opens its next attempt. It is called from handleConnect — the only
+// moment the control plane learns a pool gained capacity.
+//
+// IT SWALLOWS ITS ERRORS AND SAYS SO. A wake is work done on the side of accepting a session, and a
+// store that could not answer must not cost the machine its connection: the run stays waiting and the
+// machine's NEXT connect (a runner re-dials after every lease) tries again. What it must never do is
+// wake the WRONG run, and that is not a matter of error handling — the predicate is in the query.
+func (g *RunnerGateway) wakeParkedRun(ctx context.Context, tenant coordinator.Tenant, poolID string) {
+	if g.wake == nil || tenant.Organization == "" || tenant.Project == "" {
+		return
+	}
+	_, _ = g.wake.WakeRunAwaitingCapacity(ctx, tenant, poolKey(poolID))
 }
 
 // poolQueue is ONE pool's rendezvous: the machines parked in it with nothing to do, and the attempts
@@ -782,6 +898,31 @@ type poolQueue struct {
 	parked  []*pendingRunner
 	waiting []*poolWaiter
 	seq     uint64
+	// present counts the machines holding a session on this queue, parked OR leased. `parked` cannot
+	// answer that question — a machine serving a lease is not in it — and the difference between "no
+	// machine here" and "every machine here is busy" is what decides whether a run parks durably or
+	// rides the retry ladder.
+	present int
+}
+
+// join and leave bracket one machine's session on this queue.
+func (q *poolQueue) join() {
+	q.mu.Lock()
+	q.present++
+	q.mu.Unlock()
+}
+
+func (q *poolQueue) leave() {
+	q.mu.Lock()
+	q.present--
+	q.mu.Unlock()
+}
+
+// members is how many machines currently hold a session on this queue.
+func (q *poolQueue) members() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.present
 }
 
 // poolWaiter is one attempt's place in a pool's queue. ch is buffered so a handover never blocks the
