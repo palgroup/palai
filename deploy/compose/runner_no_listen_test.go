@@ -14,11 +14,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// composeService is the slice of a compose service the invariant reads: its published/listen
-// ports and its bind mounts. yaml.Node keeps `ports` faithful to how compose merges it.
+// composeService is the slice of a compose service the invariants read: its published/listen
+// ports, its bind mounts, and its environment (edge_cert_test.go reads the last one). yaml.Node
+// keeps `ports` faithful to how compose merges it.
 type composeService struct {
-	Ports   yaml.Node `yaml:"ports"`
-	Volumes []string  `yaml:"volumes"`
+	Ports       yaml.Node         `yaml:"ports"`
+	Volumes     []string          `yaml:"volumes"`
+	Environment map[string]string `yaml:"environment"`
 }
 
 type composeDoc struct {

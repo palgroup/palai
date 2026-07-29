@@ -17,10 +17,15 @@
 # (bootstrap key + `provision` capability); this overlay adds none. Provisioning goes through
 # the `palai` admin CLI (E14 T2) over the edge. See docs/operations/install.md.
 #
-# HONEST CEILING (plan §6): the edge here presents the LOCAL `palai init` CA's server cert
-# (${PALAI_HOME}/ca/server.crt, SAN "control-plane") — the same self-minted pair the runner
-# gateway uses. A real deployment replaces it with a real-domain certificate and/or fronts it
-# with ACME; the dedicated cloud VM + real domain is the operator leg, not run here.
+# DEFAULT TLS IDENTITY: the edge presents the LOCAL `palai init` CA's server cert
+# (${PALAI_HOME}/ca/server.crt, SAN "control-plane"). PALAI_EDGE_CERT / PALAI_EDGE_KEY point it at
+# a real-domain certificate instead; the runner gateway keeps ${PALAI_HOME}/ca/server.* either way,
+# which is what it must have (see the edge service below). Unset, the mounts are byte-identical to
+# what every install before this change had.
+#
+# HONEST CEILING (plan §6): ACME/renewal is still the operator's — this overlay mounts the files it
+# is given and Caddy runs with auto_https off. The dedicated cloud VM + real domain is the operator
+# leg, not run here.
 
 services:
   postgres:
@@ -65,10 +70,25 @@ services:
       - source: edge_caddyfile
         target: /etc/caddy/Caddyfile
     volumes:
-      # The edge TLS pair: the self-minted local-CA server cert (SAN "control-plane") `palai
-      # init` writes into ${PALAI_HOME}/ca. Operator replaces with a real-domain cert (plan §6).
-      - "${PALAI_HOME}/ca/server.crt:/etc/palai/edge/edge.crt:ro"
-      - "${PALAI_HOME}/ca/server.key:/etc/palai/edge/edge.key:ro"
+      # The edge TLS pair. It DEFAULTS to the self-minted local-CA server cert (SAN "control-plane")
+      # `palai init` writes into ${PALAI_HOME}/ca, so an install that sets neither variable mounts
+      # exactly the files it always did.
+      #
+      # PALAI_EDGE_CERT / PALAI_EDGE_KEY exist because that default file is NOT the edge's alone: it
+      # is also the control-plane's runner-gateway certificate (compose.yaml PALAI_RUNNER_SERVER_CERT),
+      # and packages/runner pins that identity to EXACTLY one DNS SAN equal to PALAI_CONTROLLER_DNS
+      # ("control-plane") — enrollment.go, session.go and renewal.go each refuse anything else,
+      # including a cert carrying both "control-plane" and the operator's domain. Overwriting
+      # ${PALAI_HOME}/ca/server.crt with a real-domain certificate therefore broke every run, and
+      # broke it LATE: the running control-plane holds its cert in memory, so the stack stayed green
+      # until the next restart and then runs simply queued forever with no mention of a certificate
+      # anywhere (measured: docs/operations/cloud-smoke-report.md, Bulgu 3).
+      #
+      # So point these two at the domain certificate and leave ${PALAI_HOME}/ca/server.* untouched.
+      # deploy/compose/edge_cert_test.go holds this seam open; docs/operations/install.md step 7 is
+      # the procedure.
+      - "${PALAI_EDGE_CERT:-${PALAI_HOME}/ca/server.crt}:/etc/palai/edge/edge.crt:ro"
+      - "${PALAI_EDGE_KEY:-${PALAI_HOME}/ca/server.key}:/etc/palai/edge/edge.key:ro"
     ports:
       # Fail closed: an unset PALAI_EDGE_PORT must error, not publish 443 from a random port.
       - "${PALAI_EDGE_PORT:?PALAI_EDGE_PORT must be set}:443"

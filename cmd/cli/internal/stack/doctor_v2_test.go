@@ -26,22 +26,59 @@ func TestDoctorReusesMetricsQueries(t *testing.T) {
 // boundaries are proven with no database and no Docker. The thresholds mirror the §52.10
 // alerts in deploy/observability/alerts.yml — doctor must fire exactly when the alert would.
 
+// gib is the unit the disk cases are written in. They used to be written in BYTES (20 of 100),
+// which no longer expresses a disk: the check now has an absolute floor too, and 20 bytes free is
+// under it. The ratio boundaries below are unchanged — only the scale is honest.
+const gib = uint64(1) << 30
+
 func TestDiskCheck(t *testing.T) {
 	// 20% free is above the 10% floor → green.
-	if c := diskCheck(20, 100); c.Status != "ok" {
+	if c := diskCheck(20*gib, 100*gib); c.Status != "ok" {
 		t.Fatalf("20%% free should be ok, got %q (%s)", c.Status, c.Detail)
 	}
 	// Exactly at the floor (10%) is NOT under it → green (alert is strict `< 0.10`).
-	if c := diskCheck(10, 100); c.Status != "ok" {
+	if c := diskCheck(10*gib, 100*gib); c.Status != "ok" {
 		t.Fatalf("10%% free (at floor) should be ok, got %q (%s)", c.Status, c.Detail)
 	}
 	// Below the floor → fail.
-	if c := diskCheck(9, 100); c.Status != "fail" {
+	if c := diskCheck(9*gib, 100*gib); c.Status != "fail" {
 		t.Fatalf("9%% free should fail, got %q (%s)", c.Status, c.Detail)
 	}
 	// A statfs that reports zero total is a broken read, not a healthy empty disk.
 	if c := diskCheck(0, 0); c.Status != "fail" {
 		t.Fatalf("zero total bytes should fail, got %q (%s)", c.Status, c.Detail)
+	}
+}
+
+// A RATIO alone gives the SMALLEST machines the WEAKEST floor, which is backwards: on a 20 GiB
+// cloud VM 10% is 2 GiB and reads green, while the stack's own images are ~0.9 GiB on disk and a
+// backup writes its whole archive beside the data it dumped. On the 460 GiB host the cloud smoke
+// ran on, the same rule called 40.6 GiB red. So the floor is the MORE demanding of the two:
+// free/total >= 10% AND free >= diskFreeAbsoluteFloorBytes.
+func TestDiskCheckAbsoluteFloor(t *testing.T) {
+	// The 20 GiB VM at 10.5% free — above the ratio floor, under the absolute one. This is the
+	// case the ratio-only check called green.
+	if c := diskCheck(2*gib+gib/10, 20*gib); c.Status != "fail" {
+		t.Fatalf("2.1GiB free on a 20GiB VM (10.5%%) must fail the absolute floor, got %q (%s)", c.Status, c.Detail)
+	}
+	// One byte under the absolute floor fails; exactly at it does not (>= floor, like the ratio).
+	if c := diskCheck(diskFreeAbsoluteFloorBytes-1, 1000*gib); c.Status != "fail" {
+		t.Fatalf("one byte under the absolute floor must fail, got %q (%s)", c.Status, c.Detail)
+	}
+	if c := diskCheck(diskFreeAbsoluteFloorBytes, 1000*gib); c.Status == "fail" &&
+		strings.Contains(c.Detail, "PalaiDiskFloor") {
+		t.Fatalf("exactly at the absolute floor must not fail it, got %q (%s)", c.Status, c.Detail)
+	}
+	// The same VM with 30% free clears both floors.
+	if c := diskCheck(6*gib, 20*gib); c.Status != "ok" {
+		t.Fatalf("6GiB free on a 20GiB VM should be ok, got %q (%s)", c.Status, c.Detail)
+	}
+	// A big host stays governed by the RATIO: 40 GiB free is eight times the absolute floor and
+	// still only 8.7% of a 460 GiB disk. The more demanding floor wins in BOTH directions.
+	if c := diskCheck(40*gib, 460*gib); c.Status != "fail" {
+		t.Fatalf("40GiB free of 460GiB (8.7%%) must still fail the ratio floor, got %q (%s)", c.Status, c.Detail)
+	} else if !strings.Contains(c.Detail, "PalaiDiskLow") {
+		t.Fatalf("a ratio-floor failure must still name PalaiDiskLow: %s", c.Detail)
 	}
 }
 

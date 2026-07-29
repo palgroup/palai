@@ -232,3 +232,81 @@ func TestEdgeSurfaceRejectsCatchAllProxy(t *testing.T) {
 		t.Fatalf("the /v1/*-matched edge should pass, got %q: %s", c.Status, c.Detail)
 	}
 }
+
+// TestEdgeSurfaceHoldsForTheShippedOverlay runs the posture check against the COMMITTED
+// deploy/compose/production.yml, not the synthetic copy above. Every other test here mutates
+// `goodOverlay`, which proves the CHECK is sharp and proves nothing about the file an operator
+// actually brings up: the two could drift apart silently, and the edge-cert change (finding 3)
+// is exactly the kind of edit that would do it. Untagged, so it rides `go test ./cmd/...`.
+func TestEdgeSurfaceHoldsForTheShippedOverlay(t *testing.T) {
+	shipped := filepath.Join("..", "..", "..", "..", "deploy", "compose", "production.yml")
+	if _, err := os.Stat(shipped); err != nil {
+		t.Fatalf("the shipped overlay must be readable from this package: %v", err)
+	}
+	if c := edgeSurfaceFile(shipped); c.Status != "ok" {
+		t.Fatalf("the SHIPPED production overlay fails its own edge-only posture check: %s", c.Detail)
+	}
+}
+
+// TestCertPairFollowsTheEdgeOverride: once the overlay lets the operator point the edge at its own
+// certificate (PALAI_EDGE_CERT/KEY, finding 3), config-validate must check THAT pair. Checking
+// ${PALAI_HOME}/ca/server.* regardless would report a green `cert_pair` for a file the edge does not
+// mount — a validator that passes an install whose edge cannot start.
+func TestCertPairFollowsTheEdgeOverride(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(filepath.Join(home, "ca"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"server.crt", "server.key"} {
+		if err := os.WriteFile(filepath.Join(home, "ca", n), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Default (neither variable set): the pre-existing pair, still green.
+	if c := certPair(map[string]string{"PALAI_HOME": home}); c.Status != "ok" {
+		t.Fatalf("the default pair must stay green: %s", c.Detail)
+	}
+	// Overridden at a path that does not exist: the edge would fail to start, so this must fail.
+	missing := map[string]string{
+		"PALAI_HOME":      home,
+		"PALAI_EDGE_CERT": filepath.Join(dir, "nope.crt"),
+		"PALAI_EDGE_KEY":  filepath.Join(dir, "nope.key"),
+	}
+	if c := certPair(missing); c.Status == "ok" {
+		t.Fatalf("an edge cert override pointing at a missing file must fail, got ok: %s", c.Detail)
+	}
+	// Overridden at a real pair: green, and the detail names the file it actually checked.
+	edgeCrt, edgeKey := filepath.Join(dir, "edge.crt"), filepath.Join(dir, "edge.key")
+	for _, p := range []string{edgeCrt, edgeKey} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := certPair(map[string]string{"PALAI_HOME": home, "PALAI_EDGE_CERT": edgeCrt, "PALAI_EDGE_KEY": edgeKey})
+	if c.Status != "ok" {
+		t.Fatalf("a real overridden pair must pass: %s", c.Detail)
+	}
+	if !strings.Contains(c.Detail, edgeCrt) {
+		t.Fatalf("the detail must name the pair it checked, got %q", c.Detail)
+	}
+}
+
+// TestEnvContractAcceptsTheEdgeCertOverride: the two new keys must be in the KNOWN set, or an
+// operator who follows install.md step 7 gets `unknown env (typo?)` and a red validator for doing
+// exactly what the document told them to do.
+func TestEnvContractAcceptsTheEdgeCertOverride(t *testing.T) {
+	envFile, overlay, home := prodLayout(t)
+	raw, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withEdge := string(raw) + "PALAI_EDGE_CERT=" + filepath.Join(home, "ca", "server.crt") +
+		"\nPALAI_EDGE_KEY=" + filepath.Join(home, "ca", "server.key") + "\n"
+	if err := os.WriteFile(envFile, []byte(withEdge), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ConfigValidate(envFile, overlay, true); err != nil {
+		t.Fatalf("PALAI_EDGE_CERT/KEY must be a recognised production key: %v", err)
+	}
+}

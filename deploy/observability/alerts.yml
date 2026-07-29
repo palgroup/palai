@@ -87,6 +87,20 @@ groups:
           summary: "Data volume is running low on space"
           description: "Free space on the control-plane data volume has been under 10% for 10 minutes."
 
+      - alert: PalaiDiskFloor
+        # The absolute half of the disk floor, and the one that matters on a small VM: 10% of a
+        # 20 GiB cloud VM is 2 GiB, which PalaiDiskLow calls healthy while the stack's own images
+        # are ~0.9 GiB and a backup writes a full copy of its data beside it. The two rules are
+        # deliberately independent — whichever is more demanding fires first. Same boundary as
+        # `palai doctor`'s disk check (diskFreeAbsoluteFloorBytes, cmd/cli/internal/stack).
+        expr: palai_disk_free_bytes < 5368709120
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Data volume has less than 5GiB free"
+          description: "Free space on the control-plane data volume has been under 5GiB for 10 minutes — below what one image pull plus one backup needs, regardless of how large the disk is."
+
       - alert: PalaiDiskMetricMissing
         # Guard against silent blindness: a statfs failure omits the disk series entirely, so PalaiDiskLow
         # would simply never evaluate. absent() surfaces that the metric itself is gone.
