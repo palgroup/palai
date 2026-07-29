@@ -376,9 +376,12 @@ ON CONFLICT (approval_id) DO NOTHING;
 -- p.state is what lets the poster refuse to post a live button for a question already decided.
 --
 -- ponytail: the join is to PUBLICATIONS, so a GATED TOOL CALL's approval (000044 R1, publication_id NULL)
--- is never claimed. Nothing enqueues one today — T3 wires the publication producer only. The tool-call
--- render lives in package execution and extensions cannot import it (that direction is a cycle), so
--- whoever enqueues the second producer either lifts the render or gives this a second claim.
+-- is never claimed. Nothing enqueues one today — T3 wires the publication producer only, so a second claim
+-- now would be a statement with no rows to claim. Whoever wires the second producer gives this a SECOND
+-- claim — joining nothing, returning the approval id, the request hash and the ledger row's name and
+-- arguments — and posts slack.ToolApprovalMessage. Not one claim serving both: the two screens carry
+-- different guarantees (see the note at execution/approval.go), and merging them is the generic display
+-- this epic refuses.
 -- name: ClaimDueApprovalMessages
 UPDATE slack_approval_deliveries d
    SET attempt_count = d.attempt_count + 1,
