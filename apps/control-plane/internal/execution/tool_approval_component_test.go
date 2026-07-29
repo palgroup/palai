@@ -198,7 +198,7 @@ func TestToolApprovalApprovedCallRunsExactlyOnceAndWakesTheRun(t *testing.T) {
 	}
 	var jobs int
 	if err := h.spine.Pool().QueryRow(storage.WithSystemScope(ctx),
-		`SELECT count(*) FROM durable_jobs WHERE kind='response.run' AND body::text LIKE '%'||$1||'%'`, h.runID).Scan(&jobs); err != nil {
+		`SELECT count(*) FROM durable_jobs WHERE kind='response.run' AND payload->>'run_id' = $1`, h.runID).Scan(&jobs); err != nil {
 		t.Fatalf("count wake jobs: %v", err)
 	}
 	if jobs != 1 {

@@ -160,7 +160,11 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	// It engages only on a FRESH call. A row that exists has already been through the gate: it is parked,
 	// approved, canceled, or was never gated at all, and the consult above resolved which.
 	if !found {
-		required, label, aerr := o.tools.RequiresApprovalResolved(ctx, env, name)
+		// The label is deliberately DISCARDED here. It belongs to the same row as the gate — which is why
+		// one lookup returns both — but the dispatcher does not render anything, and storing it now would
+		// be the stored display this design refuses. Each surface resolves it again at render time, from
+		// the same lookup, and gets the same answer.
+		required, _, aerr := o.tools.RequiresApprovalResolved(ctx, env, name)
 		if aerr != nil {
 			return aerr
 		}
@@ -177,7 +181,6 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 			}); err != nil {
 				return err
 			}
-			_ = label // the screen's second part; derived at render time by every surface (approval_display.go)
 			return o.parkForApproval(ctx, st)
 		}
 	}
