@@ -325,6 +325,10 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		rh := &runnerHandler{runners: cfg.runners}
 		mux.HandleFunc("GET /v1/runners", rh.listRunners)
 		mux.HandleFunc("GET /v1/runners/{runner_id}", rh.getRunner)
+		// The pools those machines are in (E24 T2). Read-only for the same reason the runner routes
+		// are: creating a pool and minting its enrolment key are T3/T5/T6's, and a surface that can
+		// only be read cannot be mis-used to move a fleet.
+		mux.HandleFunc("GET /v1/runner-pools", rh.listRunnerPools)
 	}
 
 	var root http.Handler = mux

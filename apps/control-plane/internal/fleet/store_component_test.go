@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -314,4 +315,100 @@ func ids(rows []fleet.Runner) []string {
 		out = append(out, r.ID)
 	}
 	return out
+}
+
+// TestEnrollingWithADeclaredPostureThePoolDoesNotHaveIsRefused is E24 T2's enrolment rule, and its
+// two halves are DIFFERENT ASSERTIONS that this comment keeps apart because the code cannot:
+//
+//   - What is built: a machine STATES its posture at enrolment, the store COMPARES it with the pool's,
+//     and a disagreement refuses the enrolment and records `refused` in the journal.
+//   - What is NOT built: any verification that the statement is true. We cannot verify it — there is
+//     no attestation on this wire — so a lying machine enrols into a sandboxed-linux pool and runs on
+//     the host. That is `FLT-P2` in known-gaps-1.0.md, not a gap this test papers over.
+//
+// Catching a mismatch is worth having on its own: the realistic failure is an operator handing a Mac
+// the Linux pool's enrolment key, which this refuses at the door instead of discovering when a run
+// produces the wrong artefact.
+func TestEnrollingWithADeclaredPostureThePoolDoesNotHaveIsRefused(t *testing.T) {
+	pool := openPool(t)
+	_, _, poolID := tenantFixture(t, pool, "sandboxed-linux")
+	registry := fleet.NewStore(pool, newID, nil)
+	ctx := context.Background()
+
+	mac := enrollment(poolID, "runner-local")
+	mac.Posture = "unsandboxed-host"
+	if _, err := registry.Register(ctx, mac); !errors.Is(err, fleet.ErrPostureMismatch) {
+		t.Fatalf("a machine declaring unsandboxed-host enrolled into a sandboxed-linux pool: err = %v, want ErrPostureMismatch", err)
+	}
+
+	ctxSys := storage.WithSystemScope(ctx)
+	var rows int
+	if err := pool.QueryRow(ctxSys, `SELECT count(*) FROM runners WHERE id = $1`, mac.ID).Scan(&rows); err != nil {
+		t.Fatalf("count the refused machine's rows: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("the refused machine has %d registry row(s); a refusal that leaves a row is an admission", rows)
+	}
+	// THE REFUSAL IS RECORDED. A door that turns a machine away and writes nothing leaves the operator
+	// with an enrolment that "just fails" and no way to see why — which is the state §3.6 D5 describes
+	// for every other enrolment decision this tree makes.
+	var kind, detail string
+	if err := pool.QueryRow(ctxSys,
+		`SELECT entry_kind, detail::text FROM runner_enrollments WHERE runner_id = $1`, mac.ID).Scan(&kind, &detail); err != nil {
+		t.Fatalf("read the refusal journal entry: %v", err)
+	}
+	if kind != "refused" {
+		t.Fatalf("journal entry kind = %q, want refused", kind)
+	}
+	if !strings.Contains(detail, "unsandboxed-host") || !strings.Contains(detail, "sandboxed-linux") {
+		t.Fatalf("the refusal detail %q names neither what was declared nor what the pool is", detail)
+	}
+
+	// The same machine declaring what the pool IS enrols, and so does one declaring nothing — every
+	// runner built before E24 sends no posture, and §2 says that machine's deployment is bit-unchanged.
+	matching := enrollment(poolID, "runner-local")
+	matching.Posture = "sandboxed-linux"
+	if _, err := registry.Register(ctx, matching); err != nil {
+		t.Fatalf("a machine declaring the pool's own posture was refused: %v", err)
+	}
+	silent := enrollment(poolID, "runner-local")
+	row, err := registry.Register(ctx, silent)
+	if err != nil {
+		t.Fatalf("a machine declaring NO posture was refused; every pre-E24 runner declares none: %v", err)
+	}
+	if row.Posture != "sandboxed-linux" {
+		t.Fatalf("a machine that declared nothing recorded posture %q, want the pool's", row.Posture)
+	}
+}
+
+// TestListPoolsIsTenantScoped covers the read surface behind GET /v1/runner-pools. The assertion is
+// scoped rather than global for the reason the runner list's is: this package shares one Postgres with
+// every other component leg, so a count is an assertion about whatever else ran.
+func TestListPoolsIsTenantScoped(t *testing.T) {
+	db := openPool(t)
+	orgA, projectA, poolA := tenantFixture(t, db, "unsandboxed-host")
+	orgB, projectB, poolB := tenantFixture(t, db, "sandboxed-linux")
+	registry := fleet.NewStore(db, newID, nil)
+	ctx := context.Background()
+
+	page, err := registry.ListPools(ctx, orgA, projectA, fleet.ListWindow{Limit: 50})
+	if err != nil {
+		t.Fatalf("list A's pools: %v", err)
+	}
+	if len(page) != 1 || page[0].ID != poolA {
+		t.Fatalf("tenant A's pools = %v, want exactly %s", page, poolA)
+	}
+	if page[0].Posture != "unsandboxed-host" {
+		t.Fatalf("pool %s posture = %q, want unsandboxed-host — the posture IS the pool", poolA, page[0].Posture)
+	}
+	if page[0].CreatedAt.IsZero() {
+		t.Fatal("a listed pool carries no created_at; the pagination cursor would be minted from the zero time")
+	}
+	page, err = registry.ListPools(ctx, orgB, projectB, fleet.ListWindow{Limit: 50})
+	if err != nil {
+		t.Fatalf("list B's pools: %v", err)
+	}
+	if len(page) != 1 || page[0].ID != poolB {
+		t.Fatalf("tenant B's pools = %v, want exactly %s", page, poolB)
+	}
 }

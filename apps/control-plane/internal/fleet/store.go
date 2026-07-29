@@ -83,9 +83,33 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 		return Runner{}, ErrUnknownPool
 	}
 
-	// The machine inherits the pool's posture: a pool IS a posture (§1 R1), so a runner that declared
-	// something else would be a runner in the wrong pool. Its own os/arch are recorded as reported —
-	// they are inventory, and T4 is where a placement decision may compare them.
+	// THE POSTURE IS COMPARED, NOT VERIFIED (E24 T2). A pool IS a posture (§1 R1), so a machine that
+	// declares a different one is a machine in the wrong pool — and the realistic way that happens is
+	// an operator handing a Mac the Linux pool's enrolment key. It is refused at the door, and the
+	// refusal is JOURNALLED, because an enrolment that "just fails" leaves an operator with nothing to
+	// read. What is NOT checked is whether the declaration is true; see ErrPostureMismatch.
+	if !postureMatches(reg.Posture, pool.posture) {
+		detail, err := refusalDetail(reg, pool.posture)
+		if err != nil {
+			return Runner{}, fmt.Errorf("encode refusal detail: %w", err)
+		}
+		if _, err := tx.Exec(ctx, storage.Query("AppendRunnerEnrollment"),
+			s.mintID("renr"), pool.org, pool.project, reg.ID, pool.id, "", "refused", detail); err != nil {
+			return Runner{}, fmt.Errorf("append refusal entry: %w", err)
+		}
+		// Commit the refusal: the record of a machine turned away is the only thing this transaction
+		// produced, and rolling it back would make the refusal invisible. Returning the helper's error
+		// directly under a deferred Rollback is how a write is silently dropped in this tree — so the
+		// commit is named here and its failure is returned in place of the refusal.
+		if err := tx.Commit(ctx); err != nil {
+			return Runner{}, fmt.Errorf("commit enrollment refusal: %w", err)
+		}
+		return Runner{}, ErrPostureMismatch
+	}
+
+	// The machine inherits the pool's posture: having agreed (or said nothing), what it IS is what the
+	// pool is. Its own os/arch are recorded as reported — they are inventory, and T4 is where a
+	// placement decision may compare them.
 	row := Runner{
 		ID: reg.ID, Organization: pool.org, Project: pool.project, PoolID: pool.id,
 		Label: reg.Label, DNS: reg.DNS, PublicKeySHA256: reg.PublicKeySHA256,

@@ -20,15 +20,26 @@ type fakeRegistry struct {
 	// many. byDNS is the RecordSeen index, mirroring the store's lookup by certificate SAN.
 	rows  []*fleet.Runner
 	byDNS map[string]*fleet.Runner
-	// pools is the set of pool ids this fake knows. Register refuses anything else, so the proof
-	// that an unknown pool is a REFUSAL runs against the same rule the store enforces.
-	pools map[string]bool
+	// pools maps each pool this fake knows to its POSTURE. Register refuses an unknown pool and
+	// refuses a declared posture the pool does not have, so the wire proofs run against the same two
+	// rules the store enforces — a fake that accepts what the store rejects is a proof about nothing.
+	pools map[string]string
 }
 
-func newFakeRegistry(pools ...string) *fakeRegistry {
-	known := map[string]bool{fleet.DefaultPoolID: true}
+// fakePool is one pool the fake registry knows: an id and the posture that pool IS.
+type fakePool struct {
+	id      string
+	posture string
+}
+
+// defaultPoolPosture is what migration 000045 R6 seeds for the bootstrap tenant's pool, restated here
+// so the fake's default matches the database's rather than being invented.
+const defaultPoolPosture = "sandboxed-linux"
+
+func newFakeRegistry(pools ...fakePool) *fakeRegistry {
+	known := map[string]string{fleet.DefaultPoolID: defaultPoolPosture}
 	for _, p := range pools {
-		known[p] = true
+		known[p.id] = p.posture
 	}
 	return &fakeRegistry{byDNS: map[string]*fleet.Runner{}, pools: known}
 }
@@ -36,7 +47,8 @@ func newFakeRegistry(pools ...string) *fakeRegistry {
 func (f *fakeRegistry) Register(_ context.Context, reg fleet.Registration) (fleet.Runner, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.pools[reg.PoolID] {
+	posture, known := f.pools[reg.PoolID]
+	if !known {
 		return fleet.Runner{}, fleet.ErrUnknownPool
 	}
 	// The store's pairing guard, restated: the fake has to refuse what the real one refuses, or a wire
@@ -44,10 +56,15 @@ func (f *fakeRegistry) Register(_ context.Context, reg fleet.Registration) (flee
 	if reg.ID == "" || reg.DNS == "" || !strings.HasPrefix(reg.DNS, reg.ID+".") {
 		return fleet.Runner{}, fleet.ErrIdentityMismatch
 	}
+	// The posture rule, likewise restated: declared-and-different is a refusal, declared-nothing
+	// inherits (every pre-E24 machine declares nothing).
+	if reg.Posture != "" && reg.Posture != posture {
+		return fleet.Runner{}, fleet.ErrPostureMismatch
+	}
 	row := &fleet.Runner{
 		ID: reg.ID, Organization: "org_local", Project: "prj_local",
 		PoolID: reg.PoolID, Label: reg.Label, DNS: reg.DNS, PublicKeySHA256: reg.PublicKeySHA256,
-		State: "active", OS: reg.OS, Arch: reg.Arch, Capacity: reg.Capacity,
+		State: "active", OS: reg.OS, Arch: reg.Arch, Posture: posture, Capacity: reg.Capacity,
 		EnrolledAt: time.Now(), LastSeenAt: time.Now(),
 	}
 	f.rows = append(f.rows, row)

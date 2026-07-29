@@ -158,6 +158,15 @@ func loadConfig() (bootstrap runner.BootstrapConfig, tokenFile, sessionURL, rene
 		ControllerCAs:   pool,
 		ControllerDNS:   controllerDNS,
 		Now:             time.Now,
+		// PALAI_RUNNER_POSTURE is what this machine DECLARES itself to be (E24 T2): "sandboxed-linux"
+		// or "unsandboxed-host". The control plane compares it with the pool's and refuses the
+		// enrolment on a disagreement — it cannot verify it, so what this catches is an operator
+		// pointing a Mac at the Linux pool's credential, not a machine that lies.
+		//
+		// Unset declares nothing, which is what every deployment does today and is what keeps a
+		// single-runner install bit-unchanged: the request body is byte-identical without it. It is
+		// read with os.Getenv rather than mustEnv for exactly that reason.
+		Posture: os.Getenv("PALAI_RUNNER_POSTURE"),
 	}
 	return bootstrap, tokenFile, mustEnv("PALAI_SESSION_URL"), os.Getenv("PALAI_RENEW_URL"), controllerDNS, pool
 }

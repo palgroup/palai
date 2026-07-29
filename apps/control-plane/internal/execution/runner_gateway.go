@@ -302,6 +302,11 @@ type enrollRequest struct {
 	// required and neither decides anything here — they are inventory (T4 may compare them).
 	OS   string `json:"os,omitempty"`
 	Arch string `json:"arch,omitempty"`
+	// Posture is what the machine SAYS it is (E24 T2). It is the one declared field that DECIDES
+	// something: the registry compares it with the pool's and refuses the enrolment on a disagreement.
+	// Absent declares nothing and enrols exactly as before — see fleet.ErrPostureMismatch for the line
+	// between comparing a claim and verifying one, which this does not cross.
+	Posture string `json:"posture,omitempty"`
 }
 
 type enrollResponse struct {
@@ -354,7 +359,15 @@ func (g *RunnerGateway) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		if _, err := reg.Register(r.Context(), fleet.Registration{
 			ID: runnerID, PoolID: fleet.DefaultPoolID, Label: request.RunnerID, DNS: runnerDNS(runnerID),
 			PublicKeySHA256: publicKeyFingerprint(publicDER), OS: request.OS, Arch: request.Arch,
+			Posture: request.Posture,
 		}); err != nil {
+			// A posture the pool does not have is the machine's mistake and it is told so — an operator
+			// who has handed a Mac the Linux pool's credential needs to read that, not a 503. Every other
+			// failure is the control plane's and stays deliberately unspecific to the caller.
+			if errors.Is(err, fleet.ErrPostureMismatch) {
+				http.Error(w, "declared posture is not this pool's", http.StatusConflict)
+				return
+			}
 			// A registry that cannot record the machine must not issue it an identity — that is the
 			// whole point of writing first. The refusal is deliberately unspecific to the caller.
 			http.Error(w, "enrollment could not be recorded", http.StatusServiceUnavailable)

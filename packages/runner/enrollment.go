@@ -39,11 +39,20 @@ type BootstrapConfig struct {
 	ControllerCAs   *x509.CertPool
 	ControllerDNS   string
 	Now             func() time.Time
+	// Posture is what this machine SAYS it is: "sandboxed-linux" (a container runner) or
+	// "unsandboxed-host" (a rented Mac). The control plane compares it with the pool's and refuses the
+	// enrolment on a disagreement (E24 T2) — it does NOT verify it, and cannot.
+	//
+	// Empty declares nothing, which is what every runner built before E24 sends and is why this field
+	// is omitempty below: an undeclared machine's request body is byte-identical to the one this
+	// package has always sent, so no deployment observes the field's existence.
+	Posture string
 }
 
 type enrollmentRequest struct {
 	RunnerID  string `json:"runner_id"`
 	PublicKey string `json:"public_key"`
+	Posture   string `json:"posture,omitempty"`
 }
 
 type enrollmentResponse struct {
@@ -83,6 +92,7 @@ func Enroll(ctx context.Context, config BootstrapConfig) (Identity, error) {
 	body, err := json.Marshal(enrollmentRequest{
 		RunnerID:  config.RunnerID,
 		PublicKey: base64.StdEncoding.EncodeToString(publicDER),
+		Posture:   config.Posture,
 	})
 	if err != nil {
 		return Identity{}, fmt.Errorf("encode enrollment request: %w", err)

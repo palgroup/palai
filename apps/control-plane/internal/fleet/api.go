@@ -36,6 +36,25 @@ func (s *Store) GetRunner(ctx context.Context, org, project, id string) (api.Run
 	return runnerItem(row), true, nil
 }
 
+// ListRunnerPools implements api.RunnerRegistryAPI (E24 T2).
+func (s *Store) ListRunnerPools(ctx context.Context, org, project string, w api.RunnerListWindow) ([]api.RunnerPoolItem, error) {
+	rows, err := s.ListPools(ctx, org, project, ListWindow{
+		CreatedGTE: w.CreatedGTE, CreatedLTE: w.CreatedLTE,
+		AfterCreatedAt: w.AfterCreatedAt, AfterID: w.AfterID, Limit: w.Limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]api.RunnerPoolItem, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, api.RunnerPoolItem{
+			ID: row.ID, Name: row.Name, Posture: row.Posture, OS: row.OS, Arch: row.Arch,
+			StrictEnrollment: row.StrictEnrollment, CreatedAt: row.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
 func runnerItem(r Runner) api.RunnerItem {
 	return api.RunnerItem{
 		ID: r.ID, PoolID: r.PoolID, Label: r.Label, DNS: r.DNS, PublicKeySHA256: r.PublicKeySHA256,

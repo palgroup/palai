@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,7 +73,7 @@ func park(t *testing.T, f *gatewayFixture, token string) *parkedRunner {
 // its pool.
 func TestAnUnsandboxedHostAttemptIsNeverOfferedToASandboxedLinuxRunner(t *testing.T) {
 	f := newGatewayFixture(t, newOneUseTokens("pool-token-1"))
-	f.gateway.SetRegistry(newFakeRegistry(hostPoolID))
+	f.gateway.SetRegistry(newFakeRegistry(fakePool{id: hostPoolID, posture: "unsandboxed-host"}))
 
 	sandboxed := park(t, f, "pool-token-1")
 	waitConnected(t, f.gateway, 1)
@@ -295,7 +296,7 @@ func TestAPoolServesItsWaitingRunsOldestFirst(t *testing.T) {
 // in one is not a machine in the other whatever the two have in common.
 func TestDialRefusesAPoolWhoseRunnerNeverComesRatherThanTakingAnother(t *testing.T) {
 	f := newGatewayFixture(t, newOneUseTokens("empty-token"))
-	f.gateway.SetRegistry(newFakeRegistry("pool_second"))
+	f.gateway.SetRegistry(newFakeRegistry(fakePool{id: "pool_second", posture: defaultPoolPosture}))
 	occupied := park(t, f, "empty-token")
 	waitConnected(t, f.gateway, 1)
 
@@ -315,5 +316,39 @@ func TestDialRefusesAPoolWhoseRunnerNeverComesRatherThanTakingAnother(t *testing
 	case lease := <-occupied.lease:
 		t.Fatalf("the other pool's runner was leased %s", lease.LeaseID)
 	default:
+	}
+}
+
+// TestAMachineDeclaringAPostureTheDefaultPoolDoesNotHaveIsTurnedAwayAtEnrolment is the enrolment rule
+// over the REAL wire, and it is a different assertion from the store's component proof: this one shows
+// that a machine's declaration actually TRAVELS (packages/runner encodes it, the gateway decodes it)
+// and that the refusal reaches the machine as a refusal rather than as a certificate.
+//
+// WHAT IS BUILT AND WHAT IS NOT, because the two are one line apart in the code and must not be one
+// line apart in a reader's head: the gateway COMPARES a declaration with the pool's posture. It does
+// not VERIFY it — there is no attestation on this wire — so a machine that lies enrols and runs on
+// whatever it actually is. That is `FLT-P2` in known-gaps-1.0.md.
+func TestAMachineDeclaringAPostureTheDefaultPoolDoesNotHaveIsTurnedAwayAtEnrolment(t *testing.T) {
+	f := newGatewayFixture(t, newOneUseTokens("posture-token-1", "posture-token-2"))
+	f.gateway.SetRegistry(newFakeRegistry())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// The default pool is sandboxed-linux; this machine says it is a host.
+	mac := f.bootstrap("posture-token-1")
+	mac.Posture = "unsandboxed-host"
+	if _, err := runner.Enroll(ctx, mac); err == nil {
+		t.Fatal("a machine declaring unsandboxed-host was issued an identity in the sandboxed-linux default pool")
+	} else if !strings.Contains(err.Error(), "409") {
+		t.Fatalf("enrolment refusal = %v, want a 409 that tells the operator WHICH mistake this is "+
+			"(a Mac pointed at the Linux pool's credential reads a 503 as 'the control plane is down')", err)
+	}
+
+	// A machine that declares the pool's own posture enrols, so the refusal above is the comparison and
+	// not a broken enrolment path.
+	linux := f.bootstrap("posture-token-2")
+	linux.Posture = "sandboxed-linux"
+	if _, err := runner.Enroll(ctx, linux); err != nil {
+		t.Fatalf("a machine declaring the default pool's own posture was refused: %v", err)
 	}
 }

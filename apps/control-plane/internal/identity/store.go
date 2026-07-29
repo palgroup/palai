@@ -406,11 +406,18 @@ func (s *Store) readProject(ctx context.Context, id string) (api.ProvisionResult
 // cannot be WRITTEN at all. The plan for this task recorded the write path as already shipped, which was
 // half true — the endpoint ships, the field did not, so `{"config_policy":{"approvers":[…]}}` was a 400
 // and the list had no way in. A control nobody can configure is not a control.
+//
+// POOL (E24 T2) IS THE SAME FINDING A SECOND TIME. The E24 plan recorded the pool policy's write path
+// as shipped, citing this endpoint — and it was half true in exactly the same way: DisallowUnknownFields
+// made `{"config_policy":{"pool":"mac-pool"}}` a 400, so the placement policy the epic rests on had no
+// way in. It is `omitempty` here alone among these fields, so a policy that names no pool marshals to
+// the bytes it always did and no existing project's stored JSON changes shape.
 type configPolicyInput struct {
 	AllowedModels []string `json:"allowed_models"`
 	AllowedTools  []string `json:"allowed_tools"`
 	DefaultTools  []string `json:"default_tools"`
 	Approvers     []string `json:"approvers"`
+	Pool          string   `json:"pool,omitempty"`
 }
 
 type organizationView struct {
