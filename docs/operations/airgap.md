@@ -112,4 +112,6 @@ ceremony** (a real registry with real TLS + a real trust root — the 127.0.0.1 
 loopback-insecure by default), a **real private model server**, and multi-arch images are the
 operator leg. SBOM / provenance production is **E18**. For a hardened real deployment, layer the
 production overlay (`deploy/compose/production.yml`: TLS edge + master-key guard, E14 T1) on top,
-swapping the self-minted edge cert for a real-domain certificate.
+giving the edge a real-domain certificate through `PALAI_EDGE_CERT`/`PALAI_EDGE_KEY` — **not** by
+overwriting `${PALAI_HOME}/ca/server.crt`, which is the runner gateway's pinned identity
+(`docs/operations/install.md` step 7 says what that costs).
