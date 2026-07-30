@@ -377,6 +377,11 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 	// resume is the third rung and it is what a WOKEN run needs: an attempt re-entered after a park finds
 	// its response in waiting_for_tool, where provision and start are both illegal, and resume is the one
 	// command that returns it to in_progress. Ordered after them so a fresh run never touches it.
+	//
+	// ponytail: three rungs is three primary-key reads and at most two writes per attempt, on a path that
+	// already makes about fifteen round trips before the engine says anything. If that ever matters, the
+	// upgrade is one read + one write: read the state once and walk ResponseTable in memory, keeping the
+	// state read as the UPDATE's predicate exactly as AdvanceResponse already does.
 	for _, cmd := range []statemachines.ResponseCommand{
 		statemachines.ResponseCmdProvision, statemachines.ResponseCmdStart, statemachines.ResponseCmdResume,
 	} {
