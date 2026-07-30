@@ -218,6 +218,21 @@ func (s *Store) settleBackgroundTask(ctx context.Context, task BackgroundTask, o
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
+	// THE RUN LOCK COMES FIRST, BEFORE THE CLAIM, and the order is the point rather than a preference.
+	// Every path in this package takes the run lock first (guardRunActive), so a transaction that locks a
+	// run and then writes a background_tasks row — which is exactly what T5's "cancelling a run kills its
+	// background work" will be — cannot deadlock against this one. Taking the claim first and the run
+	// second would have made those two orders opposite, and a deadlock found by a reaper in production is
+	// found at three in the morning.
+	//
+	// The run id is read off the TASK row rather than the claim's RETURNING for the same reason: the lock
+	// has to be acquirable before anything is written.
+	var runState string
+	if err := tx.QueryRow(ctx, storage.Query("LockRun"), task.RunID, task.Tenant.Organization, task.Tenant.Project).
+		Scan(new(string), new(*string), &runState); err != nil {
+		return false, fmt.Errorf("lock run for background notice: %w", err)
+	}
+
 	var runID, sessionID, responseID, state, outputPath string
 	var exitCode *int
 	switch err := tx.QueryRow(ctx, storage.Query("ClaimBackgroundNotice"),
@@ -228,14 +243,6 @@ func (s *Store) settleBackgroundTask(ctx context.Context, task BackgroundTask, o
 		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("claim background notice: %w", err)
-	}
-
-	// The run lock is taken BEFORE anything is written against it, matching every other path in this
-	// package (guardRunActive locks the run first), so a notification and a terminal cannot deadlock.
-	var runState string
-	if err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, task.Tenant.Organization, task.Tenant.Project).
-		Scan(new(string), new(*string), &runState); err != nil {
-		return false, fmt.Errorf("lock run for background notice: %w", err)
 	}
 
 	notice := backgroundNoticeText(task.ID, state, exitCode, outputPath, outcome)
