@@ -23,7 +23,22 @@ import (
 // rather than a silence: without it, a bundle that LOST its family claims would quietly move from "passes
 // its own gate" to "no gate recognizes it" and the sweep below would still be green.
 var promoteFamilies = map[string]string{
-	// E23's family is checked FIRST of all in PromoteGateFor, one level above E22, and this bundle inherits
+	// E24's family is checked FIRST of all in PromoteGateFor, one level above E23, and this bundle inherits
+	// the dispatch hazard one layer deeper again: it carries the E23 tool-approval claim, the E22
+	// code-and-ship claim, the E21 tools-memory claim, the E20 agent-surface claim, the E19 wiring claim AND
+	// E17 area claims, because it derives its inherited case set from those releases. Dispatching on any of
+	// them would reroute it to a gate that knows nothing about the wrong-pool sweep, the cross-tenant sweep,
+	// the capacity-death count, the key-revocation fence or the server-mint recompute. It is recognized by
+	// the E24 CASE IDS — and their `FLT-` prefix is part of that decision in BOTH directions, exactly as
+	// `HIL-` and `CAS-` were.
+	//
+	// THIS ENTRY IS THE THIRD REGISTRATION POINT A NEW BUNDLE NAME OWES (the other two are
+	// committedBundleSurfaces and the caseChecksumParts branch, both in tests/uat/evidence.go). Without it
+	// the sweep below reports "in neither promoteFamilies nor unfamiliedBundles" — deliberately, because a
+	// bundle that lost its family would otherwise move from "passes its own gate" to "no gate recognizes it"
+	// in silence.
+	"runner-fleet-0.1.0": "E24 runner-fleet (the wrong-pool and cross-tenant offer sweeps over the offer ledger + the capacity-death count over the run ledger + the key-revocation fence that COUNTS the renewals after the revocation and requires all of them to have succeeded + the machine-revocation survival sweep across two gateway generations + the server-mint recompute over the registry ledger including a label two identities came in under + the composed tool-approval/code-and-ship/tools-memory/agent-surface/wiring/extensions/eval gates)",
+	// E23's family is checked next in PromoteGateFor, one level above E22, and this bundle inherits
 	// the same dispatch hazard one layer deeper: it carries the E22 code-and-ship claim, the E21
 	// tools-memory claim, the E20 agent-surface claim, the E19 wiring claim AND E17 area claims, because it
 	// derives its inherited case set from those releases. Dispatching on any of them would reroute it to a
