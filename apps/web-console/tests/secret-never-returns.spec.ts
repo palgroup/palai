@@ -1,5 +1,7 @@
+import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Response as NetResponse } from "@playwright/test";
 
+import { WCAG_TAGS } from "./constants";
 import { announceProfile, browserServedAssets, signIn } from "./profile";
 
 // THE SENTINEL SWEEP — and its GREENNESS IS THE PROOF OF AN ABSENCE (E25 T4, plan §T4).
@@ -244,6 +246,14 @@ test("the environment picker is a select over the ids the list returned, never a
   expect(listed.length, "the upstream listed no environments after a create — this comparison would be vacuous").toBeGreaterThan(0);
   const offered = await picker.locator("option").evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value).filter((v) => v !== ""));
   expect(offered.sort()).toEqual([...listed].sort());
+
+  // AXE OVER THE POPULATED FORM, deterministically and on both profiles. The generated scan in
+  // tests/a11y.spec.ts visits this route in whatever state the upstream happens to be in — which is the EMPTY
+  // picker on a fresh fixture and the SELECT on an accumulated real stack, so which branch got scanned was an
+  // accident of profile and file order. Both branches are now scanned on purpose: this one here, the empty one
+  // in the next test. `autocomplete-valid` (wcag21aa) and `target-size` (wcag22aa) are in these tags, which is
+  // why the credential field and the small controls are inside the claim rather than beside it.
+  await expectAxeClean(page);
 });
 
 test("with no environments the picker does not exist at all — a refusal with a link, not a text box", async ({ page }) => {
@@ -275,9 +285,21 @@ test("with no environments the picker does not exist at all — a refusal with a
     .evaluateAll((els) => els.map((el) => el.getAttribute("data-testid") ?? el.getAttribute("name") ?? "<unnamed>"));
   expect(textInputs, "an empty environment list degraded into a free-text box").toEqual(["value-key-input"]);
 
-  // A label pointing at a control that does not exist would be an axe violation and a lie to a screen reader.
+  // A label pointing at a control that does not exist would be an axe violation and a lie to a screen reader —
+  // asserted directly, and then handed to axe, which is the arm that would catch the ones nobody thought of.
   await expect(page.locator('label[for="field-environment"]')).toHaveCount(0);
+  await expectAxeClean(page);
 });
+
+// expectAxeClean runs the suite's shared tag set over whatever is currently on screen. It is a helper rather
+// than an inline builder because two tests here scan two DIFFERENT STATES of the same page, and the point is
+// that the tag set is identical in both — a scan that quietly narrowed its tags would be the vacuous one.
+async function expectAxeClean(page: import("@playwright/test").Page): Promise<void> {
+  const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+  expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+  // A scan that ran ZERO rules reports zero violations too, which is the same output as a clean page.
+  expect(results.passes.length + results.violations.length + results.incomplete.length).toBeGreaterThan(0);
+}
 
 // THE SECRET FIELD'S ATTRIBUTES, READ OFF THE LIVE FIELD (plan §3.5 N17). Asserted on the rendered page rather
 // than on the component's source, because what protects the operator is what the BROWSER receives.

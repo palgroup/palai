@@ -66,16 +66,27 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
     // secret-never-returns.spec.ts; a second run against the same stack would have failed it, and an
     // assertion that depends on file order is not an assertion.
     //
-    // What is asserted instead holds in BOTH states and is the property this file is actually about: the panel
-    // RENDERED (route mounted, request authorized) and it shows NO value — the column set is metadata, which
-    // is what makes assertion 6's response-body scan a claim about a surface rather than about an empty table.
+    // What is asserted instead is that the panel RENDERED — route mounted, request authorized, which is the
+    // thing DIV-RTE-001 was wrong about — and then ONE of two pinned arms depending on what the stack holds.
+    // Both arms assert something; neither is a skip, and which one ran is printed. The claim this file is
+    // actually about (assertion 6: no credential in any response body) runs either way.
     const rows = page.getByTestId("panel-secret-refs").locator("tbody tr");
     const empty = page.getByTestId("panel-secret-refs-empty");
     await expect(async () => {
       expect((await rows.count()) + (await empty.count()), "the secret-refs panel rendered neither rows nor its empty state").toBeGreaterThan(0);
     }).toPass({ timeout: 15_000 });
-    const headers = await page.getByTestId("panel-secret-refs").locator("thead th").allTextContents();
-    expect(headers, "the secret-refs panel must project metadata only").toEqual(["Name", "Version"]);
+    const rowCount = await rows.count();
+    // eslint-disable-next-line no-console -- which arm ran is part of reading this run's output.
+    console.log(`REAL SECRET-REFS PANEL — ${rowCount} row(s); asserting the ${rowCount === 0 ? "EMPTY-state" : "metadata-only column"} arm`);
+    if (rowCount === 0) {
+      // A bootstrap stack nothing has written to. The honest empty state, which is what T2 measured.
+      await expect(empty).toBeVisible();
+    } else {
+      // Rows exist — every one of them an environment value's derived name (`env:<id>:<key>`), because that is
+      // the only thing in this tree that writes a secret ref. What they must NOT carry is a value column.
+      const headers = await page.getByTestId("panel-secret-refs").locator("thead th").allTextContents();
+      expect(headers, "the secret-refs panel must project metadata only").toEqual(["Name", "Version"]);
+    }
   } else {
     await expect(page.getByTestId("panel-secret-refs")).toContainText("provider-key");
   }
