@@ -322,6 +322,19 @@ type evidenceCase struct {
 	// plane's own process. There is no relay, so there is no credential-bytes counter — see FleetProof.
 	FleetClaim string      `json:"fleet_claim"`
 	FleetProof *FleetProof `json:"fleet_proof"`
+	// The E25 T9 admin-console claim (plan §T9 — the E25 EXIT gate) extends the same discipline to the
+	// invariants THIS epic owns: no write reaches the control plane without an operator SESSION and a console
+	// with no password hash serves nothing, every page the console DECLARES is axe-scanned in BOTH colour
+	// schemes, a secret VALUE written through the configuration surface comes back from no read path (SQL
+	// query names, projection fields, response bytes and source maps), a stranger can build an environment, a
+	// repository binding, an agent and an MCP tool grant without writing `curl`, and a Slack-less installation
+	// can decide a gated tool call from a screen. It requires its proof, and eight counters are RE-DERIVED
+	// rather than believed.
+	//
+	// WHAT IT DOES NOT CLAIM: that a real operator configured a DEPLOYED console. AdminConsolePeer is
+	// structurally the literal "fake" — compose is not a deployment, and axe is not a screen reader.
+	AdminConsoleClaim string             `json:"admin_console_claim"`
+	AdminConsoleProof *AdminConsoleProof `json:"admin_console_proof"`
 }
 
 type evidenceTerm struct {
@@ -2792,6 +2805,27 @@ var committedBundleSurfaces = map[string]string{
 	// and it is exactly why the rule exists anyway: luck is not a mechanism, and the next bundle called
 	// `automation-2` would not have it.
 	FleetBundle: SurfaceRecomputed,
+	// The E25 T9 admin-console bundle. Its anchor is the CANONICAL vendor contract and on-machine-measurement
+	// ledger digest (AdminConsoleContractsDigest), derived from the code table in evidence_admin_console.go —
+	// so a bundle that dropped or reworded a §3.5 row would move every checksum in it. It may NOT be
+	// LegacyShapeOnly, for the reason two entries up.
+	//
+	// AND IT IS THE TWENTY-FOURTH ENTRY, NOT THE TWENTY-THIRD. Plan §T9 says twenty-third; that number was
+	// written before E24 T8 added FleetBundle one entry up, and the D10 correction this table already records
+	// applies again — THIS IS A MAP, so no entry has an ordinal at all, and a number that cannot be wrong is a
+	// number nobody re-checks. COUNTED 2026-07-30: twenty-four releases here, twenty-four directories under
+	// evidence/releases, which the sweep pins in both directions.
+	//
+	// THE RC WAS NOT REGENERATED, AND THE REASON IS THE AS-OF RULE RATHER THAN LUCK — WHICH IS THE OPPOSITE OF
+	// WHAT E24 T8 MEASURED FOR ITS OWN NAME, so the sentence is written out rather than inherited (plan §3.6
+	// D21). This bundle is captured five days after release-1.0.0-rc1, so the dated recompute drops it and the
+	// RC's eight checksums still reproduce; its manifest bytes are untouched. But `admin-console-` sorts BEFORE
+	// every other bundle name in this tree, so unlike `runner-fleet-` it DOES win carrier rows on name order.
+	// MEASURED by removing this entry and its directory and re-running
+	// TestTheAsOfRuleIsWhatKeepsTheShippedRCGreen: 30 of 188 index rows move without the rule when this bundle
+	// is absent, and 31 when it is present. One row is the whole margin, and it is the row that would have made
+	// the plan's "a new bundle name reddens the RC" fear true for the first time since E22.
+	AdminConsoleBundle: SurfaceRecomputed,
 	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the SEVENTEEN committed bundles
 	// that predate its own capture, plus the materialized case corpus — so a checksum here cannot be
 	// hand-written: it moves the moment one of those bundles or the corpus does.
@@ -2875,6 +2909,8 @@ func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 		return []string{c.ID, c.RunID, ToolApprovalContractsDigest()}
 	case FleetBundle: // tests/uat/fleet/bundle_test.go
 		return []string{c.ID, c.RunID, FleetContractsDigest()}
+	case AdminConsoleBundle: // tests/uat/admin-console/bundle_test.go
+		return []string{c.ID, c.RunID, AdminConsoleContractsDigest()}
 	case "extensions-0.1.0": // tests/uat/extensions/bundle_test.go
 		return []string{c.ID, c.RunID, CapabilityClaimsDigest()}
 	case "managed-cloud-0.1.0": // tests/uat/managed-cloud/evidence_test.go
@@ -3073,6 +3109,10 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	// was offered the wrong machine", "no run died of an empty pool" and "a revocation outlives the process"
 	// ship unverified behind five green rows.
 	findings = append(findings, verifyE24FleetPresence(m)...)
+	// And for E25: a manifest carrying the admin-console CASES must carry the anchor that judges them, or "no
+	// write passed without a session", "every page was scanned" and "no written secret value came back" ship
+	// unverified behind seven green rows.
+	findings = append(findings, verifyE25AdminConsolePresence(m)...)
 
 	// A bundle whose checksums were CORRECTED, or that is shape-only, must SAY SO in the manifest (plan §2
 	// honest-naming): the note is where a reader who opens this file meets the correction or the ceiling.
@@ -3564,6 +3604,24 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "fleet_proof (a fleet claim requires the offer ledger with the offers that crossed a POOL boundary and a TENANT boundary (both zero, re-derived, over a ledger that shows a machine passed over for each and a machine actually used), the run ledger with the runs that DIED of an empty pool (zero, re-derived, beside a run that parked and a run a joining machine woke), the credential ledger with the enrolled machines a key revocation dropped (zero, re-derived, with the renewals AFTER the revocation counted and all of them successful and an enrolment it still refused), the lifecycle ledger with the revoked machines that came back after a control-plane RESTART (zero, re-derived, beside an unrevoked machine that same process still served), the registry ledger with the distinct SERVER-minted identities (re-derived, including two machines that asked for the SAME label), and every vendor requirement or on-machine measurement with its source and §3.5 divergence id; an 'enrolled' marker is not proof — plan §T8)"})
 			case !c.FleetProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "fleet_proof is incomplete: a peer not honestly named \"" + FleetPeer + "\" (this bundle cannot claim two PHYSICAL machines, and it cannot claim remote EXECUTION at all — E24 T7 was deferred, so every tool still runs in the control plane's process and a Mac is only a Mac when the control plane is on it), a shrunken/edited contract-and-measurement ledger or a contracts_digest that does not equal the canonical one, an attempt OFFERED a machine in another pool or another tenant's machine — or an offer ledger with no wrong-pool and no foreign-tenant candidate in it, so the zeros are vacuous — a run DEAD-LETTERED because its pool was empty or a ledger where nothing ever parked and nothing was ever woken, an enrolled machine DROPPED by a key revocation, no renewal at all after that revocation (so \"all of them succeeded\" is a statement about no rows) or an enrolment the revoked key still admitted, a revoked machine that RECONNECTED after a control-plane restart or a restart that served nobody (a gateway refusing everybody looks identical to one refusing the right machine), or a registry of fewer than two distinct machines, an id the CLIENT chose, a certificate whose DNS is not derived from the row's id, or no shared label that two identities came in under (plan §T8)"})
+			}
+		}
+
+		// The E25 T9 admin-console anchor (plan §T9). Complete() already RE-DERIVES the relay's exported
+		// method count and the count behind the identity gate from the relay ledger (and pins the ONE
+		// non-relay export to the login door by name), the declared routes and the routes axe scanned in
+		// EVERY colour scheme from the route ledger, the sentinel hits in the DOM / response bodies / source
+		// maps from the byte-scan ledger (each layer refused unless it names a harmless token it actually
+		// found), the SQL query names touching `ciphertext` from the query ledger, the divergence rows this
+		// epic repaired with each one's re-observation, the runbook steps that ran on /v1 alone, and the
+		// approvals decided from a screen beside the ones a changed request refused — so a proof that declares
+		// an equality or a zero over bytes saying otherwise never reaches this branch clean.
+		if c.AdminConsoleClaim != "" {
+			switch {
+			case c.AdminConsoleProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "admin_console_proof (an admin-console claim requires the relay ledger with every exported HTTP method beside the identity gate it opens with (the two counts EQUAL, re-derived, with the one non-relay export pinned to the login door), the route ledger with every page lib/routes.ts declares beside the colour schemes axe scanned it in (declared and scanned EQUAL, re-derived), the byte-scan ledger with the sentinel hits in the DOM, in every response body and in every browser-served source map (zero, re-derived, each layer naming a harmless token it DID find), the query ledger with the statement names touching `ciphertext` (exactly two, re-derived over a corpus that proves the parser still parses), the conformance sweep's compared subjects and its pre-E25 floor (risen), the divergence-ledger rows this epic measured WRONG with each one's re-observation, the shipped runbook's steps on the public API alone, the approvals decided from the screen and the ones refused on a request-hash mismatch, and every vendor requirement or on-machine measurement with its source and §3.5 divergence id; a 'configured' marker is not proof — plan §T9)"})
+			case !c.AdminConsoleProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "admin_console_proof is incomplete: a peer not honestly named \"" + AdminConsolePeer + "\" (this bundle cannot claim a DEPLOYED console or a real operator — compose is not a deployment and axe is not a screen reader, §6 leg 8), a shrunken/edited contract-and-measurement ledger or a contracts_digest that does not equal the canonical one, an exported relay method NOT opening with the session gate — or a second non-relay export, which is a second unauthenticated write path — a route lib/routes.ts declares that axe never scanned, or scanned in one colour scheme only (the light-only scan is the hole this epic closed), a route row with no readiness signal or a BLANK lead, a sentinel found in a DOM node, a response body or a source map, a byte-scan layer that scanned nothing or names no probe it found (a haystack nobody has shown was read), a third SQL statement touching `ciphertext` — a `RevealEnvironmentValue` lands HERE — a query corpus small enough to mean the parser stopped parsing, a conformance sweep that compares no more item shapes than it did before this epic or whose subject list does not match its own count, a repaired divergence row with no RE-OBSERVATION (repairing a ledger on a source read is the move that put the false sentences in it), a runbook step that needed anything below /v1, or an approval that APPLIED while its request hash did NOT match — plus a queue that never decided anything or never refused a stale binding (plan §T9)"})
 			}
 		}
 
