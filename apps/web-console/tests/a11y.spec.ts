@@ -2,7 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Page } from "@playwright/test";
 
 import { IS_REAL } from "./constants";
-import { announceProfile, runToTerminal } from "./profile";
+import { announceProfile, runToTerminal, signIn } from "./profile";
 
 // tabToTestId genuinely presses Tab until the element carrying data-testid=id holds focus — proving KEYBOARD
 // REACHABILITY. This is stronger than `.focus()`, which succeeds even on a tabindex=-1 element that Tab can
@@ -28,6 +28,9 @@ async function tabToTestId(page: Page, id: string, max = 30) {
 // What still does NOT narrow: a manual VoiceOver/screen-reader pass over a DEPLOYED console. Compose is not
 // a deployment, and axe is not a screen reader. That remains §6 operator leg 8.
 test.beforeAll(() => announceProfile("a11y.spec.ts"));
+// The relay answers 401 without an operator session (E25 T1), so every page in this file needs the door
+// opened first. It goes through the REAL login route with the REAL password — no forged cookie.
+test.beforeEach(async ({ page }) => signIn(page));
 
 test("axe-core reports zero violations on the admin surface", async ({ page }) => {
   await page.goto("/");

@@ -1,5 +1,6 @@
 import { getPalaiClient } from "@/lib/palai";
 import { isPublicApiPath, problem, relayError } from "@/lib/relay";
+import { requireSession } from "@/lib/session";
 
 // The SDK's server path uses node:crypto, so this runs on the Node runtime; force-dynamic keeps it out
 // of the static build (the credential is never present at build time).
@@ -16,6 +17,14 @@ export const dynamic = "force-dynamic";
 // Two shapes: a JSON endpoint goes through client.request (parsed body re-serialized to the browser);
 // an artifact byte download (/v1/artifacts/{id}/content) streams through client.openDownload, so the
 // object never buffers through relay memory. Everything else is JSON.
+//
+// THE IDENTITY GATE IS HERE, IN EACH METHOD, AND NOWHERE ELSE (E25 T1, §2). Not in a proxy.ts: the vendor's
+// own post-CVE guidance says middleware "should not be your only line of defense" and a mis-scoped matcher
+// "can silently remove Proxy coverage" (GHSA-f82v-jwr5-mffw, CVSS 9.1). Not in app/layout.tsx: Partial
+// Rendering does not re-run a layout on every navigation, so a check there is not a check. This function
+// family is the single place every data path passes through, which is what makes one line per method the
+// whole defense rather than one of several. tests/relay-gate.spec.ts counts the methods and the gates and
+// requires the two numbers to be equal, so a sixth export cannot join without one.
 
 async function upstreamPath(ctx: { params: Promise<{ path: string[] }> }, request: Request): Promise<string | null> {
   const { path } = await ctx.params;
@@ -89,6 +98,9 @@ async function relayJSON(method: string, path: string, body: unknown): Promise<R
 }
 
 export async function GET(request: Request, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
+  const refused = requireSession(request);
+  if (refused !== null) return refused;
+
   const path = await upstreamPath(ctx, request);
   if (path === null) return problem(400, "invalid_request", "only /v1/* public-API paths are relayed");
 
@@ -107,18 +119,27 @@ export async function GET(request: Request, ctx: { params: Promise<{ path: strin
 }
 
 export async function POST(request: Request, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
+  const refused = requireSession(request);
+  if (refused !== null) return refused;
+
   const path = await upstreamPath(ctx, request);
   if (path === null) return problem(400, "invalid_request", "only /v1/* public-API paths are relayed");
   return relayJSON("POST", path, await readBody(request));
 }
 
 export async function PATCH(request: Request, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
+  const refused = requireSession(request);
+  if (refused !== null) return refused;
+
   const path = await upstreamPath(ctx, request);
   if (path === null) return problem(400, "invalid_request", "only /v1/* public-API paths are relayed");
   return relayJSON("PATCH", path, await readBody(request));
 }
 
 export async function DELETE(request: Request, ctx: { params: Promise<{ path: string[] }> }): Promise<Response> {
+  const refused = requireSession(request);
+  if (refused !== null) return refused;
+
   const path = await upstreamPath(ctx, request);
   if (path === null) return problem(400, "invalid_request", "only /v1/* public-API paths are relayed");
   return relayJSON("DELETE", path, undefined);

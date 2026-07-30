@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+
 // Shared between the Playwright config (which injects them into the servers) and the tests (which scan
 // for the credential + assert the relay origin).
 //
@@ -21,6 +23,29 @@ export const IS_REAL = PROFILE === "real";
 
 export const NEXT_PORT = Number(process.env.PALAI_CONSOLE_PORT ?? 3200);
 export const UPSTREAM_PORT = Number(process.env.FAKE_UPSTREAM_PORT ?? 3201);
+
+// A SECOND CONSOLE, IDENTICAL EXCEPT FOR THE ONE THING BEING PROVEN (E25 T1). The fail-closed claim is
+// "a console with no PALAI_CONSOLE_PASSWORD_HASH does not serve", and the only honest way to assert it is
+// against a real process that has none. This port carries the same build, the same API key and the same
+// upstream — the hash is the single difference, so nothing else can explain the refusals.
+export const UNCONFIGURED_PORT = Number(process.env.PALAI_CONSOLE_UNCONFIGURED_PORT ?? 3202);
+
+// The operator password for both profiles. It is a test credential in the same sense FAKE_API_KEY is: it
+// opens a loopback fixture that this repo starts and stops, and it sits three lines from its own hash — the
+// point is that the door is real, not that this password is secret.
+export const CONSOLE_PASSWORD = "console-proof-operator-password-DO-NOT-REUSE-4c1f9a2b";
+
+// consolePasswordHash runs the SHIPPED script to produce the hash the server is given. Nothing is hardcoded
+// and nothing is duplicated: scripts/hash-password.mjs is the only writer of the format, lib/session.ts is
+// the only reader, and this call is what binds them — if the script's output ever stops being something the
+// console accepts, every sign-in in the suite fails. It is a function rather than a constant so only the
+// Playwright config pays for the derivation.
+export function consolePasswordHash(): string {
+  const line = execFileSync("node", ["scripts/hash-password.mjs"], { input: CONSOLE_PASSWORD, encoding: "utf8" }).trim();
+  const prefix = "PALAI_CONSOLE_PASSWORD_HASH=";
+  if (!line.startsWith(prefix)) throw new Error(`scripts/hash-password.mjs printed something unexpected: ${line.slice(0, 40)}…`);
+  return line.slice(prefix.length);
+}
 
 // The fake profile's API key is a distinctive sentinel so the browser-surface secret scan is meaningful:
 // this exact string is the server-only credential, and it must appear in NO browser surface (request

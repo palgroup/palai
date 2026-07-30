@@ -4,12 +4,18 @@ import { resolve } from "node:path";
 import { test, expect, type Request, type Response as NetResponse } from "@playwright/test";
 
 import { API_KEY, IS_REAL, NEXT_PORT, UPSTREAM, UPSTREAM_PORT } from "./constants";
-import { announceProfile, runToTerminal } from "./profile";
+import { announceProfile, runToTerminal, signInViaForm } from "./profile";
 
 test.beforeAll(() => announceProfile("public-api-only.spec.ts"));
 
 const APP_ORIGIN = `http://127.0.0.1:${NEXT_PORT}`;
 const RELAY_PREFIX = `${APP_ORIGIN}/api/palai/`;
+// THE SINGLE EXCEPTION (E25 T1, §2). The console's door needs one same-origin path that is not under the
+// relay, because a session cannot be obtained through the /v1 public API. It is named here, once, and
+// COUNTED: assertion 1 requires it to be the only non-relay data request AND requires it to actually occur,
+// so an exception that stopped being exercised could not sit here unnoticed. An exception is not an
+// exception unless it is counted.
+const LOGIN_PATH = `${APP_ORIGIN}/api/console/login`;
 
 // browserServedAssets scans .next/static — every file there is browser-fetchable (/_next/static/...), so
 // this is a real browser-surface scan of both the minified chunks (*.js) and their source maps (*.js.map).
@@ -50,6 +56,11 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
   const websockets: string[] = [];
   page.on("websocket", (ws) => websockets.push(ws.url()));
 
+  // Sign in through the FORM, in the browser, so the login request is captured by the intercept above and
+  // has to survive assertions 1-3 like every other request — that is what makes "one exception" checkable
+  // rather than asserted. It also lands on / and renders the admin surface.
+  await signInViaForm(page);
+
   // Exercise the admin surface (many list fetches) and a full live run — the broadest set of data requests
   // the console makes on this profile.
   await page.goto("/");
@@ -66,11 +77,24 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
   await runToTerminal(page);
   if (!IS_REAL) await expect(page.getByTestId("artifact-download")).toBeVisible({ timeout: 15_000 });
 
-  // --- Assertion 1: EVERY data request (fetch/xhr) is same-origin under the /api/palai/ relay. ---
+  // --- Assertion 1: EVERY data request (fetch/xhr) is same-origin under the /api/palai/ relay, with
+  // /api/console/login as the ONE named exception — and the exception is COUNTED in both directions: it must
+  // occur (so it is a live exception, not a dead licence) and nothing else may join it. ---
   const dataRequests = requests.filter((r) => r.resourceType() === "fetch" || r.resourceType() === "xhr");
   expect(dataRequests.length, "the console made data requests").toBeGreaterThan(0);
+  const loginRequests = dataRequests.filter((r) => r.url() === LOGIN_PATH);
+  expect(loginRequests.length, "the sign-in exception must actually be exercised here").toBeGreaterThan(0);
   for (const req of dataRequests) {
+    if (req.url() === LOGIN_PATH) continue;
     expect(req.url(), `a data request escaped the relay: ${req.url()}`).toContain(RELAY_PREFIX);
+  }
+  // The exception carries NO Bearer and NO API key. A session is not a control-plane credential, and the
+  // console's key must never ride a browser request — least of all the one request that is not the relay.
+  for (const req of loginRequests) {
+    const headers = await req.allHeaders();
+    expect(headers["authorization"], "the sign-in request must carry no Bearer").toBeUndefined();
+    expect(JSON.stringify(headers).toLowerCase(), "the sign-in request must carry no bearer of any spelling").not.toContain("bearer");
+    expect((req.postData() ?? "").includes(API_KEY), "the API key must not ride the sign-in body").toBe(false);
   }
 
   // --- Assertion 2: NO browser request of ANY type reaches the upstream origin (or any other host). ---
@@ -103,6 +127,13 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
     expect(seen.beareredV1Requests, "the relay authenticated server-side").toBeGreaterThan(0);
     expect(seen.nonV1Requests, "the relay hit a non-/v1 backchannel").toBe(0);
     expect(seen.unbeareredV1Requests, "the relay sent an unauthenticated /v1 request").toBe(0);
+    // E25 T1 — THE OPERATOR SESSION DOES NOT LEAK UPSTREAM. The whole run above happened with a session
+    // cookie set on this origin, and not one upstream request carried a Cookie header. The relay does not
+    // forward incoming headers (it calls client.request with a method, a path and a body), so this is
+    // structural — and counted rather than assumed, because "structural" is what this tree keeps having to
+    // re-measure. It matters concretely: a session forwarded upstream would be an operator credential
+    // sitting in a control-plane access log.
+    expect(seen.cookieBearingV1Requests, "the console's session cookie rode an upstream /v1 request").toBe(0);
     for (const p of seen.paths as string[]) {
       expect(p.startsWith("/v1/"), `upstream saw a non-/v1 path: ${p}`).toBe(true);
     }

@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-import { announceProfile, runToTerminal, skipOnReal } from "./profile";
+import { announceProfile, runToTerminal, signIn, skipOnReal } from "./profile";
 
 // The live journey against the built console: provision reads → start a run → watch the lane-separated
 // timeline → act on the EXACT approval → see a recovery/attempt → download an artifact. UI-002 is the crown:
@@ -21,6 +21,8 @@ import { announceProfile, runToTerminal, skipOnReal } from "./profile";
 // The last test in this file is the one that DOES run on both, and it is what materially narrowed: the
 // console rendering a REAL run's terminal, retrieved from a real control plane over real SSE.
 test.beforeAll(() => announceProfile("journey.spec.ts"));
+// The relay answers 401 without an operator session (E25 T1).
+test.beforeEach(async ({ page }) => signIn(page));
 
 test("UI-002: the approval UI shows the authoritative operation/branch/request_hash from the canonical event — the proposal display string does not replace them", async ({ page }) => {
   skipOnReal("DIV-UI-001");

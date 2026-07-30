@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 import { NEXT_PORT } from "./constants";
-import { announceProfile, skipOnReal } from "./profile";
+import { announceProfile, sessionHeaders, signIn, skipOnReal } from "./profile";
 
 const APP_ORIGIN = `http://127.0.0.1:${NEXT_PORT}`;
 
@@ -28,10 +28,17 @@ test.beforeAll(() => announceProfile("artifact-download-hardening.spec.ts"));
 // control plane, so `artifacts != nil` is false and the whole retrieval surface is unmounted (DIV-RTE-003).
 // The hardening pinned below is real relay code on both profiles; only its adversarial INPUT is fixture-only.
 test.describe("artifact download hardening (untrusted bytes on a trusted origin)", () => {
-  test.beforeEach(() => skipOnReal("DIV-UI-003"));
+  // The artifact download rides the gated relay now (E25 T1), so these two tests sign in first and carry
+  // the session EXPLICITLY (sessionHeaders): an APIRequestContext withholds a `Secure` cookie over
+  // loopback HTTP even when the browser in the same context sends it, so without the header both the
+  // hostile and the benign case would come back a uniform 401 and prove nothing about hardening.
+  test.beforeEach(async ({ page }) => {
+    skipOnReal("DIV-UI-003");
+    await signIn(page);
+  });
 
-  test("a hostile artifact is neutralized: octet-stream, nosniff, forced attachment, sanitized filename", async ({ request }) => {
-    const res = await request.get(`${APP_ORIGIN}/api/palai/v1/artifacts/art_evil/content`);
+  test("a hostile artifact is neutralized: octet-stream, nosniff, forced attachment, sanitized filename", async ({ page }) => {
+    const res = await page.request.get(`${APP_ORIGIN}/api/palai/v1/artifacts/art_evil/content`, { headers: await sessionHeaders(page) });
     expect(res.status()).toBe(200);
     const headers = res.headers();
 
@@ -60,8 +67,8 @@ test.describe("artifact download hardening (untrusted bytes on a trusted origin)
     expect(await res.text()).toContain("<script>");
   });
 
-  test("a benign artifact keeps its real filename and type while still being hardened", async ({ request }) => {
-    const res = await request.get(`${APP_ORIGIN}/api/palai/v1/artifacts/art_1/content`);
+  test("a benign artifact keeps its real filename and type while still being hardened", async ({ page }) => {
+    const res = await page.request.get(`${APP_ORIGIN}/api/palai/v1/artifacts/art_1/content`, { headers: await sessionHeaders(page) });
     expect(res.status()).toBe(200);
     const headers = res.headers();
 
