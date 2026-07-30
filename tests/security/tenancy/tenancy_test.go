@@ -109,6 +109,7 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 	ctx := context.Background()
 	project, session, response, run, artifact := newID("prj"), newID("ses"), newID("resp"), newID("run"), newID("art")
 	environment := newID("env")
+	tool, toolRevision, setRevision := newID("tool"), newID("trev"), newID("tsrev")
 	stmts := []struct {
 		sql  string
 		args []any
@@ -135,6 +136,24 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 			[]any{environment, org, "production"}},
 		{`INSERT INTO environment_values (environment_id, organization_id, key) VALUES ($1, $2, $3)`,
 			[]any{environment, org, "JIRA_TOKEN"}},
+		// The E25 T7 registry trio, and these are PROJECT-scoped (000024) — the opposite of the environment
+		// pair above, which is why they are seeded separately rather than folded into it.
+		//
+		// TWO NEW READ ROUTES LAND ON THESE TABLES: GET /v1/tools/{tool_id}/revisions reads tool_revisions
+		// and GET /v1/tool-sets/{set}/revisions/{revision_id} reads tool_set_revisions. Both carry an
+		// organization/project predicate in their SQL, and that predicate is exactly the kind of claim this
+		// corpus exists to distrust: the canary below issues the WHERE-LESS form of the same read and
+		// requires the DATABASE to return nothing. The description is a REAL untrusted string here rather
+		// than '' — a cross-tenant leak of this column would be an MCP server's text reaching another
+		// tenant's console, which is the specific consequence worth having a row to fail on.
+		{`INSERT INTO tools (id, organization_id, project_id, canonical_name, model_visible_name) VALUES ($1,$2,$3,$4,$5)`,
+			[]any{tool, org, project, "mcp.jira.getJiraIssue", "jira__getJiraIssue"}},
+		{`INSERT INTO tool_revisions (id, organization_id, project_id, tool_id, revision_number, executor, description, input_schema, digest)
+		  VALUES ($1,$2,$3,$4,1,'mcp',$5,'{"type":"object"}'::jsonb,'sha256:tenancyseed')`,
+			[]any{toolRevision, org, project, tool, "Get the details of a Jira issue by its key."}},
+		{`INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name, revision_number, tool_pins, digest)
+		  VALUES ($1,$2,$3,'jira',1,jsonb_build_array(jsonb_build_object('tool_revision_id',$4::text)),'sha256:tenancyseed')`,
+			[]any{setRevision, org, project, toolRevision}},
 	}
 	for _, stmt := range stmts {
 		if _, err := s.owner.Exec(ctx, stmt.sql, stmt.args...); err != nil {
@@ -169,7 +188,8 @@ func (s *suite) asOrg(t *testing.T, org string, fn func(tx pgx.Tx)) {
 // produce — and the database still returns only the caller's tenant.
 func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 	s := newSuite(t)
-	for _, table := range []string{"runs", "responses", "sessions", "projects", "artifacts", "environments", "environment_values"} {
+	for _, table := range []string{"runs", "responses", "sessions", "projects", "artifacts", "environments", "environment_values",
+		"tools", "tool_revisions", "tool_set_revisions"} {
 		s.asOrg(t, s.orgA, func(tx pgx.Tx) {
 			var foreign int
 			// The only predicate names the OTHER tenant: the query asks for exactly the rows the
