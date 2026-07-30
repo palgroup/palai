@@ -86,6 +86,12 @@ func (s *Store) Approve(ctx context.Context, org, project, id, principal string)
 		return Admission{}, err
 	}
 	if !allowed {
+		// A REFUSED APPROVAL IS NOT JOURNALLED, and that is parity rather than an omission. T2 journals a
+		// refused ENROLMENT because the machine has no other way to learn why it was turned away — an
+		// enrolment that "just fails" leaves an operator with nothing to read. A refused approval is answered
+		// synchronously, as a typed 403 naming the approver list, to the human who made it; and the sibling
+		// decision path (coordinator.DecideToolApproval) records nothing for the same case, so recording one
+		// here would make two surfaces disagree about what an unauthorized decision leaves behind.
 		return Admission{}, coordinator.ErrApproverNotAuthorized
 	}
 

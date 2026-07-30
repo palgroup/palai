@@ -100,6 +100,11 @@ With it **on**, a machine that presents a valid key for that pool:
 A run placed in a pool whose only machines are pending sees an **empty** pool, so it **parks** (§5) rather
 than burning the retry ladder while you are asleep. The approval re-enters it.
 
+**Turning it on affects the NEXT enrolment, not the machines already in the pool.** An enrolled machine
+renews over the certificate it holds and never re-enrols, so switching the flag on does not put the running
+fleet behind an approval — which is what makes it safe to turn on, and also means it is not a way to
+re-gate machines you have doubts about. For those, §4.
+
 ```bash
 palai up                                    # ... fleet   2 pool(s), 1 active runner(s), 1 pending approval
 palai admin runner list                     # which machine, and its state
