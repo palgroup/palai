@@ -109,6 +109,11 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 		fs.StringVar(&f.allowedTools, "allowed-tools", "", "comma-separated allowed tools (set-policy)")
 		fs.StringVar(&f.defaultTools, "default-tools", "", "comma-separated default tools (set-policy)")
 		fs.StringVar(&f.approvers, "approvers", "", "comma-separated approver principals, slack:<team>:<user> or key:<api_key_id> (set-policy)")
+		// The runner pool this project's runs are placed in (E24 T2). MEASURED IN T6 WHILE WRITING THE
+		// OPERATOR PAGE: the field shipped on the API and there was no flag for it, so the epic's central
+		// knob could only be set with a raw PATCH — the same half-shipped shape T2 found on the endpoint
+		// itself, one layer up. `palai admin runner list` prints the pool ids to choose from.
+		fs.StringVar(&f.pool, "pool", "", "runner pool id this project's runs are placed in (set-policy)")
 	case "apikey":
 		fs.StringVar(&f.project, "project", "", "project id the key belongs to (create)")
 		fs.Var(&f.scopes, "scope", "capability scope (repeatable; omit for a full-capability admin key)")
@@ -173,7 +178,10 @@ var positionalArity = map[string]int{
 	// A machine is named by ONE id (E24 T5); `list` takes none. An extra positional is refused for the
 	// reason every other row here refuses one: `revoke rnr_a rnr_b` must not silently decommission only the
 	// first while an operator believes both are down.
-	"runner/list": 0, "runner/cordon": 1, "runner/resume": 1, "runner/revoke": 1,
+	// `approve` (E24 T6) names ONE machine for the same reason: admitting a fleet with one command is not a
+	// thing an operator should be able to do by accident, and a human approval that could name several is a
+	// human approval nobody read.
+	"runner/list": 0, "runner/cordon": 1, "runner/resume": 1, "runner/revoke": 1, "runner/approve": 1,
 }
 
 // execute maps (resource, subcommand) to the one E13 endpoint it fronts and dispatches it. It first enforces
@@ -222,9 +230,17 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 			if f.approvers != "" {
 				policy["approvers"] = csv(f.approvers)
 			}
-			if len(policy) == 0 {
-				return errors.New("set-policy requires at least one of --allowed-models/--allowed-tools/--default-tools/--approvers")
+			// The runner pool (E24 T2). ONE id, not a list: a project's runs go to one posture.
+			if f.pool != "" {
+				policy["pool"] = strings.TrimSpace(f.pool)
 			}
+			if len(policy) == 0 {
+				return errors.New("set-policy requires at least one of --allowed-models/--allowed-tools/--default-tools/--approvers/--pool")
+			}
+			// THE WRITE REPLACES THE WHOLE DOCUMENT — `UpdateProjectConfigPolicy` is an assignment, not a
+			// merge — so a call that names one flag CLEARS every other key the policy carried. That is
+			// pre-existing behaviour and it is stated in docs/operations/runner-fleet.md §1 where an operator
+			// meets it, because the realistic accident is setting --pool and silently dropping --approvers.
 			return c.do(http.MethodPatch, "/v1/projects/"+esc(pos[0]), body(map[string]any{"config_policy": policy}))
 		}
 	case "apikey":
@@ -302,11 +318,15 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 	// `revoke` IS IRREVERSIBLE and the CLI does not prompt, deliberately: neither `apikey revoke` nor
 	// `poolkey revoke` does, and a confirmation on only one of the three teaches an operator the others are
 	// safe.
+	// AND `approve` (E24 T6): the human a strict pool waits for. It rides the same one-machine-one-verb shape
+	// as the three above, and the difference is on the server — the route is gated on the `approve`
+	// capability rather than on `provision`, so the key an operator uses here may be a key that can do
+	// nothing else. That is the point of the separate capability rather than an accident of routing.
 	case "runner":
 		switch sub {
 		case "list":
 			return c.do(http.MethodGet, "/v1/runners", nil)
-		case "cordon", "resume", "revoke":
+		case "cordon", "resume", "revoke", "approve":
 			return c.do(http.MethodPost, "/v1/runners/"+esc(pos[0])+"/"+sub, nil)
 		}
 	}
@@ -535,13 +555,13 @@ func writeLine(w io.Writer, b []byte) error {
 func usageErr(resource string) error {
 	subs := map[string]string{
 		"org":     "create --display-name <n> | list | get <org_id>",
-		"project": "create --display-name <n> | list | get <prj_id> | set-policy <prj_id> [--allowed-models <a,b>] [--approvers <p,q>]",
+		"project": "create --display-name <n> | list | get <prj_id> | set-policy <prj_id> [--allowed-models <a,b>] [--approvers <p,q>] [--pool <pool_id>] (set-policy REPLACES the whole policy)",
 		"apikey":  "create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>",
 		"secret":  "create --name <n> (value on stdin) | list | get <name> | rotate <name> (value on stdin)",
 		"poolkey": "create --pool <pool_id> [--expires-at <rfc3339>] (value printed once) | list --pool <pool_id> | revoke <key_id>",
 		// Spelled with its prefix, because that is the only spelling that works: the lifecycle is reached as
 		// `palai admin runner …` so it cannot be confused with the local runner container.
-		"runner": "list | cordon <runner_id> | resume <runner_id> | revoke <runner_id> (revoke is IRREVERSIBLE)",
+		"runner": "list | approve <runner_id> | cordon <runner_id> | resume <runner_id> | revoke <runner_id> (revoke is IRREVERSIBLE)",
 	}
 	return fmt.Errorf("usage: palai %s <%s>", resource, subs[resource])
 }

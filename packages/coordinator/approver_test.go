@@ -6,6 +6,8 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -78,8 +80,24 @@ func TestApproverAllowedIsDenyByDefaultOnlyOnceAListExists(t *testing.T) {
 //
 // It scans every non-test .go file in the tree — recursively, unlike the package-local scan in
 // adapters/integrations/slack/blocks_test.go, whose narrow reach is its own documented ceiling — and
-// requires exactly one call, in publication.go. A second call site is not necessarily wrong, but it is a
-// second place to forget, and it must be argued for by editing this test.
+// requires exactly one call per SUBJECT. A second call site is not necessarily wrong, but it is a second
+// place to forget, and it must be argued for by editing this test.
+//
+// IT HAS BEEN ARGUED FOR ONCE, IN E24 T6, AND THE ARGUMENT IS THE SCOPE OF E23'S RULE. The rule is that a
+// decision about a gated OPERATION goes through one function, `ApplyApprovalDecision` — whose subject is a
+// tool call or a publication, keyed by a tool-call id and bound to a `request_hash` so that arguments
+// changed after a human looked leave no approval. A RUNNER ENROLMENT has no arguments, no parked tool call
+// and NO REQUEST HASH TO BIND TO: the certificate was issued before anybody was asked. Routing it through
+// that throat would have meant fabricating a tool call and a hash per machine that boots, and the binding
+// would then bind nothing. So `fleet.Approve` is a second PATH and not a second POLICY: it asks THIS
+// function — the one definition of who may decide, including the asymmetry that an empty list permits
+// everything — and it reimplements no part of it. If that rule ever changes it changes for tool calls,
+// publications and machines together.
+//
+// THE COUNT IS STILL ONE PER FILE and that is the property worth keeping: this test went red on
+// fleet/strict.go's first draft, which asked twice (once for a project row that was absent), and the fix
+// was to make the zero-value policy carry that case. Two asks in one function are two places for the
+// answer to differ.
 func TestApproverAllowedHasExactlyOneProductionCallSite(t *testing.T) {
 	root := repoRootForApproverScan(t)
 	var found []string
@@ -118,9 +136,18 @@ func TestApproverAllowedHasExactlyOneProductionCallSite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk the tree: %v", err)
 	}
-	if len(found) != 1 || found[0] != filepath.Join("packages", "coordinator", "publication.go") {
-		t.Fatalf("ApproverAllowed is called from %v, want exactly [packages/coordinator/publication.go] — "+
-			"the approver check belongs in ApplyApprovalDecision, the single throat both surfaces pass through", found)
+	// One call site per SUBJECT, each named: the tool-call/publication throat, and the runner-enrolment path
+	// whose subject has no request hash to bind to (see the header). A file appearing TWICE is a failure even
+	// if it is on this list — two asks in one function are two places for the answer to differ — so the
+	// comparison is on the exact slice rather than on a set.
+	want := []string{
+		filepath.Join("apps", "control-plane", "internal", "fleet", "strict.go"),
+		filepath.Join("packages", "coordinator", "publication.go"),
+	}
+	sort.Strings(found)
+	if !slices.Equal(found, want) {
+		t.Fatalf("ApproverAllowed is called from %v, want exactly %v — the approver POLICY has one definition, "+
+			"and a new call site is a new PATH that must be argued for in this test's header", found, want)
 	}
 }
 

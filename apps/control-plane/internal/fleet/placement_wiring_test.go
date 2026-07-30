@@ -17,6 +17,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strconv"
 	"testing"
 )
 
@@ -134,6 +135,27 @@ func TestTheMachineLifecycleIsWiredIntoTheCompositionRoot(t *testing.T) {
 	if !callsMade(t, mainFile, map[string]string{"WithCapacityParkTTL": ""})["WithCapacityParkTTL"] {
 		t.Errorf("%s: nothing calls WithCapacityParkTTL — PALAI_FLEET_PARK_TTL would be an environment variable that does nothing, and T4's FLT-P7 would stay open", mainFile)
 	}
+}
+
+// literals returns every string literal in a file, as a set. Reading the AST rather than the bytes is the
+// point: a route pattern named only in a COMMENT is not a route, and grep cannot tell the two apart.
+func literals(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	found := map[string]bool{}
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		if lit, ok := node.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			if unquoted, err := strconv.Unquote(lit.Value); err == nil {
+				found[unquoted] = true
+			}
+		}
+		return true
+	})
+	return found
 }
 
 // mentionsIdent reports whether a file names an identifier anywhere.

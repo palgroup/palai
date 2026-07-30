@@ -30,6 +30,9 @@ import (
 type fakeFleet struct {
 	action string
 	id     string
+	// scope is the verified scope an APPROVE carried (E24 T6). The lifecycle verbs take org/project strings;
+	// an approval takes the whole scope because the principal is derived from its key id.
+	scope middleware.Scope
 }
 
 func (f *fakeFleet) ListRunners(context.Context, string, string, capi.RunnerListWindow) ([]capi.RunnerItem, error) {
@@ -68,6 +71,15 @@ func (f *fakeFleet) SetRunnerState(_ context.Context, _, _, id, action string) (
 	return capi.RunnerItem{ID: id, State: state, PoolID: "pool_mac"}, true, nil
 }
 
+// ApproveRunner is E24 T6's surface: the human a strict pool waits for. It records the scope as well as the
+// id, because the deciding principal is derived from the scope one layer down and a CLI path that reached a
+// route which dropped it would approve as nobody.
+func (f *fakeFleet) ApproveRunner(_ context.Context, scope middleware.Scope, id string) (capi.RunnerItem, capi.ApprovalOutcome, error) {
+	f.action, f.id, f.scope = "approve", id, scope
+	return capi.RunnerItem{ID: id, State: "active", PoolID: "pool_mac"},
+		capi.ApprovalOutcome{Found: true, Applied: true}, nil
+}
+
 // TestRunnerLifecycleCLIReachesTheRealRouter is RED (3), REACHABILITY. It demands a surface that does
 // not exist today — `palai admin runner cordon|resume|revoke|list` and the routes behind them — which
 // is the point: the test is what turns "implemented" into "reachable".
@@ -90,6 +102,9 @@ func TestRunnerLifecycleCLIReachesTheRealRouter(t *testing.T) {
 		{args: []string{"cordon", "rnr_one"}, wantAction: "cordon", wantOut: `"cordoned"`},
 		{args: []string{"resume", "rnr_one"}, wantAction: "resume", wantOut: `"active"`},
 		{args: []string{"revoke", "rnr_one"}, wantAction: "revoke", wantOut: `"revoked"`},
+		// E24 T6: the waiting room's door, through the same real router. A machine admitted by a human reads
+		// back `active`, which is what tells the operator it can now take work.
+		{args: []string{"approve", "rnr_one"}, wantAction: "approve", wantOut: `"active"`},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			fleet.action, fleet.id = "", ""

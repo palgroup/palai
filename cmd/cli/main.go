@@ -49,7 +49,7 @@ func dispatch(args []string) error {
 	case "org", "project", "apikey", "secret", "poolkey":
 		return admin.Run(args[0], args[1:], os.Stdout, os.Stdin)
 	// `palai admin <resource> …` is the explicit spelling of the same family, and the machine lifecycle
-	// (E24 T5) is reached ONLY this way — `palai admin runner cordon|resume|revoke|list`. The prefix is not
+	// (E24 T5/T6) is reached ONLY this way — `palai admin runner approve|cordon|resume|revoke|list`. The prefix is not
 	// decoration: "runner" is a word this CLI already uses for the process a stack runs
 	// (`palai local doctor` reads it, compose names a `runner` service), so a bare `palai runner revoke`
 	// would read as an operation on the local container rather than on a fleet member.
@@ -359,8 +359,10 @@ admin (thin client over the E13 APIs; base URL + key from flags, env, or .palai)
   palai secret create --name <n> | list | get <name> | rotate <name>   (secret VALUE on stdin)
   palai poolkey create --pool <pool_id> [--expires-at <rfc3339>] | list [--pool <pool_id>] | revoke <key_id>
                                            runner-pool enrolment keys; create PRINTS the value once
-  palai admin runner list | cordon <runner_id> | resume <runner_id> | revoke <runner_id>
+  palai admin runner list | approve <runner_id> | cordon <runner_id> | resume <runner_id> | revoke <runner_id>
                                            ONE machine's lifecycle: cordon stops new leases and keeps
-                                           the session, revoke is IRREVERSIBLE and cuts it
+                                           the session, revoke is IRREVERSIBLE and cuts it, approve
+                                           admits a machine a STRICT pool is holding (needs the
+                                           approve capability, not provision)
 `)
 }

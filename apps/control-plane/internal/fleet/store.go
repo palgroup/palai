@@ -110,10 +110,19 @@ func (s *Store) Register(ctx context.Context, reg Registration) (Runner, error) 
 	// The machine inherits the pool's posture: having agreed (or said nothing), what it IS is what the
 	// pool is. Its own os/arch are recorded as reported — they are inventory, and T4 is where a
 	// placement decision may compare them.
+	//
+	// THE POOL DECIDES WHETHER THE MACHINE IS ADMITTED OR ONLY RECORDED (E24 T6). A strict pool writes
+	// `pending`, and the certificate is still issued below — that pairing is the whole design: a machine
+	// with no certificate could never RENEW, so a machine that waited longer than one certificate lifetime
+	// for a human would have to re-enrol, and the operator's approval would be spent on a row nothing can
+	// reach. `pending` is what keeps it out of the rendezvous, not the absence of an identity.
 	row := Runner{
 		ID: reg.ID, Organization: pool.org, Project: pool.project, PoolID: pool.id,
 		Label: reg.Label, DNS: reg.DNS, PublicKeySHA256: reg.PublicKeySHA256,
 		State: "active", OS: reg.OS, Arch: reg.Arch, Posture: pool.posture, Capacity: reg.Capacity,
+	}
+	if pool.strict {
+		row.State = "pending"
 	}
 	if row.OS == "" {
 		row.OS = pool.os
@@ -189,6 +198,11 @@ func (s *Store) RecordSeen(ctx context.Context, dns string, certNotAfter, at tim
 // `entry_kind` CHECK admits ('requested','approved','refused','issued','revoked','renewed'), so there is
 // no kind a cordon could be written as, and E24 owns exactly one migration (T1's). A cordon is reversible
 // and observable in `state`; a revoke is neither, which is why it is the one that had to be recorded.
+//
+// NONE OF THE THREE VERBS CAN ADMIT A `pending` MACHINE (E24 T6), and the refusal is in the statement
+// rather than here — see SetRunnerState. A cordon or a resume against a machine still in the waiting room
+// returns found=false, which the caller renders as the same non-disclosing 404 it renders for a machine
+// that is not there; the operator's route for that machine is `approve` (Approve, strict.go) or `revoke`.
 func (s *Store) SetState(ctx context.Context, org, project, id, action string) (Runner, bool, error) {
 	state, ok := runnerStateFor[action]
 	if !ok {
@@ -218,8 +232,8 @@ func (s *Store) SetState(ctx context.Context, org, project, id, action string) (
 		if err != nil {
 			return Runner{}, false, fmt.Errorf("encode revocation detail: %w", err)
 		}
-		if _, err := tx.Exec(ctx, storage.Query("AppendRunnerRevocation"),
-			s.mintID("renr"), row.Organization, row.Project, row.ID, row.PoolID, detail); err != nil {
+		if _, err := tx.Exec(ctx, storage.Query("AppendRunnerDecision"),
+			s.mintID("renr"), row.Organization, row.Project, row.ID, row.PoolID, "revoked", detail); err != nil {
 			return Runner{}, false, fmt.Errorf("append revocation entry: %w", err)
 		}
 	}

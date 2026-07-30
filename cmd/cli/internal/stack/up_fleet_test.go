@@ -40,6 +40,100 @@ func fleetAPI(t *testing.T, count, status int) *apiClient {
 	return &apiClient{baseURL: srv.URL, key: "test", http: &http.Client{Timeout: 5 * time.Second}}
 }
 
+// statefulFleetAPI serves the two reads the fleet summary makes: machines with STATES, and pools. `status`
+// applies to the runner read, which is the one whose failure has to be said out loud.
+func statefulFleetAPI(t *testing.T, states []string, pools int, status int) *apiClient {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/runner-pools"):
+			rows := make([]map[string]string, 0, pools)
+			for i := 0; i < pools; i++ {
+				rows = append(rows, map[string]string{"id": fmt.Sprintf("pool_%d", i)})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": rows})
+		case strings.HasPrefix(r.URL.Path, "/v1/runners"):
+			if status != http.StatusOK {
+				w.WriteHeader(status)
+				return
+			}
+			rows := make([]map[string]string, 0, len(states))
+			for i, state := range states {
+				rows = append(rows, map[string]string{"id": fmt.Sprintf("rnr_%d", i), "state": state})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": rows})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &apiClient{baseURL: srv.URL, key: "test", http: &http.Client{Timeout: 5 * time.Second}}
+}
+
+// TestTheFleetLineNamesEveryMachineWaitingForAHuman is E24 T6's operator claim, and the load-bearing case is
+// the third: a machine held in a strict pool's waiting room must be COUNTED and the command that admits it
+// must be NAMED. E21 T2's lesson is the reason — a state nothing prints is a state an operator reads as a
+// broken machine, and here the silence would last until somebody noticed a Mac had been idle for a day.
+func TestTheFleetLineNamesEveryMachineWaitingForAHuman(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		states   []string
+		pools    int
+		want     []string
+		wantNone []string
+	}{
+		{
+			name:     "a queued-only stack has no fleet and says so without alarming anybody",
+			pools:    0,
+			want:     []string{"no pools and no enrolled machines"},
+			wantNone: []string{"pending approval"},
+		},
+		{
+			name:   "machines that are all serving are counted and nothing is demanded",
+			states: []string{"active", "active"}, pools: 1,
+			want:     []string{"1 pool(s), 2 active runner(s), 0 pending approval"},
+			wantNone: []string{"PENDING machine", "palai admin runner approve"},
+		},
+		{
+			name:   "a machine waiting for a human is named, and so is the command that admits it",
+			states: []string{"active", "pending", "pending"}, pools: 2,
+			want: []string{"2 pool(s), 1 active runner(s), 2 pending approval",
+				"holds a certificate and takes NO work", "palai admin runner approve"},
+		},
+		{
+			name:   "a cordoned machine is neither active nor waiting, and is not counted as either",
+			states: []string{"cordoned", "revoked"}, pools: 1,
+			want:     []string{"1 pool(s), 0 active runner(s), 0 pending approval"},
+			wantNone: []string{"palai admin runner approve"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fleetLine(statefulFleetAPI(t, tc.states, tc.pools, http.StatusOK).fleet())
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("fleet line = %q, want it to contain %q", got, want)
+				}
+			}
+			for _, unwanted := range tc.wantNone {
+				if strings.Contains(got, unwanted) {
+					t.Errorf("fleet line = %q, want it NOT to contain %q", got, unwanted)
+				}
+			}
+		})
+	}
+}
+
+// TestAnUnreadableFleetSaysSoOnTheReport is the half a silent summary would hide, and it is the same
+// argument dispatchWorkerFleetWarning's read failure makes: "nothing is waiting" and "nobody could ask" must
+// not render identically, because the second is the state in which a waiting machine goes unmentioned.
+func TestAnUnreadableFleetSaysSoOnTheReport(t *testing.T) {
+	got := fleetLine(statefulFleetAPI(t, nil, 0, http.StatusInternalServerError).fleet())
+	if !strings.Contains(got, "could not be read") {
+		t.Fatalf("fleet line = %q, want it to report the failed read", got)
+	}
+}
+
 // TestASecondRunnerWithOneDispatchWorkerIsSaidOutLoud pins the warning's exact trigger and its silence.
 // Both halves matter: a warning that fired on a single-runner stack would be noise on every install in
 // existence, and one that stayed silent on a two-machine stack is the measured lie this closes.

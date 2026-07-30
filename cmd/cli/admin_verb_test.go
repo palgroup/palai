@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// TestAdminVerbReachesTheRunnerLifecycle drives the top-level dispatcher for each of the four verbs. The
+// TestAdminVerbReachesTheRunnerLifecycle drives the top-level dispatcher for each of the five verbs. The
 // stub records the method and path, so a mis-spelled prefix (or a `palai runner` that would read as an
 // operation on the local runner CONTAINER) shows up as a wrong path rather than as a passing test.
 func TestAdminVerbReachesTheRunnerLifecycle(t *testing.T) {
@@ -34,6 +34,9 @@ func TestAdminVerbReachesTheRunnerLifecycle(t *testing.T) {
 		{[]string{"admin", "runner", "cordon", "rnr_one"}, "POST", "/v1/runners/rnr_one/cordon"},
 		{[]string{"admin", "runner", "resume", "rnr_one"}, "POST", "/v1/runners/rnr_one/resume"},
 		{[]string{"admin", "runner", "revoke", "rnr_one"}, "POST", "/v1/runners/rnr_one/revoke"},
+		// E24 T6: the verb docs/operations/runner-fleet.md tells an operator to type when `palai up` reports a
+		// machine pending. A mis-spelled prefix here would be a runbook step that does nothing.
+		{[]string{"admin", "runner", "approve", "rnr_one"}, "POST", "/v1/runners/rnr_one/approve"},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			got.method, got.path = "", ""

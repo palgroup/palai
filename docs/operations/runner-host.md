@@ -106,6 +106,9 @@ sudo tar -xzf palai-runner-host-*.tar.gz -C /opt/palai-runner
 #        palai poolkey list   --pool <pool_id>     # prefixes and state, never a value
 #        palai poolkey revoke <key_id>             # answers with the machines it did NOT stop
 #
+#    The pools themselves, strict enrolment, cordon/revoke and the capacity park are
+#    docs/operations/runner-fleet.md — this file is the machine's side only.
+#
 #    Write the value into /etc/palai/runner/runner-token on the machine and set PALAI_RUNNER_POOL to
 #    the pool id in step 3. Declaring the pool is optional but worth it: if the wrong pool's key was
 #    pasted here, enrolment is REFUSED at the door instead of the machine quietly joining another fleet.

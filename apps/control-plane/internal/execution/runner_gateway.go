@@ -349,7 +349,14 @@ func (g *RunnerGateway) Revoked() bool  { return g.revoked.Load() }
 // (a machine parks one session per concurrent lease) wake on one write without a condition variable and
 // without a subscriber list to leak.
 type runnerLifecycle struct {
-	mu       sync.Mutex
+	mu sync.Mutex
+	// pending is E24 T6's waiting room: the machine enrolled into a pool with `strict_enrollment` and no
+	// human has admitted it yet. It is a THIRD flag rather than a reuse of `cordoned` because the two differ
+	// in the one place it matters — a cordoned machine is a MEMBER of its pool (its pool has capacity, all of
+	// it busy, so a run rides the retry ladder) while a pending machine is ABSENT capacity (the run parks and
+	// waits for the human). Collapsing them would dead-letter every run placed in a pool whose machines are
+	// all waiting for an approval, in ~2.5 minutes, while the approver is at lunch.
+	pending  bool
 	cordoned bool
 	revoked  bool
 	changed  chan struct{}
@@ -375,6 +382,10 @@ func (l *runnerLifecycle) state() (cordoned, revoked bool, changed <-chan struct
 // back, which is today's in-memory semantics unchanged (a revoked runner identity is decommissioned, not
 // paused) rather than a new rule. A no-op transition broadcasts nothing, so a repeated cordon does not
 // churn every parked session of that machine.
+//
+// IT DOES NOT TOUCH `pending` (E24 T6). A cordon of a machine still in the waiting room would otherwise
+// erase the fact that nobody admitted it — the durable side refuses that write for the same reason
+// (SetRunnerState) — and a resume would then look legitimate.
 func (l *runnerLifecycle) set(cordoned, revoked bool) {
 	l.mu.Lock()
 	if l.revoked || (l.cordoned == cordoned && l.revoked == revoked) {
@@ -382,11 +393,45 @@ func (l *runnerLifecycle) set(cordoned, revoked bool) {
 		return
 	}
 	l.cordoned, l.revoked = cordoned, revoked
+	l.broadcast()
+	l.mu.Unlock()
+}
+
+// awaiting reports whether this machine is still in the waiting room, whether it has been revoked, and the
+// channel that closes on its next transition (E24 T6). All three are read under ONE lock for the reason
+// state() reads its two that way: a watcher that read the flag and then took the channel could miss the
+// transition in between and wait for a broadcast that has already happened.
+func (l *runnerLifecycle) awaiting() (pending, revoked bool, changed <-chan struct{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.changed == nil {
+		l.changed = make(chan struct{})
+	}
+	return l.pending, l.revoked, l.changed
+}
+
+// setPending puts a machine into the waiting room or admits it out of one, and broadcasts the change.
+//
+// A REVOKED MACHINE IS NOT ADMITTED BY IT, which is set()'s one-way rule applied to the same field: an
+// approval must not be a way to bring a decommissioned identity back, and the durable statement takes the
+// same position (`state IN ('pending','active')`).
+func (l *runnerLifecycle) setPending(pending bool) {
+	l.mu.Lock()
+	if l.revoked || l.pending == pending {
+		l.mu.Unlock()
+		return
+	}
+	l.pending = pending
+	l.broadcast()
+	l.mu.Unlock()
+}
+
+// broadcast closes the current transition channel and installs the next. Called with l.mu held.
+func (l *runnerLifecycle) broadcast() {
 	if l.changed != nil {
 		close(l.changed)
 	}
 	l.changed = make(chan struct{})
-	l.mu.Unlock()
 }
 
 // lifecycle resolves a machine's lifecycle record, creating it on first use. Double-checked under the
@@ -423,6 +468,18 @@ func (g *RunnerGateway) CordonRunner(runnerID string) {
 
 // ResumeRunner clears a cordon. It does NOT un-revoke: see runnerLifecycle.set.
 func (g *RunnerGateway) ResumeRunner(runnerID string) { g.lifecycle(runnerID).set(false, false) }
+
+// ApproveRunner admits ONE machine out of a strict pool's waiting room (E24 T6): its held-open session
+// leaves awaitApproval, joins its pool's rendezvous, and — because the join is followed by the same wake
+// every connect performs — re-enters a run that parked on that pool for want of a machine.
+//
+// IT IS CALLED FOR EVERY *found* APPROVAL AND NOT ONLY FOR THE ONE THAT MOVED THE ROW, which is what makes
+// the operator's retry the fix for one narrow race: the API writes the row and then tells this gateway, so
+// an approval landing between a connecting machine's row read and its adoption of that row leaves the row
+// admitted and the session still waiting. A second approve is a 200 (the statement is idempotent) and
+// reaches the session. Safe for a machine that has never connected: the record is created and adopted at
+// its next connect, the same as a cordon written while a Mac is rebooting.
+func (g *RunnerGateway) ApproveRunner(runnerID string) { g.lifecycle(runnerID).setPending(false) }
 
 // RevokeRunner is the hard stop for ONE machine (SAN-011, per-runner): its live sessions are CUT, its
 // in-flight lease dies with them and is reclaimed by the existing E10 recovery layer, its session frames
@@ -893,6 +950,10 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 		life.set(true, true)
 	case "cordoned":
 		life.set(true, false)
+	case "pending":
+		// The waiting room, adopted from the row (E24 T6). A machine that enrolled into a strict pool and has
+		// not been admitted keeps arriving here after every reboot, and the row is the only thing that knows.
+		life.setPending(true)
 	}
 	// A revoked gateway refuses the session before the upgrade, so a decommissioned runner never even
 	// parks (SAN-011). Cordon does NOT reject the connect — a cordoned runner still parks and finishes an
@@ -941,6 +1002,25 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// with nowhere to be removed from.
 	g.addSession(pr)
 	defer g.removeSession(pr)
+	// One goroutine owns the read side for the connection's whole life: while parked it turns a
+	// dropped connection into a disconnected signal (nothing else reads then), and once a lease is
+	// assigned it relays the runner's engine frames. Without it a runner that died while parked-and-
+	// idle would keep the connected count — and so palai_runner_sessions — falsely at its old value.
+	//
+	// It starts BEFORE the waiting room below (E24 T6) rather than after the join, because a machine that
+	// sits waiting for a human for an hour and dies in the middle of it must drop the connected count when
+	// it dies, not when somebody finally approves it.
+	go g.readLoop(pr)
+
+	// THE WAITING ROOM (E24 T6), and it is AHEAD of the join and the wake deliberately. A machine nobody has
+	// admitted is not capacity: it is not a member of its pool, so a run placed there gets
+	// ErrPoolHasNoRunner and PARKS (T4) instead of spending the retry ladder while the approver is asleep —
+	// and when the human does admit it, this returns into the ordinary join/wake/park sequence, so the
+	// approval re-enters that parked run through the SAME wake every connect performs. No second waking
+	// path, which is the rule T4 set for the same reason.
+	if !g.awaitApproval(r.Context(), pr) {
+		return
+	}
 	// A machine is a MEMBER of its queue for the whole session — parked or leased — and membership is
 	// what answers "is there anything here at all". Counted before the park and released on every return
 	// path, because the answer decides whether a run PARKS (nothing here) or rides the retry ladder
@@ -955,11 +1035,6 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// parks again — a benign race, proved by a test, and deliberately cheaper than a second durable
 	// notion of "assigned to" alongside the one the job queue already is.
 	g.wakeParkedRun(r.Context(), tenant, poolID)
-	// One goroutine owns the read side for the connection's whole life: while parked it turns a
-	// dropped connection into a disconnected signal (nothing else reads then), and once a lease is
-	// assigned it relays the runner's engine frames. Without it a runner that died while parked-and-
-	// idle would keep the connected count — and so palai_runner_sessions — falsely at its old value.
-	go g.readLoop(pr)
 
 	if !g.parkUntilLeased(r.Context(), pr, queue) {
 		return
@@ -970,6 +1045,40 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// hard stop cordon is not. The interrupted run is reclaimed by the existing E10 recovery layer, the
 	// same way a control-plane exit mid-lease already is.
 	holdLease(r.Context(), pr)
+}
+
+// awaitApproval holds a machine that enrolled into a STRICT pool outside its pool's rendezvous until a
+// human admits it (E24 T6). It reports whether the session should go on to park; false means the machine
+// was revoked, dropped its connection, or the server is shutting down.
+//
+// THE MACHINE NEVER ENTERS THE QUEUE WHILE IT WAITS, which is the whole enforcement and the reason this is
+// a hold rather than a comparison inside Dial. T5 took the same position for a cordon and T2 for the pool:
+// a machine that is not in the rendezvous is UNREACHABLE from a Dial, so there is no code path left that a
+// later change could soften into a preference. A check inside the handover would be one `if` away from
+// "close enough" for whoever is debugging an idle Mac at 3am.
+//
+// IT HOLDS THE SESSION OPEN rather than refusing the connect, and that pairing is what makes the approval
+// cheap: the machine keeps its certificate and its connection, so an admission is a broadcast on a channel
+// and not a re-enrolment. Refusing the connect instead would have made the human's approval useless until
+// the machine's own retry loop came back.
+func (g *RunnerGateway) awaitApproval(ctx context.Context, pr *pendingRunner) bool {
+	for {
+		pending, revoked, changed := pr.life.awaiting()
+		if revoked {
+			return false
+		}
+		if !pending {
+			return true
+		}
+		select {
+		case <-changed:
+			// Admitted, revoked, or cordoned — the next pass reads which.
+		case <-pr.disconnected:
+			return false
+		case <-ctx.Done():
+			return false
+		}
+	}
 }
 
 // parkUntilLeased parks pr and reports whether a Dial claimed it. A CORDON takes the machine out of the

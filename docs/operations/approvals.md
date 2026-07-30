@@ -120,6 +120,25 @@ process), the principal is stamped onto the durable command from the **verified 
 The request body has no approver field and cannot acquire one. The principal is therefore fixed at accept
 while the **list** is read at apply — which is exactly what makes §5 work.
 
+### 6.1 What "one place" means, and what it does not
+
+`ApplyApprovalDecision` is the one throat for **decisions about a gated operation** — a tool call or a
+publication. Its subject is keyed by a tool-call id and bound to a `request_hash`, which is what makes
+"the arguments a human approved are the arguments that run" true.
+
+**A runner enrolment approval (E24 T6) deliberately does NOT go through it, and that is a reading of this
+rule's scope rather than an exception to it.** `POST /v1/runners/{id}/approve` admits a machine that a
+strict pool is holding. There are no arguments, no parked tool call, and **no request hash to bind to** —
+the certificate was issued before anybody was asked. Routing it through this throat would have meant
+fabricating a tool call and a hash for every machine that boots, and the binding would then bind nothing.
+
+What is **not** separate is the policy: that path asks `ConfigPolicy.ApproverAllowed`, the same function
+this page is about, so everything in §4, §5 and §7 applies to it unchanged — including that an unset list
+permits everybody. The `ApproverAllowed` call-site guard named above allows exactly those two paths and
+carries this argument in its own header, so a third one has to be argued for the same way.
+
+The fleet side of it — pools, keys, strict mode — is [`runner-fleet.md`](runner-fleet.md).
+
 ## 7. Honest ceilings
 
 **PALAI HAS NO USER IDENTITY.** A principal is a Slack account or an API key. **It is not a person.**

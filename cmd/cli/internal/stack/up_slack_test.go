@@ -365,7 +365,7 @@ func TestTheReportCarriesTheSocketAndTheApproverTruthAtOnce(t *testing.T) {
 	rt := roundTrip{ResponseID: "resp_1", Status: "completed", Model: "claude-x", InputTokens: 1, OutputTokens: 2}
 	out := captureStdout(t, func() {
 		printReport(Config{BaseURL: "http://127.0.0.1:8080"}, "container control plane (docker compose)", rt,
-			map[string]string{"slack": "enabled"}, observedFacts(rt, fact), nil, warn)
+			map[string]string{"slack": "enabled"}, observedFacts(rt, fact), "1 pool(s), 1 active runner(s), 0 pending approval", nil, warn)
 	})
 
 	// BOTH truths, in the same report. Neither may displace the other.

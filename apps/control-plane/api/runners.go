@@ -152,6 +152,12 @@ type RunnerRegistryAPI interface {
 	// and CALLED BY NOTHING. A security control with no operator surface is a security control that does
 	// not exist.
 	SetRunnerState(ctx context.Context, org, project, id, action string) (RunnerItem, bool, error)
+	// ApproveRunner admits ONE machine out of a strict pool's waiting room (E24 T6). It takes the whole
+	// verified Scope rather than org/project because the DECIDING PRINCIPAL is derived from the key id on it
+	// — the ApprovalAPI posture, for the same reason: a decision carries an identity, and a caller that
+	// could supply one could name somebody else. The outcome is api.ApprovalOutcome, reused rather than
+	// restated, because the three facts are the same three: not found, not permitted, or applied.
+	ApproveRunner(ctx context.Context, scope middleware.Scope, id string) (RunnerItem, ApprovalOutcome, error)
 }
 
 type runnerHandler struct{ runners RunnerRegistryAPI }
@@ -344,6 +350,57 @@ func (h *runnerHandler) setRunnerState(action string) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, runnerView(item))
 	}
+}
+
+// approveRunner admits one machine out of a strict pool's waiting room
+// (POST /v1/runners/{runner_id}/approve, E24 T6).
+//
+// WHY THIS IS NOT ROUTED THROUGH E23'S THROAT, AND WHY THAT IS NOT A VIOLATION OF E23'S RULE. E23 requires
+// that a decision about a gated operation go through ONE function, `coordinator.DecideToolApproval`. That
+// function's subject is a TOOL CALL or a PUBLICATION: it is keyed by a tool call id and bound to a
+// `request_hash`, so that arguments changed after a human looked leave no approval. A MACHINE ENROLMENT HAS
+// NO REQUEST HASH TO BIND TO — there are no arguments, no parked tool call, and the certificate was issued
+// before anybody was asked. Routing it there would mean fabricating a tool call and a hash per Mac that
+// boots, and the binding would then bind nothing. A separate PATH is correct here; what is NOT separate is
+// the POLICY, because WHO MAY DECIDE is still `config_policy.approvers` evaluated by the one function that
+// evaluates it (`coordinator.ConfigPolicy.ApproverAllowed`, applied in fleet/strict.go). The longer form of
+// this reasoning is at the top of that file, where the rule is applied.
+//
+// IT IS GATED ON `approve` AND NOT ON `provision`, which is api/approvals.go's argument applied verbatim
+// rather than a taxonomy preference: PATCH /v1/projects/{id} is the config_policy write path and is gated on
+// `provision`, and config_policy is where `approvers` lives — so a `provision` key could add ITSELF to the
+// list it is about to be checked against. The three lifecycle verbs above stay on `provision` because
+// cordoning a Mac is administration; admitting one is a decision, and the two capabilities stay
+// independent.
+func (h *runnerHandler) approveRunner(w http.ResponseWriter, r *http.Request) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return
+	}
+	if !scope.HasScope(approveScope) {
+		middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the approve capability")
+		return
+	}
+	item, outcome, err := h.runners.ApproveRunner(r.Context(), scope, r.PathValue("runner_id"))
+	switch {
+	case err != nil:
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	case outcome.Unauthorized:
+		// "You may not decide this" is a different fact from "there is no such machine", and an operator whose
+		// approver list is misconfigured has to be able to tell them apart — the ApprovalOutcome split, for the
+		// reason it exists there.
+		middleware.WriteProblem(w, r, http.StatusForbidden, "approver_not_authorized",
+			"this project's approver list does not include the principal this key resolves to")
+		return
+	case !outcome.Found:
+		// The same answer for "not yours", "not there" and "cordoned or revoked, so not admissible": which of
+		// the three it was is not something a caller should be able to probe for.
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such runner awaiting approval in this project")
+		return
+	}
+	writeJSON(w, http.StatusOK, runnerView(item))
 }
 
 // authorizeAdmin resolves the verified scope and enforces the `provision` capability — the same gate
