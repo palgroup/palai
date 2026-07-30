@@ -23,6 +23,23 @@ the server-side relay (`app/api/palai/**`) and never reaches the browser — the
   model verbatim. **It holds tool approvals only** — publication approvals live in a run's stream, and the page
   says so. Operator guide: **[docs/operations/console.md](../../docs/operations/console.md) §4**.
 
+- **Repositories (`/repositories`, E25 T6):** register the external repository a coding run attaches its
+  workspace through (`POST /v1/repository-bindings`), and read the bindings back. `connection_ref` is a
+  **handle** — a `secret_refs` NAME chosen from `GET /v1/secret-refs`, never a typed value and never a
+  credential. Two ceilings are on the screen because an operator would otherwise assume otherwise:
+  **registering a binding does not prove the repository is reachable** (nothing is cloned here; the first thing
+  that exercises a binding is a run), and **there is no PATCH and no DELETE** — this console creates and reads,
+  it does not correct.
+- **Agents (`/agents`, E25 T6):** an agent is a **name with a lineage of immutable revisions**. Create the
+  lineage, create a draft revision — with the **environment picker**, which is what binds T3's pipe so the
+  agent's shell commands receive that environment's `KEY=value` pairs — then **publish**, which cannot be
+  undone. A run is pinned to a published revision from `/runs`, where the agent and revision pickers are
+  **optional**: with none chosen the stream relay's body is unchanged, which is why the E17 T10 journey specs
+  needed no edit. A **draft** is listed and labelled rather than hidden, because the server refuses to run one
+  (409 `revision_not_published`) and an operator who cannot see their draft cannot tell why. `tool_sets` and
+  `mcp_connections` are **deliberately not offered yet** — the read routes that would list a tool revision or a
+  tool set's contents do not exist (E25 T7), and an empty dropdown is a control that cannot be satisfied.
+
 ### Public-API GAP: richer approval detail
 
 The `approval.requested.v1` event carries only `{publication_id, operation, branch, request_hash, display}`,

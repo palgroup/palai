@@ -35,4 +35,14 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // renders its EMPTY state — which is a state worth scanning, because an empty queue plus the page's scope
   // sentence is the difference between "nothing is waiting" and "nothing of this KIND is waiting".
   { path: "/approvals", label: "Approvals", readyTestId: "panel-approvals" },
+  // E25 T6. The readiness signal is the LIST panel on both, for the same reason the two rows above use one:
+  // the forms render synchronously and the panel is the only part that can still be a spinner. Both
+  // collections are EMPTY on a bootstrap stack — nothing creates a repository binding or an agent without
+  // Slack — so on the real profile these scans cover the empty state, which is the state a first-day
+  // operator meets and the one the create forms sit above.
+  { path: "/repositories", label: "Repositories", readyTestId: "panel-repository-bindings" },
+  // `panel-agent-profiles`, NOT `panel-agents`: "/" already carries a panel by that name (it is where list
+  // truncation is visible — pagination.spec.ts drives it), and two pages answering one testid is how a spec
+  // ends up asserting against whichever page it happened to be on.
+  { path: "/agents", label: "Agents", readyTestId: "panel-agent-profiles" },
 ];

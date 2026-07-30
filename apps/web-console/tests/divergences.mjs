@@ -85,17 +85,17 @@ export const DIVERGENCES = [
     kind: "shape",
     subject: "GET /v1/agents",
     detail:
-      "ENVELOPE divergence, and REPAIRED (E25 T2, plan §3.6 D6): the measurement was right and the conclusion was too strong. Over a page that ENDS the collection the real envelope is {data, has_more} — next_cursor and previous_cursor are omitempty pointers (contracts.Page) and neither is set. But renderPage GENUINELY MINTS next_cursor whenever has_more is true (api/pagination.go:226-227), so the real API does have forward cursors and this row used to read as though it had none. What is structurally absent is ONLY previous_cursor: beginList refuses ?before= with a 400 (pagination.go:179) and renderPage never populates PreviousCursor, so backward pagination does not exist on this surface at all. The divergence that remains is the fixture serving BOTH cursor keys as explicit nulls on an exhausted page where the real envelope omits them, and offering a previous_cursor the API will never mint. A console that paged on previous_cursor would page nothing — which is why components/Panel.tsx reads has_more + next_cursor and renders no backward control. Same for GET /v1/agents/{id}/revisions.",
-    owner: "console fixture — the E13 T10 list-envelope family; the real envelope is the contract, and its forward half WORKS",
+      "ENVELOPE divergence, REPAIRED TWICE AND NARROWED TO WHAT CANNOT BE CLOSED. E25 T2 (plan §3.6 D6): the measurement was right and the conclusion was too strong — renderPage GENUINELY MINTS next_cursor whenever has_more is true (api/pagination.go:226-227), so the real API does have forward cursors and this row used to read as though it had none; what is structurally absent is ONLY previous_cursor, because beginList refuses ?before= with a 400 (pagination.go:179) and renderPage never populates PreviousCursor. E25 T6 then closed the half that WAS the fixture's fault: pageSlice served BOTH cursor keys as explicit nulls, offering a previous_cursor the API will never mint, and it now mints next_cursor only when rows remain and writes no previous_cursor at all. WHAT REMAINS IS NOT CLOSABLE AND IS THE SAME FACT AS DIV-UI-005: the fixture's agents collection holds TWENTY-ONE rows so that list truncation is observable at all, while a bootstrap stack holds a handful — so `next_cursor` is present on the fixture's first page and absent from the real one. The consequence is measured rather than assumed: an envelope difference SUBSUMES the item comparison, so the sweep never compares an AGENT row, and T6 seeded an agent on both sides expecting the item floor to rise by three and watched it rise by two. THE TRAILING SENTENCE OF THIS ROW USED TO READ 'Same for GET /v1/agents/{id}/revisions': that route now serves the real envelope and DIV-SHP-005 is CLOSED and deleted.",
+    owner: "console fixture, IRREDUCIBLY — a collection larger than one page is state a bootstrap stack does not have, and it is the only way truncation is provable at all",
   },
-  {
-    id: "DIV-SHP-005",
-    kind: "shape",
-    subject: "GET /v1/agents/{agent_id}/revisions",
-    detail:
-      "The same envelope divergence as DIV-SHP-004, and repaired the same way: the real envelope is {data, has_more} plus a MINTED next_cursor when has_more is true (pagination.go:226-227); only previous_cursor is structurally absent. The fixture serves both cursor keys as explicit nulls.",
-    owner: "console fixture",
-  },
+  // DIV-SHP-005 WAS HERE, AND CLOSING IT WAS THE POINT (E25 T6). It recorded the same explicit-null cursor
+  // keys on GET /v1/agents/{agent_id}/revisions — and the sweep's arm 3 treats an ENVELOPE difference as
+  // subsuming the ITEM comparison, so as long as this row existed the revision row's SHAPE was never once
+  // compared against the real projection. It was wrong the whole time: `published: true` where the real
+  // projection says `status: "published"`, and no agent_id, revision_number, mcp_connections, environment or
+  // instructions. The console does not paginate a lineage, so the fixture had nothing to gain from pageSlice
+  // there; it now serves {data, has_more} and the item shape is compared on every sweep. A ledger row that
+  // hides a second divergence is worse than the difference it records.
   {
     id: "DIV-SHP-006",
     kind: "shape",
@@ -300,6 +300,14 @@ export const DIVERGENCES = [
     detail:
       "GET /v1/approvals is REGISTERED AND MOUNTED UNCONDITIONALLY on a compose stack (main.go:305 api.WithApprovals(repo), router.go:277-279) and it answers 200 with an EMPTY page — so the console's approval screen RENDERS on the real profile, and its scope sentence, its principal sentence, its polling sentence and its honest empty state are all asserted there. What cannot exist there is a ROW. A tool approval is created only when a gated tool call PARKS, and DIV-UNX-001 measured why a compose run reaches no tool call at all: the fake adapter is hardcoded to fake.Script{ProviderRequestID:'fake-local', Model:'fake', Output:'ok'} with no ToolCalls and no env knob (main.go modelBrokerFromEnv:732). No /v1 route parks one either — the surface E23 T9 opened READS the queue and DECIDES, it cannot fill it. So every leg that needs a parked call runs on the fixture: the arguments rendered verbatim, the hash carried out of the row's own data, the 400 with no hash, the 409 from a rotated hash, the 404/403 refusals, and the deny reason on the wire. THE CONTROL PLANE'S HALF OF THOSE LEGS IS PROVEN AGAINST A REAL STORE at the component tier — apps/control-plane/internal/execution/http_tool_approval_component_test.go, nine tests — and that file is also the ONLY place the parked run WAKING is proven (TestHTTPToolApprovalApproveWithTheBoundHashReleasesTheParkedRun). Neither console profile can show a run waking, and the console claims it nowhere: its claim ends at the decision reaching the single throat with the row's own binding. Re-derived by the sweep from a REAL run: after a run reaches terminal, the real queue is still empty.",
     owner: "compose tier — the same scriptable-fake-adapter gap as DIV-UNX-001; NOT closable from apps/web-console",
+  },
+  {
+    id: "DIV-UI-007",
+    kind: "ui",
+    subject: "a run pinned to a published agent revision reporting THAT revision's model",
+    detail:
+      "The revision's model DOES reach the run on a compose stack — ResolveInput layers it above the project route and the deployment default (execution/config.go:114, layerAgentRevision) and the broker is dispatched with it — but it CANNOT BE OBSERVED, because the model a terminal Response reports is the one the ADAPTER answers with and the compose adapter answers with a constant. main.go modelBrokerFromEnv:732 builds fake.Adapter{Script: fake.Script{Model: 'fake'}} and adapters/models/fake/adapter.go:150 returns Script.Model verbatim, ignoring the requested model entirely; store/postgres.go:190 then projects that onto the response. So a run pinned to a revision naming any model at all reports 'fake' — the same value an UNPINNED run reports — and the assertion 'the terminal projection carries the revision's model' is unfalsifiable there rather than false. The fixture answers with the pinned revision's own model, which is what makes the assertion mean something on the fake profile. WHAT DOES NOT NARROW, and it is the stronger half of the pin travelling: the 409 for a DRAFT revision runs on BOTH profiles, and a 409 can only come from the server having resolved the id — api/responses.go:298 answers revision_not_published from a lookup made BEFORE the idempotency reserve (coordinator/store.go's PinnedRevisionNotPublished). Re-derived by the sweep from a REAL revision-pinned run rather than from this prose: an agent, a published revision naming a distinctive model, and a run pinned to it — and the response's model is asserted to be the adapter's constant. If the compose adapter ever echoes the model it was asked for, that assertion fails, this row is stale, and the crown leg in tests/config-journey.spec.ts must stop skipping on the real profile.",
+    owner: "compose tier — the hardcoded fake adapter script, the same gap as DIV-UNX-001 and DIV-UI-006; NOT closable from apps/web-console",
   },
 ];
 

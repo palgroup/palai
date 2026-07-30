@@ -31,6 +31,16 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: 0,
   workers: 1,
+  // THE PER-TEST BUDGET, AND IT WAS A SILENT CAP (E25 T6). No `timeout` was set, so Playwright's default 30s
+  // applied — while tests/profile.ts runToTerminal waits up to 60s for a real run's terminal, deliberately and
+  // with that number written down. The shorter timeout won, so the 60s budget was UNREACHABLE and a compose
+  // run slower than 30s failed as "Test timeout of 30000ms exceeded" inside an expect that had 30 seconds of
+  // its own budget left. MEASURED on this box rather than reasoned about: a real console-driven run took 13s
+  // and 20s with nothing else competing, and 81s (read off the ndjson frame timestamps: run.running.v1 at
+  // 12:01:36, model_step.created.v1 at 12:02:57) while a full suite and a four-service stack shared the
+  // machine. 90s lets the author's 60s actually happen and still reports a genuine hang. It changes nothing on
+  // the fake profile, where every test finishes in under three seconds.
+  timeout: 90_000,
   reporter: [["line"]],
   use: {
     baseURL: `http://127.0.0.1:${NEXT_PORT}`,
