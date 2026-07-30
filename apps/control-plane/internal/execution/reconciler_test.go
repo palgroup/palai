@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 // fakeReclaimer records the ceiling the reconciler sweeps with and returns a fixed
@@ -22,6 +24,11 @@ type fakeReclaimer struct {
 	capacitySweeps int
 	capacityTTL    time.Duration
 	capacityBody   []byte
+	// backgroundSweeps counts E26 T4's passes and backgroundObserved records whether the pass carried an
+	// observer, for the same reason capacityTTL is recorded: the opt-out must reach the store as a nil
+	// rather than as a call the caller skipped.
+	backgroundSweeps   int
+	backgroundObserved bool
 }
 
 func (f *fakeReclaimer) ReclaimExpired(_ context.Context, maxAttempts int) (int, error) {
@@ -48,6 +55,16 @@ func (f *fakeReclaimer) SweepExpiredCapacityParks(_ context.Context, ttl time.Du
 	f.capacitySweeps++
 	f.capacityTTL = ttl
 	f.capacityBody = projection
+	return 0, nil
+}
+
+// SweepFinishedBackgroundTasks records the observer the pass was handed (E26 T4). The OBSERVER is what
+// is recorded rather than a bare counter, because the interesting property of this sweep is that a
+// deployment with no background runner hands it nil — and a nil that still reached the store is the
+// difference between "opted out" and "silently broken".
+func (f *fakeReclaimer) SweepFinishedBackgroundTasks(_ context.Context, observe coordinator.BackgroundObserver) (int, error) {
+	f.backgroundSweeps++
+	f.backgroundObserved = observe != nil
 	return 0, nil
 }
 

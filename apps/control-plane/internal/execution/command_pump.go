@@ -112,6 +112,15 @@ func (o *Orchestrator) pumpCommands(ctx context.Context, st *attemptState, bound
 			}
 			continue
 		}
+		// Everything else is a MESSAGE, and there are two kinds of them: a `send_message` a person sent,
+		// and a `background_notice` this control plane wrote when a background task exited (E26 T4). They
+		// take the same arm on purpose — one delivery path, one durable delivered_messages row, one
+		// redelivery rule — because a second way of folding a turn into the engine would be a second way
+		// of losing one. The engine is unchanged and cannot tell them apart, which is D17's named ceiling:
+		// a delivered message arrives with a USER role (commands.py's queue_delivery), so the notice's
+		// fixed "[palai:background]" prefix is a convention a prompt can rely on and not a contract the
+		// protocol enforces. The upgrade path is a role/source field on message.deliver — a protocol
+		// version, and not this epic.
 		_, err := o.spine.ApplyCommand(ctx, st.tenant, st.sessionID, st.responseID, string(st.attempt.RunID), cmd.ID, boundaryRequestID)
 		if errors.Is(err, coordinator.ErrCommandNotPending) {
 			continue // another boundary already delivered it

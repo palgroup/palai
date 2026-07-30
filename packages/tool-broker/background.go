@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/palgroup/palai/packages/contracts"
 )
 
 // This file is the DETACHED half of the sandbox execution seam beside sandbox_exec.go's synchronous
@@ -162,7 +164,13 @@ type BackgroundTicket struct {
 // capability reaches a built-in tool. Nil on an attempt with nothing wired, and the tool then REFUSES
 // rather than running the command in the foreground: a model that asked for a background task and got a
 // blocking call is blocked in exactly the way the feature exists to prevent.
+//
+// StartBackground takes the CALL ID as an argument rather than reading it off the seam, because the seam
+// is built once per dispatch and the id belongs to one call: the durable row a start writes carries a FK
+// to the tool_calls row that spawned it (migration 000047's UNIQUE (tool_call_id)), and a task whose row
+// named the wrong call would be a process no ledger entry accounts for. ExecEnv.CallID is where a tool
+// reads it — the broker stamps it on a copy of the env before invoking Exec.
 type BackgroundTasks interface {
-	StartBackground(ctx context.Context, cmd ShellCommand) (BackgroundTicket, error)
+	StartBackground(ctx context.Context, cmd ShellCommand, callID contracts.ToolCallID) (BackgroundTicket, error)
 	KillBackground(ctx context.Context, taskID string) (BackgroundTicket, error)
 }

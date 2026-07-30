@@ -111,11 +111,18 @@ LIMIT 1;
 -- EVERY kind the pump branches on must be listed here. approve/deny were not, so command_pump.go's
 -- applyBoundaryApproval was unreachable and the HTTP approve path was dead: the command was accepted,
 -- sat queued, and expired at run terminal — Slack was the only surface that could apply an approval.
+--
+-- background_notice (E26 T4) is the fifth, and it is the CONTROL PLANE's own turn: a background task
+-- finished and the model is told at the next safe boundary. It takes the same delivery path a
+-- send_message takes — the pump's default arm, one message.deliver frame — which is why the engine
+-- needs no change for any of this (§3.6 D16/D17). It is a distinct KIND rather than a send_message
+-- because a send_message CARRIES across a run terminal (CarrySessionSendMessages) and a finished
+-- build's exit belongs to the run that started it, not to whatever is asked next.
 -- name: PendingBoundaryCommands
 SELECT id, kind, delivery, payload
 FROM commands
 WHERE run_id = $1 AND organization_id = $2 AND project_id = $3
-  AND state = 'queued' AND kind IN ('send_message', 'change_config', 'approve', 'deny')
+  AND state = 'queued' AND kind IN ('send_message', 'change_config', 'approve', 'deny', 'background_notice')
 ORDER BY created_at;
 
 -- ExpireQueuedCommandsForRun expires a run's still-queued commands when the run terminalizes

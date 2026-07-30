@@ -84,6 +84,7 @@ type backgroundHarness struct {
 	tenant     coordinator.Tenant
 	sessionID  string
 	runID      string
+	responseID string
 	root       string
 	shell      *countingShell
 	background *countingBackground
@@ -101,8 +102,19 @@ func newBackgroundHarness(t *testing.T) *backgroundHarness {
 	// The host executor with an UNBOUNDED wall time: nothing here may be ended by a timeout, so a
 	// measurement of a process that is still running cannot be confused with one the executor reaped.
 	exec := host.NewExecutor(0)
+	// A RESPONSE ROW, because a run in production always has one and background_tasks.response_id is a
+	// foreign key to it (migration 000047). Since E26 T4 a spawn writes that row, so a harness without a
+	// response would be a harness where no background task can start — which is not a property of the
+	// tool surface, it is a gap in the fixture.
+	responseID := redeliveryID("resp")
+	if _, err := cs.Pool().Exec(storage.WithSystemScope(context.Background()),
+		`INSERT INTO responses (id, organization_id, project_id, session_id, state, input)
+		 VALUES ($1,$2,$3,$4,'in_progress','"go"'::jsonb)`,
+		responseID, tenant.Organization, tenant.Project, sessionID); err != nil {
+		t.Fatalf("seed the response: %v", err)
+	}
 	return &backgroundHarness{
-		spine: cs, tenant: tenant, sessionID: sessionID, runID: runID,
+		spine: cs, tenant: tenant, sessionID: sessionID, runID: runID, responseID: responseID,
 		root:       t.TempDir(),
 		shell:      &countingShell{inner: exec},
 		background: &countingBackground{inner: exec},
@@ -127,8 +139,9 @@ func (h *backgroundHarness) attempt(fence uint64) (*Orchestrator, *attemptState,
 			RunID: contracts.RunID(h.runID), AttemptID: contracts.AttemptID(redeliveryID("att")),
 			Fence: fence, WorkspaceHostPath: h.root,
 		},
-		tenant:    h.tenant,
-		sessionID: h.sessionID,
+		tenant:     h.tenant,
+		sessionID:  h.sessionID,
+		responseID: h.responseID,
 	}
 	st.ch = ch
 	return orch, st, ch

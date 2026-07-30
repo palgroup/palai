@@ -495,6 +495,18 @@ func migrateAndExit() bool {
 	return false
 }
 
+// dispatchWorkerCount is production's reading of PALAI_DISPATCH_WORKERS, and startDispatch's early
+// return is `dispatchWorkerCount() <= 0`. It is a named function for the reason backgroundRunnerFor is
+// one: a test that builds its own configuration never sees the configuration production builds, so the
+// only honest way to pin what a deployment gets is to ask the function production asks.
+//
+// WHAT THAT ZERO GATES IS EVERYTHING BELOW IT, and the list is longer than "dispatch": the reconciler,
+// the fleet heartbeat and the uncertain-tool reconciler are all constructed after this return, so a
+// stack at zero runs no dead-letter sweep, no approval expiry, no capacity-park expiry and — since
+// E26 T4 — no background exit notification. deploy/compose/compose.yaml ships `:-0`; the production
+// overlay ships `:-1`. See docs/operations/background-execution.md, first paragraph.
+func dispatchWorkerCount() int { return envIntDefault("PALAI_DISPATCH_WORKERS", 1) }
+
 // startDispatch launches the durable dispatch workers and the reconciler that drive
 // admitted response.run jobs. With a runner listener bound (gateway != nil) the worker
 // runs the full production exec-path: the orchestrator drives each claimed run through the
@@ -504,7 +516,7 @@ func migrateAndExit() bool {
 // and its job is reclaimed at a higher fence, so no graceful shutdown is needed.
 // PALAI_DISPATCH_WORKERS sets the worker count (default 1); 0 disables dispatch.
 func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.RunnerGateway, supervisor *coordinator.Supervisor, artStore *artifacts.Store, slackSearchAuthorities *tools.SearchAuthorities) {
-	workers := envIntDefault("PALAI_DISPATCH_WORKERS", 1)
+	workers := dispatchWorkerCount()
 	if workers <= 0 {
 		return
 	}
@@ -512,6 +524,11 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 	retry := coordinator.RetryPolicy{MaxAttempts: 5, BaseBackoff: 100 * time.Millisecond, MaxBackoff: 30 * time.Second}
 
 	handler := execution.AdvanceRun(spine)
+	// The observer the reconciler notices a finished background task through (E26 T4). It is declared
+	// out here because the orchestrator that owns it is built inside the gateway branch below, and the
+	// reconciler is built after it: a stack with no engine gateway starts no background task, so nil is
+	// the right value and the sweep is then a no-op.
+	var backgroundObserver coordinator.BackgroundObserver
 	if gateway != nil {
 		broker, route := modelBrokerFromEnv()
 		// Register the real coding tools alongside the conformance math tool: the workspace file and
@@ -653,6 +670,11 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 				// so a composition-root test can ask it what production wires.
 				if bg := backgroundRunnerFor(shell); bg != nil {
 					orch.SetBackgroundRunner(bg)
+					// AND THE OTHER END OF THE SAME DECISION (E26 T4): the reconciler below notices a task
+					// finishing through THIS orchestrator's observer. Taken from the orchestrator rather than
+					// rebuilt here so the probe that decides a task is done is the same one the park gate and
+					// the kill tool use — a second prober would be a second answer to "is it still running".
+					backgroundObserver = orch.BackgroundObserver()
 				}
 			}
 		}
@@ -677,8 +699,14 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 	// documents a Mac host taking 6 to 20 minutes to start — so any default this binary chose would be a
 	// guess about somebody else's fleet. Set it and a park that outlives it ends as a `timed_out` response
 	// naming the reason, instead of waiting forever (T4's FLT-P7).
+	// AND E26 T4's sweep, on the same loop. NOTE WHERE THIS LINE SITS: below `if workers <= 0 { return }`
+	// at the top of this function, so a deployment that sets PALAI_DISPATCH_WORKERS=0 — which the shipped
+	// deploy/compose/compose.yaml does — builds no reconciler and therefore delivers NO background exit
+	// notification at all. That is a declaration, not a defect, and it is the first paragraph of
+	// docs/operations/background-execution.md.
 	reconciler := execution.NewReconciler(spine, 30*time.Second, retry.MaxAttempts).
-		WithCapacityParkTTL(envDuration("PALAI_FLEET_PARK_TTL"))
+		WithCapacityParkTTL(envDuration("PALAI_FLEET_PARK_TTL")).
+		WithBackgroundTasks(backgroundObserver)
 	go supervisor.Supervise(ctx, "reconciler", reconciler.Run)
 	// THE FLEET HEARTBEAT AND ITS REAPER (E24 T5), supervised beside the reconciler. It pings every live
 	// runner session: an answer advances `runners.last_seen_at` — the stamp that froze the moment a machine
