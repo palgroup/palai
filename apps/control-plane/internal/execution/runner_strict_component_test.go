@@ -28,6 +28,7 @@ import (
 
 	"github.com/palgroup/palai/apps/control-plane/internal/execution"
 	"github.com/palgroup/palai/packages/coordinator"
+	"github.com/palgroup/palai/packages/runner"
 	"github.com/palgroup/palai/storage"
 )
 
@@ -80,6 +81,21 @@ func TestStrictEnrolmentHoldsTheMachineOutOfTheRendezvousUntilAHumanApproves(t *
 	id := runnerIDOf(t, identity)
 	if got := runnerState(t, f, id); got != "pending" {
 		t.Fatalf("runners.state = %q after enrolling into a pool with strict_enrollment=true, want pending", got)
+	}
+	// AND THE CERTIFICATE IS USABLE, which is the half that makes issuing it the point rather than a
+	// concession: renewal authenticates with the certificate the machine already holds, so a machine that
+	// waits longer than one certificate lifetime for a human has to be able to renew WHILE PENDING or the
+	// approval would eventually land on an identity that can no longer connect. Asserting only that a
+	// certificate came back would not have said this.
+	renewed, err := runner.Renew(ctx, identity, f.renewConfig())
+	if err != nil {
+		t.Fatalf("a PENDING machine could not renew: %v — a waiting machine that cannot roll its certificate forward is a machine whose approval expires with it", err)
+	}
+	if renewed.Certificate.Leaf.SerialNumber.Cmp(identity.Certificate.Leaf.SerialNumber) == 0 {
+		t.Fatal("the renewal returned the same certificate, so nothing was re-issued")
+	}
+	if got := runnerState(t, f, id); got != "pending" {
+		t.Fatalf("runners.state = %q after a PENDING machine renewed, want pending — a renewal must not admit anybody", got)
 	}
 
 	// The machine connects and holds its session open, exactly as a real runner's park loop does. It is
