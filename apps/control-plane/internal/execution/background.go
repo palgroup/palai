@@ -141,7 +141,7 @@ func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.Sh
 			// and the log names the process that is now genuinely unaccounted for.
 			log.Printf("background task %s could not be recorded (%v) AND could not be killed (%v): handle %s is now an orphan", taskID, err, kerr, handle.Value)
 		}
-		return toolbroker.BackgroundTicket{}, fmt.Errorf("record background task: %w", err)
+		return toolbroker.BackgroundTicket{}, err
 	}
 
 	// `status` is what the operating system says, not what we hope: a command that has already failed
