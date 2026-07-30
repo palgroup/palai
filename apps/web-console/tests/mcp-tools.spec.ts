@@ -26,6 +26,26 @@ import { announceProfile, signIn, skipOnReal } from "./profile";
 
 announceProfile("mcp-tools.spec.ts");
 
+// THE CONNECTION NAME IS THIS FILE'S ISOLATION KEY, AND IT NEEDED A SECOND AXIS (console design pass).
+//
+// The fixture derives a tool's canonical name from the connection's — `mcp.<connection name>.<remote tool>`,
+// mirroring the real product — and then finds an EXISTING lineage by that name rather than minting one, with
+// a no-churn rule that writes no revision when the description is unchanged. So the name is what keeps one
+// test's registry out of another's, which is why the four tests below register "jira", "hostile", "gates" and
+// "drafts" rather than one name.
+//
+// Adding the dark colour-scheme PROJECT made this file run twice against ONE fake control plane, and the
+// second run met the first run's PUBLISHED revisions: `revision-state-trev_console_0001` read "published"
+// where the spec asserts "draft", the gate toggle for an already-published revision did not exist, and a pin
+// control was present where a draft's absence was being proven. Three failures, none of them about the
+// console. It is the same class the fixture already fixed for the approval queue (ensureDecisionRows) — a
+// fixture its own proofs can exhaust is a suite that passes once — and the fix is the same shape: give the
+// namespace the axis it was missing. A repeat run against a REUSED server is isolated by this too, which the
+// name alone never was.
+function ns(base: string): string {
+  return `${base}${test.info().project.name.replace(/[^a-z0-9]/gi, "")}`;
+}
+
 /** open signs in and lands on the tools screen with its first panel rendered. */
 async function open(page: Page): Promise<void> {
   await signIn(page);
@@ -154,15 +174,16 @@ test("an MCP connection is registered, discovered, approved with a gate, and pin
   skipOnReal("DIV-UI-008");
   await open(page);
 
-  const id = await register(page, "jira");
+  const conn = ns("jira");
+  const id = await register(page, conn);
   await expect(page.getByTestId("panel-mcp-connections")).toContainText(id);
   // REGISTERING DIALS NOTHING, and the screen says so — the operator's next step is a separate control.
   await expect(page.getByTestId("mcp-connection-status")).toContainText("Nothing has been dialled yet");
 
   await discoverAll(page);
   // DISCOVERY LEAVES DRAFTS. Nothing is advertised to a model by finding it.
-  await expect(page.getByTestId("panel-tools")).toContainText("mcp.jira.getJiraIssue");
-  await chooseTool(page, "mcp.jira.getJiraIssue");
+  await expect(page.getByTestId("panel-tools")).toContainText(`mcp.${conn}.getJiraIssue`);
+  await chooseTool(page, `mcp.${conn}.getJiraIssue`);
   const revID = await onlyRevisionID(page, READS);
   await expect(page.getByTestId(`revision-state-${revID}`)).toHaveText("draft");
 
@@ -180,7 +201,7 @@ test("an MCP connection is registered, discovered, approved with a gate, and pin
   // PIN AND PUBLISH THE SET.
   await page.getByTestId(`pin-${revID}`).click();
   await expect(page.getByTestId("tool-set-pins-list")).toContainText(revID);
-  await page.getByTestId("set-name-input").fill("jira");
+  await page.getByTestId("set-name-input").fill(conn);
   await page.getByTestId("tool-set-revision-create-button").click();
   const created = page.getByTestId("tool-set-revision-status");
   await expect(created).toBeVisible();
@@ -206,9 +227,10 @@ test("a tool description written by the upstream server is inert — no element,
   const navigations: string[] = [];
   page.on("framenavigated", (frame) => navigations.push(frame.url()));
 
-  await register(page, "hostile");
+  const conn = ns("hostile");
+  await register(page, conn);
   await discoverAll(page);
-  await chooseTool(page, "mcp.hostile.getJiraIssue");
+  await chooseTool(page, `mcp.${conn}.getJiraIssue`);
   const revID = await onlyRevisionID(page, READS);
 
   const cell = page.getByTestId(`tool-revision-description-${revID}`);
@@ -237,14 +259,15 @@ test("the approval gate defaults ON, and un-gating a tool is a deliberate click 
   skipOnReal("DIV-UI-008");
   await open(page);
 
-  await register(page, "gates");
+  const conn = ns("gates");
+  await register(page, conn);
   await discoverAll(page);
 
   // DEFAULT ON, FOR EVERY TOOL. The console cannot know which tool writes — the MCP specification says a
   // server's own annotations are untrusted and our client does not decode them — so the safe answer is the
   // default and un-gating is the operator's act. That is HIL-P5 made VISIBLE rather than closed: the gate
   // can still be removed, it just cannot be removed by accident.
-  await chooseTool(page, "mcp.gates.transitionJiraIssue");
+  await chooseTool(page, `mcp.${conn}.transitionJiraIssue`);
   const writeID = await onlyRevisionID(page, WRITES);
   await expect(page.getByTestId(`gate-toggle-${writeID}`)).toBeChecked();
   await page.getByTestId(`publish-${writeID}`).click();
@@ -253,7 +276,7 @@ test("the approval gate defaults ON, and un-gating a tool is a deliberate click 
   await expect(page.getByTestId(`tool-revision-gate-${writeID}`)).toContainText("(no operator label)");
 
   // UN-GATING IS A CLICK, and what it produces is stated in words rather than by the absence of a word.
-  await chooseTool(page, "mcp.gates.getJiraIssue");
+  await chooseTool(page, `mcp.${conn}.getJiraIssue`);
   const readID = await onlyRevisionID(page, READS);
   await expect(page.getByTestId(`gate-toggle-${readID}`)).toBeChecked();
   await page.getByTestId(`gate-toggle-${readID}`).uncheck();
@@ -266,9 +289,10 @@ test("a refused publish is the server's own sentence on screen, and a draft cann
   skipOnReal("DIV-UI-008");
   await open(page);
 
-  await register(page, "drafts");
+  const conn = ns("drafts");
+  await register(page, conn);
   await discoverAll(page);
-  await chooseTool(page, "mcp.drafts.getJiraIssue");
+  await chooseTool(page, `mcp.${conn}.getJiraIssue`);
   const revID = await onlyRevisionID(page, READS);
 
   // A DRAFT CANNOT BE PINNED, and the control does not exist rather than existing and failing: publishing IS

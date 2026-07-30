@@ -48,7 +48,7 @@ export default function CapabilitiesPage() {
           },
         ]}
         columns={[
-          { header: "Property", render: (row) => row.property },
+          { header: "Property", render: (row) => <code>{row.property}</code> },
           { header: "Value", render: (row) => row.value },
         ]}
       />
@@ -74,7 +74,7 @@ export default function CapabilitiesPage() {
             .sort((a, b) => a.name.localeCompare(b.name));
         }}
         columns={[
-          { header: "Capability", render: (row) => row.name },
+          { header: "Capability", render: (row) => <code>{row.name}</code> },
           { header: "Tier", render: (row) => row.tier },
         ]}
         emptyNote="This deployment advertises no capabilities at all, which means discovery answered with an empty matrix — a client reading it would conclude there is nothing here to call."

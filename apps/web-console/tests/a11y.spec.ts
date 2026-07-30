@@ -139,8 +139,15 @@ test("keyboard navigation: skip link is the first stop and the run→approve flo
   await expect(page.getByTestId("terminal-status")).toContainText(/completed/i, { timeout: 60_000 });
 
   // Status is NOT color-only: the terminal status carries a visible glyph + the word.
+  //
+  // U+2714 FOLLOWED BY U+FE0E, and the selector is asserted rather than tolerated. Unicode's emoji-data.txt
+  // gives U+2714 the `Emoji` and `Extended_Pictographic` properties and omits it from `Emoji_Presentation`,
+  // so a platform may render it as a COLOUR emoji glyph — which would put colour back as a carrier on the
+  // one element that exists to avoid it, and change the glyph's width so a column of statuses stops lining
+  // up. VS15 pins text presentation, and dropping it fails here rather than looking fine on the one machine
+  // the suite ran on.
   const glyph = page.getByTestId("terminal-status").locator(".glyph");
-  await expect(glyph).toHaveText("✔");
+  await expect(glyph).toHaveText("✔︎");
   await expect(page.getByTestId("terminal-status")).toContainText("completed");
 });
 
@@ -163,4 +170,9 @@ test("every route lib/routes.ts declares was actually scanned by axe", () => {
       "and 'the filter excluded the scans' is exactly the excuse a silent gap would hide behind.",
   ).toEqual(declared);
   expect(CONSOLE_ROUTES.every((r) => r.readyTestId !== "")).toBe(true);
+  // A ROUTE WITH NO LEAD SENTENCE IS THE SAME OMISSION AS ONE WITH NO READINESS SIGNAL, and it fails the
+  // same way. Every page in this console used to open with a panel or a wall of equally-weighted notes,
+  // and the only h1 on any of them was the brand — so "which page is this and what is it for" had no
+  // answer on screen. The list is where a route is declared; this is what keeps the answer required.
+  expect(CONSOLE_ROUTES.filter((r) => r.lead.trim() === "").map((r) => r.path)).toEqual([]);
 });

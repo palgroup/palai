@@ -88,10 +88,20 @@ async function pickOpen(page: Page, prefix: string): Promise<string> {
   return id;
 }
 
-/** openQueue signs-in state is already present; this waits for the list to have actually rendered. */
+/**
+ * openQueue signs-in state is already present; this waits for the list to have actually rendered.
+ *
+ * AND IT DID NOT, WHICH WAS A LIVE FLAKE ON main (console design pass). The sentence above was true of the
+ * intent and false about the code: `panel-approvals` is the <section> Panel renders SYNCHRONOUSLY, with
+ * "Loading…" inside it, so this returned while the queue was still empty. Two legs then took a bare
+ * `.count()` — which does not retry — and read 0, failing as "the fixture parks gated calls and none of them
+ * rendered". Reproduced at HEAD before any styling landed: two runs in three. Panel renders exactly one of
+ * loading / error / empty / rows, so the spinner's absence is the honest signal that the list has landed.
+ */
 async function openQueue(page: Page): Promise<void> {
   await page.goto("/approvals");
   await expect(page.getByTestId("panel-approvals")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("panel-approvals-loading")).toHaveCount(0, { timeout: 15_000 });
 }
 
 test("the approval queue shows a parked gated tool call with the server's own arguments, verbatim", async ({ page }) => {

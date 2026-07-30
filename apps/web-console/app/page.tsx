@@ -21,7 +21,7 @@ export default function AdminPage() {
         testId="panel-organizations"
         fetchPath="/organizations"
         columns={[
-          { header: "ID", render: (r) => String(r.id ?? "") },
+          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
           { header: "Name", render: (r) => String(r.display_name ?? "") },
         ]}
       />
@@ -31,9 +31,9 @@ export default function AdminPage() {
         testId="panel-projects"
         fetchPath="/projects"
         columns={[
-          { header: "ID", render: (r) => String(r.id ?? "") },
+          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
           { header: "Name", render: (r) => String(r.display_name ?? "") },
-          { header: "Organization", render: (r) => String(r.organization_id ?? "") },
+          { header: "Organization", render: (r) => <code>{String(r.organization_id ?? "")}</code> },
         ]}
       />
 
@@ -43,8 +43,8 @@ export default function AdminPage() {
         fetchPath="/api-keys"
         note="Key plaintext is disclosed once at creation and never on a read — this surface shows metadata only."
         columns={[
-          { header: "ID", render: (r) => String(r.id ?? "") },
-          { header: "Project", render: (r) => String(r.project_id ?? "") },
+          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
+          { header: "Project", render: (r) => <code>{String(r.project_id ?? "")}</code> },
           { header: "Scopes", render: (r) => (Array.isArray(r.scopes) ? r.scopes.join(", ") : "") },
           { header: "Status", render: (r) => (r.revoked_at ? "revoked" : "active") },
         ]}
@@ -56,9 +56,9 @@ export default function AdminPage() {
         fetchPath="/model-connections"
         note="A connection binds a provider to a secret REF (a name), never a value."
         columns={[
-          { header: "ID", render: (r) => String(r.id ?? "") },
+          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
           { header: "Provider", render: (r) => String(r.provider ?? "") },
-          { header: "Secret ref", render: (r) => String(r.secret_ref ?? "") },
+          { header: "Secret ref", render: (r) => <code>{String(r.secret_ref ?? "")}</code> },
         ]}
       />
 
@@ -68,7 +68,7 @@ export default function AdminPage() {
         fetchPath="/model-routes"
         note="E16 T1 read-back of the E13 write-only route surface."
         columns={[
-          { header: "ID", render: (r) => String(r.id ?? "") },
+          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
           { header: "Name", render: (r) => String(r.name ?? "") },
         ]}
       />
@@ -79,8 +79,8 @@ export default function AdminPage() {
         fetchPath="/secret-refs"
         note="METADATA ONLY. A secret VALUE is write-only server-side and never appears in any response."
         columns={[
-          { header: "Name", render: (r) => String(r.name ?? "") },
-          { header: "Version", render: (r) => String(r.version ?? "") },
+          { header: "Name", render: (r) => <code>{String(r.name ?? "")}</code> },
+          { header: "Version", render: (r) => <span className="num">{String(r.version ?? "")}</span> },
         ]}
       />
 
@@ -89,7 +89,7 @@ export default function AdminPage() {
         testId="panel-knowledge-bases"
         fetchPath="/knowledge-bases"
         columns={[
-          { header: "ID", render: (r) => String(r.id ?? "") },
+          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
           { header: "Name", render: (r) => String(r.display_name ?? r.name ?? "") },
         ]}
       />
@@ -100,7 +100,7 @@ export default function AdminPage() {
         title="Agents"
         testId="panel-agents"
         fetchPath="/agents"
-        columns={[{ header: "ID", render: (r) => String(r.id ?? "") }]}
+        columns={[{ header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> }]}
       />
 
       <AgentDiff />

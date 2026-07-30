@@ -182,6 +182,11 @@ export default function EnvironmentsPage() {
 
   return (
     <>
+      {/* THE WRITE-ONLY RULE STAYS OPEN AND THE SCOPE NOTE COLLAPSES, and that ordering is the decision: one
+          of them changes what you DO on this screen every time you use it, and the other is a fact about the
+          deployment you read once. They were two grey paragraphs of identical weight. */}
+      <details className="notes" data-testid="environments-standing-notes">
+        <summary>What an environment is scoped to, and who can read these names</summary>
       <p className="muted" data-testid="env-scope-note">
         An environment is a named group of <code>KEY=value</code> pairs an agent&apos;s shell commands
         receive. It is scoped to the <strong>organization</strong>, not to a project — the same scope{" "}
@@ -189,6 +194,7 @@ export default function EnvironmentsPage() {
         agent in any of them can be bound to one. There is no per-environment permission: any API key that can
         provision can read every key NAME here and write every value.
       </p>
+      </details>
       <p className="muted" data-testid="env-writeonly-note">
         <strong>A value cannot be read back once written.</strong> This screen shows key names, versions and
         update times — never a value, and there is no button that would reveal one. If you lose a value, write
@@ -205,10 +211,10 @@ export default function EnvironmentsPage() {
         onRows={setEnvironments}
         note="Key COUNTS only. Select an environment below to see its key names and versions."
         columns={[
-          { header: "ID", render: (r) => String(r.id ?? "") },
+          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
           { header: "Name", render: (r) => String(r.name ?? "") },
           { header: "Description", render: (r) => String(r.description ?? "") },
-          { header: "Keys", render: (r) => String(r.key_count ?? 0) },
+          { header: "Keys", render: (r) => <span className="num">{String(r.key_count ?? 0)}</span> },
         ]}
       />
 

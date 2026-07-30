@@ -22,7 +22,7 @@ export function Timeline({ frames, title = "Run timeline", testId = "timeline" }
   return (
     <section className="panel" data-testid={testId} aria-labelledby={`${testId}-h`}>
       <h2 id={`${testId}-h`}>{title}</h2>
-      <ol>
+      <ol className="timeline">
         {events.map((f, i) => (
           <li key={i} className="lane" data-lane={f.lane} data-type={f.type}>
             <span className="muted">[{f.lane}]</span> {f.type}

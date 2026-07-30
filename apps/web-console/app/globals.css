@@ -1,29 +1,241 @@
 /* Accessibility fundamentals (UI-001, §47.5). These are load-bearing for the axe + keyboard proofs, not
    decoration: a visible skip link, an always-visible focus ring, reduced-motion honored, and status
-   conveyed by text + glyph (never color alone). Light/dark follow the OS. */
+   conveyed by text + glyph (color is now a genuinely redundant hint on top of both). Light/dark follow the OS.
+
+   THE PALETTE IS A TOKEN SYSTEM (docs/superpowers/plans/console-design-language.md, "Operator"). Two layers,
+   and the split is what keeps dark mode to one block: layer 1 is raw scale steps (--slate-10), layer 2 is
+   semantic aliases (--border-control). RULE BODIES USE LAYER 2 ONLY. Radix's light and dark scales carry the
+   same step numbers, so the dark block below redefines 27 raw steps and touches ONE semantic token.
+
+   The colour values are Radix Colors (MIT, radix-ui/colors src/light.ts / src/dark.ts), extracted rather
+   than hand-copied. The package is not a dependency: it ships constants and nothing else, so the 27 steps
+   this console uses are written here and the dependency count stays at zero.
+
+   THE STEP MAPPING IS OURS, NOT RADIX'S, and one measurement is why. Radix guarantees its steps in APCA (Lc);
+   this console is judged by axe under WCAG 2.0/2.1/2.2 tags. Re-measured with the WCAG 2.x formula, Radix's
+   step 7 ("UI element border and focus rings") is 1.53:1 and step 8 ("hovered UI element border") is 1.86:1
+   against step 1 — both far under the 3:1 that SC 1.4.11 requires. The first usable neutral for an
+   interactive control border is step 10. Copying Radix's role table would have reproduced the exact defect
+   the token commit fixes.
+
+   SECTION ORDER IS FIXED: 1 tokens · 2 reset+base · 3 accessibility · 4 typography · 5 layout · 6 table ·
+   7 form · 8 controls · 9 status+feedback · 10 domain. */
+
+/* ============================================================ 1. TOKENS ==================================== */
 
 :root {
-  --bg: #ffffff;
-  --fg: #1a1a1a;
-  --muted: #55606b;
-  --border: #d0d7de;
-  --panel: #f6f8fa;
-  --accent: #0b5cad;
-  --focus: #0b5cad;
   color-scheme: light dark;
+
+  /* --- LAYER 1: raw scale steps. NOT used in rule bodies. Unused steps are deliberately not emitted; a new
+     one is added when it is needed, and MEASURED at that moment. --- */
+  --slate-1: #fcfcfd;
+  --slate-2: #f9f9fb;
+  --slate-3: #f0f0f3;
+  --slate-4: #e8e8ec;
+  --slate-5: #e0e1e6;
+  --slate-6: #d9d9e0;
+  --slate-9: #8b8d98;
+  --slate-10: #80838d;
+  --slate-11: #60646c;
+  --slate-12: #1c2024;
+  --blue-3: #e6f4fe;
+  --blue-6: #acd8fc;
+  --blue-9: #0090ff;
+  --blue-10: #0588f0;
+  --blue-11: #0d74ce;
+  --blue-12: #113264;
+  --red-3: #feebec;
+  --red-6: #fdbdbe;
+  --red-11: #ce2c31;
+  --red-12: #641723;
+  --grass-3: #e9f6e9;
+  --grass-6: #b2ddb5;
+  --grass-11: #2a7e3b;
+  --grass-12: #203c25;
+  --amber-3: #fff7c2;
+  --amber-6: #f3d673;
+  --amber-12: #4f3422;
+
+  /* --- LAYER 2: surfaces. Page and panel are the SAME colour on purpose: measured on the old palette, the
+     panel fill carried 1.06:1 (light) and 1.09:1 (dark), i.e. a surface hierarchy that did not exist. The
+     separation is carried by a hairline + a shadow instead of by a fill nobody can see. --- */
+  --bg-page: var(--slate-1);
+  --bg-subtle: var(--slate-2); /* table head band */
+  --bg-inset: var(--slate-3); /* code block, kv label column, disabled control */
+  --bg-hover: var(--slate-4);
+  --bg-active: var(--slate-5);
+
+  /* --- LAYER 2: text --- */
+  --text: var(--slate-12);
+  --text-muted: var(--slate-11);
+  --text-on-solid: #ffffff; /* the ONE semantic token the dark block inverts */
+
+  /* --- LAYER 2: borders. The distinction is the whole of SC 1.4.11: a hairline is structural decoration, a
+     control border is the only thing that says where an input IS. They are not the same colour and must
+     never be collapsed back into one token. --- */
+  --border-hairline: var(--slate-6); /* row separators, panel edge — decorative, SC 1.4.11 does not apply */
+  --border-control: var(--slate-10); /* interactive control boundary — 3.69/3.60/3.33 light, 4.45/4.15/3.75 dark */
+  --border-control-hover: var(--slate-11);
+
+  /* --- LAYER 2: accent. --accent-text is NOT used on --bg-inset or darker: it measures 4.53:1 on
+     --bg-subtle, and the margin over 4.5 is 0.03. --- */
+  --accent-text: var(--blue-11);
+  --accent-bg: var(--blue-3);
+  --accent-border: var(--blue-6);
+  --accent-solid: var(--blue-11);
+  --accent-solid-hover: var(--blue-12);
+  --focus-ring: var(--blue-11);
+
+  /* --- LAYER 2: status. Five states x 3, plus two inline text colours.
+     --warn-text-inline IS DELIBERATELY ABSENT: amber step 11 (#ab6400) clears 4.5:1 on NO surface in this
+     system — 4.50 on slate-1 with zero margin, 4.38 on slate-2, 4.05 on slate-3. So amber is a chip colour
+     only, and its text is step 12. --- */
+  --ok-bg: var(--grass-3);
+  --ok-border: var(--grass-6);
+  --ok-text: var(--grass-12);
+  --ok-text-inline: var(--grass-11);
+  --warn-bg: var(--amber-3);
+  --warn-border: var(--amber-6);
+  --warn-text: var(--amber-12);
+  --danger-bg: var(--red-3);
+  --danger-border: var(--red-6);
+  --danger-text: var(--red-12);
+  --danger-text-inline: var(--red-11);
+  --info-bg: var(--blue-3);
+  --info-border: var(--blue-6);
+  --info-text: var(--blue-12);
+  --neutral-bg: var(--slate-3);
+  --neutral-border: var(--slate-6);
+  --neutral-text: var(--slate-12);
+
+  /* --- Typography. system-ui is KEPT: zero network requests, no font-src in any CSP, no FOUT, nothing new
+     on the audit surface of a console whose whole claim is that it talks to one origin. What is given up is
+     real and named — this console is not typographically identical across operating systems, and weight 500
+     is synthesised by some Linux fontconfig results. --- */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* rem, never px, on the root: SC 1.4.4 Resize Text requires these to follow the browser's font setting. */
+  --font-size-1: 0.6875rem; /* micro label: column head, eyebrow, lane tag — uppercase + tracking */
+  --font-size-2: 0.75rem; /* meta: timestamp, hint, truncation note */
+  --font-size-3: 0.8125rem; /* dense table cell, timeline row, code */
+  --font-size-4: 0.875rem; /* BODY DEFAULT, form controls, buttons */
+  --font-size-5: 1rem; /* prose, a section's lead sentence */
+  --font-size-6: 1.125rem; /* panel heading */
+  --font-size-7: 1.375rem;
+  --font-size-8: 1.75rem; /* page title */
+  --font-size-9: 2.25rem;
+
+  --line-height-1: 1rem;
+  --line-height-2: 1.125rem;
+  --line-height-3: 1.25rem;
+  --line-height-4: 1.375rem;
+  --line-height-5: 1.5rem;
+  --line-height-6: 1.625rem;
+  --line-height-7: 1.75rem;
+  --line-height-8: 2.125rem;
+  --line-height-9: 2.5rem;
+
+  --letter-spacing-1: 0.06em;
+  --letter-spacing-2: 0.01em;
+  --letter-spacing-3: 0em;
+  --letter-spacing-4: 0em;
+  --letter-spacing-5: 0em;
+  --letter-spacing-6: -0.005em;
+  --letter-spacing-7: -0.01em;
+  --letter-spacing-8: -0.015em;
+  --letter-spacing-9: -0.02em;
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* --- Space, density, radius, border width, shadow, motion --- */
+  --space-1: 0.25rem;
+  --space-2: 0.375rem;
+  --space-3: 0.5rem;
+  --space-4: 0.75rem;
+  --space-5: 1rem;
+  --space-6: 1.5rem;
+  --space-7: 2rem;
+  --space-8: 3rem;
+  --space-9: 4rem;
+
+  --row-h-compact: 1.75rem; /* timeline / log row */
+  --row-h: 2.25rem; /* default table row */
+  --row-h-roomy: 2.75rem; /* a row with a control in it */
+  --control-h: 2rem;
+  --control-h-sm: 1.5rem; /* 24px — SC 2.5.8 Target Size floor, and nothing goes under it */
+
+  --radius-1: 3px;
+  --radius-2: 5px;
+  --radius-3: 8px;
+  --radius-4: 12px;
+  --radius-full: 9999px;
+
+  --border-w: 1px;
+  --border-w-strong: 2px;
+  --ring-w: 2px;
+  --ring-offset: 2px;
+
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 4%), 0 1px 1px rgb(0 0 0 / 3%);
+  --shadow-2: 0 8px 24px rgb(0 0 0 / 10%), 0 2px 6px rgb(0 0 0 / 6%);
+
+  --duration-1: 90ms;
+  --duration-2: 150ms;
+  --duration-3: 240ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* ORDERING RULE — THIS BLOCK MUST COME AFTER EVERY :root DECLARATION, AND IT FAILS SILENTLY OTHERWISE.
+   It overrides --shadow-1 and --shadow-2, which are declared in the :root above at the same specificity. A
+   :root written BELOW this block would win, and dark mode would quietly get the light shadows with no test
+   anywhere able to say so. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0d1117;
-    --fg: #e6edf3;
-    --muted: #9aa7b4;
-    --border: #30363d;
-    --panel: #161b22;
-    --accent: #4aa3ff;
-    --focus: #4aa3ff;
+    --slate-1: #111113;
+    --slate-2: #18191b;
+    --slate-3: #212225;
+    --slate-4: #272a2d;
+    --slate-5: #2e3135;
+    --slate-6: #363a3f;
+    --slate-9: #696e77;
+    --slate-10: #777b84;
+    --slate-11: #b0b4ba;
+    --slate-12: #edeef0;
+    --blue-3: #0d2847;
+    --blue-6: #104d87;
+    --blue-9: #0090ff;
+    --blue-10: #3b9eff;
+    --blue-11: #70b8ff;
+    --blue-12: #c2e6ff;
+    --red-3: #3b1219;
+    --red-6: #72232d;
+    --red-11: #ff9592;
+    --red-12: #ffd1d9;
+    --grass-3: #1b2a1e;
+    --grass-6: #2d5736;
+    --grass-11: #71d083;
+    --grass-12: #c2f0c2;
+    --amber-3: #302008;
+    --amber-6: #5c3d05;
+    --amber-12: #ffe7b3;
+
+    /* A solid fill is LIGHT in dark mode, so the text on it goes dark. This inversion is the structural fix
+       for the skip link: it hard-coded `color: #fff` on a background that lightens here, which measured
+       2.63:1 against a required 4.5:1 — on the first Tab stop of every page. Nothing hard-codes it now. */
+    --text-on-solid: var(--slate-1);
+
+    /* A drop shadow is invisible on a dark surface; the card edge is carried by the hairline plus a top
+       inner highlight instead. */
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 40%), inset 0 1px 0 rgb(255 255 255 / 3%);
+    --shadow-2: 0 8px 24px rgb(0 0 0 / 60%), 0 2px 6px rgb(0 0 0 / 40%);
   }
 }
+
+/* ============================================================ 2. RESET + BASE ============================== */
 
 * {
   box-sizing: border-box;
@@ -31,21 +243,37 @@
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--fg);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  line-height: 1.5;
+  background: var(--bg-page);
+  color: var(--text);
+  font-family: var(--font-sans);
+  /* 14px, not 16px. This is an admin console over dense machine output, and the hierarchy is carried by the
+     scale rather than by everything being one size — the old stylesheet had h1 at 1.05rem and h2 at 1.15rem,
+     which is to say no hierarchy at all. */
+  font-size: var(--font-size-4);
+  line-height: var(--line-height-5);
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
-/* Focus is ALWAYS visible — keyboard users must see where they are (axe: focusable content). */
+::selection {
+  background: var(--accent-bg);
+  color: var(--text);
+}
+
+/* ============================================================ 3. ACCESSIBILITY ============================= */
+
+/* Focus is ALWAYS visible — keyboard users must see where they are (axe: focusable content).
+
+   THE OFFSET IS LOAD-BEARING. The ring sits at ~1.3:1 (light) / 2.0:1 (dark) against a control's own border;
+   what makes it conforming is that the offset moves it OFF that border and onto the surface, where it clears
+   3:1 (4.65 / 8.97 measured). Setting the offset to 0 would break SC 1.4.11 without changing a single colour,
+   and tests/contrast.spec.ts asserts it is non-zero for exactly that reason. */
 :focus-visible {
-  outline: 3px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: 2px;
+  outline: var(--ring-w) solid var(--focus-ring);
+  outline-offset: var(--ring-offset);
+  border-radius: var(--radius-1);
 }
 
 /* The skip link is off-screen until focused, then jumps into view — the first Tab stop. */
@@ -53,16 +281,20 @@ a {
   position: absolute;
   left: -9999px;
   top: 0;
-  background: var(--accent);
-  color: #fff;
-  padding: 0.5rem 1rem;
+  background: var(--accent-solid);
+  color: var(--text-on-solid);
+  padding: var(--space-3) var(--space-5);
+  font-weight: var(--font-weight-medium);
   z-index: 100;
 }
 .skip-link:focus {
   left: 0;
 }
 
-/* Reduced-motion: no transitions/animations for users who ask for calm (axe / §47.5). */
+/* Reduced-motion: no transitions/animations for users who ask for calm (axe / §47.5).
+
+   SC 1.4.12 Text Spacing forbids !important on line-height / letter-spacing / word-spacing. This block uses
+   it only on animation and transition, which is correct — no spacing property may ever be added here. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -74,141 +306,605 @@ a {
   }
 }
 
-header.app-header {
-  border-bottom: 1px solid var(--border);
-  padding: 0.75rem 1.25rem;
-  display: flex;
-  gap: 1.25rem;
-  align-items: baseline;
-}
-header.app-header h1 {
-  font-size: 1.05rem;
+/* ============================================================ 4. TYPOGRAPHY ================================ */
+
+/* THE PAGE TITLE IS THE h1 AND THE BRAND IS NOT. Every page carried one h1 — "Palai Console" — repeated in
+   the header on all eleven screens, so the largest text on screen never said which screen it was. */
+h1.page-title {
+  font-size: var(--font-size-8);
+  line-height: var(--line-height-8);
+  letter-spacing: var(--letter-spacing-8);
+  font-weight: var(--font-weight-semibold);
   margin: 0;
 }
+
+/* The page's first sentence: what this screen is for, in prose, at reading size. */
+.page-lead {
+  font-size: var(--font-size-5);
+  line-height: var(--line-height-6);
+  color: var(--text-muted);
+  max-width: 62ch;
+  margin: var(--space-3) 0 0;
+}
+
+/* No bottom margin: <main> is a flex column with a gap, so a margin here would double it. */
+.page-header {
+  margin: 0;
+}
+
+/* A PANEL HEADING IS h2 AND IT IS SIZED AS ONE LEVEL BELOW THE PAGE TITLE, not two. The design spec maps h2
+   to 22px and h3 to 18px and gives the panel head an h3 — but every panel in this console is a <section>
+   with an <h2>, which is the CORRECT level directly under the page title and is not being rewritten. So h2
+   takes the 18px step the spec assigns to a panel head; there is no intermediate section level to occupy 22. */
+h2 {
+  font-size: var(--font-size-6);
+  line-height: var(--line-height-6);
+  letter-spacing: var(--letter-spacing-6);
+  font-weight: var(--font-weight-semibold);
+  margin: 0 0 var(--space-3);
+}
+
+h3 {
+  font-size: var(--font-size-5);
+  line-height: var(--line-height-5);
+  font-weight: var(--font-weight-semibold);
+  margin: var(--space-5) 0 var(--space-2);
+}
+
+p {
+  margin: 0 0 var(--space-3);
+}
+p:last-child {
+  margin-bottom: 0;
+}
+
+.muted {
+  color: var(--text-muted);
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-3);
+  max-width: 78ch;
+}
+
+/* Machine values are MONOSPACE — an id, a hash, a digest, a cursor, a branch. The contrast between
+   proportional prose and a tabular machine value is most of what makes a dense screen readable, and it costs
+   one rule because the markup already reaches for <code>. */
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-size: 0.9286em; /* 13px inside 14px body — the size-3 step, expressed relatively so it nests */
+  background: var(--bg-inset);
+  border-radius: var(--radius-1);
+  padding: 0 0.25em;
+  overflow-wrap: anywhere;
+}
+
+/* A <pre> WRAPS RATHER THAN SCROLLS, and that is an accessibility rule rather than a taste.
+   `overflow-x: auto` turns a block into a SCROLLABLE REGION, and axe-core's `scrollable-region-focusable`
+   (wcag2a, SC 2.1.1) then requires it to be keyboard-reachable — a scroll container nobody can reach with a
+   keyboard is content nobody can read with a keyboard. The approval screen's arguments block is the case
+   that proves it: 8000 bytes of model-authored JSON, no focusable content of its own, and it is the exact
+   text the operator is being asked to authorize. `pre-wrap` keeps every space and every newline — the
+   canonical rendering is preserved, which is what makes it comparable byte-for-byte — and needs no
+   tabindex, no scroll container and no new markup. */
+pre {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-3);
+  background: var(--bg-inset);
+  border-radius: var(--radius-2);
+  padding: var(--space-3) var(--space-4);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: var(--space-2) 0;
+}
+pre code,
+td code,
+th code {
+  background: none;
+  padding: 0;
+}
+pre code {
+  font-size: inherit;
+}
+
+/* A numeric column, right-aligned with figures that line up (Shopify Polaris is the one directly citable
+   rule in this whole area: "Numeric cells and titles should be right aligned"). */
+.num {
+  font-variant-numeric: tabular-nums;
+}
+td.num,
+th.num {
+  text-align: right;
+}
+
+/* ============================================================ 5. LAYOUT ==================================== */
+
+header.app-header {
+  border-bottom: var(--border-w) solid var(--border-hairline);
+  padding: 0 var(--space-6);
+  display: flex;
+  gap: var(--space-6);
+  align-items: center;
+  flex-wrap: wrap;
+  min-height: var(--row-h-roomy);
+  background: var(--bg-subtle);
+}
+
+/* THE BRAND STAYS SMALL. It is chrome repeated on every screen; the page title is what carries the weight. */
+.brand {
+  font-size: var(--font-size-4);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-2);
+  color: var(--text);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+header.app-header nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
 header.app-header nav a {
-  margin-right: 1rem;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-h-sm);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-2);
+  color: var(--text-muted);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background var(--duration-1) var(--ease-out), color var(--duration-1) var(--ease-out);
+}
+header.app-header nav a:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+/* The current page is NOT marked by colour alone: aria-current is the machine-readable half and the weight
+   difference is the visual one. */
+header.app-header nav a[aria-current="page"] {
+  color: var(--text);
+  font-weight: var(--font-weight-semibold);
+  background: var(--bg-active);
 }
 
 main {
-  padding: 1.25rem;
-  max-width: 72rem;
+  /* 90rem, not 72rem: the widest tables here (the ledger, the artifact list, a tool-set's contents) had a
+     horizontal scrollbar at 72rem for no reason but the number. */
+  max-width: 90rem;
   margin: 0 auto;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
 }
 
-h2 {
-  font-size: 1.15rem;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 0.25rem;
-}
-
+/* A panel is a hairline and a shadow on the SAME surface as the page — not a fill. Measured on the old
+   palette, the panel fill carried 1.06:1, i.e. it was doing no work at all. */
 .panel {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem;
-  margin: 0 0 1.25rem;
-  background: var(--panel);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-3);
+  padding: var(--space-5);
+  margin: 0;
+  background: var(--bg-page);
+  box-shadow: var(--shadow-1);
   overflow-x: auto;
 }
-
-table {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 0.9rem;
-}
-th,
-td {
-  text-align: left;
-  padding: 0.35rem 0.6rem;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-}
-th {
-  color: var(--muted);
-  font-weight: 600;
+/* The panel's own note sits under its heading as secondary prose, never as a second paragraph of equal
+   weight — this is the single most common shape on the surface. */
+.panel > .muted:first-of-type {
+  margin-top: calc(var(--space-2) * -1);
 }
 
-button {
-  font: inherit;
-  padding: 0.4rem 0.8rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
+/* STANDING CAVEATS COLLAPSE, THE LEAD DOES NOT. A screen whose first three paragraphs are all permanent
+   background reads as a wall; they are still text, still in the DOM, still keyboard-reachable, and the
+   summary says what is inside rather than "more". <details> is the native element for exactly this and it
+   costs no JavaScript. */
+details.notes {
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-2);
+  padding: 0 var(--space-4);
+  background: var(--bg-subtle);
+}
+details.notes > summary {
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h); /* SC 2.5.8 Target Size floor with room to spare */
+  font-size: var(--font-size-2);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-muted);
+  letter-spacing: var(--letter-spacing-2);
 }
-button:hover {
-  border-color: var(--accent);
+details.notes[open] > summary {
+  border-bottom: var(--border-w) solid var(--border-hairline);
+  margin-bottom: var(--space-3);
 }
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+details.notes > :last-child {
+  margin-bottom: var(--space-4);
 }
 
+/* ============================================================ 6. TABLE ===================================== */
+
+/* border-collapse: SEPARATE, and the reason is structural rather than cosmetic: with `collapse` a cell's
+   border belongs to the table rather than to the cell, so a background band on <thead> paints over the line
+   under it and a rounded container clips wrongly. Every row line here is drawn by the cell that owns it. */
+table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-3);
+}
+
+/* THE COLUMN HEADING IS CARRIED BY TYPOGRAPHY, NOT BY A FILL. 11px, uppercase, tracked out and muted: this
+   is the cheapest single move that stops a data table reading as a government form, and it is the one the
+   old stylesheet did not make — its th was the same size as its td and differed only in weight. */
+thead th {
+  font-size: var(--font-size-1);
+  line-height: var(--line-height-1);
+  letter-spacing: var(--letter-spacing-1);
+  text-transform: uppercase;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  text-align: left;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: var(--border-w) solid var(--border-hairline);
+  white-space: nowrap;
+}
+thead th:first-child {
+  padding-left: var(--space-5);
+  border-top-left-radius: var(--radius-2);
+}
+thead th:last-child {
+  padding-right: var(--space-5);
+  border-top-right-radius: var(--radius-2);
+}
+
+tbody td {
+  text-align: left;
+  vertical-align: top;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: var(--border-w) solid var(--border-hairline);
+}
+tbody td:first-child {
+  padding-left: var(--space-5);
+}
+tbody td:last-child {
+  padding-right: var(--space-5);
+}
+tbody tr:last-child td {
+  border-bottom: none;
+}
+/* NO ZEBRA STRIPING. The hairline separator already does the job; the two together are noise. */
+tbody tr:hover td {
+  background: var(--bg-hover);
+}
+
+/* THERE IS NO STICKY HEADER, AND THAT IS A DECISION RATHER THAN AN OMISSION. A sticky thead is named by
+   WCAG 2.2's failure technique F110 for SC 2.4.11 Focus Not Obscured — it can hide the very row control a
+   keyboard user just focused — and closing that needs scroll-padding-top plus a scroll container these
+   components do not have (`.panel` scrolls horizontally, so a `position: sticky` thead inside it would stick
+   to nothing). Every list here is cut at twenty rows by api/pagination.go's defaultPageLimit, which is about
+   one screen. The hazard is real, the benefit at twenty rows is not, so the hazard is not introduced. */
+
+/* ============================================================ 7. FORM ===================================== */
+
+label {
+  display: block;
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-2);
+  font-weight: var(--font-weight-medium);
+  color: var(--text);
+  margin-bottom: var(--space-2);
+}
+
+/* THE CONTROL BORDER IS --border-control AND NOT --border-hairline, AND THAT IS THE FIX FOR A MEASURED
+   VIOLATION. These controls take their background from the page, so this border is the ONLY visual
+   information marking where the control is — exactly what SC 1.4.11 Non-text Contrast requires at 3:1. The
+   old --border (#d0d7de / #30363d) carried 1.36-1.55:1 depending on the surface, on every control in the
+   console, in both modes. axe-core has no rule that looks at a control border; tests/contrast.spec.ts does. */
 input[type="text"],
 input[type="password"],
 select,
 textarea {
   font: inherit;
-  padding: 0.4rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
+  font-size: var(--font-size-4);
+  height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: var(--border-w) solid var(--border-control);
+  border-radius: var(--radius-2);
+  background: var(--bg-page);
+  color: var(--text);
   width: 100%;
+  transition: border-color var(--duration-1) var(--ease-out);
+}
+/* A CONTROL IS AS WIDE AS ITS CONTENT NEEDS, NOT AS WIDE AS THE PAGE. At `width: 100%` inside a 90rem
+   panel, a password field and a repository name were both 1350px of empty box — which reads as an
+   unfinished layout and gives the eye no clue how long the value is meant to be. The textarea is allowed
+   more because the one on this surface holds a denial reason written for a model to read. */
+input[type="text"],
+input[type="password"],
+select {
+  max-width: 34rem;
+}
+textarea {
+  height: auto;
+  max-width: 60rem;
+  padding: var(--space-2) var(--space-3);
+  line-height: var(--line-height-4);
+  resize: vertical;
+}
+input[type="text"]:hover,
+input[type="password"]:hover,
+select:hover,
+textarea:hover {
+  border-color: var(--border-control-hover);
+}
+/* A DISABLED CONTROL CHANGES ITS FILL RATHER THAN ITS OPACITY. `opacity` halves the contrast of the LABEL
+   text too, and 1.4.3's exemption for inactive controls is not a licence to make them unreadable. */
+input:disabled,
+select:disabled,
+textarea:disabled {
+  background: var(--bg-inset);
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 
-/* A status is NEVER color-only: the glyph + the word carry the meaning; color is a redundant hint. */
-.status {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-weight: 600;
+/* A field's spacing lives on the wrapper ResourceForm/Picker/SecretField already render, so no markup moves:
+   each is a <div> holding a label, a control and an optional hint. */
+form > div {
+  margin-bottom: var(--space-5);
 }
-.status .glyph {
-  font-weight: 700;
-}
-
-pre.code {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.6rem;
-  overflow-x: auto;
-  font-size: 0.82rem;
-  margin: 0.3rem 0;
-}
-
-.lane {
-  border-left: 3px solid var(--border);
-  padding: 0.2rem 0 0.2rem 0.6rem;
-  margin: 0.25rem 0;
-}
-
-.muted {
-  color: var(--muted);
-}
-
-/* A form refusal is TEXT with a glyph, never colour alone — the same rule .status follows. The colour is a
-   redundant hint on top of a sentence that already says what happened. */
-.form-error {
-  color: var(--fg);
-  font-weight: 600;
-}
-.form-error .glyph {
-  color: #b3261e;
-}
-@media (prefers-color-scheme: dark) {
-  .form-error .glyph {
-    color: #ff7b72;
-  }
+form > div > .muted {
+  margin: var(--space-2) 0 0;
 }
 
 fieldset {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  margin: 0 0 1rem;
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-2);
+  padding: var(--space-4);
+  margin: 0 0 var(--space-5);
 }
 legend {
-  padding: 0 0.4rem;
-  font-weight: 600;
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-1);
+  letter-spacing: var(--letter-spacing-1);
+  text-transform: uppercase;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-muted);
+}
+
+/* A DEFINITION LIST IS A KEY/VALUE GRID, and it is the shape the approval surfaces use for the facts a
+   decision is bound to: the LABEL is a micro-label and the VALUE is what is being read. The browser default
+   (an indented dd under a dt) buries the value under its own key. */
+dl {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) 1fr;
+  gap: var(--space-2) var(--space-5);
+  margin: 0 0 var(--space-4);
+  align-items: baseline;
+}
+dt {
+  font-size: var(--font-size-1);
+  line-height: var(--line-height-2);
+  letter-spacing: var(--letter-spacing-1);
+  text-transform: uppercase;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-muted);
+}
+dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ============================================================ 8. CONTROLS ================================== */
+
+button {
+  font: inherit;
+  font-size: var(--font-size-4);
+  font-weight: var(--font-weight-medium);
+  height: var(--control-h);
+  padding: 0 var(--space-4);
+  border: var(--border-w) solid var(--border-control);
+  border-radius: var(--radius-2);
+  background: var(--bg-page);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--duration-1) var(--ease-out), border-color var(--duration-1) var(--ease-out);
+}
+button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-control-hover);
+}
+button:active:not(:disabled) {
+  background: var(--bg-active);
+}
+/* Same reason as the inputs above: a fill change, not an opacity change. */
+button:disabled {
+  background: var(--bg-inset);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* THE PRIMARY ACTION IS THE SUBMIT, and no component needed a new prop to say so: every form on this surface
+   has exactly one <button type="submit"> and it is the thing the form is for. `.primary` is for the two
+   primary actions that are not submits (the approval panel's approve). */
+button[type="submit"],
+button.primary {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--text-on-solid);
+}
+button[type="submit"]:hover:not(:disabled),
+button.primary:hover:not(:disabled) {
+  background: var(--accent-solid-hover);
+  border-color: var(--accent-solid-hover);
+}
+button[type="submit"]:disabled,
+button.primary:disabled {
+  background: var(--bg-inset);
+  border-color: var(--border-control);
+  color: var(--text-muted);
+}
+
+/* A row of actions, the shape ResourceForm's <p> around the submit already produces. */
+form > p:last-of-type {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: var(--space-5) 0 0;
+}
+
+/* ============================================================ 9. STATUS + FEEDBACK ========================= */
+
+/* A status is NEVER colour-only: the glyph + the word carry the meaning and colour is a THIRD, redundant
+   layer. It was redundant in a stronger sense before this — the old comment promised a colour hint and the
+   stylesheet had no [data-status] rule at all. Remove the glyph and the word and the chip means nothing,
+   which is the property that keeps this conforming. Every pair below measures 10.47:1 or better. */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-h-sm);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-full);
+  border: var(--border-w) solid var(--neutral-border);
+  background: var(--neutral-bg);
+  color: var(--neutral-text);
+  font-size: var(--font-size-2);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+.status .glyph {
+  font-weight: var(--font-weight-bold);
+}
+/* The mapping mirrors Status.tsx's glyphFor() classification and is written from the GLYPH the component
+   already chose, via a data attribute — so there is one classifier, not two that can disagree. */
+.status[data-glyph="ok"] {
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
+  color: var(--ok-text);
+}
+.status[data-glyph="danger"] {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+.status[data-glyph="info"] {
+  background: var(--info-bg);
+  border-color: var(--info-border);
+  color: var(--info-text);
+}
+.status[data-glyph="warn"] {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+}
+
+/* A form refusal is TEXT with a glyph, never colour alone — the same rule .status follows. The two
+   hard-coded hexes it used to carry (#b3261e / #ff7b72) are gone, and with them a SECOND dark media block
+   that sat after every other rule in this file — the ordering hazard the token block's own warning
+   describes. --text on --danger-bg measures 14.29:1 light and 14.06:1 dark. */
+.form-error {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-4);
+  color: var(--text);
+  background: var(--danger-bg);
+  border: var(--border-w) solid var(--danger-border);
+  border-radius: var(--radius-2);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-4) 0;
+}
+.form-error .glyph {
+  color: var(--danger-text);
+  font-weight: var(--font-weight-bold);
+}
+
+/* An outcome, in the same shape and the other colour. */
+.form-status {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-4);
+  color: var(--text);
+  background: var(--ok-bg);
+  border: var(--border-w) solid var(--ok-border);
+  border-radius: var(--radius-2);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-4) 0;
+}
+.form-status .glyph {
+  color: var(--ok-text);
+  font-weight: var(--font-weight-bold);
+}
+
+/* An empty collection is a SENTENCE in a region that looks deliberate, never a blank strip. No icon and no
+   illustration: this console has no icon set and inventing one glyph for the occasion is worse than none. */
+.empty {
+  text-align: center;
+  padding: var(--space-7) var(--space-5);
+  color: var(--text-muted);
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-4);
+  max-width: 62ch;
+  margin: 0 auto;
+}
+.loading {
+  padding: var(--space-6) 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-3);
+}
+/* The truncation notice — Panel and RevisePublish both state a cut in words, and it reads as a footnote to
+   the table rather than as another paragraph. */
+.table-more {
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-3);
+  color: var(--text-muted);
+  margin: var(--space-3) 0 0;
+  border-top: var(--border-w) solid var(--border-hairline);
+  padding-top: var(--space-3);
+}
+
+/* ============================================================ 10. DOMAIN =================================== */
+
+/* The timeline: a fixed-width lane tag turns six interleaved event kinds into columns that can be read down.
+   Lanes are NOT colour-coded — six distinguishable hues do not survive colour blindness, and the lane is
+   already written out as text. */
+ol.timeline,
+.panel > ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.lane {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-height: var(--row-h-compact);
+  border-left: var(--border-w-strong) solid var(--border-hairline);
+  padding: var(--space-1) 0 var(--space-1) var(--space-4);
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-3);
+}
+.lane > .muted {
+  flex: 0 0 7rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-1);
+  letter-spacing: var(--letter-spacing-1);
+  text-transform: uppercase;
+}
+
+/* pre.code keeps its class for the callers that already use it; the base <pre> rule above does the work. */
+pre.code {
+  border: var(--border-w) solid var(--border-hairline);
 }

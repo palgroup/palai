@@ -88,13 +88,13 @@ export function AgentDiff() {
         />
       )}
       {error ? (
-        <p role="alert" data-testid="agent-diff-error">
+        <p role="alert" className="form-error" data-testid="agent-diff-error">
           Error: {error}
         </p>
       ) : agents !== null && agents.length === 0 ? null : revisions === null ? (
-        <p data-testid="agent-diff-loading">Loading…</p>
+        <p className="loading" data-testid="agent-diff-loading">Loading…</p>
       ) : revisions.length < 2 ? (
-        <p data-testid="agent-diff-insufficient">Need at least two revisions to diff.</p>
+        <p className="empty" data-testid="agent-diff-insufficient">Need at least two revisions to diff.</p>
       ) : (
         <>
           <p className="muted">

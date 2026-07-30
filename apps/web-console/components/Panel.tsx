@@ -147,13 +147,13 @@ export function Panel<Row extends Record<string, unknown>>({
       <h2 id={`${testId}-h`}>{title}</h2>
       {note ? <p className="muted">{note}</p> : null}
       {error ? (
-        <p role="alert" data-testid={`${testId}-error`}>
+        <p role="alert" className="form-error" data-testid={`${testId}-error`}>
           Error: {error}
         </p>
       ) : rows === null ? (
-        <p data-testid={`${testId}-loading`}>Loading…</p>
+        <p className="loading" data-testid={`${testId}-loading`}>Loading…</p>
       ) : rows.length === 0 ? (
-        <p data-testid={`${testId}-empty`}>{emptyNote ?? "None yet."}</p>
+        <p className="empty" data-testid={`${testId}-empty`}>{emptyNote ?? "None yet."}</p>
       ) : (
         <>
           <table>
@@ -178,7 +178,7 @@ export function Panel<Row extends Record<string, unknown>>({
           </table>
           {/* The cut, in WORDS. Not a colour, not a greyed arrow, not silence. */}
           {truncated ? (
-            <p data-testid={`${testId}-more`}>
+            <p className="table-more" data-testid={`${testId}-more`}>
               Showing {rows.length} rows — more are available.{" "}
               {cursor === null ? "The server returned no cursor to continue from." : null}
             </p>

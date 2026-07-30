@@ -59,12 +59,21 @@ export default function ApprovalsPage() {
     <>
       <p className="muted" data-testid="approvals-scope-note">
         <strong>This queue holds tool approvals only.</strong> A gated tool call parks a run and waits here
-        (<code>GET /v1/approvals</code>). <strong>Publication approvals are not here</strong> — a push, a pull
+        (<code>GET /v1/approvals</code>). <strong>Publication approvals are not here</strong>{" "}
+        — a push, a pull
         request or a merge is approved inside a live run&apos;s event stream, because the public API has no list
         route for them (filed as <code>API-3</code>/<code>API-4</code> and not approved). If you are waiting to
         approve a push, watch it on <a href="/runs">Live runs</a>; an empty queue on this page does not mean
         nothing is waiting for you.
       </p>
+      {/* WHAT STAYS OPEN AND WHAT COLLAPSES IS THE DECISION, not the styling. The scope note above changes
+          what an EMPTY queue means — "nothing is waiting" versus "nothing of this kind is waiting" — so it is
+          read on every visit and stays. The three below are standing facts about the deployment: true on
+          every visit, unchanged by anything on screen, and read once. Four paragraphs of equal weight before
+          the queue is how a screen stops being read at all. They are still text, still in the DOM, still
+          keyboard-reachable, and the summary says what is inside rather than "more". */}
+      <details className="notes" data-testid="approvals-standing-notes">
+        <summary>How a decision here is recorded, what gates it, and why this queue polls</summary>
       <p className="muted" data-testid="approvals-principal-note">
         <strong>A decision made here is recorded against the console&apos;s API key</strong> (
         <code>key:&lt;api_key_id&gt;</code>), not against a person. Palai has no user identity: a principal is an
@@ -86,10 +95,11 @@ export default function ApprovalsPage() {
         An approval that arrived while the browser was closed is here when you open it, which is the improvement
         over &quot;only inside a live stream&quot;; a live event surface for this queue is a separate decision.
       </p>
+      </details>
 
       {decided === "" ? null : (
         // role="status": announced without stealing focus, which matters when the row it described has gone.
-        <p role="status" data-testid="approvals-decision-status">
+        <p role="status" className="form-status" data-testid="approvals-decision-status">
           <span className="glyph" aria-hidden="true">
             ✔
           </span>{" "}
