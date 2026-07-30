@@ -314,9 +314,16 @@ func (e *ShellExecutor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (t
 	if cmd.Shell {
 		runArgv = []string{"/bin/sh", "-c", strings.Join(cmd.Argv, " ")}
 	}
+	// The attempt's own environment values, layered on top of shellEnv() (E25 T3). Refused BEFORE the
+	// container is created, so a colliding key never becomes a running process.
+	env, err := toolbroker.LayerEnv(shellEnv(), nil, cmd.Env)
+	if err != nil {
+		return toolbroker.ShellResult{}, err
+	}
+	envValues := toolbroker.EnvValueList(cmd.Env)
 	spec := oci.ContainerSpec{
 		ImageDigest:    e.image,
-		Env:            shellEnv(),
+		Env:            env,
 		Labels:         map[string]string{"io.palai.sandbox": "shell"},
 		Limits:         e.limits,
 		MaxStdoutBytes: e.maxStdoutBytes,
@@ -330,8 +337,8 @@ func (e *ShellExecutor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (t
 	outcome, err := e.driver.Run(ctx, spec)
 	result := toolbroker.ShellResult{
 		ExitCode:   int(outcome.ExitCode),
-		Stdout:     redactSecrets(string(outcome.Stdout)),
-		Stderr:     redactSecrets(string(outcome.Stderr)),
+		Stdout:     redactSecrets(string(outcome.Stdout), envValues),
+		Stderr:     redactSecrets(string(outcome.Stderr), envValues),
 		Truncated:  outcome.StdoutTruncated || outcome.StderrTruncated,
 		TimedOut:   outcome.TimedOut,
 		DurationMS: time.Since(start).Milliseconds(),
@@ -355,14 +362,24 @@ func (e *ShellExecutor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (t
 	return result, nil
 }
 
-// shellEnv is the minimal environment a shell command receives: no host inheritance, no credential,
-// no runtime socket address. HOME points at the writable workspace so tools that scribble a dotfile
-// do not fail on the read-only rootfs.
+// shellEnv is the minimal environment a shell command receives: no host inheritance and no runtime
+// socket address. HOME points at the writable workspace so tools that scribble a dotfile do not fail on
+// the read-only rootfs.
+//
+// "NO CREDENTIAL" STOOD IN THIS COMMENT UNTIL E25 T3 AND IS NOW HALF TRUE, SO IT IS WRITTEN OUT RATHER
+// THAN LEFT TO ROT. Nothing is INHERITED — this function still returns a closed two-entry list built
+// from constants, and the container still reaches nothing the control-plane process holds. But
+// ShellCommand.Env is layered on top of it (toolbroker.LayerEnv) and an operator-authored environment
+// may carry a credential value on purpose. Neither entry below can be shadowed by that layer: a
+// colliding key is refused and the container is never created.
 func shellEnv() []string {
 	return []string{"HOME=" + shellMountTarget, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 }
 
-// redactSecrets masks secret-shaped tokens in captured shell output. The patterns and the function
-// live in the broker package beside ShellResult (packages/tool-broker/redact.go) so the host
-// executor masks the SAME shapes: redaction is a property of the result, not of the container.
-func redactSecrets(s string) string { return toolbroker.RedactSecrets(s) }
+// redactSecrets masks secret-shaped tokens AND this attempt's own environment values in captured shell
+// output. Both functions live in the broker package beside ShellResult (packages/tool-broker/redact.go)
+// so the host executor masks the SAME shapes and the SAME values: redaction is a property of the result,
+// not of the container.
+func redactSecrets(s string, envValues []string) string {
+	return toolbroker.RedactValues(toolbroker.RedactSecrets(s), envValues)
+}

@@ -1007,7 +1007,7 @@ run_packaged() {
 # name is a proof that never runs, and this tier has shipped green-by-omission before.
 run_native_shell() {
   go test -tags=component -count=1 -v \
-    -run 'TestNativeShellPostureRunsTheHostsOwnToolchain|TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac|TestShellToolStillFailsCleanlyWithNoPostureConfigured' \
+    -run 'TestNativeShellPostureRunsTheHostsOwnToolchain|TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac|TestShellToolStillFailsCleanlyWithNoPostureConfigured|TestAnEnvironmentValueReachesTheAgentsShellAndTheHostsDoesNot|TestAnEnvironmentKeyCannotShadowTheSandboxsOwnPATH' \
     ./apps/control-plane/internal/execution/tools
   # The host executor's own guards (environment allow-list, ReadOnly refusal, process-group kill) are
   # untagged and ride `make verify`; they are re-run here because this suite is what a Mac operator
