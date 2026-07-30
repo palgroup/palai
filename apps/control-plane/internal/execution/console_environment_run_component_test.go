@@ -295,6 +295,9 @@ type consoleClient struct {
 	base  string
 	token string
 	seen  map[string]string
+	// location is the Location header of the most recent response, so a create's advertised address can be
+	// FOLLOWED rather than trusted. A 201 that names a route nobody mounted is a 404 with extra steps.
+	location string
 }
 
 func (c *consoleClient) record(path, body string) {
@@ -312,6 +315,7 @@ func (c *consoleClient) do(req *http.Request, want int, path string) map[string]
 		c.t.Fatalf("%s %s: %v", req.Method, path, err)
 	}
 	defer res.Body.Close()
+	c.location = res.Header.Get("Location")
 	var body map[string]any
 	dec := json.NewDecoder(res.Body)
 	_ = dec.Decode(&body)

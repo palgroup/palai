@@ -30,6 +30,8 @@ type ToolRegistryAPI interface {
 	// scope, so an unknown or foreign tool is a 404 and not an empty page.
 	ListToolRevisions(ctx context.Context, scope middleware.Scope, toolID string, q ListQuery) ([]ListRow, bool, error)
 	GetToolSetRevision(ctx context.Context, scope middleware.Scope, setName, revisionID string) (ToolResult, error)
+	// GetToolRevision is the single-resource read the create's Location header names.
+	GetToolRevision(ctx context.Context, scope middleware.Scope, toolID, revisionID string) (ToolResult, error)
 }
 
 // ToolResult is a management projection. Exactly one outcome is set: Body carries the created/published
@@ -65,8 +67,11 @@ func (h *toolHandler) createRevision(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, err := h.tools.CreateToolRevision(r.Context(), scope, r.PathValue("tool_id"), raw)
-	h.write(w, r, out, err, http.StatusCreated, "/v1/tool-revisions/")
+	// THE LOCATION NAMES THE ROUTE THAT SERVES IT. This said `/v1/tool-revisions/` from E12 until E25, and
+	// no epic ever mounted that prefix — a client that followed the address the API handed it got a 404.
+	toolID := r.PathValue("tool_id")
+	out, err := h.tools.CreateToolRevision(r.Context(), scope, toolID, raw)
+	h.write(w, r, out, err, http.StatusCreated, "/v1/tools/"+toolID+"/revisions/")
 }
 
 // publishRevision publishes a draft tool revision (POST /v1/tools/{tool_id}/revisions/{revision_id}/publish).
@@ -89,8 +94,12 @@ func (h *toolHandler) createSetRevision(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	out, err := h.tools.CreateToolSetRevision(r.Context(), scope, r.PathValue("set"), raw)
-	h.write(w, r, out, err, http.StatusCreated, "/v1/tool-set-revisions/")
+	// Same defect as createRevision's, and this one pointed AWAY FROM A LIVE ROUTE rather than at a missing
+	// one: `/v1/tool-set-revisions/` is unmounted, while E25 T7 has served the resource at
+	// /v1/tool-sets/{set}/revisions/{revision_id} since it landed. The set name is part of that identity.
+	set := r.PathValue("set")
+	out, err := h.tools.CreateToolSetRevision(r.Context(), scope, set, raw)
+	h.write(w, r, out, err, http.StatusCreated, "/v1/tool-sets/"+set+"/revisions/")
 }
 
 // publishSetRevision publishes a draft tool-set revision.
@@ -145,6 +154,22 @@ func (h *toolHandler) listRevisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	renderPage(w, r, kind, scope, rows, q.Limit)
+}
+
+// getRevision reads ONE revision of ONE lineage (GET /v1/tools/{tool_id}/revisions/{revision_id}). It is
+// the address createRevision's Location header names, and it carries the SAME projection the list does —
+// including the untrusted description and input_schema an admin approves.
+//
+// It is `provision`-gated with its two E25 T7 siblings rather than with the ungated E12/E13 routes above:
+// what it answers is the configuration an operator provisions, and a create whose Location resolves only
+// for a broad key is the shipped asymmetry (the writes were never gated) rather than a new one.
+func (h *toolHandler) getRevision(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.tools.GetToolRevision(r.Context(), scope, r.PathValue("tool_id"), r.PathValue("revision_id"))
+	h.write(w, r, out, err, http.StatusOK, "")
 }
 
 // getSetRevision reads one tool-set revision AND ITS PINS

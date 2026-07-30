@@ -289,11 +289,23 @@ func TestAForeignTenantsToolRevisionIsNotFound(t *testing.T) {
 	theirs.get(404, "/v1/tools/tool_does_not_exist_at_all/revisions")
 	theirs.get(404, "/v1/tool-sets/jira/revisions/"+setRevID)
 	theirs.get(404, "/v1/tool-sets/jira/revisions/tsrev_does_not_exist_at_all")
+	// The single-revision read carries the same two properties, and it is the address a create's Location
+	// hands out — so it is reachable by anyone who ever saw a 201 body.
+	theirs.get(404, "/v1/tools/"+toolID+"/revisions/"+revID)
+	theirs.get(404, "/v1/tools/"+toolID+"/revisions/trev_does_not_exist_at_all")
 
-	// And the owner still sees them — otherwise the four refusals above would be satisfied by a route that
+	// And the owner still sees them — otherwise the refusals above would be satisfied by a route that
 	// refuses everybody.
 	mine.get(200, "/v1/tools/"+toolID+"/revisions")
 	mine.get(200, "/v1/tool-sets/jira/revisions/"+setRevID)
+	mine.get(200, "/v1/tools/"+toolID+"/revisions/"+revID)
+
+	// THE LINEAGE ID IS PART OF THE IDENTITY, the tool-side twin of the set-name claim below: a revision of
+	// tool A must not be readable under tool B's id, or the {tool_id} segment would be decorative and a
+	// console could show one tool's revision under another tool's heading.
+	otherTool := mine.post(201, "/v1/tools", map[string]any{"canonical_name": "acme.other.lineage"})
+	otherToolID, _ := otherTool["id"].(string)
+	mine.get(404, "/v1/tools/"+otherToolID+"/revisions/"+revID)
 
 	// THE SET NAME IS PART OF THE IDENTITY. A revision id from set "jira" must not be readable under another
 	// set's name, or the path would be decorative and a console could show one set's contents under another.
@@ -314,6 +326,7 @@ func TestTheToolRevisionReadRoutesRequireTheProvisionCapability(t *testing.T) {
 
 	client.get(403, "/v1/tools/tool_whatever/revisions")
 	client.get(403, "/v1/tool-sets/jira/revisions/tsrev_whatever")
+	client.get(403, "/v1/tools/tool_whatever/revisions/trev_whatever")
 	// The pre-existing surface is unchanged by this task, and saying so here is what keeps the asymmetry a
 	// recorded decision instead of an accident: GET /v1/tools has never been capability-gated.
 	client.get(200, "/v1/tools")

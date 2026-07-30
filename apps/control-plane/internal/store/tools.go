@@ -133,24 +133,46 @@ func (s *Store) ListToolRevisions(ctx context.Context, scope middleware.Scope, t
 	}
 	rows := make([]api.ListRow, 0, len(items))
 	for _, it := range items {
-		status := "draft"
-		if it.Published {
-			status = "published"
-		}
-		// description + input_schema ARE THE POINT (plan §T7): they are what an admin approves. They are
-		// also UNTRUSTED — an MCP server wrote them — and they cross this boundary as data: the schema is
-		// re-emitted as raw JSON rather than re-modelled, and the description as a string. Neither is
-		// interpreted here and neither may be interpreted by a renderer.
-		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: mustJSON(map[string]any{
-			"id": it.ID, "object": "tool_revision", "tool_id": it.ToolID,
-			"revision_number": it.RevisionNumber, "executor": it.Executor,
-			"description": it.Description, "input_schema": json.RawMessage(it.InputSchema),
-			"digest": it.Digest, "status": status,
-			"approval_required": it.ApprovalRequired, "approval_label": it.ApprovalLabel,
-			"created_at": it.CreatedAt,
-		})})
+		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: mustJSON(toolRevisionProjection(it))})
 	}
 	return rows, true, nil
+}
+
+// toolRevisionProjection is a tool revision's read shape, shared by the list and the single-resource read
+// so the two cannot drift into different answers about the same row.
+//
+// description + input_schema ARE THE POINT (plan §T7): they are what an admin approves. They are also
+// UNTRUSTED — an MCP server wrote them — and they cross this boundary as data: the schema is re-emitted as
+// raw JSON rather than re-modelled, and the description as a string. Neither is interpreted here and
+// neither may be interpreted by a renderer.
+func toolRevisionProjection(it extensions.ToolRevisionItem) map[string]any {
+	status := "draft"
+	if it.Published {
+		status = "published"
+	}
+	return map[string]any{
+		"id": it.ID, "object": "tool_revision", "tool_id": it.ToolID,
+		"revision_number": it.RevisionNumber, "executor": it.Executor,
+		"description": it.Description, "input_schema": json.RawMessage(it.InputSchema),
+		"digest": it.Digest, "status": status,
+		"approval_required": it.ApprovalRequired, "approval_label": it.ApprovalLabel,
+		"created_at": it.CreatedAt,
+	}
+}
+
+// GetToolRevision reads ONE revision of ONE lineage (spec §28.3). It is the address POST
+// /v1/tools/{tool_id}/revisions names in its Location header — which pointed at an unmounted
+// `/v1/tool-revisions/` prefix until this route existed. A missing/foreign id, or an id belonging to a
+// different lineage, is NotFound (404).
+func (s *Store) GetToolRevision(ctx context.Context, scope middleware.Scope, toolID, revisionID string) (api.ToolResult, error) {
+	it, found, err := s.tools.GetToolRevisionOfTool(ctx, scope.Organization, scope.Project, toolID, revisionID)
+	if err != nil {
+		return api.ToolResult{}, err
+	}
+	if !found {
+		return api.ToolResult{NotFound: true}, nil
+	}
+	return api.ToolResult{Body: mustJSON(toolRevisionProjection(it))}, nil
 }
 
 // GetToolSetRevision reads one set revision AND ITS PINS (spec §28.4, E25 T7). A missing/foreign id, or an
@@ -217,6 +239,13 @@ func toolReject(err error) (api.ToolResult, bool) {
 	case errors.Is(err, extensions.ErrUnknownField),
 		errors.Is(err, extensions.ErrInvalidCanonicalName),
 		errors.Is(err, extensions.ErrInvalidReplayClass),
+		// ErrTimeoutTooLarge is the operator's value, not the server's fault. It was MISSING from this arm
+		// while every other check on the SAME decode path (DecodeToolRevisionInput: unknown field, bad
+		// replay_class) was named here, so a timeout_ms past the ceiling fell through to `default`, the
+		// handler saw a non-nil error, and the answer was a 500 that ALSO said retryable:true — advice to
+		// keep re-sending the one value that can never be accepted. The hook surface's twin mapper
+		// (store/hooks.go:59) has named it since E12 T8; only the tool surface's did not.
+		errors.Is(err, extensions.ErrTimeoutTooLarge),
 		errors.Is(err, extensions.ErrApprovalLabelTooLong),
 		errors.Is(err, extensions.ErrOverrideNotStricter):
 		return api.ToolResult{BadField: true}, true

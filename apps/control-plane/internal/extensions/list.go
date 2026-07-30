@@ -145,6 +145,25 @@ func (s *Store) ListToolRevisions(ctx context.Context, org, project, toolID stri
 	return out, rows.Err()
 }
 
+// GetToolRevisionOfTool reads ONE revision of ONE lineage within scope, keyed by BOTH the tool id and the
+// revision id. found=false for a foreign/unknown id or an id belonging to another lineage (404). The row
+// shape is ToolRevisionItem, so the single-resource read and the list cannot drift into two projections of
+// the same thing.
+func (s *Store) GetToolRevisionOfTool(ctx context.Context, org, project, toolID, revisionID string) (ToolRevisionItem, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	var it ToolRevisionItem
+	err := s.pool.QueryRow(ctx, storage.Query("GetToolRevisionOfTool"), revisionID, toolID, org, project).
+		Scan(&it.ID, &it.ToolID, &it.RevisionNumber, &it.Executor, &it.Description, &it.InputSchema,
+			&it.Digest, &it.Published, &it.ApprovalRequired, &it.ApprovalLabel, &it.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ToolRevisionItem{}, false, nil
+	}
+	if err != nil {
+		return ToolRevisionItem{}, false, fmt.Errorf("get tool revision: %w", err)
+	}
+	return it, true, nil
+}
+
 // ToolSetRevisionDetail is one set revision INCLUDING its pins (E25 T7). Pins is the raw tool_pins JSONB —
 // the exact [{"tool_revision_id":…,"overrides":{…}}] the set was created with — passed through rather than
 // re-modelled, because the pin shape is the create body's shape and two models of one thing drift.

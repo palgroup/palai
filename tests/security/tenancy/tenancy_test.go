@@ -139,8 +139,9 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 		// The E25 T7 registry trio, and these are PROJECT-scoped (000024) — the opposite of the environment
 		// pair above, which is why they are seeded separately rather than folded into it.
 		//
-		// TWO NEW READ ROUTES LAND ON THESE TABLES: GET /v1/tools/{tool_id}/revisions reads tool_revisions
-		// and GET /v1/tool-sets/{set}/revisions/{revision_id} reads tool_set_revisions. Both carry an
+		// THREE READ ROUTES LAND ON THESE TABLES: GET /v1/tools/{tool_id}/revisions and GET
+		// /v1/tools/{tool_id}/revisions/{revision_id} read tool_revisions, and GET
+		// /v1/tool-sets/{set}/revisions/{revision_id} reads tool_set_revisions. All carry an
 		// organization/project predicate in their SQL, and that predicate is exactly the kind of claim this
 		// corpus exists to distrust: the canary below issues the WHERE-LESS form of the same read and
 		// requires the DATABASE to return nothing. The description is a REAL untrusted string here rather

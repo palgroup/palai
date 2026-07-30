@@ -110,6 +110,9 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		// projection has never carried.
 		mux.HandleFunc("GET /v1/tools/{tool_id}/revisions", th.listRevisions)
 		mux.HandleFunc("GET /v1/tool-sets/{set}/revisions/{revision_id}", th.getSetRevision)
+		// The address POST /v1/tools/{tool_id}/revisions has named in its 201 Location since E12. It was
+		// `/v1/tool-revisions/<id>`, a prefix no epic ever mounted, so following the header 404'd.
+		mux.HandleFunc("GET /v1/tools/{tool_id}/revisions/{revision_id}", th.getRevision)
 		mux.HandleFunc("POST /v1/tools/{tool_id}/revisions", th.createRevision)
 		mux.HandleFunc("POST /v1/tools/{tool_id}/revisions/{revision_id}/publish", th.publishRevision)
 		mux.HandleFunc("POST /v1/tool-sets/{set}/revisions", th.createSetRevision)
