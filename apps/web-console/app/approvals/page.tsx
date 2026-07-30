@@ -89,7 +89,7 @@ export default function ApprovalsPage() {
 
       {decided === "" ? null : (
         // role="status": announced without stealing focus, which matters when the row it described has gone.
-        <p role="status" data-testid="approvals-decision-status">
+        <p role="status" className="form-status" data-testid="approvals-decision-status">
           <span className="glyph" aria-hidden="true">
             ✔
           </span>{" "}

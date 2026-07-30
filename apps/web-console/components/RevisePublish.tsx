@@ -214,7 +214,7 @@ export function RevisePublish({
       {/* The status lives OUTSIDE the form, because a publish is not a form submission and its sentence has
           to survive the form's own state. `data-revision-id` is the id in machine-readable form. */}
       {status === "" ? null : (
-        <p data-testid={`${testId}-status`} data-revision-id={statusID}>
+        <p className="form-status" data-testid={`${testId}-status`} data-revision-id={statusID}>
           <span className="glyph" aria-hidden="true">
             ✔
           </span>{" "}
@@ -231,13 +231,13 @@ export function RevisePublish({
         </p>
         {listNote ? <p className="muted">{listNote}</p> : null}
         {listError !== "" ? (
-          <p role="alert" data-testid={`panel-${testId}s-error`}>
+          <p role="alert" className="form-error" data-testid={`panel-${testId}s-error`}>
             Error: {listError}
           </p>
         ) : revisions === null ? (
-          <p data-testid={`panel-${testId}s-loading`}>Loading…</p>
+          <p className="loading" data-testid={`panel-${testId}s-loading`}>Loading…</p>
         ) : revisions.length === 0 ? (
-          <p data-testid={`panel-${testId}s-empty`}>No revisions yet.</p>
+          <p className="empty" data-testid={`panel-${testId}s-empty`}>No revisions yet.</p>
         ) : (
           <table>
             <thead>
@@ -289,7 +289,7 @@ export function RevisePublish({
           </table>
         )}
         {truncated ? (
-          <p data-testid={`panel-${testId}s-more`}>
+          <p className="table-more" data-testid={`panel-${testId}s-more`}>
             Showing the {revisions?.length ?? 0} newest revisions — <strong>older ones exist and are not
             listed</strong>. Publishing and pinning act on recent revisions, so this list does not continue;
             read the rest through the API.

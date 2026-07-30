@@ -78,13 +78,13 @@ export function ApprovalPanel({
       ) : null}
 
       {error ? (
-        <p role="alert" data-testid="approval-error">
+        <p role="alert" className="form-error" data-testid="approval-error">
           Error: {error}
         </p>
       ) : null}
 
       <div>
-        <button type="button" data-testid="approve-button" disabled={busy} onClick={() => resolve("approve")}>
+        <button type="button" className="primary" data-testid="approve-button" disabled={busy} onClick={() => resolve("approve")}>
           Approve this exact operation
         </button>{" "}
         <button type="button" data-testid="deny-button" disabled={busy} onClick={() => resolve("deny")}>

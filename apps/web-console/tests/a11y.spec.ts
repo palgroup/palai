@@ -139,8 +139,15 @@ test("keyboard navigation: skip link is the first stop and the run→approve flo
   await expect(page.getByTestId("terminal-status")).toContainText(/completed/i, { timeout: 60_000 });
 
   // Status is NOT color-only: the terminal status carries a visible glyph + the word.
+  //
+  // U+2714 FOLLOWED BY U+FE0E, and the selector is asserted rather than tolerated. Unicode's emoji-data.txt
+  // gives U+2714 the `Emoji` and `Extended_Pictographic` properties and omits it from `Emoji_Presentation`,
+  // so a platform may render it as a COLOUR emoji glyph — which would put colour back as a carrier on the
+  // one element that exists to avoid it, and change the glyph's width so a column of statuses stops lining
+  // up. VS15 pins text presentation, and dropping it fails here rather than looking fine on the one machine
+  // the suite ran on.
   const glyph = page.getByTestId("terminal-status").locator(".glyph");
-  await expect(glyph).toHaveText("✔");
+  await expect(glyph).toHaveText("✔︎");
   await expect(page.getByTestId("terminal-status")).toContainText("completed");
 });
 

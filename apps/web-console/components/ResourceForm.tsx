@@ -183,7 +183,7 @@ export function ResourceForm({
           </p>
         )}
         {status === "" ? null : (
-          <p data-testid={testId ? `${testId}-status` : undefined}>
+          <p className="form-status" data-testid={testId ? `${testId}-status` : undefined}>
             <span className="glyph" aria-hidden="true">
               ✔
             </span>{" "}
