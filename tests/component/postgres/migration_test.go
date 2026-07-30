@@ -2294,3 +2294,150 @@ func TestMigration46EnvironmentsGrantsAreAsymmetricAcrossReboots(t *testing.T) {
 		t.Fatalf("agent_revisions.environment is nullable=%s default=%s, want NOT NULL DEFAULT '' — a NULL would make `IS NULL` and `= ''` two different kinds of nothing", nullable, dflt)
 	}
 }
+
+// TestMigration47BackgroundTasks pins the three column decisions migration 000047 makes, and each of them
+// is a decision rather than a convenience — the migration says so in its own comments and this test is
+// what makes those comments true.
+//
+// A NOTE ON WHY THIS TEST EXISTS AT ALL WHEN NO GO CODE READS THE TABLE YET. 000019's own comment forbids
+// storing dead config, and a table nothing reads brushes against it. The boundary is deliberate: E26's
+// other six tasks add NO migration, so one task owns 000047 and "two parallel tasks both took the next
+// number" cannot happen in this epic. What that costs is a window in which the schema is ahead of its
+// readers, and this test is the interest paid on it — the CHECKs, the uniqueness and the grants are
+// enforced by the database from the day the table exists, not from the day something queries it.
+func TestMigration47BackgroundTasks(t *testing.T) {
+	cs := openHarness(t)
+	ctx := storage.WithSystemScope(context.Background())
+	pool := cs.Pool()
+
+	// The second boot: main.go re-runs the whole chain on every start, so this is the boot on which
+	// 000001's and 000029's blanket grants are re-exposed to the now-existing table.
+	if err := cs.Migrate(context.Background()); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+
+	// exit_code IS NULLABLE, and that is the sharpest of the three. A control plane that restarted knows a
+	// task is gone and cannot know what it returned; NOT NULL would have forced a sentinel, and a -1 in
+	// this column is a number a model compares against zero.
+	var nullable, dataType string
+	if err := pool.QueryRow(ctx, `SELECT is_nullable, data_type FROM information_schema.columns
+	     WHERE table_schema='public' AND table_name='background_tasks' AND column_name='exit_code'`).Scan(&nullable, &dataType); err != nil {
+		t.Fatalf("background_tasks.exit_code is absent: %v", err)
+	}
+	if nullable != "YES" {
+		t.Fatalf("background_tasks.exit_code is NOT NULL, which forces a sentinel for every task whose "+
+			"exit status nobody observed (data_type=%s)", dataType)
+	}
+	// deadline_at is nullable for the opposite reason: NULL means no ceiling, which is a choice an operator
+	// may legitimately make for a credential-free task (E26 §0.2's `0` = unbounded).
+	if err := pool.QueryRow(ctx, `SELECT is_nullable FROM information_schema.columns
+	     WHERE table_schema='public' AND table_name='background_tasks' AND column_name='deadline_at'`).Scan(&nullable); err != nil {
+		t.Fatalf("background_tasks.deadline_at is absent: %v", err)
+	}
+	if nullable != "YES" {
+		t.Fatal("background_tasks.deadline_at is NOT NULL; an unbounded task is a legitimate operator choice")
+	}
+
+	// The CHECK on posture. It is not decoration: the reaper probes a DIFFERENT operating-system object
+	// per posture (a container id versus a pgid), and an unrecognised posture would send it to the wrong
+	// one — where the failure mode is not an error but a wrong answer, "no such container" reading as
+	// "the task exited" for a process that is still compiling.
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	defer conn.Release()
+
+	org, project, session, response, run, call := seedBackgroundTaskParents(t, ctx, conn)
+	insert := func(id, posture, state string) error {
+		_, err := conn.Exec(ctx, `INSERT INTO background_tasks
+		    (id, organization_id, project_id, run_id, session_id, response_id, tool_call_id, posture, handle, state, output_path)
+		  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'4242:2026-07-30T12:00:00Z',$9,'.palai-session/bg/'||$1||'.log')`,
+			id, org, project, run, session, response, call, posture, state)
+		return err
+	}
+	if got := pgCode(insert("bgt-bad-posture", "kubernetes", "running")); got != "23514" {
+		t.Fatalf("an unrecognised posture was accepted (code %q, want 23514): the reaper would probe the wrong "+
+			"kind of operating-system object and read a running build as an exited one", got)
+	}
+	if got := pgCode(insert("bgt-bad-state", "unsandboxed-host", "zombie")); got != "23514" {
+		t.Fatalf("an unrecognised state was accepted (code %q, want 23514)", got)
+	}
+	if err := insert("bgt-ok", "unsandboxed-host", "running"); err != nil {
+		t.Fatalf("a well-formed background task was refused: %v", err)
+	}
+
+	// UNIQUE (tool_call_id): one call spawns one process. A retried dispatch that reached the operating
+	// system twice would otherwise leave two live processes under one ledger row, and only one of them
+	// would ever be reaped.
+	if got := pgCode(insert("bgt-duplicate", "unsandboxed-host", "running")); got != "23505" {
+		t.Fatalf("a second background task was accepted for the same tool_call_id (code %q, want 23505)", got)
+	}
+
+	// The PARTIAL index the reaper reads through. It is asserted by its predicate, not just its name: an
+	// index over the whole table would still be an index and would still be called this.
+	var indexDef string
+	if err := pool.QueryRow(ctx, `SELECT indexdef FROM pg_indexes
+	     WHERE schemaname='public' AND indexname='background_tasks_running_idx'`).Scan(&indexDef); err != nil {
+		t.Fatalf("background_tasks_running_idx is absent: %v", err)
+	}
+	if !strings.Contains(indexDef, "WHERE (state = 'running'") {
+		t.Fatalf("background_tasks_running_idx is not partial on the running state: %s", indexDef)
+	}
+
+	// Grants: UPDATE yes, DELETE no, re-asserted after the second boot. A row moves through its life cycle
+	// and takes a notified_at stamp; it is never removed, because an operator hunting orphans needs the
+	// `lost` rows to still be there. What a TTL deletes is the log FILE, which is bytes in an allocation.
+	assertPriv := func(priv string, want bool) {
+		t.Helper()
+		var got bool
+		if err := pool.QueryRow(ctx, `SELECT has_table_privilege('palai_app', 'background_tasks', $1)`, priv).Scan(&got); err != nil {
+			t.Fatalf("has_table_privilege(background_tasks, %s) error = %v", priv, err)
+		}
+		if got != want {
+			t.Fatalf("palai_app %s on background_tasks = %v, want %v (000047's grants eroded across reboots)", priv, got, want)
+		}
+	}
+	assertPriv("SELECT", true)
+	assertPriv("INSERT", true)
+	assertPriv("UPDATE", true)
+	assertPriv("DELETE", false)
+
+	// And as the runtime role itself: the privilege check refuses before RLS is even consulted.
+	if _, err := conn.Exec(ctx, `SET ROLE palai_app`); err != nil {
+		t.Fatalf("SET ROLE palai_app error = %v", err)
+	}
+	defer func() { _, _ = conn.Exec(ctx, `RESET ROLE`) }()
+	if got := pgCode(mustFail(conn.Exec(ctx, `DELETE FROM background_tasks`))); got != "42501" {
+		t.Fatalf("background_tasks DELETE code = %q, want 42501 — the row is the audit record that a process existed", got)
+	}
+}
+
+// seedBackgroundTaskParents writes the FK chain one background task needs. It is a helper rather than
+// inline SQL because the chain is six tables deep and the test above is about the seventh.
+func seedBackgroundTaskParents(t *testing.T, ctx context.Context, conn interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}) (org, project, session, response, run, call string) {
+	t.Helper()
+	org, project = newID("org-bgt"), newID("prj-bgt")
+	session, response, run, call = newID("ses-bgt"), newID("resp-bgt"), newID("run-bgt"), newID("call-bgt")
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO organizations (id) VALUES ($1)`, []any{org}},
+		{`INSERT INTO projects (id, organization_id) VALUES ($1,$2)`, []any{project, org}},
+		{`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, []any{session, org, project}},
+		{`INSERT INTO responses (id, organization_id, project_id, session_id, input) VALUES ($1,$2,$3,$4,'{}'::jsonb)`,
+			[]any{response, org, project, session}},
+		{`INSERT INTO runs (id, organization_id, project_id, session_id, response_id) VALUES ($1,$2,$3,$4,$5)`,
+			[]any{run, org, project, session, response}},
+		{`INSERT INTO tool_calls (id, organization_id, project_id, run_id, name) VALUES ($1,$2,$3,$4,'palai.workspace.shell')`,
+			[]any{call, org, project, run}},
+	} {
+		if _, err := conn.Exec(ctx, stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed background task parents: %v", err)
+		}
+	}
+	return org, project, session, response, run, call
+}
