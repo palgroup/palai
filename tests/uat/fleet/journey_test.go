@@ -77,6 +77,16 @@ func TestFleetJourneyRunsThroughTheOperatorEntryPoint(t *testing.T) {
 	// what makes a PASS for FLT-001..005 honest is that the suite backing it ran in THIS invocation — and a
 	// `-run` pointed at the wrong package matches nothing at all and exits 0 in silence, which is how this
 	// repository has shipped green-by-omission more than a dozen times, TWICE inside this very epic's T1.
+	//
+	// AND THIS LIST CAUGHT THE FIFTH INSTANCE, which is the only reason five of its entries exist. The first
+	// draft of scripts/uat/fleet copied the component tier's selector verbatim and looked complete. Diffing
+	// this list against the run's actual `--- PASS` lines showed that `runner_pool_test.go`'s five tests
+	// matched NONE of it — the file is UNTAGGED so they ride `make verify` and were never missing from the
+	// tree, but no allow-list in the repository selected them, because not one of their names starts with a
+	// word already on the line (`TestPoolKey` does not match `TestAPoolServesItsWaitingRunsOldestFirst`).
+	// The two §2 invariant legs among them — a wrong-pool machine never offered an attempt, and a
+	// no-pool-configured deployment being bit-unchanged — were being NAMED here as backing FLT-002 by an
+	// invocation that did not run them. Read the diff, never the selector.
 	for _, leg := range []struct{ test, why string }{
 		{"TestRegistryRecordsEachMachineOnceWithItsOwnJournalEntry", "FLT-001 — two machines are two rows with two SERVER-minted ids, each with its own append-only journal entry committed in the same transaction"},
 		{"TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool", "FLT-001 — and an install that predates the registry can still enrol its own runner, which is what stops 000045 from being an upgrade that bricks a stack"},
@@ -84,6 +94,9 @@ func TestFleetJourneyRunsThroughTheOperatorEntryPoint(t *testing.T) {
 		{"TestPoolKeyEnrolsOnlyIntoThePoolItNames", "FLT-003 — the Mac pool's key is REFUSED into the Linux pool, and the SAME key enrols into the pool it names (the two-sided half: a credential that refused everything would satisfy the refusal alone)"},
 		{"TestAnUnsandboxedHostAttemptIsNeverOfferedToASandboxedLinuxRunner", "FLT-002 — a run lands only on its own pool's machine, and the machine that must NOT be used is asserted still parked and still lease-less"},
 		{"TestASingleRunnerDeploymentWithNoPoolConfigurationIsBitUnchanged", "FLT-002 — and with no pool configured at all the behaviour is today's, which is the §2 invariant this whole epic is negotiated against"},
+		{"TestAPoolServesItsWaitingRunsOldestFirst", "FLT-002 — the order inside a pool is created_at FIFO, CHOSEN rather than inherited: three attempts arrive in one order, carry ids that sort in a second and timestamps in a third, and only the timestamps decide"},
+		{"TestDialRefusesAPoolWhoseRunnerNeverComesRatherThanTakingAnother", "FLT-002/FLT-004 — a Dial on a pool whose machine never arrives refuses rather than reaching for another pool's"},
+		{"TestAMachineDeclaringAPostureTheDefaultPoolDoesNotHaveIsTurnedAwayAtEnrolment", "FLT-002 — the posture a machine states is COMPARED with the pool's at the door and the mismatch is journalled (it is never VERIFIED — FLT-P2)"},
 		{"TestPlacementNeverOffersOneTenantsAttemptToAnothersRunner", "FLT-004 — tenant B's attempt is never offered tenant A's machine; before this epic the runner plane had no tenant on it AT ALL"},
 		{"TestPlacementParksARunWhosePoolHasNoRunner", "FLT-004 — a run whose pool holds no machine reaches `waiting` with no live attempt row, instead of dead-lettering in ~2.5 minutes while a Mac takes 6-20 to boot"},
 		{"TestPlacementWakesAParkedRunWhenAMachineJoinsItsPool", "FLT-004 — the machine returns and the parked run WAKES and runs, through E23 T1's choreography rather than a second one"},

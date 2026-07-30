@@ -147,11 +147,23 @@ else
   # match `TestStrictOffIsBitUnchanged`. Every alternative below was checked by RUNNING it and reading
   # `=== RUN`, not by reading the string.
   #
+  # AND THE FIVE NAMES THIS GATE HAD TO ADD, FOUND BY RUNNING THE SELECTOR AND DIFFING `--- PASS` AGAINST
+  # THE JOURNEY'S OWN LEG LIST — which is the only reason they were found, because the first version of this
+  # line was the component tier's verbatim and looked complete. `runner_pool_test.go` is UNTAGGED, so its
+  # five tests ride `make verify` and are never absent from the tree; what they were absent from is every
+  # -run allow-list, because not one of them starts with a word already on it. TestPoolKey does not match
+  # TestAPoolServesItsWaitingRunsOldestFirst, and nothing matches
+  # TestAnUnsandboxedHostAttemptIsNeverOfferedToASandboxedLinuxRunner. So the TWO §2 invariant legs — "a
+  # wrong-pool machine is never offered an attempt" and "with no pool configured the behaviour is today's" —
+  # were named by this journey as backing FLT-002 while not running in the invocation that claimed them.
+  # That is the fifth instance of this list's signature trap, and the reason the rule is: diff the leg list
+  # against `--- PASS`, never read the selector.
+  #
   # apps/control-plane/internal/fleet gets its OWN entry with an empty selector because the package has no
   # tests this epic does not own — an allow-list over a package that is entirely ours would be a list to
   # forget to extend.
   suites=(
-    "./apps/control-plane/internal/execution|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool|TestPoolKey|TestPlacement|TestLifecycle|TestStrict"
+    "./apps/control-plane/internal/execution|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool|TestPoolKey|TestPlacement|TestLifecycle|TestStrict|TestAnUnsandboxedHostAttemptIsNeverOfferedToASandboxedLinuxRunner|TestASingleRunnerDeploymentWithNoPoolConfigurationIsBitUnchanged|TestAPoolServesItsWaitingRunsOldestFirst|TestDialRefusesAPoolWhoseRunnerNeverComesRatherThanTakingAnother|TestAMachineDeclaringAPostureTheDefaultPoolDoesNotHaveIsTurnedAwayAtEnrolment"
     "./apps/control-plane/internal/fleet|Test"
   )
   status=0
