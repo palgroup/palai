@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,6 +15,13 @@ type fakeReclaimer struct {
 	bridgeSweeps   int
 	approvalSweeps int
 	toolSweeps     int
+	// capacitySweeps counts the passes and capacityTTL records the TTL each pass was given, so a test can
+	// assert that an UNCONFIGURED deployment still gets the call (with zero, which the store treats as a
+	// no-op) rather than the sweep being skipped by the caller — a skip that would make the knob look
+	// wired while doing nothing.
+	capacitySweeps int
+	capacityTTL    time.Duration
+	capacityBody   []byte
 }
 
 func (f *fakeReclaimer) ReclaimExpired(_ context.Context, maxAttempts int) (int, error) {
@@ -34,6 +42,36 @@ func (f *fakeReclaimer) SweepExpiredApprovals(_ context.Context) (int, error) {
 func (f *fakeReclaimer) SweepExpiredToolApprovals(_ context.Context) (int, error) {
 	f.toolSweeps++
 	return 0, nil
+}
+
+func (f *fakeReclaimer) SweepExpiredCapacityParks(_ context.Context, ttl time.Duration, projection []byte) (int, error) {
+	f.capacitySweeps++
+	f.capacityTTL = ttl
+	f.capacityBody = projection
+	return 0, nil
+}
+
+// TestReconcilerSweepsCapacityParksWithTheConfiguredTTL is E24 T5's half of this file. The two assertions
+// are: an unconfigured deployment still REACHES the sweep (so the no-op lives in one place — the store —
+// rather than being a caller-side skip somebody has to remember), and a configured TTL arrives intact along
+// with the terminal projection whose detail names the reason.
+func TestReconcilerSweepsCapacityParksWithTheConfiguredTTL(t *testing.T) {
+	rec := &fakeReclaimer{}
+	if _, err := NewReconciler(rec, time.Second, 5).Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep with no park TTL: %v", err)
+	}
+	if rec.capacitySweeps != 1 || rec.capacityTTL != 0 {
+		t.Fatalf("unconfigured pass = %d sweep(s) with ttl %v, want 1 and 0", rec.capacitySweeps, rec.capacityTTL)
+	}
+	if _, err := NewReconciler(rec, time.Second, 5).WithCapacityParkTTL(9 * time.Minute).Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep with a park TTL: %v", err)
+	}
+	if rec.capacityTTL != 9*time.Minute {
+		t.Fatalf("configured pass carried ttl %v, want 9m", rec.capacityTTL)
+	}
+	if !strings.Contains(string(rec.capacityBody), "no runner joined this run's pool") {
+		t.Fatalf("the terminal projection does not name the reason: %s — an expiry a caller cannot read is a silent death", rec.capacityBody)
+	}
 }
 
 func TestReconcilerSweepReportsDeadLetteredWithConfiguredCeiling(t *testing.T) {

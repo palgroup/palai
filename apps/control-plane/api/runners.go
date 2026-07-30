@@ -11,11 +11,11 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
 )
 
-// The runner registry READ surface (E24 T1). Two routes, both GET, and the absence of a write route
-// is deliberate rather than unfinished: cordoning, draining and revoking a runner is T5's work and
-// enrolment is the runner plane's, so there is nothing here an operator could POST that would not be
-// a second way to do something that does not exist yet. A surface that can only be read cannot be
-// mis-used to change a fleet.
+// The runner registry surface: the READ half (E24 T1), the pool-key half (E24 T3) and the LIFECYCLE half
+// (E24 T5). T1 wrote that there would never be a write route here and gave the right reason for what it
+// shipped — reading a fleet cannot move a fleet — and T5 is why there is one now: `Revoke()` was
+// implemented, tested and catalogued as SAN-011's hard stop, and NOTHING CALLED IT (§3.6 D15). An operator
+// with no way to say "decommission that Mac" has no hard stop.
 //
 // WHAT THIS ANSWERS, and it is the question §3.6 D13 says nobody could ask: which machines have
 // enrolled, under which pool, and when each was last seen. Before the registry, the only observable
@@ -45,6 +45,18 @@ type RunnerItem struct {
 	EnrolledAt      time.Time
 	LastSeenAt      time.Time
 	CreatedAt       time.Time
+	// ActiveLeases is how many leases this machine is serving RIGHT NOW, and it is the one field here that
+	// is not a stored fact — the gateway holding the sessions is the only thing that knows (E24 T5). It is
+	// on the single read rather than the listing because it is a live value: a page of them would be a page
+	// of separate instants presented as one.
+	//
+	// It exists because a cordon leaves exactly one question open: an operator who has taken a Mac out of
+	// service needs to know when it is safe to take AWAY, and before this there was nothing to ask.
+	//
+	// A POINTER, so that "serving nothing" and "nobody asked the gateway" are different answers. Zero is a
+	// real and important value here — it is the one that means the Mac can be unplugged — and a plain int
+	// would render it identically to a deployment that wired no gateway at all.
+	ActiveLeases *int64
 }
 
 // RunnerListWindow is the keyset page window the registry read takes — declared here rather than
@@ -108,8 +120,10 @@ type RunnerPoolKeyEnrollment struct {
 // was true of what T1/T2 shipped — reading a fleet cannot move a fleet — and it stops being true the
 // moment a fleet has a CREDENTIAL, because minting and revoking one is an operator action with no
 // other home: the runner plane authenticates machines, not people. The three key routes are gated on
-// the `provision` capability, the same as every other org-admin surface, and there is still no route
-// that moves a machine (cordon/drain/revoke is T5's).
+// the `provision` capability, the same as every other org-admin surface.
+//
+// AND IT GAINED A MACHINE-MOVING HALF IN E24 T5 (SetRunnerState), gated on the same capability for the
+// same reason: taking a Mac out of service and decommissioning one are org administration.
 type RunnerRegistryAPI interface {
 	ListRunners(ctx context.Context, org, project string, w RunnerListWindow) ([]RunnerItem, error)
 	// GetRunner reports found=false for an id that is not in the caller's tenant, so the handler
@@ -127,6 +141,17 @@ type RunnerRegistryAPI interface {
 	// RevokeRunnerPoolKey closes a key and reports the machines it already admitted, none of which is
 	// stopped. Idempotent; found=false for an unknown or foreign id.
 	RevokeRunnerPoolKey(ctx context.Context, org, project, keyID string) (RunnerPoolKeyItem, bool, error)
+	// SetRunnerState cordons, resumes or revokes ONE machine (E24 T5). action is one of
+	// "cordon"/"resume"/"revoke" and is bound at route registration, so an implementation never has to
+	// validate a caller-supplied string. found=false is an unknown or foreign id — or a machine already
+	// revoked and asked to move, since a revoke is irreversible — all rendered as the same non-disclosing
+	// 404.
+	//
+	// IT IS THE FIRST WRITE ROUTE HERE THAT MOVES A MACHINE, which the comment above says did not exist,
+	// and §3.6 D15 is why it does now: `Revoke()` was implemented, tested, catalogued as SAN-011's hard stop
+	// and CALLED BY NOTHING. A security control with no operator surface is a security control that does
+	// not exist.
+	SetRunnerState(ctx context.Context, org, project, id, action string) (RunnerItem, bool, error)
 }
 
 type runnerHandler struct{ runners RunnerRegistryAPI }
@@ -289,6 +314,38 @@ func (h *runnerHandler) revokePoolKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, poolKeyView(item, false))
 }
 
+// setRunnerState cordons, resumes or revokes one machine (POST /v1/runners/{runner_id}/<action>).
+//
+// THE ACTION IS BOUND AT ROUTE-REGISTRATION TIME, not read out of the path, and that is worth a sentence
+// because it removes a whole class of code: there are three mux patterns and one closure each, so an
+// unknown verb is a 404 from the mux and there is no string to validate, no body to decode, and no field a
+// caller could smuggle a `runners.state` value through. The action reaching the store is one of exactly
+// three literals written in this file.
+//
+// REVOKE IS IRREVERSIBLE, which is today's in-memory semantics made durable rather than a new rule, and
+// the response says so by carrying the machine's new state: an operator handed a bare 200 has to guess.
+func (h *runnerHandler) setRunnerState(action string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		scope, ok := h.authorizeAdmin(w, r)
+		if !ok {
+			return
+		}
+		item, found, err := h.runners.SetRunnerState(r.Context(), scope.Organization, scope.Project,
+			r.PathValue("runner_id"), action)
+		switch {
+		case err != nil:
+			middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+			return
+		case !found:
+			// The same answer for "not yours", "not there" and "already decommissioned": which of the three it
+			// was is not something a caller should be able to probe for.
+			middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such runner in this project")
+			return
+		}
+		writeJSON(w, http.StatusOK, runnerView(item))
+	}
+}
+
 // authorizeAdmin resolves the verified scope and enforces the `provision` capability — the same gate
 // every other org-admin surface uses (api-keys, secret-refs, model-routes, limits).
 func (h *runnerHandler) authorizeAdmin(w http.ResponseWriter, r *http.Request) (middleware.Scope, bool) {
@@ -353,6 +410,13 @@ func runnerView(it RunnerItem) map[string]any {
 		if !at.IsZero() {
 			view[key] = at
 		}
+	}
+	// The live lease count, on the reads that have one. Rendered UNCONDITIONALLY on those, including at
+	// zero: "this machine is serving nothing" and "nobody asked the gateway" are different answers, and an
+	// omitted field would make them look the same to an operator deciding whether to unplug a Mac. The
+	// listing does not set it — see RunnerItem.ActiveLeases — so a page carries no such field at all.
+	if it.ActiveLeases != nil {
+		view["active_leases"] = *it.ActiveLeases
 	}
 	return view
 }

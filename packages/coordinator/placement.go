@@ -130,6 +130,101 @@ func (s *Store) ParkRunForCapacity(ctx context.Context, tenant Tenant, runID, at
 	return nil
 }
 
+// capacityParkBatch bounds one sweep pass, so a large backlog of parked runs cannot hold a pooled
+// connection open across the whole reconcile tick. The next tick takes the rest.
+const capacityParkBatch = 50
+
+// SweepExpiredCapacityParks ends the runs that have been parked for want of a machine longer than the
+// operator's TTL, and it is the reaper §T5 asks for — the one that closes T4's `FLT-P7`: a run parked in a
+// pool that will never have a machine waits FOREVER, because the only wake fires when a machine connects.
+//
+// THERE IS NO DEFAULT TTL. ttl <= 0 is a no-op and that is the shipped posture: AWS documents a Mac host
+// taking "approximately 6 minutes to 20 minutes" to start, so a default here would be this file guessing
+// how long somebody else's fleet takes to arrive. An operator sets PALAI_FLEET_PARK_TTL or nothing expires.
+//
+// WHAT "THE ANSWER IS LEARNED RATHER THAN DIED OF" MEANS HERE, and this is a correction to §T5. The plan
+// says the run is WOKEN and the model LEARNS the no-capacity answer. Measured against the tree, a capacity
+// park happens at the DIAL — before any engine process exists, with no tool call in flight and no model in
+// the loop — so there is nothing to hand an answer to, and a plain wake would re-dial into the same empty
+// pool and park again on a loop. What CAN learn is the CALLER: the run reaches a terminal `timed_out`
+// with a Response body that says a machine never came, which is exactly the shape §20.12's queue deadline
+// already uses for a run that waited too long to start (TimeoutQueuedIfExpired). So this reuses that
+// choreography rather than inventing a second one, and it reuses the EXISTING `run.timed_out.v1` event and
+// the state machine's existing (waiting -> timed_out) edge: no new event type, no migration, nothing added
+// to the contract.
+//
+// Each run settles in its OWN transaction, tenant-re-scoped, exactly as SweepDeadLetteredRuns does: one
+// wedged run must not hold the pass, and a sweep that spans tenants to FIND rows still writes under each
+// row's own scope so RLS applies to it as it would to a request.
+func (s *Store) SweepExpiredCapacityParks(ctx context.Context, ttl time.Duration, projection []byte) (int, error) {
+	if ttl <= 0 {
+		return 0, nil
+	}
+	rows, err := s.pool.Query(storage.WithSystemScope(ctx), storage.Query("ExpiredCapacityParks"),
+		ttl.Seconds(), capacityParkBatch)
+	if err != nil {
+		return 0, fmt.Errorf("select expired capacity parks: %w", err)
+	}
+	type parked struct {
+		tenant            Tenant
+		runID, responseID string
+	}
+	var expired []parked
+	for rows.Next() {
+		var p parked
+		if err := rows.Scan(&p.tenant.Organization, &p.tenant.Project, &p.runID, &p.responseID); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan expired capacity park: %w", err)
+		}
+		expired = append(expired, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("read expired capacity parks: %w", err)
+	}
+
+	swept := 0
+	for _, p := range expired {
+		ended, err := s.timeOutOneCapacityPark(ctx, p.tenant, p.runID, p.responseID, projection)
+		if err != nil {
+			return swept, err
+		}
+		if ended {
+			swept++
+		}
+	}
+	return swept, nil
+}
+
+// timeOutOneCapacityPark drives one parked run to `timed_out` and finalizes its Response in the SAME
+// transaction, so a restart reads a coherent terminal — the event and the body land together. A run a
+// machine's arrival woke between the scan and this line is not `waiting` any more and is left alone, which
+// is what makes the sweep single-winner against the wake: the pass reports what it MOVED, not what it read.
+func (s *Store) timeOutOneCapacityPark(ctx context.Context, tenant Tenant, runID, responseID string, projection []byte) (bool, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return false, fmt.Errorf("begin capacity-park timeout: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	switch _, err := applyRunTransitionTx(ctx, tx, tenant, runID, statemachines.RunCmdTimeout); {
+	case errors.Is(err, ErrRunTerminal), errors.Is(err, statemachines.ErrInvalidState):
+		return false, nil // already terminal, or woken and running again, under the run lock
+	case err != nil:
+		return false, err
+	}
+	// UpdateResponse excludes terminal states in its WHERE, so a racing terminal write still wins once.
+	if _, err := tx.Exec(ctx, storage.Query("UpdateResponse"),
+		responseID, tenant.Organization, tenant.Project, string(statemachines.RunTimedOut), projection); err != nil {
+		return false, fmt.Errorf("finalize timed-out capacity park: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit capacity-park timeout: %w", err)
+	}
+	return true, nil
+}
+
 // WakeRunAwaitingCapacity re-enters the OLDEST run parked on a pool for want of a machine and enqueues
 // its response.run job in the SAME transaction, so the job becomes claimable only once the wake is
 // durable: nothing dispatches before commit. It reports the run it woke, or "" when the pool had none.

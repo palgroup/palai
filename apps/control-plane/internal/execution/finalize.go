@@ -78,6 +78,31 @@ func mustQueueTimeoutProjection() []byte {
 	return body
 }
 
+// capacityTimeoutProjection is the terminal Response body a §T5 park-TTL expiry finalizes to (E24 T5): the
+// canonical timed_out problem with ONE line replaced.
+//
+// THE DETAIL IS THE POINT OF HAVING A SECOND PROJECTION AT ALL. The queue-deadline body reads "the run
+// exceeded its execution deadline", which for a run that never started is not just imprecise, it sends its
+// owner looking for a slow model. This one names what actually happened — no machine joined the pool — so
+// the answer a caller reads is the answer they need, which is the whole of §T5's requirement that the
+// no-capacity outcome be LEARNED rather than silently died of. Everything else is shared: same stable code,
+// same status, same type URI, so it is one document class with one honest sentence.
+var capacityTimeoutProjection = mustCapacityTimeoutProjection()
+
+func mustCapacityTimeoutProjection() []byte {
+	problem := terminalProblem("timed_out")
+	problem.Detail = "no runner joined this run's pool before the fleet park deadline, so the run never started"
+	body, err := json.Marshal(map[string]any{
+		"output": []contracts.ContentItem{},
+		"usage":  contracts.Usage{},
+		"error":  problem,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("marshal capacity-timeout projection: %v", err))
+	}
+	return body
+}
+
 // finalize handles run.terminal: it applies exactly one terminal run transition and
 // writes the terminal Response projection from the committed run, output, and usage.
 func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame contracts.EngineFrame) error {

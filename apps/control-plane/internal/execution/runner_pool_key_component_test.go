@@ -112,6 +112,9 @@ type poolKeyFixture struct {
 	pool     *pgxpool.Pool
 	keys     *fleet.PoolEnrollmentKeys
 	registry *fleet.Store
+	// spine is the coordinator store the capacity waker and the park reaper share (E24 T5). Set only by
+	// newPlacementFixture, which is the fixture that migrates and wires it.
+	spine *coordinator.Store
 }
 
 func newPoolKeyFixture(t *testing.T) *poolKeyFixture {

@@ -320,7 +320,8 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 	}
 
 	// The runner registry (E24 T1): the read surface for the fleet. Bearer-scoped and RLS-confined, so
-	// a caller sees its own tenant's machines and nothing else. No write route — see api/runners.go.
+	// a caller sees its own tenant's machines and nothing else. The write routes below it are T3's key
+	// surface and T5's machine lifecycle — see api/runners.go for why each exists.
 	if cfg.runners != nil {
 		rh := &runnerHandler{runners: cfg.runners}
 		mux.HandleFunc("GET /v1/runners", rh.listRunners)
@@ -336,6 +337,18 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/runner-pools/{pool_id}/keys", rh.mintPoolKey)
 		mux.HandleFunc("GET /v1/runner-pools/{pool_id}/keys", rh.listPoolKeys)
 		mux.HandleFunc("POST /v1/runner-pool-keys/{key_id}/revoke", rh.revokePoolKey)
+		// THE MACHINE LIFECYCLE (E24 T5), and the reason it is here is §3.6 D15: `Revoke()` was SAN-011's
+		// hard stop for a compromised runner, implemented, tested, registered in the UAT catalogue, and
+		// reachable from nothing at all — the same shape as E19 T9's CreateSlackConnection and E23's
+		// DecideToolApproval. These three routes are what make it reachable.
+		//
+		// One pattern per verb, so the action reaching the store is a literal in this file and an unknown verb
+		// is a 404 from the mux rather than a string somebody has to remember to validate. Gated on
+		// `provision` like every other org-admin surface, because taking a Mac out of service and
+		// decommissioning one are org administration.
+		mux.HandleFunc("POST /v1/runners/{runner_id}/cordon", rh.setRunnerState("cordon"))
+		mux.HandleFunc("POST /v1/runners/{runner_id}/resume", rh.setRunnerState("resume"))
+		mux.HandleFunc("POST /v1/runners/{runner_id}/revoke", rh.setRunnerState("revoke"))
 	}
 
 	var root http.Handler = mux

@@ -28,6 +28,15 @@ type fakeRunnerRegistry struct {
 	keyFound      bool
 	mintedForPool string
 	mintedExpiry  *time.Time
+	// lifecycleAction and lifecycleRunner record the machine-lifecycle call (E24 T5) so a route test can
+	// assert WHICH verb and WHICH machine reached the store — a route that answered 200 having asked for the
+	// wrong one would otherwise pass. runnerFound scripts the non-disclosing 404.
+	lifecycleAction string
+	lifecycleRunner string
+	runnerFound     bool
+	// activeLeases is the live count the single read decorates with, so the rendering of zero can be
+	// distinguished from its absence.
+	activeLeases *int64
 }
 
 func (f *fakeRunnerRegistry) ListRunners(context.Context, string, string, RunnerListWindow) ([]RunnerItem, error) {
@@ -160,6 +169,20 @@ func (f *fakeRunnerRegistry) RevokeRunnerPoolKey(_ context.Context, org, project
 			ID: "rnr_1", Label: "runner-local", DNS: "rnr_1.runners.palai.internal", State: "active",
 			PoolID: "pool_mac", EnrolledAt: time.Unix(1_700_000_050, 0).UTC(),
 		}},
+	}, true, nil
+}
+
+func (f *fakeRunnerRegistry) SetRunnerState(_ context.Context, org, project, id, action string) (RunnerItem, bool, error) {
+	f.askedOrg, f.askedProject = org, project
+	f.lifecycleAction, f.lifecycleRunner = action, id
+	if !f.runnerFound {
+		return RunnerItem{}, false, nil
+	}
+	return RunnerItem{
+		ID: id, PoolID: "pool_mac", State: map[string]string{
+			"cordon": "cordoned", "resume": "active", "revoke": "revoked",
+		}[action],
+		CreatedAt: time.Unix(1_700_000_000, 0).UTC(), ActiveLeases: f.activeLeases,
 	}, true, nil
 }
 
