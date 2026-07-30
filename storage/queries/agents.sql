@@ -35,8 +35,14 @@ LIMIT $7;
 
 -- ListAgentRevisions pages one profile's revisions newest-first (spec §10, E13 T4). Scoped by profile_id
 -- ($3) on top of the tenant scope, so an unknown/foreign profile simply yields an empty page.
+--
+-- tool_sets JOINS THE PROJECTION IN E25 T7, and for the third time the same argument: there is no
+-- per-revision GET, so this list is the only read path for a config the API lets you write. It is the
+-- half of jira-mcp-connection.md §4 that GRANTS the tools ("tool_sets missing → the tool is never
+-- advertised"), while mcp_connections — the CEILING — has read back since E22 T6. A runbook that says
+-- both fields are required had one of them readable.
 -- name: ListAgentRevisions
-SELECT id, revision_number, model, tools, mcp_connections, instructions, environment, published_at IS NOT NULL, created_at
+SELECT id, revision_number, model, tools, tool_sets, mcp_connections, instructions, environment, published_at IS NOT NULL, created_at
 FROM agent_revisions
 WHERE organization_id = $1 AND project_id = $2 AND profile_id = $3
   AND ($4::timestamptz IS NULL OR created_at >= $4)

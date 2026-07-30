@@ -229,9 +229,16 @@ test("the environment picker on the revision form does not degrade to free text 
   // STUBBED AT THE RELAY BOUNDARY so the empty state is deterministic on BOTH profiles — it is the state a
   // real organization is in on its first day and can never be put back into. Everything else (the session
   // gate, the relay, the page's own fetch) still runs.
-  await page.route("**/api/palai/v1/environments", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ object: "list", data: [] }) }),
-  );
+  //
+  // ALL THREE COLLECTIONS ARE STUBBED SINCE E25 T7, and the third one is why: the revision form gained a
+  // tool-set picker and an MCP-connection picker, and the FIXTURE's registry is stateful — tests/
+  // mcp-tools.spec.ts fills it. Stubbing only /environments would have made this test's outcome depend on
+  // WHICH FILE RAN FIRST, which is the exact trap E25 T4 and T6 each paid for once.
+  for (const collection of ["environments", "tool-sets", "mcp-connections"]) {
+    await page.route(`**/api/palai/v1/${collection}`, (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ object: "list", data: [] }) }),
+    );
+  }
   await page.goto("/agents");
   await expect(page.getByTestId("panel-agent-profiles")).toBeVisible({ timeout: 15_000 });
 
@@ -260,13 +267,27 @@ test("the environment picker on the revision form does not degrade to free text 
     ["revision-instructions-input", "revision-model-input", "revision-tools-input"].sort(),
   );
 
-  // THE SECOND CEILING IS AN ABSENCE, AND IT IS ASSERTED AS ONE (plan §T6): tool sets and MCP connections
-  // are T7's, and until then there is nothing to choose — so no control for them is rendered at all,
-  // not an empty one.
-  for (const id of ["revision-tool-sets-select", "revision-mcp-connections-select"]) {
-    await expect(page.getByTestId(id)).toHaveCount(0);
+  // THE SECOND CEILING WAS AN ABSENCE AND E25 T7 CLOSED IT, SO THIS ASSERTION IS REPAIRED RATHER THAN
+  // DELETED — and what it got wrong is worth keeping. It named `revision-tool-sets-select` and
+  // `revision-mcp-connections-select`, two testids that have never existed in this tree in any epic: the
+  // controls T7 added are `revision-tool-set-select` and `revision-mcp-connection-select` (singular, one
+  // choice each). So the loop asserted the absence of things that could not have been present, and it would
+  // have kept passing after the controls it was watching for arrived. A `toHaveCount(0)` over a name nobody
+  // owns is the shape of a guard that cannot fail.
+  //
+  // What is asserted now is the rule that DOES bind them, and it is the same rule as the environment
+  // picker's: with nothing to choose, the control is not rendered at all and a note with a way forward
+  // stands in its place. All three collections are stubbed empty above, so this is one rule measured three
+  // times rather than a claim about which epic built what.
+  for (const [control, note, wants] of [
+    ["revision-tool-set-select", "revision-tool-set-select-empty", "Publish a tool set first"],
+    ["revision-mcp-connection-select", "revision-mcp-connection-select-empty", "Register an MCP connection first"],
+  ]) {
+    await expect(page.getByTestId(control)).toHaveCount(0);
+    await expect(page.getByTestId(note)).toContainText(wants);
+    await expect(page.getByTestId(note).getByRole("link")).toHaveAttribute("href", "/tools");
   }
-  await expect(page.getByTestId("revision-t7-note")).toContainText("tool sets and MCP connections");
+  await expect(page.getByTestId("revision-t7-note")).toContainText("Both external fields read back");
 });
 
 // --- THE RUN --------------------------------------------------------------------------------------------

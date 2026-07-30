@@ -104,9 +104,20 @@ const concretePath = (pattern) => pattern.replace(/\{[a-z_]+\}/g, PROBE);
  * seededPath is concretePath with the ids seedBothStacks actually created substituted in, per side (E25 T6).
  * A wildcard with no seed still gets the probe token — the only thing that changes is that a route whose
  * item shape CAN be compared now is.
+ *
+ * A PATTERN-SCOPED KEY WINS OVER THE BARE NAME, and that is not generality for its own sake: `{revision_id}`
+ * is the ONE OVERLOADED WILDCARD in this table (E25 T7). An agent revision and a tool-set revision both use
+ * the name, and a flat map handed GET /v1/tool-sets/{set}/revisions/{revision_id} an AGENT revision id —
+ * which the real route correctly 404s, which makes arm 3 `continue` past it, which means the comparison this
+ * seed exists to enable would have been skipped IN SILENCE. Exactly the failure mode T6 found with the probe
+ * token, one wildcard later. Scoped keys are written as `<pattern>|<name>`.
  */
 const seededPath = (pattern, side) =>
-  pattern.replace(/\{([a-z_]+)\}/g, (_m, name) => (typeof seeded[side][name] === "string" ? encodeURIComponent(seeded[side][name]) : PROBE));
+  pattern.replace(/\{([a-z_]+)\}/g, (_m, name) => {
+    const scoped = seeded[side][`${pattern}|${name}`];
+    const value = typeof scoped === "string" ? scoped : seeded[side][name];
+    return typeof value === "string" ? encodeURIComponent(value) : PROBE;
+  });
 
 /** allowProbe reads a running router's method set for one path pattern — see the header for why this works. */
 async function allowProbe(base, pattern, key) {
@@ -318,6 +329,67 @@ async function seedBothStacks() {
 
     seeded[label] = { agent_id: agentBody.id, revision_id: revisionBody.id };
   }
+
+  // E25 T7 SEEDS THREE MORE COLLECTIONS: tools, tool-revisions and tool-sets. All three are EMPTY on a
+  // bootstrap stack — built-in tools are code-defined and deliberately NOT in the registry
+  // (000024_tools.up.sql says so), so nothing puts a row in any of them without an operator — which is why
+  // the two E25 T7 read routes had never had a shape compared at all.
+  //
+  // THE SEED USES THE MANUAL REGISTRY PATH, NOT DISCOVERY, and that is deliberate on BOTH sides: discovery
+  // needs an upstream MCP server, a hermetic stack must not dial one, and this seed exists to compare
+  // PROJECTIONS rather than to re-prove the discovery chain (which the component tier proves against a real
+  // router — see DIV-UI-008). A control_plane revision and an mcp revision have the same projection.
+  for (const [label, doFetch] of [
+    ["real", realFetch],
+    ["fixture", fakeFetch],
+  ]) {
+    const json = (body) => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const tool = await doFetch("/v1/tools", json({ canonical_name: `sweep.seed.probe${Date.now()}` }));
+    const toolBody = await tool.json().catch(() => ({}));
+    assert.ok(
+      tool.status === 200 || tool.status === 201,
+      `the sweep could not seed a tool on the ${label} side: POST /v1/tools returned ${tool.status} ` +
+        `(${toolBody.code ?? "?"}). The registry routes mount only when the store is wired (api/router.go), ` +
+        "and an unmounted family means the item-shape floor below would drop silently.",
+    );
+    const revision = await doFetch(`/v1/tools/${encodeURIComponent(toolBody.id)}/revisions`, json({
+      executor: "control_plane",
+      description: "conformance sweep seed — a registry projection, not a discovered tool",
+      input_schema: { type: "object" },
+    }));
+    const revisionBody = await revision.json().catch(() => ({}));
+    assert.ok(
+      revision.status === 200 || revision.status === 201,
+      `the sweep could not seed a tool revision on the ${label} side: POST /v1/tools/{id}/revisions returned ` +
+        `${revision.status} (${revisionBody.code ?? "?"}). Without it GET /v1/tools/{tool_id}/revisions is ` +
+        "compared against an empty page on one side, which is the pass-over-nothing this seed exists to end.",
+    );
+    // PUBLISHED, because a set may pin only published revisions — and because `status` and the two approval
+    // columns are fields whose PUBLISHED value is the one worth comparing.
+    const publish = await doFetch(
+      `/v1/tools/${encodeURIComponent(toolBody.id)}/revisions/${encodeURIComponent(revisionBody.id)}/publish`,
+      json({ approval_required: true, approval_label: "conformance sweep seed" }),
+    );
+    assert.ok(publish.status === 200, `the sweep could not publish the seeded tool revision on the ${label} side: ${publish.status}`);
+    await publish.body?.cancel().catch(() => {});
+
+    const setName = "sweep-seed";
+    const setRevision = await doFetch(`/v1/tool-sets/${setName}/revisions`, json({ tools: [{ tool_revision_id: revisionBody.id }] }));
+    const setBody = await setRevision.json().catch(() => ({}));
+    assert.ok(
+      setRevision.status === 200 || setRevision.status === 201,
+      `the sweep could not seed a tool-set revision on the ${label} side: POST /v1/tool-sets/{set}/revisions ` +
+        `returned ${setRevision.status} (${setBody.code ?? "?"})`,
+    );
+    const publishSet = await doFetch(`/v1/tool-sets/${setName}/revisions/${encodeURIComponent(setBody.id)}/publish`, json({}));
+    assert.ok(publishSet.status === 200, `the sweep could not publish the seeded set revision on the ${label} side: ${publishSet.status}`);
+    await publishSet.body?.cancel().catch(() => {});
+
+    seeded[label].tool_id = toolBody.id;
+    seeded[label].set = setName;
+    // SCOPED, because `{revision_id}` already means the AGENT revision above — see seededPath.
+    seeded[label]["/v1/tool-sets/{set}/revisions/{revision_id}|revision_id"] = setBody.id;
+  }
 }
 after(() => fake?.kill());
 
@@ -456,14 +528,25 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     // (DIV-UNX-001: the fake adapter is hardcoded with no ToolCalls and no env knob). So the honest floor for T5
     // is the one below, unchanged, with the reason written down — and the first task that can seed a row on the
     // real side raises it. A baseline nudged up by a seed that does not exist would be worse than one that holds.
+    //
+    // E25 T7 RAISES IT TO 11. Its seed creates a TOOL, a published TOOL REVISION and a published TOOL-SET
+    // REVISION — three collections empty on every bootstrap stack, because built-in tools are code-defined
+    // and deliberately absent from the registry (000024_tools.up.sql). All three become comparable, and one
+    // of them is a route this epic just wrote: GET /v1/tools/{tool_id}/revisions had no shape to compare
+    // because it did not exist. GET /v1/tool-sets/{set}/revisions/{revision_id} is compared too, but as an
+    // ENVELOPE rather than an item — it is a single resource, not a page, so `data[0]` is undefined and it
+    // does not raise this count. Its whole key set is still diffed, which for a detail projection is the
+    // stronger of the two checks. The eleven: organizations, projects, api-keys, knowledge-bases,
+    // environments, secret-refs, repository-bindings, agent-revisions, tools, tool-revisions, tool-sets.
     assert.ok(
-      itemsCompared >= 8,
+      itemsCompared >= 11,
       `only ${itemsCompared} collections had a row on BOTH sides (${comparedSubjects.join(", ")}), so this arm ` +
         "compared almost no item shapes — the bootstrap seeds organizations/projects/api-keys and this sweep " +
         "seeds a knowledge base, an environment, one environment value (which is a secret_refs row), a " +
-        "repository binding, an agent and a published agent revision. Eight of those nine can be compared; " +
-        "GET /v1/agents cannot, because its envelope differs irreducibly (see DIV-SHP-004). Fewer than eight " +
-        "means either the real stack is not seeded or a seed did not land, and this arm would pass vacuously",
+        "repository binding, an agent, a published agent revision, a tool, a published tool revision and a " +
+        "published tool-set revision. Eleven of those twelve can be compared; GET /v1/agents cannot, because " +
+        "its envelope differs irreducibly (see DIV-SHP-004). Fewer than eleven means either the real stack is " +
+        "not seeded or a seed did not land, and this arm would pass vacuously",
     );
   });
 
@@ -654,6 +737,29 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
       "the tool-approval queue over a PARKED gated tool call",
       `GET /v1/approvals answers 200 with ${queue.data?.length ?? 0} row(s) after a real run reached terminal, and the ` +
         `envelope is {${Object.keys(queue).sort().join(",")}} — the screen is real on this profile, the rows cannot be`,
+    );
+
+    // DIV-UI-008 (E25 T7): the tools screen RENDERS on the real profile — its panels, its pickers and its
+    // ceiling notes are all real there, and this sweep's own seed proves both new read routes answer. What
+    // cannot exist is a DISCOVERED tool revision, because discovery dials an upstream MCP server and a
+    // hermetic stack has none and must not acquire one. Re-derived from the connection collection rather
+    // than from prose: it is EMPTY, and nothing on a bootstrap stack fills it — `palai up` registers no
+    // connection, and SLACK_AGENT_MCP names one an operator already made. If a compose stack ever ships with
+    // a connection registered, this fails, the row is stale, and the discovery legs must stop skipping.
+    const conns = await realFetch("/v1/mcp-connections");
+    assert.equal(conns.status, 200, `GET /v1/mcp-connections on the real stack returned ${conns.status} — the family is unmounted, which DIV-UI-008 does not claim`);
+    const connPage = await conns.json();
+    assert.deepEqual(
+      connPage.data ?? [],
+      [],
+      `the real stack holds ${connPage.data?.length ?? 0} MCP connection(s) — something on a bootstrap stack now ` +
+        "registers one, so DIV-UI-008 is stale and tests/mcp-tools.spec.ts must stop skipping its discovery legs",
+    );
+    requireLedgerRow(
+      "ui",
+      "registering an MCP connection, DISCOVERING it, and approving what it found",
+      `GET /v1/mcp-connections answers 200 with ${connPage.data?.length ?? 0} row(s) — there is nothing to discover ` +
+        "on a hermetic stack, while both E25 T7 read routes are seeded and compared by this same sweep",
     );
   });
 

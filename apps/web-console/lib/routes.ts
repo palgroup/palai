@@ -45,4 +45,9 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // truncation is visible — pagination.spec.ts drives it), and two pages answering one testid is how a spec
   // ends up asserting against whichever page it happened to be on.
   { path: "/agents", label: "Agents", readyTestId: "panel-agent-profiles" },
+  // E25 T7. `panel-mcp-connections` is the FIRST panel on the page and the one that can still be a spinner;
+  // the forms below it render synchronously. It is empty on every bootstrap stack (nothing registers an MCP
+  // connection without an operator), so on both profiles this scan covers the empty state — which is the
+  // state a first-day operator meets, and the one the registration form sits above.
+  { path: "/tools", label: "Tools", readyTestId: "panel-mcp-connections" },
 ];

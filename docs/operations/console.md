@@ -237,6 +237,71 @@ read this queue nor decide on it — reading and deciding are gated on the same 
 
 ---
 
+## 4b. `/tools` — MCP connections and tool registration
+
+`/tools` is the screen for the E12 T5/T6 registry: register an upstream MCP server, discover its tools,
+**approve** the ones you want, pin them into a set, publish the set. The full API walkthrough is
+[`jira-mcp-connection.md`](jira-mcp-connection.md) §3 — this screen makes the same seven calls.
+
+### It is a REGISTRATION screen. `/approvals` is the approval screen. They are not the same decision
+
+This distinction is written down because the two screens look adjacent and are not, and a reader who
+conflates them will conclude that one of them is missing something.
+
+| | `/tools` (this screen) | `/approvals` (§4) |
+|---|---|---|
+| **When** | once per tool, **before any run exists** | while a run is **parked**, waiting |
+| **What is decided** | is this tool advertised to a model at all, and will calling it stop for a human | does *this* call, with *these* arguments, proceed now |
+| **The server's `description`** | **SHOWN — it is what you are deciding about**: those words go into a model's context | **NOT ON THE WIRE AT ALL** |
+| **The human sentence** | you WRITE it (`approval_label`) | you READ it |
+| **Reversible** | no — publishing is permanent; supersede with a new revision | the decision applies once, to one call |
+
+The approval screen's absence of a description is deliberate and structural rather than an omission:
+`api/approvals.go`'s `PendingApproval` carries six ledger fields and four screen fields, and its own comment
+says *"WHAT IS NOT HERE is as deliberate as what is: no MCP `description`, no server-supplied `title`, no
+model prose outside the arguments."* A console could not render it there if it wanted to. That is the whole
+reason the label you type on `/tools` exists — it is the **only** human sentence on the approval screen.
+
+### The description is an attacker's text, and it is rendered as text
+
+Whoever operates the MCP server wrote it, and on this screen you are reading it precisely because you are
+about to let it into a model's context. It is displayed **as bytes**: no HTML is interpreted, no URL becomes
+a clickable link. A description containing `<script>` shows you `<script>`. That is asserted by attack rather
+than by claim — a fixture description carrying a `<script>` and an `<a href>` is driven onto the page and the
+spec then counts elements, anchors and navigations (`tests/mcp-tools.spec.ts`), and a token scan of every
+`.tsx` in the console forbids `dangerouslySetInnerHTML` outright.
+
+### The approval gate defaults ON, and Palai will not guess for you
+
+Every draft revision arrives with **Require approval** checked. Turning it off is a deliberate click.
+
+Palai does **not** classify tools as read or write and is not going to start: the MCP specification says
+verbatim that *"clients MUST consider tool annotations to be untrusted unless they come from trusted
+servers"*, so a server's own `destructiveHint` cannot decide this, and our client does not decode
+`annotations` at all. The console therefore takes the safe answer as the default rather than the informed
+one — **and it does not prevent you from removing it.** Publishing a write tool with the gate off succeeds,
+silently, and the agent will call it with no human in the loop. That is `HIL-P5`, and this screen makes it
+**visible** rather than closed.
+
+### Ceilings, named
+
+- **Two read routes are not an approval FLOW.** `GET /v1/tools/{tool_id}/revisions` and
+  `GET /v1/tool-sets/{set}/revisions/{revision_id}` are what E25 T7 added; **who published a revision is
+  recorded nowhere.** The decision is immutable and readable, and it is not attributed.
+- **`discover` is the only control here that leaves the process**, and it reaches a real MCP server. There
+  is nothing to discover on a stack that has registered no connection.
+- **No DELETE and no PATCH for a connection.** The API mounts a create, two reads and a discover. This
+  console registers and reads; it does not correct. A connection registered wrongly is superseded, not
+  edited.
+- **A published set grants nothing on its own.** Bind it on `/agents`, where a revision names **both** a
+  tool set (the grant) and an MCP connection (the ceiling). Each one's absence fails quietly and
+  differently: without the set the tool is never advertised; without the connection it resolves to nothing
+  even when it is.
+- **One set and one connection per revision on that form.** The API accepts several; the console offers one
+  of each, and the field is an array on the wire.
+
+---
+
 ## 5. When it does not work
 
 | Symptom | Cause | Fix |
@@ -292,7 +357,7 @@ and the operator session never rides an upstream request.
 | The approval routes and the capability | `apps/control-plane/api/approvals.go` |
 | The proofs | `apps/web-console/tests/auth.spec.ts`, `tests/relay-gate.spec.ts`, `tests/public-api-only.spec.ts`, `tests/approval-queue.spec.ts` |
 
-The control plane's public API is **125 method+path pairs** as of `c6a59658` (2026-07-30), all registered in
+The control plane's public API is **132 method+path pairs** as of `1aad6586` (2026-07-30), all registered in
 `apps/control-plane/api/router.go`. The console relays a subset of them and can reach no other path.
 
 That number is dated on purpose, with the command that produces it, because it has now gone stale three
@@ -303,4 +368,6 @@ grep -E '\.(Handle|HandleFunc)\("(GET|POST|PATCH|DELETE|PUT) /v1' apps/control-p
 ```
 
 It read 112 when `admin-console-feature-list.md` measured it, 115 after E23 T9 added the three approval
-routes, and 125 after E24's runner-fleet routes landed. Quote the command, not the count.
+routes, 125 after E24's runner-fleet routes landed, **130 by the time E25 T3 mounted the environment
+family** — which happened while this very paragraph said 125, the fourth staleness and the first inside the
+epic that wrote the warning — and 132 after E25 T7's two registry reads. Quote the command, not the count.

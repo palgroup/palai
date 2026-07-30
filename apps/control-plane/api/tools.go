@@ -21,11 +21,15 @@ type ToolRegistryAPI interface {
 	PublishToolRevision(ctx context.Context, scope middleware.Scope, revisionID string, body []byte) (ToolResult, error)
 	CreateToolSetRevision(ctx context.Context, scope middleware.Scope, setName string, body []byte) (ToolResult, error)
 	PublishToolSetRevision(ctx context.Context, scope middleware.Scope, revisionID string) (ToolResult, error)
-	// GetTool + ListTools + ListToolSets are the E13 T4 read side, RLS-scoped. A tool-set has no
-	// single-resource GET (a set is consumed by name, not fetched by revision id) — LIST only.
+	// GetTool + ListTools + ListToolSets are the E13 T4 read side, RLS-scoped.
 	GetTool(ctx context.Context, scope middleware.Scope, id string) (ToolResult, error)
 	ListTools(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
 	ListToolSets(ctx context.Context, scope middleware.Scope, q ListQuery) ([]ListRow, error)
+	// ListToolRevisions + GetToolSetRevision are the E25 T7 read side, and both close a hole that had a
+	// SHIPPED DOCUMENT resting on it (plan §3.6 D14). The bool reports whether the lineage exists in
+	// scope, so an unknown or foreign tool is a 404 and not an empty page.
+	ListToolRevisions(ctx context.Context, scope middleware.Scope, toolID string, q ListQuery) ([]ListRow, bool, error)
+	GetToolSetRevision(ctx context.Context, scope middleware.Scope, setName, revisionID string) (ToolResult, error)
 }
 
 // ToolResult is a management projection. Exactly one outcome is set: Body carries the created/published
@@ -109,6 +113,73 @@ func (h *toolHandler) getTool(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := h.tools.GetTool(r.Context(), scope, r.PathValue("tool_id"))
 	h.write(w, r, out, err, http.StatusOK, "")
+}
+
+// listRevisions returns a tenant-scoped page of ONE lineage's revisions
+// (GET /v1/tools/{tool_id}/revisions, E25 T7). An unknown or foreign tool id is a 404.
+//
+// THE PROJECTION CARRIES description AND input_schema, AND THAT IS THE ROUTE'S REASON RATHER THAN A
+// CONVENIENCE: publishing a revision is the admin approval point for an untrusted description (000024's
+// own words), and approving an id you cannot read is not approving anything. Those two fields are the
+// remote server's bytes. They travel as DATA — a renderer that interprets them is the bug this surface
+// makes reachable, which is why the console's guard is an AST test rather than a promise.
+func (h *toolHandler) listRevisions(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	// The cursor kind carries the tool id, for the reason agents.go's twin gives: a revisions list is
+	// scoped to ONE lineage, so a cursor minted on tool A must not MAC-validate on tool B's revisions.
+	kind := "tool-revisions:" + r.PathValue("tool_id")
+	q, ok := beginList(w, r, kind, scope)
+	if !ok {
+		return
+	}
+	rows, found, err := h.tools.ListToolRevisions(r.Context(), scope, r.PathValue("tool_id"), q)
+	if err != nil {
+		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
+		return
+	}
+	if !found {
+		middleware.WriteProblem(w, r, http.StatusNotFound, "not_found", "no such tool in this project")
+		return
+	}
+	renderPage(w, r, kind, scope, rows, q.Limit)
+}
+
+// getSetRevision reads one tool-set revision AND ITS PINS
+// (GET /v1/tool-sets/{set}/revisions/{revision_id}, E25 T7). The list route projects a digest and a
+// revision number; this is the only place the public API says WHICH TOOL REVISIONS a set actually grants.
+func (h *toolHandler) getSetRevision(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.tools.GetToolSetRevision(r.Context(), scope, r.PathValue("set"), r.PathValue("revision_id"))
+	h.write(w, r, out, err, http.StatusOK, "")
+}
+
+// authorize resolves the verified scope and enforces the `provision` capability for the E25 T7 reads.
+//
+// THE ASYMMETRY IS DELIBERATE AND IT IS RECORDED HERE RATHER THAN INFERRED: the E12/E13 tool routes above
+// carry no capability gate, and this task does not narrow them — retro-gating a shipped surface is a
+// contract change, not a read route. What these two answer is the configuration an operator provisions
+// (which upstream descriptions were approved, and what a set actually grants), so they sit with the other
+// provisioned surfaces (environments, secret-refs, model-routes) rather than with the model-facing list.
+// HONEST CEILING, and it is the one D8 measures: a key with an EMPTY scope set — every bootstrap and
+// admin key, including the console's — holds `provision` implicitly, so this gate separates a narrowed
+// key from a broad one and never an operator from an operator.
+func (h *toolHandler) authorize(w http.ResponseWriter, r *http.Request) (middleware.Scope, bool) {
+	scope, ok := middleware.ScopeFrom(r.Context())
+	if !ok {
+		middleware.WriteProblem(w, r, http.StatusUnauthorized, "authentication_required", "a bearer API key is required")
+		return middleware.Scope{}, false
+	}
+	if !scope.HasScope(provisionScope) {
+		middleware.WriteProblem(w, r, http.StatusForbidden, "insufficient_scope", "this API key lacks the provision capability")
+		return middleware.Scope{}, false
+	}
+	return scope, true
 }
 
 // listTools returns a tenant-scoped page of tool lineages (GET /v1/tools).

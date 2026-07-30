@@ -19,7 +19,16 @@ type fakeToolRegistry struct {
 	getTool    ToolResult
 	listTools  []ListRow
 	listSets   []ListRow
-	lastBody   []byte
+	listRevs   []ListRow
+	// revsFound scripts whether the lineage exists in scope — the bool that separates a 404 from an empty
+	// page on GET /v1/tools/{tool_id}/revisions (E25 T7).
+	revsFound bool
+	getSetRev ToolResult
+	// lastRevisionsTool records which lineage the handler asked for, so the path segment is proven to
+	// reach the seam rather than assumed from a 200.
+	lastRevisionsTool string
+	lastSetRevision   [2]string
+	lastBody          []byte
 }
 
 func (f *fakeToolRegistry) CreateTool(_ context.Context, _ middleware.Scope, body []byte) (ToolResult, error) {
@@ -48,6 +57,15 @@ func (f *fakeToolRegistry) ListTools(_ context.Context, _ middleware.Scope, _ Li
 }
 func (f *fakeToolRegistry) ListToolSets(_ context.Context, _ middleware.Scope, _ ListQuery) ([]ListRow, error) {
 	return f.listSets, nil
+}
+
+func (f *fakeToolRegistry) ListToolRevisions(_ context.Context, _ middleware.Scope, toolID string, _ ListQuery) ([]ListRow, bool, error) {
+	f.lastRevisionsTool = toolID
+	return f.listRevs, f.revsFound, nil
+}
+func (f *fakeToolRegistry) GetToolSetRevision(_ context.Context, _ middleware.Scope, setName, revisionID string) (ToolResult, error) {
+	f.lastSetRevision = [2]string{setName, revisionID}
+	return f.getSetRev, nil
 }
 
 func toolTestServer(t *testing.T, reg *fakeToolRegistry) string {
@@ -135,6 +153,72 @@ func TestToolReadRoutes(t *testing.T) {
 	reg.getTool = ToolResult{NotFound: true}
 	if resp := do(t, "GET", base+"/v1/tools/tool_missing", ``, nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown tool get status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// narrowedVerifier authenticates a key whose scope set is NON-EMPTY and does not name `provision`. It is
+// the only shape the capability gate can be measured with: an empty scope set is unrestricted by design
+// (middleware.Scope.HasScope), so a bootstrap key would pass the gate and prove nothing about it.
+type narrowedVerifier struct{}
+
+func (narrowedVerifier) VerifyAPIKey(context.Context, string) (middleware.Scope, error) {
+	return middleware.Scope{Organization: "org_1", Project: "prj_1", Principal: "prin_1", Scopes: []string{"responses"}}, nil
+}
+
+// TestToolRevisionReadRoutes pins the two E25 T7 reads at the HANDLER contract: the path segments reach the
+// seam, an unknown lineage is a 404 rather than an empty page, and a set revision renders through the
+// single-resource path.
+func TestToolRevisionReadRoutes(t *testing.T) {
+	reg := &fakeToolRegistry{
+		revsFound: true,
+		listRevs: []ListRow{
+			{ID: "trev_2", Body: []byte(`{"id":"trev_2","status":"draft"}`)},
+			{ID: "trev_1", Body: []byte(`{"id":"trev_1","status":"published"}`)},
+		},
+		getSetRev: ToolResult{Body: []byte(`{"id":"tsrev_1","tools":[{"tool_revision_id":"trev_1"}]}`)},
+	}
+	base := toolTestServer(t, reg)
+
+	assertPageLen(t, do(t, "GET", base+"/v1/tools/tool_1/revisions", ``, nil), 2)
+	if reg.lastRevisionsTool != "tool_1" {
+		t.Fatalf("the handler asked the seam for %q, want the tool_id from the path", reg.lastRevisionsTool)
+	}
+
+	// AN UNKNOWN LINEAGE IS A 404, NOT AN EMPTY PAGE. An empty page would tell an operator following the
+	// runbook that their newly discovered tool has no revisions, when what happened is a mistyped id.
+	reg.revsFound = false
+	reg.listRevs = nil
+	if resp := do(t, "GET", base+"/v1/tools/tool_missing/revisions", ``, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown-lineage revisions status = %d, want 404", resp.StatusCode)
+	}
+
+	if resp := do(t, "GET", base+"/v1/tool-sets/jira/revisions/tsrev_1", ``, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("get set revision status = %d, want 200", resp.StatusCode)
+	}
+	if reg.lastSetRevision != [2]string{"jira", "tsrev_1"} {
+		t.Fatalf("the handler asked the seam for %v, want both path segments", reg.lastSetRevision)
+	}
+	reg.getSetRev = ToolResult{NotFound: true}
+	if resp := do(t, "GET", base+"/v1/tool-sets/jira/revisions/tsrev_missing", ``, nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown set revision status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestToolRevisionReadRoutesRequireProvision pins the capability gate on the two NEW routes and, in the
+// same test, pins that the E12/E13 routes stay UNGATED — because the asymmetry is a decision and a test
+// that only asserted the refusals would let a later "tidy-up" gate the whole family silently.
+func TestToolRevisionReadRoutesRequireProvision(t *testing.T) {
+	reg := &fakeToolRegistry{revsFound: true, getTool: ToolResult{Body: []byte(`{"id":"tool_1"}`)}}
+	srv := httptest.NewServer(NewRouter(narrowedVerifier{}, nil, nil, nil, nil, nil, nil, nil, nil, reg, nil, nil, nil, nil, nil, SSEConfig{}, nil, nil))
+	t.Cleanup(srv.Close)
+
+	for _, path := range []string{"/v1/tools/tool_1/revisions", "/v1/tool-sets/jira/revisions/tsrev_1"} {
+		if resp := do(t, "GET", srv.URL+path, ``, nil); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("GET %s with a key lacking `provision` = %d, want 403", path, resp.StatusCode)
+		}
+	}
+	if resp := do(t, "GET", srv.URL+"/v1/tools/tool_1", ``, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/tools/{id} with the same key = %d, want 200 — this task does not retro-gate a shipped route", resp.StatusCode)
 	}
 }
 

@@ -116,10 +116,71 @@ func (s *Store) ListTools(ctx context.Context, scope middleware.Scope, q api.Lis
 	return rows, nil
 }
 
+// ListToolRevisions returns a tenant-scoped page of ONE lineage's revisions (spec §28.3, E25 T7). An
+// unknown or foreign tool id is a NotFound rather than an empty page: the lineage's existence is checked
+// in scope first, through the SAME GetTool the read route uses.
+//
+// THIS IS THE ROUTE docs/operations/jira-mcp-connection.md §3c HAS ALWAYS NEEDED. It told an operator to
+// find ids with GET /v1/tools and publish each revision, and no response in this tree carried a revision
+// id — so three of the runbook's five calls rested on one nobody could make.
+func (s *Store) ListToolRevisions(ctx context.Context, scope middleware.Scope, toolID string, q api.ListQuery) ([]api.ListRow, bool, error) {
+	if _, found, err := s.tools.GetTool(ctx, scope.Organization, scope.Project, toolID); err != nil || !found {
+		return nil, found, err
+	}
+	items, err := s.tools.ListToolRevisions(ctx, scope.Organization, scope.Project, toolID, toExtensionsWindow(q))
+	if err != nil {
+		return nil, false, err
+	}
+	rows := make([]api.ListRow, 0, len(items))
+	for _, it := range items {
+		status := "draft"
+		if it.Published {
+			status = "published"
+		}
+		// description + input_schema ARE THE POINT (plan §T7): they are what an admin approves. They are
+		// also UNTRUSTED — an MCP server wrote them — and they cross this boundary as data: the schema is
+		// re-emitted as raw JSON rather than re-modelled, and the description as a string. Neither is
+		// interpreted here and neither may be interpreted by a renderer.
+		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: mustJSON(map[string]any{
+			"id": it.ID, "object": "tool_revision", "tool_id": it.ToolID,
+			"revision_number": it.RevisionNumber, "executor": it.Executor,
+			"description": it.Description, "input_schema": json.RawMessage(it.InputSchema),
+			"digest": it.Digest, "status": status,
+			"approval_required": it.ApprovalRequired, "approval_label": it.ApprovalLabel,
+			"created_at": it.CreatedAt,
+		})})
+	}
+	return rows, true, nil
+}
+
+// GetToolSetRevision reads one set revision AND ITS PINS (spec §28.4, E25 T7). A missing/foreign id, or an
+// id belonging to a different set, is NotFound (404).
+func (s *Store) GetToolSetRevision(ctx context.Context, scope middleware.Scope, setName, revisionID string) (api.ToolResult, error) {
+	it, found, err := s.tools.GetToolSetRevision(ctx, scope.Organization, scope.Project, setName, revisionID)
+	if err != nil {
+		return api.ToolResult{}, err
+	}
+	if !found {
+		return api.ToolResult{NotFound: true}, nil
+	}
+	status := "draft"
+	if it.Published {
+		status = "published"
+	}
+	return api.ToolResult{Body: mustJSON(map[string]any{
+		"id": it.ID, "object": "tool_set_revision", "set": it.Set,
+		"revision_number": it.RevisionNumber, "digest": it.Digest, "status": status,
+		// The pins, verbatim — the field the LIST projection does not carry and the reason this route
+		// exists. It is the create body's own shape, so an operator reads back what they wrote.
+		"tools":      json.RawMessage(it.Pins),
+		"created_at": it.CreatedAt,
+	})}, nil
+}
+
 // ListToolSets returns a tenant-scoped page of tool-set revisions (spec §28.4, E13 T4). A set is named
-// directly (no lineage table), so the list is its revisions.
-// ponytail: no single-resource GET /v1/tool-sets/{id} — a set is consumed by NAME in an agent revision,
-// never fetched by revision id, so there is no resolver to expose. Add one if a console needs it.
+// directly (no lineage table), so the list is its revisions. The single-resource read a `ponytail:` note
+// here used to defer ("add one if a console needs it") is GetToolSetRevision above — E25 T7's console
+// needed it, and the list projection stays as it was: identity and digest, without the pins.
 func (s *Store) ListToolSets(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
 	items, err := s.tools.ListToolSetRevisions(ctx, scope.Organization, scope.Project, toExtensionsWindow(q))
 	if err != nil {
