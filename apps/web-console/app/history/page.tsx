@@ -117,7 +117,7 @@ export default function HistoryPage() {
         fetchPath="/responses"
         note="Newest first, and confined to the tenant this console's key is scoped to. Open a run to read the event journal it wrote and the files it left behind."
         columns={[
-          { header: "Response", render: (row) => row.id },
+          { header: "Response", render: (row) => <code>{row.id}</code> },
           { header: "Status", render: (row) => <Status value={row.status} /> },
           { header: "Created", render: (row) => row.created_at },
           {
@@ -213,7 +213,7 @@ export default function HistoryPage() {
                 ),
               },
               { header: "Type", render: (row) => (row.media_type === "" ? "—" : row.media_type) },
-              { header: "Size", render: (row) => `${String(row.size_bytes)} bytes` },
+              { header: "Size", render: (row) => <span className="num">{`${String(row.size_bytes)} bytes`}</span> },
               { header: "Scan", render: (row) => row.malware_scan_status },
               { header: "Created", render: (row) => row.created_at },
             ]}

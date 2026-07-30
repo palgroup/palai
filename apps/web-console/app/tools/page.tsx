@@ -214,12 +214,17 @@ export default function ToolsPage() {
       <p className="muted" data-testid="tools-registration-note">
         <strong>This is a registration screen, not the approval queue.</strong> Here you decide, once per
         tool and before any run exists, whether a tool is advertised to a model at all and whether calling it
-        will stop for a human. The <strong>server&apos;s own description is shown here on purpose</strong> —
-        it is what you are deciding about, because those words go into a model&apos;s context. The{" "}
-        <a href="/approvals">approval queue</a> answers a different question later (this call, these
+        will stop for a human. The <strong>server&apos;s own description is shown here on purpose</strong>{" "}
+        — it is what you are deciding about, because those words go into a model&apos;s context. The{" "}
+        <a href="/approvals">approval queue</a>{" "}
+        answers a different question later (this call, these
         arguments, now) and the server&apos;s description is <strong>not on that screen at all</strong>; the
         only human sentence there is the label you write below.
       </p>
+      {/* The registration note above says WHICH decision this screen is, which is the thing an operator gets
+          wrong; these two are standing properties of the surface. Collapsed, not removed. */}
+      <details className="notes" data-testid="tools-standing-notes">
+        <summary>The descriptions below are untrusted text, and nothing here can be edited or removed</summary>
       <p className="muted" data-testid="tools-untrusted-note">
         <strong>Every description below was written by the upstream server, and it is untrusted text.</strong>{" "}
         It is displayed exactly as bytes — no markup is interpreted and no link is made clickable — so a
@@ -233,6 +238,7 @@ export default function ToolsPage() {
         makes an approved tool auditable. And <strong>nothing records who published</strong>: the decision is
         immutable and visible, but it is not attributed to a person.
       </p>
+      </details>
 
       <Panel<ConnectionRow>
         title="MCP connections"
@@ -242,7 +248,7 @@ export default function ToolsPage() {
         onRows={setConnections}
         note="An admin-registered upstream MCP server. The credential is NOT here and cannot be: a connection carries a secret_ref HANDLE, and the list projection has no field for a value."
         columns={[
-          { header: "ID", render: (r) => String(r.id ?? "") },
+          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
           { header: "Name", render: (r) => String(r.name ?? "") },
           { header: "Transport", render: (r) => String(r.transport ?? "") },
           { header: "Trust level", render: (r) => String(r.trust_level ?? "") },
@@ -372,9 +378,9 @@ export default function ToolsPage() {
         onRows={setTools}
         note="One row per tool lineage, discovered or registered. The model calls a tool by its model-visible name; the canonical name is what an operator reads."
         columns={[
-          { header: "ID", render: (r) => String(r.id ?? "") },
-          { header: "Canonical name", render: (r) => String(r.canonical_name ?? "") },
-          { header: "Model-visible name", render: (r) => String(r.model_visible_name ?? "") },
+          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
+          { header: "Canonical name", render: (r) => <code>{String(r.canonical_name ?? "")}</code> },
+          { header: "Model-visible name", render: (r) => <code>{String(r.model_visible_name ?? "")}</code> },
         ]}
       />
 
@@ -571,7 +577,7 @@ export default function ToolsPage() {
         }
         columns={[
           { header: "Set", render: (rev) => String(rev.set ?? "") },
-          { header: "Digest", render: (rev) => String(rev.digest ?? "") },
+          { header: "Digest", render: (rev) => <code>{String(rev.digest ?? "")}</code> },
           {
             header: "Contents",
             render: (rev) => (

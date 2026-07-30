@@ -59,9 +59,9 @@ export default function UsagePage() {
         // from their OWN routes — the ones O5 names).
         selectRows={(body) => (Array.isArray(body.meters) ? (body.meters as MeterRow[]) : [])}
         columns={[
-          { header: "Meter", render: (row) => row.meter },
-          { header: "Quantity", render: (row) => `${String(row.quantity)} ${row.unit}` },
-          { header: "Settled entries", render: (row) => String(row.entries) },
+          { header: "Meter", render: (row) => <code>{row.meter}</code> },
+          { header: "Quantity", render: (row) => <span className="num">{`${String(row.quantity)} ${row.unit}`}</span> },
+          { header: "Settled entries", render: (row) => <span className="num">{String(row.entries)}</span> },
         ]}
         emptyNote="This project has metered nothing yet. A meter appears here once a run settles usage — a model step settles input and output tokens against the run that spent them — so an empty table means no run has completed in this scope, not that metering is off."
       />
@@ -72,9 +72,9 @@ export default function UsagePage() {
         fetchPath="/usage/ledger"
         note="The raw settled rows, newest first — the same rows an external billing exporter would read. Each is settled exactly once against the model request or run that produced it, so a redelivery adds nothing."
         columns={[
-          { header: "Meter", render: (row) => row.meter },
-          { header: "Quantity", render: (row) => `${String(row.quantity)} ${row.unit}` },
-          { header: "Run", render: (row) => (row.run_id === undefined || row.run_id === "" ? "—" : row.run_id) },
+          { header: "Meter", render: (row) => <code>{row.meter}</code> },
+          { header: "Quantity", render: (row) => <span className="num">{`${String(row.quantity)} ${row.unit}`}</span> },
+          { header: "Run", render: (row) => (row.run_id === undefined || row.run_id === "" ? "—" : <code>{row.run_id}</code>) },
           { header: "Occurred", render: (row) => row.occurred_at },
         ]}
         emptyNote="The ledger holds no settled entries for this scope. A zero-quantity fact is never written — settleUsage skips it — so a run whose model step reported no tokens leaves no row here at all, which is the usual reason a completed run appears in the history and nowhere in this table."
@@ -86,8 +86,8 @@ export default function UsagePage() {
         fetchPath="/budgets"
         note="A budget is a cumulative spend cap on a meter prefix. Admission refuses a run once settled usage since the period start reaches the limit."
         columns={[
-          { header: "Meter prefix", render: (row) => row.meter_prefix },
-          { header: "Limit", render: (row) => String(row.limit_quantity) },
+          { header: "Meter prefix", render: (row) => <code>{row.meter_prefix}</code> },
+          { header: "Limit", render: (row) => <span className="num">{String(row.limit_quantity)}</span> },
           { header: "Period start", render: (row) => row.period_start },
           { header: "Updated", render: (row) => row.updated_at },
         ]}
@@ -100,24 +100,27 @@ export default function UsagePage() {
         fetchPath="/quotas"
         note="A quota is a rate cap: a limit on a meter prefix within a rolling window."
         columns={[
-          { header: "Meter prefix", render: (row) => row.meter_prefix },
-          { header: "Limit", render: (row) => String(row.limit_quantity) },
-          { header: "Window", render: (row) => `${String(row.window_seconds)} s` },
+          { header: "Meter prefix", render: (row) => <code>{row.meter_prefix}</code> },
+          { header: "Limit", render: (row) => <span className="num">{String(row.limit_quantity)}</span> },
+          { header: "Window", render: (row) => <span className="num">{`${String(row.window_seconds)} s`}</span> },
           { header: "Updated", render: (row) => row.updated_at },
         ]}
         emptyNote="No quota is set in this scope, so nothing here caps the rate of spend. Like a budget it is a write this console does not offer; POST /v1/quotas is the only way today, and there is no CLI verb for it either."
       />
 
-      <section className="panel" aria-labelledby="usage-ceiling-h">
-        <h2 id="usage-ceiling-h">What this screen cannot do</h2>
-        <p data-testid="usage-ceiling">
+      {/* NOT A FIFTH PANEL. Four panels of data plus a fifth panel of prose reads as five things of equal
+          importance, and the fifth is not data — it is what the four do not do. Same words, same testid,
+          one level down. */}
+      <details className="notes" data-testid="usage-ceiling-notes">
+        <summary>What this screen cannot do</summary>
+        <p className="muted" data-testid="usage-ceiling">
           These four panels are a <strong>read</strong> surface. Nothing here sets, raises or removes a limit,
           and nothing here is a bill: the metering surface reports consumption and caps it, and carries no
           price, no invoice and no adjustment entry. A limit is set today by calling{" "}
           <code>POST /v1/budgets</code> or <code>POST /v1/quotas</code> with a key holding the{" "}
           <code>provision</code> capability — there is no CLI verb for either.
         </p>
-      </section>
+      </details>
     </>
   );
 }

@@ -152,11 +152,14 @@ export default function RepositoriesPage() {
         is checked. The first thing that exercises a binding is a run, and that is where a wrong provider,
         a wrong identity or a revoked credential shows up.
       </p>
+      <details className="notes" data-testid="repositories-standing-notes">
+        <summary>A binding cannot be changed or removed from here</summary>
       <p className="muted" data-testid="binding-correction-note">
         <strong>There is no way to change or remove a binding from here.</strong> The API mounts a create and
         two reads and no PATCH or DELETE, so this console creates and reads; it does not correct. A binding
         registered wrongly is superseded by registering another and pointing runs at that one.
       </p>
+      </details>
 
       <Panel<BindingRow>
         title="Repository bindings"
@@ -165,11 +168,11 @@ export default function RepositoriesPage() {
         reloadKey={reloadKey}
         note="Provider + repository identity are the AUTHORITATIVE identity; a display name or a URL is not trusted as one. The connection ref is a handle — no credential is on this surface."
         columns={[
-          { header: "ID", render: (r) => String(r.id ?? "") },
+          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
           { header: "Provider", render: (r) => String(r.provider ?? "") },
-          { header: "Repository", render: (r) => String(r.repository_identity ?? "") },
+          { header: "Repository", render: (r) => <code>{String(r.repository_identity ?? "")}</code> },
           { header: "Default branch", render: (r) => String(r.default_branch ?? "") },
-          { header: "Connection ref", render: (r) => (r.connection_ref ? String(r.connection_ref) : "— none (public)") },
+          { header: "Connection ref", render: (r) => (r.connection_ref ? <code>{String(r.connection_ref)}</code> : "— none (public)") },
           { header: "Allowed operations", render: (r) => (Array.isArray(r.allowed_operations) ? r.allowed_operations.join(", ") : "") },
         ]}
       />

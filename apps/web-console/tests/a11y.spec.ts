@@ -170,4 +170,9 @@ test("every route lib/routes.ts declares was actually scanned by axe", () => {
       "and 'the filter excluded the scans' is exactly the excuse a silent gap would hide behind.",
   ).toEqual(declared);
   expect(CONSOLE_ROUTES.every((r) => r.readyTestId !== "")).toBe(true);
+  // A ROUTE WITH NO LEAD SENTENCE IS THE SAME OMISSION AS ONE WITH NO READINESS SIGNAL, and it fails the
+  // same way. Every page in this console used to open with a panel or a wall of equally-weighted notes,
+  // and the only h1 on any of them was the brand — so "which page is this and what is it for" had no
+  // answer on screen. The list is where a route is declared; this is what keeps the answer required.
+  expect(CONSOLE_ROUTES.filter((r) => r.lead.trim() === "").map((r) => r.path)).toEqual([]);
 });

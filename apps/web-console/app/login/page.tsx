@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { PageHeader } from "@/components/Chrome";
 import { ResourceForm } from "@/components/ResourceForm";
 
 // The console's sign-in form. A Client Component with a plain fetch, NOT a Server Action — deliberately, and
@@ -56,36 +57,43 @@ export default function LoginPage() {
   }
 
   return (
-    <ResourceForm
-      title="Sign in"
-      testId="login"
-      note={
-        <span data-testid="login-note">
-          This console holds a server-side API key with <strong>full</strong> control-plane authority, so it
-          asks for the operator password before relaying anything. One operator, one password — there are no
-          user accounts, no roles and no audit trail (see docs/operations/console.md).
-        </span>
-      }
-      fields={[
-        {
-          name: "password",
-          label: "Operator password",
-          kind: "password",
-          // current-password, not "off": the operator's password manager must be able to fill this (WCAG 2.2
-          // §3.3.8), and browsers ignore "off" on a password field anyway.
-          autoComplete: "current-password",
-          required: true,
-          value: password,
-          onChange: setPassword,
-          testId: "password-input",
-        },
-      ]}
-      submitLabel="Sign in"
-      submittingLabel="Signing in…"
-      submitTestId="login-button"
-      submitting={busy}
-      error={error}
-      onSubmit={submit}
-    />
+    <>
+      {/* /login is deliberately absent from lib/routes.ts — it is outside the session gate, so the generated
+          axe loop cannot reach it — which is why this is the one page that names its own header rather than
+          reading it from the route table. The brand is the h1 here because there is no other page identity
+          to give: this screen IS the console's front door. */}
+      <PageHeader title="Palai Console" lead="One operator, one password. There are no user accounts and no roles — everything past this door acts as a single API key." />
+      <ResourceForm
+        title="Sign in"
+        testId="login"
+        note={
+          <span data-testid="login-note">
+            This console holds a server-side API key with <strong>full</strong> control-plane authority, so it
+            asks for the operator password before relaying anything. One operator, one password — there are no
+            user accounts, no roles and no audit trail (see docs/operations/console.md).
+          </span>
+        }
+        fields={[
+          {
+            name: "password",
+            label: "Operator password",
+            kind: "password",
+            // current-password, not "off": the operator's password manager must be able to fill this (WCAG 2.2
+            // §3.3.8), and browsers ignore "off" on a password field anyway.
+            autoComplete: "current-password",
+            required: true,
+            value: password,
+            onChange: setPassword,
+            testId: "password-input",
+          },
+        ]}
+        submitLabel="Sign in"
+        submittingLabel="Signing in…"
+        submitTestId="login-button"
+        submitting={busy}
+        error={error}
+        onSubmit={submit}
+      />
+    </>
   );
 }

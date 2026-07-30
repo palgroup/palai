@@ -177,7 +177,7 @@ export default function AgentsPage() {
         onRows={setAgents}
         note="One row per lineage. Select one below to read its revisions and add another."
         columns={[
-          { header: "ID", render: (r) => String(r.id ?? "") },
+          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
           { header: "Name", render: (r) => String(r.name ?? "") },
         ]}
       />

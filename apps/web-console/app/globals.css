@@ -327,8 +327,9 @@ h1.page-title {
   margin: var(--space-3) 0 0;
 }
 
+/* No bottom margin: <main> is a flex column with a gap, so a margin here would double it. */
 .page-header {
-  margin: 0 0 var(--space-6);
+  margin: 0;
 }
 
 /* A PANEL HEADING IS h2 AND IT IS SIZED AS ONE LEVEL BELOW THE PAGE TITLE, not two. The design spec maps h2
@@ -397,9 +398,13 @@ pre {
   overflow-wrap: anywhere;
   margin: var(--space-2) 0;
 }
-pre code {
+pre code,
+td code,
+th code {
   background: none;
   padding: 0;
+}
+pre code {
   font-size: inherit;
 }
 
@@ -616,8 +621,18 @@ textarea {
   width: 100%;
   transition: border-color var(--duration-1) var(--ease-out);
 }
+/* A CONTROL IS AS WIDE AS ITS CONTENT NEEDS, NOT AS WIDE AS THE PAGE. At `width: 100%` inside a 90rem
+   panel, a password field and a repository name were both 1350px of empty box — which reads as an
+   unfinished layout and gives the eye no clue how long the value is meant to be. The textarea is allowed
+   more because the one on this surface holds a denial reason written for a model to read. */
+input[type="text"],
+input[type="password"],
+select {
+  max-width: 34rem;
+}
 textarea {
   height: auto;
+  max-width: 60rem;
   padding: var(--space-2) var(--space-3);
   line-height: var(--line-height-4);
   resize: vertical;
