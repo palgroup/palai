@@ -33,34 +33,26 @@
 /** @type {Divergence[]} */
 export const DIVERGENCES = [
   // =====================================================================================================
-  // ROUTE SURFACE — three of the fifteen routes the fixture serves are not registered by the real router
-  // on a compose stack. The console reads all three.
-  // =====================================================================================================
-  {
-    id: "DIV-RTE-001",
-    kind: "route",
-    subject: "GET /v1/secret-refs",
-    detail:
-      "REPAIRED (E25 T2, plan §3.6 D6) — THE REASON THIS ROW GAVE IS NOW FALSE, AND IT WAS FALSE FOR MONTHS. It read 'deploy/compose/compose.yaml configures none', and compose.yaml:116 passes PALAI_SECRET_MASTER_KEY_FILE: /run/secrets/master_key — written LITERALLY, and `palai up`'s ensureSecretSlots guarantees the file it names holds a parseable key on every bring-up. What is still true is the MECHANISM: router.go mounts the whole /v1/secret-refs family only when cfg.secrets != nil, which main.go passes only when a master key is configured, so the console must still render an absent capability honestly rather than assume the route. What is no longer true is that a compose stack is such a stack. DISPOSITION, STATED RATHER THAN GUESSED: on a stack brought up by `palai local up` this row is expected to have CLOSED, and the sweep's staleness arm will say so by failing here — which is the correct signal and the whole reason the ledger fails in both directions. T2 could not run that sweep (it needs RUN_CONSOLE_REAL=1 and a compose stack, §6 leg 2, which is also why this row rotted), so the row is REPAIRED rather than deleted: deleting a measurement on the strength of a source read is how the false sentence got here in the first place. AND THIS ROW IS R1's PRECONDITION: T4's secret-ref list is not empty against a real stack, so a console secret form has something to write to.",
-    owner: "compose tier — the master key IS configured now (compose.yaml:116); the next RUN_CONSOLE_REAL=1 sweep decides whether this row closes",
-  },
-  {
-    id: "DIV-RTE-002",
-    kind: "route",
-    subject: "GET /v1/responses/{response_id}/artifacts",
-    detail:
-      "REPAIRED (E25 T2) — unmounted for the same reason as DIV-RTE-003, and repaired for the same reason; this is the list half of the same gate. See there.",
-    owner: "REAL COMPOSE WIRING GAP, NOW WIRED — see DIV-RTE-003",
-  },
-  {
-    id: "DIV-RTE-003",
-    kind: "route",
-    subject: "GET /v1/artifacts/{artifact_id}/content",
-    detail:
-      "REPAIRED (E25 T2, plan §3.6 D6) — THE WIRING GAP THIS ROW MEASURED HAS BEEN CLOSED AND THE ROW DID NOT NOTICE. It read that compose 'never passes PALAI_S3_ENDPOINT to the control-plane'; compose.yaml:77-78 passes PALAI_S3_ENDPOINT: http://object-store:8333 and PALAI_S3_BUCKET: palai-artifacts, deliberately NOT interpolated and with no empty default, and the comment above them names the five surfaces that were silently off while it was missing. The MECHANISM stands: router.go gates all three artifact routes on `artifacts != nil`, which main.go derives from artifactStoreFromEnv, which returns nil the moment PALAI_S3_ENDPOINT is empty (main.go:1417-1421) — so an artifact-less deployment still gets no artifact routes, and the console must still render that honestly. DISPOSITION: as with DIV-RTE-001, on a compose stack this row is expected to have CLOSED and the staleness arm is expected to fail here; that failure is the measurement T2 could not make (§6 leg 2). NOT REPAIRED BY DELETION, because the row also records WHY the console's one untrusted-bytes relay path had no real counterpart, and whether it now has one is a claim only a running stack can make.",
-    owner: "deploy/compose/compose.yaml — WIRED (77-78); the next RUN_CONSOLE_REAL=1 sweep decides whether this row closes",
-  },
-
+  // ROUTE SURFACE — EMPTY, AND THAT IS A MEASUREMENT (E25 T2). This section held three rows: GET
+  // /v1/secret-refs (unmounted because compose configured no secret master key) and the two artifact
+  // retrieval routes (unmounted because compose never passed PALAI_S3_ENDPOINT). All three reasons had
+  // become FALSE — compose.yaml:116 passes PALAI_SECRET_MASTER_KEY_FILE and compose.yaml:77-78 pass
+  // PALAI_S3_ENDPOINT/PALAI_S3_BUCKET — and the rows sat unrepaired for months because the only thing that
+  // reads them is a sweep nothing routine runs (§6 leg 2).
+  //
+  // They were not deleted on the strength of reading compose.yaml. A compose stack was brought up
+  // (packaged CLI, `:local` images, no build) and probed the way ARM 2 probes, and all three answered
+  // 405 with an Allow header — which means the PATTERN is registered:
+  //     OPTIONS /v1/secret-refs                  -> 405  Allow: GET, HEAD, POST
+  //     OPTIONS /v1/artifacts/{id}/content       -> 405  Allow: GET, HEAD
+  //     OPTIONS /v1/responses/{id}/artifacts     -> 405  Allow: GET, HEAD
+  // The staleness arm then named exactly these three and nothing else. So the divergence is CLOSED, and
+  // this ledger's own rule for a closed row is to delete it — a row nobody can re-observe is decoration,
+  // and decoration is what let the false sentences survive. The MECHANISM they recorded is not lost: both
+  // families are still mounted CONDITIONALLY (router.go on cfg.secrets != nil and artifacts != nil), so a
+  // deployment that configures neither still serves neither, and the console still has to render an absent
+  // capability honestly rather than assume a route.
+  //
   // =====================================================================================================
   // RESPONSE SHAPE — routes both serve, answered differently.
   // =====================================================================================================
@@ -171,7 +163,7 @@ export const DIVERGENCES = [
     kind: "event",
     subject: "artifact.created.v1",
     detail:
-      "The fixture announces each artifact on the stream and the console reveals the download link mid-run. The real write path inserts the artifacts row with NO journal event, so a real client can only learn about artifacts by polling GET /v1/responses/{id}/artifacts after terminal — a route that is itself unmounted on compose (DIV-RTE-002).",
+      "The fixture announces each artifact on the stream and the console reveals the download link mid-run. The real write path inserts the artifacts row with NO journal event, so a real client can only learn about artifacts by polling GET /v1/responses/{id}/artifacts after terminal. CORRECTED (E25 T2): this row used to add 'a route that is itself unmounted on compose (DIV-RTE-002)', which was measured false — the artifact routes ARE registered on a compose stack. The gap that remains is the one this row is about: artifact creation is invisible to the stream, so the only way to learn of an artifact is to poll after terminal.",
     owner: "REAL GAP — artifact creation is invisible to the stream. E19 T8 public-API gap disposition",
   },
   {
@@ -282,7 +274,7 @@ export const DIVERGENCES = [
     kind: "ui",
     subject: "the hostile-artifact download hardening suite",
     detail:
-      "The suite drives /v1/artifacts/art_evil/content — a fixture that deliberately replays an active content type, an `inline` disposition and a traversal filename. No real object store would serve such a response on demand, and no real stack holds an artifact called art_evil. The relay hardening it pins (coerced type, nosniff, forced attachment, sanitized filename, CSP) is real relay code; only the hostile INPUT is fixture-only. This row exists so the skip is never mistaken for the hardening being unproven — it is proven, on the profile that can produce an attacker. CORRECTED (E25 T2, plan §3.6 D6): this row used to carry a second reason — 'on compose that route is not even mounted (DIV-RTE-003)' — which is stale, because compose.yaml:77-78 passes PALAI_S3_ENDPOINT and the artifact routes mount. The row STANDS on its first reason, which was always the load-bearing one and blocks on its own: a hostile artifact has to be synthesised, and nothing on a real stack synthesises one. A ledger is worth exactly the truth of its lines.",
+      "The suite drives /v1/artifacts/art_evil/content — a fixture that deliberately replays an active content type, an `inline` disposition and a traversal filename. No real object store would serve such a response on demand, and no real stack holds an artifact called art_evil. The relay hardening it pins (coerced type, nosniff, forced attachment, sanitized filename, CSP) is real relay code; only the hostile INPUT is fixture-only. This row exists so the skip is never mistaken for the hardening being unproven — it is proven, on the profile that can produce an attacker. CORRECTED (E25 T2, plan §3.6 D6): this row used to carry a second reason — that on compose the artifact route is not even mounted — and that was MEASURED FALSE on a running stack: OPTIONS /v1/artifacts/{id}/content answers 405 with an Allow header, so the pattern is registered. The row STANDS on its first reason, which was always the load-bearing one and blocks on its own: a hostile artifact has to be synthesised, and nothing on a real stack synthesises one. A ledger is worth exactly the truth of its lines.",
     owner: "console fixture, correctly — synthesising a hostile upstream is what a fixture is FOR",
   },
   {
