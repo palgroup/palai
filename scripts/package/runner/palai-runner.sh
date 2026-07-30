@@ -7,7 +7,7 @@
 set -eu
 
 : "${PALAI_CONTROLLER_URL:?PALAI_CONTROLLER_URL is required (https://controller-host:8443)}"
-: "${PALAI_ENROLLMENT_TOKEN_FILE:?PALAI_ENROLLMENT_TOKEN_FILE is required (one-use token file)}"
+: "${PALAI_ENROLLMENT_TOKEN_FILE:?PALAI_ENROLLMENT_TOKEN_FILE is required (bootstrap token file)}"
 : "${PALAI_RUNNER_CA_CERT:?PALAI_RUNNER_CA_CERT is required (the controller CA the runner pins)}"
 
 # PALAI_SESSION_URL below strips the https:// prefix to build wss://…; a non-https URL would

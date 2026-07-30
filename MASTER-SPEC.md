@@ -1647,9 +1647,9 @@ WebSocket over TLS is the baseline firewall-friendly transport; HTTP long pollin
 
 ### 24.9 Runner enrollment
 
-1. An administrator creates a single-use enrollment token scoped to organization, project or pool, labels, expiry, and maximum hosts.
+1. An administrator creates an enrollment credential scoped to organization, project or pool, labels, expiry, and maximum hosts. It is **not single-use**: the control plane admits one redemption per issued-certificate lifetime, because re-presenting it inside that window is the only way a host whose certificate has already expired can recover an identity. Maximum hosts is not implemented (see `known-gaps-1.0.md` `FLT-P5`).
 2. The daemon presents the token over TLS and generates a local key pair.
-3. The control plane attests the request as far as the configured deployment supports, consumes the token, and issues a short-lived runner certificate.
+3. The control plane attests the request as far as the configured deployment supports, redeems the credential for this certificate lifetime, and issues a short-lived runner certificate.
 4. Renewal uses the runner identity, not the enrollment token.
 5. Revocation stops new leases immediately and terminates or drains existing leases according to policy.
 

@@ -20,16 +20,18 @@ import (
 
 // Identity is the runner's short-lived enrolled identity: the run-scoped client
 // certificate and the private key that never leaves the runner. It deliberately
-// carries no enrollment token — the one-use bootstrap token is spent during Enroll
-// and discarded, never retained as a credential.
+// carries no enrollment token — the bootstrap credential is presented during Enroll
+// and discarded, never retained. It is not one-use (the control plane admits one
+// redemption per issued-certificate lifetime), which makes NOT retaining it the
+// stronger property: the runner re-reads it from disk when it needs it.
 type Identity struct {
 	RunnerID    string
 	Certificate tls.Certificate
 	NotAfter    time.Time
 }
 
-// BootstrapConfig is the one-use enrollment input. EnrollmentToken is presented once
-// and never stored; ControllerCAs and ControllerDNS are the trust anchor and exact
+// BootstrapConfig is the enrollment input. EnrollmentToken is presented and never
+// stored — not one-use, but not retained either; ControllerCAs and ControllerDNS are the trust anchor and exact
 // server identity the runner requires for every outbound connection.
 type BootstrapConfig struct {
 	RunnerID        string
@@ -78,14 +80,15 @@ type enrollmentResponse struct {
 	RunnerID string `json:"runner_id"`
 }
 
-// Enroll exchanges the one-use bootstrap token for a short-lived client identity over
+// Enroll exchanges the bootstrap credential for a short-lived client identity over
 // an outbound, server-authenticated TLS connection. The runner generates its own
 // keypair locally; only the public key is sent, and the returned certificate plus that
-// local key form the identity. The token is used once and discarded.
+// local key form the identity. The token is presented and discarded — it is not one-use, so a
+// machine whose certificate expired may re-present it, but nothing here retains it.
 func Enroll(ctx context.Context, config BootstrapConfig) (Identity, error) {
 	if config.RunnerID == "" || config.RunnerDNS == "" || config.EnrollmentToken == "" ||
 		config.ControllerCAs == nil || config.ControllerDNS == "" || config.Now == nil {
-		return Identity{}, errors.New("enrollment requires runner identity, one-use token, controller trust, DNS and clock")
+		return Identity{}, errors.New("enrollment requires runner identity, bootstrap token, controller trust, DNS and clock")
 	}
 	if !strings.HasPrefix(config.EnrollmentURL, "https://") {
 		return Identity{}, errors.New("enrollment URL must be outbound https")

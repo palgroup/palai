@@ -252,7 +252,7 @@ log "OPS-008: an old-stamp runner (0.12.0) is rejected with the intermediate-hop
 # 0.15.0 stamp (it is not recreated), so the connect handshake rejects the runner with the hop message.
 compose_up "$d_engine_n1" "$cp_n1" "$runner_n1"
 for _ in $(seq 1 30); do curl_api GET /v1/capabilities >/dev/null 2>&1 && break; sleep 1; done
-# Mint a FRESH one-use enrollment token: the healthy runner above already spent the current token on this
+# Mint a FRESH enrollment token: the healthy runner above already redeemed the current token for this
 # (not-recreated) control-plane, so the 0.12.0 runner must enroll with a new one before it can reach the
 # version handshake. The control-plane re-reads the token file at Consume.
 head -c48 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$PALAI_HOME/runner-token"

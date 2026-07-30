@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bring the packaged local stack up: build the palai CLI, initialise .palai on first run,
-# then `local up` (build images, mint a fresh one-use runner token, compose up --wait).
+# then `local up` (build images, mint a fresh runner token, compose up --wait).
 # Volumes are retained across down/up; `scripts/local/down` stops without deleting them.
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
