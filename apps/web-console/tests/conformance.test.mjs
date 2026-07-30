@@ -329,6 +329,15 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     // were empty on every bootstrap stack now have one each. The six that must hold: organizations, projects,
     // api-keys, knowledge-bases, environments, secret-refs. T7 seeds tool revisions and raises it again; it
     // must never fall.
+    //
+    // E25 T5 DID NOT RAISE IT, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION (§2 says every page-opening task
+    // seeds its collection and raises this number). GET /v1/approvals is comparable here and its ENVELOPE is
+    // compared — both sides answer {data, has_more} — but its ITEM shape cannot be, because the real side cannot
+    // be seeded: a row in `tool_approvals` is created only when a gated tool call PARKS, no /v1 route parks one
+    // (E23 T9's surface reads the queue and decides on it), and a compose run reaches no tool call at all
+    // (DIV-UNX-001: the fake adapter is hardcoded with no ToolCalls and no env knob). So the honest floor for T5
+    // is the one below, unchanged, with the reason written down — and the first task that can seed a row on the
+    // real side raises it. A baseline nudged up by a seed that does not exist would be worse than one that holds.
     assert.ok(
       itemsCompared >= 6,
       `only ${itemsCompared} collections had a row on BOTH sides, so this arm compared almost no item shapes — ` +
@@ -497,6 +506,34 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
       "ui",
       "the list-truncation proof over a collection larger than one page",
       `a real stack's agents list holds ${agentsPage.data?.length ?? 0} row(s) with has_more=false — no page is ever truncated`,
+    );
+
+    // DIV-UI-006 (E25 T5): the tool-approval QUEUE renders on the real profile — the route is mounted
+    // unconditionally and answers 200 — but it cannot hold a ROW, because a tool approval is created only when a
+    // gated tool call parks and nothing on a compose stack can park one. Re-derived, not assumed, and derived
+    // AFTER a real run has reached terminal: if a real run ever does park a gated call, this fails, the row is
+    // stale, and the queue's decision legs must stop skipping on the real profile.
+    const approvals = await realFetch("/v1/approvals");
+    assert.equal(
+      approvals.status,
+      200,
+      `GET /v1/approvals on the real stack returned ${approvals.status}. It is mounted UNCONDITIONALLY (main.go ` +
+        "api.WithApprovals(repo)) and the bootstrap key holds the `approve` capability implicitly (an empty scope " +
+        "set satisfies Scope.HasScope), so anything else means the console's approval screen has no real upstream " +
+        "and DIV-UI-006 understates the problem",
+    );
+    const queue = await approvals.json();
+    assert.deepEqual(
+      queue.data ?? [],
+      [],
+      `the real tool-approval queue holds ${queue.data?.length ?? 0} row(s) — a compose run PARKED a gated call, so ` +
+        "DIV-UI-006 is stale and tests/approval-queue.spec.ts must stop skipping its decision legs on the real profile",
+    );
+    requireLedgerRow(
+      "ui",
+      "the tool-approval queue over a PARKED gated tool call",
+      `GET /v1/approvals answers 200 with ${queue.data?.length ?? 0} row(s) after a real run reached terminal, and the ` +
+        `envelope is {${Object.keys(queue).sort().join(",")}} — the screen is real on this profile, the rows cannot be`,
     );
   });
 

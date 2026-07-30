@@ -16,6 +16,13 @@ the server-side relay (`app/api/palai/**`) and never reaches the browser — the
   renders the proposal-supplied `display` string in a separate, explicitly non-authoritative region that
   never replaces it. Recovery/attempt transitions and artifact download included.
 
+- **Approvals (`/approvals`, E25 T5):** the queue of **gated tool calls** parked by a run —
+  `GET /v1/approvals` plus the two decision routes E23 T9 opened, so a deployment with no Slack workspace can
+  answer them at all. The screen is the server's (`slack.DeriveApprovalDisplay`, the same derivation the Slack
+  message renders), the decision carries the row's own `request_hash`, and a deny takes a reason that reaches the
+  model verbatim. **It holds tool approvals only** — publication approvals live in a run's stream, and the page
+  says so. Operator guide: **[docs/operations/console.md](../../docs/operations/console.md) §4**.
+
 ### Public-API GAP: richer approval detail
 
 The `approval.requested.v1` event carries only `{publication_id, operation, branch, request_hash, display}`,
