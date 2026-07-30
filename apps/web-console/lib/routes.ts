@@ -50,4 +50,25 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // connection without an operator), so on both profiles this scan covers the empty state — which is the
   // state a first-day operator meets, and the one the registration form sits above.
   { path: "/tools", label: "Tools", readyTestId: "panel-mcp-connections" },
+  // E25 T8 — THE OBSERVABILITY HALF, AND IT IS THREE ROUTES FOR SIX SCREENS (feature list §7 O1/O2/O4/O5/
+  // O6/O9). §T8 says each screen adds a row here; three of the six cannot have a row of their own and that
+  // is structural rather than a saving: O2 (a past run's event stream) and O6 (that run's artifacts) are
+  // both keyed by a RUN ID, and a row here must be a path this list's own axe loop can `goto` on a stack
+  // that may hold no runs at all. A `/history/[id]` route would be a declared row with no scannable path,
+  // which is exactly the unscanned-page hole this file exists to close. So they live on /history as the
+  // drill-down of the run the operator selected, and each still gets its own panel testid and its own leg.
+  //
+  // `panel-runs` is the list, and it is the honest readiness signal on both profiles: a bootstrap stack
+  // whose console has never started a run answers GET /v1/responses with an empty page, so on the real
+  // profile this scan covers the empty state — which is the state a first-day operator meets.
+  { path: "/history", label: "Run history", readyTestId: "panel-runs" },
+  // O4/O5, THE READ HALF ONLY (the write half is E26). `panel-usage-meters` is the first of four panels and
+  // the one that can still be a spinner. All four are EMPTY on a fresh stack and that is the point of the
+  // scan: an empty metering screen is a rendered SENTENCE here, never a blank region (DIV-UI-002 measured
+  // how thin the real surface is; a console that answers thinness with whitespace is unreadable).
+  { path: "/usage", label: "Usage", readyTestId: "panel-usage-meters" },
+  // O9. The tiers are shown as GET /v1/capabilities returns them — no re-derivation, no prettifying, no
+  // console-side opinion about what "preview" ought to mean. `palai up` prints this to a terminal
+  // (up.go capabilityRows) and until now the console did not show it at all.
+  { path: "/capabilities", label: "Capabilities", readyTestId: "panel-capabilities" },
 ];

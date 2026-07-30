@@ -38,6 +38,36 @@ function isArtifactDownload(path: string): boolean {
   return /^\/v1\/artifacts\/[^/]+\/content(\?|$)/.test(path);
 }
 
+// sessionEventsID matches the one STREAMING JSON endpoint — GET /v1/sessions/{id}/events — and returns the
+// session id, or null. It exists because a past run's timeline (E25 T8, feature list O2) has no other route:
+// /v1 publishes no JSON event list, so run history is the SSE journal replayed from sequence 0, and pushing
+// text/event-stream through relayJSON would buffer a stream and then fail to parse it as JSON.
+//
+// The id is DECODED: upstreamPath encodeURIComponent's each segment and the SDK encodes the id again, so
+// passing the encoded form through would double-encode it.
+function sessionEventsID(path: string): string | null {
+  const id = path.match(/^\/v1\/sessions\/([^/]+)\/events(?:\?|$)/)?.[1];
+  return id === undefined ? null : decodeURIComponent(id);
+}
+
+// upstreamProblem renders a non-2xx upstream answer on the streaming branch. openEventStream returns the
+// raw response rather than throwing (ResponseStream owns retry), so the typed refusal has to be carried
+// across by hand — and it IS carried rather than flattened: a 404 for an unknown session and a 410 for a
+// reaped one say different things to an operator, and "the timeline failed to load" says neither. The
+// upstream body is never echoed; only its stable `code`/`detail` are re-emitted through problem().
+async function upstreamProblem(upstream: globalThis.Response): Promise<Response> {
+  let code = "upstream_error";
+  let detail = "the session's event journal could not be read";
+  try {
+    const body = (await upstream.json()) as { code?: unknown; detail?: unknown };
+    if (typeof body.code === "string" && body.code !== "") code = body.code;
+    if (typeof body.detail === "string" && body.detail !== "") detail = body.detail;
+  } catch {
+    /* a non-JSON refusal keeps the generic pair above */
+  }
+  return problem(upstream.status, code, detail);
+}
+
 // artifactID pulls the id out of the download path — the fallback filename when an upstream name is
 // missing or sanitizes away to nothing.
 function artifactID(path: string): string {
@@ -111,6 +141,31 @@ export async function GET(request: Request, ctx: { params: Promise<{ path: strin
       // untrusted and this is the console's own origin, so the relay decides how they are labelled — see
       // downloadHeaders. No key, no upstream URL — just the object body.
       return new Response(upstream.body, { status: upstream.status, headers: downloadHeaders(upstream.headers, path) });
+    } catch (err) {
+      return relayError(err);
+    }
+  }
+
+  // The past-run journal (E25 T8). Streamed straight through — never buffered here, and never re-projected:
+  // the browser applies the SAME lib/timeline laneFor the live relay applies, so a replayed run is sorted
+  // into lanes by one function rather than two that can drift.
+  //
+  // ponytail: the resume cursor is not forwarded. `?after_sequence=` and Last-Event-ID both exist upstream
+  // (api/events.go resolveCursor) and this always replays from the beginning, which is correct for a
+  // FINISHED run — the journal ends. Forward the cursor when a caller needs to resume a live one.
+  const sessionID = sessionEventsID(path);
+  if (sessionID !== null) {
+    try {
+      const upstream = await getPalaiClient().openEventStream(sessionID, null, request.signal);
+      if (!upstream.ok) return await upstreamProblem(upstream);
+      return new Response(upstream.body, {
+        status: upstream.status,
+        headers: {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
     } catch (err) {
       return relayError(err);
     }

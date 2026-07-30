@@ -584,6 +584,98 @@ function ensureDecisionRows() {
   }
 }
 
+// --- RUN HISTORY, ARTIFACT METADATA AND METERING (E25 T8) ------------------------------------------------
+
+// responseListRows renders every run this fixture has created as GET /v1/responses renders one, NEWEST
+// FIRST — the order storage/queries/responses.sql gives (`ORDER BY created_at DESC, id DESC`), which is what
+// lets the console's history screen open "the run I just made" without naming an id.
+//
+// The KEY SET is store/postgres.go ListResponses': a zero Usage marshals to {input_tokens, output_tokens}
+// (total_tokens and tool_calls are omitempty and zero), Model is "" and present, Output is [], and RunID and
+// UpdatedAt are omitempty and absent. A list row is deliberately poorer than the detail — that is the
+// contract, not a shortcut.
+function responseListRows() {
+  const rows = [];
+  for (const [sid, state] of sessions) {
+    rows.push({
+      created_at: fixtureTime(rows.length),
+      id: sid.replace("ses_", "resp_"),
+      model: "",
+      object: "response",
+      organization_id: "org_local",
+      output: [],
+      project_id: "proj_local",
+      session_id: sid,
+      status: state.denied === true ? "canceled" : "completed",
+      usage: { input_tokens: 0, output_tokens: 0 },
+    });
+  }
+  return rows.reverse();
+}
+
+// artifactProjection is the artifact metadata shape BOTH artifact reads render — the list and the per-id
+// GET share artifacts/reader.go metadataRow.projection(), so they are one function here too. There is no
+// `filename` and no `byte_size`: the projection carries neither, and a download's filename comes from the
+// object store's own disposition (sanitized by the relay), never from this metadata.
+function artifactProjection(id) {
+  return {
+    id,
+    object: "artifact",
+    run_id: "run_console_0001",
+    size_bytes: 22,
+    checksum: "sha256:7f0d1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7",
+    media_type: "text/plain",
+    logical_type: "release_notes",
+    malware_scan_status: "not_scanned",
+    created_at: "2026-07-24T00:00:03Z",
+  };
+}
+
+// The metering fixtures. Meters and the ledger carry rows so the console's columns are exercised; budgets
+// and quotas are empty on both profiles and the ROUTES table says why.
+//
+// THE METER NAMES ARE THE REAL ONES, and getting that wrong is the exact defect this task caught one file
+// over. coordinator/usage.go names them: `run.admitted` (unit "run", settled inside the ADMISSION
+// transaction, so a real stack has this row the moment a run is created) and `model.input_tokens` /
+// `model.output_tokens` (unit "token"). A compose run settles ONLY the first — settleUsage skips a
+// zero-quantity entry and the compose fake adapter reports no tokens — so the two model meters here are
+// UNEXERCISED real names rather than invented ones, which is a distinction this tree enforces elsewhere and
+// should not blur in a fixture.
+const USAGE_METERS = [
+  { meter: "run.admitted", unit: "run", quantity: 1, entries: 1 },
+  { meter: "model.input_tokens", unit: "token", quantity: 40, entries: 1 },
+  { meter: "model.output_tokens", unit: "token", quantity: 18, entries: 1 },
+];
+
+// The ledger row's key set is metering/store.go ledgerEntryView: session_id and run_id are omitempty and are
+// present here because a settled model step always carries both.
+const USAGE_LEDGER = [
+  {
+    id: "use_fixture000000000001",
+    object: "usage_ledger_entry",
+    schema_version: 1,
+    project_id: "proj_local",
+    session_id: "ses_console_0001",
+    run_id: "run_console_0001",
+    meter: "tokens.input",
+    quantity: 40,
+    unit: "token",
+    occurred_at: "2026-07-24T00:00:02Z",
+  },
+  {
+    id: "use_fixture000000000002",
+    object: "usage_ledger_entry",
+    schema_version: 1,
+    project_id: "proj_local",
+    session_id: "ses_console_0001",
+    run_id: "run_console_0001",
+    meter: "tokens.output",
+    quantity: 18,
+    unit: "token",
+    occurred_at: "2026-07-24T00:00:02Z",
+  },
+];
+
 // The static admin fixtures — the §47.1 surface. Secret-ref rows are metadata only (name/version); a
 // connection carries a secret REF name, never a value; an api-key row is metadata only.
 const ADMIN = {
@@ -974,7 +1066,82 @@ export const ROUTES = [
         sendJSON(response, 200, { object: "mcp_discovery", connection_id: id, new_revisions: fresh, unchanged, rejected: [] });
       }),
   },
+  // THE MANUAL REGISTRY WRITE PATH, AND ITS ABSENCE MADE `pnpm sweep` RED FROM THE MOMENT E25 T7 LANDED.
+  // T7 added a seed to tests/conformance.test.mjs that creates a tool and a revision on BOTH sides through
+  // these two routes — and the fixture served neither, so seedBothStacks asserted on `POST /v1/tools
+  // returned 404` before a single arm ran. Nothing else could have caught it: the sweep's arm 2 checks only
+  // that every route the FIXTURE serves is registered by the real router, never the other direction, so a
+  // route the real router mounts and the fixture lacks is invisible to it by design. The seed was the one
+  // thing that would notice, and the seed is what never ran.
+  //
+  // The console itself does not use either route — it fills the registry by DISCOVERY (the block above), and
+  // that is why the gap survived T7's own screen work. They are here for the sweep's benefit, so a manually
+  // registered lineage and a control_plane revision exist on both sides and their projections get compared.
+  //
+  // BOTH SHAPES WERE MEASURED AGAINST THE RUNNING REAL ROUTER RATHER THAN READ OFF A STRUCT, and the second
+  // one is not what a reader would guess: creating a revision answers a NARROWER projection than listing
+  // one. `description`, `input_schema`, `approval_required`, `approval_label` and `created_at` are all
+  // absent from the create answer and present in ListToolRevisions, so a fixture that echoed toolRevisionRow
+  // here would have invented five fields — the exact defect class this commit's own artifact-row finding is.
+  {
+    method: "POST",
+    pattern: "/v1/tools",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const canonical = typeof body.canonical_name === "string" ? body.canonical_name.trim() : "";
+        if (canonical === "") return sendProblem(response, 400, "invalid_request", "the request carries an unsupported field, a malformed canonical name, or a widening override");
+        toolSeq += 1;
+        const tool = {
+          id: `tool_console_${String(toolSeq).padStart(4, "0")}`,
+          canonical_name: canonical,
+          // The real derivation, measured: `sweep.shape.probe1` answered model_visible_name `probe1`, so it
+          // is the last dot-segment rather than the whole name or a slug of it.
+          model_visible_name: canonical.slice(canonical.lastIndexOf(".") + 1),
+        };
+        toolLineages.set(tool.id, tool);
+        toolRevisionsByTool.set(tool.id, []);
+        sendJSON(response, 201, toolRow(tool));
+      }),
+  },
   { method: "GET", pattern: "/v1/tools", handle: (_req, res) => sendJSON(res, 200, { data: [...toolLineages.values()].map(toolRow), has_more: false }) },
+  {
+    method: "POST",
+    pattern: "/v1/tools/{tool_id}/revisions",
+    handle: (request, response, { tool_id: id }) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const executor = typeof body.executor === "string" ? body.executor : "";
+        if (executor === "") return sendProblem(response, 400, "invalid_request", "the request carries an unsupported field, a malformed canonical name, or a widening override");
+        const existing = toolRevisionsByTool.get(id) ?? [];
+        toolRevSeq += 1;
+        const rev = {
+          id: `trev_console_${String(toolRevSeq).padStart(4, "0")}`,
+          tool_id: id,
+          revision_number: existing.length + 1,
+          executor,
+          description: typeof body.description === "string" ? body.description : "",
+          input_schema: body.input_schema ?? { type: "object" },
+          digest: `sha256:fixture${String(toolRevSeq).padStart(2, "0")}`,
+          status: "draft",
+          approval_required: false,
+          approval_label: "",
+          created_at: fixtureTime(toolRevSeq),
+        };
+        // NEWEST FIRST, the order ListToolRevisions returns — the same rule the discovery path follows.
+        toolRevisionsByTool.set(id, [rev, ...existing]);
+        // THE NARROW CREATE PROJECTION, not toolRevisionRow. See the note above this block.
+        sendJSON(response, 201, {
+          id: rev.id,
+          object: "tool_revision",
+          tool_id: rev.tool_id,
+          revision_number: rev.revision_number,
+          executor: rev.executor,
+          digest: rev.digest,
+          status: rev.status,
+        });
+      }),
+  },
   {
     method: "GET",
     pattern: "/v1/tools/{tool_id}/revisions",
@@ -1292,11 +1459,91 @@ export const ROUTES = [
       });
     },
   },
+  // GET /v1/responses — RUN HISTORY (E25 T8, feature list O1). Paged like every other list, and derived from
+  // the runs this fixture has actually created rather than from a static row: the console's history screen
+  // has to show a run the suite just drove, and a frozen fixture row would make that assertion a property of
+  // which spec file ran first (the trap pagination.spec.ts already paid for once).
+  //
+  // THE ROW SHAPE IS THE LIST ROW'S, NOT THE DETAIL'S, and the difference is the point: store/postgres.go
+  // ListResponses marshals contracts.Response with Model "", Output [] and a ZERO Usage — model, usage and
+  // output come from the per-id GET, so a page never decodes N output blobs. Serving the richer detail shape
+  // here would have taught the console that a list row carries a model, and the console would then have
+  // rendered an empty column against the real API.
+  { method: "GET", pattern: "/v1/responses", handle: (request, response) => pageSlice(responseListRows(), requestURL(request), response) },
   {
     method: "GET",
     pattern: "/v1/responses/{response_id}/artifacts",
-    handle: (_request, response) => sendJSON(response, 200, listView([{ id: "art_1", object: "artifact", filename: "release-notes.txt", byte_size: 24 }])),
+    // THE PROJECTION IS THE REAL ONE NOW, AND IT WAS INVENTED BEFORE (E25 T8). This route used to serve
+    // `{id, object, filename, byte_size}` — and the artifact projection has NEITHER of those two fields:
+    // artifacts/reader.go metadataRow.projection writes id, object, run_id, size_bytes, checksum, media_type,
+    // logical_type, malware_scan_status and created_at, and no name at all. Nothing caught it because the
+    // only consumer was /runs, which reads `a.id` and nothing else, and because a compose run leaves no
+    // artifact for the sweep's item arm to compare against. E25 T8's artifact browser is the first screen
+    // that would have rendered those columns — blank, on the real API, with a filename column that can never
+    // be filled from this route.
+    handle: (_request, response) => sendJSON(response, 200, listView([artifactProjection("art_1")])),
   },
+  {
+    method: "GET",
+    pattern: "/v1/artifacts/{artifact_id}",
+    // The per-id metadata read. It answers with the SAME projection the list above serves, because that is
+    // what the real pair does — ListRunArtifacts and GetArtifact both render metadataRow.projection(), so
+    // this route adds no field the list did not already carry. It is served here because the sweep's arm 1
+    // requires every table row to be reachable and because a console that lists ids must be able to resolve
+    // one; it is NOT a richer view, and the artifact browser does not pretend it is.
+    handle: (_request, response, { artifact_id: id }) => sendJSON(response, 200, artifactProjection(id)),
+  },
+
+  // --- DISCOVERY AND METERING (E25 T8, feature list O9 / O4 / O5) -----------------------------------------
+  {
+    method: "GET",
+    pattern: "/v1/capabilities",
+    // The UNCONDITIONAL half of api/capabilities.go's matrix and nothing else. `a2a`, `slack`, `queues`,
+    // `knowledge` and `capability-workers` are advertised ONLY where the binary MOUNTED them, so a fixture
+    // that listed them would be claiming mounts on behalf of a deployment it is not — the §2 discovery lie
+    // in fixture form. `workspaces` is "unavailable" because this fixture configures no workspace root,
+    // which is the same derivation workspacesCapability() makes.
+    handle: (_request, response) =>
+      sendJSON(response, 200, {
+        object: "capabilities",
+        maturity: "preview",
+        isolation: "development",
+        retention: { store_false_ttl_seconds: 0 },
+        capabilities: {
+          responses: "preview",
+          sessions: "unavailable",
+          workspaces: "unavailable",
+          "knowledge-vector": "disabled",
+          "apple-build": "disabled",
+          console: "preview",
+        },
+      }),
+  },
+  {
+    method: "GET",
+    pattern: "/v1/usage",
+    handle: (_request, response) =>
+      sendJSON(response, 200, {
+        object: "usage_summary",
+        organization_id: "org_local",
+        project_id: "proj_local",
+        meters: USAGE_METERS,
+        // EMPTY ARRAYS, not absent keys: readBudgets/readQuotas initialise `[]budgetView{}` so the real
+        // summary carries both keys over an empty scope. And they are empty for the same reason the two
+        // list routes below are — see USAGE_BUDGETS.
+        budgets: [],
+        quotas: [],
+      }),
+  },
+  { method: "GET", pattern: "/v1/usage/ledger", handle: (request, response) => pageSlice(USAGE_LEDGER, requestURL(request), response) },
+  // THE LIMIT COLLECTIONS ARE EMPTY ON PURPOSE, AND IT IS A PROOF RATHER THAN A GAP. A bootstrap stack holds
+  // no budget and no quota — nothing creates one, there is no CLI verb for either — so an empty answer here
+  // is what the real API returns, and it is what makes "an empty metering panel renders a SENTENCE, never a
+  // blank region" assertable on BOTH profiles instead of only on whichever one happens to be thin. Inventing
+  // a limit row would have bought two exercised column renderers and cost the only deterministic empty-state
+  // proof on this surface.
+  { method: "GET", pattern: "/v1/budgets", handle: (_request, response) => sendJSON(response, 200, listView([])) },
+  { method: "GET", pattern: "/v1/quotas", handle: (_request, response) => sendJSON(response, 200, listView([])) },
   {
     method: "GET",
     pattern: "/v1/sessions/{session_id}/events",
