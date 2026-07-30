@@ -57,6 +57,56 @@ UPDATE runners
 RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at;
 
+-- name: SetRunnerState
+-- Cordon, resume or revoke ONE machine, durably (E24 T5). Before this the three were in-memory
+-- whole-gateway booleans, so "decommission that Mac" took every Mac out of service AND a restart erased
+-- it (§3.6 D15).
+--
+-- REVOKE IS IRREVERSIBLE AND THAT IS THIS PREDICATE, not a rule in Go. `state <> 'revoked'` refuses to
+-- move a decommissioned machine, and the `OR $4 = 'revoked'` clause is what keeps a REVOKE idempotent:
+-- revoking twice returns the row rather than a not-found an operator would read as "the id was wrong".
+-- The pairing matters — an idempotency that also let a resume through would make "irreversible" a comment.
+--
+-- Tenant-scoped, because this is reached through the public API where the verified bearer scope is the
+-- only tenant authority. Another tenant's runner id simply returns no row, so the handler answers 404
+-- without ever learning whether the id exists elsewhere.
+--
+-- THERE IS NO 'unhealthy' HERE and there cannot be: migration 000045's CHECK admits
+-- ('pending','active','cordoned','revoked') and E24 owns exactly one migration, which is T1's. Health is
+-- derived from last_seen_at instead — see RunnerGateway.Heartbeat for why that is the better answer
+-- rather than the available one.
+UPDATE runners
+   SET state = $4
+ WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
+   AND (state <> 'revoked' OR $4 = 'revoked')
+RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
+          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at, created_at;
+
+-- name: AppendRunnerRevocation
+-- The journal entry for a decommission (E24 T5), appended AT MOST ONCE per machine.
+--
+-- The `NOT EXISTS` is what makes it once, and it is here rather than in Go because the alternative is a
+-- read-then-write: SetRunnerState is idempotent by design (an operator must be able to repeat a revoke
+-- and see the same answer), so a second call arrives with the row already revoked and must record
+-- nothing. A Go-side "was it already revoked?" would need its own locking read, and two concurrent ones
+-- would both see `active`.
+--
+-- Concurrency beyond that is handled by the journal's own spine: `UNIQUE (runner_id, entry_seq)` means two
+-- writers computing the same next seq collide (23505) and exactly one lands — the capability_jobs fence,
+-- and the same one AppendRunnerEnrollment relies on.
+--
+-- key_id is deliberately empty: a revocation is a decision about the MACHINE, and the key that admitted
+-- it is already recorded on the `issued` entry. Writing it again here would suggest the key was revoked.
+INSERT INTO runner_enrollments (
+    id, organization_id, project_id, runner_id, pool_id, key_id, entry_kind, entry_seq, detail
+)
+SELECT $1, $2, $3, $4, $5, '', 'revoked',
+       coalesce((SELECT max(entry_seq) FROM runner_enrollments WHERE runner_id = $4), 0) + 1,
+       $6::jsonb
+ WHERE NOT EXISTS (SELECT 1
+                     FROM runner_enrollments
+                    WHERE runner_id = $4 AND entry_kind = 'revoked');
+
 -- name: GetRunner
 -- One runner inside the caller's tenant. A row belonging to another tenant returns NO row, so the
 -- handler answers 404 without ever learning whether the id exists elsewhere.
@@ -230,6 +280,38 @@ UPDATE runs
                  FROM runner_pools p
                 WHERE p.id = $4 AND p.organization_id = $2
                   AND (p.project_id IS NULL OR p.project_id = $3));
+
+-- name: ExpiredCapacityParks
+-- The runs that have been parked for want of a machine longer than the operator's park TTL (E24 T5).
+--
+-- IT CLOSES T4'S SECOND CEILING (`FLT-P7`): a run parked in a pool that will never have a machine — a
+-- deleted pool, a `config_policy.pool` naming one that does not exist, a Mac that was never ordered —
+-- waits FOREVER, because the only wake fires when a machine connects. There is no default TTL and there
+-- must not be: AWS documents a Mac host taking "approximately 6 minutes to 20 minutes" to start, so any
+-- number this file chose would be a guess about somebody else's fleet.
+--
+-- The predicate is the park's OWN marker, positively: `attempts.state = 'awaiting_capacity'` (T4's, and
+-- the reason it is on the attempt is that `waiting` is four different conditions with four different
+-- wakers). The age is the ATTEMPT's `updated_at`, which is the moment the park was written — the run's
+-- created_at would time out a run that has been running for hours and parked for one second.
+--
+-- $1 is the TTL in seconds. Bounded by $2 so one pass cannot hold a connection open over a large backlog;
+-- the next tick takes the rest.
+--
+-- ponytail: THE SAME MISSING INDEX OldestRunAwaitingCapacity NAMES, and for the same reason — E24 owns one
+-- migration and it is T1's. This runs once per reconcile tick (30s) rather than once per runner connect,
+-- so it is the cheaper of the two, and the upgrade is the same one partial index.
+SELECT r.organization_id, r.project_id, r.id, r.response_id
+  FROM runs r
+  JOIN attempts a ON a.run_id = r.id
+                 AND a.organization_id = r.organization_id
+                 AND a.project_id = r.project_id
+ WHERE r.state = 'waiting'
+   AND a.state = 'awaiting_capacity'
+   AND a.updated_at < clock_timestamp() - make_interval(secs => $1)
+   AND r.response_id IS NOT NULL
+ ORDER BY a.updated_at, r.id
+ LIMIT $2;
 
 -- name: MarkAttemptAwaitingCapacity
 -- The POSITIVE marker for the one waiting reason a machine's arrival may wake. `waiting` is four

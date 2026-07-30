@@ -94,6 +94,48 @@ func TestTheCapacityWakerIsWiredIntoTheGateway(t *testing.T) {
 	}
 }
 
+// TestTheMachineLifecycleIsWiredIntoTheCompositionRoot is E24 T5's fence, and it is the one this task
+// exists for. §3.6 D15 measured `Revoke()` — SAN-011's hard stop, written for a compromised runner —
+// implemented, tested, registered in the UAT catalogue, and CALLED BY NOTHING. This repository has now
+// shipped that exact shape four times (E19 T9's CreateSlackConnection, E23's DecideToolApproval, T2's
+// ResolvePool, and this), so the three lines that make the new surfaces reachable are pinned BY NAME.
+//
+// None of them can be caught by the proofs above: every component test in this epic constructs the gateway,
+// the registry and the router itself, so all of them would pass against a binary that wired none.
+//
+// WHY THESE THREE AND NOT FOUR OR TWO. `WithLifecycle` is what joins the API surface to the live gateway —
+// without it a cordon writes a row and reaches no session, which for a Mac mid-run means hours. `WithRunners`
+// is what mounts the routes at all. `HeartbeatLoop` is the reaper: without it `last_seen_at` freezes the
+// moment a machine finishes connecting and a half-open session keeps its queue slot forever. Any two of the
+// three is a half-built feature, which is why it counts to three — T3's fence took the same position for the
+// same reason.
+func TestTheMachineLifecycleIsWiredIntoTheCompositionRoot(t *testing.T) {
+	const mainFile = "../../cmd/palai-control-plane/main.go"
+	sites := map[string]string{
+		"WithLifecycle": "a cordon/revoke reaches the SESSIONS that machine is holding, not only its row",
+		"WithRunners":   "the lifecycle routes are mounted on the public API at all",
+	}
+	for name, wired := range callsMade(t, mainFile, sites) {
+		if !wired {
+			t.Errorf("%s: nothing calls %s — %s. A security control with no operator surface is a security control that does not exist (§3.6 D15)", mainFile, name, sites[name])
+		}
+	}
+	// HeartbeatLoop is checked as a MENTION rather than as a call, and the distinction is the supervisor's
+	// signature rather than a weakening: it is handed to `supervisor.Supervise` as a method VALUE — which is
+	// the idiomatic shape for a `func(context.Context) error` and the one every other supervised loop in that
+	// file uses — so there is no CallExpr to find. An *ast.Ident is not a comment, so a mention still means
+	// the composition root names it in code.
+	if !mentionsIdent(t, mainFile, "HeartbeatLoop") {
+		t.Errorf("%s does not name HeartbeatLoop: `runners.last_seen_at` would freeze the moment a machine finished connecting, and a session alive to the kernel and dead to the process would keep its queue slot and be handed the next lease forever", mainFile)
+	}
+	// The park-TTL reaper is the other half of the same argument: T4 filed FLT-P7 saying a run parked in a
+	// pool that will never have a machine waits FOREVER and named T5 as the owner. A TTL nothing reads is
+	// that ceiling still open with a knob bolted to it.
+	if !callsMade(t, mainFile, map[string]string{"WithCapacityParkTTL": ""})["WithCapacityParkTTL"] {
+		t.Errorf("%s: nothing calls WithCapacityParkTTL — PALAI_FLEET_PARK_TTL would be an environment variable that does nothing, and T4's FLT-P7 would stay open", mainFile)
+	}
+}
+
 // mentionsIdent reports whether a file names an identifier anywhere.
 func mentionsIdent(t *testing.T, path, name string) bool {
 	t.Helper()

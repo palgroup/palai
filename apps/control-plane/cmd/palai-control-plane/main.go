@@ -305,7 +305,20 @@ func main() {
 	// is not a capability.
 	// The read surface plus T3's key WRITE half, joined at the composition root because the router takes
 	// one interface and the two stores are deliberately separate types (inventory / credential).
-	routerOpts = append(routerOpts, api.WithRunners(fleet.NewRegistryAPI(runnerRegistry, runnerPoolKeys)))
+	//
+	// AND T5'S MACHINE LIFECYCLE, whose live half is the GATEWAY: cordon/resume/revoke writes the row and
+	// then reaches the sessions that machine is holding, because a row alone takes effect at its next
+	// connect — hours away for a Mac mid-run. This one line is why `Revoke()` is reachable at all: §3.6 D15
+	// found it implemented, tested, catalogued as SAN-011's hard stop and called by NOTHING, which is the
+	// third time this repository has shipped that shape (E19 T9's CreateSlackConnection, E23's
+	// DecideToolApproval). It is fenced by name in a test for exactly that reason. A stack with no runner
+	// listener passes a nil gateway and the routes then write the row only, which is correct: there are no
+	// sessions to cut.
+	runnerAdmin := fleet.NewRegistryAPI(runnerRegistry, runnerPoolKeys)
+	if gateway != nil {
+		runnerAdmin = runnerAdmin.WithLifecycle(gateway)
+	}
+	routerOpts = append(routerOpts, api.WithRunners(runnerAdmin))
 	// Discovery advertises `capability-workers` ONLY where the gateway above actually BOUND its listener —
 	// the option is passed off the returned value, never off the env var, so the claim cannot outlive the
 	// mount (§2; E19 T8a closed the static "stable" that a binary not importing internal/workers was serving).
@@ -638,8 +651,22 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		}, handler)
 		go supervisor.Supervise(ctx, fmt.Sprintf("dispatch-worker-%d", i), w.Run)
 	}
-	reconciler := execution.NewReconciler(spine, 30*time.Second, retry.MaxAttempts)
+	// PALAI_FLEET_PARK_TTL opts the deployment into expiring capacity parks (E24 T5). UNSET MEANS NEVER and
+	// that is deliberate: a run parked because its pool holds no machine is waiting for a Mac, and AWS
+	// documents a Mac host taking 6 to 20 minutes to start — so any default this binary chose would be a
+	// guess about somebody else's fleet. Set it and a park that outlives it ends as a `timed_out` response
+	// naming the reason, instead of waiting forever (T4's FLT-P7).
+	reconciler := execution.NewReconciler(spine, 30*time.Second, retry.MaxAttempts).
+		WithCapacityParkTTL(envDuration("PALAI_FLEET_PARK_TTL"))
 	go supervisor.Supervise(ctx, "reconciler", reconciler.Run)
+	// THE FLEET HEARTBEAT AND ITS REAPER (E24 T5), supervised beside the reconciler. It pings every live
+	// runner session: an answer advances `runners.last_seen_at` — the stamp that froze the moment a machine
+	// finished connecting before this — and no answer CUTS the session, which is the only thing that notices
+	// a connection alive to the kernel and dead to the process (a suspended laptop, an unplugged Mac). Only
+	// with a gateway: a stack that binds no runner listener has no sessions to ping.
+	if gateway != nil {
+		go supervisor.Supervise(ctx, "runner-heartbeat", gateway.HeartbeatLoop)
+	}
 	// Uncertain-tool reconciliation loop (spec §26.7, E10 T7): resolves tool_calls stuck `uncertain` by a
 	// kill-between-execute-and-commit. The RemoteToolProber (E12 T4) is the FIRST real destination prober:
 	// for an uncertain remote_http call it reads the durable remote-operation ledger, so a LATE signed

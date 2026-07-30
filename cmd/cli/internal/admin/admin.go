@@ -1,7 +1,9 @@
-// Package admin is the `palai org|project|apikey|secret|poolkey` admin CLI: a thin authenticated HTTP
-// client over the E13 provisioning + secret-ref APIs (router.go:152-187) and the E24 runner-pool key
-// surface. It adds NO server surface — every subcommand maps to one existing endpoint. Until the E17
-// console it is the only human interface for tenancy admin (spec §47.6).
+// Package admin is the `palai org|project|apikey|secret|poolkey|runner` admin CLI: a thin authenticated
+// HTTP client over the E13 provisioning + secret-ref APIs (router.go:152-187), the E24 runner-pool key
+// surface and the E24 T5 machine lifecycle. It adds NO server surface — every subcommand maps to one
+// existing endpoint. Until the E17 console it is the only human interface for tenancy admin (spec §47.6),
+// and for the fleet it is the only one there will be for now: the console has no authentication at all,
+// so minting a pool key or decommissioning a Mac behind it would undo what E24 builds (§0.2).
 //
 // CREDENTIAL HYGIENE (the load-bearing rule): the admin API key and any secret VALUE never ride argv. The
 // key comes from --api-key-file (a path, not the value), $PALAI_API_KEY, or the initialised .palai stack;
@@ -118,6 +120,9 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 		// and everything else names it by id. Nothing here can put a credential in argv.
 		fs.StringVar(&f.pool, "pool", "", "runner pool id (required for create; narrows list)")
 		fs.StringVar(&f.expiresAt, "expires-at", "", "RFC3339 expiry, optional (create) — omitted means the key never expires")
+	case "runner":
+		// No flags at all. Every subcommand either takes no argument (`list`) or names ONE machine by the
+		// id the server minted, so there is nothing to configure and nothing that could carry a credential.
 	}
 }
 
@@ -165,6 +170,10 @@ var positionalArity = map[string]int{
 	// A pool key is minted with flags and revoked by ID. `create` takes no positional for the same reason
 	// `secret create` takes none: the only string that could go there is a credential.
 	"poolkey/create": 0, "poolkey/list": 0, "poolkey/revoke": 1,
+	// A machine is named by ONE id (E24 T5); `list` takes none. An extra positional is refused for the
+	// reason every other row here refuses one: `revoke rnr_a rnr_b` must not silently decommission only the
+	// first while an operator believes both are down.
+	"runner/list": 0, "runner/cordon": 1, "runner/resume": 1, "runner/revoke": 1,
 }
 
 // execute maps (resource, subcommand) to the one E13 endpoint it fronts and dispatches it. It first enforces
@@ -281,6 +290,24 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 			// By id, never by value: a revoke that took the value would put a credential in argv and in
 			// every access log between here and the control plane.
 			return c.do(http.MethodPost, "/v1/runner-pool-keys/"+esc(pos[0])+"/revoke", nil)
+		}
+	// THE MACHINE LIFECYCLE (E24 T5) — `palai admin runner cordon|resume|revoke|list`.
+	//
+	// It exists because §3.6 D15 measured that `Revoke()` — SAN-011's hard stop, written for a compromised
+	// runner — had NO PRODUCTION CALLER anywhere in the tree. There was no way for a human to say
+	// "decommission that Mac". This is it, and it is a CLI rather than a console screen because the console
+	// has no authentication at all (§0.2): a fleet-moving write behind an unauthenticated proxy would undo
+	// what this epic builds.
+	//
+	// `revoke` IS IRREVERSIBLE and the CLI does not prompt, deliberately: neither `apikey revoke` nor
+	// `poolkey revoke` does, and a confirmation on only one of the three teaches an operator the others are
+	// safe.
+	case "runner":
+		switch sub {
+		case "list":
+			return c.do(http.MethodGet, "/v1/runners", nil)
+		case "cordon", "resume", "revoke":
+			return c.do(http.MethodPost, "/v1/runners/"+esc(pos[0])+"/"+sub, nil)
 		}
 	}
 	return usageErr(resource)
@@ -512,6 +539,9 @@ func usageErr(resource string) error {
 		"apikey":  "create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>",
 		"secret":  "create --name <n> (value on stdin) | list | get <name> | rotate <name> (value on stdin)",
 		"poolkey": "create --pool <pool_id> [--expires-at <rfc3339>] (value printed once) | list --pool <pool_id> | revoke <key_id>",
+		// Spelled with its prefix, because that is the only spelling that works: the lifecycle is reached as
+		// `palai admin runner …` so it cannot be confused with the local runner container.
+		"runner": "list | cordon <runner_id> | resume <runner_id> | revoke <runner_id> (revoke is IRREVERSIBLE)",
 	}
 	return fmt.Errorf("usage: palai %s <%s>", resource, subs[resource])
 }

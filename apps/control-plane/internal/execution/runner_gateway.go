@@ -113,19 +113,29 @@ type RunnerGateway struct {
 	// so this is >0 while a runner is up and drops to 0 when it stops — the real signal behind the
 	// palai_runner_sessions gauge and the runner-down alert (E14 Task 6).
 	connected atomic.Int64
-	// active counts leases currently in flight (offered and not yet closed). Drain waits on THIS, not on
-	// connected: a parked-and-idle runner (connected>0, active==0) must not block a drain, only an
-	// in-flight lease does. Incremented on a successful Dial offer, decremented when its channel closes.
-	active atomic.Int64
+	// machines is the PER-RUNNER lifecycle: one cordon flag, one revoke flag and one in-flight-lease
+	// counter per enrolled machine, keyed by the SERVER-minted runner id (E24 T5). It replaced the single
+	// `active atomic.Int64` the whole-gateway drain used to wait on, and the whole-gateway drain now waits
+	// on the SUM — a control-plane swap still drains everything (§48.4), it just knows whose leases those
+	// were. See runnerLifecycle for why a cordon takes a machine OUT of the rendezvous rather than being
+	// compared against inside Dial.
+	machinesMu sync.RWMutex
+	machines   map[string]*runnerLifecycle
+	// sessions is every live runner session on this gateway, which is what the heartbeat pings and what
+	// the reaper cuts. A machine may hold several (PALAI_RUNNER_CONCURRENCY parks one loop per concurrent
+	// lease), so this is a set of connections and not a map keyed by runner id.
+	sessions map[*pendingRunner]struct{}
 	// cpVersion is this control-plane's version stamp, checked against the runner's advertised version in
 	// the connect handshake for the §48.2 support window (OPS-008). Defaulted to version.Resolve; a test
 	// or a deploy override sets it with SetControlPlaneVersion.
 	cpVersion string
 	// cordoned stops NEW leases (Dial refuses) while an in-flight lease finishes — the upgrade-drain
 	// signal. revoked is the hard stop: new connects rejected AND session frames dropped (SAN-011).
-	// ponytail: two atomic.Bool at whole-gateway granularity, not a per-runner registry — SH-0 is a
-	// single-runner topology (there is no hosts/runners table in this tier), so "the runner" IS the
-	// gateway. A multi-runner fleet would key these by runner id; that is the SaaS/post-SH-0 upgrade path.
+	//
+	// THESE TWO ARE WHOLE-GATEWAY AND THEY STAY, which is E24 T5's instruction and the right answer: a
+	// control-plane swap must drain EVERYTHING, so `Drain` (SIGTERM) still cordons the gateway itself. What
+	// E24 T5 added is the per-machine layer above (`machines`), because "take that Mac out of service"
+	// asked these bools a question they could not answer — the upgrade path this comment used to name.
 	cordoned atomic.Bool
 	revoked  atomic.Bool
 	// identity is the client certificate the gateway last saw a runner present, on connect or on
@@ -206,6 +216,8 @@ func NewRunnerGateway(issuer CertIssuer, tokens EnrollmentTokens) *RunnerGateway
 		tokens:    tokens,
 		now:       time.Now,
 		pools:     map[string]*poolQueue{},
+		machines:  map[string]*runnerLifecycle{},
+		sessions:  map[*pendingRunner]struct{}{},
 		cpVersion: version.Resolve(),
 		newID:     middleware.NewID,
 	}
@@ -324,18 +336,175 @@ func (g *RunnerGateway) Revoke() {
 func (g *RunnerGateway) Cordoned() bool { return g.cordoned.Load() }
 func (g *RunnerGateway) Revoked() bool  { return g.revoked.Load() }
 
+// runnerLifecycle is ONE machine's cordon/revoke state and its in-flight lease count (E24 T5).
+//
+// A CORDONED MACHINE LEAVES THE RENDEZVOUS RATHER THAN BEING COMPARED AGAINST INSIDE Dial, and that is
+// the same structural choice T2 made for the pool and T4 made for the tenant, for the same reason: a
+// machine that is not in the queue is UNREACHABLE from a Dial, so there is no code path left that could
+// later be softened into "close enough" by somebody debugging an idle Mac at 3am. It is also the cheaper
+// one — a comparison inside the handover would need the queue to consult per-runner state under its own
+// lock, and a resume would then need a way to re-run the match.
+//
+// `changed` is the broadcast: it is CLOSED and REPLACED on every transition, so any number of watchers
+// (a machine parks one session per concurrent lease) wake on one write without a condition variable and
+// without a subscriber list to leak.
+type runnerLifecycle struct {
+	mu       sync.Mutex
+	cordoned bool
+	revoked  bool
+	changed  chan struct{}
+	// active counts THIS machine's in-flight leases. The whole-gateway Drain sums these; the read surface
+	// publishes one machine's as `active_leases`, which is the question a cordon exists to let an operator
+	// ask ("can I unplug it yet?").
+	active atomic.Int64
+}
+
+// state reports the machine's current posture and the channel that closes on its next transition. Both
+// are read together under one lock, so a watcher cannot miss a change between reading the flags and
+// selecting on the channel.
+func (l *runnerLifecycle) state() (cordoned, revoked bool, changed <-chan struct{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.changed == nil {
+		l.changed = make(chan struct{})
+	}
+	return l.cordoned, l.revoked, l.changed
+}
+
+// set applies a transition and broadcasts it. A revoke is ONE-WAY: once revoked, neither flag comes
+// back, which is today's in-memory semantics unchanged (a revoked runner identity is decommissioned, not
+// paused) rather than a new rule. A no-op transition broadcasts nothing, so a repeated cordon does not
+// churn every parked session of that machine.
+func (l *runnerLifecycle) set(cordoned, revoked bool) {
+	l.mu.Lock()
+	if l.revoked || (l.cordoned == cordoned && l.revoked == revoked) {
+		l.mu.Unlock()
+		return
+	}
+	l.cordoned, l.revoked = cordoned, revoked
+	if l.changed != nil {
+		close(l.changed)
+	}
+	l.changed = make(chan struct{})
+	l.mu.Unlock()
+}
+
+// lifecycle resolves a machine's lifecycle record, creating it on first use. Double-checked under the
+// write lock so two concurrent first-uses cannot end up with two records for one machine — which would
+// be a cordon written to one and read from the other.
+//
+// ponytail: the map grows by enrolled machine and is never pruned. A runner id is server-minted and
+// durable, so there is nothing here a stranger can grow; prune on runner deletion if that ever lands.
+func (g *RunnerGateway) lifecycle(runnerID string) *runnerLifecycle {
+	g.machinesMu.RLock()
+	life, ok := g.machines[runnerID]
+	g.machinesMu.RUnlock()
+	if ok {
+		return life
+	}
+	g.machinesMu.Lock()
+	defer g.machinesMu.Unlock()
+	if life, ok = g.machines[runnerID]; ok {
+		return life
+	}
+	life = &runnerLifecycle{}
+	g.machines[runnerID] = life
+	return life
+}
+
+// CordonRunner stops offering NEW leases to ONE machine: it leaves its pool's rendezvous and stays
+// connected, so an in-flight lease finishes and nothing new arrives. ResumeRunner puts it back. Both are
+// idempotent, and both are safe for a machine that has never connected — the record is created and the
+// machine adopts it when it does, which is what makes a cordon written while a Mac is rebooting stick.
+func (g *RunnerGateway) CordonRunner(runnerID string) {
+	g.lifecycle(runnerID).set(true, false)
+	g.evict(runnerID)
+}
+
+// ResumeRunner clears a cordon. It does NOT un-revoke: see runnerLifecycle.set.
+func (g *RunnerGateway) ResumeRunner(runnerID string) { g.lifecycle(runnerID).set(false, false) }
+
+// RevokeRunner is the hard stop for ONE machine (SAN-011, per-runner): its live sessions are CUT, its
+// in-flight lease dies with them and is reclaimed by the existing E10 recovery layer, its session frames
+// are refused, and it cannot reconnect. Irreversible in this process; the durable half is
+// `runners.state = 'revoked'`, which is what makes it survive a restart.
+func (g *RunnerGateway) RevokeRunner(runnerID string) {
+	g.lifecycle(runnerID).set(true, true)
+	g.evict(runnerID)
+}
+
+// evict takes every live session of ONE machine out of its pool's rendezvous, synchronously, so that a
+// cordon which has RETURNED is a cordon no Dial can get past. Without it the flag alone is only
+// eventually effective — the machine's own connect handler would wake and unpark itself, and a Dial
+// arriving in that window would be handed a machine an operator has just taken out of service.
+//
+// It is not a substitute for the connect handler's own reaction: that is what keeps the session
+// CONNECTED and re-parks it on resume. This is only the removal, and unpark is idempotent, so the two
+// racing each other is a no-op rather than a bug.
+//
+// THE ONE CASE IT CANNOT WIN, named where a reader meets it: a Dial that has ALREADY popped this machine
+// off the queue holds it, and unpark reports so. Dial's own post-receive re-check refuses that lease and
+// hands the connection back, which costs the machine its session (it re-dials at once) — the honest trade
+// against offering a lease to a cordoned machine.
+func (g *RunnerGateway) evict(runnerID string) {
+	g.machinesMu.RLock()
+	evicting := make([]*pendingRunner, 0, len(g.sessions))
+	for pr := range g.sessions {
+		if pr.runnerID == runnerID {
+			evicting = append(evicting, pr)
+		}
+	}
+	g.machinesMu.RUnlock()
+	for _, pr := range evicting {
+		if pr.queue != nil {
+			pr.queue.unpark(pr)
+		}
+	}
+}
+
+// RunnerActiveLeases reports how many leases ONE machine is currently serving — the answer to the
+// question a cordon exists to let an operator ask, which is "can I take this Mac away yet?". It is the
+// per-runner half of the counter Drain sums.
+func (g *RunnerGateway) RunnerActiveLeases(runnerID string) int64 {
+	g.machinesMu.RLock()
+	life, ok := g.machines[runnerID]
+	g.machinesMu.RUnlock()
+	if !ok {
+		return 0
+	}
+	return life.active.Load()
+}
+
+// activeLeases is every machine's in-flight leases summed — what the WHOLE-GATEWAY drain waits on. It is
+// a sum rather than one counter because the counter became per-machine; a drain that read one machine's
+// would return nil while another was mid-lease, which is a control plane exiting during a run.
+func (g *RunnerGateway) activeLeases() int64 {
+	total := int64(0)
+	g.machinesMu.RLock()
+	for _, life := range g.machines {
+		total += life.active.Load()
+	}
+	g.machinesMu.RUnlock()
+	return total
+}
+
 // Drain cordons the gateway and blocks until every in-flight lease has quiesced (active == 0) or ctx is
 // done. It stops new leases and waits for the in-flight lease to finish; if it cannot finish within ctx,
 // the caller (a control-plane shutting down for a swap) exits anyway and the interrupted run is reclaimed
 // and completed by the EXISTING E10 recovery layer (coordinator reconcile + WorkspaceRecovery, §26.3) —
 // drain REUSES that layer, it does not re-implement run migration here. Returns nil on quiesce, ctx.Err()
 // on timeout.
+// THE BODY IS E15 T2'S, UNCHANGED, AND ONLY THE COUNTER MOVED (E24 T5): `g.active.Load()` became the SUM
+// of the per-machine counters. The cordon is still whole-gateway, the tick is still 25ms, the handover to
+// the E10 recovery layer is still by exiting anyway, and the return is still nil-on-quiesce /
+// ctx.Err()-on-timeout. A per-runner drain is deliberately NOT a surface: nothing in production would
+// call one, and this task's own subject is surfaces with no caller.
 func (g *RunnerGateway) Drain(ctx context.Context) error {
 	g.Cordon()
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if g.active.Load() == 0 {
+		if g.activeLeases() == 0 {
 			return nil
 		}
 		select {
@@ -357,7 +526,20 @@ func (g *RunnerGateway) Drain(ctx context.Context) error {
 // disconnect detection is what keeps palai_runner_sessions honest: a runner that dies while parked-
 // and-idle (nothing else reads the connection then) is noticed at once, not only at the next Dial.
 type pendingRunner struct {
-	conn    *websocket.Conn
+	conn *websocket.Conn
+	// runnerID and dns identify WHICH machine this session belongs to (E24 T5). Both come from the
+	// certificate the connect presented and never from anything the connecting party said: dns is the SAN,
+	// runnerID is derived from it, and they are what a cordon, a revoke and a heartbeat write name.
+	runnerID string
+	dns      string
+	// life is this machine's cordon/revoke state and lease counter, shared by every session it holds.
+	life *runnerLifecycle
+	// queue is the (tenant, pool) rendezvous this session parks on, so a cordon can take the machine OUT
+	// of it synchronously — see RunnerGateway.evict for why "synchronously" is the whole property.
+	queue *poolQueue
+	// beatAt bounds how often a heartbeat frame may advance the durable liveness stamp, so a runner that
+	// sends them in a loop cannot turn one UPDATE per frame into a write amplifier.
+	beatAt  atomic.Int64
 	release chan struct{}
 	// taken closes when a Dial has claimed this machine off its pool's queue. It exists because the
 	// queue replaced the rendezvous a channel send used to be: the connect handler no longer learns it
@@ -599,7 +781,7 @@ func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 	// it is deliberately not treated as re-proving anything the enrolment proved: it advances
 	// last_seen_at and the recorded expiry, and it does not touch which key issued the identity (T3's
 	// binding). A runner the registry does not know keeps renewing exactly as before.
-	g.recordSeen(r.Context(), dns, certNotAfter(certDER))
+	g.recordSeen(r.Context(), dns, certNotAfter(certDER)) //nolint:errcheck // inventory write; see recordSeen
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(enrollResponse{
 		Certificate: base64.StdEncoding.EncodeToString(certDER),
@@ -625,23 +807,28 @@ func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 // deployment's runs forever the moment the control plane was upgraded — a queue keyed by tenant is
 // exactly as good at excluding your own runner as somebody else's. Reading the tenant off the default
 // pool row gives that machine the tenant a single-runner install has always had.
-func (g *RunnerGateway) recordSeen(ctx context.Context, dns string, notAfter time.Time) (string, coordinator.Tenant) {
+// IT ALSO REPORTS THE DURABLE LIFECYCLE STATE (E24 T5), and that is what makes a revocation survive a
+// restart: the row is read on the same write that records the liveness, so a new process learns that a
+// machine is decommissioned from the database rather than from the memory it no longer has. A machine the
+// registry has no row for reports "" — the pre-E24 runner, whose lifecycle is the whole gateway's exactly
+// as it always was.
+func (g *RunnerGateway) recordSeen(ctx context.Context, dns string, notAfter time.Time) (string, coordinator.Tenant, string) {
 	reg := g.registry
 	if reg == nil || dns == "" {
-		return "", coordinator.Tenant{}
+		return "", coordinator.Tenant{}, ""
 	}
 	row, found, err := reg.RecordSeen(ctx, dns, notAfter, g.now())
 	if err != nil {
-		return "", coordinator.Tenant{}
+		return "", coordinator.Tenant{}, ""
 	}
 	if found {
-		return row.PoolID, coordinator.Tenant{Organization: row.Organization, Project: row.Project}
+		return row.PoolID, coordinator.Tenant{Organization: row.Organization, Project: row.Project}, row.State
 	}
 	pool, found, err := reg.Pool(ctx, fleet.DefaultPoolID)
 	if err != nil || !found {
-		return "", coordinator.Tenant{}
+		return "", coordinator.Tenant{}, ""
 	}
-	return pool.ID, coordinator.Tenant{Organization: pool.Organization, Project: pool.Project}
+	return pool.ID, coordinator.Tenant{Organization: pool.Organization, Project: pool.Project}, ""
 }
 
 // certNotAfter reads the expiry out of a DER the CA just produced. A DER that will not parse leaves
@@ -691,11 +878,25 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// session wire carries neither field and inventing one would let a machine choose its own placement
 	// — or, worse, its own tenant. A stack with no registry yields the zero pair, and poolKey turns the
 	// pool half into the default pool: §2's bit-unchanged rule.
-	poolID, tenant := g.recordSeen(r.Context(), renewDNS(leaf), leaf.NotAfter)
+	dns := renewDNS(leaf)
+	poolID, tenant, durable := g.recordSeen(r.Context(), dns, leaf.NotAfter)
+	// THE MACHINE'S OWN LIFECYCLE, ADOPTED FROM THE ROW (E24 T5). The row is the authority a restart has
+	// and the memory is not, so a state the database records is applied to this process before the session
+	// is admitted — which is the whole of "a revocation survives a restart". It only ever UPGRADES the
+	// in-process state (an `active` row never clears a cordon somebody just wrote through the API), because
+	// the API writes the row first and then this gateway, so the two can only disagree in the direction
+	// where memory is ahead.
+	life := g.lifecycle(runnerIDFromDNS(dns))
+	switch durable {
+	case "revoked":
+		life.set(true, true)
+	case "cordoned":
+		life.set(true, false)
+	}
 	// A revoked gateway refuses the session before the upgrade, so a decommissioned runner never even
 	// parks (SAN-011). Cordon does NOT reject the connect — a cordoned runner still parks and finishes an
 	// in-flight lease; it is only Dial that stops offering it NEW work.
-	if g.revoked.Load() {
+	if _, revoked, _ := life.state(); g.revoked.Load() || revoked {
 		http.Error(w, ErrRunnerRevoked.Error(), http.StatusForbidden)
 		return
 	}
@@ -728,8 +929,17 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	g.connected.Add(1)
 	defer g.connected.Add(-1)
 
-	pr := &pendingRunner{conn: conn, release: make(chan struct{}), disconnected: make(chan struct{}), taken: make(chan struct{})}
+	pr := &pendingRunner{
+		conn: conn, runnerID: runnerIDFromDNS(dns), dns: dns, life: life,
+		release: make(chan struct{}), disconnected: make(chan struct{}), taken: make(chan struct{}),
+	}
 	queue := g.queueFor(tenant, poolID)
+	pr.queue = queue
+	// The session joins the set the heartbeat pings, the reaper cuts and a cordon evicts, for exactly as
+	// long as it is held open. Registered AFTER its queue is set, so an eviction can never see a session
+	// with nowhere to be removed from.
+	g.addSession(pr)
+	defer g.removeSession(pr)
 	// A machine is a MEMBER of its queue for the whole session — parked or leased — and membership is
 	// what answers "is there anything here at all". Counted before the park and released on every return
 	// path, because the answer decides whether a run PARKS (nothing here) or rides the retry ladder
@@ -750,23 +960,97 @@ func (g *RunnerGateway) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// idle would keep the connected count — and so palai_runner_sessions — falsely at its old value.
 	go g.readLoop(pr)
 
-	queue.park(pr)
-	select {
-	case <-pr.taken:
-	case <-pr.disconnected:
-		queue.unpark(pr)
-		return // the runner dropped before any lease
-	case <-r.Context().Done():
-		queue.unpark(pr)
+	if !g.parkUntilLeased(r.Context(), pr, queue) {
 		return
 	}
 	// Hold the hijacked connection open for the lease. release closes when the attempt ends;
-	// disconnected closes if the runner drops mid-lease; the request context covers server shutdown.
-	select {
-	case <-pr.release:
-	case <-pr.disconnected:
-	case <-r.Context().Done():
+	// disconnected closes if the runner drops mid-lease; the request context covers server shutdown; and a
+	// REVOKE of this machine returns, which tears the connection down and kills the lease with it — the
+	// hard stop cordon is not. The interrupted run is reclaimed by the existing E10 recovery layer, the
+	// same way a control-plane exit mid-lease already is.
+	holdLease(r.Context(), pr)
+}
+
+// parkUntilLeased parks pr and reports whether a Dial claimed it. A CORDON takes the machine out of the
+// rendezvous and holds it here — connected, leaseless, resumable — which is what makes a cordon neither
+// an outage nor a decommission. A revoke, a disconnect or a finished request returns false.
+//
+// The unpark's return value is load-bearing: false means a Dial took the machine in the race between the
+// transition and the unpark, and the caller must fall through to the lease hold rather than tear a
+// connection down under an attempt that is already using it.
+func (g *RunnerGateway) parkUntilLeased(ctx context.Context, pr *pendingRunner, queue *poolQueue) bool {
+	for {
+		cordoned, revoked, changed := pr.life.state()
+		if revoked {
+			return false
+		}
+		if cordoned {
+			select {
+			case <-changed:
+				continue // resumed (or revoked — the next pass decides which)
+			case <-pr.disconnected:
+				return false
+			case <-ctx.Done():
+				return false
+			}
+		}
+		queue.park(pr)
+		select {
+		case <-pr.taken:
+			return true
+		case <-changed:
+			// Leave the rendezvous (idempotent — a cordon may have evicted this session already) and then ask
+			// whether anybody claimed the machine on the way past. `taken` is closed under the queue's own lock
+			// at the moment of a handover, so this answer is not a race: unclaimed means re-read the posture,
+			// claimed means the lease owns this connection now.
+			queue.unpark(pr)
+			select {
+			case <-pr.taken:
+				return true
+			default:
+				continue
+			}
+		case <-pr.disconnected:
+			queue.unpark(pr)
+			return false // the runner dropped before any lease
+		case <-ctx.Done():
+			queue.unpark(pr)
+			return false
+		}
 	}
+}
+
+// holdLease blocks for the life of an offered lease. A revoke of THIS machine returns, so the connection
+// is torn down and a decommissioned runner's in-flight work stops rather than completing.
+func holdLease(ctx context.Context, pr *pendingRunner) {
+	for {
+		_, revoked, changed := pr.life.state()
+		if revoked {
+			return
+		}
+		select {
+		case <-pr.release:
+			return
+		case <-pr.disconnected:
+			return
+		case <-ctx.Done():
+			return
+		case <-changed:
+		}
+	}
+}
+
+// addSession and removeSession bracket one live session's membership of the heartbeat set.
+func (g *RunnerGateway) addSession(pr *pendingRunner) {
+	g.machinesMu.Lock()
+	g.sessions[pr] = struct{}{}
+	g.machinesMu.Unlock()
+}
+
+func (g *RunnerGateway) removeSession(pr *pendingRunner) {
+	g.machinesMu.Lock()
+	delete(g.sessions, pr)
+	g.machinesMu.Unlock()
 }
 
 // Dial offers a machine IN THE ATTEMPT'S POOL the attempt's lease and returns the bridged
@@ -805,9 +1089,16 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 		// Re-check AFTER receiving the runner: a Dial already blocked in this select when Cordon/Revoke
 		// fired would otherwise slip a lease past the pre-check and increment active after a Drain read
 		// active==0 (a post-cordon lease). Refuse and hand the runner back (close release) instead.
-		if g.revoked.Load() || g.cordoned.Load() {
+		//
+		// THE MACHINE'S OWN POSTURE IS RE-CHECKED HERE TOO (E24 T5), one layer down and for the same reason:
+		// a cordoned machine has LEFT the rendezvous, so reaching this line at all means the transition
+		// raced the handover. Handing it back costs that machine its connection — it re-dials at once — and
+		// that is the honest trade against offering a lease to a machine an operator just took out of
+		// service.
+		cordonedMachine, revokedMachine, _ := pr.life.state()
+		if g.revoked.Load() || g.cordoned.Load() || cordonedMachine || revokedMachine {
 			close(pr.release)
-			if g.revoked.Load() {
+			if g.revoked.Load() || revokedMachine {
 				return nil, ErrRunnerRevoked
 			}
 			return nil, ErrRunnerCordoned
@@ -821,7 +1112,9 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 			return nil, err
 		}
 		gc := newGatewayChannel(pr, attempt)
-		gc.active = &g.active // Close decrements the in-flight-lease counter Drain waits on.
+		// Close decrements THIS MACHINE's in-flight-lease counter (E24 T5). The whole-gateway Drain sums
+		// every machine's, so a swap still waits for the whole fleet; the read surface publishes this one's.
+		gc.active = &pr.life.active
 		// Publish the channel BEFORE writing the offer, so the runner's first engine frame — which it
 		// sends only after receiving the offer — always finds a relay target in readLoop.
 		pr.gc.Store(gc)
@@ -834,7 +1127,7 @@ func (g *RunnerGateway) Dial(ctx context.Context, attempt AttemptDescriptor) (En
 			close(pr.release)
 			return nil, fmt.Errorf("offer lease: %w", err)
 		}
-		g.active.Add(1) // the lease is in flight; Close (always called on terminal) decrements it.
+		pr.life.active.Add(1) // the lease is in flight; Close (always called on terminal) decrements it.
 		return gc, nil
 	case <-ctx.Done():
 		// Leave the queue. abandon also covers the race where a machine was handed over between the
@@ -868,6 +1161,114 @@ func (g *RunnerGateway) wakeParkedRun(ctx context.Context, tenant coordinator.Te
 		return
 	}
 	_, _ = g.wake.WakeRunAwaitingCapacity(ctx, tenant, poolKey(poolID))
+}
+
+// heartbeatInterval and heartbeatTimeout are the reaper's cadence and its patience.
+//
+// ponytail: FIXED, not per-pool. §T5's own honest ceiling says so, and the reason it is tolerable is that
+// the numbers are not a policy but a liveness probe: 30s between pings and 10s to answer one is generous
+// for any machine that is running at all, and a machine that needs longer is a machine whose next lease
+// would time out anyway. Per-pool tuning becomes worth building when a pool exists whose network makes
+// 10s tight.
+const (
+	heartbeatInterval = 30 * time.Second
+	heartbeatTimeout  = 10 * time.Second
+	// heartbeatMinWrite bounds how often a runner-sent heartbeat FRAME may advance the durable stamp. The
+	// gateway's own ping is already rate-limited by its interval; a frame arrives whenever the runner
+	// chooses to send one, so this is what stops a chatty (or hostile) runner turning liveness into a write
+	// amplifier.
+	heartbeatMinWrite = 5 * time.Second
+)
+
+// Heartbeat pings every live runner session, advances the registry's liveness stamp for the ones that
+// answer, and CUTS the ones that do not. It reports (alive, cut).
+//
+// A PING RATHER THAN A RUNNER-SENT FRAME, and this is the load-bearing design decision of the reaper.
+// §T5 assumed the runner already sends heartbeats; it does not (see readLoop's default arm). A ping needs
+// NO runner change at all — coder/websocket answers one from inside the peer's own read loop, and every
+// runner is in that loop for its whole session — and it proves strictly more than a timer-driven frame
+// would: that the connection is alive in BOTH directions right now. That is what catches the failure this
+// reaper exists for, which is a session alive to the kernel and dead to the process — a suspended laptop,
+// an unplugged Mac, a wedged runner — where `readLoop` learns nothing because a peer that stopped
+// answering produces no read error.
+//
+// CUTTING IS ALL IT DOES, AND IT DELIBERATELY DOES NOT WAKE THAT POOL'S PARKED RUNS: capacity is still
+// absent, so waking a run would hand it straight back to a pool with nothing in it. What the cut DOES do
+// is decrement the count that decides whether the next run parks or rides the retry ladder — the pool's
+// membership — so a run placed there parks (honest: nothing here) instead of being handed to a corpse.
+//
+// IT WRITES NO `unhealthy` STATE, WHICH IS A CORRECTION TO §T5. `runners.state` is CHECK-constrained to
+// ('pending','active','cordoned','revoked') by migration 000045 and E24 owns exactly one migration, which
+// is T1's — so `unhealthy` is not a value this task can write. It is also not a value this task needs:
+// health is DERIVED from `last_seen_at`, which is already durable and already advancing, and a stamped
+// flag would additionally have to be CLEARED when the machine came back. A reaper re-derives after a
+// restart either way.
+func (g *RunnerGateway) Heartbeat(ctx context.Context, timeout time.Duration) (alive, cut int) {
+	if timeout <= 0 {
+		timeout = heartbeatTimeout
+	}
+	g.machinesMu.RLock()
+	live := make([]*pendingRunner, 0, len(g.sessions))
+	for pr := range g.sessions {
+		live = append(live, pr)
+	}
+	g.machinesMu.RUnlock()
+
+	for _, pr := range live {
+		pingCtx, cancel := context.WithTimeout(ctx, timeout)
+		err := pr.conn.Ping(pingCtx)
+		cancel()
+		if err != nil {
+			// It stopped answering. Cutting is what the connect handler is waiting for: it unparks, drops the
+			// connected count and the pool's membership, and any in-flight lease ends as a disconnect — which
+			// the EXISTING E10 recovery layer reclaims, exactly as it reclaims a control plane that exited.
+			pr.markDisconnected()
+			cut++
+			continue
+		}
+		g.recordHeartbeat(pr)
+		alive++
+	}
+	return alive, cut
+}
+
+// HeartbeatLoop runs Heartbeat every heartbeatInterval until ctx is done. It is the shape every other
+// supervised loop in this tree has, so a transient error is a logged restart rather than a dead reaper —
+// and it returns ctx.Err() so the supervisor knows the difference between cancelled and crashed.
+func (g *RunnerGateway) HeartbeatLoop(ctx context.Context) error {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			g.Heartbeat(ctx, heartbeatTimeout)
+		}
+	}
+}
+
+// recordHeartbeat advances the durable liveness stamp for one session's machine, at most once every
+// heartbeatMinWrite. It passes a ZERO certificate expiry, so `cert_not_after` is left where the last
+// enrol/renew put it (the statement coalesces): a heartbeat proves the machine is there and says nothing
+// new about its certificate.
+func (g *RunnerGateway) recordHeartbeat(pr *pendingRunner) {
+	if g.registry == nil || pr.dns == "" {
+		return
+	}
+	now := g.now()
+	last := pr.beatAt.Load()
+	if last != 0 && now.Sub(time.Unix(0, last)) < heartbeatMinWrite {
+		return
+	}
+	if !pr.beatAt.CompareAndSwap(last, now.UnixNano()) {
+		return // another frame won the window; one write is the point
+	}
+	// Not the request context: a heartbeat outlives the frame that triggered it and a ping has no request
+	// at all. Bounded so a stalled database cannot hold the reaper's pass open.
+	ctx, cancel := context.WithTimeout(context.Background(), heartbeatTimeout)
+	defer cancel()
+	g.recordSeen(ctx, pr.dns, time.Time{}) //nolint:errcheck // inventory write; see recordSeen
 }
 
 // poolQueue is ONE pool's rendezvous: the machines parked in it with nothing to do, and the attempts
@@ -955,6 +1356,12 @@ func (q *poolQueue) park(pr *pendingRunner) {
 	if len(q.waiting) > 0 {
 		w := q.waiting[0]
 		q.waiting = q.waiting[1:]
+		// MARKED UNDER THE QUEUE LOCK (E24 T5), which is what makes `taken` the authority on "somebody
+		// claimed this machine". A cordon evicts a machine by unparking it, so unpark's own return value can
+		// no longer tell a Dial's claim from an eviction — and getting that wrong strands a resumed machine
+		// in the lease hold with no lease. unpark takes this same lock, so after it returns the answer is
+		// already decided.
+		pr.markTaken()
 		w.ch <- pr // buffered: never blocks
 		return
 	}
@@ -986,6 +1393,7 @@ func (q *poolQueue) wait(queuedAt time.Time) *poolWaiter {
 	if len(q.parked) > 0 {
 		pr := q.parked[0]
 		q.parked = q.parked[1:]
+		pr.markTaken() // under the queue lock — see park() for why this is where it happens
 		w.ch <- pr
 		return w
 	}
@@ -1040,7 +1448,8 @@ func (g *RunnerGateway) readLoop(pr *pendingRunner) {
 		}
 		// A gateway revoked mid-session refuses this runner's stale frames (SAN-011): tear the relay down
 		// as if the runner disconnected, so a decommissioned runner's in-flight events reach no attempt.
-		if g.revoked.Load() {
+		// Since E24 T5 a revoke of THIS MACHINE does the same, which is what makes the hard stop targeted.
+		if _, revokedMachine, _ := pr.life.state(); g.revoked.Load() || revokedMachine {
 			if gc := pr.gc.Load(); gc != nil {
 				gc.emit(relayRead{err: ErrRunnerRevoked})
 				gc.closeFrames()
@@ -1077,7 +1486,16 @@ func (g *RunnerGateway) readLoop(pr *pendingRunner) {
 			gc.closeFrames() // succeeded → close frames → Receive sees io.EOF
 			return
 		default:
-			// heartbeat or other non-frame messages carry nothing to relay.
+			// A heartbeat carries nothing to RELAY and it does carry one fact: this machine is alive. Since
+			// E24 T5 that fact advances `runners.last_seen_at`, which is the stamp an operator reads.
+			//
+			// NOTHING IN THIS TREE SENDS ONE TODAY, AND THAT IS A CORRECTION TO §T5. The plan reasoned that
+			// binding this arm was nearly free "because the frame already arrives and is thrown away" — it does
+			// not arrive: packages/runner writes exactly `runner.hello`, `engine.frame` and `lease.complete`
+			// (session.go), and while PARKED it is blocked in Read and writes nothing at all. So this arm is
+			// forward compatibility for a runner that grows one (T7's relay is the obvious candidate), and the
+			// liveness that actually keeps the stamp fresh today is the gateway's own ping — see Heartbeat.
+			g.recordHeartbeat(pr)
 		}
 	}
 }

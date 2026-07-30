@@ -67,12 +67,75 @@ func (s *Store) ListRunnerPools(ctx context.Context, org, project string, w api.
 type RegistryAPI struct {
 	*Store
 	keys *PoolEnrollmentKeys
+	// live is the gateway (E24 T5). Nil leaves the lifecycle routes writing the ROW only, which is a
+	// supported posture rather than a fallback: a control plane with no runner listener bound has no
+	// sessions to cordon, and a decision recorded now is adopted by whichever gateway that machine next
+	// connects to.
+	live RunnerLifecycle
 }
 
 // NewRegistryAPI joins the two. keys may be nil, in which case the key routes answer as if no pool had
 // keys — a deployment that wires no key store has none.
 func NewRegistryAPI(store *Store, keys *PoolEnrollmentKeys) *RegistryAPI {
 	return &RegistryAPI{Store: store, keys: keys}
+}
+
+// WithLifecycle wires the live gateway a lifecycle decision has to reach as well as the row. A setter for
+// the reason SetRegistry is one: the gateway is built after the stores are, and a deployment that binds no
+// runner listener passes nothing.
+func (a *RegistryAPI) WithLifecycle(live RunnerLifecycle) *RegistryAPI {
+	a.live = live
+	return a
+}
+
+// SetRunnerState implements api.RunnerRegistryAPI: cordon, resume or revoke ONE machine.
+//
+// THE ROW FIRST, THEN THE LIVE GATEWAY, and the order is the whole of "a revocation survives a restart".
+// A decision that reached only the gateway is a decision the next restart erases (§3.6 D15); a decision
+// that reached only the row takes effect at the machine's next connect, which for a Mac mid-run is hours
+// away. Both, in that order, means a crash between them leaves the safe state: recorded but not yet
+// applied, which the machine's next connect resolves because handleConnect adopts the row.
+func (a *RegistryAPI) SetRunnerState(ctx context.Context, org, project, id, action string) (api.RunnerItem, bool, error) {
+	row, found, err := a.Store.SetState(ctx, org, project, id, action)
+	if errors.Is(err, ErrUnknownLifecycleAction) {
+		return api.RunnerItem{}, false, err
+	}
+	if err != nil || !found {
+		return api.RunnerItem{}, false, err
+	}
+	if a.live != nil {
+		switch action {
+		case "cordon":
+			a.live.CordonRunner(row.ID)
+		case "resume":
+			a.live.ResumeRunner(row.ID)
+		case "revoke":
+			a.live.RevokeRunner(row.ID)
+		}
+	}
+	return a.decorate(row), true, nil
+}
+
+// GetRunner shadows the embedded Store's so a single machine's read carries its LIVE lease count. It is
+// the per-runner counter's operator-facing consumer: after cordoning a Mac, "how many leases is it still
+// serving" is the only question left before unplugging it, and before this there was no way to ask.
+func (a *RegistryAPI) GetRunner(ctx context.Context, org, project, id string) (api.RunnerItem, bool, error) {
+	row, found, err := a.Store.Get(ctx, org, project, id)
+	if err != nil || !found {
+		return api.RunnerItem{}, false, err
+	}
+	return a.decorate(row), true, nil
+}
+
+// decorate adds what only the live gateway knows. It is deliberately the ONLY place a runtime fact joins a
+// stored one, so the read projection cannot grow a field whose source nobody can name.
+func (a *RegistryAPI) decorate(row Runner) api.RunnerItem {
+	item := runnerItem(row)
+	if a.live != nil {
+		leases := a.live.RunnerActiveLeases(row.ID)
+		item.ActiveLeases = &leases
+	}
+	return item
 }
 
 // MintRunnerPoolKey implements api.RunnerRegistryAPI.

@@ -182,7 +182,15 @@ type gatewayFixture struct {
 // the real redemption rule (the expired-identity recovery proof does).
 func newGatewayFixture(t *testing.T, tokens execution.EnrollmentTokens) *gatewayFixture {
 	t.Helper()
-	ca := newGatewayCA(t)
+	return newGatewayFixtureWithCA(t, newGatewayCA(t), tokens)
+}
+
+// newGatewayFixtureWithCA is newGatewayFixture over an EXISTING CA, which is what makes a control-plane
+// RESTART provable (E24 T5): a second gateway on the same authority is a new process the machines
+// already hold valid certificates for, so what survives the restart is whatever is in the DATABASE and
+// nothing that was in the first process's memory.
+func newGatewayFixtureWithCA(t *testing.T, ca *gatewayCA, tokens execution.EnrollmentTokens) *gatewayFixture {
+	t.Helper()
 	gateway := execution.NewRunnerGateway(ca, tokens)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

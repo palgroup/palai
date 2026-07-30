@@ -33,6 +33,29 @@ var ErrUnknownPool = errors.New("fleet: no such runner pool")
 // suffix, so the DNS contract stays where the CA and the runner already agree on it.
 var ErrIdentityMismatch = errors.New("fleet: runner DNS is not derived from the runner id")
 
+// ErrUnknownLifecycleAction is returned by SetState for a verb that is not cordon/resume/revoke. The
+// action reaches the store from a URL path segment and `runners.state` is CHECK-constrained, so an
+// unmapped verb has to be refused by the surface that took it rather than by Postgres.
+var ErrUnknownLifecycleAction = errors.New("fleet: unknown runner lifecycle action")
+
+// RunnerLifecycle is the LIVE half of a lifecycle decision: the gateway holding that machine's sessions.
+// The durable half is a row, and a row alone would take effect only at the machine's next connect — which
+// for a cordoned Mac serving a two-hour run is two hours away.
+//
+// THE INTERFACE LIVES HERE AND THE IMPLEMENTATION IS *execution.RunnerGateway, which is the direction the
+// dependency has to run: internal/execution imports internal/fleet, so fleet cannot import it back. One
+// method per verb rather than one `SetState(id, action)` because the gateway's three are genuinely
+// different operations — one evicts, one re-admits, one cuts — and collapsing them would mean re-deriving
+// which is which inside the gateway from a string this package already parsed.
+type RunnerLifecycle interface {
+	CordonRunner(runnerID string)
+	ResumeRunner(runnerID string)
+	RevokeRunner(runnerID string)
+	// RunnerActiveLeases is how many leases that machine is serving right now — the answer to the question
+	// a cordon exists to let an operator ask, which is whether the Mac can be taken away yet.
+	RunnerActiveLeases(runnerID string) int64
+}
+
 // DefaultPoolID is the pool every runner enrols into until enrollment carries a tenant of its own.
 //
 // WHY A CONSTANT AND NOT A LOOKUP: today's enrollment request is {runner_id, public_key} — no org,

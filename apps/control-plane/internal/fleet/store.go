@@ -172,6 +172,73 @@ func (s *Store) RecordSeen(ctx context.Context, dns string, certNotAfter, at tim
 	return row, true, nil
 }
 
+// SetState is the DURABLE half of a lifecycle decision (E24 T5): cordon, resume or revoke ONE machine,
+// with a revoke appended to the enrolment journal, in one transaction.
+//
+// WHY DURABLE AT ALL, said once here because it is the whole task: `cordoned` and `revoked` were in-memory
+// `atomic.Bool`s on the gateway, so a restart erased a revocation (§3.6 D15) — and `restart: always` plus
+// a host reboot replaces that process on a schedule. A decommissioned Mac that comes back into service
+// when the control plane is upgraded is not decommissioned.
+//
+// THE ROW IS WRITTEN BEFORE THE LIVE GATEWAY IS TOLD, and the ordering is the recovery story: a crash
+// between the two leaves a machine whose row says revoked and whose session is still up, which the next
+// connect resolves (handleConnect adopts the row). The other order would leave a cut session with no
+// record — a revocation that a restart undoes, which is the bug this replaces.
+//
+// A revoke is journalled and a cordon is not, and that is a limit rather than a choice: 000045 R4's
+// `entry_kind` CHECK admits ('requested','approved','refused','issued','revoked','renewed'), so there is
+// no kind a cordon could be written as, and E24 owns exactly one migration (T1's). A cordon is reversible
+// and observable in `state`; a revoke is neither, which is why it is the one that had to be recorded.
+func (s *Store) SetState(ctx context.Context, org, project, id, action string) (Runner, bool, error) {
+	state, ok := runnerStateFor[action]
+	if !ok {
+		return Runner{}, false, fmt.Errorf("%w: %q", ErrUnknownLifecycleAction, action)
+	}
+	ctx = storage.WithTenant(ctx, org, project)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Runner{}, false, fmt.Errorf("begin runner lifecycle write: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+
+	row, err := scanRunner(tx.QueryRow(ctx, storage.Query("SetRunnerState"), id, org, project, state), true)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Not this tenant's, not there, or already decommissioned and being asked to move — all of which
+		// the caller renders as a 404 that discloses nothing about which.
+		return Runner{}, false, nil
+	}
+	if err != nil {
+		return Runner{}, false, fmt.Errorf("set runner state: %w", err)
+	}
+	// The journal entry for a decommission. The statement itself appends AT MOST ONCE per machine, so a
+	// repeated revoke — which has to succeed, or an operator cannot confirm one — records nothing the
+	// second time rather than counting their confidence as fleet history.
+	if action == "revoke" {
+		detail, err := json.Marshal(map[string]string{"runner_dns": row.DNS, "label": row.Label})
+		if err != nil {
+			return Runner{}, false, fmt.Errorf("encode revocation detail: %w", err)
+		}
+		if _, err := tx.Exec(ctx, storage.Query("AppendRunnerRevocation"),
+			s.mintID("renr"), row.Organization, row.Project, row.ID, row.PoolID, detail); err != nil {
+			return Runner{}, false, fmt.Errorf("append revocation entry: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Runner{}, false, fmt.Errorf("commit runner lifecycle write: %w", err)
+	}
+	return row, true, nil
+}
+
+// runnerStateFor maps the operator's VERB to the durable state it writes. A map rather than a switch so
+// an unknown action is a refusal at the door: the action reaches this store from a URL path segment, and
+// `runners.state` is CHECK-constrained, so an unmapped verb would otherwise be a 500 from Postgres
+// instead of a 400 from the surface that took it.
+var runnerStateFor = map[string]string{
+	"cordon": "cordoned",
+	"resume": "active",
+	"revoke": "revoked",
+}
+
 // Get resolves one runner inside the caller's verified scope.
 func (s *Store) Get(ctx context.Context, org, project, id string) (Runner, bool, error) {
 	ctx = storage.WithTenant(ctx, org, project)

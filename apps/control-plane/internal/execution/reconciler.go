@@ -21,6 +21,11 @@ type ReconcileStore interface {
 	// nothing waiting — the run finished long before. A tool call's run is parked on the question, so an
 	// expiry that only cancelled the call would leave that run waiting forever (E23 T1).
 	SweepExpiredToolApprovals(ctx context.Context) (int, error)
+	// SweepExpiredCapacityParks ends the runs parked for want of a MACHINE longer than the operator's TTL
+	// (E24 T5). ttl <= 0 is a no-op and is the shipped default: there is no honest default duration for
+	// "how long until a rented Mac arrives". The projection is the terminal Response body, passed in because
+	// it lives in this package with the other terminal projections.
+	SweepExpiredCapacityParks(ctx context.Context, ttl time.Duration, projection []byte) (int, error)
 }
 
 // Reconciler periodically dead-letters jobs whose lease has lapsed and whose attempts
@@ -33,11 +38,23 @@ type Reconciler struct {
 	store       ReconcileStore
 	interval    time.Duration
 	maxAttempts int
+	// capacityParkTTL bounds how long a run may sit parked for want of a MACHINE (E24 T5). ZERO IS THE
+	// DEFAULT AND IT MEANS NEVER, deliberately: a default here would be a guess about how long a rented Mac
+	// takes to arrive, and AWS's own documented range for starting a Mac host is 6 to 20 minutes.
+	capacityParkTTL time.Duration
 }
 
 // NewReconciler binds a sweep interval and attempt ceiling to the store.
 func NewReconciler(store ReconcileStore, interval time.Duration, maxAttempts int) *Reconciler {
 	return &Reconciler{store: store, interval: interval, maxAttempts: maxAttempts}
+}
+
+// WithCapacityParkTTL opts the deployment into expiring capacity parks (PALAI_FLEET_PARK_TTL). A setter
+// rather than a constructor parameter so every existing caller compiles unchanged, and because the honest
+// default is "off" — see the field.
+func (r *Reconciler) WithCapacityParkTTL(ttl time.Duration) *Reconciler {
+	r.capacityParkTTL = ttl
+	return r
 }
 
 // Sweep runs one reconciliation pass: it dead-letters abandoned jobs, then drives every
@@ -61,6 +78,13 @@ func (r *Reconciler) Sweep(ctx context.Context) (int, error) {
 	// And the gated-tool half, which RELEASES A PARKED RUN as well as cancelling the call. Non-fatal like
 	// the rest of the pass; a transient blip means the next tick frees the run instead of this one.
 	if _, err := r.store.SweepExpiredToolApprovals(ctx); err != nil {
+		return dead, err
+	}
+	// And the CAPACITY half (E24 T5): a run parked because its pool held no machine, for longer than the
+	// operator allowed. It rides this loop rather than a reaper of its own because this loop already exists,
+	// already spans tenants, and is already supervised — and because an unconfigured TTL makes the call a
+	// return-immediately no-op, so a deployment that opts out pays one comparison per tick.
+	if _, err := r.store.SweepExpiredCapacityParks(ctx, r.capacityParkTTL, capacityTimeoutProjection); err != nil {
 		return dead, err
 	}
 	return dead, nil
