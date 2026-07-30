@@ -1,27 +1,240 @@
 /* Accessibility fundamentals (UI-001, §47.5). These are load-bearing for the axe + keyboard proofs, not
    decoration: a visible skip link, an always-visible focus ring, reduced-motion honored, and status
-   conveyed by text + glyph (never color alone). Light/dark follow the OS. */
+   conveyed by text + glyph (never color alone). Light/dark follow the OS.
+
+   THE PALETTE IS A TOKEN SYSTEM NOW (docs/superpowers/plans/console-design-language.md, "Operator"). Two
+   layers, and the split is what keeps dark mode to one block: layer 1 is raw scale steps (--slate-10), layer
+   2 is semantic aliases (--border-control). RULE BODIES USE LAYER 2 ONLY. Radix's light and dark scales carry
+   the same step numbers, so the dark block below redefines 27 raw steps and touches ONE semantic token.
+
+   The colour values are Radix Colors (MIT, radix-ui/colors src/light.ts / src/dark.ts), extracted rather
+   than hand-copied. The package is not a dependency: it ships constants and nothing else, so the 27 steps
+   this console uses are written here and the dependency count stays at zero.
+
+   THE STEP MAPPING IS OURS, NOT RADIX'S, and one measurement is why. Radix guarantees its steps in APCA (Lc);
+   this console is judged by axe under WCAG 2.0/2.1/2.2 tags. Re-measured with the WCAG 2.x formula, Radix's
+   step 7 ("UI element border and focus rings") is 1.53:1 and step 8 ("hovered UI element border") is 1.86:1
+   against step 1 — both far under the 3:1 that SC 1.4.11 requires. The first usable neutral for an
+   interactive control border is step 10. Copying Radix's role table would have reproduced the exact defect
+   this commit fixes. */
 
 :root {
-  --bg: #ffffff;
-  --fg: #1a1a1a;
-  --muted: #55606b;
-  --border: #d0d7de;
-  --panel: #f6f8fa;
-  --accent: #0b5cad;
-  --focus: #0b5cad;
   color-scheme: light dark;
+
+  /* --- LAYER 1: raw scale steps. NOT used in rule bodies. Unused steps are deliberately not emitted; a new
+     one is added when it is needed, and MEASURED at that moment. --- */
+  --slate-1: #fcfcfd;
+  --slate-2: #f9f9fb;
+  --slate-3: #f0f0f3;
+  --slate-4: #e8e8ec;
+  --slate-5: #e0e1e6;
+  --slate-6: #d9d9e0;
+  --slate-9: #8b8d98;
+  --slate-10: #80838d;
+  --slate-11: #60646c;
+  --slate-12: #1c2024;
+  --blue-3: #e6f4fe;
+  --blue-6: #acd8fc;
+  --blue-9: #0090ff;
+  --blue-10: #0588f0;
+  --blue-11: #0d74ce;
+  --blue-12: #113264;
+  --red-3: #feebec;
+  --red-6: #fdbdbe;
+  --red-11: #ce2c31;
+  --red-12: #641723;
+  --grass-3: #e9f6e9;
+  --grass-6: #b2ddb5;
+  --grass-11: #2a7e3b;
+  --grass-12: #203c25;
+  --amber-3: #fff7c2;
+  --amber-6: #f3d673;
+  --amber-12: #4f3422;
+
+  /* --- LAYER 2: surfaces. Page and panel are the SAME colour on purpose: measured on the old palette, the
+     panel fill carried 1.06:1 (light) and 1.09:1 (dark), i.e. a surface hierarchy that did not exist. The
+     separation is carried by a hairline + a shadow instead of by a fill nobody can see. --- */
+  --bg-page: var(--slate-1);
+  --bg-subtle: var(--slate-2); /* sticky thead band */
+  --bg-inset: var(--slate-3); /* code block, kv label column, disabled control */
+  --bg-hover: var(--slate-4);
+  --bg-active: var(--slate-5);
+
+  /* --- LAYER 2: text --- */
+  --text: var(--slate-12);
+  --text-muted: var(--slate-11);
+  --text-on-solid: #ffffff; /* the ONE semantic token the dark block inverts */
+
+  /* --- LAYER 2: borders. The distinction is the whole of SC 1.4.11: a hairline is structural decoration, a
+     control border is the only thing that says where an input IS. They are not the same colour and must
+     never be collapsed back into one token. --- */
+  --border-hairline: var(--slate-6); /* row separators, panel edge — decorative, SC 1.4.11 does not apply */
+  --border-control: var(--slate-10); /* interactive control boundary — 3.69/3.60/3.33 light, 4.45/4.15/3.75 dark */
+  --border-control-hover: var(--slate-11);
+
+  /* --- LAYER 2: accent --- */
+  --accent-text: var(--blue-11);
+  --accent-bg: var(--blue-3);
+  --accent-border: var(--blue-6);
+  --accent-solid: var(--blue-11);
+  --accent-solid-hover: var(--blue-12);
+  --focus-ring: var(--blue-11);
+
+  /* --- LAYER 2: status. Five states x 3, plus two inline text colours.
+     --warn-text-inline IS DELIBERATELY ABSENT: amber step 11 (#ab6400) clears 4.5:1 on NO surface in this
+     system — 4.50 on slate-1 with zero margin, 4.38 on slate-2, 4.05 on slate-3. So amber is a chip colour
+     only, and its text is step 12. --- */
+  --ok-bg: var(--grass-3);
+  --ok-border: var(--grass-6);
+  --ok-text: var(--grass-12);
+  --ok-text-inline: var(--grass-11);
+  --warn-bg: var(--amber-3);
+  --warn-border: var(--amber-6);
+  --warn-text: var(--amber-12);
+  --danger-bg: var(--red-3);
+  --danger-border: var(--red-6);
+  --danger-text: var(--red-12);
+  --danger-text-inline: var(--red-11);
+  --info-bg: var(--blue-3);
+  --info-border: var(--blue-6);
+  --info-text: var(--blue-12);
+  --neutral-bg: var(--slate-3);
+  --neutral-border: var(--slate-6);
+  --neutral-text: var(--slate-12);
+
+  /* --- Typography. system-ui is KEPT: zero network requests, no font-src in any CSP, no FOUT, nothing new
+     on the audit surface of a console whose whole claim is that it talks to one origin. What is given up is
+     real and named — this console is not typographically identical across operating systems. --- */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* rem, never px, on the root: SC 1.4.4 Resize Text requires these to follow the browser's font setting. */
+  --font-size-1: 0.6875rem;
+  --font-size-2: 0.75rem;
+  --font-size-3: 0.8125rem;
+  --font-size-4: 0.875rem;
+  --font-size-5: 1rem;
+  --font-size-6: 1.125rem;
+  --font-size-7: 1.375rem;
+  --font-size-8: 1.75rem;
+  --font-size-9: 2.25rem;
+
+  --line-height-1: 1rem;
+  --line-height-2: 1.125rem;
+  --line-height-3: 1.25rem;
+  --line-height-4: 1.375rem;
+  --line-height-5: 1.5rem;
+  --line-height-6: 1.625rem;
+  --line-height-7: 1.75rem;
+  --line-height-8: 2.125rem;
+  --line-height-9: 2.5rem;
+
+  --letter-spacing-1: 0.06em;
+  --letter-spacing-2: 0.01em;
+  --letter-spacing-3: 0em;
+  --letter-spacing-4: 0em;
+  --letter-spacing-5: 0em;
+  --letter-spacing-6: -0.005em;
+  --letter-spacing-7: -0.01em;
+  --letter-spacing-8: -0.015em;
+  --letter-spacing-9: -0.02em;
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* --- Space, density, radius, border width, shadow, motion --- */
+  --space-1: 0.25rem;
+  --space-2: 0.375rem;
+  --space-3: 0.5rem;
+  --space-4: 0.75rem;
+  --space-5: 1rem;
+  --space-6: 1.5rem;
+  --space-7: 2rem;
+  --space-8: 3rem;
+  --space-9: 4rem;
+
+  --row-h-compact: 1.75rem; /* timeline / log row */
+  --row-h: 2.25rem; /* default table row */
+  --row-h-roomy: 2.75rem; /* a row with a control in it */
+  --control-h: 2rem;
+  --control-h-sm: 1.5rem; /* 24px — SC 2.5.8 Target Size floor, and nothing goes under it */
+
+  --radius-1: 3px;
+  --radius-2: 5px;
+  --radius-3: 8px;
+  --radius-4: 12px;
+  --radius-full: 9999px;
+
+  --border-w: 1px;
+  --border-w-strong: 2px;
+  --ring-w: 2px;
+  --ring-offset: 2px;
+
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 4%), 0 1px 1px rgb(0 0 0 / 3%);
+  --shadow-2: 0 8px 24px rgb(0 0 0 / 10%), 0 2px 6px rgb(0 0 0 / 6%);
+
+  --duration-1: 90ms;
+  --duration-2: 150ms;
+  --duration-3: 240ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* --- The seven tokens this file used to have, kept as aliases so this step moves no selector. They are
+     deleted in a later step, which is what closes the escape route back to the old palette. --- */
+  --bg: var(--bg-page);
+  --fg: var(--text);
+  --muted: var(--text-muted);
+  --panel: var(--bg-page);
+  --border: var(--border-hairline);
+  --accent: var(--accent-text);
+  --focus: var(--focus-ring);
 }
 
+/* ORDERING RULE — THIS BLOCK MUST COME AFTER EVERY :root DECLARATION, AND IT FAILS SILENTLY OTHERWISE.
+   It overrides --shadow-1 and --shadow-2, which are declared in the :root above at the same specificity. A
+   :root written BELOW this block would win, and dark mode would quietly get the light shadows with no test
+   anywhere able to say so. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0d1117;
-    --fg: #e6edf3;
-    --muted: #9aa7b4;
-    --border: #30363d;
-    --panel: #161b22;
-    --accent: #4aa3ff;
-    --focus: #4aa3ff;
+    --slate-1: #111113;
+    --slate-2: #18191b;
+    --slate-3: #212225;
+    --slate-4: #272a2d;
+    --slate-5: #2e3135;
+    --slate-6: #363a3f;
+    --slate-9: #696e77;
+    --slate-10: #777b84;
+    --slate-11: #b0b4ba;
+    --slate-12: #edeef0;
+    --blue-3: #0d2847;
+    --blue-6: #104d87;
+    --blue-9: #0090ff;
+    --blue-10: #3b9eff;
+    --blue-11: #70b8ff;
+    --blue-12: #c2e6ff;
+    --red-3: #3b1219;
+    --red-6: #72232d;
+    --red-11: #ff9592;
+    --red-12: #ffd1d9;
+    --grass-3: #1b2a1e;
+    --grass-6: #2d5736;
+    --grass-11: #71d083;
+    --grass-12: #c2f0c2;
+    --amber-3: #302008;
+    --amber-6: #5c3d05;
+    --amber-12: #ffe7b3;
+
+    /* A solid fill is LIGHT in dark mode, so the text on it goes dark. This inversion is the structural fix
+       for the skip link: it hard-coded `color: #fff` on a background that lightens here, which measured
+       2.63:1 against a required 4.5:1 — on the first Tab stop of every page. Nothing hard-codes it now. */
+    --text-on-solid: var(--slate-1);
+
+    /* A drop shadow is invisible on a dark surface; the card edge is carried by the hairline plus a top
+       inner highlight instead. */
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 40%), inset 0 1px 0 rgb(255 255 255 / 3%);
+    --shadow-2: 0 8px 24px rgb(0 0 0 / 60%), 0 2px 6px rgb(0 0 0 / 40%);
   }
 }
 
@@ -31,21 +244,26 @@
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--fg);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg-page);
+  color: var(--text);
+  font-family: var(--font-sans);
   line-height: 1.5;
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
-/* Focus is ALWAYS visible — keyboard users must see where they are (axe: focusable content). */
+/* Focus is ALWAYS visible — keyboard users must see where they are (axe: focusable content).
+
+   THE OFFSET IS LOAD-BEARING. The ring sits at only ~1.4:1 against a control's own border; what makes it
+   conforming is that the offset moves it OFF that border and onto the surface, where it clears 3:1. Setting
+   it to 0 would break SC 1.4.11 without changing a single colour. tests/contrast.spec.ts asserts it is
+   non-zero for exactly that reason. */
 :focus-visible {
-  outline: 3px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: 2px;
+  outline: var(--ring-w) solid var(--focus-ring);
+  outline-offset: var(--ring-offset);
+  border-radius: var(--radius-1);
 }
 
 /* The skip link is off-screen until focused, then jumps into view — the first Tab stop. */
@@ -53,16 +271,19 @@ a {
   position: absolute;
   left: -9999px;
   top: 0;
-  background: var(--accent);
-  color: #fff;
-  padding: 0.5rem 1rem;
+  background: var(--accent-solid);
+  color: var(--text-on-solid);
+  padding: var(--space-3) var(--space-5);
   z-index: 100;
 }
 .skip-link:focus {
   left: 0;
 }
 
-/* Reduced-motion: no transitions/animations for users who ask for calm (axe / §47.5). */
+/* Reduced-motion: no transitions/animations for users who ask for calm (axe / §47.5).
+
+   SC 1.4.12 Text Spacing forbids !important on line-height / letter-spacing / word-spacing. This block uses
+   it only on animation and transition, which is correct — no spacing property may ever be added here. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -75,7 +296,7 @@ a {
 }
 
 header.app-header {
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--border-w) solid var(--border-hairline);
   padding: 0.75rem 1.25rem;
   display: flex;
   gap: 1.25rem;
@@ -97,16 +318,16 @@ main {
 
 h2 {
   font-size: 1.15rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--border-w) solid var(--border-hairline);
   padding-bottom: 0.25rem;
 }
 
 .panel {
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-3);
   padding: 1rem;
   margin: 0 0 1.25rem;
-  background: var(--panel);
+  background: var(--bg-page);
   overflow-x: auto;
 }
 
@@ -119,25 +340,31 @@ th,
 td {
   text-align: left;
   padding: 0.35rem 0.6rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--border-w) solid var(--border-hairline);
   vertical-align: top;
 }
 th {
-  color: var(--muted);
-  font-weight: 600;
+  color: var(--text-muted);
+  font-weight: var(--font-weight-semibold);
 }
 
+/* THE CONTROL BORDER IS --border-control AND NOT --border-hairline, AND THIS IS THE FIX FOR A MEASURED
+   VIOLATION. These controls take their background from the page, so this border is the ONLY visual
+   information marking where the control is — which is exactly what SC 1.4.11 Non-text Contrast requires at
+   3:1. The old --border (#d0d7de / #30363d) carried 1.36-1.55:1 depending on the surface, on every control
+   in the console, in both modes. axe-core has no rule that looks at a control border, so the suite was green
+   the whole time; tests/contrast.spec.ts is what measures it now. */
 button {
   font: inherit;
   padding: 0.4rem 0.8rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
+  border: var(--border-w) solid var(--border-control);
+  border-radius: var(--radius-2);
+  background: var(--bg-page);
+  color: var(--text);
   cursor: pointer;
 }
 button:hover {
-  border-color: var(--accent);
+  border-color: var(--border-control-hover);
 }
 button:disabled {
   opacity: 0.5;
@@ -150,10 +377,10 @@ select,
 textarea {
   font: inherit;
   padding: 0.4rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
+  border: var(--border-w) solid var(--border-control);
+  border-radius: var(--radius-2);
+  background: var(--bg-page);
+  color: var(--text);
   width: 100%;
 }
 
@@ -162,16 +389,16 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 .status .glyph {
-  font-weight: 700;
+  font-weight: var(--font-weight-bold);
 }
 
 pre.code {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: var(--bg-inset);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-2);
   padding: 0.6rem;
   overflow-x: auto;
   font-size: 0.82rem;
@@ -179,36 +406,35 @@ pre.code {
 }
 
 .lane {
-  border-left: 3px solid var(--border);
+  border-left: 3px solid var(--border-hairline);
   padding: 0.2rem 0 0.2rem 0.6rem;
   margin: 0.25rem 0;
 }
 
 .muted {
-  color: var(--muted);
+  color: var(--text-muted);
 }
 
 /* A form refusal is TEXT with a glyph, never colour alone — the same rule .status follows. The colour is a
-   redundant hint on top of a sentence that already says what happened. */
+   redundant hint on top of a sentence that already says what happened.
+
+   The two hard-coded hexes (#b3261e / #ff7b72) are gone, and with them a SECOND dark media block that sat
+   after every other rule in this file — the ordering hazard the token block's own warning describes. One
+   token, resolved per mode, measuring 5.08:1 light and 8.95:1 dark on the page surface. */
 .form-error {
-  color: var(--fg);
-  font-weight: 600;
+  color: var(--text);
+  font-weight: var(--font-weight-semibold);
 }
 .form-error .glyph {
-  color: #b3261e;
-}
-@media (prefers-color-scheme: dark) {
-  .form-error .glyph {
-    color: #ff7b72;
-  }
+  color: var(--danger-text-inline);
 }
 
 fieldset {
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-2);
   margin: 0 0 1rem;
 }
 legend {
   padding: 0 0.4rem;
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
