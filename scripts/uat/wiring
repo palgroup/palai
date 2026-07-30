@@ -151,19 +151,31 @@ else
 fi
 
 # ---- the console tier ---------------------------------------------------------------------------------------
-console="console specs NOT RUN (no pnpm/node_modules)"
-if command -v pnpm >/dev/null 2>&1 && [ -d apps/web-console/node_modules ]; then
-  echo "uat-wiring: the console specs (FAKE upstream profile)" >&2
-  ( cd apps/web-console && pnpm test:e2e )
-  console="console specs green (FAKE upstream)"
-  if [ "${RUN_CONSOLE_REAL:-0}" = "1" ]; then
-    echo "uat-wiring: the console REAL-upstream profile + the fake-vs-real sweep (E19 T7; needs a compose stack)" >&2
-    ( cd apps/web-console && pnpm test:e2e:real && pnpm sweep )
-    console="console specs green (FAKE + REAL upstream + the D15 sweep)"
-  fi
-else
-  echo "uat-wiring: pnpm/node_modules absent — the console specs did NOT run; install them with" >&2
+# THE SILENT SKIP IS GONE (E25 T9, plan §3.6 D7). This block used to `echo` and CONTINUE when the toolchain was
+# absent, so a `uat-wiring=PASS` was printed over a console tier that had not run — and the closing line said
+# `console specs NOT RUN` in the same breath as PASS. MEASURED before it was changed, with no node_modules in
+# the tree: `SKIP_JOURNEYS=1 scripts/uat/wiring` printed `uat-wiring=PASS (… console specs NOT RUN (no
+# pnpm/node_modules) …)` and exited 0.
+#
+# That mattered more than a missing tier: `console` is one of the capabilities this gate's closing line
+# declares PREVIEW, and the divergence ledger the console's evidence rests on is only re-measured by a sweep
+# that runs here. §3.6 D6 measured what that cost — five ledger rows stayed WRONG for months, and the reason
+# they rotted is on this line. It is now `scripts/uat/extensions`' posture verbatim: a missing toolchain EXITS
+# 2 with the install command, because a silently unrun backing suite is the exact hole a co-run closes.
+if ! command -v pnpm >/dev/null 2>&1 || [ ! -d apps/web-console/node_modules ]; then
+  echo "uat-wiring: the console playwright specs BACK the console capability this gate reports on, and the" >&2
+  echo "  conformance sweep is the ONLY thing that re-measures tests/divergences.mjs — neither can be skipped." >&2
+  echo "  Install them with:" >&2
   echo "  corepack pnpm install && (cd apps/web-console && pnpm exec playwright install chromium)" >&2
+  exit 2
+fi
+echo "uat-wiring: the console specs (FAKE upstream profile)" >&2
+( cd apps/web-console && pnpm test:e2e )
+console="console specs green (FAKE upstream)"
+if [ "${RUN_CONSOLE_REAL:-0}" = "1" ]; then
+  echo "uat-wiring: the console REAL-upstream profile + the fake-vs-real sweep (E19 T7; needs a compose stack)" >&2
+  ( cd apps/web-console && pnpm test:e2e:real && pnpm sweep )
+  console="console specs green (FAKE + REAL upstream + the D15 sweep)"
 fi
 
 # ---- the live tier: credential-gated, NO CODE CHANGES -------------------------------------------------------
