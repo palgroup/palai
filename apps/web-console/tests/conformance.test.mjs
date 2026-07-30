@@ -188,26 +188,45 @@ async function seedBothStacks() {
       "(api/middleware/auth.go HasScope on an empty scope set), so this is a real failure, not a permission gap.",
   );
 
+  // AND IT WRITES ONE VALUE, WHICH SEEDS A SECOND COLLECTION. An environment value IS a secret_refs row
+  // under the derived name `env:<id>:<key>`, and secret_refs is EMPTY on a bootstrap stack — so the item arm
+  // has never once compared a secret-ref shape, and the fixture's row was missing `updated_at` for months
+  // with nothing able to notice. That is not a hypothetical: this seed's first run found it.
+  //
+  // The value is a SENTINEL, not a credential: it opens nothing, it is never printed, and it is written in a
+  // request BODY (never a path, never an argument), which is the same discipline the route itself enforces.
   const name = `sweep-env-${Date.now()}`;
-  const init = {
+  const create = {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name, description: "conformance sweep seed" }),
+  };
+  const write = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key: "SWEEP_SEED_TOKEN", value: "conformance-sweep-sentinel-not-a-credential" }),
   };
   for (const [label, doFetch] of [
     ["real", realFetch],
     ["fixture", fakeFetch],
   ]) {
-    const created = await doFetch("/v1/environments", init);
+    const created = await doFetch("/v1/environments", create);
     const createdBody = await created.json().catch(() => ({}));
     assert.ok(
       created.status === 200 || created.status === 201,
       `the sweep could not seed an environment on the ${label} side: POST /v1/environments returned ` +
-        `${created.status} (${createdBody.code ?? "?"}). NO VALUE IS WRITTEN BY THIS SEED — only the group — so a ` +
-        "failure here is a route or capability problem, never a credential one. The environment routes mount " +
-        "only when a secret master key is configured (main.go WithEnvironments); compose passes " +
-        "PALAI_SECRET_MASTER_KEY_FILE, so an unmounted family on the real side means the stack was brought up " +
-        "without it and the item-shape floor below would drop silently.",
+        `${created.status} (${createdBody.code ?? "?"}). The environment routes mount only when a secret master ` +
+        "key is configured (main.go WithEnvironments); compose passes PALAI_SECRET_MASTER_KEY_FILE, so an " +
+        "unmounted family on the real side means the stack was brought up without it and the item-shape floor " +
+        "below would drop silently.",
+    );
+    const wrote = await doFetch(`/v1/environments/${encodeURIComponent(createdBody.id)}/values`, write);
+    const wroteBody = await wrote.json().catch(() => ({}));
+    assert.ok(
+      wrote.status === 200 || wrote.status === 201,
+      `the sweep could not seed an environment VALUE on the ${label} side: POST /v1/environments/{id}/values ` +
+        `returned ${wrote.status} (${wroteBody.code ?? "?"}). Without it the secret-refs item shape is compared ` +
+        "against an empty real collection, which is a pass over nothing.",
     );
   }
 }
@@ -305,16 +324,17 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
       }
     }
     // THE FLOOR, AND IT RISES EVERY TASK (E25 T2, raised by T4). It was 3 — the three collections a bootstrap
-    // stack seeds — then 4 once this sweep began seeding a knowledge base, and it is now 5: T4 seeds an
-    // ENVIRONMENT on both sides (see seedBothStacks), which is the collection its console screen writes into.
-    // The five that must hold: organizations, projects, api-keys, knowledge-bases, environments. T7 seeds tool
-    // revisions and raises it again; it must never fall.
+    // stack seeds — then 4 once this sweep began seeding a knowledge base, and it is now 6: T4's seed creates
+    // an ENVIRONMENT and writes one VALUE into it, and the value is a SECRET_REFS row, so two collections that
+    // were empty on every bootstrap stack now have one each. The six that must hold: organizations, projects,
+    // api-keys, knowledge-bases, environments, secret-refs. T7 seeds tool revisions and raises it again; it
+    // must never fall.
     assert.ok(
-      itemsCompared >= 5,
+      itemsCompared >= 6,
       `only ${itemsCompared} collections had a row on BOTH sides, so this arm compared almost no item shapes — ` +
-        "the bootstrap seeds organizations/projects/api-keys and this sweep seeds a knowledge base and an " +
-        "environment, so fewer than five means either the real stack is not seeded or a seed did not land, and " +
-        "this arm would pass vacuously",
+        "the bootstrap seeds organizations/projects/api-keys and this sweep seeds a knowledge base, an " +
+        "environment and one environment value (which is a secret_refs row), so fewer than six means either " +
+        "the real stack is not seeded or a seed did not land, and this arm would pass vacuously",
     );
   });
 

@@ -173,7 +173,13 @@ const ADMIN = {
   "api-keys": listView([{ id: "key_admin", object: "api_key", project_id: "proj_local", scopes: ["provision", "responses"], revoked_at: null }]),
   "model-connections": listView([{ id: "mc_1", object: "model_connection", provider: "fake", secret_ref: "provider-key" }]),
   "model-routes": listView([{ id: "mr_1", object: "model_route", name: "default" }]),
-  "secret-refs": listView([{ name: "provider-key", version: 2, object: "secret_ref" }]),
+  // `updated_at` was ABSENT here until E25 T4 and nothing could catch it, for exactly the reason T2's seed
+  // exists: a bootstrap stack's secret_refs collection is EMPTY, so the sweep's item arm had no real row to
+  // compare against and skipped. T4's environment write is the first thing in this tree that PUTS a row
+  // there (the derived name `env:<id>:<key>` IS a secret_refs row), and the very first comparison found the
+  // missing field. The real projection is identity/secrets.go secretRefView: {name, object, version,
+  // updated_at} with updated_at a non-nil pointer on every scanned row.
+  "secret-refs": listView([{ name: "provider-key", version: 2, object: "secret_ref", updated_at: "2026-07-24T00:00:00Z" }]),
   // The knowledge-base row carries the field names the REAL projection carries — `name`, not `display_name`,
   // plus `created_at` (knowledge/views.go knowledgeBaseView; embedding_route and active_index_revision_id are
   // omitempty and absent on a freshly created base). It said `display_name` until E25 T2, which nothing had

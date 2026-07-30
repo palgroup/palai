@@ -57,10 +57,25 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
     // E25 T2 — THIS USED TO SAY "/v1/secret-refs is not registered on a compose stack (DIV-RTE-001), so the
     // panel renders its ERROR state", and that was measured FALSE: compose.yaml:116 passes the secret master
     // key file, the route family mounts, and a running stack answers OPTIONS /v1/secret-refs with 405 + Allow.
-    // What a compose stack actually shows is the honest EMPTY state — the route works and nothing has written
-    // a secret ref — which is a stronger assertion than "visible", and it is the state T4's secret form will
-    // write into. The ledger row is deleted because the divergence is closed, not because the check moved.
-    await expect(page.getByTestId("panel-secret-refs-empty")).toBeVisible({ timeout: 15_000 });
+    // The ledger row is deleted because the divergence is closed, not because the check moved.
+    //
+    // E25 T4 — AND IT THEN SAID "the honest EMPTY state", WHICH T4 MADE UNTRUE. An environment value IS a
+    // secret_refs row (the derived name `env:<id>:<key>`), so the moment T4's own suite writes one, this
+    // stack's secret-refs collection has rows FOREVER — secret_refs grants no DELETE. Asserting `-empty` here
+    // was passing only because `p` sorts before `s` and this file therefore ran before
+    // secret-never-returns.spec.ts; a second run against the same stack would have failed it, and an
+    // assertion that depends on file order is not an assertion.
+    //
+    // What is asserted instead holds in BOTH states and is the property this file is actually about: the panel
+    // RENDERED (route mounted, request authorized) and it shows NO value — the column set is metadata, which
+    // is what makes assertion 6's response-body scan a claim about a surface rather than about an empty table.
+    const rows = page.getByTestId("panel-secret-refs").locator("tbody tr");
+    const empty = page.getByTestId("panel-secret-refs-empty");
+    await expect(async () => {
+      expect((await rows.count()) + (await empty.count()), "the secret-refs panel rendered neither rows nor its empty state").toBeGreaterThan(0);
+    }).toPass({ timeout: 15_000 });
+    const headers = await page.getByTestId("panel-secret-refs").locator("thead th").allTextContents();
+    expect(headers, "the secret-refs panel must project metadata only").toEqual(["Name", "Version"]);
   } else {
     await expect(page.getByTestId("panel-secret-refs")).toContainText("provider-key");
   }
