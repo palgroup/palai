@@ -99,6 +99,11 @@ func NewExecutor(wallTime time.Duration) *Executor {
 	return &Executor{wallTime: wallTime, maxStdoutBytes: 1 << 20, maxStderrBytes: 1 << 16}
 }
 
+// WallTime reports the bound this executor was built with, so a composition root can be asked what it
+// actually wired. It exists because zero is not a neutral value here — it is UNBOUNDED, and an
+// unbounded host executor is indistinguishable from a bounded one until a command hangs.
+func (e *Executor) WallTime() time.Duration { return e.wallTime }
+
 // Run executes one argv on the host and returns its bounded, redacted result. A non-zero exit is a
 // normal shell outcome (the command failed), not an executor error — including a missing command,
 // which is reported as exit 127 the way a shell reports it, so the result reads the same under both

@@ -350,11 +350,26 @@ func (e *ShellExecutor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (t
 	// it as a bounded termination; a mem-bounded kill is reported OOM. ponytail: exit-code heuristic
 	// — the daemon's OOM flag is not surfaced by the driver, and a mem-bounded 137 is the reliable
 	// OOM signal in practice.
+	//
+	// IT RUNS BEFORE THE TIMED-OUT CORRECTION BELOW, and the order is load-bearing: this heuristic
+	// GUESSES an OOM from a 137 the daemon reported, and a wall-time expiry is a cause we already
+	// KNOW. Correcting the exit code first would feed this branch a 137 we synthesised ourselves and
+	// every timeout would claim an OOM that never happened.
 	if result.ExitCode == 137 {
 		result.Signal = "KILL"
 		if e.limits.MaxMemoryBytes > 0 {
 			result.OOMKilled = true
 		}
+	}
+	// The driver assigns an exit code only on the branch where the container REPORTED one (docker.go's
+	// `<-wait.Result`); a wall-time expiry abandons that wait, so Outcome.ExitCode is still its zero
+	// value. Reporting that verbatim would tell the model a reaped build EXITED CLEANLY with no output,
+	// and a model checks the exit code first. 137 is what this type's doc comment already promises and
+	// what the host posture reports for the same event, so the two postures agree on one outcome. The
+	// driver's Outcome stays a faithful record of what the daemon said; the correction is made here,
+	// where the result becomes something a model reads.
+	if outcome.TimedOut && result.ExitCode == 0 {
+		result.ExitCode = 137
 	}
 	if err != nil {
 		return result, fmt.Errorf("sandbox shell: %w", err)

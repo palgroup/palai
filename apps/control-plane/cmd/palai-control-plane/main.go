@@ -831,7 +831,7 @@ func shellRunnerFromEnv() toolbroker.ShellRunner {
 		return nil
 	}
 	if native {
-		return host.NewExecutor(envDuration("PALAI_SANDBOX_WALL_TIME"))
+		return host.NewExecutor(sandboxWallTime())
 	}
 	if image == "" {
 		return nil
@@ -841,13 +841,65 @@ func shellRunnerFromEnv() toolbroker.ShellRunner {
 		log.Printf("shell sandbox: bind docker driver: %v (shell tool disabled)", err)
 		return nil
 	}
-	limits := oci.Limits{
-		WallTime:        envDuration("PALAI_SANDBOX_WALL_TIME"),
+	return workspace.NewShellExecutor(driver, image, sandboxLimitsFromEnv())
+}
+
+// defaultSandboxWallTime bounds ONE shell tool call in BOTH postures. It is a default rather than a
+// required setting because the variable was set in no shipped file, and unset meant two opposite
+// broken things: the host executor ran UNBOUNDED (zero = unbounded, adapters/sandboxes/host), and the
+// OCI driver REFUSED every call before creating a container (Limits.Validate rejects a non-positive
+// bound). Neither is a posture anyone chose.
+//
+// THE NUMBER IS MEASURED, NOT PICKED. On the owner's own Mac (Xcode 26.6, 2026-07-30): `xcodebuild
+// -version` takes 3.15s; merely LISTING the schemes of a real iOS project with its packages already
+// cached takes 12.3s; a clean `swift build` of one trivial SwiftPM target takes 59s; and a clean
+// `xcodebuild build` of a single iOS framework scheme with SPM dependencies, code signing off, takes
+// 3m32s at 19% CPU — meaning contention, not compute, dominates, so a loaded machine is slower still.
+// Ten minutes clears the largest of those by roughly 3x and leaves room for a full app plus its test
+// suite; anything in the tens of seconds would fail on a command that only PRINTS A VERSION.
+//
+// It is deliberately an order of magnitude above the tree's other timeouts (PALAI_STACK_READY_TIMEOUT
+// 90s, PALAI_DRAIN_TIMEOUT 20s, the live MCP suites 60s) because it bounds a different kind of work:
+// those bound operations PALAI performs, whose cost Palai controls and can estimate. This one bounds
+// whatever toolchain the operator's argv names, whose cost Palai does not control and cannot know.
+//
+// It is a BACKSTOP AGAINST A HANG, not a schedule — a build wedged on a stuck CoreSimulatorService is
+// what it exists to reap. A deployment whose real builds run longer sets the variable, which is now
+// documented in deploy/compose/compose.yaml and docs/operations/palai-on-a-mac.md; before this change
+// there was nothing to discover, because there was no default to be wrong about.
+//
+// It also stays well below the 60m ceiling E26 chose for BACKGROUND tasks
+// (docs/superpowers/plans/phase-26-background-execution.md §0.2), keeping the two ordered: work that
+// needs an hour belongs in the background, which is that plan's own argument.
+const defaultSandboxWallTime = 10 * time.Minute
+
+// sandboxWallTime is the wall-time bound BOTH postures run under. One function rather than two call
+// sites because the postures had drifted apart through a shared unset variable once already, and a
+// bound that means different things on different machines is the defect this replaces.
+//
+// The postures get the SAME number on purpose: a wall time bounds the WORK, and nothing about a
+// container makes a compile faster. The tree's rule for these two executors is that they differ only
+// where the machine forces it (ReadOnly has no host equivalent; OOMKilled needs a cgroup) — a build
+// taking longer in one posture than the other is not such a place.
+//
+// ponytail: envDurationOr treats an UNPARSEABLE value as unset, so `PALAI_SANDBOX_WALL_TIME=10min`
+// (not a Go duration) silently gets the default. That is the existing helper's behaviour and it is
+// strictly better than what it replaces — a typo used to silently mean "unbounded".
+func sandboxWallTime() time.Duration {
+	return envDurationOr("PALAI_SANDBOX_WALL_TIME", defaultSandboxWallTime)
+}
+
+// sandboxLimitsFromEnv builds the OCI posture's resource bounds. It is a named function so a test can
+// assert what the composition root ACTUALLY builds: every sandbox test in this tree constructs its own
+// oci.Limits with an explicit WallTime, which is exactly why an unset variable that refused every
+// containerised shell call was invisible to all of them.
+func sandboxLimitsFromEnv() oci.Limits {
+	return oci.Limits{
+		WallTime:        sandboxWallTime(),
 		MaxMemoryBytes:  int64(envIntDefault("PALAI_SANDBOX_MAX_MEMORY_BYTES", 1<<30)),
 		MaxProcessCount: int64(envIntDefault("PALAI_SANDBOX_MAX_PROCS", 128)),
 		NanoCPUs:        int64(envIntDefault("PALAI_SANDBOX_NANO_CPUS", 1_000_000_000)),
 	}
-	return workspace.NewShellExecutor(driver, image, limits)
 }
 
 // mcpManagerFromEnv builds the MCP client the discovered-tool dispatch + admin discover paths share (spec

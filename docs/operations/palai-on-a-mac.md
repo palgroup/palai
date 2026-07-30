@@ -68,6 +68,30 @@ bytes, wall-time expiry classified as `TimedOut`, and a **process-group kill** s
 mount; a host has no equivalent, so the runner refuses the call instead of running it writable under
 a read-only name (`TestHostShellRefusesAReadOnlyAttempt`).
 
+**The wall time is the only bound this posture has, so it is the only one worth configuring.**
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PALAI_SANDBOX_WALL_TIME` | **`10m`** | Kills one shell call — and its whole process group — after this long. |
+
+Ten minutes is **measured, not picked.** On an M-series Mac with Xcode 26.6 (2026-07-30):
+`xcodebuild -version` takes **3.15s**; merely *listing* the schemes of a real iOS project with its
+packages already cached takes **12.3s**; a clean `swift build` of one trivial SwiftPM target takes
+**59s**; and a clean `xcodebuild build` of a single iOS framework scheme with SPM dependencies takes
+**3m32s** — at 19% CPU, so contention rather than compute dominates and a busy Mac is slower still.
+Anything in the tens of seconds would kill a command that only prints a version number.
+
+It is **a backstop against a hang, not a schedule** — a build wedged on a stuck
+`CoreSimulatorService` is what it exists to reap. If your real builds run longer, set the variable;
+it is deliberately far above the tree's other timeouts (`PALAI_STACK_READY_TIMEOUT` 90s,
+`PALAI_DRAIN_TIMEOUT` 20s) because those bound work *Palai* does and this one bounds whatever
+toolchain your argv names.
+
+**Before this default existed the variable was set in no shipped file, and unset meant this posture
+ran shell commands with no wall time at all** — a hung `xcodebuild` held the attempt forever. The
+model is told when the cap is hit: the tool result carries `timed_out: true` and `signal: "KILL"`,
+never an indistinguishable failure (`TestAWallTimeExpiryTellsTheModelWhatHappened`).
+
 ### 1.1 The environment is an allow-list
 
 This is the sharpest edge of the swap. In a container the agent's shell inherited **nothing**. On the
@@ -588,6 +612,8 @@ message.
 | `ReadOnly` refuses rather than running writable | `TestHostShellRefusesAReadOnlyAttempt` |
 | Output bounded, secrets redacted, workspace is the cwd | `TestHostShellBoundsOutput`, `TestHostShellRunsInTheWorkspaceRootAndRedactsSecrets` |
 | Wall time kills the process **group** | `TestHostShellWallTimeKillsTheWholeProcessGroup` |
+| There IS a wall time with nothing configured (it used to be unbounded) | `TestTheNativePostureBoundsAShellCallWithNoEnvironmentSet` |
+| The model is told a cap was hit, not handed an indistinguishable failure | `TestAWallTimeExpiryTellsTheModelWhatHappened` |
 | Missing command is exit 127, not an infrastructure error | `TestHostShellReportsAMissingCommandAsExit127` |
 | Both postures at once is fatal; `=1` refused | `TestShellPostureRefusesBothSandboxImageAndNativeHost`, `TestShellPostureAcceptsOnlyTheStringThatSaysWhatItIs` |
 | No posture ⇒ nil runner ⇒ clean tool failure (unchanged) | `TestShellRunnerFromEnvKeepsItsNilDiscipline`, `TestShellToolStillFailsCleanlyWithNoPostureConfigured` |
