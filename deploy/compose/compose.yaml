@@ -80,6 +80,16 @@ services:
       # browser/clean-boot proofs unchanged; the wiring test and live UAT set it to 1 with
       # PALAI_MODEL_PROVIDER to run a real create -> engine -> terminal round-trip.
       PALAI_DISPATCH_WORKERS: ${PALAI_DISPATCH_WORKERS:-0}
+      # The workspace shell tool's sandbox. Unset = NO shell tool at all: shellRunnerFromEnv returns
+      # nil and a shell call fails cleanly, which is what every compose deployment has always done.
+      # Set it to a PINNED DIGEST (the driver refuses a mutable tag) to enable the tool.
+      PALAI_SANDBOX_IMAGE: ${PALAI_SANDBOX_IMAGE:-}
+      # …and the wall time ONE shell call runs under, which is why it sits on the next line rather
+      # than somewhere an operator would meet it after their first hang. Unset = 10m, measured
+      # against real builds rather than picked (see defaultSandboxWallTime in main.go); the container
+      # posture REFUSES a non-positive bound, so this must never be blank once the image is set.
+      # Raise it for a toolchain whose builds legitimately run longer.
+      PALAI_SANDBOX_WALL_TIME: ${PALAI_SANDBOX_WALL_TIME:-}
       # Model provider the exec-path routes to: "fake" (deterministic, no network/credential)
       # or "provider-one" (live OpenAI; model id from PALAI_MODEL, credential redeemed at call
       # time from the provider_one_key file secret bridged by the entrypoint). The credential

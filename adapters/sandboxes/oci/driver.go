@@ -37,6 +37,21 @@ type Limits struct {
 	MaxDiskBytes    int64
 }
 
+// Validate reports whether these bounds are enforceable. It is the check ContainerSpec.validate runs
+// before any container is created, exported so a COMPOSITION ROOT can ask the same question of the
+// limits it just built from its environment — the driver refuses unenforceable bounds by returning an
+// error from Run, which needs a Docker daemon to reach, and a deployment should not have to start one
+// to learn that its configuration refuses every shell call.
+//
+// MaxDiskBytes is absent on purpose: it is the one best-effort bound (see the type comment), so zero
+// means "not requested" rather than "unenforceable".
+func (l Limits) Validate() error {
+	if l.WallTime <= 0 || l.MaxMemoryBytes <= 0 || l.MaxProcessCount <= 0 || l.NanoCPUs <= 0 {
+		return errors.New("all sandbox resource bounds must be positive")
+	}
+	return nil
+}
+
 // Mount is a host-directory bind into the sandbox. Source is an opaque host path — never shown
 // to the model, since exact host paths are hidden (spec §29.9); Target is the in-container path
 // (e.g. /workspace). ReadOnly binds a child's read-only snapshot; a root writer binds read-write
@@ -102,9 +117,8 @@ func (spec ContainerSpec) validate() error {
 	if spec.MaxStdoutBytes <= 0 || spec.MaxStderrBytes <= 0 {
 		return errors.New("stdout and stderr bounds must be positive")
 	}
-	if spec.Limits.WallTime <= 0 || spec.Limits.MaxMemoryBytes <= 0 ||
-		spec.Limits.MaxProcessCount <= 0 || spec.Limits.NanoCPUs <= 0 {
-		return errors.New("all sandbox resource bounds must be positive")
+	if err := spec.Limits.Validate(); err != nil {
+		return err
 	}
 	for _, m := range spec.Mounts {
 		if !filepath.IsAbs(m.Source) || !filepath.IsAbs(m.Target) {

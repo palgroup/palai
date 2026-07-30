@@ -131,3 +131,66 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// TestContainerShellWallTimeExpiryIsNotReportedAsACleanExit pins the container half of "a timeout must
+// tell the model something". The driver only assigns an exit code on the branch where the container
+// actually reported one (docker.go's `<-wait.Result`); on a wall-time expiry the wait is abandoned and
+// ExitCode is never assigned, so it stays 0 — while THIS file's own ShellExecutor doc comment promises
+// that "a wall-time expiry ... surfaces as a SIGKILL termination (exit 137)".
+//
+// The consequence is the one that matters: a model checking `exit_code == 0` before anything else reads
+// a reaped build as a SUCCESS with empty output. The host posture already reports 137 for the same
+// event (128 + SIGKILL), so this is also the two postures disagreeing about one outcome.
+func TestContainerShellWallTimeExpiryIsNotReportedAsACleanExit(t *testing.T) {
+	driver := &recordingDriver{outcome: oci.Outcome{TimedOut: true}}
+	res, err := newShellExecutor(driver).Run(context.Background(), toolbroker.ShellCommand{
+		Argv:          []string{"sleep", "600"},
+		WorkspaceRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("a wall-time expiry came back as an error, losing the result: %v", err)
+	}
+	if !res.TimedOut || res.Signal != "KILL" {
+		t.Fatalf("the expiry was not classified: %+v", res)
+	}
+	if res.ExitCode == 0 {
+		t.Fatalf("a reaped container reported exit_code 0 — a model that checks the exit code first "+
+			"reads this as a success with no output: %+v", res)
+	}
+	if res.ExitCode != 137 {
+		t.Fatalf("exit code = %d, want 137 (128 + SIGKILL), which is what the host posture reports "+
+			"for the same event", res.ExitCode)
+	}
+}
+
+// TestContainerShellTimeoutDoesNotClaimAnOOMItNeverObserved guards the ordering the fix above depends
+// on. The 137 heuristic GUESSES an OOM from an exit code; the timeout correction SYNTHESISES that same
+// exit code. Run in the wrong order they compose into a lie — every wall-time expiry would report
+// oom_killed on any memory-bounded sandbox, which is every sandbox, since the composition root always
+// sets a memory bound.
+func TestContainerShellTimeoutDoesNotClaimAnOOMItNeverObserved(t *testing.T) {
+	driver := &recordingDriver{outcome: oci.Outcome{TimedOut: true}}
+	res, err := newShellExecutor(driver).Run(context.Background(), toolbroker.ShellCommand{
+		Argv:          []string{"sleep", "600"},
+		WorkspaceRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.OOMKilled {
+		t.Fatalf("a wall-time expiry was reported as an OOM kill: %+v", res)
+	}
+	// A container the daemon really did report 137 for still reads as an OOM under a memory bound —
+	// the guard must not have cost the heuristic its actual job.
+	driver = &recordingDriver{outcome: oci.Outcome{ExitCode: 137}}
+	res, err = newShellExecutor(driver).Run(context.Background(), toolbroker.ShellCommand{
+		Argv:          []string{"hog"},
+		WorkspaceRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !res.OOMKilled || res.Signal != "KILL" {
+		t.Fatalf("a daemon-reported 137 under a memory bound is no longer classified as an OOM: %+v", res)
+	}
+}

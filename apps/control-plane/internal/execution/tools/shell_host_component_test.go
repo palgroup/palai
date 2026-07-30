@@ -173,6 +173,46 @@ func TestNativeShellPostureSeparatesConcurrentSessionsOnOneMac(t *testing.T) {
 	}
 }
 
+// TestAWallTimeExpiryTellsTheModelWhatHappened is the other half of giving the shell tool a wall
+// time: a cap the model cannot distinguish from any other failure teaches it nothing, so it would
+// retry the same hanging command. The executors classify the expiry (TimedOut + Signal "KILL", proven
+// for the host in adapters/sandboxes/host and for the container in the oci workspace package) — what
+// nothing asserted until now is that the classification survives the TOOL, which is the only layer
+// the model ever sees.
+//
+// The hazard is specific and one line up in shell.go: `if err != nil { return nil, err }` DISCARDS
+// the result, so a timeout that came back as an error would reach the model as a bare error with no
+// stdout, no duration and no timed_out flag. Both postures return (result, nil) on an expiry, which
+// is what makes the flag reachable, and this pins it.
+//
+// The wall time is explicit and short here because the subject is the RENDERING of an expiry, not the
+// default that produces one (that is main_test.go's TestTheNativePostureBoundsAShellCallWith...).
+func TestAWallTimeExpiryTellsTheModelWhatHappened(t *testing.T) {
+	broker := toolbroker.New(ShellTool())
+	out, err := broker.Execute(t.Context(), "call_hangs", "palai.workspace.shell",
+		map[string]any{"argv": []any{"sleep", "60"}}, 1, toolbroker.ExecEnv{
+			WorkspaceRoot: t.TempDir(),
+			Shell:         host.NewExecutor(500 * time.Millisecond),
+		})
+	if err != nil {
+		t.Fatalf("a wall-time expiry reached the model as an ERROR, losing the result: %v", err)
+	}
+	if timedOut, _ := out.Result["timed_out"].(bool); !timedOut {
+		t.Fatalf("the model cannot tell this apart from any other failure — timed_out is not set: %#v", out.Result)
+	}
+	if signal, _ := out.Result["signal"].(string); signal != "KILL" {
+		t.Fatalf("signal = %v, want KILL: %#v", out.Result["signal"], out.Result)
+	}
+	// A killed command must not read as one that ran and exited cleanly.
+	if code, _ := out.Result["exit_code"].(int); code == 0 {
+		t.Fatalf("a reaped command reported exit_code 0: %#v", out.Result)
+	}
+	// The host posture bounds no memory, so it must not claim an OOM it never observed.
+	if oom, _ := out.Result["oom_killed"].(bool); oom {
+		t.Fatalf("the host posture claimed an OOM kill it cannot observe: %#v", out.Result)
+	}
+}
+
 // TestShellToolStillFailsCleanlyWithNoPostureConfigured holds the unchanged half. shellRunnerFromEnv
 // returns nil when no posture is declared, and a nil runner must stay a clean tool error — the same
 // error a deployment with no sandbox image has always produced. A new posture branch is exactly the

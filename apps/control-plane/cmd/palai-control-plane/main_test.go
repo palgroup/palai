@@ -317,6 +317,71 @@ func TestShellRunnerFromEnvBindsTheHostExecutorOnTheNativePosture(t *testing.T) 
 	}
 }
 
+// TestTheNativePostureBoundsAShellCallWithNoEnvironmentSet is one half of the wall-time defect, and it
+// runs against the PRODUCTION wiring on purpose. Every sandbox test in this tree builds its own
+// oci.Limits or calls host.NewExecutor with an explicit wall time (exec_env_test.go = 1m,
+// stdio_component_test.go = 15s, the live MCP suites = 20s/60s), so not one of them ever traversed
+// shellRunnerFromEnv's env lookup — a test that builds its own config never sees the config production
+// builds, and that is precisely why this shipped.
+//
+// PALAI_SANDBOX_WALL_TIME is assigned in NO shipped file. Unset, envDuration returns 0, and zero is
+// UNBOUNDED for the host executor — so the posture a Mac deployment actually runs under had no wall
+// time at all and a hung `xcodebuild` would hold the attempt forever. That the bound is ENFORCED once
+// it exists is already proven next door (TestHostShellWallTimeKillsTheWholeProcessGroup, which kills
+// the whole process group); what was missing is a composition root that hands it a bound to enforce.
+func TestTheNativePostureBoundsAShellCallWithNoEnvironmentSet(t *testing.T) {
+	t.Setenv("PALAI_SANDBOX_IMAGE", "")
+	t.Setenv("PALAI_SHELL_NATIVE", shellPostureNative)
+	// The shipped state: no assignment anywhere. An empty value is what envDuration sees for an unset
+	// variable — ParseDuration fails on both — and t.Setenv restores whatever the runner's own
+	// environment had.
+	t.Setenv("PALAI_SANDBOX_WALL_TIME", "")
+
+	executor, ok := shellRunnerFromEnv().(*host.Executor)
+	if !ok {
+		t.Fatalf("the native posture bound no host executor: %T", shellRunnerFromEnv())
+	}
+	if executor.WallTime() <= 0 {
+		t.Fatalf("the native posture runs shell commands UNBOUNDED with PALAI_SANDBOX_WALL_TIME unset "+
+			"(wall time %v): a hung build holds the attempt forever and nothing reaps it", executor.WallTime())
+	}
+	if executor.WallTime() != defaultSandboxWallTime {
+		t.Fatalf("the native posture defaulted to %v, want %v", executor.WallTime(), defaultSandboxWallTime)
+	}
+	// An operator who knows their builds are longer must still win — the default is a backstop, not a
+	// ceiling on what can be configured.
+	t.Setenv("PALAI_SANDBOX_WALL_TIME", "45m")
+	executor, _ = shellRunnerFromEnv().(*host.Executor)
+	if executor.WallTime() != 45*time.Minute {
+		t.Fatalf("an explicit PALAI_SANDBOX_WALL_TIME=45m produced %v", executor.WallTime())
+	}
+}
+
+// TestTheSandboxPostureAcceptsItsOwnLimitsWithNoEnvironmentSet is the other half, and the same unset
+// variable breaks it in the OPPOSITE direction: the OCI driver refuses a non-positive bound before it
+// creates anything (Limits.Validate, reached from ContainerSpec.validate at the top of Run), so with
+// PALAI_SANDBOX_WALL_TIME unset every containerised shell call was refused the instant it was made.
+//
+// It asks the driver's OWN check about the limits the COMPOSITION ROOT builds, so it needs no Docker
+// daemon and — the point of the exercise — constructs no oci.Limits of its own.
+//
+// The posture is reached only when an operator sets PALAI_SANDBOX_IMAGE, which is also set in no
+// shipped file. That is not a mitigation: enabling the feature was the act that broke it.
+func TestTheSandboxPostureAcceptsItsOwnLimitsWithNoEnvironmentSet(t *testing.T) {
+	t.Setenv("PALAI_SANDBOX_WALL_TIME", "")
+
+	limits := sandboxLimitsFromEnv()
+	if err := limits.Validate(); err != nil {
+		t.Fatalf("with PALAI_SANDBOX_WALL_TIME unset the sandbox posture refuses EVERY shell call before "+
+			"a container is created: %v (limits %+v)", err, limits)
+	}
+	// Both postures read the same variable, so they must reach the same bound: a command bounded
+	// differently depending on where it ran is the drift this default exists to close.
+	if limits.WallTime != defaultSandboxWallTime {
+		t.Fatalf("the sandbox posture defaulted to %v, want %v", limits.WallTime, defaultSandboxWallTime)
+	}
+}
+
 // TestNativeShellPostureDeclarationNamesTheOperatingRule pins the boot line's CONTENT, because a
 // declaration that says "native shell enabled" would be worse than none: it announces a feature
 // where the truth is a deleted boundary. The line names the posture, what it means for the uid, the
