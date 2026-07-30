@@ -286,20 +286,20 @@ export const DIVERGENCES = [
     owner: "console fixture, correctly — synthesising a hostile upstream is what a fixture is FOR",
   },
   {
-    id: "DIV-UI-005",
-    kind: "ui",
-    subject: "the list-truncation proof over a collection larger than one page",
-    detail:
-      "tests/pagination.spec.ts drives a TWENTY-ONE row collection so the twenty-first row — the one components/Panel.tsx used to drop in silence (plan §3.6 D18, api/pagination.go defaultPageLimit = 20) — is observable: twenty rows, a truncation notice in TEXT, then a continuation with the server's own ?after= cursor. A fresh compose stack holds ZERO agents: nothing creates one, and no /v1 collection on a bootstrap stack exceeds a page, so has_more is false everywhere and there is no truncation to see. Synthesising a collection larger than a page is what the fake upstream is for, exactly as with the hostile artifact (DIV-UI-003). What does NOT narrow to the fixture is the absence claim: 'no list renders a previous control, and no request carries ?before=' runs on BOTH profiles, because beginList answers ?before= with a 400 (pagination.go:179) and a backward control could therefore never work against the real API.",
-    owner: "console fixture, correctly — a collection larger than one page is state a bootstrap stack does not have; the sweep re-derives that the real agents list is short",
-  },
-  {
     id: "DIV-UI-004",
     kind: "ui",
     subject: "the upstream half of the public-API-only proof (/__introspect)",
     detail:
       "The fixture exposes /__introspect so 'the relay addressed ONLY /v1/*, every one Bearered' is checkable from the UPSTREAM end. A real control plane has no such endpoint, so on the real profile only the BROWSER end runs: every captured request is same-origin under /api/palai/, none reached the upstream origin, the key appears in no request/chunk/source-map/response body, no websocket, no service worker. The browser end is the half that would actually catch a backchannel, so the loss is small — but it is a loss, and it is named rather than quietly dropped.",
     owner: "console fixture, correctly — an introspection endpoint is not something a control plane should ship",
+  },
+  {
+    id: "DIV-UI-005",
+    kind: "ui",
+    subject: "the list-truncation proof over a collection larger than one page",
+    detail:
+      "tests/pagination.spec.ts drives a TWENTY-ONE row collection so the twenty-first row — the one components/Panel.tsx used to drop in silence (plan §3.6 D18, api/pagination.go defaultPageLimit = 20) — is observable: twenty rows, a truncation notice in TEXT, then a continuation with the server's own ?after= cursor. A fresh compose stack holds ZERO agents: nothing creates one, and no /v1 collection on a bootstrap stack exceeds a page, so has_more is false everywhere and there is no truncation to see. Synthesising a collection larger than a page is what the fake upstream is for, exactly as with the hostile artifact (DIV-UI-003). What does NOT narrow to the fixture is the absence claim: 'no list renders a previous control, and no request carries ?before=' runs on BOTH profiles, because beginList answers ?before= with a 400 (pagination.go:179) and a backward control could therefore never work against the real API.",
+    owner: "console fixture, correctly — a collection larger than one page is state a bootstrap stack does not have; the sweep re-derives that the real agents list is short",
   },
 ];
 

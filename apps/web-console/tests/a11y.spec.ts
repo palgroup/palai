@@ -63,12 +63,20 @@ for (const route of CONSOLE_ROUTES) {
   });
 }
 
-test("the admin surface's scan saw REAL rows, not a spinner", async ({ page }) => {
+// THIS TEST KEEPS ITS NAME, and the reason is a record rather than a preference: tests/uat/cases/UI-001 —
+// a SHIPPED case inside the committed extensions-0.1.0 bundle — declares this exact title as one of its
+// proofs, and tests/uat/extensions resolves every declared proof to a real `test("<title>"` in the tree. A
+// rename would make a shipped case cite evidence that no longer exists. So the generated loop above scans "/"
+// as one of the declared routes, and this scans it again with the assertion the loop cannot make generically:
+// that the panel held REAL ROWS and not a spinner when axe looked at it.
+test("axe-core reports zero violations on the admin surface", async ({ page }) => {
   await page.goto("/");
   // org_local is the id BOTH surfaces carry: the fixture seeds it, and identity/store.go's ProvisionFirstOrg
   // seeds it on every real bootstrap. Its display NAME is not — the real seed passes no orgName at all
   // (DIV-SHP-001) — so asserting on the name would be asserting on the fixture.
   await expect(page.getByTestId("panel-organizations")).toContainText("org_local", { timeout: 15_000 });
+  const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+  expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
 });
 
 // THE WIDENED TAG SET IS NOT DECORATION, AND THIS IS WHERE THAT STOPS BEING A CLAIM (plan §3.6 D16).

@@ -66,6 +66,7 @@ var expectedAdminConsoleCatalog = map[string]struct {
 	why    string
 }{
 	"CON-001": {"e2e-deterministic", 8, "the console refuses every relay method without a session, refuses a foreign-Origin write with one, and serves nothing at all without a password hash"},
+	"CON-002": {"e2e-deterministic", 8, "list truncation is stated in text and continued with the server's cursor, every route lib/routes.ts declares is axe-scanned under the WCAG 2.0+2.1+2.2 tags, and five divergence-ledger rows the console's evidence rested on were false"},
 }
 
 func TestAdminConsoleCatalogMaterialized(t *testing.T) {
