@@ -27,6 +27,14 @@ import (
 // (adapters/sandboxes/oci/workspace/allocation.go), so a log does not enter a snapshot, does not enter a
 // changeset and does not enter a checksum — while palai.workspace.file still reads it, because it is an
 // ordinary path under the allocation root.
+//
+// AND THE READ OF THAT FILE IS NOT REDACTED TODAY, WHICH IS T6's AND IS WRITTEN HERE SO IT IS FOUND. A
+// synchronous shell result is redacted on the way back (host/exec.go, workspace/exec.go apply
+// RedactSecrets/RedactValues to the CAPTURED GO STRING); a process writing its own log file bypasses
+// both, and palai.workspace.file has never redacted anything it reads. So a background command that
+// echoes one of the attempt's environment values puts that value where the model can read it raw — the
+// exposure E26 §3.6 D8 names, whose fix is a redacting read path that re-resolves the task's env_keys at
+// READ time, because the row holds key names and never values.
 const backgroundLogDir = ".palai-session/bg"
 
 // errBackgroundDisabled is the kill switch's answer, and it is a REFUSAL rather than a downgrade. A

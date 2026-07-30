@@ -1767,7 +1767,11 @@ var slackDefaultTools = []string{"palai.research.fetch", "palai.knowledge.retrie
 //
 // The publish half is the SEPARATE list below, and the two stay separate after E22 T4 opened it: this one
 // is what an agent may do to a workspace nobody else can see, and that one is what leaves the machine.
-var slackRepositoryTools = []string{"palai.workspace.file", "palai.workspace.shell", "palai.workspace.commit"}
+// E26 T2 adds the fourth, and it belongs on THIS list for a reason that is an asymmetry rather than a
+// preference: `background` is a PARAMETER of palai.workspace.shell, so an agent granted the shell tool can
+// already START a long-running task, and without this name it could never stop one. A run that can begin a
+// build it cannot kill is the orphan this epic exists to prevent, granted by omission.
+var slackRepositoryTools = []string{"palai.workspace.file", "palai.workspace.shell", "palai.workspace.commit", "palai.workspace.background_kill"}
 
 // slackPublishTools are the publish half (E22 T4), added under the SAME condition as the coding half and
 // for the same reason: without a binding RunPublicationTarget answers "the run prepared no repository", so
