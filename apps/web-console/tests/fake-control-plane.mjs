@@ -113,6 +113,58 @@ function pageSlice(rows, url, response) {
 // TWENTY-ONE agents: one more than a page. See PAGE_LIMIT.
 const AGENTS = Array.from({ length: 21 }, (_, i) => ({ id: `agt_${String(i + 1).padStart(2, "0")}`, object: "agent" }));
 
+// --- THE ENVIRONMENT SURFACE (E25 T4) -----------------------------------------------------------------
+//
+// STATEFUL ON PURPOSE, unlike every other admin fixture above. The console's environment screen creates,
+// writes, ROTATES and unbinds, and a static row cannot express "the version went from 1 to 2" — which is the
+// one observable difference between a create and a rotation, and therefore the only way the console's claim
+// that they are the same route is checkable at all.
+//
+// AND IT NEVER RETURNS A VALUE. The bytes an operator types land in `receivedValues` below, which NO handler
+// reads and NO response serializes — not even /__introspect, deliberately: an introspection endpoint that
+// dumped them would put the sweep's own sentinel into a response body, and the sweep would be measuring the
+// fixture's indiscretion instead of the console's. What the write route answers with is exactly what
+// identity/environments.go answers with: {key, object, version, updated_at}.
+//
+// The shapes below are the REAL projections, field for field (identity/environments.go environmentView /
+// environmentKeyView), including two details that are easy to get wrong and that the conformance sweep's item
+// arm would catch: `key_count` is NOT omitempty so it is present as 0 on a fresh environment, and `keys` IS
+// omitempty so it is ABSENT — not `[]` — on an environment with no keys.
+const environments = new Map();
+// The values the fixture was given. Write-only, like the store it stands in for. See above.
+const receivedValues = new Map();
+let environmentSeq = 0;
+
+/** environmentListRow is the LIST projection: metadata plus the key COUNT, never the key names. */
+function environmentListRow(env) {
+  return { id: env.id, object: "environment", name: env.name, description: env.description, key_count: env.keys.size, created_at: env.created_at };
+}
+
+/**
+ * environmentDetail is the DETAIL projection: the list row plus key NAMES, versions and update times.
+ *
+ * An UNKNOWN id is synthesised rather than 404'd, which is a deliberate fixture behaviour and not an
+ * oversight: the conformance sweep's first arm requires every row of ROUTES to be genuinely served, and it
+ * probes each pattern with a placeholder id. GET /v1/responses/{response_id} above has synthesised for the
+ * same reason since E17 T10. The real API 404s an unknown id (RLS makes absent and foreign
+ * indistinguishable), and no console path depends on either behaviour — the picker only ever offers ids the
+ * list returned.
+ */
+function environmentDetail(id) {
+  const env = environments.get(id) ?? { id, name: id, description: "", created_at: "2026-07-30T00:00:00Z", keys: new Map() };
+  const row = environmentListRow(env);
+  if (env.keys.size === 0) return row;
+  return {
+    ...row,
+    keys: [...env.keys.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([key, meta]) => ({ key, object: "environment_key", version: meta.version, updated_at: meta.updated_at })),
+  };
+}
+
+/** VALID_ENV_KEY mirrors toolbroker.ValidEnvKey's name rule, so the fixture refuses what the real route refuses. */
+const VALID_ENV_KEY = /^[A-Z][A-Z0-9_]*$/;
+
 // The static admin fixtures — the §47.1 surface. Secret-ref rows are metadata only (name/version); a
 // connection carries a secret REF name, never a value; an api-key row is metadata only.
 const ADMIN = {
@@ -275,6 +327,88 @@ export const ROUTES = [
   { method: "GET", pattern: "/v1/knowledge-bases", handle: adminList("knowledge-bases") },
   { method: "GET", pattern: "/v1/agents", handle: (request, response) => pageSlice(AGENTS, requestURL(request), response) },
   { method: "GET", pattern: "/v1/agents/{agent_id}/revisions", handle: (_req, res) => sendJSON(res, 200, AGENT_REVISIONS) },
+
+  // --- ENVIRONMENTS (E25 T4). Five routes, matching api/router.go's registration order. ---
+  {
+    method: "POST",
+    pattern: "/v1/environments",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        let body = {};
+        try {
+          body = JSON.parse(raw || "{}");
+        } catch {
+          /* tolerate — the real route answers 400 for a bad body, which arm 1 probes with "{}" */
+        }
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        if (name === "") return sendProblem(response, 400, "invalid_request");
+        // A duplicate NAME is a conflict in the real store (UNIQUE(organization_id, name)), reported rather
+        // than silently returning someone else's environment.
+        for (const env of environments.values()) {
+          if (env.name === name) return sendProblem(response, 409, "conflict");
+        }
+        environmentSeq += 1;
+        const env = {
+          id: `env_console_${String(environmentSeq).padStart(4, "0")}`,
+          name,
+          description: typeof body.description === "string" ? body.description : "",
+          created_at: new Date(Date.UTC(2026, 6, 30, 0, 0, environmentSeq)).toISOString(),
+          keys: new Map(),
+        };
+        environments.set(env.id, env);
+        sendJSON(response, 201, environmentListRow(env));
+      }),
+  },
+  { method: "GET", pattern: "/v1/environments", handle: (_req, res) => sendJSON(res, 200, listView([...environments.values()].map(environmentListRow))) },
+  { method: "GET", pattern: "/v1/environments/{environment_id}", handle: (_req, res, { environment_id: id }) => sendJSON(res, 200, environmentDetail(id)) },
+  {
+    // CREATE-OR-ROTATE, one route, because secret_refs is append-only. The version increments; the value is
+    // stored where nothing serves it.
+    method: "POST",
+    pattern: "/v1/environments/{environment_id}/values",
+    handle: (request, response, { environment_id: id }) =>
+      drainBody(request, (raw) => {
+        let body = {};
+        try {
+          body = JSON.parse(raw || "{}");
+        } catch {
+          /* tolerate */
+        }
+        const key = typeof body.key === "string" ? body.key : "";
+        const value = typeof body.value === "string" ? body.value : "";
+        if (key === "" || value === "" || !VALID_ENV_KEY.test(key) || key.startsWith("PALAI_")) {
+          return sendProblem(response, 400, "invalid_request");
+        }
+        const env = environments.get(id);
+        if (env === undefined) return sendProblem(response, 404, "not_found");
+        const version = (env.keys.get(key)?.version ?? 0) + 1;
+        const updated_at = new Date(Date.UTC(2026, 6, 30, 1, 0, version)).toISOString();
+        env.keys.set(key, { version, updated_at });
+        receivedValues.set(`env:${id}:${key}`, value); // write-only, served by nothing
+        sendJSON(response, 201, { key, object: "environment_key", version, updated_at });
+      }),
+  },
+  {
+    // The BINDING goes; the bytes do not. The `note` is the real store's own wording, because a console that
+    // paraphrases this would be paraphrasing a claim about whether a credential still exists.
+    method: "DELETE",
+    pattern: "/v1/environments/{environment_id}/values/{environment_key}",
+    handle: (_req, response, { environment_id: id, environment_key: key }) => {
+      // Synthesised for an unknown id/key, exactly as the detail route is and for the same reason — the
+      // sweep's arm 1 probes this pattern with placeholder segments and a 404 there would read as "the table
+      // declares a route the fixture does not serve". The real route 404s an unbound key; nothing in the
+      // console depends on either answer, because the unbind control only exists on a key the list returned.
+      environments.get(id)?.keys.delete(key);
+      sendJSON(response, 200, {
+        key,
+        object: "environment_key",
+        removed: true,
+        note:
+          "the binding was removed; the stored value's versions are retained and unreachable " +
+          "(secret_refs is append-only for audit). Nothing names them and no run receives this key.",
+      });
+    },
+  },
 
   {
     method: "POST",

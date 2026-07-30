@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { apiGet, RelayError } from "@/lib/api";
 
@@ -37,18 +37,36 @@ interface Page<Row> {
 // ponytail: forward-only, append-in-place, no page-number UI and no cursor history. The API is forward-only,
 // so a page model would be inventing state the server does not have. Upgrade path: if `?before=` is ever
 // implemented, keep the cursors this already carries and add a backward control THEN.
+// TWO PROPS ARRIVED IN E25 T4, both because a WRITE surface changes what a list holds while the operator is
+// looking at it:
+//
+//   reloadKey — bump it and this refetches from page one. A console that creates a resource and then shows a
+//               stale list has taught the operator to reload the browser to find out whether their write
+//               landed, which is how a UI stops being believed.
+//   onRows    — the rows this panel actually RENDERED, handed to the page. T4's environment picker is built
+//               from them rather than from a second fetch of the same collection, so the dropdown can never
+//               offer something the list did not show, and whatever this panel says about truncation is
+//               therefore true of the picker as well. (Measured, so nobody reads a ceiling into it that is
+//               not there: GET /v1/environments does NOT go through renderPage — storage/queries/
+//               environments.sql's ListEnvironments carries no LIMIT and the handler returns a plain
+//               {object, data} list — so that collection is never cut. The wiring is what makes the picker
+//               inherit the notice for any collection that IS paginated.)
 export function Panel<Row extends Record<string, unknown>>({
   title,
   testId,
   fetchPath,
   columns,
   note,
+  reloadKey = 0,
+  onRows,
 }: {
   title: string;
   testId: string;
   fetchPath: string;
   columns: Column<Row>[];
-  note?: string;
+  note?: ReactNode;
+  reloadKey?: number;
+  onRows?: (rows: Row[]) => void;
 }) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,15 +74,21 @@ export function Panel<Row extends Record<string, unknown>>({
   const [truncated, setTruncated] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  // A ref, so a caller passing an inline arrow does not re-trigger the fetch on every render. The effect
+  // depends on the DATA inputs (path, reload signal) and nothing else.
+  const onRowsRef = useRef(onRows);
+  onRowsRef.current = onRows;
 
   useEffect(() => {
     let live = true;
     apiGet<Page<Row>>(fetchPath)
       .then((body) => {
         if (!live) return;
-        setRows(body.data ?? []);
+        const next = body.data ?? [];
+        setRows(next);
         setTruncated(body.has_more === true);
         setCursor(body.next_cursor ?? null);
+        onRowsRef.current?.(next);
       })
       .catch((err: unknown) => {
         if (live) setError(err instanceof RelayError ? err.problem.detail : "failed to load");
@@ -72,7 +96,7 @@ export function Panel<Row extends Record<string, unknown>>({
     return () => {
       live = false;
     };
-  }, [fetchPath]);
+  }, [fetchPath, reloadKey]);
 
   // loadMore continues from the SERVER's cursor. The console never computes an offset: a real cursor is an
   // HMAC'd keyset position bound to the tenant (api/pagination.go encodeCursor), so a client-side guess is
@@ -83,9 +107,14 @@ export function Panel<Row extends Record<string, unknown>>({
     try {
       const sep = fetchPath.includes("?") ? "&" : "?";
       const body = await apiGet<Page<Row>>(`${fetchPath}${sep}after=${encodeURIComponent(cursor)}`);
-      setRows((current) => [...(current ?? []), ...(body.data ?? [])]);
+      // Appended outside the state updater, not inside it: an updater must stay pure (React may call it
+      // twice), and onRows is a side effect. `rows` is current here — loadMore only runs from a click, behind
+      // the loadingMore guard.
+      const next = [...(rows ?? []), ...(body.data ?? [])];
+      setRows(next);
       setTruncated(body.has_more === true);
       setCursor(body.next_cursor ?? null);
+      onRowsRef.current?.(next);
     } catch (err: unknown) {
       setError(err instanceof RelayError ? err.problem.detail : "failed to load more");
     } finally {

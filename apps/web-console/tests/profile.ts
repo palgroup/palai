@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { expect, test, type Page } from "@playwright/test";
 
 import { DIVERGENCE_BY_ID } from "./divergences.mjs";
@@ -30,6 +33,26 @@ export function skipOnReal(divergenceId: string): void {
   // eslint-disable-next-line no-console -- the loudness IS the feature; a silent skip is the trap.
   console.log(`SKIPPED ON REAL PROFILE — ${row.id} [${row.kind}] ${row.subject}\n  owner: ${row.owner}`);
   test.skip(true, `${row.id}: ${row.subject} — ${row.detail}`);
+}
+
+// browserServedAssets scans .next/static — every file there is browser-fetchable (/_next/static/...), so a
+// walk of it is a real browser-surface scan of both the minified chunks (*.js) and their source maps
+// (*.js.map), which exist because next.config.ts sets productionBrowserSourceMaps.
+//
+// IT IS HERE, NOT IN A SPEC, BECAUSE TWO SWEEPS NEED THE SAME WALK (E25 T4): public-api-only.spec.ts scans
+// these bytes for the API key, secret-never-returns.spec.ts scans them for a written environment value. A
+// second copy would be a second thing to keep correct, and the correctness that matters is subtle — the walk
+// is RECURSIVE and it enumerates FILES rather than a list of names, because a guard that names the asset
+// directories it expects is a guard a new build layout defeats silently.
+export function browserServedAssets(): { path: string; body: string }[] {
+  const root = resolve(process.cwd(), ".next", "static");
+  const out: { path: string; body: string }[] = [];
+  for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const full = resolve(entry.parentPath ?? root, entry.name);
+    out.push({ path: full, body: readFileSync(full, "utf8") });
+  }
+  return out;
 }
 
 // announceProfile prints which upstream a spec file actually ran against. "which profile ran" is a question

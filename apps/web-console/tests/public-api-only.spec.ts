@@ -1,10 +1,7 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { test, expect, type Request, type Response as NetResponse } from "@playwright/test";
 
 import { API_KEY, IS_REAL, NEXT_PORT, UPSTREAM, UPSTREAM_PORT } from "./constants";
-import { announceProfile, runToTerminal, signInViaForm } from "./profile";
+import { announceProfile, browserServedAssets, runToTerminal, signInViaForm } from "./profile";
 
 test.beforeAll(() => announceProfile("public-api-only.spec.ts"));
 
@@ -17,18 +14,9 @@ const RELAY_PREFIX = `${APP_ORIGIN}/api/palai/`;
 // exception unless it is counted.
 const LOGIN_PATH = `${APP_ORIGIN}/api/console/login`;
 
-// browserServedAssets scans .next/static — every file there is browser-fetchable (/_next/static/...), so
-// this is a real browser-surface scan of both the minified chunks (*.js) and their source maps (*.js.map).
-function browserServedAssets(): { path: string; body: string }[] {
-  const root = resolve(process.cwd(), ".next", "static");
-  const out: { path: string; body: string }[] = [];
-  for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const full = resolve(entry.parentPath ?? root, entry.name);
-    out.push({ path: full, body: readFileSync(full, "utf8") });
-  }
-  return out;
-}
+// browserServedAssets moved to tests/profile.ts in E25 T4 — the SAME walk now backs two sweeps (this file's
+// credential scan and secret-never-returns.spec.ts's environment-value scan), and one walk is one thing to
+// keep correct.
 
 // THE CROWN (§47.6): the console is public-API-only. This is the mechanically un-foolable proof — the
 // browser physically CANNOT reach the upstream control-plane or any privileged backchannel/DB, because
