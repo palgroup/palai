@@ -104,6 +104,12 @@ func (s *Store) Approve(ctx context.Context, org, project, id, principal string)
 	if err != nil {
 		return Admission{}, fmt.Errorf("approve runner: %w", err)
 	}
+	// ponytail: the pre-state is read WITHOUT `FOR UPDATE`, so two approvals of the SAME machine landing at
+	// the same instant both see `pending`, both try to journal, and the journal's own
+	// UNIQUE (runner_id, entry_seq) fence makes exactly one land — the loser's transaction fails and its
+	// caller reads a 500 on a machine that IS now admitted. That is self-healing (the retry is a 200, and the
+	// durable state and the single journal entry are both correct either way) and the case is a human
+	// double-clicking. The upgrade is a locking read of its own; it is not worth a second statement for it.
 	admitted := current.State == "pending"
 	if admitted {
 		// WHO admitted it, which is the entry's reason for existing: `state` already says the machine is
