@@ -8,7 +8,8 @@ SHELL := /bin/bash
 	uat-interactive uat-coding uat-recovery uat-automation uat-extensibility uat-managed-cloud uat-self-host \
 	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-wiring uat-wiring-live \
 	uat-agent-surface uat-agent-surface-live uat-tools-memory uat-tools-memory-live uat-code-and-ship uat-code-and-ship-live \
-	uat-tool-approval uat-tool-approval-live uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
+	uat-tool-approval uat-tool-approval-live uat-fleet uat-fleet-live \
+	uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
 	release-matrix-smoke provenance-offline-verify
 
 bootstrap:
@@ -399,6 +400,25 @@ uat-tool-approval:
 uat-tool-approval-live:
 	@test -x scripts/uat/tool-approval || { echo "tool-approval UAT not implemented" >&2; exit 2; }
 	@RUN_LIVE=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/tool-approval
+
+# E24 T8 exit gate (plan §T8): the runner-fleet-0.1.0 bundle, the refusal matrix (an offer that crossed a pool
+# or a tenant boundary; a run dead-lettered for an empty pool; a renewal refused after a key revocation; a
+# revoked machine that came back after a restart; a registry with no shared label two identities came in
+# under), the promote gate dispatched ahead of E23's, the §3.6 D4 belief sweep, the reachability sweep over
+# E24's new exported surface, the five case ids this epic opened, and the Docker-bound backing co-run. Every
+# earlier uat-* target above stays untouched.
+uat-fleet:
+	@test -x scripts/uat/fleet || { echo "fleet UAT not implemented" >&2; exit 2; }
+	@SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/fleet
+
+# THE ONE COMMAND (plan §T8) — and for this epic it is the one that has to be honest about adding NOTHING.
+# E24 opens no live root of its own: its §6 legs want a SECOND PHYSICAL MACHINE, a real pool-key revocation in
+# real time, and a `linux/amd64` host, and no credential produces any of those. So this runs E23's live set
+# unchanged, and E24's §6 contribution is to make leg 1 BIGGER again (a real remote enrolment, a real pool-key
+# revocation, a real machine revocation across a restart) while closing none of it.
+uat-fleet-live:
+	@test -x scripts/uat/fleet || { echo "fleet UAT not implemented" >&2; exit 2; }
+	@RUN_LIVE=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/fleet
 
 # E18 T1 image half of the release matrix (Docker-bound, so NOT in `make verify` — like uat-kind): builds
 # linux/amd64 + linux/arm64 for all three images, asserts each indexed tar's digest/image_id/arch against the

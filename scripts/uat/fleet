@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# Runner-fleet UAT — the E24 EXIT gate (plan §T8). One target, a Docker-free CORE + a Docker-bound JOURNEY
+# tier + a CREDENTIAL-gated live tier, shaped exactly like E23's `tool-approval`. The core is the
+# load-bearing gate: it needs no Docker and no credential.
+#
+# WHY THIS TARGET CO-RUNS THE BACKING SUITES (the E17 T11 review's MUST-FIX 1, inherited verbatim through
+# E19..E23): the bundle's per-case `status` is AUTHORED deterministic data, and so are the five ledgers the
+# fleet proof carries. Only what a verifier can re-derive is judged by a verifier; the rest is a claim. So
+# `evidence-verify` on its own certifies "UAT declared green", NOT "UAT green". THIS SCRIPT is what makes the
+# authored status honest: the SAME invocation that verifies the bundle also RUNS the suites that back the
+# five cases it certifies. A red backing suite fails this target, and TestARedBackingSuiteFailsTheFleetGate
+# proves that mechanically via PALAI_FLEET_FAULT_SUITE.
+#
+#   Docker-free core (always):
+#     1. go test ./tests/uat/fleet/... — six gates in one package:
+#        a. the committed runner-fleet-0.1.0 bundle is BYTE-identical to its generator and verifies clean
+#           through the SHIPPED verifier;
+#        b. the REFUSAL matrix: fifteen shape-consistent manifests claiming a property they did not earn.
+#           NINE move a ledger so a guard fires while leaving the declared counter at zero; SIX delete the
+#           demonstration a zero rests on — the wrong-pool candidate, the woken run, the post-revocation
+#           renewal, the served machine, the shared label — and assert the gate refuses the vacuous zero;
+#        c. the promote gate: rc PASSES, stable is REFUSED, and a dropped claim marker still routes HERE;
+#        d. the five cases' catalog, plus the FLT- orphan sweep and the guard that keeps `FLT-` inside the
+#           only sweep in the tree that walks tests/uat/cases;
+#        e. the §3.6 D4 sweep: no line in any TRACKED file may say the runner enrolment credential is
+#           one-use, with no allow-list;
+#        f. the reachability sweep: every exported function E24 added has a production caller, one filed
+#           exception (FLT-P14) that fails if it is ever fixed without being un-filed.
+#     2. evidence-verify RELEASE=runner-fleet-0.1.0 through the shipped command (0/0/0/0).
+#     3. the automation catalog corpus + the operator-doc corpus. E24 adds ONE case.yaml (FLT-001) and edits
+#        four (FLT-002..005 gained the §6 operator-leg sentence this gate found missing), so the catalog
+#        corpus is not optional — the re-verify rule this repository learned the hard way, twice. The
+#        operator-doc corpus runs beside it because this epic's page (docs/operations/runner-fleet.md) and
+#        its ceilings (known-gaps-1.0.md) are both in tests/docs's owned set.
+#
+#   Journey tier (Docker, no credential — SKIP_JOURNEYS=1 to opt out):
+#     4. against a throwaway Postgres: the E24 narrative where its seams already live — two pools, a key per
+#        pool, two machines with two SERVER-minted identities, the Mac pool's key refused into the Linux
+#        pool, a run that lands only on its pool's machine, a pool emptied so the next run PARKS, a machine
+#        joining that wakes it, a key revoked so new enrolments fail and the enrolled machine keeps
+#        renewing, one machine cordoned while the other keeps taking leases, and a revoked machine that
+#        cannot reconnect after a control-plane restart. Plus the TENANCY corpus, which needs this tier's
+#        real Postgres to run at all — 000045 opened FOUR new tenant tables, so for this epic it is doubly
+#        not optional.
+#
+#   Live tier (credentials from .env.local — `make uat-fleet-live`):
+#     5. every leg E23's target runs, unchanged. E24 adds NO new live root, and that absence is the honest
+#        answer: this epic's §6 legs need a SECOND PHYSICAL MACHINE, and a credential cannot conjure one.
+#
+# HONEST CEILING (plan §6). What this bundle claims: that several machines can exist as an identified,
+# tenant-scoped, pooled and revocable INVENTORY whose ids the SERVER mints; that which pool a run executes in
+# is a configuration and placement into one is a REFUSAL rather than a preference; that a run with no
+# capacity PARKS instead of dying and wakes when a machine joins; that revoking a pool KEY leaves the
+# machines that came in on it RUNNING; and that revoking a MACHINE outlives the process that decided it.
+#
+# AND THE PART AN OPERATOR MUST READ BEFORE TRUSTING THIS TARGET. E24 T7 — the execution relay — WAS
+# DEFERRED. Every tool still executes in the CONTROL PLANE's own process: the shell through
+# `orch.SetShellRunner(shellRunnerFromEnv())` and the file tool through
+# `workspace.NewWorkspaceFS(env.WorkspaceRoot)`. So a Mac pool routes a run's ENGINE to a Mac and
+# `xcodebuild` runs wherever the control plane is — A MAC IS ONLY A MAC WHEN THE CONTROL PLANE IS ON IT.
+# The fleet is real; the remote EXECUTION is not. There is no FLT-006 and no credential-bytes counter,
+# because there is no relay to measure and a number for a leg that never ran is a fabrication.
+#
+# TWO MORE AN OPERATOR MUST READ: a machine STATES its posture and nothing VERIFIES it (FLT-P2), so with
+# strict enrolment off — the default — whoever holds a pool key can enrol a machine of their own into that
+# pool and be offered real work, and the defences are key secrecy and revocation speed and nothing else
+# (FLT-P4/FLT-P12). And `Waiting(poolID)` counts the attempts queued for an empty pool and NOTHING reads it,
+# so "why is nothing running in my Mac pool" still has no answer on any surface (FLT-P14).
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+echo "uat-fleet: [1/3] the E24 bundle + refusal matrix + promote gate + catalog + FLT- orphan sweep + the D4 and reachability sweeps" >&2
+# -v because EXIT 0 IS NOT PROOF: the two sweeps and the fifteen refusals are the load-bearing half, and a
+# package that compiled to zero matching tests exits 0 exactly like a package whose tests all passed.
+go test -count=1 -v ./tests/uat/fleet/...
+
+echo "uat-fleet: [2/3] evidence-verify RELEASE=runner-fleet-0.1.0 (want 0 failed / 0 missing / 0 secret)" >&2
+RELEASE=runner-fleet-0.1.0 scripts/evidence/verify
+
+echo "uat-fleet: [3/3] the automation catalog corpus + the operator-doc corpus" >&2
+# E24 adds FLT-001 and edits FLT-002..005, so the catalog corpus is not optional.
+go test -count=1 ./tests/uat/automation/... ./tests/docs/...
+# The TENANCY corpus is the other half of the re-verify rule, and it is NOT run here: all of its tests
+# t.Skip without PALAI_SECURITY_POSTGRES_URL, so a plain `go test` reports `ok` over skips — a green that
+# certifies nothing. It runs in the JOURNEY tier below. E24's migration 000045 opened FOUR NEW TENANT TABLES
+# (runner_pools, runner_pool_keys, runners, runner_enrollments), so for this epic it is doubly not optional.
+
+# ---- the journey tier: real PostgreSQL, no credential -------------------------------------------------------
+journeys="the E24 backing suites CO-RUN green (the registry, the pools, the key, the placement, the lifecycle, the waiting room)"
+if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
+  # Said plainly, because the closing line must never imply a tier that did not run.
+  echo "uat-fleet: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — the backing component suites" >&2
+  echo "  did NOT run; this invocation does not back the bundle's authored PASS for them" >&2
+  journeys="Docker-bound backing suites NOT RUN (SKIP_JOURNEYS=1)"
+else
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "uat-fleet: docker is not available; the E24 backing suites need a throwaway Postgres" >&2
+    exit 2
+  fi
+  image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  label="io.palai.uat=fleet"
+  container="palai-uat-fleet-$$-${RANDOM}"
+  # Throwaway local credential, generated per run; never written to a file, never echoed.
+  password="palai-uat-fleet-${RANDOM}${RANDOM}"
+  cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+  before="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  trap cleanup EXIT
+
+  docker run --detach --pull=never --name "$container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 "$image" >/dev/null
+  ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "uat-fleet: the journey postgres did not become ready" >&2
+    exit 1
+  fi
+  binding="$(docker port "$container" 5432/tcp)"; port="${binding##*:}"
+
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+  # A DEAD Postgres for the fault knob: reachable-looking, connects to nothing.
+  dead_url="postgres://postgres:$password@127.0.0.1:1/palai?sslmode=disable"
+
+  echo "uat-fleet: [journey] the tenancy corpus against real PostgreSQL (000045 opened FOUR tenant tables)" >&2
+  set +e
+  PALAI_SECURITY_POSTGRES_URL="$url" go test -tags=security -count=1 -v ./tests/security/tenancy
+  tenancy_status=$?
+  set -e
+  if test "$tenancy_status" -ne 0; then
+    echo "uat-fleet: the tenancy corpus FAILED — four new tenant tables and five case.yaml files must re-run it" >&2
+    cleanup; trap - EXIT
+    exit "$tenancy_status"
+  fi
+
+  # The BACKING suites. The -run selector is the SHIPPED one from scripts/test/component, VERBATIM: these
+  # packages also hold suites this epic does not own, and running them here would make the gate's runtime
+  # somebody else's problem.
+  #
+  # NAMING EACH TEST IS LOAD-BEARING and this family has paid for the comment five times (E18 T8, E21 T7,
+  # E23 T7, and TWICE inside T1 of this epic). Go's -run is an unanchored regexp over the test NAME, so
+  # `TestLifecycle` does NOT match `TestPlacementParksARunWhosePoolHasNoRunner` and `TestPoolKey` does not
+  # match `TestStrictOffIsBitUnchanged`. Every alternative below was checked by RUNNING it and reading
+  # `=== RUN`, not by reading the string.
+  #
+  # apps/control-plane/internal/fleet gets its OWN entry with an empty selector because the package has no
+  # tests this epic does not own — an allow-list over a package that is entirely ours would be a list to
+  # forget to extend.
+  suites=(
+    "./apps/control-plane/internal/execution|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool|TestPoolKey|TestPlacement|TestLifecycle|TestStrict"
+    "./apps/control-plane/internal/fleet|Test"
+  )
+  status=0
+  for entry in "${suites[@]}"; do
+    suite="${entry%%|*}"
+    selector="${entry#*|}"
+    suite_url="$url"
+    if [ "${PALAI_FLEET_FAULT_SUITE:-}" = "$suite" ]; then
+      suite_url="$dead_url"
+      echo "uat-fleet: FAULT INJECTED — $suite points at a DEAD Postgres; this run MUST fail" >&2
+    fi
+    echo "uat-fleet: [journey] backing suite $suite" >&2
+    set +e
+    PALAI_COMPONENT_POSTGRES_URL="$suite_url" \
+      go test -tags=component -count=1 -v -run "$selector" "$suite"
+    status=$?
+    set -e
+    if test "$status" -ne 0; then
+      echo "uat-fleet: backing suite $suite FAILED — the bundle's authored PASS for its cases is not honest" >&2
+      docker logs "$container" >&2 || true
+      break
+    fi
+  done
+
+  cleanup
+  trap - EXIT
+  after="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if test "$after" -ne "$before"; then
+    echo "uat-fleet: the journey tier leaked a container" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+fi
+
+# ---- the live tier: credential-gated, NO CODE CHANGES --------------------------------------------------------
+live="live legs NOT RUN (RUN_LIVE unset)"
+if [ "${RUN_LIVE:-0}" = "1" ]; then
+  if [ -f .env.local ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env.local
+    set +a
+  fi
+  echo "uat-fleet: the credential-gated live legs — each SKIPS by name if its variable is absent" >&2
+  # E24 ADDS NO LIVE ROOT OF ITS OWN, and that is the honest answer rather than an omission: this epic's §6
+  # legs want a SECOND PHYSICAL MACHINE, a real pool-key revocation in real time and a `linux/amd64` host.
+  # No credential produces any of those, so inventing a live root here would be a green over legs that
+  # cannot run from this box. What runs is E23's set, unchanged.
+  # -v so a SKIP is VISIBLE: this family's signature failure is a green report over legs that never ran.
+  go test -tags=live -count=1 -v ./tests/live/slack/... ./tests/live/repository/... \
+    ./adapters/integrations/mcp/
+  live="live legs attempted (read the SKIP lines above: a skip is not a pass; E24 adds none of its own)"
+fi
+
+echo "uat-fleet=PASS (E24 exit gate: bundle 0/0/0/0, the wrong-pool and cross-tenant offer counts re-derived" >&2
+echo "  from the offer ledger, the capacity deaths from the run ledger, the renewals AFTER a key revocation" >&2
+echo "  COUNTED and all of them successful, the machine revocation re-derived across two gateway generations," >&2
+echo "  and the server-minted identities recomputed from the registry ledger including a label two machines" >&2
+echo "  shared, $journeys, $live)" >&2
+echo "uat-fleet: NO TIER ADVANCED — \`slack\` closes PREVIEW, \`knowledge-vector\` and \`apple-build\` close" >&2
+echo "  DISABLED, \`console\` closes PREVIEW, \`workspaces\` and \`capability-workers\` keep the answers E22" >&2
+echo "  and E23 derived. Every machine is a FAKE on ONE box, on darwin/arm64. THIS BUNDLE DOES NOT CLAIM" >&2
+echo "  THAT THERE IS A CLOUD FLEET: it claims a fleet SPINE — several machines as an identified," >&2
+echo "  tenant-scoped, pooled and revocable inventory whose ids the SERVER mints; placement as a REFUSAL;" >&2
+echo "  a run that PARKS rather than dying; a pool key whose revocation leaves enrolled machines RUNNING;" >&2
+echo "  and a machine revocation that outlives the process." >&2
+echo "  AND THE CEILING THAT OUTRANKS ALL OF IT: T7 WAS DEFERRED, so every tool still runs in the control" >&2
+echo "  plane's process — a Mac is only a Mac when the control plane is ON it. The fleet is real; the" >&2
+echo "  remote EXECUTION is not, and no counter here pretends otherwise." >&2

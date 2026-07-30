@@ -56,12 +56,24 @@ var enrolmentWords = regexp.MustCompile(`(?i)enroll?ment|enrol\b|enrols|bootstra
 // corrected one.
 var correctionMarkers = regexp.MustCompile(`(?i)not one-use|not one use|not single-use|replaced one-use|used to say|is NOT ONE-USE|WHY THIS IS NOT`)
 
+// sweepOwnPath is this file, as `git ls-files` names it. It is asserted to EXIST by
+// TestTheOneUseSweepExcludesExactlyItself, so a rename that stranded the exclusion would leave the sweep
+// failing on its own fixtures rather than silently excluding nothing.
+const sweepOwnPath = "tests/uat/fleet/oneuse_test.go"
+
 // TestNoLineClaimsTheEnrolmentCredentialIsOneUse walks every TRACKED file — `git ls-files`, so generated
 // artefacts and node_modules cannot dilute it and a file somebody forgot to add cannot hide in it.
 //
-// The plan document itself is excluded, and only it: docs/superpowers/plans/ RECORDS the belief as the thing
-// being corrected (§3.6 D4 quotes all four copies verbatim, which is its job), and a plan that could not quote
-// a wrong belief could not describe correcting one.
+// TWO PATHS ARE EXCLUDED AND BOTH ARE SELF-REFERENCE RATHER THAN CONVENIENCE:
+//
+//   - docs/superpowers/plans/ RECORDS the belief as the thing being corrected — §3.6 D4 quotes all four copies
+//     verbatim, which is its job — and a plan that could not quote a wrong belief could not describe
+//     correcting one;
+//   - THIS FILE, which is built out of the vocabulary it bans: its fixtures below are the tree's own wrong
+//     lines verbatim, and its failure message names the phrase to look for. It found itself the moment it was
+//     committed and became a tracked file, which is a small joke and also the reason the exclusion is by exact
+//     path rather than by prefix — `tests/uat/fleet/` as a directory would let a second file in this package
+//     ship the belief unchecked.
 func TestNoLineClaimsTheEnrolmentCredentialIsOneUse(t *testing.T) {
 	root := repoRoot(t)
 	cmd := exec.Command("git", "ls-files", "-z")
@@ -78,7 +90,7 @@ func TestNoLineClaimsTheEnrolmentCredentialIsOneUse(t *testing.T) {
 	var hits []string
 	scanned := 0
 	for _, rel := range files {
-		if rel == "" || strings.HasPrefix(rel, "docs/superpowers/plans/") {
+		if rel == "" || strings.HasPrefix(rel, "docs/superpowers/plans/") || rel == sweepOwnPath {
 			continue
 		}
 		body, readErr := readTracked(root, rel)
@@ -179,3 +191,17 @@ func readTracked(root, rel string) (string, error) {
 }
 
 var errBinary = errors.New("binary file")
+
+// TestTheOneUseSweepExcludesExactlyItself keeps the self-exclusion honest in both directions. If this file is
+// renamed the constant goes stale, and a stale exclusion is the WORSE failure of the two available: it would
+// exclude nothing, the sweep would go red on its own fixtures, and the cheapest way to silence that is to
+// widen the exclusion to the whole directory — which is how a second file in this package would come to ship
+// the belief unchecked.
+func TestTheOneUseSweepExcludesExactlyItself(t *testing.T) {
+	if _, err := os.Stat(filepath.Join(repoRoot(t), sweepOwnPath)); err != nil {
+		t.Fatalf("sweepOwnPath = %q does not exist: %v — the self-exclusion now excludes nothing, and this file's own fixtures will be reported as tree findings", sweepOwnPath, err)
+	}
+	if !strings.HasSuffix(sweepOwnPath, ".go") || strings.Count(sweepOwnPath, "/") < 2 {
+		t.Errorf("sweepOwnPath = %q is not an exact file path — a directory or prefix exclusion would let a sibling file in this package ship the belief unchecked", sweepOwnPath)
+	}
+}
