@@ -237,16 +237,19 @@ func TestARunWhoseRevisionNamesAnEnvironmentFailsClosedWithNoResolver(t *testing
 	}
 
 	// And the other direction, which is what keeps every pre-E25 run bit-unchanged: a run whose revision
-	// names NO environment resolves nothing, needs no resolver, and does not fail.
-	bareRev, bareRun := pinnedID("arev"), pinnedID("run")
+	// names NO environment resolves nothing, needs no resolver, and does not fail. It gets its OWN session,
+	// because runs_one_active_root_per_session (000006) permits one active root per session — reusing the
+	// one above is a 23505, which is how this fixture failed the first time it ran.
+	bareRev, bareRun, bareSession := pinnedID("arev"), pinnedID("run"), pinnedID("ses")
+	exec(`INSERT INTO sessions (id, organization_id, project_id) VALUES ($1,$2,$3)`, bareSession, tenant.Organization, tenant.Project)
 	exec(`INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, published_at)
 	      VALUES ($1,$2,$3,$4,2, clock_timestamp())`, bareRev, tenant.Organization, tenant.Project, profileID)
 	exec(`INSERT INTO runs (id, organization_id, project_id, session_id, state, agent_revision_id) VALUES ($1,$2,$3,$4,'running',$5)`,
-		bareRun, tenant.Organization, tenant.Project, sessionID, bareRev)
+		bareRun, tenant.Organization, tenant.Project, bareSession, bareRev)
 	bare := &attemptState{
 		attempt:   AttemptDescriptor{RunID: contracts.RunID(bareRun), AttemptID: contracts.AttemptID(pinnedID("att")), Fence: 1},
 		tenant:    tenant,
-		sessionID: sessionID,
+		sessionID: bareSession,
 	}
 	if bare.envKeys, err = orch.resolveEnvKeys(ctx, bare); err != nil {
 		t.Fatalf("resolveEnvKeys on an environment-less run: %v", err)

@@ -85,6 +85,10 @@ var allTables = []string{
 	// APPEND-ONLY issuance journal (self-re-asserting REVOKE). These two ARE new; runner_pools and
 	// runners above are not.
 	"runner_pool_keys", "runner_enrollments",
+	// The E25 T3 environment tables (000046): the grouping identity and the key MEMBERSHIP rows. Neither
+	// holds a credential — the values are secret_refs versions under the derived name
+	// `env:<environment_id>:<key>` — which is why there is no third table here.
+	"environments", "environment_values",
 	"schema_migrations",
 }
 
@@ -2193,5 +2197,96 @@ func TestMigration45RunnerFleet(t *testing.T) {
 	}
 	if got := pgCode(mustFail(conn.Exec(ctx, `DELETE FROM runner_enrollments`))); got != "42501" {
 		t.Fatalf("runner_enrollments DELETE code = %q, want 42501 (append-only: DELETE withheld)", got)
+	}
+}
+
+// TestMigration46EnvironmentsGrantsAreAsymmetricAcrossReboots pins the ONE thing migration 000046's design
+// rests on, and it is a set of GRANTS rather than a schema: `environment_values` may be DELETEd and
+// `environments` may not, both after a SECOND boot.
+//
+// WHY THE ASYMMETRY IS THE WHOLE FEATURE. secret_refs can never lose a row (000031's REVOKE re-asserts on
+// every boot, on purpose — version history is retained for audit). So "remove the JIRA_TOKEN key from the
+// production environment" cannot mean "delete the bytes". 000046 splits MEMBERSHIP from BYTES precisely so
+// that the removal has something real to remove: the binding goes, the sealed versions stay, and nothing
+// names them afterwards because the derived name `env:<environment_id>:<key>` is only ever built from a
+// membership row. A delete button that deletes something other than what it says is worse than no button,
+// and the API's response body says which one this is.
+//
+// WHY IT NEEDS ITS OWN TEST. The RLS-catalogue gate (tests/security/tenancy) checks POLICIES, not grants,
+// and every harness in this repository migrates more than once — so a grant eroded by the blanket
+// `GRANT ... ON ALL TABLES` in 000001/000029 re-running on boot #2 is invisible to every other tier. This
+// migrates TWICE and then asks the runtime role directly.
+func TestMigration46EnvironmentsGrantsAreAsymmetricAcrossReboots(t *testing.T) {
+	cs := openHarness(t)
+	ctx := storage.WithSystemScope(context.Background())
+	pool := cs.Pool()
+
+	// The second boot: main.go re-runs the whole chain on every start, and this is the boot on which the
+	// blanket grants are re-exposed to the now-existing pair.
+	if err := cs.Migrate(context.Background()); err != nil {
+		t.Fatalf("re-Migrate() error = %v", err)
+	}
+
+	assertPriv := func(table, priv string, want bool) {
+		t.Helper()
+		var got bool
+		if err := pool.QueryRow(ctx, `SELECT has_table_privilege('palai_app', $1, $2)`, table, priv).Scan(&got); err != nil {
+			t.Fatalf("has_table_privilege(%s, %s) error = %v", table, priv, err)
+		}
+		if got != want {
+			t.Fatalf("palai_app %s on %s = %v, want %v (000046's grants eroded across reboots)", priv, table, got, want)
+		}
+	}
+	// environments: append-only. An environment id is embedded in every derived secret name it groups, so
+	// deleting or renaming one would orphan every version under it — and E25 ships no such button.
+	assertPriv("environments", "SELECT", true)
+	assertPriv("environments", "INSERT", true)
+	assertPriv("environments", "UPDATE", false)
+	assertPriv("environments", "DELETE", false)
+	// environment_values: DELETE is GRANTED, UPDATE is not. A key's name is its identity here, so a
+	// "rename" would silently orphan the versions stored under the old derived name; renaming is
+	// remove-then-add, which is honest about the new key starting at version 1.
+	assertPriv("environment_values", "SELECT", true)
+	assertPriv("environment_values", "INSERT", true)
+	assertPriv("environment_values", "DELETE", true)
+	assertPriv("environment_values", "UPDATE", false)
+
+	// The behavioural half, as the runtime role itself: the privilege check refuses before RLS is even
+	// consulted (42501).
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SET ROLE palai_app`); err != nil {
+		t.Fatalf("SET ROLE palai_app error = %v", err)
+	}
+	defer func() { _, _ = conn.Exec(ctx, `RESET ROLE`) }()
+
+	if got := pgCode(mustFail(conn.Exec(ctx, `DELETE FROM environments`))); got != "42501" {
+		t.Fatalf("environments DELETE code = %q, want 42501 — an environment id addresses every secret it groups", got)
+	}
+	if got := pgCode(mustFail(conn.Exec(ctx, `UPDATE environments SET name = 'x'`))); got != "42501" {
+		t.Fatalf("environments UPDATE code = %q, want 42501", got)
+	}
+	if got := pgCode(mustFail(conn.Exec(ctx, `UPDATE environment_values SET key = 'x'`))); got != "42501" {
+		t.Fatalf("environment_values UPDATE code = %q, want 42501 — a rename would orphan the versions under the old derived name", got)
+	}
+	// And DELETE on the membership table SUCCEEDS (zero rows, but permitted) — the positive leg, without
+	// which the three refusals above would pass on a build where nothing can be written at all.
+	if _, err := conn.Exec(ctx, `DELETE FROM environment_values WHERE environment_id = 'nonexistent'`); err != nil {
+		t.Fatalf("environment_values DELETE was refused (%v) — removing a key BINDING is the one deletion this pair exists to allow", err)
+	}
+
+	// The `environment` column 000046 adds to agent_revisions, with its honest default. Asserted here
+	// because the column lands in the same change as the code that reads it (000019's own rule against
+	// storing dead config), so a rollback that dropped one and not the other would be silent.
+	var dflt, nullable string
+	if err := pool.QueryRow(ctx, `SELECT column_default, is_nullable FROM information_schema.columns
+	     WHERE table_schema='public' AND table_name='agent_revisions' AND column_name='environment'`).Scan(&dflt, &nullable); err != nil {
+		t.Fatalf("agent_revisions.environment is absent: %v", err)
+	}
+	if nullable != "NO" || dflt != `''::text` {
+		t.Fatalf("agent_revisions.environment is nullable=%s default=%s, want NOT NULL DEFAULT '' — a NULL would make `IS NULL` and `= ''` two different kinds of nothing", nullable, dflt)
 	}
 }
