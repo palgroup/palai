@@ -460,15 +460,29 @@ func persistedSurface(t *testing.T, pool *pgxpool.Pool, tenant coordinator.Tenan
 		query string
 		arg   string
 	}{
+		// EVERY string_agg BELOW CARRIES AN EXPLICIT ORDER BY, and it is a FIX rather than a flourish (E25
+		// T9). PostgreSQL's string_agg has NO defined order without one — it concatenates rows in whatever
+		// order the plan produced them — while three lines down this document is compared BYTE FOR BYTE
+		// against a constant the committed tools-memory-0.1.0 bundle carries. So the journey was green only
+		// while the planner happened to return the ledger in insertion order, and it went RED under a
+		// full-package co-run with the SAME CONTENT in a different order: `{tools…} {key} {ping} {ping}`
+		// where the bundle commits `{ping} {ping} {tools…} {key}`. A false red on an evidence comparison is
+		// worse than a flake, because the honest reading of it is "the run persisted something different".
+		// This is the same family as the LIMIT-1-without-ORDER-BY defect this tree has twice let decide a
+		// security outcome: an unordered read whose first answer is treated as the answer.
+		//
 		// The tool ledger: EVERY dispatched tool result is committed here before it is delivered, so this is
-		// the first place a search result would land if nothing stopped it.
-		{"tool_calls", `SELECT coalesce(string_agg(coalesce(result::text,'') || ' ' || coalesce(arguments::text,''), ' '),'')
+		// the first place a search result would land if nothing stopped it. `created_at` defaults to
+		// clock_timestamp(), which advances INSIDE a transaction, so it is a real insertion order; `id` breaks
+		// a tie deterministically rather than leaving one.
+		{"tool_calls", `SELECT coalesce(string_agg(coalesce(result::text,'') || ' ' || coalesce(arguments::text,''), ' ' ORDER BY created_at, id),'')
 		                FROM tool_calls WHERE run_id=$1`, runID},
 		// The session's responses: what a LATER turn in this thread reads back as conversation history.
-		{"responses", `SELECT coalesce(string_agg(coalesce(input::text,'') || ' ' || coalesce(output::text,''), ' '),'')
+		{"responses", `SELECT coalesce(string_agg(coalesce(input::text,'') || ' ' || coalesce(output::text,''), ' ' ORDER BY created_at, id),'')
 		               FROM responses WHERE session_id=$1`, sessionID},
-		// The event journal.
-		{"events", `SELECT coalesce(string_agg(coalesce(payload::text,''), ' '),'')
+		// The event journal, ordered by the sequence the journal itself defines — the one table here that
+		// carries an explicit order rather than a timestamp.
+		{"events", `SELECT coalesce(string_agg(coalesce(payload::text,''), ' ' ORDER BY seq),'')
 		            FROM events WHERE session_id=$1`, sessionID},
 	} {
 		var dump string
