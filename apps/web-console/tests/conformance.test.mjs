@@ -390,6 +390,35 @@ async function seedBothStacks() {
     // SCOPED, because `{revision_id}` already means the AGENT revision above — see seededPath.
     seeded[label]["/v1/tool-sets/{set}/revisions/{revision_id}|revision_id"] = setBody.id;
   }
+
+  // E25 T8 SEEDS A RUN ON EACH SIDE, which populates TWO collections at once and is why it is one seed
+  // rather than two: GET /v1/responses gets its first row, and so does GET /v1/usage/ledger — a run settles
+  // `run.admitted` inside the ADMISSION transaction (coordinator/usage.go), so the ledger row exists the
+  // moment the create returns and does not wait for the run to finish.
+  //
+  // THE REAL SIDE REUSES realRun(), which is memoized: four later arms already need a real run, and driving
+  // a second one would double the slowest thing this sweep does for nothing. The fixture side is a plain
+  // POST — its run history is stateful for the same reason its environment surface is (the console's history
+  // screen must be able to open a run the browser suite just drove), so it starts empty and this fills it.
+  // Both sides record their ids, so `/v1/responses/{response_id}/artifacts` is compared against a run that
+  // EXISTS rather than against the probe id — which 404s on the real side and made that route's envelope
+  // uncomparable. It still adds no ITEM comparison (a compose run leaves no artifact behind), and that is
+  // itself worth having measured rather than assumed.
+  const real = await realRun();
+  seeded.real.response_id = real.responseID;
+  seeded.real.session_id = real.sessionID;
+  const fixtureRun = await fakeFetch("/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json", "idempotency-key": `sweep-${Date.now()}` },
+    body: JSON.stringify({ input: "E25 T8 conformance sweep — seed one run so history and the ledger have a row" }),
+  });
+  const fixtureRunBody = await fixtureRun.json().catch(() => ({}));
+  assert.ok(
+    fixtureRun.status === 200 || fixtureRun.status === 202,
+    `the sweep could not seed a run on the fixture side: POST /v1/responses returned ${fixtureRun.status}`,
+  );
+  seeded.fixture.response_id = fixtureRunBody.id;
+  seeded.fixture.session_id = fixtureRunBody.session_id;
 }
 after(() => fake?.kill());
 
@@ -538,15 +567,31 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     // does not raise this count. Its whole key set is still diffed, which for a detail projection is the
     // stronger of the two checks. The eleven: organizations, projects, api-keys, knowledge-bases,
     // environments, secret-refs, repository-bindings, agent-revisions, tools, tool-revisions, tool-sets.
+    //
+    // E25 T8 RAISES IT TO 13, AND T7's ELEVEN HAD NEVER ACTUALLY BEEN REACHED. T7 wrote the number above
+    // from the seed it added, but that seed asserted on `POST /v1/tools returned 404` — the fixture served
+    // no manual registry write path at all — so `pnpm sweep` failed in seedBothStacks from the moment T7
+    // landed and not one arm of it ran. The three collections T7 counted became comparable only once the
+    // fixture gained those two routes (tests/fake-control-plane.mjs says what was missing and why nothing
+    // caught it). The number was therefore aspirational when it was written and is measured now.
+    //
+    // T8's OWN TWO are GET /v1/responses and GET /v1/usage/ledger, from one seed rather than two: a run
+    // settles `run.admitted` inside the ADMISSION transaction (coordinator/usage.go), so creating a run puts
+    // a row in both collections at once. Both are empty on a bootstrap stack — a console that never started
+    // a run leaves no response and therefore no ledger entry — which is why the two routes O1 and O4 are
+    // built on had never had an item shape compared. GET /v1/usage does NOT raise it and cannot: it answers
+    // totals under `meters`, not a `data` page, so it has no item to compare. The thirteen: the eleven above
+    // plus responses and usage-ledger.
     assert.ok(
-      itemsCompared >= 11,
+      itemsCompared >= 13,
       `only ${itemsCompared} collections had a row on BOTH sides (${comparedSubjects.join(", ")}), so this arm ` +
         "compared almost no item shapes — the bootstrap seeds organizations/projects/api-keys and this sweep " +
         "seeds a knowledge base, an environment, one environment value (which is a secret_refs row), a " +
-        "repository binding, an agent, a published agent revision, a tool, a published tool revision and a " +
-        "published tool-set revision. Eleven of those twelve can be compared; GET /v1/agents cannot, because " +
-        "its envelope differs irreducibly (see DIV-SHP-004). Fewer than eleven means either the real stack is " +
-        "not seeded or a seed did not land, and this arm would pass vacuously",
+        "repository binding, an agent, a published agent revision, a tool, a published tool revision, a " +
+        "published tool-set revision and a RUN (which settles a usage ledger row in the same transaction). " +
+        "Thirteen of those fourteen can be compared; GET /v1/agents cannot, because its envelope differs " +
+        "irreducibly (see DIV-SHP-004). Fewer than thirteen means either the real stack is not seeded or a " +
+        "seed did not land, and this arm would pass vacuously",
     );
   });
 

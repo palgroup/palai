@@ -631,11 +631,20 @@ function artifactProjection(id) {
   };
 }
 
-// The metering fixtures. Meters and the ledger carry rows so the console's columns are exercised somewhere;
-// budgets and quotas are empty on both profiles and the ROUTES table says why.
+// The metering fixtures. Meters and the ledger carry rows so the console's columns are exercised; budgets
+// and quotas are empty on both profiles and the ROUTES table says why.
+//
+// THE METER NAMES ARE THE REAL ONES, and getting that wrong is the exact defect this task caught one file
+// over. coordinator/usage.go names them: `run.admitted` (unit "run", settled inside the ADMISSION
+// transaction, so a real stack has this row the moment a run is created) and `model.input_tokens` /
+// `model.output_tokens` (unit "token"). A compose run settles ONLY the first — settleUsage skips a
+// zero-quantity entry and the compose fake adapter reports no tokens — so the two model meters here are
+// UNEXERCISED real names rather than invented ones, which is a distinction this tree enforces elsewhere and
+// should not blur in a fixture.
 const USAGE_METERS = [
-  { meter: "tokens.input", unit: "token", quantity: 40, entries: 1 },
-  { meter: "tokens.output", unit: "token", quantity: 18, entries: 1 },
+  { meter: "run.admitted", unit: "run", quantity: 1, entries: 1 },
+  { meter: "model.input_tokens", unit: "token", quantity: 40, entries: 1 },
+  { meter: "model.output_tokens", unit: "token", quantity: 18, entries: 1 },
 ];
 
 // The ledger row's key set is metering/store.go ledgerEntryView: session_id and run_id are omitempty and are
@@ -1057,7 +1066,82 @@ export const ROUTES = [
         sendJSON(response, 200, { object: "mcp_discovery", connection_id: id, new_revisions: fresh, unchanged, rejected: [] });
       }),
   },
+  // THE MANUAL REGISTRY WRITE PATH, AND ITS ABSENCE MADE `pnpm sweep` RED FROM THE MOMENT E25 T7 LANDED.
+  // T7 added a seed to tests/conformance.test.mjs that creates a tool and a revision on BOTH sides through
+  // these two routes — and the fixture served neither, so seedBothStacks asserted on `POST /v1/tools
+  // returned 404` before a single arm ran. Nothing else could have caught it: the sweep's arm 2 checks only
+  // that every route the FIXTURE serves is registered by the real router, never the other direction, so a
+  // route the real router mounts and the fixture lacks is invisible to it by design. The seed was the one
+  // thing that would notice, and the seed is what never ran.
+  //
+  // The console itself does not use either route — it fills the registry by DISCOVERY (the block above), and
+  // that is why the gap survived T7's own screen work. They are here for the sweep's benefit, so a manually
+  // registered lineage and a control_plane revision exist on both sides and their projections get compared.
+  //
+  // BOTH SHAPES WERE MEASURED AGAINST THE RUNNING REAL ROUTER RATHER THAN READ OFF A STRUCT, and the second
+  // one is not what a reader would guess: creating a revision answers a NARROWER projection than listing
+  // one. `description`, `input_schema`, `approval_required`, `approval_label` and `created_at` are all
+  // absent from the create answer and present in ListToolRevisions, so a fixture that echoed toolRevisionRow
+  // here would have invented five fields — the exact defect class this commit's own artifact-row finding is.
+  {
+    method: "POST",
+    pattern: "/v1/tools",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const canonical = typeof body.canonical_name === "string" ? body.canonical_name.trim() : "";
+        if (canonical === "") return sendProblem(response, 400, "invalid_request", "the request carries an unsupported field, a malformed canonical name, or a widening override");
+        toolSeq += 1;
+        const tool = {
+          id: `tool_console_${String(toolSeq).padStart(4, "0")}`,
+          canonical_name: canonical,
+          // The real derivation, measured: `sweep.shape.probe1` answered model_visible_name `probe1`, so it
+          // is the last dot-segment rather than the whole name or a slug of it.
+          model_visible_name: canonical.slice(canonical.lastIndexOf(".") + 1),
+        };
+        toolLineages.set(tool.id, tool);
+        toolRevisionsByTool.set(tool.id, []);
+        sendJSON(response, 201, toolRow(tool));
+      }),
+  },
   { method: "GET", pattern: "/v1/tools", handle: (_req, res) => sendJSON(res, 200, { data: [...toolLineages.values()].map(toolRow), has_more: false }) },
+  {
+    method: "POST",
+    pattern: "/v1/tools/{tool_id}/revisions",
+    handle: (request, response, { tool_id: id }) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const executor = typeof body.executor === "string" ? body.executor : "";
+        if (executor === "") return sendProblem(response, 400, "invalid_request", "the request carries an unsupported field, a malformed canonical name, or a widening override");
+        const existing = toolRevisionsByTool.get(id) ?? [];
+        toolRevSeq += 1;
+        const rev = {
+          id: `trev_console_${String(toolRevSeq).padStart(4, "0")}`,
+          tool_id: id,
+          revision_number: existing.length + 1,
+          executor,
+          description: typeof body.description === "string" ? body.description : "",
+          input_schema: body.input_schema ?? { type: "object" },
+          digest: `sha256:fixture${String(toolRevSeq).padStart(2, "0")}`,
+          status: "draft",
+          approval_required: false,
+          approval_label: "",
+          created_at: fixtureTime(toolRevSeq),
+        };
+        // NEWEST FIRST, the order ListToolRevisions returns — the same rule the discovery path follows.
+        toolRevisionsByTool.set(id, [rev, ...existing]);
+        // THE NARROW CREATE PROJECTION, not toolRevisionRow. See the note above this block.
+        sendJSON(response, 201, {
+          id: rev.id,
+          object: "tool_revision",
+          tool_id: rev.tool_id,
+          revision_number: rev.revision_number,
+          executor: rev.executor,
+          digest: rev.digest,
+          status: rev.status,
+        });
+      }),
+  },
   {
     method: "GET",
     pattern: "/v1/tools/{tool_id}/revisions",
