@@ -813,8 +813,8 @@ func publicKeyFingerprint(publicDER []byte) string {
 // re-signs the public key the presented certificate carries with a fresh validity window. An
 // expired certificate cannot complete the mTLS handshake, so renewal is only possible while
 // the current identity is still valid — the proactive ~80%-TTL renewal keeps it so. The
-// one-use bootstrap token is never presented again, so a long-lived runner rolls its
-// certificate forward without re-enrolling.
+// bootstrap credential is never presented again on this path — it is not one-use, but renewal does
+// not use it — so a long-lived runner rolls its certificate forward without re-enrolling.
 func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 		http.Error(w, "runner client certificate required", http.StatusUnauthorized)

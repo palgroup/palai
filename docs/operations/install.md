@@ -113,7 +113,8 @@ touch "${PALAI_HOME}/secrets/github-app-key"
 chmod 600 "${PALAI_HOME}/secrets/github-app-key"
 ```
 
-Mint the one-use runner enrollment token as well — a hand-run compose (unlike `palai local up`)
+Mint the runner enrollment token as well — fresh per boot, and re-presentable within that boot
+because it is how a runner recovers an expired identity. A hand-run compose (unlike `palai local up`)
 does NOT create it, and its bind-mount source must exist as a file:
 
 ```sh

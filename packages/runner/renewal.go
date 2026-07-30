@@ -17,7 +17,8 @@ import (
 // RenewConfig is the input to a certificate renewal: the renew endpoint and the controller
 // trust anchor and exact DNS identity the runner pins on every outbound connection. The
 // current identity (its client certificate and private key) authenticates the renewal — the
-// one-use bootstrap token is never presented again.
+// bootstrap credential is not on this path at all, which is why revoking it stops new
+// enrolments and stops no machine that already holds an identity.
 type RenewConfig struct {
 	RenewURL      string
 	ControllerCAs *x509.CertPool

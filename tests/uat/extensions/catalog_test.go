@@ -66,7 +66,12 @@ var dockerBoundClasses = map[string]bool{"component-real": true, "live-provider"
 // exact hole the TLM- and CAS- paragraphs above were written to prevent, arrived at from the other side:
 // not a family whose ownership moved, but a family whose prefix was never added. Ownership may live in
 // uat.ToolApprovalCaseIDs; escaping the sweep may not.
-var extensionIDPrefixes = []string{"SLK-", "A2A-", "KNO-", "QUA-", "TLM-", "CAS-", "HIL-", "UI-", "WRK-"}
+// FLT- (E24) joins for the same reason, and it is the FIFTH family whose ownership lives elsewhere. The
+// sentence four paragraphs up is the whole justification and it is repeated because it keeps being the thing
+// that gets skipped: this sweep is the ONLY place in the tree that walks the cases DIRECTORY, so a prefix
+// left outside it is a family whose dirs nothing checks. Ownership may live in uat.FleetCaseIDs; escaping
+// the sweep may not.
+var extensionIDPrefixes = []string{"SLK-", "A2A-", "KNO-", "QUA-", "TLM-", "CAS-", "HIL-", "FLT-", "UI-", "WRK-"}
 
 // expectedExtensionsCatalog is the E17 UAT catalog: every case this epic materializes (plan §T11 + §7) mapped
 // to the proof class its case.yaml must declare and the in-tree proof(s) that prove it. A missing dir, a drifted
@@ -483,8 +488,9 @@ func TestExtensionsCatalogMaterialized(t *testing.T) {
 				if !e17 && !slices.Contains(uat.AgentSurfaceCaseIDs, e.Name()) &&
 					!slices.Contains(uat.ToolsMemoryCaseIDs, e.Name()) &&
 					!slices.Contains(uat.CodeAndShipCaseIDs, e.Name()) &&
-					!slices.Contains(uat.ToolApprovalCaseIDs, e.Name()) {
-					t.Errorf("%s: a case dir under a guarded prefix is in NONE of expectedExtensionsCatalog, uat.AgentSurfaceCaseIDs, uat.ToolsMemoryCaseIDs, uat.CodeAndShipCaseIDs or uat.ToolApprovalCaseIDs (add it to one, or it escapes proof resolution entirely)", e.Name())
+					!slices.Contains(uat.ToolApprovalCaseIDs, e.Name()) &&
+					!slices.Contains(uat.FleetCaseIDs, e.Name()) {
+					t.Errorf("%s: a case dir under a guarded prefix is in NONE of expectedExtensionsCatalog, uat.AgentSurfaceCaseIDs, uat.ToolsMemoryCaseIDs, uat.CodeAndShipCaseIDs, uat.ToolApprovalCaseIDs or uat.FleetCaseIDs (add it to one, or it escapes proof resolution entirely)", e.Name())
 				}
 				break
 			}
@@ -503,6 +509,7 @@ func TestTheSLKCatalogsAreDisjoint(t *testing.T) {
 		"uat.ToolsMemoryCaseIDs":  uat.ToolsMemoryCaseIDs,
 		"uat.CodeAndShipCaseIDs":  uat.CodeAndShipCaseIDs,
 		"uat.ToolApprovalCaseIDs": uat.ToolApprovalCaseIDs,
+		"uat.FleetCaseIDs":        uat.FleetCaseIDs,
 	}
 	for name, ids := range owners {
 		for _, id := range ids {

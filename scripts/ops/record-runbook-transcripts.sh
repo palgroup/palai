@@ -135,7 +135,7 @@ run 'palai apikey revoke "$NEWKEY"'
 note "# The SAME key, immediately after. Revocation is enforced at the request, not merely recorded."
 run 'curl -s -o /dev/null -w "%{http_code}\n" "$BASE/v1/organizations" -H "Authorization: Bearer $KEYVAL"'
 run 'palai apikey get "$NEWKEY"'
-note "# B. Runner enrollment credential: \`palai local up\` mints a FRESH one-use token every time, so
+note "# B. Runner enrollment credential: \`palai local up\` mints a FRESH token every boot (not one-use within it), so
 # re-running it rotates the runner's enrollment secret. The digests below are of the token file
 # before and after."
 run 'shasum -a 256 "$PALAI_HOME/runner-token"'

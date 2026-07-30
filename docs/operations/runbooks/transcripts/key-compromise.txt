@@ -78,7 +78,7 @@ $ palai apikey get "$NEWKEY"
   "revoked_at": "2026-07-25T19:41:20.492957Z"
 }
 
-# B. Runner enrollment credential: `palai local up` mints a FRESH one-use token every time, so
+# B. Runner enrollment credential: `palai local up` mints a FRESH token every boot (not one-use within it), so
 # re-running it rotates the runner's enrollment secret. The digests below are of the token file
 # before and after.
 

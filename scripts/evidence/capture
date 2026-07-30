@@ -22,5 +22,6 @@ if [ "$provider" = "provider-one" ]; then
   export PALAI_UAT_PROVIDER=provider-one
 fi
 
-# -count=1 so the one-use enrollment token and one-shot lease are never replayed from cache.
+# -count=1 so the enrollment token's per-lifetime redemption and the one-shot lease are never
+# replayed from cache.
 exec go test -tags uat -count=1 -timeout 30m -run TestLocalLive ./tests/uat -v

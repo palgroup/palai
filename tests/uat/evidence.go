@@ -311,6 +311,17 @@ type evidenceCase struct {
 	// than believed.
 	ToolApprovalClaim string             `json:"tool_approval_claim"`
 	ToolApprovalProof *ToolApprovalProof `json:"tool_approval_proof"`
+	// The E24 T8 fleet claim (plan §T8 — the E24 EXIT gate) extends the same discipline to the invariants
+	// THIS epic owns: several machines exist as an identified, tenant-scoped, pooled and revocable INVENTORY
+	// whose ids the SERVER mints, placement into a pool is a refusal rather than a preference, a run with no
+	// capacity PARKS instead of dying and wakes when a machine joins, revoking a pool KEY leaves the
+	// machines that came in on it running, and revoking a MACHINE outlives the process that decided it. It
+	// requires its proof, and six counters are RE-DERIVED rather than believed.
+	//
+	// WHAT IT DOES NOT CLAIM, because T7 was deferred: that a tool call runs anywhere but the control
+	// plane's own process. There is no relay, so there is no credential-bytes counter — see FleetProof.
+	FleetClaim string      `json:"fleet_claim"`
+	FleetProof *FleetProof `json:"fleet_proof"`
 }
 
 type evidenceTerm struct {
@@ -2757,6 +2768,30 @@ var committedBundleSurfaces = map[string]string{
 	// that dropped or reworded a §3.5 row would move every checksum in it. It may NOT be LegacyShapeOnly,
 	// for the reason stated one entry up.
 	ToolApprovalBundle: SurfaceRecomputed,
+	// The E24 T8 runner-fleet bundle. Its anchor is the CANONICAL contract and on-machine-measurement ledger
+	// digest (FleetContractsDigest), derived from the code table in evidence_fleet.go — so a bundle that
+	// dropped or reworded a §3.5 row would move every checksum in it. It may NOT be LegacyShapeOnly, for the
+	// reason two entries up.
+	//
+	// AND IT DID NOT COST THE RC ANYTHING, WHICH WAS MEASURED RATHER THAN INHERITED. Plan §T8 said a new
+	// bundle NAME turns release-1.0.0-rc1's release index red and that the price would be paid here. It is
+	// stale on BOTH of its halves, and the second is the one worth writing down.
+	//
+	// FIRST: the as-of rule drops every carrier captured after the index it would appear in, and this bundle
+	// is captured four days after the RC. So the dated recompute is bit-identical and the RC's eight
+	// checksums still recompute — the RC was NOT regenerated and its manifest bytes are untouched.
+	//
+	// SECOND, AND THIS ONE CORRECTS A GUESS MADE WHILE WRITING THIS COMMENT: the name would not have
+	// displaced anything even WITHOUT the rule. Measured by removing this bundle and re-running
+	// TestTheAsOfRuleIsWhatKeepsTheShippedRCGreen — thirty of a hundred and eighty-eight index rows move
+	// either way, unchanged. The reason is structural rather than lucky-looking: `runner-fleet-0.1.0`
+	// INHERITS its whole case set from tool-approval-0.1.0, which inherits from code-and-ship, tools-memory,
+	// agent-surface, wiring and extensions — so every Appendix-A id it carries is also carried by a bundle
+	// whose name sorts before "r", and it can never win a carrier row. That is the same naming luck the
+	// as-of test's own comment names for `integration-wiring-`, `slack-agent-surface-` and `tools-memory-`,
+	// and it is exactly why the rule exists anyway: luck is not a mechanism, and the next bundle called
+	// `automation-2` would not have it.
+	FleetBundle: SurfaceRecomputed,
 	// The E18 T10 RC bundle. Its anchor is the RECOMPUTED release index over the SEVENTEEN committed bundles
 	// that predate its own capture, plus the materialized case corpus — so a checksum here cannot be
 	// hand-written: it moves the moment one of those bundles or the corpus does.
@@ -2838,6 +2873,8 @@ func caseChecksumParts(m evidenceManifest, c evidenceCase) []string {
 		return []string{c.ID, c.RunID, CodeAndShipContractsDigest()}
 	case ToolApprovalBundle: // tests/uat/tool-approval/bundle_test.go
 		return []string{c.ID, c.RunID, ToolApprovalContractsDigest()}
+	case FleetBundle: // tests/uat/fleet/bundle_test.go
+		return []string{c.ID, c.RunID, FleetContractsDigest()}
 	case "extensions-0.1.0": // tests/uat/extensions/bundle_test.go
 		return []string{c.ID, c.RunID, CapabilityClaimsDigest()}
 	case "managed-cloud-0.1.0": // tests/uat/managed-cloud/evidence_test.go
@@ -3032,6 +3069,10 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 	// "nothing side-effecting ran without a human", "no byte from outside reached the approval screen" and
 	// "only interactions.go mints a button" ship unverified behind five green rows.
 	findings = append(findings, verifyE23ToolApprovalPresence(m)...)
+	// And for E24: a manifest carrying the fleet CASES must carry the anchor that judges them, or "no attempt
+	// was offered the wrong machine", "no run died of an empty pool" and "a revocation outlives the process"
+	// ship unverified behind five green rows.
+	findings = append(findings, verifyE24FleetPresence(m)...)
 
 	// A bundle whose checksums were CORRECTED, or that is shape-only, must SAY SO in the manifest (plan §2
 	// honest-naming): the note is where a reader who opens this file meets the correction or the ceiling.
@@ -3508,6 +3549,21 @@ func VerifyManifest(raw []byte, secrets []string) []Finding {
 				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "tool_approval_proof (a tool-approval claim requires the tool-call ledger with the side effects that ran WITHOUT a human decision (zero, re-derived), the approval screen beside the untrusted text that arrived from outside and the characters of it that reached the screen (zero, re-derived in both directions), the run ledger with the runs that went terminal while waiting and the runs left waiting after expiry (both zero, re-derived), the decisions an unauthorized principal got through (zero, re-derived, refused on BOTH surfaces), the destination fields the model could fill in the three publish tools' input schemas (zero, re-derived), the actionable elements minted beside the files that built them (recomputed from source), and every vendor requirement with its source URL and §3.5 divergence id; an 'approved' marker is not proof — plan §T7)"})
 			case !c.ToolApprovalProof.Complete():
 				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "tool_approval_proof is incomplete: a peer not honestly named \"" + ToolApprovalPeer + "\" (this bundle cannot claim a real workspace, a real Atlassian tenant or a real merged pull request — §6 legs 1, 5 and 6), a shrunken/edited vendor contract ledger or a contracts_digest that does not equal the canonical one, a gated tool call that RAN without an approve or a ledger with no approve, no deny, no EXPIRY or no ungated call in it (so the zero is vacuous), untrusted text that cannot be found in what arrived from outside (so the fence is vacuous) or CAN be found on the approval screen — an MCP server's `description` or `title` reaching that screen lands HERE — a screen showing neither the resolved identity nor the arguments (showing nothing is the cheapest way to show nothing forbidden), a run that went terminal while its question was open or was left WAITING after its approval expired, an unauthorized decision that applied or a ledger that never refused one on both surfaces, a destination field the model could fill in any of the three publish tools' schemas (a `pull_request_number` on merge would land here), a screen with no actionable element at all or an actionable element built by any file other than interactions.go (plan §T7)"})
+			}
+		}
+
+		// The E24 T8 fleet anchor (plan §T8). Complete() already RE-DERIVES the wrong-pool and cross-tenant
+		// offer counts from the offer ledger, the capacity deaths from the run ledger, the machines a key
+		// revocation dropped from the credential ledger (with the renewals AFTER the revocation counted and
+		// required to have succeeded), the revoked machines that came back from the lifecycle ledger across a
+		// gateway generation, and the distinct server-minted identities from the registry ledger — so a proof
+		// that declares a zero over bytes saying otherwise never reaches this branch clean.
+		if c.FleetClaim != "" {
+			switch {
+			case c.FleetProof == nil:
+				findings = append(findings, Finding{Case: c.ID, Kind: "missing", Detail: "fleet_proof (a fleet claim requires the offer ledger with the offers that crossed a POOL boundary and a TENANT boundary (both zero, re-derived, over a ledger that shows a machine passed over for each and a machine actually used), the run ledger with the runs that DIED of an empty pool (zero, re-derived, beside a run that parked and a run a joining machine woke), the credential ledger with the enrolled machines a key revocation dropped (zero, re-derived, with the renewals AFTER the revocation counted and all of them successful and an enrolment it still refused), the lifecycle ledger with the revoked machines that came back after a control-plane RESTART (zero, re-derived, beside an unrevoked machine that same process still served), the registry ledger with the distinct SERVER-minted identities (re-derived, including two machines that asked for the SAME label), and every vendor requirement or on-machine measurement with its source and §3.5 divergence id; an 'enrolled' marker is not proof — plan §T8)"})
+			case !c.FleetProof.Complete():
+				findings = append(findings, Finding{Case: c.ID, Kind: "invalid", Detail: "fleet_proof is incomplete: a peer not honestly named \"" + FleetPeer + "\" (this bundle cannot claim two PHYSICAL machines, and it cannot claim remote EXECUTION at all — E24 T7 was deferred, so every tool still runs in the control plane's process and a Mac is only a Mac when the control plane is on it), a shrunken/edited contract-and-measurement ledger or a contracts_digest that does not equal the canonical one, an attempt OFFERED a machine in another pool or another tenant's machine — or an offer ledger with no wrong-pool and no foreign-tenant candidate in it, so the zeros are vacuous — a run DEAD-LETTERED because its pool was empty or a ledger where nothing ever parked and nothing was ever woken, an enrolled machine DROPPED by a key revocation, no renewal at all after that revocation (so \"all of them succeeded\" is a statement about no rows) or an enrolment the revoked key still admitted, a revoked machine that RECONNECTED after a control-plane restart or a restart that served nobody (a gateway refusing everybody looks identical to one refusing the right machine), or a registry of fewer than two distinct machines, an id the CLIENT chose, a certificate whose DNS is not derived from the row's id, or no shared label that two identities came in under (plan §T8)"})
 			}
 		}
 

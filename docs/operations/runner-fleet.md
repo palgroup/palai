@@ -13,6 +13,34 @@ below changes that. Read the rest when you have a second machine.
 
 ---
 
+## 0. READ THIS BEFORE YOU CONFIGURE A MAC POOL
+
+**A pool decides where a run's ENGINE goes. It does not decide where the run's TOOLS run.** Every tool — the
+shell, the file tool, and everything built on them — executes in the **control plane's own process**, against
+the workspace allocation the control plane holds. A `lease.offer` carries an engine image digest and nothing
+about tools.
+
+So, stated the way it will matter to you:
+
+> **A Mac is only a Mac when the control plane is on it.** Placing a run in a `mac-pool` whose machines are
+> Macs, while the control plane runs on Linux, will run `xcodebuild` **on the Linux box** — and fail there.
+
+What a Mac pool *does* give you today is the thing the rest of this page is about: an identified, revocable
+inventory, a queue per pool, a tenant boundary, and a run that waits instead of dying. What it does not yet
+give you is remote execution.
+
+**The supported way to run Mac work today is unchanged and is the one already documented:** put the control
+plane on the Mac (`palai up --native`, see [`palai-on-a-mac.md`](palai-on-a-mac.md), whose own §2 says
+`--native` *"selects **where the control plane runs** — nothing else"*). Multiple concurrent sessions on one
+native Mac work; that is measured and shipped.
+
+This is [`FLT-P15`](known-gaps-1.0.md), and it is a **deferral, not a defect**: the execution relay was
+planned as E24 T7 and postponed with the scope written down (`T7a` shell relay, `T7b` workspace relay). No
+release note claims otherwise, and the evidence bundle for this epic carries no counter about it, because
+there is nothing yet to count.
+
+---
+
 ## 1. A pool is a posture
 
 A **pool** is a set of machines that are the same *kind* of machine, and the kind is the point:
@@ -198,11 +226,19 @@ bounded by the control plane there, not by the fleet, so the second machine park
 
 ## 7. Where the limits are written down
 
-Every ceiling on this page is a row in [known-gaps-1.0.md](known-gaps-1.0.md) §10 (`FLT-P1`..`FLT-P13`),
-with the measurement that produced it. The two worth reading before you rely on a fleet:
+Every ceiling on this page is a row in [known-gaps-1.0.md](known-gaps-1.0.md) §10 (`FLT-P1`..`FLT-P17`),
+with the measurement that produced it. The three worth reading before you rely on a fleet:
 
+- **`FLT-P15`** — **there is no remote execution.** §0 above is this row: a pool routes an engine, every tool
+  runs in the control plane's process, and a Mac is only a Mac when the control plane is on it. Read it first,
+  because it bounds what every other row on this page is worth.
 - **`FLT-P4`/`FLT-P12`** — with strict mode off, whoever holds a pool key can enrol a machine of their own
   into that pool and be offered real work. The defences are key secrecy and revocation speed, and there
   are exactly two.
 - **`FLT-P2`** — the posture a machine declares is compared with the pool's and never verified. There is
   no attestation on this wire.
+
+And one that will cost you time rather than safety: **`FLT-P14`** — nothing reports how many runs are queued
+for a pool with no free machine. The count exists inside the gateway and no surface reads it, so the question
+§5 tells you to ask ("why is nothing running in my Mac pool") has no answer you can query. Until that row is
+closed, the answer is `GET /v1/runners` for that pool and `state` on each machine.

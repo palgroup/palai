@@ -3,7 +3,7 @@
 # SIGNED host package enrolls OUTBOUND-ONLY from OUTSIDE the stack's Docker network and runs a
 # REAL run:
 #
-#   1. palai init (fresh temp PALAI_HOME) + mint a one-use runner token.
+#   1. palai init (fresh temp PALAI_HOME) + mint a runner token.
 #   2. Build the control-plane + reference-engine images.
 #   3. Bring up postgres + object-store + control-plane WITHOUT any in-stack runner, with the
 #      runner gateway published (splitvm.yml), dispatch on, fake provider.

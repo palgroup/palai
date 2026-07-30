@@ -177,9 +177,15 @@ type gatewayFixture struct {
 	sessionURL string
 }
 
-// tokens is the execution.EnrollmentTokens the gateway redeems against: newOneUseTokens for
-// the in-test one-use set, or the production execution.FileEnrollmentTokens when a proof needs
-// the real redemption rule (the expired-identity recovery proof does).
+// tokens is the execution.EnrollmentTokens the gateway redeems against: newOneUseTokens for the
+// in-test set, which spends a token on first success, or the production
+// execution.FileEnrollmentTokens when a proof needs the real redemption rule (the expired-identity
+// recovery proof does).
+//
+// THE IN-TEST SET IS STRICTER THAN THE CONTRACT AND THAT IS THE FIXTURE'S CHOICE, not what production
+// does: FileEnrollmentTokens admits one redemption per issued-certificate lifetime, because a machine
+// whose certificate expired has no other way back (§3.6 D4). What the proofs below establish is the
+// RUNNER's side — it presents the credential once and retains nothing — which holds under either rule.
 func newGatewayFixture(t *testing.T, tokens execution.EnrollmentTokens) *gatewayFixture {
 	t.Helper()
 	return newGatewayFixtureWithCA(t, newGatewayCA(t), tokens)
@@ -292,9 +298,10 @@ func (f *gatewayFixture) attempt(runID, attemptID string, fence uint64) executio
 	}
 }
 
-// TestGatewayEnrollmentConsumesTokenOnce proves the enrollment endpoint exchanges a
-// one-use bootstrap token for a short-lived client identity exactly once: a replay of
-// the same token is rejected.
+// TestGatewayEnrollmentConsumesTokenOnce proves the enrollment endpoint exchanges a bootstrap
+// credential for a short-lived client identity and REDEEMS it: a replay against the in-test set,
+// which spends on first success, is rejected. Production's rule is one redemption per certificate
+// lifetime rather than one ever; what this pins is that the gateway consults the token store at all.
 func TestGatewayEnrollmentConsumesTokenOnce(t *testing.T) {
 	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -317,15 +324,15 @@ func TestGatewayEnrollmentConsumesTokenOnce(t *testing.T) {
 		t.Fatalf("issued identity is already expired: NotAfter=%s", identity.NotAfter)
 	}
 	if _, err := runner.Enroll(ctx, f.bootstrap("gw-token-1")); err == nil {
-		t.Fatal("gateway accepted a reused one-use enrollment token")
+		t.Fatal("gateway accepted a replayed enrollment token against a store that had spent it")
 	}
 }
 
 // TestGatewayRenewsCertificateOverExistingIdentity proves the renew endpoint rolls a
 // runner's certificate forward over its CURRENT mutually-authenticated identity — no
 // enrollment token — issuing a fresh, CA-signed client certificate with advanced validity,
-// and rejects a certless caller. The one-use bootstrap token is spent exactly once at
-// enrollment and never presented again, so a long-lived runner never re-enrolls.
+// and rejects a certless caller. The bootstrap credential is redeemed at enrollment and is not on
+// the renewal path at all, so a long-lived runner never re-enrolls.
 func TestGatewayRenewsCertificateOverExistingIdentity(t *testing.T) {
 	f := newGatewayFixture(t, newOneUseTokens("gw-token-1"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -357,9 +364,10 @@ func TestGatewayRenewsCertificateOverExistingIdentity(t *testing.T) {
 		t.Fatalf("renewed NotAfter %s is earlier than the original %s", renewed.NotAfter, identity.NotAfter)
 	}
 
-	// The bootstrap token was spent once at enrollment; the renewal path never reuses it.
+	// The bootstrap token was redeemed at enrollment and the renewal path never presents it; the
+	// in-test store spends on first success, so a replay is rejected here.
 	if _, err := runner.Enroll(ctx, f.bootstrap("gw-token-1")); err == nil {
-		t.Fatal("the one-use bootstrap token was accepted a second time")
+		t.Fatal("the spent bootstrap token was accepted a second time")
 	}
 
 	// A certless caller to /renew is rejected: renewal requires a current mTLS identity.
@@ -378,7 +386,7 @@ func TestGatewayRenewsCertificateOverExistingIdentity(t *testing.T) {
 
 // TestRunnerRenewsCertificateAcrossLifetimesWithoutReenrolling is the fault-live proof that a
 // long-lived runner keeps a continuously valid identity across many short certificate
-// lifetimes by renewing over its existing certificate — never the one-use bootstrap token. It
+// lifetimes by renewing over its existing certificate — never the bootstrap credential. It
 // drives the REAL serve loop (runner.ServeConfig.Serve) against the REAL
 // mutually-authenticated gateway with a deliberately short certificate TTL, and proves the CA
 // signed the runner three or more times (one enrollment plus two or more renewals) past the
@@ -432,10 +440,10 @@ func TestRunnerRenewsCertificateAcrossLifetimesWithoutReenrolling(t *testing.T) 
 		t.Fatalf("test finished before the original certificate would expire (%s); shorten the TTL", originalNotAfter)
 	}
 
-	// Zero re-enrollment: the one-use bootstrap token was spent exactly once at enrollment and
-	// the renewal path never presents it again, so a replay is rejected.
+	// Zero re-enrollment: the bootstrap token was redeemed at enrollment and the renewal path never
+	// presents it again, so a replay against the spent in-test store is rejected.
 	if _, err := runner.Enroll(context.Background(), f.bootstrap("gw-token-1")); err == nil {
-		t.Fatal("the one-use bootstrap token was accepted a second time; the runner re-enrolled")
+		t.Fatal("the spent bootstrap token was accepted a second time; the runner re-enrolled")
 	}
 }
 

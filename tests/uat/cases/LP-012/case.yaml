@@ -4,4 +4,4 @@ proof_class: e2e-deterministic
 provider: fake
 input: "idempotent boot check"
 expect_status: completed
-# idempotent-boot proof: tests/e2e/local/clean_boot_test.go (-count=3, fresh one-use token each up)
+# idempotent-boot proof: tests/e2e/local/clean_boot_test.go (-count=3, fresh-per-boot token each up)

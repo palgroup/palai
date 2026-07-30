@@ -223,6 +223,17 @@ run_postgres() {
   # the heartbeat advances `runners.last_seen_at` for a machine that has been parked doing nothing, which
   # before this froze the moment it finished connecting.
   #
+  # THE FIVE E24 T2 NAMES ADDED BY T8's EXIT GATE, and they were found the way this list's comments keep
+  # saying to find them: by RUNNING the selector and diffing `--- PASS` against the legs a gate claimed.
+  # runner_pool_test.go is UNTAGGED, so these five ride `make verify` and were never missing from the tree —
+  # what they were missing from was every -run allow-list, because not one of them starts with a word
+  # already on this line. `TestPoolKey` does not match `TestAPoolServesItsWaitingRunsOldestFirst` and nothing
+  # at all matches `TestAnUnsandboxedHostAttemptIsNeverOfferedToASandboxedLinuxRunner`. They hold the §2
+  # invariant this whole epic is negotiated against — a wrong-pool machine is never offered an attempt, and
+  # with no pool configured the behaviour is bit-for-bit today's — plus the chosen FIFO order, the pool whose
+  # machine never comes, and the posture compared at the door. They need no Postgres, so running them in
+  # this tier costs nothing and closes the gap between what a gate claims and what an invocation ran.
+  #
   # TestHTTPToolApproval* is E23 T9 — the SLACK-LESS decision surface — and it needs its OWN alternative
   # for the third time this list has had to say so: `TestToolApproval` does not match
   # `TestHTTPToolApprovalListShows…` and neither does `TestSlackToolApproval`. Without this word, the eight
@@ -237,7 +248,7 @@ run_postgres() {
   if test "$status" -eq 0; then
     PALAI_COMPONENT_POSTGRES_URL="$url" \
       go test -tags=component -count=1 -v \
-        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool|TestPoolKey|TestPlacement|TestLifecycle|TestStrict' \
+        -run 'TestApplied|TestRedelivery|TestPauseCheckpointCarriesBoundarySnapshot|TestPauseBoundaryCutsAndLinksSnapshotThroughOrchestrator|TestStuckWriterLeaseReclaimedAfterCrash|TestProvisioningInterruptedMidStateRecovers|TestPureToolReplay|TestIrreversibleUncertain|TestLateCallbackAfterFence|TestOutageCommandsDeliver|TestRecoveryProofCarries|TestStaleCommitOnReclaimer|TestDivergedContentReplay|TestPinnedRevision|TestBindingConnectionRef|TestProjectModelRoute|TestProviderErrorFailsTheModelStep|TestRemoteChild|TestBoundaryApproval|TestDispatchResolvesAnImageRefIntoTheProviderRequest|TestDispatchWithNoImageReaderMarksTheImageRatherThanFailing|TestClearSession|TestTheRealOrchestratorAdvertises|TestAnExternalToolIsAdvertised|TestARunReachesNoMCPServer|TestARegistryToolDispatchesThrough|TestToolsMemoryJourney|TestPublicationFromSlack|TestToolApproval|TestSlackToolApproval|TestExpiredToolApproval|TestApprover|TestAGatedMCPWrite|TestApprovedMCPArguments|TestAJiraTicketBodyCannotApproveItself|TestAToolPinnedTwiceRefuses|TestMergePullRequest|TestToolWithoutApprovalDeclared|TestHTTPToolApproval|TestBootstrapInstallEnrollsItsRunnerIntoTheDefaultPool|TestPoolKey|TestPlacement|TestLifecycle|TestStrict|TestAnUnsandboxedHostAttempt|TestASingleRunnerDeployment|TestAPoolServesItsWaitingRuns|TestDialRefusesAPool|TestAMachineDeclaringAPosture' \
         ./apps/control-plane/internal/execution
     status=$?
   fi
