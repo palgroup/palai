@@ -88,6 +88,11 @@ type backgroundHarness struct {
 	shell      *countingShell
 	background *countingBackground
 	gated      bool // register palai.workspace.shell as approval_required
+	// orch is built ONCE and reused across every tool call, because that is what production does: main.go
+	// constructs one Orchestrator in startDispatch and every attempt of every run dispatches through it.
+	// The ledger tests in this package deliberately mint a fresh one per attempt to simulate a new process
+	// — correct there, wrong here, and the difference is the whole point of the restart proof below.
+	orch *Orchestrator
 }
 
 func newBackgroundHarness(t *testing.T) *backgroundHarness {
@@ -108,15 +113,15 @@ func newBackgroundHarness(t *testing.T) *backgroundHarness {
 // given fence. The broker carries the REAL tools — the shipped ShellTool, FileTool and (once it exists)
 // the background kill tool — because the surface under test is what a deployment registers.
 func (h *backgroundHarness) attempt(fence uint64) (*Orchestrator, *attemptState, *recordingChannel) {
-	shellTool := tools.ShellTool()
-	shellTool.RequiresApproval = h.gated
-	registered := []toolbroker.Tool{shellTool, tools.FileTool()}
-	registered = append(registered, backgroundKillToolIfPresent()...)
-
+	if h.orch == nil {
+		shellTool := tools.ShellTool()
+		shellTool.RequiresApproval = h.gated
+		h.orch = &Orchestrator{spine: h.spine, tools: toolbroker.New(shellTool, tools.FileTool(), tools.BackgroundKillTool())}
+		h.orch.SetShellRunner(h.shell)
+		h.orch.SetBackgroundRunner(h.background)
+	}
 	ch := &recordingChannel{}
-	orch := &Orchestrator{spine: h.spine, tools: toolbroker.New(registered...)}
-	orch.SetShellRunner(h.shell)
-	orch.SetBackgroundRunner(h.background)
+	orch := h.orch
 	st := &attemptState{
 		attempt: AttemptDescriptor{
 			RunID: contracts.RunID(h.runID), AttemptID: contracts.AttemptID(redeliveryID("att")),
@@ -598,6 +603,38 @@ func TestBackgroundKillStopsTheProcessGroupAndKillingTwiceIsKillingOnce(t *testi
 	}
 }
 
+// TestABackgroundTaskCannotBeKilledByIdAfterAControlPlaneRestart is this task's HONEST CEILING, written
+// as a measurement rather than as a paragraph in a commit message. T2 holds a started task's handle IN
+// MEMORY: migration 000047 opened the durable row, and the three things that read it — the park gate, the
+// exit notification and the reaper — are T3, T4 and T5.
+//
+// So the claim has two halves and BOTH are asserted, because only together are they honest:
+//
+//	The kill by id FAILS after a restart, and fails loudly rather than reporting a task it never stopped.
+//	The PROCESS IS UNAFFECTED — it keeps running, which is T1's whole point and the reason this ceiling is
+//	survivable rather than a broken feature: the task belongs to the run, not to the process that started
+//	it, and what is missing is only this control plane's ability to name it again.
+//
+// This is T5's RED, already failing, in the place a reader of T2 will look for it.
+func TestABackgroundTaskCannotBeKilledByIdAfterAControlPlaneRestart(t *testing.T) {
+	h := newBackgroundHarness(t)
+	ticket, pgid := h.spawn(t, "survivor", "sleep 20")
+	taskID, _ := ticket["task_id"].(string)
+
+	// A restarted control plane: the same spine, the same allocation and the same host executor, behind a
+	// NEW orchestrator — which is exactly what survives a restart and what does not.
+	h.orch = nil
+
+	if _, err := h.dispatch(t, "palai.workspace.background_kill", map[string]any{"task_id": taskID}); err == nil {
+		t.Fatal("a restarted control plane resolved a task id whose handle it can only have held in memory; " +
+			"if this now passes, the durable row landed and this ceiling should be deleted rather than relaxed")
+	}
+	if !alive(pgid) {
+		t.Fatalf("process group %d died with the orchestrator that started it: a background task belongs to "+
+			"the RUN, not to the process that spawned it", pgid)
+	}
+}
+
 // nonBackgroundShellResultKeys is the EXACT key set a shell tool call produced before background
 // execution existed, recorded by running this test against the tree at d634c1a6 (E26 T1's merge, the
 // fork point of T2). It is a committed word rather than a recomputed baseline: a guard that derives its
@@ -702,10 +739,3 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
-
-// backgroundKillToolIfPresent registers the kill tool once it exists. Written this way so the seven REDs
-// above COMPILE against the tree before T2 and fail for the reason they are about — a test that fails to
-// build is not a RED, it is a typo.
-//
-// ponytail: replaced by a direct tools.BackgroundKillTool() call in the same commit that adds the tool.
-func backgroundKillToolIfPresent() []toolbroker.Tool { return nil }

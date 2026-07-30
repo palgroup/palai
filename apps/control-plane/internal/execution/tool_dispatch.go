@@ -361,9 +361,13 @@ func (o *Orchestrator) execEnv(st *attemptState) toolbroker.ExecEnv {
 		WorkspaceRoot: st.attempt.WorkspaceHostPath,
 		ReadOnly:      st.attempt.WorkspaceReadOnly,
 		Shell:         o.shell,
-		Tasks:         o.tasks,
-		Publications:  o.publications,
-		Artifacts:     o.artifacts, // the research tool persists a large body here; nil ⇒ excerpt-only
+		// The background orchestration, BOUND TO THIS RUN (E26 T2). The run id travels with the seam rather
+		// than being read off an argument, so "kill task X" can be answered safely: a task id belongs to the
+		// run that started it, and a model naming somebody else's id is refused by the lookup itself.
+		Background:   &backgroundTasks{orch: o, runID: string(st.attempt.RunID)},
+		Tasks:        o.tasks,
+		Publications: o.publications,
+		Artifacts:    o.artifacts, // the research tool persists a large body here; nil ⇒ excerpt-only
 		Scope: toolbroker.TaskScope{
 			Org: st.tenant.Organization, Project: st.tenant.Project,
 			SessionID: st.sessionID, RunID: string(st.attempt.RunID), ResponseID: st.responseID,

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/palgroup/palai/adapters/repositories"
@@ -63,6 +64,12 @@ type Orchestrator struct {
 	// got a blocking call is blocked in exactly the way the feature exists to prevent. main.go injects it
 	// via SetBackgroundRunner where the wired shell runner can also detach.
 	background toolbroker.BackgroundRunner
+	// bgTasks maps a task id to the handle that can stop it, for the tasks THIS process started (E26 T2).
+	// It is guarded by bgMu because several attempts of several runs dispatch concurrently through one
+	// orchestrator. See rememberBackgroundTask in background.go for the ceiling this carries and the
+	// durable row (migration 000047) that replaces it.
+	bgMu    sync.Mutex
+	bgTasks map[string]*backgroundTask
 	// tasks is the durable session-scoped task/todo registry the task/todo tools persist through
 	// (spec §11). It is always the spine (the control plane owns the DB), so it is wired at
 	// construction; a stack opts into the durable primitives by registering the task/todo tools.
