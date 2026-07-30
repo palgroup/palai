@@ -51,6 +51,18 @@ interface Page<Row> {
 //               environments.sql's ListEnvironments carries no LIMIT and the handler returns a plain
 //               {object, data} list — so that collection is never cut. The wiring is what makes the picker
 //               inherit the notice for any collection that IS paginated.)
+// TWO MORE ARRIVED IN E25 T8, both because the observability reads are not all `{data: [...]}` lists:
+//
+//   selectRows — maps a response BODY to the rows to render, defaulting to `body.data`. GET /v1/usage
+//                carries its per-meter totals under `meters` (metering/store.go summaryView) and GET
+//                /v1/capabilities answers a capability -> tier MAP rather than a list at all. Without this
+//                each would have needed its own component with its own loading / empty / error states —
+//                three more places for a blank region to hide, on the pages added precisely because a
+//                blank region is what the console showed before.
+//   emptyNote  — replaces the generic "None yet." where the emptiness MEANS something. "None yet." over a
+//                budget list says nothing about whether this deployment caps spending, and on a read-only
+//                screen with no control to change it, a sentence that does not say so is a blank region
+//                with two words on it.
 export function Panel<Row extends Record<string, unknown>>({
   title,
   testId,
@@ -59,6 +71,8 @@ export function Panel<Row extends Record<string, unknown>>({
   note,
   reloadKey = 0,
   onRows,
+  selectRows,
+  emptyNote,
 }: {
   title: string;
   testId: string;
@@ -67,6 +81,8 @@ export function Panel<Row extends Record<string, unknown>>({
   note?: ReactNode;
   reloadKey?: number;
   onRows?: (rows: Row[]) => void;
+  selectRows?: (body: Record<string, unknown>) => Row[];
+  emptyNote?: ReactNode;
 }) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -78,13 +94,17 @@ export function Panel<Row extends Record<string, unknown>>({
   // depends on the DATA inputs (path, reload signal) and nothing else.
   const onRowsRef = useRef(onRows);
   onRowsRef.current = onRows;
+  // Same reason as onRows: a page passing an inline `(b) => b.meters` must not re-trigger the fetch on
+  // every render. The effect depends on the DATA inputs and nothing else.
+  const selectRef = useRef(selectRows);
+  selectRef.current = selectRows;
 
   useEffect(() => {
     let live = true;
     apiGet<Page<Row>>(fetchPath)
       .then((body) => {
         if (!live) return;
-        const next = body.data ?? [];
+        const next = selectRef.current?.(body as Record<string, unknown>) ?? body.data ?? [];
         setRows(next);
         setTruncated(body.has_more === true);
         setCursor(body.next_cursor ?? null);
@@ -110,7 +130,7 @@ export function Panel<Row extends Record<string, unknown>>({
       // Appended outside the state updater, not inside it: an updater must stay pure (React may call it
       // twice), and onRows is a side effect. `rows` is current here — loadMore only runs from a click, behind
       // the loadingMore guard.
-      const next = [...(rows ?? []), ...(body.data ?? [])];
+      const next = [...(rows ?? []), ...(selectRef.current?.(body as Record<string, unknown>) ?? body.data ?? [])];
       setRows(next);
       setTruncated(body.has_more === true);
       setCursor(body.next_cursor ?? null);
@@ -133,7 +153,7 @@ export function Panel<Row extends Record<string, unknown>>({
       ) : rows === null ? (
         <p data-testid={`${testId}-loading`}>Loading…</p>
       ) : rows.length === 0 ? (
-        <p data-testid={`${testId}-empty`}>None yet.</p>
+        <p data-testid={`${testId}-empty`}>{emptyNote ?? "None yet."}</p>
       ) : (
         <>
           <table>

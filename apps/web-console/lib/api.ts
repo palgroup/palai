@@ -53,6 +53,53 @@ export function artifactHref(artifactId: string): string {
   return `${RELAY}/v1/artifacts/${encodeURIComponent(artifactId)}/content`;
 }
 
+// readSessionEvents re-reads a session's canonical event journal (E25 T8, feature list O2). It is how a
+// FINISHED run's timeline is rebuilt, and it is the only way: /v1 has no JSON event-list route, so the
+// history of a run is the same SSE stream a live run reads, replayed from sequence 0.
+//
+// It TERMINATES rather than tails, and that is the server's behaviour rather than a hope: api/events.go's
+// pump returns as soon as it has written a terminal event type, closing the stream. A run still in flight
+// would tail with heartbeats instead, which is why the caller owns an AbortSignal.
+//
+// EventSource is deliberately not used. The frames carry `event: <type>` (contracts.Event MarshalSSE), so
+// an EventSource would need a listener registered per event NAME — a list this console would then have to
+// keep in step with the journal's vocabulary — and on the server's clean close it would RECONNECT and
+// replay the whole run again. A read of the body ends when the stream ends.
+export async function readSessionEvents(
+  sessionId: string,
+  onEvent: (event: Record<string, unknown>) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`${RELAY}/v1/sessions/${encodeURIComponent(sessionId)}/events`, {
+    headers: { Accept: "text/event-stream" },
+    signal,
+  });
+  if (!res.ok || res.body === null) throw await toProblem(res);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let end = buffer.indexOf("\n\n");
+    while (end !== -1) {
+      // Only the `data:` lines are read. `id:` and `event:` restate what the payload already carries, and a
+      // `: heartbeat` comment carries nothing — a frame with no data line is skipped rather than parsed.
+      const data = buffer
+        .slice(0, end)
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).trim())
+        .join("");
+      buffer = buffer.slice(end + 2);
+      if (data !== "") onEvent(JSON.parse(data) as Record<string, unknown>);
+      end = buffer.indexOf("\n\n");
+    }
+  }
+}
+
 // streamRun starts a run and yields each projected ndjson frame. It POSTs the prompt to the stream relay
 // and reads the newline-delimited canonical projection (lib/timeline lanes). The signal aborts the read
 // (a disconnect closes the upstream transport but does NOT cancel the run — LP6).

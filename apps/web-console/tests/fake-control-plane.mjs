@@ -584,6 +584,89 @@ function ensureDecisionRows() {
   }
 }
 
+// --- RUN HISTORY, ARTIFACT METADATA AND METERING (E25 T8) ------------------------------------------------
+
+// responseListRows renders every run this fixture has created as GET /v1/responses renders one, NEWEST
+// FIRST — the order storage/queries/responses.sql gives (`ORDER BY created_at DESC, id DESC`), which is what
+// lets the console's history screen open "the run I just made" without naming an id.
+//
+// The KEY SET is store/postgres.go ListResponses': a zero Usage marshals to {input_tokens, output_tokens}
+// (total_tokens and tool_calls are omitempty and zero), Model is "" and present, Output is [], and RunID and
+// UpdatedAt are omitempty and absent. A list row is deliberately poorer than the detail — that is the
+// contract, not a shortcut.
+function responseListRows() {
+  const rows = [];
+  for (const [sid, state] of sessions) {
+    rows.push({
+      created_at: fixtureTime(rows.length),
+      id: sid.replace("ses_", "resp_"),
+      model: "",
+      object: "response",
+      organization_id: "org_local",
+      output: [],
+      project_id: "proj_local",
+      session_id: sid,
+      status: state.denied === true ? "canceled" : "completed",
+      usage: { input_tokens: 0, output_tokens: 0 },
+    });
+  }
+  return rows.reverse();
+}
+
+// artifactProjection is the artifact metadata shape BOTH artifact reads render — the list and the per-id
+// GET share artifacts/reader.go metadataRow.projection(), so they are one function here too. There is no
+// `filename` and no `byte_size`: the projection carries neither, and a download's filename comes from the
+// object store's own disposition (sanitized by the relay), never from this metadata.
+function artifactProjection(id) {
+  return {
+    id,
+    object: "artifact",
+    run_id: "run_console_0001",
+    size_bytes: 22,
+    checksum: "sha256:7f0d1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7",
+    media_type: "text/plain",
+    logical_type: "release_notes",
+    malware_scan_status: "not_scanned",
+    created_at: "2026-07-24T00:00:03Z",
+  };
+}
+
+// The metering fixtures. Meters and the ledger carry rows so the console's columns are exercised somewhere;
+// budgets and quotas are empty on both profiles and the ROUTES table says why.
+const USAGE_METERS = [
+  { meter: "tokens.input", unit: "token", quantity: 40, entries: 1 },
+  { meter: "tokens.output", unit: "token", quantity: 18, entries: 1 },
+];
+
+// The ledger row's key set is metering/store.go ledgerEntryView: session_id and run_id are omitempty and are
+// present here because a settled model step always carries both.
+const USAGE_LEDGER = [
+  {
+    id: "use_fixture000000000001",
+    object: "usage_ledger_entry",
+    schema_version: 1,
+    project_id: "proj_local",
+    session_id: "ses_console_0001",
+    run_id: "run_console_0001",
+    meter: "tokens.input",
+    quantity: 40,
+    unit: "token",
+    occurred_at: "2026-07-24T00:00:02Z",
+  },
+  {
+    id: "use_fixture000000000002",
+    object: "usage_ledger_entry",
+    schema_version: 1,
+    project_id: "proj_local",
+    session_id: "ses_console_0001",
+    run_id: "run_console_0001",
+    meter: "tokens.output",
+    quantity: 18,
+    unit: "token",
+    occurred_at: "2026-07-24T00:00:02Z",
+  },
+];
+
 // The static admin fixtures — the §47.1 surface. Secret-ref rows are metadata only (name/version); a
 // connection carries a secret REF name, never a value; an api-key row is metadata only.
 const ADMIN = {
@@ -1292,11 +1375,91 @@ export const ROUTES = [
       });
     },
   },
+  // GET /v1/responses — RUN HISTORY (E25 T8, feature list O1). Paged like every other list, and derived from
+  // the runs this fixture has actually created rather than from a static row: the console's history screen
+  // has to show a run the suite just drove, and a frozen fixture row would make that assertion a property of
+  // which spec file ran first (the trap pagination.spec.ts already paid for once).
+  //
+  // THE ROW SHAPE IS THE LIST ROW'S, NOT THE DETAIL'S, and the difference is the point: store/postgres.go
+  // ListResponses marshals contracts.Response with Model "", Output [] and a ZERO Usage — model, usage and
+  // output come from the per-id GET, so a page never decodes N output blobs. Serving the richer detail shape
+  // here would have taught the console that a list row carries a model, and the console would then have
+  // rendered an empty column against the real API.
+  { method: "GET", pattern: "/v1/responses", handle: (request, response) => pageSlice(responseListRows(), requestURL(request), response) },
   {
     method: "GET",
     pattern: "/v1/responses/{response_id}/artifacts",
-    handle: (_request, response) => sendJSON(response, 200, listView([{ id: "art_1", object: "artifact", filename: "release-notes.txt", byte_size: 24 }])),
+    // THE PROJECTION IS THE REAL ONE NOW, AND IT WAS INVENTED BEFORE (E25 T8). This route used to serve
+    // `{id, object, filename, byte_size}` — and the artifact projection has NEITHER of those two fields:
+    // artifacts/reader.go metadataRow.projection writes id, object, run_id, size_bytes, checksum, media_type,
+    // logical_type, malware_scan_status and created_at, and no name at all. Nothing caught it because the
+    // only consumer was /runs, which reads `a.id` and nothing else, and because a compose run leaves no
+    // artifact for the sweep's item arm to compare against. E25 T8's artifact browser is the first screen
+    // that would have rendered those columns — blank, on the real API, with a filename column that can never
+    // be filled from this route.
+    handle: (_request, response) => sendJSON(response, 200, listView([artifactProjection("art_1")])),
   },
+  {
+    method: "GET",
+    pattern: "/v1/artifacts/{artifact_id}",
+    // The per-id metadata read. It answers with the SAME projection the list above serves, because that is
+    // what the real pair does — ListRunArtifacts and GetArtifact both render metadataRow.projection(), so
+    // this route adds no field the list did not already carry. It is served here because the sweep's arm 1
+    // requires every table row to be reachable and because a console that lists ids must be able to resolve
+    // one; it is NOT a richer view, and the artifact browser does not pretend it is.
+    handle: (_request, response, { artifact_id: id }) => sendJSON(response, 200, artifactProjection(id)),
+  },
+
+  // --- DISCOVERY AND METERING (E25 T8, feature list O9 / O4 / O5) -----------------------------------------
+  {
+    method: "GET",
+    pattern: "/v1/capabilities",
+    // The UNCONDITIONAL half of api/capabilities.go's matrix and nothing else. `a2a`, `slack`, `queues`,
+    // `knowledge` and `capability-workers` are advertised ONLY where the binary MOUNTED them, so a fixture
+    // that listed them would be claiming mounts on behalf of a deployment it is not — the §2 discovery lie
+    // in fixture form. `workspaces` is "unavailable" because this fixture configures no workspace root,
+    // which is the same derivation workspacesCapability() makes.
+    handle: (_request, response) =>
+      sendJSON(response, 200, {
+        object: "capabilities",
+        maturity: "preview",
+        isolation: "development",
+        retention: { store_false_ttl_seconds: 0 },
+        capabilities: {
+          responses: "preview",
+          sessions: "unavailable",
+          workspaces: "unavailable",
+          "knowledge-vector": "disabled",
+          "apple-build": "disabled",
+          console: "preview",
+        },
+      }),
+  },
+  {
+    method: "GET",
+    pattern: "/v1/usage",
+    handle: (_request, response) =>
+      sendJSON(response, 200, {
+        object: "usage_summary",
+        organization_id: "org_local",
+        project_id: "proj_local",
+        meters: USAGE_METERS,
+        // EMPTY ARRAYS, not absent keys: readBudgets/readQuotas initialise `[]budgetView{}` so the real
+        // summary carries both keys over an empty scope. And they are empty for the same reason the two
+        // list routes below are — see USAGE_BUDGETS.
+        budgets: [],
+        quotas: [],
+      }),
+  },
+  { method: "GET", pattern: "/v1/usage/ledger", handle: (request, response) => pageSlice(USAGE_LEDGER, requestURL(request), response) },
+  // THE LIMIT COLLECTIONS ARE EMPTY ON PURPOSE, AND IT IS A PROOF RATHER THAN A GAP. A bootstrap stack holds
+  // no budget and no quota — nothing creates one, there is no CLI verb for either — so an empty answer here
+  // is what the real API returns, and it is what makes "an empty metering panel renders a SENTENCE, never a
+  // blank region" assertable on BOTH profiles instead of only on whichever one happens to be thin. Inventing
+  // a limit row would have bought two exercised column renderers and cost the only deterministic empty-state
+  // proof on this surface.
+  { method: "GET", pattern: "/v1/budgets", handle: (_request, response) => sendJSON(response, 200, listView([])) },
+  { method: "GET", pattern: "/v1/quotas", handle: (_request, response) => sendJSON(response, 200, listView([])) },
   {
     method: "GET",
     pattern: "/v1/sessions/{session_id}/events",
