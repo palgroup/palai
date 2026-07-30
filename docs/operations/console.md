@@ -7,8 +7,52 @@ solely in the server-side relay, never in a browser request, a chunk or a source
 Until E25 T1 it had **no authentication of any kind**. This page is about what closed and, just as
 importantly, what did not.
 
-> **The door, the key, and the approval queue.** T1 wrote §1-§3, T5 wrote §4. The environment screen has its
-> own page (`environments.md`); repository bindings and agents are written as those tasks land.
+> **Installation to configured agent, on one page.** §0 is the whole path in order; §1-§3 are the door and
+> the key; §4 is the approval queue; §4b is tool registration. The environment screen keeps its own page
+> (`environments.md`) and the MCP chain keeps its own runbook (`jira-mcp-connection.md`), because both are
+> longer than a step; §0 links to them where they belong in the sequence.
+
+---
+
+## 0. From an empty install to a configured agent — the whole path
+
+A fresh `palai up` with no Slack has **zero agents, zero repositories, zero environments and zero registered
+tools**. This is the order that takes it to an agent that runs your code with your credentials, entirely from
+the console. Each step names the screen and the page that goes deeper.
+
+1. **Set the console password.** `node apps/web-console/scripts/hash-password.mjs` reading from stdin, then
+   export `PALAI_CONSOLE_PASSWORD_HASH`. **Without it the console serves nothing** — not a read, not a write,
+   not a sign-in (§2). Restart the console after setting it: the hash is read from the process environment.
+2. **Give the console a narrow key.** `palai apikey create --project <prj_id> --scope provision --scope
+   approve` (§3). Skipping this leaves the console holding a key with EVERY capability; the door is shut, the
+   key is not narrow, and `CON-P2` says how far that goes.
+3. **Sign in** at `/login`, and confirm `/` shows your organization and project. If it shows an error panel
+   instead, the console is running but its upstream is not — see §5.
+4. **Create an environment and write its keys** at `/environments`. An environment is a named `KEY=value` set
+   an agent's **shell commands** run against. A value is written once and **never read back** — not by you,
+   not by the API, not by any screen. Full page: [`environments.md`](environments.md).
+5. **Register a repository** at `/repositories`. `connection_ref` is a HANDLE chosen from your secret refs,
+   never a typed credential. Registering checks nothing: the first thing that exercises a binding is a run.
+6. **Register and approve tools**, if the agent needs any, at `/tools`. Register the MCP connection, discover
+   its tools, read each draft revision's **description and input schema** — those are what you are approving,
+   because that prose enters a model's context — publish the ones you want, pin them into a set, publish the
+   set. The gate defaults **ON** for every tool (§4b). Full runbook, including the `curl` equivalents:
+   [`jira-mcp-connection.md`](jira-mcp-connection.md).
+7. **Create the agent and its first revision** at `/agents`. A revision names a model, an environment (step
+   4), a tool set (step 6) and the MCP connections that CEILING it. **Both `tool_sets` and `mcp_connections`
+   are required for a tool to reach a model** — the first is the grant, the second the ceiling, and each
+   absence fails quietly.
+8. **Publish the revision.** Publishing is what makes a run pinned to it reproducible, and it cannot be
+   undone. A draft cannot be pinned: the API answers 409 and the screen says no run and no session were
+   created, with no default substituted.
+9. **Run it** at `/runs`, pinned to that revision. The run's shell commands now see the environment's keys.
+10. **Answer its gates** at `/approvals` (§4), and **read what it did** at `/history`.
+
+**The two things this path does NOT include, on purpose.** There is no button that tests a model route or
+validates an environment: verifying that a handle has a value behind it means USING the value, which is a run,
+a credential spend and a budget decision. And there is no screen that writes a model connection or a
+model route — `palai up` produces a working deployment-default route, and a second provider is a CLI job
+today.
 
 ---
 
@@ -343,6 +387,33 @@ and the operator session never rides an upstream request.
 
 ---
 
+## 6b. Contract divergences — published docs × this console
+
+Every row is a published requirement or an on-machine measurement this console ACTED on, with the source. The
+canonical copy is `tests/uat/evidence_admin_console.go` (`AdminConsoleContracts`), and the
+`admin-console-0.1.0` bundle's every checksum moves if a row is dropped or reworded — so this table cannot go
+stale quietly.
+
+| # | The published requirement | What this console does |
+|---|---|---|
+| `N2` | [GHSA-f82v-jwr5-mffw](https://github.com/advisories/GHSA-f82v-jwr5-mffw) (CVSS 9.1): an attacker could *"bypass authorization checks … if the authorization check occurs in middleware"* | The gate is the first two statements of every exported relay method. There is no `proxy.ts` and no layout check |
+| `N5` | Next.js Partial Rendering: a layout is re-used across a client-side navigation rather than re-run | Second reason the gate is in the relay. It is also why the fail-closed control console is probed on `/login`: the static shell still RENDERS, so "does not serve" is a claim about data |
+| `N7` | The vendor's own session-cookie examples use `SameSite=Lax` | **Deliberate divergence:** `Strict`. Cost paid by the operator — a link from another site lands on a console that looks signed out, one more click. Taken because this origin is a write proxy holding an unlimited credential |
+| `N8` | Server Actions get CSRF protection for free; Route Handlers do not — and the vendor RECOMMENDS Server Actions for mutations | **Deliberate divergence:** no Server Actions, because they open a second write path the public-API-only proof cannot see. The protection given up is written by hand: an Origin-vs-Host comparison on every non-GET, refusing a missing Origin outright |
+| `N10` | `wcag2a`/`wcag2aa` select **WCAG 2.0 rules only**; `wcag21a`, `wcag21aa` and `wcag22aa` are separate tags | All five tags are scanned. What the widening buys is MEASURED rather than assumed — exactly three rules (`autocomplete-valid`, `avoid-inline-spacing`, `target-size`), and `wcag21a` adds none, because an unknown tag selects no rules and reports clean |
+| `N13` | [MDN](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Attributes/autocomplete): `autocomplete="off"` does not stop a password manager offering to save or autofilling | `off` is NOT used, and a test fails if the secret field ever carries it |
+| `N17` | MDN: `new-password` is the token for a NEW secret field — *"to avoid accidentally filling in an existing password"* — and `off` is for *"CAPTCHA or one-time token fields"* | The environment value field is `type="password"` + `autocomplete="new-password"`, uncontrolled, and **paste is not blocked** (WCAG 2.2 SC 3.3.8) |
+| `N18` | [OWASP Secrets Management](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html) §2.7.2 rotation, §2.3 least privilege, §2.6 auditing | Rotation is **closed** (a button on the same route as create). Least privilege is **bounded** (§3, and `CON-P2`). Auditing is **open and filed** (`CON-P3`): no resolve is recorded anywhere |
+| `N20` | `playwright-core@1.51.1` writes its own default down: *"Defaults to `light`."* | A second Playwright project runs the WHOLE spec set in `dark`. Before it, every axe scan this console had ever run looked at one of the two palettes `globals.css` ships — which is how a 2.63:1 skip link, the first Tab stop on every page, stayed green |
+| `N21` | axe-core has **no rule** for SC 1.4.11 (a control's own boundary); Radix Colors guarantees its steps in APCA, not WCAG 2.x | Contrast is measured with WCAG 2.2's own formula against the rendered page, on all 11 routes and both schemes. Radix's published role for step 7 re-measures at 1.53:1, so the step mapping here is ours: step 10 is the first usable control border |
+
+**One row is deliberately ABSENT.** Whether a browser offers to SAVE a lone `type="password"` field outside a
+login form — and whether `new-password` suppresses that offer — could not be read on any published page. It is
+UNCONFIRMED, it entered no test, no sentence here and no bundle field, and it is filed as `CON-P5`. A vendor
+silence is not a design freedom.
+
+---
+
 ## 7. Where the pieces live
 
 | Piece | File |
@@ -357,11 +428,12 @@ and the operator session never rides an upstream request.
 | The approval routes and the capability | `apps/control-plane/api/approvals.go` |
 | The proofs | `apps/web-console/tests/auth.spec.ts`, `tests/relay-gate.spec.ts`, `tests/public-api-only.spec.ts`, `tests/approval-queue.spec.ts` |
 
-The control plane's public API is **132 method+path pairs** as of `1aad6586` (2026-07-30), all registered in
-`apps/control-plane/api/router.go`. The console relays a subset of them and can reach no other path.
+The control plane's public API is **133 method+path pairs over 101 distinct paths** as of `6ddb85ac`
+(2026-07-30), all registered in `apps/control-plane/api/router.go`. The console relays a subset of them and
+can reach no other path.
 
-That number is dated on purpose, with the command that produces it, because it has now gone stale three
-times in three documents:
+That number is dated on purpose, with the command that produces it, because it has now gone stale FIVE times
+in three documents — and the fifth time was inside the epic that wrote this warning, for the second time:
 
 ```sh
 grep -E '\.(Handle|HandleFunc)\("(GET|POST|PATCH|DELETE|PUT) /v1' apps/control-plane/api/*.go | grep -v _test | wc -l
@@ -369,5 +441,14 @@ grep -E '\.(Handle|HandleFunc)\("(GET|POST|PATCH|DELETE|PUT) /v1' apps/control-p
 
 It read 112 when `admin-console-feature-list.md` measured it, 115 after E23 T9 added the three approval
 routes, 125 after E24's runner-fleet routes landed, **130 by the time E25 T3 mounted the environment
-family** — which happened while this very paragraph said 125, the fourth staleness and the first inside the
-epic that wrote the warning — and 132 after E25 T7's two registry reads. Quote the command, not the count.
+family** — which happened while this paragraph said 125 — 132 after E25 T7's two registry reads, and **133
+once the tool-registry contract fix mounted `GET /v1/tools/{tool_id}/revisions/{revision_id}`**, which
+happened while this paragraph said 132. **The plan's §T9 still says 115**, which was true of `0226661` and
+has been wrong by eighteen since E24 and E25 merged. Quote the command, not the count.
+
+**E25's own contribution is EIGHT routes, not the seven §T9 counts**: five for the environment family
+(`GET`/`POST /v1/environments`, `GET /v1/environments/{id}`, `POST /v1/environments/{id}/values`,
+`DELETE /v1/environments/{id}/values/{key}`), two revision reads from T7
+(`GET /v1/tools/{tool_id}/revisions`, `GET /v1/tool-sets/{set}/revisions/{revision_id}`) and the eighth from
+the contract fix that followed it. The other ten of the eighteen are E24's runner fleet, which ran in
+parallel and is not this console's.

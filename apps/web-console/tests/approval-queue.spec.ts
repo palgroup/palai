@@ -98,6 +98,16 @@ async function pickOpen(page: Page, prefix: string): Promise<string> {
  * rendered". Reproduced at HEAD before any styling landed: two runs in three. Panel renders exactly one of
  * loading / error / empty / rows, so the spinner's absence is the honest signal that the list has landed.
  */
+// logDecision prints ONE ledger line per decision this file drives, and the shape is a CONTRACT rather than a
+// log (E25 T9): tests/uat/admin-console parses these lines out of the gate's own co-run and requires them to
+// agree with the approval ledger the admin-console-0.1.0 bundle carries. Without it, group (h)'s two counters
+// — decisions that APPLIED and decisions refused on a request-hash MISMATCH — would be numbers authored in a
+// Go file with nothing in the tree that produces them.
+function logDecision(id: string, decision: string, hashMatched: boolean, applied: boolean, outcome: string): void {
+  // eslint-disable-next-line no-console -- the line IS the evidence; see above.
+  console.log(`APPROVAL DECISION — id=${id} decision=${decision} hash_matched=${hashMatched} applied=${applied} outcome=${outcome}`);
+}
+
 async function openQueue(page: Page): Promise<void> {
   await page.goto("/approvals");
   await expect(page.getByTestId("panel-approvals")).toBeVisible({ timeout: 15_000 });
@@ -174,6 +184,7 @@ test("the decision carries the request hash the row displayed, and nothing on th
   // `approver` field on purpose — the principal is stamped server-side from the verified key — so a body that
   // grew a field would be a 400 against the real API and a console trying to name its own approver.
   expect(Object.keys(sent).sort(), "an approve body carries the binding and nothing else").toEqual(["request_hash"]);
+  logDecision(target, "approve", true, true, "the run was released; the row left the queue");
 
   // ANSWERED MEANS GONE. There is no status field on this projection to read instead: the row leaving the queue
   // is the whole of what "it was answered" looks like.
@@ -221,6 +232,7 @@ test("an approval whose arguments changed is refused as no-longer-decidable, and
   await expect(error).toContainText("can no longer be decided");
   await expect(error).toContainText("the arguments changed");
   await expect(error, "the 409 sentence must say that NOTHING was authorized").toContainText("Nothing was");
+  logDecision(DRIFT, "approve", false, false, "409 no-longer-decidable: the carried binding was the previous serve's, and nothing was authorized");
   // Still parked, and the next read shows a hash that is not the one that was held — the arguments really did
   // move, which is what made the refusal real rather than canned.
   await expect(page.getByTestId(`tool-approval-facts-${DRIFT}`)).toBeVisible();
@@ -248,6 +260,9 @@ test("the typed refusals get different sentences and none of them is a generic f
   expect(sentences[LOCKED]).toContain("approver list");
   expect(sentences[LOCKED], "the two gates are independent and the fix is different for each").toContain("capability");
   expect(sentences[DRIFT]).toContain("can no longer be decided");
+  logDecision(GONE, "approve", true, false, "404 unknown-or-foreign: indistinguishable on purpose, and the screen says so");
+  logDecision(LOCKED, "approve", true, false, "403 not_an_approver: the project's approver list, which is a different fix from the capability gate");
+  logDecision(DRIFT, "approve", false, false, "409 no-longer-decidable, reached a second time through the typed-refusal sweep");
 
   const all = [sentences[GONE], sentences[LOCKED], sentences[DRIFT]];
   expect(new Set(all).size, `three typed refusals produced ${new Set(all).size} distinct sentence(s):\n${all.join("\n---\n")}`).toBe(3);
@@ -288,6 +303,7 @@ test("a deny sends the operator's own reason verbatim, and a deny with no reason
   expect(sent.reason, "the reason reaches the API exactly as it was written").toBe(reason);
   expect(sent.request_hash, "the deny carries the row's own binding too").toBe(displayed);
   expect(Object.keys(sent).sort()).toEqual(["reason", "request_hash"]);
+  logDecision(target, "deny", true, true, "the operator's reason reached the API verbatim; the row left the queue");
   await expect(page.getByTestId(`tool-approval-facts-${target}`)).toHaveCount(0, { timeout: 15_000 });
 });
 

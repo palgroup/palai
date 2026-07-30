@@ -9,6 +9,7 @@ SHELL := /bin/bash
 	uat-kubernetes uat-kind uat-sh2 uat-sdk-parity uat-extensions uat-stable-release uat-wiring uat-wiring-live \
 	uat-agent-surface uat-agent-surface-live uat-tools-memory uat-tools-memory-live uat-code-and-ship uat-code-and-ship-live \
 	uat-tool-approval uat-tool-approval-live uat-fleet uat-fleet-live \
+	uat-admin-console uat-admin-console-live \
 	uat-escape evidence-verify promote migration-resume-drill upgrade-drill \
 	release-matrix-smoke provenance-offline-verify
 
@@ -419,6 +420,28 @@ uat-fleet:
 uat-fleet-live:
 	@test -x scripts/uat/fleet || { echo "fleet UAT not implemented" >&2; exit 2; }
 	@RUN_LIVE=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/fleet
+
+# THE ONE COMMAND (plan §T9) — the E25 admin-console exit gate. Docker-free core (the console TYPECHECK,
+# which §3.6 D15 measured hits no other gate in this tree; the bundle; the refusal matrix; the promote gate
+# dispatched ahead of E24's and E23's; the CON- catalog and orphan sweep; the reachability sweep over E25's
+# new exported surface and the guard that every component test this epic added is NAMED in
+# scripts/test/component's -run allow-list; the ciphertext query pin and the environment projection pin; the
+# automation and operator-doc corpora; and the console specs on the FAKE profile in BOTH colour schemes),
+# then the Docker-bound journey tier (the tenancy corpus — 000046 opened two tenant tables — plus the
+# component-real legs where E25's Go seams live). Every earlier uat-* target above stays untouched.
+uat-admin-console:
+	@test -x scripts/uat/admin-console || { echo "admin-console UAT not implemented" >&2; exit 2; }
+	@SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/admin-console
+
+# The REAL-UPSTREAM tier, and for this epic that is what "live" means: E25 has no credential-gated leg at all
+# — there is no vendor to call — so the honest second command runs the SAME spec files against a compose
+# control plane and then the fake-vs-real conformance sweep. THAT SWEEP IS THE ONLY THING THAT RE-OBSERVES
+# THE FIVE REPAIRED LEDGER ROWS (§6 leg 2), which is why it is a target rather than a note. It needs a
+# running stack: `PALAI_DISPATCH_WORKERS=1 PALAI_MODEL_PROVIDER=fake palai local up`, plus PALAI_BASE_URL and
+# PALAI_API_KEY exported. The sweep refuses to skip without them.
+uat-admin-console-live:
+	@test -x scripts/uat/admin-console || { echo "admin-console UAT not implemented" >&2; exit 2; }
+	@RUN_CONSOLE_REAL=1 SKIP_JOURNEYS='$(SKIP_JOURNEYS)' scripts/uat/admin-console
 
 # E18 T1 image half of the release matrix (Docker-bound, so NOT in `make verify` — like uat-kind): builds
 # linux/amd64 + linux/arm64 for all three images, asserts each indexed tar's digest/image_id/arch against the

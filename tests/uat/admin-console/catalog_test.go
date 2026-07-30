@@ -1,6 +1,7 @@
 package adminconsole
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -248,4 +249,28 @@ func repoRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
+}
+
+// caseAssertion derives a case's bundle db_assertion line from THIS gate's catalog rather than retyping it
+// into evidence_admin_console.go — the E24 shape. One owner for "what this case proves and at which tier".
+func caseAssertion(t *testing.T, id string) string {
+	t.Helper()
+	entry, ok := expectedAdminConsoleCatalog[id]
+	if !ok {
+		t.Fatalf("%s has no catalog entry to derive its bundle assertion from", id)
+	}
+	return fmt.Sprintf("%s: proven by %d in-tree proof(s) at the %s tier — %s",
+		id, entry.proofs, entry.class, entry.why)
+}
+
+// caseProofClass is the same one-owner rule for the bundle's `proof_class` field. E25's cases are NOT all one
+// class — CON-003 is `component-real` (the Go half of R1, which touches no console file) while the other six
+// are `e2e-deterministic` — so the bundle reads it here instead of hard-coding one value for all seven.
+func caseProofClass(t *testing.T, id string) string {
+	t.Helper()
+	entry, ok := expectedAdminConsoleCatalog[id]
+	if !ok {
+		t.Fatalf("%s has no catalog entry to derive its proof class from", id)
+	}
+	return entry.class
 }

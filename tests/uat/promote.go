@@ -69,7 +69,34 @@ func PromoteGateFor(raw []byte, target string) []Refusal {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return []Refusal{{Detail: "manifest is not valid JSON: " + err.Error()}}
 	}
-	// The E24 fleet family is checked FIRST, ahead of E23, and for the reason every clause below repeats one
+	// The E25 admin-console family is checked FIRST, ahead of E24 and E23, and for the reason every clause
+	// below repeats one level down: it is now the most specific policy in the tree and it COMPOSES the
+	// tool-approval gate underneath itself (which composes code-and-ship, tools-memory, agent-surface,
+	// wiring, the E17 tier table and the eval gate). An E25 bundle DERIVES its inherited case set from the
+	// E23 release, so it also carries the E23 tool-approval claim, the E22 code-and-ship claim, the E21
+	// tools-memory claim, the E20 agent-surface claim and E17 area claims — without this clause it would
+	// reroute to ToolApprovalPromoteGate, which knows nothing about the relay-gate totality re-derivation,
+	// the axe coverage equality, the ciphertext query pin, the byte scan, the sweep floor or the ledger
+	// repairs, and would pass it: every console guard would be optional in practice.
+	//
+	// IT COMPOSES E23 AND NOT E24, AND THAT IS A MEASUREMENT. E25 ran in PARALLEL with E24 (plan §7) and
+	// inherits from `tool-approval-0.1.0`, not from `runner-fleet-0.1.0`: it built nothing on the fleet and
+	// carries no `FLT-` case. So the two families are SIBLINGS with disjoint id sets, the relative order of
+	// this clause and the E24 clause below is immaterial, and TestTheE24AndE25FamiliesAreDisjoint asserts
+	// that rather than leaving it to be assumed — because "immaterial today" is how a dispatch order becomes
+	// load-bearing tomorrow.
+	//
+	// THE FAMILY IS RECOGNIZED BY THE E25 CASE IDS, NOT BY THE admin_console_claim THIS GATE ENFORCES. That
+	// is also why E25's ids carry the `CON-` prefix: a `UI-005` would be inside extensionIDPrefixes, whose
+	// map IS the shipped extensions-0.1.0 bundle's case list, so it would either regenerate a committed
+	// historical release or fall through to a WEAKER gate — the promote-gate-family-dispatch defect,
+	// reachable from a naming choice in two directions.
+	for _, c := range m.Cases {
+		if carriesE25AdminConsoleCase(c) {
+			return AdminConsolePromoteGate(raw, target)
+		}
+	}
+	// The E24 fleet family is checked next, ahead of E23, and for the reason every clause below repeats one
 	// level down: it is now the most specific policy in the tree and it COMPOSES the tool-approval gate
 	// underneath itself (which composes code-and-ship, tools-memory, agent-surface, wiring, the E17 tier
 	// table and the eval gate). An E24 bundle DERIVES its inherited case set from the E23 release, so it also
