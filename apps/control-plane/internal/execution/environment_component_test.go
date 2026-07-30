@@ -16,7 +16,6 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/identity"
 	"github.com/palgroup/palai/packages/contracts"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
-	"github.com/palgroup/palai/storage"
 )
 
 // E25 T3's CROWN, against a real spine: an operator's environment reaches a real shell command on this
@@ -326,7 +325,3 @@ var errNoSuchEnvironmentSecret = errEnvSecretMiss{}
 type errEnvSecretMiss struct{}
 
 func (errEnvSecretMiss) Error() string { return "no such environment secret ref" }
-
-// storageScopeAssertion keeps the storage import honest in this file: openPinnedSpine's exec helper uses
-// the system scope, and every read under test scopes itself, so nothing here needs a scope of its own.
-var _ = storage.WithSystemScope

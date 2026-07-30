@@ -231,6 +231,19 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 		arguments = parked.Arguments
 	}
 
+	// THE LAST MOMENT (E25 T3). The attempt's environment VALUES are resolved here and nowhere earlier:
+	// after the durable consult, after BOTH approval parks (`approval_pending` above and the fresh-call gate
+	// at :183, both of which RETURN), after the before_tool hook, one statement before the call that uses
+	// them. So a run waiting for a human holds no credential in memory while it waits — the park left this
+	// function before this line was reached.
+	//
+	// The map's whole life is the Execute call below. `env` is a per-dispatch local (execEnv mints a fresh
+	// value each call), it is not read again after :249, and it is never marshalled, journaled or logged:
+	// the four resolver lookups above take `env` BEFORE this line, so none of them can see a value either.
+	if env.EnvValues, err = o.resolveEnvValues(ctx, st); err != nil {
+		return err
+	}
+
 	// 3. Execute + commit + deliver. Execute runs the PATCHED args (a transform hook's replacement, or the
 	// model's original when no transform fired), so the ledger row and the effect agree (honest audit).
 	outcome, err := o.tools.Execute(ctx, contracts.ToolCallID(callID), name, execArgs, st.attempt.Fence, env)

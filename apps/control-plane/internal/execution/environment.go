@@ -3,8 +3,6 @@ package execution
 import (
 	"context"
 	"fmt"
-
-	"github.com/palgroup/palai/storage"
 )
 
 // THE CLAIM — the capability-worker secret-handle pattern applied to a RUN (E25 T3, plan §T3).
@@ -56,22 +54,13 @@ func (o *Orchestrator) SetEnvironmentSecrets(secrets SecretResolver) {
 // nil, which is every run in every deployment before E25: the attempt then carries no environment and a
 // shell command's environment is bit-identical to what it was.
 func (o *Orchestrator) resolveEnvKeys(ctx context.Context, st *attemptState) ([]envKey, error) {
-	ctx = storage.ScopeToTenant(ctx, st.tenant.Organization, st.tenant.Project)
-	rows, err := o.spine.Pool().Query(ctx, storage.Query("RunEnvironmentKeys"), string(st.attempt.RunID))
+	names, secretNames, err := o.spine.RunEnvironmentKeys(ctx, st.tenant, string(st.attempt.RunID))
 	if err != nil {
-		return nil, fmt.Errorf("read run environment keys: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-	var keys []envKey
-	for rows.Next() {
-		var k envKey
-		if err := rows.Scan(&k.Key, &k.SecretName); err != nil {
-			return nil, fmt.Errorf("scan run environment key: %w", err)
-		}
-		keys = append(keys, k)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate run environment keys: %w", err)
+	keys := make([]envKey, len(names))
+	for i := range names {
+		keys[i] = envKey{Key: names[i], SecretName: secretNames[i]}
 	}
 	return keys, nil
 }
