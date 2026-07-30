@@ -181,10 +181,15 @@ let revisionSeq = 100;
 /**
  * revisionRow is the projection, field for field.
  *
- * `tools` and `mcp_connections` are NULL when the revision named none, not `[]`, and that is measured rather
- * than stylistic: store/agents.go marshals `it.Tools` / `it.MCPConnections`, which are Go `[]string` — a
- * revision created without them holds nil and nil marshals to `null`. The fixture served `[]` and the
- * conformance sweep's item arm named the difference the first time it could see this route at all.
+ * `tools`, `tool_sets` and `mcp_connections` are NULL when the revision named none, not `[]`, and that is
+ * measured rather than stylistic: store/agents.go marshals `it.Tools` / `it.ToolSets` / `it.MCPConnections`,
+ * which are Go `[]string` — a revision created without them holds nil and nil marshals to `null`. The
+ * fixture served `[]` and the conformance sweep's item arm named the difference the first time it could see
+ * this route at all.
+ *
+ * `tool_sets` JOINED THE REAL PROJECTION IN E25 T7 and joins this one with it. It is the GRANT (the
+ * published set revisions a run pinned to this revision may reach); `mcp_connections` beside it is the
+ * CEILING. Only the ceiling read back before, so a console could show the half that advertises nothing.
  */
 function revisionRow(agentID, rev) {
   return {
@@ -194,6 +199,7 @@ function revisionRow(agentID, rev) {
     revision_number: rev.revision_number,
     model: rev.model,
     tools: rev.tools ?? null,
+    tool_sets: rev.tool_sets ?? null,
     mcp_connections: rev.mcp_connections ?? null,
     environment: rev.environment,
     instructions: rev.instructions,
@@ -209,6 +215,86 @@ function findRevision(id) {
   }
   return null;
 }
+
+// --- THE MCP CONNECTION + TOOL REGISTRY (E25 T7) ---------------------------------------------------------
+//
+// STATEFUL, and for the reason T4's environments are: the console's claim is "register a connection,
+// discover it, approve what it found, pin it and publish the set", and a static row proves none of that. All
+// four collections therefore start EMPTY — which is also what a bootstrap stack holds, so the fake profile
+// meets the same first-day console a compose stack does.
+//
+// THE DISCOVERED DESCRIPTION IS HOSTILE ON PURPOSE. `mcpDiscoverable` below carries a <script> tag and an
+// <a href>, because an MCP server's description is an ATTACKER'S TEXT and "we render it as text" is a claim
+// that has to be attacked rather than asserted. tests/mcp-tools.spec.ts drives it onto the screen and then
+// counts elements and navigations. It is the exact discipline the approval queue's own XSS leg uses on the
+// model's arguments (approval-queue.spec.ts), applied to the other untrusted author.
+const mcpConnections = new Map();
+const toolLineages = new Map();
+const toolRevisionsByTool = new Map();
+const toolSetRevisions = [];
+let mcpSeq = 0;
+let toolSeq = 0;
+let toolRevSeq = 0;
+let toolSetSeq = 0;
+
+// What the fixture "server" offers. Two tools, mirroring the Atlassian Rovo shapes the runbook names: a READ
+// and a WRITE, so the screen's gate control has both cases to be exercised on.
+const mcpDiscoverable = [
+  {
+    remote: "getJiraIssue",
+    description: 'Get the details of a Jira issue by its key. <script>window.__mcp_xss_executed = true;</script> <a href="https://evil.example/pwned">docs</a>',
+    input_schema: { type: "object", properties: { issueKey: { type: "string" } }, required: ["issueKey"] },
+  },
+  {
+    remote: "transitionJiraIssue",
+    description: "Move a Jira issue to another status.",
+    input_schema: { type: "object", properties: { issueKey: { type: "string" }, transition: { type: "string" } } },
+  },
+];
+
+/** mcpConnectionRow is store/mcp_connections.go's mcpConnectionProjection, field for field. */
+function mcpConnectionRow(conn) {
+  return { id: conn.id, object: "mcp_connection", name: conn.name, transport: conn.transport, trust_level: conn.trust_level, disabled: conn.disabled };
+}
+
+/** toolRow is store/tools.go's toolLineageProjection, field for field. */
+function toolRow(tool) {
+  return { id: tool.id, object: "tool", canonical_name: tool.canonical_name, model_visible_name: tool.model_visible_name };
+}
+
+/**
+ * toolRevisionRow is store/tools.go's ListToolRevisions projection, field for field — INCLUDING description
+ * and input_schema, which are the two fields the route exists for (they are what an admin approves).
+ */
+function toolRevisionRow(rev) {
+  return {
+    id: rev.id,
+    object: "tool_revision",
+    tool_id: rev.tool_id,
+    revision_number: rev.revision_number,
+    executor: rev.executor,
+    description: rev.description,
+    input_schema: rev.input_schema,
+    digest: rev.digest,
+    status: rev.status,
+    approval_required: rev.approval_required,
+    approval_label: rev.approval_label,
+    created_at: rev.created_at,
+  };
+}
+
+/** toolSetListRow is the LIST projection: identity + digest, and deliberately NOT the pins. */
+function toolSetListRow(rev) {
+  return { id: rev.id, object: "tool_set_revision", set: rev.set, revision_number: rev.revision_number, digest: rev.digest, status: rev.status };
+}
+
+/** toolSetDetailRow is the single-resource projection: the list row plus `tools` (the pins) and created_at. */
+function toolSetDetailRow(rev) {
+  return { ...toolSetListRow(rev), tools: rev.tools, created_at: rev.created_at };
+}
+
+/** fixtureTime keeps created_at deterministic and ordered without a clock. */
+const fixtureTime = (seq) => new Date(Date.UTC(2026, 6, 30, 1, 0, seq)).toISOString();
 
 // --- REPOSITORY BINDINGS (E25 T6) ------------------------------------------------------------------------
 //
@@ -766,6 +852,7 @@ export const ROUTES = [
           model: typeof body.model === "string" ? body.model : "",
           // Nil, not empty — see revisionRow. A revision that named no tools has `null` on the real wire.
           tools: Array.isArray(body.tools) ? body.tools : null,
+          tool_sets: Array.isArray(body.tool_sets) ? body.tool_sets : null,
           mcp_connections: Array.isArray(body.mcp_connections) ? body.mcp_connections : null,
           instructions: typeof body.instructions === "string" ? body.instructions : "",
           environment,
@@ -789,12 +876,186 @@ export const ROUTES = [
         // refusal is proven against a real router in
         // apps/control-plane/internal/execution/console_environment_run_component_test.go; no console path
         // depends on either answer, because the publish button only exists on a row the list returned.
-        return sendJSON(response, 200, revisionRow(id, { id: revID, revision_number: 1, model: "", tools: null, instructions: "", environment: "", status: "published" }));
+        return sendJSON(response, 200, revisionRow(id, { id: revID, revision_number: 1, model: "", tools: null, tool_sets: null, instructions: "", environment: "", status: "published" }));
       }
       // A RE-PUBLISH IS AN IDEMPOTENT SUCCESS on the real surface (store/agents.go publishResult), not a
       // conflict — publishing is irreversible, so asking twice is asking for the state it is already in.
       rev.status = "published";
       sendJSON(response, 200, revisionRow(id, rev));
+    },
+  },
+
+  // --- MCP CONNECTIONS + THE TOOL REGISTRY (E25 T7), in api/router.go's registration order. ---
+  //
+  // SYNTHESISED-ON-UNKNOWN, on the three routes whose path carries an id: the sweep's arm 1 probes every
+  // pattern with a placeholder segment and reads a 404 as "the table declares a route the fixture does not
+  // serve". The real routes answer 404 for an unknown or foreign id — GET /v1/tools/{id}/revisions is a 404
+  // rather than an empty page ON PURPOSE (store/tools.go checks the lineage first), and that refusal is
+  // proven against a REAL router and a REAL foreign tenant in
+  // apps/control-plane/internal/execution/jira_runbook_component_test.go. No console path depends on either
+  // answer: every id this console puts in a path came out of a list it just read.
+  {
+    method: "POST",
+    pattern: "/v1/mcp-connections",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        const config = typeof body.config === "object" && body.config !== null ? body.config : {};
+        if (name === "") return sendProblem(response, 400, "invalid_request", "the request carries an invalid transport, config, or name, or an inline credential");
+        // The real refusal for an http connection with no url (extensions/mcp.go validateConnectionConfig).
+        if (typeof config.url !== "string" || config.url === "") {
+          return sendProblem(response, 400, "invalid_request", "the request carries an invalid transport, config, or name, or an inline credential");
+        }
+        mcpSeq += 1;
+        const conn = { id: `mcpc_console_${String(mcpSeq).padStart(4, "0")}`, name, transport: "http", trust_level: "untrusted", disabled: false };
+        mcpConnections.set(conn.id, conn);
+        sendJSON(response, 201, mcpConnectionRow(conn));
+      }),
+  },
+  { method: "GET", pattern: "/v1/mcp-connections", handle: (_req, res) => sendJSON(res, 200, { data: [...mcpConnections.values()].map(mcpConnectionRow), has_more: false }) },
+  {
+    method: "GET",
+    pattern: "/v1/mcp-connections/{id}",
+    handle: (_req, res, { id }) =>
+      sendJSON(res, 200, mcpConnectionRow(mcpConnections.get(id) ?? { id, name: "synthesised", transport: "http", trust_level: "untrusted", disabled: false })),
+  },
+  {
+    method: "POST",
+    pattern: "/v1/mcp-connections/{id}/discover",
+    // THE ONLY ROUTE HERE THAT WOULD TOUCH A REAL SERVER. On this profile it is a fixture and that is §6
+    // leg 3 — what is proven below the browser is that a DRAFT is what discovery leaves behind, never a
+    // published revision, which is the property EXT-006 names and the reason this screen exists at all.
+    handle: (request, response, { id }) =>
+      drainBody(request, () => {
+        const conn = mcpConnections.get(id);
+        if (conn === undefined) {
+          return sendJSON(response, 200, { object: "mcp_discovery", connection_id: id, new_revisions: [], unchanged: [], rejected: [] });
+        }
+        const fresh = [];
+        const unchanged = [];
+        for (const offered of mcpDiscoverable) {
+          const canonical = `mcp.${conn.name}.${offered.remote}`;
+          let tool = [...toolLineages.values()].find((t) => t.canonical_name === canonical);
+          if (tool === undefined) {
+            toolSeq += 1;
+            tool = {
+              id: `tool_console_${String(toolSeq).padStart(4, "0")}`,
+              canonical_name: canonical,
+              model_visible_name: `${conn.name}__${offered.remote}`,
+            };
+            toolLineages.set(tool.id, tool);
+            toolRevisionsByTool.set(tool.id, []);
+          }
+          const existing = toolRevisionsByTool.get(tool.id) ?? [];
+          // The no-churn rule: an identical description + schema writes NOTHING on re-discovery.
+          if (existing.some((r) => r.description === offered.description)) {
+            unchanged.push(offered.remote);
+            continue;
+          }
+          toolRevSeq += 1;
+          const rev = {
+            id: `trev_console_${String(toolRevSeq).padStart(4, "0")}`,
+            tool_id: tool.id,
+            revision_number: existing.length + 1,
+            executor: "mcp",
+            description: offered.description,
+            input_schema: offered.input_schema,
+            digest: `sha256:fixture${String(toolRevSeq).padStart(2, "0")}`,
+            status: "draft",
+            approval_required: false,
+            approval_label: "",
+            created_at: fixtureTime(toolRevSeq),
+          };
+          // NEWEST FIRST, the order ListToolRevisions returns.
+          toolRevisionsByTool.set(tool.id, [rev, ...existing]);
+          fresh.push(offered.remote);
+        }
+        sendJSON(response, 200, { object: "mcp_discovery", connection_id: id, new_revisions: fresh, unchanged, rejected: [] });
+      }),
+  },
+  { method: "GET", pattern: "/v1/tools", handle: (_req, res) => sendJSON(res, 200, { data: [...toolLineages.values()].map(toolRow), has_more: false }) },
+  {
+    method: "GET",
+    pattern: "/v1/tools/{tool_id}/revisions",
+    handle: (_req, res, { tool_id: id }) => sendJSON(res, 200, { data: (toolRevisionsByTool.get(id) ?? []).map(toolRevisionRow), has_more: false }),
+  },
+  {
+    method: "POST",
+    pattern: "/v1/tools/{tool_id}/revisions/{revision_id}/publish",
+    handle: (request, response, { tool_id: toolID, revision_id: revID }) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        // THE LABEL CEILING IS REAL AND IT IS 300 (extensions.MaxApprovalLabelLen): a longer one is
+        // ErrApprovalLabelTooLong → BadField → 400, NOT a silently truncated label on the approval screen.
+        // Serving it here is what makes the console's publish-refusal region reachable at all.
+        if (typeof body.approval_label === "string" && body.approval_label.length > 300) {
+          return sendProblem(response, 400, "invalid_request", "the request carries an unsupported field, a malformed canonical name, or a widening override");
+        }
+        const rev = (toolRevisionsByTool.get(toolID) ?? []).find((r) => r.id === revID);
+        if (rev === undefined) return sendJSON(response, 200, { id: revID, status: "published" });
+        // A RE-PUBLISH CHANGES NOTHING, which is the guard's whole point: a gate cannot be quietly REMOVED
+        // from an already-published revision by calling this again without the flag (storage/queries/
+        // tools.sql PublishToolRevision — the UPDATE is conditional on published_at IS NULL).
+        if (rev.status !== "published") {
+          rev.status = "published";
+          rev.approval_required = body.approval_required === true;
+          rev.approval_label = typeof body.approval_label === "string" ? body.approval_label : "";
+        }
+        sendJSON(response, 200, { id: revID, status: "published" });
+      }),
+  },
+  { method: "GET", pattern: "/v1/tool-sets", handle: (_req, res) => sendJSON(res, 200, { data: toolSetRevisions.map(toolSetListRow), has_more: false }) },
+  {
+    method: "POST",
+    pattern: "/v1/tool-sets/{set}/revisions",
+    handle: (request, response, { set }) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const pins = Array.isArray(body.tools) ? body.tools : [];
+        // ONLY PUBLISHED REVISIONS MAY BE PINNED — a draft pin is a 409 on the real surface
+        // (extensions.ErrRevisionNotPublished → Conflict), and it is the refusal an operator meets if they
+        // pin before approving. Serving it here is what lets the console's error region be exercised.
+        for (const pin of pins) {
+          const revID = typeof pin?.tool_revision_id === "string" ? pin.tool_revision_id : "";
+          const found = [...toolRevisionsByTool.values()].flat().find((r) => r.id === revID);
+          if (found !== undefined && found.status !== "published") {
+            return sendProblem(response, 409, "conflict", "the tool name is already taken, shadows a built-in, or a pinned revision is not published");
+          }
+        }
+        toolSetSeq += 1;
+        const rev = {
+          id: `tsrev_console_${String(toolSetSeq).padStart(4, "0")}`,
+          set,
+          revision_number: toolSetRevisions.filter((r) => r.set === set).length + 1,
+          digest: `sha256:fixtureset${String(toolSetSeq).padStart(2, "0")}`,
+          status: "draft",
+          tools: pins,
+          created_at: fixtureTime(100 + toolSetSeq),
+        };
+        toolSetRevisions.unshift(rev);
+        sendJSON(response, 201, { id: rev.id, object: "tool_set_revision", set, revision_number: rev.revision_number, digest: rev.digest, status: "draft" });
+      }),
+  },
+  {
+    method: "GET",
+    pattern: "/v1/tool-sets/{set}/revisions/{revision_id}",
+    handle: (_req, res, { set, revision_id: revID }) => {
+      const rev = toolSetRevisions.find((r) => r.id === revID && r.set === set);
+      return sendJSON(
+        res,
+        200,
+        toolSetDetailRow(rev ?? { id: revID, set, revision_number: 1, digest: "sha256:fixturesynthesised", status: "draft", tools: [], created_at: fixtureTime(0) }),
+      );
+    },
+  },
+  {
+    method: "POST",
+    pattern: "/v1/tool-sets/{set}/revisions/{revision_id}/publish",
+    handle: (_req, response, { revision_id: revID }) => {
+      const rev = toolSetRevisions.find((r) => r.id === revID);
+      if (rev !== undefined) rev.status = "published";
+      sendJSON(response, 200, { id: revID, status: "published" });
     },
   },
 

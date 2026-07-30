@@ -28,11 +28,23 @@ import { apiGet, apiSend, RelayError } from "@/lib/api";
 // stopped looking at. With no environments the control is not rendered at all — a refusal with a link, which
 // is the honest shape of "there is nothing to choose".
 //
-// WHAT IS DELIBERATELY ABSENT UNTIL T7: `tool_sets` and `mcp_connections`. The revision body accepts both and
-// this page renders NEITHER, because there is nothing in this deployment to put in them yet — the two read
-// routes that would list a tool revision and a tool set's contents do not exist (plan §3.6 D14), which is
-// T7's whole reason for being. An empty dropdown is a control that cannot be satisfied, so the absence is
-// stated in a sentence instead.
+// `tool_sets` AND `mcp_connections` ARRIVED IN T7, AND ONE HALF OF THE ABSENCE-NOTE THEY REPLACE WAS WRONG.
+// T6 wrote that neither control could exist "because the two read routes that would list a tool revision and
+// a tool set's contents do not exist". The first half held (GET /v1/tools/{id}/revisions was genuinely
+// missing — plan §3.6 D14) but the SECOND did not: GET /v1/tool-sets and GET /v1/mcp-connections have both
+// been mounted since E13 T4, so a set picker was reachable the whole time and the sentence blamed a missing
+// route for a control nobody had written. It is repaired here rather than deleted, because what it got
+// wrong is the more useful half.
+//
+// BOTH ARE PICKERS AND NEITHER IS FREE TEXT, and here that rule is load-bearing rather than tidy: a
+// tool_sets id is NOT reference-checked at create or at publish (automation/agents.go says so, deliberately
+// — "a typo'd/draft/foreign id fails CLOSED"). So a mistyped set id is accepted by every route and then
+// grants nothing, silently, forever. The dropdown offers PUBLISHED set revisions only, for the same reason:
+// a draft pinned here is a revision that will never advertise anything and never say why.
+//
+// ponytail: ONE set and ONE connection per revision. The field is an array and the API takes several; a
+// multi-select is a control nobody has asked for, and the runbook's own example grants one of each. The
+// screen says so. Upgrade path: a checkbox list, when a deployment has two sets worth combining.
 
 interface AgentRow extends Record<string, unknown> {
   id?: string;
@@ -40,6 +52,18 @@ interface AgentRow extends Record<string, unknown> {
 }
 
 interface EnvironmentRow {
+  id?: string;
+  name?: string;
+}
+
+interface ToolSetRow {
+  id?: string;
+  set?: string;
+  revision_number?: number;
+  status?: string;
+}
+
+interface MCPConnectionRow {
   id?: string;
   name?: string;
 }
@@ -68,7 +92,12 @@ export default function AgentsPage() {
   const [tools, setTools] = useState("");
   const [environment, setEnvironment] = useState("");
 
+  const [toolSet, setToolSet] = useState("");
+  const [mcpConnection, setMcpConnection] = useState("");
+
   const [environments, setEnvironments] = useState<EnvironmentRow[]>([]);
+  const [toolSets, setToolSets] = useState<ToolSetRow[]>([]);
+  const [mcpConnections, setMcpConnections] = useState<MCPConnectionRow[]>([]);
   useEffect(() => {
     let live = true;
     apiGet<{ data?: EnvironmentRow[] }>("/environments")
@@ -78,6 +107,20 @@ export default function AgentsPage() {
       .catch(() => {
         // An unreadable list leaves the picker absent, which renders the "create one first" note. An operator
         // who cannot read environments cannot bind one either, so that is the truthful screen.
+      });
+    apiGet<{ data?: ToolSetRow[] }>("/tool-sets")
+      .then((body) => {
+        if (live) setToolSets(body.data ?? []);
+      })
+      .catch(() => {
+        /* same rule: an unreadable list is an absent control with a note, never a text box */
+      });
+    apiGet<{ data?: MCPConnectionRow[] }>("/mcp-connections")
+      .then((body) => {
+        if (live) setMcpConnections(body.data ?? []);
+      })
+      .catch(() => {
+        /* same rule */
       });
     return () => {
       live = false;
@@ -109,6 +152,14 @@ export default function AgentsPage() {
   const environmentOptions = environments
     .filter((e) => typeof e.id === "string" && e.id !== "")
     .map((e) => ({ value: String(e.id), label: `${String(e.name ?? e.id)} (${String(e.id)})` }));
+  // PUBLISHED ONLY. A draft set revision is accepted by every route here and then advertises nothing —
+  // see the header. Offering one would be offering a choice that fails silently.
+  const toolSetOptions = toolSets
+    .filter((s) => typeof s.id === "string" && s.id !== "" && s.status === "published")
+    .map((s) => ({ value: String(s.id), label: `${String(s.set ?? "?")} #${String(s.revision_number ?? "?")} (${String(s.id)})` }));
+  const mcpConnectionOptions = mcpConnections
+    .filter((c) => typeof c.id === "string" && c.id !== "")
+    .map((c) => ({ value: String(c.id), label: `${String(c.name ?? c.id)} (${String(c.id)})` }));
 
   return (
     <>
@@ -190,7 +241,7 @@ export default function AgentsPage() {
         }
         createPath={selected === "" ? "" : `/agents/${encodeURIComponent(selected)}/revisions`}
         listPath={selected === "" ? "" : `/agents/${encodeURIComponent(selected)}/revisions`}
-        publishPath={(revisionID) => `/agents/${encodeURIComponent(selected)}/revisions/${encodeURIComponent(revisionID)}/publish`}
+        publishPath={(rev) => `/agents/${encodeURIComponent(selected)}/revisions/${encodeURIComponent(String(rev.id ?? ""))}/publish`}
         emptyNote={
           <>
             <strong>Choose an agent above first.</strong> A revision belongs to one lineage, so there is
@@ -248,6 +299,41 @@ export default function AgentsPage() {
               </>
             ),
           },
+          {
+            name: "revision-tool-set",
+            label: "Tool set",
+            kind: "select",
+            value: toolSet,
+            onChange: setToolSet,
+            options: toolSetOptions,
+            placeholder: "None — this agent reaches no registered tool",
+            testId: "revision-tool-set-select",
+            hint: "The GRANT: a published set revision, pinning exact tool revisions. Published sets only — a draft pinned here would be accepted and then advertise nothing.",
+            emptyNote: (
+              <>
+                <strong>Publish a tool set first.</strong> Register an MCP connection, approve its tools and
+                pin them into a set on the <a href="/tools">Tools</a> page. An id cannot be typed here on
+                purpose: a wrong one is accepted by every route and then grants nothing, silently.
+              </>
+            ),
+          },
+          {
+            name: "revision-mcp-connection",
+            label: "MCP connection",
+            kind: "select",
+            value: mcpConnection,
+            onChange: setMcpConnection,
+            options: mcpConnectionOptions,
+            placeholder: "None — this agent reaches no MCP server",
+            testId: "revision-mcp-connection-select",
+            hint: "The CEILING, not the grant: a run may only reach connections its revision names. An MCP tool needs BOTH this and the tool set above — each one missing fails quietly, and differently.",
+            emptyNote: (
+              <>
+                <strong>Register an MCP connection first.</strong> <a href="/tools">Go to Tools</a>. Without
+                one an MCP tool resolves to nothing even when it is advertised.
+              </>
+            ),
+          },
         ]}
         buildBody={() => ({
           // Only what was FILLED IN. An empty string on `model` would pin the revision to a model named "",
@@ -256,6 +342,11 @@ export default function AgentsPage() {
           ...(instructions === "" ? {} : { instructions }),
           ...(tools === "" ? {} : { tools: csv(tools) }),
           ...(environment === "" ? {} : { environment }),
+          // One-element arrays: the field is a list and this control offers one. An empty list and an
+          // ABSENT field are not the same thing here — nil means "no ceiling declared" — so neither is sent
+          // when nothing was chosen.
+          ...(toolSet === "" ? {} : { tool_sets: [toolSet] }),
+          ...(mcpConnection === "" ? {} : { mcp_connections: [mcpConnection] }),
         })}
         columns={[
           { header: "Model", render: (rev) => String(rev.model ?? "— inherited") },
@@ -266,15 +357,31 @@ export default function AgentsPage() {
             ),
           },
           { header: "Tools", render: (rev) => (Array.isArray(rev.tools) ? rev.tools.join(", ") : "— inherited") },
+          {
+            header: "Tool sets",
+            render: (rev) => (
+              <span data-testid={`revision-tool-sets-${String(rev.id ?? "")}`}>
+                {Array.isArray(rev.tool_sets) && rev.tool_sets.length > 0 ? rev.tool_sets.join(", ") : "— none"}
+              </span>
+            ),
+          },
+          {
+            header: "MCP connections",
+            render: (rev) => (
+              <span data-testid={`revision-mcp-connections-${String(rev.id ?? "")}`}>
+                {Array.isArray(rev.mcp_connections) && rev.mcp_connections.length > 0 ? rev.mcp_connections.join(", ") : "— none"}
+              </span>
+            ),
+          },
         ]}
       />
 
       <p className="muted" data-testid="revision-t7-note">
-        <strong>This form does not offer tool sets and MCP connections yet</strong>, and that is an absence
-        rather than an oversight: the revision body accepts both, but nothing in this deployment can list a
-        tool revision or a tool set&apos;s contents, so there would be nothing to choose from. An empty
-        dropdown is a control that cannot be satisfied. Until those read routes exist, a revision&apos;s
-        external capability ceiling is set outside this console.
+        <strong>Both external fields read back, and that is newer than it looks.</strong> The MCP connection
+        rider has been readable since E22; the tool set — the half that actually GRANTS the tools — was
+        write-only until E25 T7, so a revision could name a set nobody could confirm. Each one&apos;s absence
+        fails quietly and differently: without the set the tool is never advertised, without the connection
+        it resolves to nothing even when it is.
       </p>
     </>
   );

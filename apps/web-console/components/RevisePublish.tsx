@@ -19,6 +19,23 @@ import { apiGet, apiSend, RelayError } from "@/lib/api";
 // approval_required toggle and `columns` carrying a digest. It needs no new prop, and if it does, that is a
 // prop the caller was going to hand-roll anyway.
 //
+// T7 NEEDED THREE, AND EACH ONE IS A PROP THE CALLER WOULD HAVE HAND-ROLLED — which is the sentence above
+// being cashed rather than contradicted. They are generalisations of this component, not additions to it:
+//
+//   1. `publishPath` TAKES THE REVISION, not its id. A tool-set revision's publish route names the SET
+//      (/v1/tool-sets/{set}/revisions/{id}/publish) and the list shows every set in the project, so the
+//      path cannot be closed over — it has to be read off the row. (Measured while writing this: the
+//      publish HANDLER ignores the {set} segment and keys on the revision id alone, so closing over one
+//      set's name would have WORKED and quietly published another set's draft under the wrong path. A
+//      caller that happens to work is worse than one that reads correctly.)
+//   2. `publishBody` — an OPTIONAL body on the publish. E23 T5 made publishing a tool revision carry the
+//      operator's approval declaration, and a publish with no body is the shipped bodyless publish, so this
+//      is `undefined` for both agent lineages and unchanged for them.
+//   3. `createPath === ""` NOW MEANS "no create form here", with the list and its publish controls still
+//      rendered. A discovered MCP tool revision is created by DISCOVERY, not by a form: offering an
+//      operator a hand-written revision box on the approval screen would be offering the one thing that
+//      screen is not for. `listPath === ""` still means "no parent selected" and renders `emptyNote`.
+//
 // THE PUBLISH REFUSAL IS THE SERVER'S OWN SENTENCE, not a category. api/agents.go answers a revision naming
 // an environment this organization does not have with a 400 (store/agents.go turns
 // automation.ErrEnvironmentNotFound into BadField, deliberately NOT a 404 — the revision id in the path is
@@ -45,32 +62,38 @@ export function RevisePublish({
   title,
   testId,
   note,
-  fields,
+  fields = [],
   buildBody,
   onCreated,
   createPath,
   listPath,
   publishPath,
+  publishBody,
   columns,
   emptyNote,
+  listNote,
   submitLabel = "Create draft revision",
 }: {
   title: string;
   testId: string;
   note?: ReactNode;
   /** The draft's own fields. The caller owns their state; this component owns the form's discipline. */
-  fields: FormField[];
+  fields?: FormField[];
   /** The create body, built by the caller because only the caller knows what its fields mean. */
-  buildBody: () => Record<string, unknown>;
+  buildBody?: () => Record<string, unknown>;
   /** Called after a successful create with the id the server minted, so a page can clear its inputs. */
   onCreated?: (revision: Revision) => void;
-  /** POST target for a draft. "" means there is no parent selected — see `emptyNote`. */
+  /** POST target for a draft. "" means THIS LINEAGE IS NOT CREATED FROM HERE — no form is rendered. */
   createPath: string;
-  /** GET target for the lineage. "" means the same. */
+  /** GET target for the lineage. "" means there is no parent selected — see `emptyNote`. */
   listPath: string;
-  /** POST target for a publish, from the revision's own id. */
-  publishPath: (revisionID: string) => string;
+  /** POST target for a publish, read off the ROW (a set revision's path names its set). */
+  publishPath: (revision: Revision) => string;
+  /** An OPTIONAL publish body, per row. `undefined` is the shipped bodyless publish. */
+  publishBody?: (revision: Revision) => Record<string, unknown> | undefined;
   columns: RevisionColumn[];
+  /** Extra prose above the revisions table, for what is true of THIS lineage and not of every one. */
+  listNote?: ReactNode;
   /** What stands in place of the whole surface when there is no parent to revise. */
   emptyNote: ReactNode;
   submitLabel?: string;
@@ -108,6 +131,12 @@ export function RevisePublish({
   }, []);
 
   useEffect(() => {
+    // CLEARED FIRST, and this is a correctness fix rather than a flicker (E25 T7). `load` replaces the rows
+    // when the fetch returns, so switching to another lineage left the PREVIOUS one's revisions on screen
+    // under the new one's heading until the response landed — and a publish control rendered against the
+    // wrong lineage is a click that publishes something the operator was not looking at. It was found by a
+    // spec that switched tools and read the row it was already showing. "Loading…" is the honest state.
+    setRevisions(null);
     void load(listPath);
   }, [listPath, load]);
 
@@ -116,7 +145,7 @@ export function RevisePublish({
     setFormError("");
     setStatus("");
     try {
-      const body = await apiSend<Revision>("POST", createPath, buildBody());
+      const body = await apiSend<Revision>("POST", createPath, buildBody?.() ?? {});
       setStatusID(String(body.id ?? ""));
       setStatus(`Revision ${String(body.id ?? "?")} created as a draft. Publish it before a run can be pinned to it.`);
       onCreated?.(body);
@@ -128,11 +157,12 @@ export function RevisePublish({
     }
   }
 
-  async function publish(revisionID: string) {
+  async function publish(revision: Revision) {
+    const revisionID = String(revision.id ?? "");
     setFormError("");
     setStatus("");
     try {
-      await apiSend<Revision>("POST", publishPath(revisionID));
+      await apiSend<Revision>("POST", publishPath(revision), publishBody?.(revision));
       setStatusID(revisionID);
       setStatus(`Revision ${revisionID} is published. Publishing cannot be undone — supersede it with a new revision instead.`);
       await load(listPath);
@@ -143,7 +173,7 @@ export function RevisePublish({
     }
   }
 
-  if (listPath === "" || createPath === "") {
+  if (listPath === "") {
     return (
       <section className="panel" data-testid={`${testId}-none`} aria-labelledby={`${testId}-none-h`}>
         <h2 id={`${testId}-none-h`}>{title}</h2>
@@ -154,17 +184,32 @@ export function RevisePublish({
 
   return (
     <>
-      <ResourceForm
-        title={title}
-        testId={testId}
-        note={note}
-        fields={fields}
-        submitLabel={submitLabel}
-        submitTestId={`${testId}-create-button`}
-        submitting={busy}
-        error={formError}
-        onSubmit={create}
-      />
+      {createPath === "" ? null : (
+        <ResourceForm
+          title={title}
+          testId={testId}
+          note={note}
+          fields={fields}
+          submitLabel={submitLabel}
+          submitTestId={`${testId}-create-button`}
+          submitting={busy}
+          error={formError}
+          onSubmit={create}
+        />
+      )}
+
+      {/* A REFUSAL NEEDS SOMEWHERE TO LAND WHEN THERE IS NO FORM. `formError` is where a failed PUBLISH goes,
+          and with `createPath === ""` the ResourceForm that used to render it is not on the page — so a
+          server's 400 about a draft pin or a too-long approval label would have been swallowed entirely.
+          Same role="alert" region, same words, rendered here instead. */}
+      {createPath !== "" || formError === "" ? null : (
+        <p role="alert" className="form-error" data-testid={`${testId}-error`}>
+          <span className="glyph" aria-hidden="true">
+            ✖
+          </span>{" "}
+          {formError}
+        </p>
+      )}
 
       {/* The status lives OUTSIDE the form, because a publish is not a form submission and its sentence has
           to survive the form's own state. `data-revision-id` is the id in machine-readable form. */}
@@ -184,6 +229,7 @@ export function RevisePublish({
           this surface — and <strong>publishing is permanent</strong>: a published revision can be superseded
           but never un-published, which is what makes a run pinned to one reproducible.
         </p>
+        {listNote ? <p className="muted">{listNote}</p> : null}
         {listError !== "" ? (
           <p role="alert" data-testid={`panel-${testId}s-error`}>
             Error: {listError}
@@ -231,7 +277,7 @@ export function RevisePublish({
                       {published ? (
                         <span>— already published</span>
                       ) : (
-                        <button type="button" data-testid={`publish-${id}`} onClick={() => void publish(id)}>
+                        <button type="button" data-testid={`publish-${id}`} onClick={() => void publish(rev)}>
                           Publish {id}
                         </button>
                       )}
