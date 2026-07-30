@@ -76,6 +76,9 @@ func TestEverySlackDefaultToolResolves(t *testing.T) {
 		FileTool(),
 		ShellTool(),
 		CommitTool(),
+		// And the fourth (E26 T2): the shell tool's `background` parameter can start a task, so the tool that
+		// stops one is granted under the same condition.
+		BackgroundKillTool(),
 		// And the publish two, which E22 T4's bring-up binds under the same condition. They are in the SAME
 		// broker for the same reason — main.go builds one (main.go:459-467), and a guard that gave each list
 		// its own hand-picked set would prove less than it appears to.

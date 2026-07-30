@@ -522,6 +522,7 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			toolbroker.ConformanceMathAdd(),
 			tools.FileTool(),
 			tools.ShellTool(),
+			tools.BackgroundKillTool(), // E26 T2: stop a task the shell tool's `background` parameter started
 			tools.CommitTool(),
 			tools.PushTool(),
 			tools.PullRequestTool(),

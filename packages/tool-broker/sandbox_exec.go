@@ -20,6 +20,12 @@ type ExecEnv struct {
 	WorkspaceRoot string
 	ReadOnly      bool
 	Shell         ShellRunner
+	// Background is the orchestration seam a `background: true` shell call and the background kill tool
+	// reach through (E26 T2). It is SEPARATE from Shell rather than a capability of it for the reason
+	// BackgroundRunner is separate from ShellRunner: one answers with a result and the other with a
+	// handle. Nil on an attempt with no background orchestration wired — the background parameter is then
+	// refused, never silently downgraded to a synchronous run.
+	Background BackgroundTasks
 	// CallID and Fence are the per-call identity Execute stamps on a COPY of the env before invoking a
 	// tool (never on the caller's template). A remote_http tool (E12 T4) keys its invoke Idempotency-Key
 	// on CallID (a duplicate retry settles one server-side execution) and stamps Fence on the durable

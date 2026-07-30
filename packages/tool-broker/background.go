@@ -131,3 +131,38 @@ type BackgroundRunner interface {
 	Probe(ctx context.Context, handle Handle) (BackgroundStatus, error)
 	Kill(ctx context.Context, handle Handle) error
 }
+
+// BackgroundTicket is what a background start hands back TO THE MODEL, and it is three fields because a
+// fourth would be the output.
+//
+// THAT IS A CONTEXT DECISION AND IT IS THE POINT OF THE FEATURE. A model backgrounds a five-minute build
+// precisely so it does not have to hold that build's output; returning the output anyway would spend the
+// owner's money on the thing the call was made to avoid. Seeing it takes an explicit read of OutputPath —
+// and no new tool for that read, because the output is a file and palai.workspace.file already reads
+// files. The harness this replicates reached the same conclusion and deprecated its own TaskOutput tool
+// "in favor of Read on the task's output file path" (E26 §3.5 P2).
+type BackgroundTicket struct {
+	// TaskID names the task in every later call about it — the kill tool's only argument.
+	TaskID string
+	// OutputPath is ALLOCATION-RELATIVE, so it is directly the `path` argument of a file read and it
+	// discloses no host path (spec §29.9).
+	OutputPath string
+	// State is what the operating system said about the process a moment after it started, not what we
+	// hoped: a command that has already failed reports `exited` rather than a comfortable `running`.
+	State BackgroundState
+}
+
+// BackgroundTasks is the ORCHESTRATION seam a tool reaches background execution through, and it sits one
+// layer above BackgroundRunner on purpose. A runner deals in handles, process groups and container ids;
+// a tool deals in a task id and a path. Everything between the two — minting the id, deriving the log
+// path, refusing the call when the deployment has switched the feature off, and knowing which run a task
+// belongs to — is durable orchestration state, and the tool has no business holding any of it.
+//
+// It is carried on ExecEnv beside Shell/Tasks/Publications, the same way every other control-plane
+// capability reaches a built-in tool. Nil on an attempt with nothing wired, and the tool then REFUSES
+// rather than running the command in the foreground: a model that asked for a background task and got a
+// blocking call is blocked in exactly the way the feature exists to prevent.
+type BackgroundTasks interface {
+	StartBackground(ctx context.Context, cmd ShellCommand) (BackgroundTicket, error)
+	KillBackground(ctx context.Context, taskID string) (BackgroundTicket, error)
+}

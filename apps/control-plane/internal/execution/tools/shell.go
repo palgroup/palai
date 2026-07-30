@@ -28,6 +28,12 @@ func ShellTool() toolbroker.Tool {
 			"properties": map[string]any{
 				"argv":  map[string]any{"description": "command and arguments as a JSON array of strings"},
 				"shell": map[string]any{"description": "run through a shell for pipelines/redirection (default false)"},
+				// BACKGROUND IS A PARAMETER, NOT A SECOND TOOL, and that is taken verbatim from the harness
+				// this replicates: "Claude can set run_in_background: true to start the command as a background
+				// task and continue working while it runs" (E26 §3.5 P1). One tool, one extra field, and the
+				// model chooses per call — a separate `shell_background` tool would have made the choice a
+				// question of which tool to reach for rather than one of how long the command takes.
+				"background": map[string]any{"description": "start the command as a background task and return immediately with {task_id, output_path, status} instead of the command's output; read output_path with palai.workspace.file to see how it is going, and palai.workspace.background_kill to stop it (default false)"},
 			},
 			"required": []any{"argv"},
 		},
@@ -63,7 +69,7 @@ func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 		}
 	}
 
-	res, err := env.Shell.Run(ctx, toolbroker.ShellCommand{
+	cmd := toolbroker.ShellCommand{
 		Argv:          argv,
 		WorkspaceRoot: env.WorkspaceRoot,
 		ReadOnly:      env.ReadOnly,
@@ -72,7 +78,38 @@ func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 		// this function must not be able to put a value into `findings`, into an error message or into the
 		// returned map, all three of which are committed to the tool ledger.
 		Env: env.EnvValues,
-	})
+	}
+
+	// THE BACKGROUND BRANCH (E26 T2). It is the LAST thing this function decides and the whole synchronous
+	// path below it is untouched, so a call that never names the parameter runs the same runner with the
+	// same command and returns the same fields it always did.
+	//
+	// Note where this sits: inside Exec, which dispatchTool reaches only AFTER the approval gate. A tool a
+	// deployment declared approval_required cannot be spawned by adding a parameter — the human is asked
+	// first, and nothing has started while they think about it.
+	if background, _ := args["background"].(bool); background {
+		if env.Background == nil {
+			return nil, fmt.Errorf("shell tool: %w", toolbroker.ErrBackgroundUnsupported)
+		}
+		ticket, err := env.Background.StartBackground(ctx, cmd)
+		if err != nil {
+			return nil, fmt.Errorf("shell tool: %w", err)
+		}
+		out := map[string]any{
+			"task_id":     ticket.TaskID,
+			"output_path": ticket.OutputPath,
+			"status":      string(ticket.State),
+		}
+		// The egress findings ride along for the same reason they ride the synchronous result: they are the
+		// audit record that a denied destination was NAMED, and a command does not stop naming it by being
+		// backgrounded.
+		if len(findings) > 0 {
+			out["egress_findings"] = findings
+		}
+		return out, nil
+	}
+
+	res, err := env.Shell.Run(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
