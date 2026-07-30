@@ -166,8 +166,8 @@ func (s *Store) SweepExpiredCapacityParks(ctx context.Context, ttl time.Duration
 		return 0, fmt.Errorf("select expired capacity parks: %w", err)
 	}
 	type parked struct {
-		tenant             Tenant
-		runID, responseID  string
+		tenant            Tenant
+		runID, responseID string
 	}
 	var expired []parked
 	for rows.Next() {

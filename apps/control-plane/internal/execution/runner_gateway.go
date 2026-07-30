@@ -781,7 +781,7 @@ func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 	// it is deliberately not treated as re-proving anything the enrolment proved: it advances
 	// last_seen_at and the recorded expiry, and it does not touch which key issued the identity (T3's
 	// binding). A runner the registry does not know keeps renewing exactly as before.
-	g.recordSeen(r.Context(), dns, certNotAfter(certDER)) //nolint:errcheck // inventory write; see recordSeen
+	g.recordSeen(r.Context(), dns, certNotAfter(certDER))
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(enrollResponse{
 		Certificate: base64.StdEncoding.EncodeToString(certDER),
@@ -1268,7 +1268,7 @@ func (g *RunnerGateway) recordHeartbeat(pr *pendingRunner) {
 	// at all. Bounded so a stalled database cannot hold the reaper's pass open.
 	ctx, cancel := context.WithTimeout(context.Background(), heartbeatTimeout)
 	defer cancel()
-	g.recordSeen(ctx, pr.dns, time.Time{}) //nolint:errcheck // inventory write; see recordSeen
+	g.recordSeen(ctx, pr.dns, time.Time{})
 }
 
 // poolQueue is ONE pool's rendezvous: the machines parked in it with nothing to do, and the attempts
