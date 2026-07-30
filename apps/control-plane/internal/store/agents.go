@@ -37,6 +37,10 @@ func (s *Store) CreateAgentRevision(ctx context.Context, scope middleware.Scope,
 		return api.AgentResult{BadField: true}, nil
 	case errors.Is(err, automation.ErrProfileNotFound):
 		return api.AgentResult{NotFound: true}, nil
+	case errors.Is(err, automation.ErrEnvironmentNotFound):
+		// 400, not 404: the PROFILE in the path exists, so a 404 would point the caller at the wrong thing.
+		// What is wrong is a field in the body naming an environment this organization does not have (E25 T3).
+		return api.AgentResult{BadField: true}, nil
 	case err != nil:
 		return api.AgentResult{}, err
 	}
@@ -47,6 +51,13 @@ func (s *Store) CreateAgentRevision(ctx context.Context, scope middleware.Scope,
 // idempotent success (200).
 func (s *Store) PublishAgentRevision(ctx context.Context, scope middleware.Scope, revisionID string) (api.AgentResult, error) {
 	_, exists, err := s.agents.PublishRevision(ctx, scope.Organization, scope.Project, revisionID)
+	// A revision naming an environment this organization does not have is REFUSED at publish (E25 T3), and
+	// as a 400 rather than a 404: the revision id in the path is real, so pointing the caller at a missing
+	// revision would send them looking for the wrong thing. publishResult would otherwise turn this into a
+	// 500 — an unrecognised error is the one outcome it has no branch for.
+	if errors.Is(err, automation.ErrEnvironmentNotFound) {
+		return api.AgentResult{BadField: true}, nil
+	}
 	return publishResult(revisionID, exists, err)
 }
 
@@ -126,7 +137,10 @@ func (s *Store) ListAgentRevisions(ctx context.Context, scope middleware.Scope, 
 			"id": it.ID, "object": "agent_revision", "agent_id": profileID,
 			"revision_number": it.RevisionNumber, "model": it.Model, "tools": it.Tools,
 			"mcp_connections": it.MCPConnections,
-			"instructions":    it.Instructions, "status": status,
+			// The environment id (E25 T3). Additive, ID only, and it is what makes the console able to show
+			// which environment an agent runs under — a field the API lets you write needs a read path.
+			"environment":  it.Environment,
+			"instructions": it.Instructions, "status": status,
 		})
 		rows = append(rows, api.ListRow{ID: it.ID, CreatedAt: it.CreatedAt, Body: body})
 	}
@@ -139,6 +153,11 @@ func revisionBody(rev automation.Revision, object, parent string) []byte {
 	m := map[string]any{
 		"id": rev.ID, "object": object, "revision_number": rev.RevisionNumber,
 		"model": rev.Model, "tools": rev.Tools, "instructions": rev.Instructions, "status": "draft",
+	}
+	// The environment id, on an AGENT revision only (E25 T3). A run template has no environment column:
+	// migration 000046 bonds an environment to an AGENT, because a template is profile-free.
+	if object != "run_template_revision" {
+		m["environment"] = rev.Environment
 	}
 	if object == "run_template_revision" {
 		m["template"] = parent

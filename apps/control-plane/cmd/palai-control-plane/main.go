@@ -216,6 +216,10 @@ func main() {
 	}
 	if secretStore != nil {
 		routerOpts = append(routerOpts, api.WithSecretRefs(secretStore))
+		// The environment surface (E25 T3) rides the SAME condition and the SAME store, and the coupling is
+		// the design: an environment value IS a secret_refs version, so an environment surface without a
+		// master key could list names it can never fill. One `if`, two families, no way to mount half of it.
+		routerOpts = append(routerOpts, api.WithEnvironments(secretStore))
 	}
 	// The A2A 1.0 server projection (E17 T2, spec §38): the DB-backed interface + task store over the same
 	// spine pool, wired behind the api.Admitter so an inbound A2A message admits through the SAME §20.9 path a
@@ -624,6 +628,13 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 		// CP≠runner deploy (control plane and runner on different hosts, not sharing a filesystem) needs a
 		// runner-relay seam — the CP-side tool dispatch would ship the file/shell op to the runner that
 		// holds the mount — a NAMED FUTURE split-deploy hardening, not built here.
+		// The environment resolver (E25 T3). Wired UNCONDITIONALLY and outside the workspace branch, unlike
+		// the connection resolver: an environment reaches the agent through the SHELL TOOL, and a shell tool
+		// call can happen on any run whose revision names an environment. Left nil, such a run would fail its
+		// tool call with "no secret resolver is wired" — the fail-closed direction, but a confusing message
+		// for a deployment that has a master key. With no master key configured, dbSecretStore is nil and the
+		// resolver reports an honest miss instead.
+		orch.SetEnvironmentSecrets(environmentValueSecret)
 		if root := os.Getenv("PALAI_WORKSPACE_ROOT"); root != "" {
 			orch.SetWorkspaceProvisioner(root, repositoryBrokerFromEnv())
 			// A binding that names a connection_ref clones under its own tenant's credential (E13 T9);
@@ -933,6 +944,34 @@ func repositoryConnectionSecret(org, ref string) ([]byte, error) {
 		// causes and must not assert the wrong one: an operator reading "unprovisioned" during a Postgres
 		// blip would go hunting for a ref that is in fact present.
 		return nil, fmt.Errorf("repository connection %q did not resolve under org %q: no such secret ref, or the secret store was unreachable (see the secret-store log)", ref, org)
+	}
+	return v, nil
+}
+
+// environmentValueSecret bridges an ENVIRONMENT key's derived secret name to its value at exec time (E25
+// T3). It is the fifth sibling of the webhook/inbound/remote-tool/repository resolvers and, like the
+// repository one, DB-ONLY: the derived name `env:<environment_id>:<key>` is minted by this feature and has
+// no pre-existing env-file bridge to stay compatible with.
+//
+// A MISS IS AN ERROR. The write path lands the membership row and the sealed version in ONE transaction,
+// so a named key with no resolvable value means the row was hand-edited or the master key changed. The
+// alternative — an empty string — would run the agent's command anonymously and report success, which is
+// the failure this resolver exists to prevent.
+//
+// The org is server-minted from the RUN, never from anything the model or the engine said, so the store
+// scopes the read to it and RLS denies any foreign row. The error names the ref and never the value.
+func environmentValueSecret(org, ref string) ([]byte, error) {
+	if org == "" || ref == "" {
+		return nil, errors.New("empty environment org/ref")
+	}
+	v, ok, err := dbSecret(org, ref)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		// dbSecret flattens a transient store failure into a miss (logged there), so this covers two causes
+		// and must not assert the wrong one — the repositoryConnectionSecret precedent, verbatim.
+		return nil, fmt.Errorf("environment value %q did not resolve under org %q: no such secret ref, or the secret store was unreachable (see the secret-store log)", ref, org)
 	}
 	return v, nil
 }

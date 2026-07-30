@@ -69,6 +69,11 @@ type routerConfig struct {
 	approvals ApprovalAPI
 	// runners is the runner registry READ surface (E24 T1); nil => routes unmounted.
 	runners RunnerRegistryAPI
+	// environments is the environment surface (E25 T3); nil ⇒ routes unmounted. It is wired from the SAME
+	// object as secrets, because an environment value IS a secret_refs version — so a stack with no master
+	// key mounts neither family, which is correct: an environment that cannot seal a value is a list of
+	// names.
+	environments EnvironmentAPI
 	// capabilityWorkers records that this binary SERVES the capability-worker gateway (E17 T9) — on its own
 	// listener, not on this router (see WithCapabilityWorkers). It carries no handler because there is
 	// nothing for the router to mount; it exists so discovery derives the claim from the live mount.
@@ -85,6 +90,14 @@ func WithEdgeLimits(e EdgeLimits) RouterOption {
 // caller compiles unchanged, and a stack with no master key leaves it unset so the routes stay unmounted.
 func WithSecretRefs(secrets SecretRefAPI) RouterOption {
 	return func(c *routerConfig) { c.secrets = secrets }
+}
+
+// WithEnvironments mounts the environment surface (E25 T3): the named key→value groups an agent's shell
+// receives. A trailing option for the same reason as WithSecretRefs, and wired from the same store —
+// main.go passes it only when a master key is configured, so a stack without one mounts no route that
+// would have to seal a value it cannot seal.
+func WithEnvironments(environments EnvironmentAPI) RouterOption {
+	return func(c *routerConfig) { c.environments = environments }
 }
 
 // WithUsage mounts the metering surface (E13 Task 6): the durable budget/quota limits and the

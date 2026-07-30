@@ -108,6 +108,7 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 	t.Helper()
 	ctx := context.Background()
 	project, session, response, run, artifact := newID("prj"), newID("ses"), newID("resp"), newID("run"), newID("art")
+	environment := newID("env")
 	stmts := []struct {
 		sql  string
 		args []any
@@ -121,6 +122,19 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 			[]any{run, org, project, session, response}},
 		{`INSERT INTO artifacts (id, organization_id, project_id, run_id, object_key, size_bytes, checksum) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			[]any{artifact, org, project, run, org + "/" + project + "/" + run + "/" + artifact, 12, "sha256:deadbeef"}},
+		// The E25 T3 environment pair (000046). Both are ORG-scoped rather than project-scoped, matching
+		// secret_refs (000031:16), so both are seeded with the org and no project — a mismatch would make the
+		// WHERE-less canary below pass for the wrong reason.
+		//
+		// THEY ARE SEEDED BECAUSE THE CATALOGUE-DRIVEN TESTS ALONE ARE NOT ENOUGH. TestEveryTenantTableIsRow-
+		// LevelSecured and TestConnectionWithoutTenantContextSeesNoTenantRows both walk pg_class, so they cover
+		// a new table the moment it exists — but they can only prove "no rows come back", and a table with no
+		// rows in it satisfies that vacuously. The canary below needs a row in EACH org to have anything to
+		// fail on.
+		{`INSERT INTO environments (id, organization_id, name) VALUES ($1, $2, $3)`,
+			[]any{environment, org, "production"}},
+		{`INSERT INTO environment_values (environment_id, organization_id, key) VALUES ($1, $2, $3)`,
+			[]any{environment, org, "JIRA_TOKEN"}},
 	}
 	for _, stmt := range stmts {
 		if _, err := s.owner.Exec(ctx, stmt.sql, stmt.args...); err != nil {
@@ -155,7 +169,7 @@ func (s *suite) asOrg(t *testing.T, org string, fn func(tx pgx.Tx)) {
 // produce — and the database still returns only the caller's tenant.
 func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 	s := newSuite(t)
-	for _, table := range []string{"runs", "responses", "sessions", "projects", "artifacts"} {
+	for _, table := range []string{"runs", "responses", "sessions", "projects", "artifacts", "environments", "environment_values"} {
 		s.asOrg(t, s.orgA, func(tx pgx.Tx) {
 			var foreign int
 			// The only predicate names the OTHER tenant: the query asks for exactly the rows the

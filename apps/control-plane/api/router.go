@@ -187,6 +187,30 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/secret-refs/{secret_name}/rotate", sh.rotate)
 	}
 
+	// The ENVIRONMENT surface (E25 T3, migration 000046): a named group of key→value pairs an agent's
+	// shell receives at exec time. Five routes, all `provision`-gated, all in the ProvisionResult
+	// envelope. Mounted via WithEnvironments beside WithSecretRefs and from the same store, because an
+	// environment value IS a secret_refs version under the derived name `env:<environment_id>:<key>` —
+	// there is no second table of ciphertext and no second master key.
+	//
+	// THE READ ROUTE CARRIES KEY NAMES, VERSIONS AND UPDATE TIMES, AND NO VALUE. That is not a property of
+	// this block; it is a property of there being no query that reads one (guarded by
+	// storage/ciphertext_sweep_test.go) and no view field that could carry one (guarded by
+	// internal/identity/environments_view_test.go). The value arrives only in a POST BODY, never in a path
+	// segment, so it cannot land in an access log or a browser history entry.
+	//
+	// The DELETE removes the BINDING between an environment and a key, never the stored bytes: secret_refs
+	// grants no DELETE and re-asserts that REVOKE on every boot, so the versions are retained for audit
+	// with nothing naming them. The response body says that in words.
+	if cfg.environments != nil {
+		eh := &environmentHandler{environments: cfg.environments}
+		mux.HandleFunc("POST /v1/environments", eh.create)
+		mux.HandleFunc("GET /v1/environments", eh.list)
+		mux.HandleFunc("GET /v1/environments/{environment_id}", eh.get)
+		mux.HandleFunc("POST /v1/environments/{environment_id}/values", eh.putValue)
+		mux.HandleFunc("DELETE /v1/environments/{environment_id}/values/{environment_key}", eh.deleteValue)
+	}
+
 	// The metering surface (spec §43, E13 Task 6, BIL-001/BIL-003/QUO-001): the durable budget/quota
 	// limits admission enforces, and the tenant's own view of what has been settled. Setting a limit is an
 	// administrative act gated on the `provision` capability; reading usage is not (a tenant must be able
