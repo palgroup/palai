@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "@playwright/test";
 
-import { CONSOLE_PASSWORD, NEXT_PORT, UNCONFIGURED_PORT, UPSTREAM } from "./constants";
+import { CONSOLE_PASSWORD, NEXT_PORT, UNCONFIGURED_PORT, UPSTREAM, WCAG_TAGS } from "./constants";
 import { announceProfile, sessionHeaders, signIn, signInViaForm } from "./profile";
 
 // CON-001: THE CONSOLE ASKS FOR AN IDENTITY, AND DOES NOT OPEN WITHOUT A PASSWORD.
@@ -208,10 +208,12 @@ test("the login page is axe-clean and operable with the keyboard alone", async (
   await page.goto("/login");
   await expect(page.getByTestId("login-form")).toBeVisible();
 
-  // The same rule set the rest of the console is held to today (a11y.spec.ts). WCAG 2.1/2.2 tags are T2's
-  // step and are expected to find pre-existing violations across every page, so adding them here would mix
-  // T1's surface with that measurement.
-  const clean = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
+  // The same rule set the rest of the console is held to (tests/constants.ts WCAG_TAGS). E25 T2 widened it to
+  // include the WCAG 2.1/2.2 tags and this form was re-measured under them: it found NOTHING here, on a page
+  // whose criteria (3.3.8 Accessible Authentication, 3.3.7 Redundant Entry) are precisely the 2.2 additions —
+  // and the reason is measured in a11y.spec.ts rather than assumed, because widening a tag set adds only the
+  // three axe rules that carry those tags, none of which a single-field login form can violate.
+  const clean = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
   expect(clean.violations, JSON.stringify(clean.violations, null, 2)).toEqual([]);
 
   // The field is a real password field with the token WCAG 2.2's 3.3.8 Accessible Authentication needs: a
@@ -234,6 +236,6 @@ test("the login page is axe-clean and operable with the keyboard alone", async (
 
   // The error state is also axe-clean — a live region added at runtime is exactly where a form's a11y
   // usually breaks.
-  const withError = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
+  const withError = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
   expect(withError.violations, JSON.stringify(withError.violations, null, 2)).toEqual([]);
 });

@@ -94,6 +94,15 @@ export default function AdminPage() {
         ]}
       />
 
+      {/* The one PAGINATED collection on this surface: api/pagination.go serves agents through renderPage, so
+          this panel is where truncation is visible rather than assumed (E25 T2, plan §3.6 D18). */}
+      <Panel
+        title="Agents"
+        testId="panel-agents"
+        fetchPath="/agents"
+        columns={[{ header: "ID", render: (r) => String(r.id ?? "") }]}
+      />
+
       <AgentDiff />
     </>
   );

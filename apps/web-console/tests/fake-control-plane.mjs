@@ -75,6 +75,44 @@ function page(data) {
   return { data, has_more: false, next_cursor: null, previous_cursor: null };
 }
 
+// PAGE_LIMIT mirrors the real api/pagination.go `defaultPageLimit = 20`, and it is the whole reason the
+// agents collection below holds TWENTY-ONE rows: the twenty-first row is the one the console used to drop
+// silently, and a fixture that serves twenty can never demonstrate that.
+const PAGE_LIMIT = 20;
+
+// pageSlice serves ONE page of rows the way the real surface does (api/pagination.go renderPage): has_more
+// is true exactly when rows remain, next_cursor is minted only then, and `previous_cursor` is present-and-
+// null — which is the envelope divergence DIV-SHP-004/005 records and which the console must therefore never
+// depend on. A `?before=` is REFUSED with a 400, exactly as beginList does (pagination.go:179), so the
+// fixture cannot teach the console a backward-pagination contract the real API rejects.
+//
+// The cursor is `cur_<offset>`: opaque enough that the console must carry it rather than compute it, and
+// deterministic enough to read in a failure message. The real cursor is an HMAC'd keyset position; nothing
+// in the console may assume either shape.
+function pageSlice(rows, url, response) {
+  if (url.searchParams.get("before") !== null) {
+    sendProblem(response, 400, "invalid_request");
+    return;
+  }
+  const after = url.searchParams.get("after");
+  const start = after === null ? 0 : Number(after.replace("cur_", ""));
+  if (!Number.isInteger(start) || start < 0) {
+    sendProblem(response, 400, "invalid_cursor");
+    return;
+  }
+  const slice = rows.slice(start, start + PAGE_LIMIT);
+  const hasMore = start + PAGE_LIMIT < rows.length;
+  sendJSON(response, 200, {
+    data: slice,
+    has_more: hasMore,
+    next_cursor: hasMore ? `cur_${start + PAGE_LIMIT}` : null,
+    previous_cursor: null,
+  });
+}
+
+// TWENTY-ONE agents: one more than a page. See PAGE_LIMIT.
+const AGENTS = Array.from({ length: 21 }, (_, i) => ({ id: `agt_${String(i + 1).padStart(2, "0")}`, object: "agent" }));
+
 // The static admin fixtures — the §47.1 surface. Secret-ref rows are metadata only (name/version); a
 // connection carries a secret REF name, never a value; an api-key row is metadata only.
 const ADMIN = {
@@ -84,8 +122,12 @@ const ADMIN = {
   "model-connections": listView([{ id: "mc_1", object: "model_connection", provider: "fake", secret_ref: "provider-key" }]),
   "model-routes": listView([{ id: "mr_1", object: "model_route", name: "default" }]),
   "secret-refs": listView([{ name: "provider-key", version: 2, object: "secret_ref" }]),
-  "knowledge-bases": listView([{ id: "kb_1", object: "knowledge_base", display_name: "Docs KB" }]),
-  agents: page([{ id: "agt_1", object: "agent" }]),
+  // The knowledge-base row carries the field names the REAL projection carries — `name`, not `display_name`,
+  // plus `created_at` (knowledge/views.go knowledgeBaseView; embedding_route and active_index_revision_id are
+  // omitempty and absent on a freshly created base). It said `display_name` until E25 T2, which nothing had
+  // ever caught because the real collection is EMPTY on a fresh stack and the conformance sweep skips an item
+  // comparison when either side has no row. T2's seed gives the real side a row, so this now has to be right.
+  "knowledge-bases": listView([{ id: "kb_1", object: "knowledge_base", name: "Docs KB", created_at: "2026-07-24T00:00:00Z" }]),
 };
 const AGENT_REVISIONS = page([
   { id: "agrev_2", object: "agent_revision", model: "fake", tools: ["add", "push"], published: true },
@@ -220,6 +262,9 @@ function streamEvents(sid, rid, runId, request, response) {
 // a collection the real API has never heard of and still look conformant.
 const adminList = (name) => (_req, res) => sendJSON(res, 200, ADMIN[name]);
 
+/** requestURL re-parses a handler's request URL so a paginated route can read ?after= / ?before=. */
+const requestURL = (request) => new URL(request.url ?? "/", `http://127.0.0.1:${PORT}`);
+
 export const ROUTES = [
   { method: "GET", pattern: "/v1/organizations", handle: adminList("organizations") },
   { method: "GET", pattern: "/v1/projects", handle: adminList("projects") },
@@ -228,7 +273,7 @@ export const ROUTES = [
   { method: "GET", pattern: "/v1/model-routes", handle: adminList("model-routes") },
   { method: "GET", pattern: "/v1/secret-refs", handle: adminList("secret-refs") },
   { method: "GET", pattern: "/v1/knowledge-bases", handle: adminList("knowledge-bases") },
-  { method: "GET", pattern: "/v1/agents", handle: adminList("agents") },
+  { method: "GET", pattern: "/v1/agents", handle: (request, response) => pageSlice(AGENTS, requestURL(request), response) },
   { method: "GET", pattern: "/v1/agents/{agent_id}/revisions", handle: (_req, res) => sendJSON(res, 200, AGENT_REVISIONS) },
 
   {
