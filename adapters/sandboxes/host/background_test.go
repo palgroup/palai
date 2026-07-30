@@ -371,6 +371,19 @@ func TestKillingABackgroundTaskTwiceIsKillingItOnce(t *testing.T) {
 	if status.State != toolbroker.BackgroundExited {
 		t.Fatalf("probe state after kill = %q, want exited", status.State)
 	}
+	// A KILLED TASK MUST NOT BE RECORDED AS -1, and it would have been: os.ProcessState.ExitCode()
+	// returns -1 for a signalled process, and -1 is the sentinel this feature's whole design refuses —
+	// exit_code's NULL already means "not known", and a model reads an exit code by comparing it.
+	// 128 + SIGKILL is what a shell reports, what the synchronous host executor reports for the same
+	// event, and what the daemon reports for a SIGKILLed container.
+	if status.ExitCode == nil {
+		t.Fatal("a task this process killed and watched reports no exit code")
+	}
+	if *status.ExitCode != 128+int(syscall.SIGKILL) {
+		t.Fatalf("exit code after kill = %d, want %d (128 + SIGKILL); -1 is the sentinel this column exists "+
+			"to avoid, and it is what ProcessState.ExitCode() returns for a signalled process",
+			*status.ExitCode, 128+int(syscall.SIGKILL))
+	}
 }
 
 // TestTheKillReachesTheWholeProcessGroup keeps the property the synchronous posture's own header calls

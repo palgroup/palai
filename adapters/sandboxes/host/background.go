@@ -151,14 +151,15 @@ func (e *Executor) Start(ctx context.Context, cmd toolbroker.ShellCommand, spec 
 	// and the process both do.
 	go func() {
 		err := c.Wait()
-		code := 0
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			code = exitErr.ExitCode()
-		} else if err != nil {
-			return // Wait itself failed; we know nothing, so we record nothing.
+		switch {
+		case err == nil:
+			exitCodes.Store(handle.Value, 0)
+		case errors.As(err, &exitErr):
+			exitCodes.Store(handle.Value, exitStatus(exitErr))
 		}
-		exitCodes.Store(handle.Value, code)
+		// Any other Wait failure tells us nothing about the command, so nothing is recorded and Probe
+		// reports an exited task with NO exit code — the honest NULL.
 	}()
 
 	return handle, nil
@@ -231,6 +232,22 @@ func (e *Executor) Kill(ctx context.Context, handle toolbroker.Handle) error {
 		return fmt.Errorf("kill background task group %d: %w", pgid, err)
 	}
 	return nil
+}
+
+// exitStatus turns a finished process into the number a shell would report, and it exists because
+// os.ProcessState.ExitCode() returns -1 FOR A SIGNALLED PROCESS — which is precisely the sentinel this
+// whole feature refuses to write. A killed background task must not be recorded as exit_code = -1: a
+// model reads an exit code by comparing it, and -1 compares as "some failure" in a column whose NULL
+// already means "not known".
+//
+// 128 + signal is what a shell reports, what the synchronous host executor reports for the same event,
+// and what the container posture's daemon reports (a SIGKILLed container exits 137). Three paths, one
+// number, so a reaped build reads the same under every posture.
+func exitStatus(exitErr *exec.ExitError) int {
+	if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return 128 + int(status.Signal())
+	}
+	return exitErr.ExitCode()
 }
 
 // errNoSuchProcess reports a pid the operating system does not list. It is a normal answer here, not a
