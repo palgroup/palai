@@ -46,7 +46,24 @@ export default defineConfig({
     baseURL: `http://127.0.0.1:${NEXT_PORT}`,
     trace: "off",
   },
-  projects: [{ name: `chromium-${PROFILE}`, use: { ...devices["Desktop Chrome"] } }],
+  // TWO COLOUR SCHEMES, ONE SPEC SET — and the second one is a HOLE BEING CLOSED, not a nicety.
+  //
+  // There was one project and it named no `colorScheme`. The installed playwright-core@1.51.1 writes its own
+  // default down in its types ("Passing `null` resets emulation to system defaults. Defaults to 'light'."),
+  // so every axe scan this suite has ever run looked at the LIGHT palette — and `app/globals.css` carries a
+  // whole `@media (prefers-color-scheme: dark)` block that redefines the text, border and accent colours.
+  // The dark palette was outside automated accessibility coverage entirely, which is how a 2.63:1 skip link
+  // (white text on the lightened dark-mode accent, first Tab stop on every page) stayed green.
+  //
+  // It runs the WHOLE spec set rather than a named list of the four files that call AxeBuilder today
+  // (a11y, auth, config-journey, secret-never-returns). A hand-maintained list is the same shape as the
+  // hand-written route list lib/routes.ts exists to abolish: the next spec to add a scan would be
+  // light-only and nothing would say so. The cost is honest — the non-visual specs run twice and prove
+  // nothing new the second time — and it is paid in seconds on the fake profile.
+  projects: [
+    { name: `chromium-${PROFILE}`, use: { ...devices["Desktop Chrome"], colorScheme: "light" } },
+    { name: `chromium-${PROFILE}-dark`, use: { ...devices["Desktop Chrome"], colorScheme: "dark" } },
+  ],
   webServer: [
     // The fake upstream, only on the fake profile — the real profile's upstream is a stack this config does
     // not own and must not start, stop or assume.
