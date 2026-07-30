@@ -110,6 +110,7 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 	project, session, response, run, artifact := newID("prj"), newID("ses"), newID("resp"), newID("run"), newID("art")
 	environment := newID("env")
 	tool, toolRevision, setRevision := newID("tool"), newID("trev"), newID("tsrev")
+	toolCall, backgroundTask := newID("call"), newID("bgt")
 	stmts := []struct {
 		sql  string
 		args []any
@@ -155,6 +156,20 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 		{`INSERT INTO tool_set_revisions (id, organization_id, project_id, set_name, revision_number, tool_pins, digest)
 		  VALUES ($1,$2,$3,'jira',1,jsonb_build_array(jsonb_build_object('tool_revision_id',$4::text)),'sha256:tenancyseed')`,
 			[]any{setRevision, org, project, toolRevision}},
+		// The E26 T1 background task (000047), PROJECT-scoped like the tool_calls row it hangs off. It needs
+		// that row first: `UNIQUE (tool_call_id)` makes the FK the identity of the pair, so the seed writes
+		// both rather than pointing at a call that never existed.
+		//
+		// WHAT MAKES THIS CANARY WORTH A ROW rather than only the catalogue sweep: `handle` names a LIVE
+		// OPERATING-SYSTEM OBJECT — a container id, or a `pgid:starttime` on the machine the control plane
+		// runs on. A cross-tenant read of this column would hand one tenant a handle the reaper signals, so
+		// the leak this seed exists to fail on is not a disclosure, it is a kill.
+		{`INSERT INTO tool_calls (id, organization_id, project_id, run_id, name) VALUES ($1,$2,$3,$4,'palai.workspace.shell')`,
+			[]any{toolCall, org, project, run}},
+		{`INSERT INTO background_tasks (id, organization_id, project_id, run_id, session_id, response_id, tool_call_id,
+		    posture, handle, state, output_path)
+		  VALUES ($1,$2,$3,$4,$5,$6,$7,'unsandboxed-host','4242:2026-07-30T12:00:00Z','running','.palai-session/bg/'||$1||'.log')`,
+			[]any{backgroundTask, org, project, run, session, response, toolCall}},
 	}
 	for _, stmt := range stmts {
 		if _, err := s.owner.Exec(ctx, stmt.sql, stmt.args...); err != nil {
@@ -190,7 +205,7 @@ func (s *suite) asOrg(t *testing.T, org string, fn func(tx pgx.Tx)) {
 func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 	s := newSuite(t)
 	for _, table := range []string{"runs", "responses", "sessions", "projects", "artifacts", "environments", "environment_values",
-		"tools", "tool_revisions", "tool_set_revisions"} {
+		"tools", "tool_revisions", "tool_set_revisions", "background_tasks"} {
 		s.asOrg(t, s.orgA, func(tx pgx.Tx) {
 			var foreign int
 			// The only predicate names the OTHER tenant: the query asks for exactly the rows the

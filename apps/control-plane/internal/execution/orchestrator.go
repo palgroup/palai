@@ -55,6 +55,14 @@ type Orchestrator struct {
 	// when no sandbox driver is wired into this control plane — a shell tool call then fails
 	// cleanly rather than escaping. main.go injects it via SetShellRunner where a driver exists.
 	shell toolbroker.ShellRunner
+	// background starts a shell command that OUTLIVES the attempt that started it (E26 T1). It is a
+	// SEPARATE field from shell rather than a capability of it, and separate because the two answer
+	// different questions: a ShellRunner returns a result, a BackgroundRunner returns a handle. Nil when
+	// the wired posture cannot detach — a background tool call then fails cleanly, and specifically does
+	// NOT fall back to running the command synchronously: a model that asked for a background task and
+	// got a blocking call is blocked in exactly the way the feature exists to prevent. main.go injects it
+	// via SetBackgroundRunner where the wired shell runner can also detach.
+	background toolbroker.BackgroundRunner
 	// tasks is the durable session-scoped task/todo registry the task/todo tools persist through
 	// (spec §11). It is always the spine (the control plane owns the DB), so it is wired at
 	// construction; a stack opts into the durable primitives by registering the task/todo tools.
@@ -147,6 +155,18 @@ func (o *Orchestrator) SetModelRoute(r ModelRoute) { o.route = r }
 // SetShellRunner injects the sandbox shell runner the workspace shell tool executes through. Left
 // unset, a shell tool call fails cleanly (no runner) rather than escaping the sandbox.
 func (o *Orchestrator) SetShellRunner(s toolbroker.ShellRunner) { o.shell = s }
+
+// SetBackgroundRunner injects the detached shell runner a background task is started through (E26 T1).
+// Left unset — which is every deployment before E26 and every posture that cannot detach — the dispatch
+// is bit-unchanged: the same SetShellRunner/SetHookFirer/SetPublisher discipline, where an unwired seam
+// means the feature is simply absent rather than half-present.
+func (o *Orchestrator) SetBackgroundRunner(b toolbroker.BackgroundRunner) { o.background = b }
+
+// BackgroundRunner reports the detached runner this orchestrator was wired with. It exists so a
+// COMPOSITION-ROOT test can ask what production actually wired, which is the only kind of test that
+// would have caught a shell wall time that was unbounded on one posture and refused every call on the
+// other while every sandbox test — each building its own config — stayed green.
+func (o *Orchestrator) BackgroundRunner() toolbroker.BackgroundRunner { return o.background }
 
 // SetHookFirer injects the hook dispatcher the five pinned points fire through (spec §28.17, E12 T8). Left
 // unset, no hook fires — the dispatch is bit-unchanged (the same discipline as SetShellRunner/SetPublisher).
