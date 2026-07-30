@@ -145,6 +145,7 @@ button:disabled {
 }
 
 input[type="text"],
+input[type="password"],
 textarea {
   font: inherit;
   padding: 0.4rem 0.6rem;
@@ -184,6 +185,21 @@ pre.code {
 
 .muted {
   color: var(--muted);
+}
+
+/* A form refusal is TEXT with a glyph, never colour alone — the same rule .status follows. The colour is a
+   redundant hint on top of a sentence that already says what happened. */
+.form-error {
+  color: var(--fg);
+  font-weight: 600;
+}
+.form-error .glyph {
+  color: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  .form-error .glyph {
+    color: #ff7b72;
+  }
 }
 
 fieldset {

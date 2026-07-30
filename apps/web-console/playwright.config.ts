@@ -1,6 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { API_KEY, IS_REAL, NEXT_PORT, PROFILE, UPSTREAM, UPSTREAM_PORT } from "./tests/constants";
+import { API_KEY, consolePasswordHash, IS_REAL, NEXT_PORT, PROFILE, UNCONFIGURED_PORT, UPSTREAM, UPSTREAM_PORT } from "./tests/constants";
+
+// The hash is derived ONCE here, by running the shipped scripts/hash-password.mjs, and handed to the
+// configured console below. The un-configured console on UNCONFIGURED_PORT gets everything except this.
+const PASSWORD_HASH = consolePasswordHash();
 
 // TWO PROFILES, ONE SPEC SET (E19 T7). PALAI_CONSOLE_PROFILE selects the /v1 upstream the built console is
 // pointed at; the spec files, the browser and the relay are identical in both. That constraint is the point:
@@ -55,11 +59,31 @@ export default defineConfig({
       env: {
         PALAI_API_KEY: API_KEY,
         PALAI_BASE_URL: UPSTREAM,
+        PALAI_CONSOLE_PASSWORD_HASH: PASSWORD_HASH,
       },
       url: `http://127.0.0.1:${NEXT_PORT}`,
       timeout: 120_000,
       // On the real profile a stale console process would still be pointed at the FAKE upstream, and the
       // whole run would silently prove nothing. Never reuse a server whose upstream this run just changed.
+      reuseExistingServer: !process.env.CI && !IS_REAL,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+    {
+      // THE FAIL-CLOSED CONTROL (E25 T1). Same build, same key, same upstream — and NO
+      // PALAI_CONSOLE_PASSWORD_HASH. tests/auth.spec.ts asserts this console serves no read, no write and no
+      // sign-in, which is only a claim about the missing hash because nothing else about it differs.
+      //
+      // Its readiness is probed on /login rather than /, because an un-configured console is EXPECTED to
+      // refuse data: the static shell still renders (the gate is in the relay, deliberately not in the
+      // layout — §3.5 N5), and that is the honest shape of "does not serve" for a Next app.
+      command: `pnpm exec next start -p ${UNCONFIGURED_PORT}`,
+      env: {
+        PALAI_API_KEY: API_KEY,
+        PALAI_BASE_URL: UPSTREAM,
+      },
+      url: `http://127.0.0.1:${UNCONFIGURED_PORT}/login`,
+      timeout: 120_000,
       reuseExistingServer: !process.env.CI && !IS_REAL,
       stdout: "pipe",
       stderr: "pipe",

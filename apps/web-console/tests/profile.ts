@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { DIVERGENCE_BY_ID } from "./divergences.mjs";
-import { IS_REAL, PROFILE } from "./constants";
+import { CONSOLE_PASSWORD, IS_REAL, NEXT_PORT, PROFILE } from "./constants";
 
 // skipOnReal is the ONLY way a spec may decline to run on the real profile, and it makes that decision
 // expensive on purpose (E19 T7).
@@ -37,6 +37,55 @@ export function skipOnReal(divergenceId: string): void {
 export function announceProfile(file: string): void {
   // eslint-disable-next-line no-console -- see above.
   console.log(`PROFILE=${PROFILE} — ${file}`);
+}
+
+// signIn opens the console's door for a browser context, and every spec that reads data needs it now — the
+// relay answers 401 without a session (E25 T1). It goes through the REAL login route with the REAL password,
+// so no spec is handed a forged cookie: if the door stopped working, the whole suite would fail rather than
+// quietly testing an open console.
+//
+// `page.request` shares the browser context's cookie jar, so the Set-Cookie lands where the page will send
+// it. Origin is set explicitly because an APIRequestContext does not stamp one, and the login route refuses
+// a mutation without it — the same refusal a foreign page would get.
+export async function signIn(page: Page): Promise<void> {
+  const origin = `http://127.0.0.1:${NEXT_PORT}`;
+  const res = await page.request.post(`${origin}/api/console/login`, {
+    data: { password: CONSOLE_PASSWORD },
+    headers: { Origin: origin, "Content-Type": "application/json" },
+  });
+  // Not an `expect`: a failure here is a broken precondition for everything after it, and it must read as
+  // that rather than as an assertion inside whichever test happened to be first.
+  if (res.status() !== 204) {
+    throw new Error(`sign-in failed with ${res.status()} — the console's door is not working, so nothing after this proves anything`);
+  }
+}
+
+// sessionHeaders returns the session as an explicit Cookie header, for the API-LEVEL requests some specs
+// make (`page.request`, `request`) rather than browser navigations.
+//
+// MEASURED, not guessed: Playwright's APIRequestContext does NOT apply the browser's "localhost and
+// 127.0.0.1 are potentially-trustworthy" exception to a `Secure` cookie, so over loopback HTTP it withholds
+// the session and every such request comes back 401 — while `page.goto` in the same context sends it
+// happily, because Chromium does apply the exception. `context.cookies(url)` filters the same way, which is
+// why the lookup below passes no url. The cookie is read from the jar the real login route filled; nothing
+// here is forged.
+export async function sessionHeaders(page: Page): Promise<Record<string, string>> {
+  const cookie = (await page.context().cookies()).find((c) => c.name === "palai_console_session");
+  if (cookie === undefined) throw new Error("no session cookie in the browser context — signIn(page) must run first");
+  return { Cookie: `${cookie.name}=${cookie.value}` };
+}
+
+// signInViaForm signs in through the PAGE — the real form, a real browser fetch — so the login request is
+// visible to page.on("request"). That is required by exactly one spec and is the reason there are two
+// helpers: public-api-only.spec.ts has to SEE the login request to assert that it is the single non-relay
+// exception and that it carries no Bearer. A page.request post is invisible to that intercept, so using the
+// fast helper there would have made the exception unobservable and the assertion vacuous.
+export async function signInViaForm(page: Page): Promise<void> {
+  await page.goto("/login");
+  await page.getByTestId("password-input").fill(CONSOLE_PASSWORD);
+  await page.getByTestId("login-button").click();
+  // The form navigates to / on success. A refusal would leave the error region on screen instead.
+  await expect(page.getByTestId("ceiling-note")).toBeVisible({ timeout: 15_000 });
 }
 
 // runToTerminal starts a run on /runs and drives it to a terminal status on EITHER profile.

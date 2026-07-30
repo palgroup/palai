@@ -31,7 +31,12 @@ const USAGE = { input_tokens: 40, output_tokens: 18, total_tokens: 58, tool_call
 const FRAME_GAP_MS = 60;
 
 // Introspection of what the upstream actually received — the upstream half of the public-API-only proof.
-const introspect = { v1Requests: 0, nonV1Requests: 0, beareredV1Requests: 0, unbeareredV1Requests: 0, paths: [] };
+//
+// cookieBearingV1Requests is E25 T1's addition: the console's OPERATOR SESSION cookie must never ride an
+// upstream request. The relay does not forward incoming headers at all (it calls client.request with a method,
+// a path and a body), so this counter should be structurally pinned to zero — and "should be structurally"
+// is exactly the kind of claim this tree has learned to count instead of assert.
+const introspect = { v1Requests: 0, nonV1Requests: 0, beareredV1Requests: 0, unbeareredV1Requests: 0, cookieBearingV1Requests: 0, paths: [] };
 
 // Per-session interactive approval state: the SSE pump pauses at approval.requested until an approve
 // command lands on POST /v1/sessions/{id}/commands (a real round-trip through the relay).
@@ -354,6 +359,7 @@ const server = createServer((request, response) => {
   if (pathname.startsWith("/v1/")) {
     introspect.v1Requests += 1;
     if (!introspect.paths.includes(pathname)) introspect.paths.push(pathname);
+    if (typeof request.headers["cookie"] === "string") introspect.cookieBearingV1Requests += 1;
     if (bearer(request) === null) {
       introspect.unbeareredV1Requests += 1;
       return sendProblem(response, 401, "authentication_required");

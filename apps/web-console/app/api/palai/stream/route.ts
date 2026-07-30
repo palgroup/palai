@@ -1,6 +1,7 @@
 import { PalaiAPIError, PalaiError, type Event, type Response as PalaiResponse } from "@palai/sdk";
 
 import { getPalaiClient } from "@/lib/palai";
+import { requireSession } from "@/lib/session";
 import { laneFor } from "@/lib/timeline";
 
 // The SDK's server path uses node:crypto, so this runs on the Node runtime; force-dynamic keeps the
@@ -16,7 +17,14 @@ export const dynamic = "force-dynamic";
 //
 // The first frame is a `meta` carrying the session + response id so the browser can address the approve
 // command and list the run's artifacts — both through the same /v1/* relay, never a backchannel.
+//
+// THE GATE IS THE FIRST THING THIS METHOD DOES (E25 T1). This handler is the console's most expensive
+// unauthenticated surface if left open: a POST here STARTS A RUN, which spends a model budget and can drive
+// real side effects. It is counted alongside the four /v1 relay methods by tests/relay-gate.spec.ts.
 export async function POST(request: Request): Promise<Response> {
+  const refused = requireSession(request);
+  if (refused !== null) return refused;
+
   let prompt: string;
   try {
     const body = (await request.json()) as { prompt?: unknown };
