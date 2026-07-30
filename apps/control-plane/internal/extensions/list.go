@@ -102,6 +102,73 @@ func (s *Store) ListTools(ctx context.Context, org, project string, w ListWindow
 	return out, rows.Err()
 }
 
+// ToolRevisionItem is one row of a lineage's revision list (E25 T7). Description and InputSchema are
+// UNTRUSTED — for an mcp executor they are the remote server's own words and the shape it declared — and
+// they are here because they are exactly what an admin approves when they publish. Nothing in this struct
+// is a credential: the MCP credential lives on the connection row, and a control_plane/remote_http
+// revision's secret_ref is a handle that is deliberately NOT selected.
+type ToolRevisionItem struct {
+	ID               string
+	ToolID           string
+	RevisionNumber   int
+	Executor         string
+	Description      string
+	InputSchema      []byte
+	Digest           string
+	Published        bool
+	ApprovalRequired bool
+	ApprovalLabel    string
+	CreatedAt        time.Time
+}
+
+// ListToolRevisions returns a tenant-scoped page of ONE tool lineage's revisions newest-first (spec §28.3,
+// E25 T7). The caller checks the lineage exists in scope first, so an unknown or foreign tool is a 404
+// rather than an empty page — a list that cannot tell "no revisions" from "not your tool" makes the
+// runbook's first step ambiguous at exactly the moment an operator is looking for a typo.
+func (s *Store) ListToolRevisions(ctx context.Context, org, project, toolID string, w ListWindow) ([]ToolRevisionItem, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	rows, err := s.pool.Query(ctx, storage.Query("ListToolRevisions"),
+		toolID, org, project, w.CreatedGTE, w.CreatedLTE, w.AfterCreatedAt, w.AfterID, w.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list tool revisions: %w", err)
+	}
+	defer rows.Close()
+	var out []ToolRevisionItem
+	for rows.Next() {
+		var it ToolRevisionItem
+		if err := rows.Scan(&it.ID, &it.ToolID, &it.RevisionNumber, &it.Executor, &it.Description, &it.InputSchema,
+			&it.Digest, &it.Published, &it.ApprovalRequired, &it.ApprovalLabel, &it.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan tool revision row: %w", err)
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// ToolSetRevisionDetail is one set revision INCLUDING its pins (E25 T7). Pins is the raw tool_pins JSONB —
+// the exact [{"tool_revision_id":…,"overrides":{…}}] the set was created with — passed through rather than
+// re-modelled, because the pin shape is the create body's shape and two models of one thing drift.
+type ToolSetRevisionDetail struct {
+	ToolSetRevisionItem
+	Pins []byte
+}
+
+// GetToolSetRevision reads one set revision within scope, keyed by BOTH the set name and the revision id.
+// found=false for a foreign/unknown id or an id belonging to another set (404).
+func (s *Store) GetToolSetRevision(ctx context.Context, org, project, setName, revisionID string) (ToolSetRevisionDetail, bool, error) {
+	ctx = storage.ScopeToTenant(ctx, org, project)
+	var it ToolSetRevisionDetail
+	err := s.pool.QueryRow(ctx, storage.Query("GetToolSetRevision"), revisionID, setName, org, project).
+		Scan(&it.ID, &it.Set, &it.RevisionNumber, &it.Digest, &it.Pins, &it.Published, &it.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ToolSetRevisionDetail{}, false, nil
+	}
+	if err != nil {
+		return ToolSetRevisionDetail{}, false, fmt.Errorf("get tool set revision: %w", err)
+	}
+	return it, true, nil
+}
+
 // ToolSetRevisionItem is one row of the tool-set list: a set revision's identity + published flag.
 type ToolSetRevisionItem struct {
 	ID             string

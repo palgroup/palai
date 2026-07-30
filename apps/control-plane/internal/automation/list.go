@@ -77,6 +77,12 @@ type AgentRevisionItem struct {
 	// so this is the ONLY read path for a config the API already lets you write — and its absence had a
 	// live consequence (see the comment in store/agents.go's ListAgentRevisions).
 	Tools []string
+	// ToolSets is the revision's GRANT — the published ToolSetRevision ids the resolver unions into the
+	// effective set (execution.Resolve). E25 T7 lists it after measuring the asymmetry: the CEILING
+	// (MCPConnections) has read back since E22 T6 while the GRANT never did, and
+	// jira-mcp-connection.md §4 says both are required and that each one's absence fails QUIETLY.
+	// A console that could show only the ceiling would show the half that cannot advertise anything.
+	ToolSets []string
 	// MCPConnections is the revision's EXTERNAL capability ceiling — the connection ids a run pinned to this
 	// revision may reach (extensions/lookup.go's mcpConnectionForRun joins on it). Listed for the same
 	// reason Tools is, and after the same defect: there is no per-revision GET, so a config the API lets you
@@ -106,7 +112,7 @@ func (s *Store) ListRevisions(ctx context.Context, org, project, profileID strin
 	var out []AgentRevisionItem
 	for rows.Next() {
 		var it AgentRevisionItem
-		if err := rows.Scan(&it.ID, &it.RevisionNumber, &it.Model, &it.Tools, &it.MCPConnections, &it.Instructions, &it.Environment, &it.Published, &it.CreatedAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.RevisionNumber, &it.Model, &it.Tools, &it.ToolSets, &it.MCPConnections, &it.Instructions, &it.Environment, &it.Published, &it.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan agent revision row: %w", err)
 		}
 		out = append(out, it)

@@ -103,6 +103,13 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("GET /v1/tools", th.listTools)
 		mux.HandleFunc("GET /v1/tools/{tool_id}", th.getTool)
 		mux.HandleFunc("GET /v1/tool-sets", th.listToolSets)
+		// The two E25 T7 reads. They exist because a SHIPPED runbook rested on them:
+		// docs/operations/jira-mcp-connection.md §3c said "find the ids with GET /v1/tools, then publish
+		// each revision", and no route returned a revision id — so the publish, the pin and the grant that
+		// follow it were all unreachable on the public API. The set read is the pins, which the list
+		// projection has never carried.
+		mux.HandleFunc("GET /v1/tools/{tool_id}/revisions", th.listRevisions)
+		mux.HandleFunc("GET /v1/tool-sets/{set}/revisions/{revision_id}", th.getSetRevision)
 		mux.HandleFunc("POST /v1/tools/{tool_id}/revisions", th.createRevision)
 		mux.HandleFunc("POST /v1/tools/{tool_id}/revisions/{revision_id}/publish", th.publishRevision)
 		mux.HandleFunc("POST /v1/tool-sets/{set}/revisions", th.createSetRevision)

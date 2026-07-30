@@ -12,6 +12,45 @@ VALUES ($1, $2, $3, $4, $5);
 -- name: ToolExists
 SELECT 1 FROM tools WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
+-- ListToolRevisions pages ONE lineage's revisions newest-first (E25 T7). It is the read that makes
+-- docs/operations/jira-mcp-connection.md §3c executable: that runbook has shipped since E22 telling an
+-- operator to "find the ids with GET /v1/tools, then publish each revision", and until this query existed
+-- no /v1 response carried a revision id at all — so the publish, the pin and the grant that follow it all
+-- rested on a step nobody could perform.
+--
+-- description AND input_schema ARE SELECTED DELIBERATELY, and they are the reason this is not just an id
+-- list. What an admin approves at publish IS the untrusted description (it enters a model's context) and
+-- the input schema (it is the shape the model will be able to call). A projection that showed neither
+-- would be asking for approval of an identifier. They are UNTRUSTED BYTES — written by the MCP server —
+-- and every consumer treats them as text, never as markup.
+--
+-- approval_required/approval_label ride along for the symmetric reason: E23 T5 made publish carry a gate
+-- declaration, and a declaration that cannot be read back is a gate an operator cannot audit.
+-- name: ListToolRevisions
+SELECT id, tool_id, revision_number, executor, description, input_schema, digest,
+       published_at IS NOT NULL, approval_required, approval_label, created_at
+FROM tool_revisions
+WHERE tool_id = $1 AND organization_id = $2 AND project_id = $3
+  AND ($4::timestamptz IS NULL OR created_at >= $4)
+  AND ($5::timestamptz IS NULL OR created_at <= $5)
+  AND ($6::timestamptz IS NULL OR (created_at, id) < ($6, $7))
+ORDER BY created_at DESC, id DESC
+LIMIT $8;
+
+-- GetToolSetRevision reads ONE set revision INCLUDING ITS PINS (E25 T7). The list projection carries a
+-- digest and a revision number but not tool_pins, so "which tools did I actually grant?" had no answer on
+-- the public API — which the tree recorded as a `ponytail:` note on ListToolSets: "no single-resource GET
+-- /v1/tool-sets/{id} … Add one if a console needs it". A console does.
+--
+-- BOTH set_name AND id ARE IN THE PREDICATE. The route is /v1/tool-sets/{set}/revisions/{revision_id} and
+-- a revision belongs to exactly one set, so a revision of set A read under set B's name must be a 404
+-- rather than a row: otherwise the path segment would be decorative and a screen could show one set's
+-- contents under another set's heading.
+-- name: GetToolSetRevision
+SELECT id, set_name, revision_number, digest, tool_pins, published_at IS NOT NULL, created_at
+FROM tool_set_revisions
+WHERE id = $1 AND set_name = $2 AND organization_id = $3 AND project_id = $4;
+
 -- InsertToolRevision creates a DRAFT revision (published_at NULL). revision_number is the tool's next
 -- monotonic number, computed in-statement so a revise never has to read-then-write. Returns it.
 -- ponytail: the MAX+1 subselect can race two concurrent inserts to the same number; the

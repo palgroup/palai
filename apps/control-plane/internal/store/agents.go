@@ -136,6 +136,12 @@ func (s *Store) ListAgentRevisions(ctx context.Context, scope middleware.Scope, 
 		body := mustJSON(map[string]any{
 			"id": it.ID, "object": "agent_revision", "agent_id": profileID,
 			"revision_number": it.RevisionNumber, "model": it.Model, "tools": it.Tools,
+			// `tool_sets` is E25 T7's addition and it closes the asymmetry the two lines below created:
+			// the CEILING read back and the GRANT did not. jira-mcp-connection.md §4 says both fields are
+			// required and that each absence fails silently — a revision missing `tool_sets` never
+			// advertises the tool, a revision missing `mcp_connections` cannot resolve it — so a surface
+			// that showed one of them showed the half that grants nothing. Ids only, like its neighbours.
+			"tool_sets":       it.ToolSets,
 			"mcp_connections": it.MCPConnections,
 			// The environment id (E25 T3). Additive, ID only, and it is what makes the console able to show
 			// which environment an agent runs under — a field the API lets you write needs a read path.
