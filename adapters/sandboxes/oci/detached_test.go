@@ -91,7 +91,7 @@ func TestTheDetachedPathBuildsNoContainerOptionsOfItsOwn(t *testing.T) {
 			}
 			fn, ok := opts.Fun.(*ast.Ident)
 			if !ok || fn.Name != "createOptions" {
-				t.Fatalf("the options argument to ContainerCreate is not createOptions(...): "+
+				t.Fatalf("the options argument to ContainerCreate is not createOptions(...): " +
 					"the hardening would then live in two places and could differ in one")
 			}
 			if len(opts.Args) != 2 {
