@@ -7,8 +7,8 @@ solely in the server-side relay, never in a browser request, a chunk or a source
 Until E25 T1 it had **no authentication of any kind**. This page is about what closed and, just as
 importantly, what did not.
 
-> **First version — T1 only.** It covers the door and the key. The rest of the console's operator story
-> (environments, the approval screen, repository bindings, agents) is written as those tasks land.
+> **The door, the key, and the approval queue.** T1 wrote §1-§3, T5 wrote §4. The environment screen has its
+> own page (`environments.md`); repository bindings and agents are written as those tasks land.
 
 ---
 
@@ -53,7 +53,7 @@ Notes that matter:
 - **`echo` adds a newline.** The script strips one trailing newline and says so on stderr; `printf %s` avoids
   the ambiguity entirely.
 - **Changing the password invalidates every live session.** That is deliberate, and it is the *only*
-  revocation this design has (see §5).
+  revocation this design has (see §6).
 - The parameters (`16384$8$1`) are stored inside the hash, so raising them later does not invalidate a hash
   you generate today.
 
@@ -116,7 +116,128 @@ constrained by that list.
 
 ---
 
-## 4. When it does not work
+## 4. The approval queue — what it decides, and what it does not show
+
+`/approvals` is the console's screen for the surface E23 T9 opened: **`GET /v1/approvals`**, plus
+`POST /v1/approvals/{id}/approve|deny`. Before it existed, a gated tool call could only be seen — and therefore
+only be answered — inside a Slack thread. A deployment with no Slack workspace parked its runs on questions
+nobody could reach, and the expiry reaper released them half an hour later. It failed *closed*, which is exactly
+why nobody noticed.
+
+### What it holds, and what it deliberately does not
+
+**Tool approvals only.** The list is `coordinator.PendingToolApprovals`: gated tool calls, oldest first (the
+oldest question is the one closest to its deadline).
+
+**Publication approvals are not here.** A push, a pull request or a merge — every side effect E22 produces —
+is approved inside a **live run's event stream** (`/runs`), because the public API has no list route for them:
+`API-3`/`API-4` in `known-gaps-1.0.md` have been filed three times and are still unapproved. The page says so in
+a sentence and links to `/runs`, and that sentence is load-bearing: an operator who learns "approvals live here"
+will otherwise miss the ones that do not.
+
+### What you are reading when you decide
+
+Five things, and every one of them is the **server's** computation rather than the console's:
+
+| On screen | Where it comes from |
+|---|---|
+| Tool identity | the resolution that will EXECUTE the call — not a name off the model's frame |
+| The operator's label | what a human wrote at registration; `(no operator label)` when nobody did |
+| Arguments | the ledger row's committed bytes, canonically rendered, `truncated` flagged when cut |
+| Request hash | the one-shot binding the decision carries |
+| Deadline | `expires_at`, or a sentence saying the gate has none |
+
+The console renders those bytes verbatim: no re-indenting, no JSON re-parse, no friendlier name for the tool.
+Both this screen and the Slack one come from **one** derivation (`slack.DeriveApprovalDisplay`), so two
+renderings of one row are byte-identical and the two surfaces cannot disagree about what a human approved.
+
+Two consequences worth knowing before you read a screen:
+
+- **There is no MCP `description` on this screen, and none on the wire.** The vendor documents `description` and
+  `title` as the human-readable display text; they are also the two fields whose author has an interest in your
+  answer. What you approve is the CALL.
+- **The arguments carry a Slack-shaped escape.** Because the derivation is shared, `<!` and `<@` arrive as
+  `&lt;!` and `&lt;@`. The console shows what it was given rather than "repairing" it — that is the price of one
+  derivation, and it is a price rather than a bug.
+
+### The hash comes from the row
+
+The decision body is `{request_hash, reason?}` and **the hash is mandatory** — an approval id alone authorizes
+nothing. The console reads it out of the row it displayed: it never asks you to type one, and there is no hidden
+field carrying it. If the call's arguments change after the row was rendered, the binding no longer matches and
+the decision authorizes **nothing** rather than authorizing something else.
+
+### Denying takes a reason, and the reason reaches the model
+
+`reason` rides a denial back to the model verbatim, so the console **requires** one. A denial with no reason is
+a wall; a denial with one is an instruction the agent can act on. This is the one thing this surface does that
+Slack's cannot: `HIL-P10` records that a Slack approver's typed deny reason reaches nothing (no
+`view_submission` is routed) and the model is handed a constant sentence instead. On the HTTP surface that
+ceiling is closed.
+
+### The five refusals, and what each one means for you
+
+| Answer | What it means | What to do |
+|---|---|---|
+| `400 invalid_request` | the decision carried no `request_hash` | reload the queue; the row arrived without a binding |
+| `403 insufficient_scope` | the KEY does not hold `approve` | mint or fix the key (§3) |
+| `403 not_an_approver` | the project's `config_policy.approvers` refuses this principal | add `key:<api_key_id>` to that list, or decide with a key already in it |
+| `404 not_found` | unknown **or** another project's — indistinguishable on purpose | reload the queue; it says nothing about whether the id exists elsewhere |
+| `409 approval_not_decidable` | already answered, deadline passed, or the arguments changed | read the arguments again — they may not be the ones you read |
+
+The console gives each of these its own sentence. None of them is "something went wrong", because the next
+action is different for all five.
+
+### Configure BOTH gates, or any of your own keys can approve
+
+Two independent gates stand between a key and a decision, and **both are permissive when unset**
+(`HIL-P11`): an empty scope set holds every capability (`Scope.HasScope`) and an empty approver list permits
+every principal (`ConfigPolicy.ApproverAllowed`). A deployment that configures neither has a decision surface
+any of its own API keys can drive. E25 does **not** change that posture — changing it would be a behaviour
+change for every project alive today. Closing both gates is two commands:
+
+```sh
+# 1. A key that can ONLY decide approvals. It holds `approve` and nothing else, so it cannot rewrite the list
+#    it is checked against. The key is printed ONCE; the key ID it prints is what gate 2 names.
+palai apikey create --project prj_local --scope approve
+
+# 2. Name that key's principal in the project's approver list. `key:<api_key_id>` is the principal form the
+#    server stamps for a bearer decision (coordinator.ApproverPrincipal).
+palai admin project set-policy prj_local --approvers 'key:key_9f2c1d'
+```
+
+**`set-policy` REPLACES the whole `config_policy`** — read `docs/operations/approvals.md` §3 before running it,
+because a call that names only `--approvers` leaves `allowed_models`, `allowed_tools` and `default_tools` null,
+which reads as *unrestricted*. That page is the authority on both gates, on what a principal is, and on what
+changes once a list exists; this section is only the console's half of it.
+
+`PATCH /v1/projects/{id}` is `provision`-gated and `config_policy` is where `approvers` lives — which is
+**why** `approve` is deliberately not `provision`. A key that could provision could add *itself* to the approver
+list and then approve.
+
+**The console's own key needs `approve`** (`--scope provision --scope approve`, §3). A bootstrap key carries it
+implicitly because an empty scope set holds everything; a narrow key does not, and a key without it can neither
+read this queue nor decide on it — reading and deciding are gated on the same capability.
+
+### Ceilings, named
+
+- **An approval is a KEY, not a person.** Every decision made here is recorded as `key:<api_key_id>` —
+  `HIL-P2`: *"a principal is … an account on a surface, never a human"*. Everyone who holds the console password
+  decides as the same key, and "two humans approved" is not expressible on this platform.
+- **There is no push notification.** The queue is re-read on load, after every decision, and on a 10-second
+  timer; a refresh returns to the first page. An approval that arrives while the browser is closed is there when
+  you open it — a definite improvement on "only inside a live stream" — but a live event surface for this queue
+  is a separate decision and does not exist.
+- **The console cannot show you a run waking up.** Approving here applies the decision through
+  `coordinator.DecideToolApproval`, which transitions the call and releases the parked run in one transaction;
+  that release is proven against a real store at the component tier
+  (`apps/control-plane/internal/execution/http_tool_approval_component_test.go`), not on this screen.
+- **The queue is cut at twenty rows** like every other list on the public API, and the cut is stated in text
+  with a control that continues from the server's own cursor.
+
+---
+
+## 5. When it does not work
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -134,7 +255,7 @@ though, is deliberately uniform — one credential means there is no half to be 
 
 ---
 
-## 5. What this is NOT — the ceilings, named
+## 6. What this is NOT — the ceilings, named
 
 **This is a single-operator door, not an identity system.**
 
@@ -157,7 +278,7 @@ and the operator session never rides an upstream request.
 
 ---
 
-## 6. Where the pieces live
+## 7. Where the pieces live
 
 | Piece | File |
 |---|---|
@@ -166,7 +287,10 @@ and the operator session never rides an upstream request.
 | The sign-in form | `apps/web-console/app/login/page.tsx` |
 | The hash generator (stdin, zero dependencies) | `apps/web-console/scripts/hash-password.mjs` |
 | The gated relay | `apps/web-console/app/api/palai/v1/[...path]/route.ts`, `app/api/palai/stream/route.ts` |
-| The proofs | `apps/web-console/tests/auth.spec.ts`, `tests/relay-gate.spec.ts`, `tests/public-api-only.spec.ts` |
+| The approval queue and one parked call | `apps/web-console/app/approvals/page.tsx`, `components/ApprovalRow.tsx` |
+| The shared approval-screen derivation | `adapters/integrations/slack/approval_display.go` (reached from `apps/control-plane/internal/store/approvals.go`) |
+| The approval routes and the capability | `apps/control-plane/api/approvals.go` |
+| The proofs | `apps/web-console/tests/auth.spec.ts`, `tests/relay-gate.spec.ts`, `tests/public-api-only.spec.ts`, `tests/approval-queue.spec.ts` |
 
 The control plane's public API is **125 method+path pairs** as of `c6a59658` (2026-07-30), all registered in
 `apps/control-plane/api/router.go`. The console relays a subset of them and can reach no other path.

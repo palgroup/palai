@@ -69,6 +69,7 @@ var expectedAdminConsoleCatalog = map[string]struct {
 	"CON-002": {"e2e-deterministic", 8, "list truncation is stated in text and continued with the server's cursor, every route lib/routes.ts declares is axe-scanned under the WCAG 2.0+2.1+2.2 tags, and five divergence-ledger rows the console's evidence rested on were false"},
 	"CON-003": {"component-real", 14, "an operator-authored environment reaches a real shell command on this machine, its value enters no durable row, a key named PATH is refused at EXEC time by both sandbox adaptors, and the no-value-comes-back property is tracked in three layers that each fail on a different mistake"},
 	"CON-004": {"e2e-deterministic", 8, "a value typed into the console comes back in no DOM node, no response body and no source map — and the source-map arm was shown to catch a leak the other two passed over; no control offers to reveal a value, rotate is the same route as create on the wire, unbinding removes the binding and says so, and the environment picker never degrades to a free-text box"},
+	"CON-005": {"e2e-deterministic", 13, "a gated tool call is decided from a console screen with the hash carried out of the row's own data, an approval whose arguments changed authorizes nothing, five typed refusals get five different sentences, a deny reason reaches the API verbatim, and the queue says on screen that publication approvals are not in it — asserted while one is actually parked"},
 }
 
 func TestAdminConsoleCatalogMaterialized(t *testing.T) {

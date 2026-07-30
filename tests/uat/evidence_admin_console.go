@@ -28,4 +28,10 @@ package uat
 // real shell command and enters no durable row; T4 proves the surface a HUMAN types it into returns it
 // nowhere — in no DOM node, no response body and no source map. Neither claim is the other's, and neither
 // is the ceiling both share: giving an agent a secret is the agent having that secret.
-var AdminConsoleCaseIDs = []string{"CON-001", "CON-002", "CON-003", "CON-004"}
+//
+// CON-005 IS THE SMALLEST CASE IN THIS LIST AND ITS SMALLNESS IS THE MEASUREMENT (plan §3.6 D3): E23 T9 had
+// already opened GET /v1/approvals, both decision routes, the `approve` capability and the mandatory request
+// hash, so T5 is a PAGE. What it claims is bounded by one thing no console profile can produce — a PARKED
+// gated tool call on a real stack (DIV-UI-006) — so the release of the parked run stays a component-tier
+// claim and the browser's claim ends at the decision reaching the single throat with the row's own binding.
+var AdminConsoleCaseIDs = []string{"CON-001", "CON-002", "CON-003", "CON-004", "CON-005"}
