@@ -37,6 +37,19 @@ var ErrUnknownField = errors.New("automation: revision body carries an unsupport
 // ErrProfileNotFound is returned when a revision is created against a profile absent from the scope.
 var ErrProfileNotFound = errors.New("automation: agent profile not found in scope")
 
+// ErrEnvironmentNotFound is returned when a revision names an `environment` that does not exist in the
+// caller's organization (E25 T3), at create and again at publish.
+//
+// IT DEPARTS FROM THIS FILE'S OWN "validate at consumption" RULE, AND THE REASON IS THE DIFFERENCE BETWEEN
+// A CAPABILITY AND A CREDENTIAL. RevisionInput's comment defers tool_sets/mcp/skills/hooks reference checks
+// to consumption because a typo'd id there fails CLOSED and harmlessly: it grants no capability and leaks
+// nothing. An environment fails closed too — an unknown id resolves to zero keys — but "harmlessly" does
+// not follow. The operator's belief is that the agent HAS the credentials, and a run that silently receives
+// none does not stop: `curl` succeeds anonymously, `gh` reads the public repository, the deploy script
+// writes to the default target. The failure is a wrong answer that looks like a right one, which is exactly
+// the class of thing worth 5 lines and one query to refuse loudly.
+var ErrEnvironmentNotFound = errors.New("automation: environment not found in scope")
+
 // Store is the automation management store over the durable spine's pool.
 type Store struct{ pool *pgxpool.Pool }
 
@@ -69,6 +82,11 @@ type RevisionInput struct {
 	MCPConnections []string `json:"mcp_connections"`
 	Skills         []string `json:"skills"`
 	Hooks          []string `json:"hooks"`
+	// Environment is the id of the environment whose key→value pairs this agent's shell commands receive
+	// (E25 T3, migration 000046). Empty means no environment, which is every existing revision. Unlike the
+	// four fields above this one IS reference-checked at create and at publish — see ErrEnvironmentNotFound
+	// for why a credential is not a capability.
+	Environment string `json:"environment"`
 }
 
 // Revision is a stored revision's committed shape (management GET + the immutability check). ToolSets is
@@ -82,6 +100,7 @@ type Revision struct {
 	Tools          []string
 	Instructions   string
 	ToolSets       []string
+	Environment    string
 	Published      bool
 }
 
@@ -124,6 +143,9 @@ func (s *Store) CreateRevision(ctx context.Context, org, project, profileID stri
 	case err != nil:
 		return Revision{}, fmt.Errorf("verify agent profile: %w", err)
 	}
+	if err := s.verifyEnvironment(ctx, org, in.Environment); err != nil {
+		return Revision{}, err
+	}
 	id := newID("arev")
 	var number int
 	// ponytail: revision_number is MAX+1 in-statement, so two concurrent CreateRevision on ONE profile
@@ -132,10 +154,12 @@ func (s *Store) CreateRevision(ctx context.Context, org, project, profileID stri
 	// if concurrent revise throughput ever matters.
 	if err := s.pool.QueryRow(ctx, storage.Query("InsertAgentRevision"),
 		id, org, project, profileID, in.Model, marshalTools(in.Tools), in.Instructions,
-		marshalTools(in.ToolSets), marshalTools(in.MCPConnections), marshalTools(in.Skills), marshalTools(in.Hooks)).Scan(&number); err != nil {
+		marshalTools(in.ToolSets), marshalTools(in.MCPConnections), marshalTools(in.Skills), marshalTools(in.Hooks),
+		in.Environment).Scan(&number); err != nil {
 		return Revision{}, fmt.Errorf("insert agent revision: %w", err)
 	}
-	return Revision{ID: id, RevisionNumber: number, Model: in.Model, Tools: in.Tools, Instructions: in.Instructions, ToolSets: in.ToolSets}, nil
+	return Revision{ID: id, RevisionNumber: number, Model: in.Model, Tools: in.Tools, Instructions: in.Instructions,
+		ToolSets: in.ToolSets, Environment: in.Environment}, nil
 }
 
 // PublishRevision flips a draft revision to published exactly once. published is true only when THIS
@@ -143,7 +167,45 @@ func (s *Store) CreateRevision(ctx context.Context, org, project, profileID stri
 // (true) — so the caller can 404 an unknown id while treating a re-publish as an idempotent success.
 func (s *Store) PublishRevision(ctx context.Context, org, project, revisionID string) (published, exists bool, err error) {
 	ctx = storage.ScopeToTenant(ctx, org, project)
+	// THE ENVIRONMENT IS RE-CHECKED AT PUBLISH, and this is not belt-and-braces about the create check —
+	// it is the check that matters. Publish is what makes a revision runnable, so it is the last moment at
+	// which "this agent has the production credentials" can still be refused instead of discovered by a run
+	// that quietly had none. It is also the moment that survives a future create path (the console's, a
+	// CLI's, an import) forgetting to validate: publish is the single throat every revision passes through.
+	var environment string
+	switch e := s.pool.QueryRow(ctx, storage.Query("AgentRevisionEnvironment"), revisionID, org, project).Scan(&environment); {
+	case errors.Is(e, pgx.ErrNoRows):
+		return false, false, nil // unknown revision: the caller renders a 404, unchanged
+	case e != nil:
+		return false, false, fmt.Errorf("read revision environment: %w", e)
+	}
+	if err := s.verifyEnvironment(ctx, org, environment); err != nil {
+		// exists=true so the caller does not report this as an unknown revision: the revision is real and
+		// its environment is not.
+		return false, true, err
+	}
 	return s.publish(ctx, "PublishAgentRevision", "AgentRevisionPublished", revisionID, org, project)
+}
+
+// verifyEnvironment refuses an `environment` that names no row in the caller's organization. An EMPTY
+// environment is the no-environment case and always passes — that is every revision that existed before
+// migration 000046, and the column's DEFAULT ” is what makes it representable without a nullable FK.
+//
+// The read is org-scoped (environments carries no project_id — the secret_refs posture, 000031:16), so a
+// foreign environment id is invisible under RLS and refused as absent. That is the intended answer: an
+// operator must not learn from an error message that an id exists in another tenant.
+func (s *Store) verifyEnvironment(ctx context.Context, org, environment string) error {
+	if environment == "" {
+		return nil
+	}
+	ctx = storage.WithTenant(ctx, org, "")
+	switch err := s.pool.QueryRow(ctx, storage.Query("EnvironmentExists"), environment).Scan(new(int)); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return fmt.Errorf("%w: %q", ErrEnvironmentNotFound, environment)
+	case err != nil:
+		return fmt.Errorf("verify environment: %w", err)
+	}
+	return nil
 }
 
 // GetRevision reads a revision's committed shape, or found=false when it is absent from the scope.

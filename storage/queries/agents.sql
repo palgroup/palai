@@ -36,7 +36,7 @@ LIMIT $7;
 -- ListAgentRevisions pages one profile's revisions newest-first (spec §10, E13 T4). Scoped by profile_id
 -- ($3) on top of the tenant scope, so an unknown/foreign profile simply yields an empty page.
 -- name: ListAgentRevisions
-SELECT id, revision_number, model, tools, mcp_connections, instructions, published_at IS NOT NULL, created_at
+SELECT id, revision_number, model, tools, mcp_connections, instructions, environment, published_at IS NOT NULL, created_at
 FROM agent_revisions
 WHERE organization_id = $1 AND project_id = $2 AND profile_id = $3
   AND ($4::timestamptz IS NULL OR created_at >= $4)
@@ -47,11 +47,17 @@ LIMIT $8;
 
 -- name: InsertAgentRevision
 INSERT INTO agent_revisions (id, organization_id, project_id, profile_id, revision_number, model, tools, instructions,
-        tool_sets, mcp_connections, skills, hooks)
+        tool_sets, mcp_connections, skills, hooks, environment)
 VALUES ($1, $2, $3, $4,
         (SELECT COALESCE(MAX(revision_number), 0) + 1 FROM agent_revisions WHERE profile_id = $4),
-        $5, $6, $7, $8, $9, $10, $11)
+        $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING revision_number;
+
+-- AgentRevisionEnvironment reads the environment a revision names (E25 T3), '' for a revision that names
+-- none. The publish path re-checks the reference through it, because publish is the last moment at which
+-- "this agent has the production credentials" can be refused rather than discovered by a run that had none.
+-- name: AgentRevisionEnvironment
+SELECT environment FROM agent_revisions WHERE id = $1 AND organization_id = $2 AND project_id = $3;
 
 -- PublishAgentRevision is the ONE legitimate mutation: it flips published_at exactly once. The
 -- WHERE published_at IS NULL guard makes a re-publish a zero-row no-op, so a published revision's

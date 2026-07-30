@@ -119,6 +119,10 @@ type Orchestrator struct {
 	// prevent. main.go injects both via SetRemoteChildren.
 	remoteAgents   RemoteAgents
 	remoteChildren RemoteChildRunner
+	// envSecrets resolves an ENVIRONMENT value from its derived secret_refs name (E25 T3). Nil ⇒ a run
+	// whose pinned revision names an environment fails its tool call rather than running the command
+	// without the credential it was configured with. main.go injects it via SetEnvironmentSecrets.
+	envSecrets SecretResolver
 }
 
 // HookFirer runs a run's registered hooks at a dispatch point and returns the verdict (spec §28.17, E12 T8).
@@ -254,6 +258,11 @@ type attemptState struct {
 	// this attempt is now dispatching — the commit_boundary a side-effecting tool's durable pre-write
 	// records (spec §26.6, E12 T4), so an async-callback ledger row is keyed to the boundary it belongs to.
 	lastModelRequestID string
+	// envKeys are this attempt's environment key NAMES and their derived secret_refs names, resolved ONCE
+	// at attempt start from the run's PINNED revision (E25 T3). NAMES ONLY — no value is ever stored here,
+	// on the orchestrator, or anywhere else that outlives one Execute call. Nil for every run whose
+	// revision names no environment, which is every run in every deployment before E25.
+	envKeys []envKey
 }
 
 // fanoutUsed is the number of children this attempt has already dispatched: the local ChildRuns plus the
@@ -422,6 +431,13 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		ch: ch, ledger: runner.NewFrameLedger(),
 		workspaceID: workspaceID, workspaceLeaseID: workspaceLeaseID,
 		attemptStart: time.Now(),
+	}
+
+	// This attempt's environment key NAMES, from the run's PINNED revision (E25 T3). Read here, at attempt
+	// start, so the set is fixed before the engine says anything — the scope half of the worker
+	// secret-handle pattern. The VALUES are resolved immediately before each exec call, never here.
+	if st.envKeys, err = o.resolveEnvKeys(ctx, st); err != nil {
+		return err
 	}
 
 	st.depth = depth

@@ -40,6 +40,21 @@ type ExecEnv struct {
 	// the full bytes through (spec §22.6, T2), returning the artifact id. Nil on an attempt with no
 	// object store wired — the tool then returns its bounded excerpt only, with an empty artifact id.
 	Artifacts ArtifactWriter
+	// EnvValues is the attempt's resolved ENVIRONMENT: the key→value pairs a shell command receives on
+	// top of the sandbox's own closed environment (E25 T3). Empty on every attempt whose pinned revision
+	// names no environment, which is every attempt in every deployment before E25 — so a shell command's
+	// environment is then bit-identical to what it was.
+	//
+	// THIS FIELD HOLDS CREDENTIAL VALUES AND IS THE ONLY FIELD OF THIS STRUCT THAT DOES. Three rules
+	// follow, and each is enforced somewhere rather than asserted here: the orchestrator fills it
+	// IMMEDIATELY before the exec call and never earlier (so a run parked waiting for a human approval
+	// holds no value); nothing writes it to the tool ledger, a ConfigSnapshot, an event or a log line;
+	// and the executor masks its values in captured output (RedactValues) before the result is returned.
+	//
+	// Scope and expiry are the ATTEMPT itself — the run's answer to the worker pattern's
+	// fence/scope/expiry triple (internal/workers/store.go RedeemSecretHandle). There is no handle to
+	// redeem and no deadline to check because the value's whole life is one Execute call.
+	EnvValues map[string]string
 }
 
 // ArtifactWriter is the object-store write-path a body-producing tool persists through. It is
@@ -59,11 +74,15 @@ type ShellRunner interface {
 
 // ShellCommand is one sandboxed execution request: the argv (never a shell string — the caller opts
 // into a shell explicitly via Shell), the workspace root to mount, and whether it mounts read-only.
+// Env is the attempt's environment values, layered ON TOP of whatever closed environment the executor
+// builds for itself (LayerEnv). A colliding key is REFUSED, never overwritten, so the sandbox's own
+// PATH/HOME cannot be shadowed by a key an operator named. Empty on every command before E25.
 type ShellCommand struct {
 	Argv          []string
 	WorkspaceRoot string
 	ReadOnly      bool
 	Shell         bool
+	Env           map[string]string
 }
 
 // ShellResult is the captured outcome of a sandboxed command: bounded, already-redacted output, the

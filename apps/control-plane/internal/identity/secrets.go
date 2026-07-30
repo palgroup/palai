@@ -114,10 +114,6 @@ func (s *SecretStore) RotateSecretRef(ctx context.Context, scope middleware.Scop
 // backstop against a concurrent insert of the same version. requireExisting turns a rotate of a never-created
 // name into a NotFound.
 func (s *SecretStore) putVersion(ctx context.Context, scope middleware.Scope, name, value string, requireExisting bool) (api.ProvisionResult, error) {
-	sealed, err := s.seal([]byte(value))
-	if err != nil {
-		return api.ProvisionResult{}, err
-	}
 	ctx = orgScope(ctx, scope)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -125,22 +121,51 @@ func (s *SecretStore) putVersion(ctx context.Context, scope middleware.Scope, na
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	var version int
-	if err := tx.QueryRow(ctx, storage.Query("NextSecretVersion"), name).Scan(&version); err != nil {
-		return api.ProvisionResult{}, fmt.Errorf("next secret version: %w", err)
+	version, createdAt, err := s.insertVersion(ctx, tx, scope.Organization, name, value, requireExisting)
+	if err != nil {
+		return api.ProvisionResult{}, err
 	}
-	if requireExisting && version == 1 {
-		return api.ProvisionResult{NotFound: true}, nil
-	}
-	var createdAt time.Time
-	if err := tx.QueryRow(ctx, storage.Query("InsertSecretRef"),
-		middleware.NewID("sec"), scope.Organization, name, version, sealed).Scan(&createdAt); err != nil {
-		return api.ProvisionResult{}, fmt.Errorf("insert secret ref: %w", err)
+	if version == 0 {
+		return api.ProvisionResult{NotFound: true}, nil // rotate of a never-created name
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return api.ProvisionResult{}, fmt.Errorf("commit put secret: %w", err)
 	}
 	return api.ProvisionResult{Body: mustJSON(secretRefView{Name: name, Object: "secret_ref", Version: version, UpdatedAt: &createdAt})}, nil
+}
+
+// insertVersion seals value and appends the next version of name INSIDE the caller's transaction. It is
+// the ONE place a plaintext becomes a sealed row, and it is extracted from putVersion for exactly one
+// caller beyond it: an environment value write, which has to land its membership row and its secret
+// version atomically (E25 T3). Extracting it is what keeps the environment feature from opening a second
+// encryption path — the alternative was a second seal + a second INSERT, which is how a tree ends up with
+// two envelope formats.
+//
+// IT DOES NOT COMMIT, AND IT DOES NOT ROLL BACK. The transaction belongs to the caller, which is the only
+// party that knows whether the rest of its work succeeded. (This tree has shipped a helper called under a
+// `defer tx.Rollback` whose caller `return`ed the helper's result without committing, twice in one
+// function, with comments claiming otherwise — hence the sentence.)
+//
+// version 0 with a nil error is the "rotate of a name that has no prior version" answer, which the caller
+// renders as a 404; every other failure is an error.
+func (s *SecretStore) insertVersion(ctx context.Context, tx pgx.Tx, org, name, value string, requireExisting bool) (int, time.Time, error) {
+	sealed, err := s.seal([]byte(value))
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	var version int
+	if err := tx.QueryRow(ctx, storage.Query("NextSecretVersion"), name).Scan(&version); err != nil {
+		return 0, time.Time{}, fmt.Errorf("next secret version: %w", err)
+	}
+	if requireExisting && version == 1 {
+		return 0, time.Time{}, nil
+	}
+	var createdAt time.Time
+	if err := tx.QueryRow(ctx, storage.Query("InsertSecretRef"),
+		middleware.NewID("sec"), org, name, version, sealed).Scan(&createdAt); err != nil {
+		return 0, time.Time{}, fmt.Errorf("insert secret ref: %w", err)
+	}
+	return version, createdAt, nil
 }
 
 // ListSecretRefs lists secret-ref METADATA (name/version/updated_at) for the caller's organization — never a

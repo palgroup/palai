@@ -16,7 +16,11 @@ package uat
 // tests/uat/extensions refuses a CON- dir that no catalog owns, and tests/uat/admin-console refuses an id in
 // this list that has no directory or whose declared proofs are not in the tree.
 //
-// THIS LIST GROWS ONE ID PER TASK, and only when the directory exists. T1 opens CON-001, T2 opens CON-002; the
-// remaining ids the plan names (CON-003..007) join as their tasks land, and the E25 exit gate is where they
-// meet a bundle.
-var AdminConsoleCaseIDs = []string{"CON-001", "CON-002"}
+// THIS LIST GROWS ONE ID PER TASK, and only when the directory exists. T1 opens CON-001, T2 opens CON-002,
+// T3 opens CON-003; the remaining ids the plan names (CON-004..007) join as their tasks land, and the E25
+// exit gate is where they meet a bundle.
+//
+// CON-003 IS THE FIRST NON-BROWSER CASE IN THIS LIST, and its proof_class says so: `component-real` rather
+// than `e2e-deterministic`, because T3 is the Go half of R1 and touches no console file. Its proofs are Go
+// test FUNCTIONS, so the catalog gate resolves them as `func Name(` rather than as `test("title"`.
+var AdminConsoleCaseIDs = []string{"CON-001", "CON-002", "CON-003"}

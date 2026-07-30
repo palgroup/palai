@@ -335,6 +335,99 @@ func TestHostShellRunsInTheWorkspaceRootAndRedactsSecrets(t *testing.T) {
 	}
 }
 
+// TestHostShellRefusesAnEnvironmentKeyThatShadowsItsOwn is the HOST half of E25 T3's exec-time key
+// rule; its container sibling is TestContainerShellRefusesAnEnvironmentKeyThatShadowsItsOwn
+// (adapters/sandboxes/oci/workspace/exec_env_test.go). The rule is enforced in two adaptors, so it is
+// proven in two places — a rule enforced twice is a rule that can hold in one place only.
+//
+// THE EXEC-TIME CHECK IS THE LOAD-BEARING ONE, not the write route's. The route that stores an
+// environment key also validates it, but a route can change and this cannot be reached around: every
+// path to a host command goes through Run. What it prevents is concrete rather than theoretical — a key
+// named PATH would make the agent's `git`, `xcodebuild` and `sh` resolve out of a directory an operator
+// (or a model that talked one into it) chose.
+func TestHostShellRefusesAnEnvironmentKeyThatShadowsItsOwn(t *testing.T) {
+	// The sandbox's own PATH, before anything tries to shadow it.
+	before, err := run(t, 10*time.Second, toolbroker.ShellCommand{Argv: []string{"/usr/bin/env"}})
+	if err != nil {
+		t.Fatalf("baseline env: %v", err)
+	}
+	basePATH := envValue(before.Stdout, "PATH")
+	if basePATH == "" {
+		t.Fatal("the sandbox's own PATH is empty, so the comparison below would prove nothing")
+	}
+
+	// Every name this file's two lists produce, plus the reserved prefix and three malformed shapes. The
+	// first six are read from the allow-list's own vocabulary rather than invented: PATH/LANG/
+	// DEVELOPER_DIR are inherited, HOME/TMPDIR/PALAI_SIMCTL_SET are derived per allocation.
+	for _, key := range []string{
+		"PATH", "LANG", "DEVELOPER_DIR", "HOME", "TMPDIR", "PALAI_SIMCTL_SET",
+		"PALAI_ANYTHING", "lowercase", "WITH-DASH", "1LEADING_DIGIT", "",
+	} {
+		res, err := run(t, 10*time.Second, toolbroker.ShellCommand{
+			Argv: []string{"/usr/bin/env"},
+			Env:  map[string]string{key: "attacker-supplied-value"},
+		})
+		if err == nil {
+			t.Errorf("environment key %q was accepted at exec time; the command's environment was:\n%s", key, res.Stdout)
+			continue
+		}
+		// The refusal happened BEFORE the process started, so there is no captured output at all. A
+		// refusal reported after the command ran would already have run it under the shadowed name.
+		if res.Stdout != "" || res.ExitCode != 0 {
+			t.Errorf("environment key %q was refused but a process still ran (exit %d):\n%s", key, res.ExitCode, res.Stdout)
+		}
+	}
+
+	// And the sandbox's PATH is bit-unchanged. A refusal that left the environment mutated would be a
+	// refusal in name only.
+	after, err := run(t, 10*time.Second, toolbroker.ShellCommand{Argv: []string{"/usr/bin/env"}})
+	if err != nil {
+		t.Fatalf("env after the refusals: %v", err)
+	}
+	if got := envValue(after.Stdout, "PATH"); got != basePATH {
+		t.Fatalf("the sandbox's PATH moved after the refused shadow attempts:\nbefore=%q\nafter =%q", basePATH, got)
+	}
+}
+
+// TestHostShellLayersTheAttemptsEnvironmentAndRedactsItsValues is the other side of the same rule: a
+// non-colliding key ARRIVES, and a command that echoes its value gets the mask back.
+func TestHostShellLayersTheAttemptsEnvironmentAndRedactsItsValues(t *testing.T) {
+	const value = "jira-token-8f3a2b1c9d-not-a-real-credential"
+	res, err := run(t, 10*time.Second, toolbroker.ShellCommand{
+		Argv: []string{"/usr/bin/env"},
+		Env:  map[string]string{"JIRA_TOKEN": value, "DATABASE_URL": "postgres://u:p@db/x"},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// The KEYS arrive — the layer took effect.
+	for _, name := range []string{"JIRA_TOKEN", "DATABASE_URL"} {
+		if envValue(res.Stdout, name) == "" {
+			t.Fatalf("the attempt's environment key %q did not reach the command:\n%s", name, res.Stdout)
+		}
+	}
+	// The VALUES do not survive into the result. This is the property the tool ledger depends on: `env`
+	// is a one-line way for an agent to dump every credential it holds into a durable row.
+	if strings.Contains(res.Stdout, value) || strings.Contains(res.Stdout, "postgres://u:p@db/x") {
+		t.Fatalf("an environment value came back in the captured output unmasked:\n%s", res.Stdout)
+	}
+	if envValue(res.Stdout, "JIRA_TOKEN") != "***" {
+		t.Fatalf("JIRA_TOKEN's value is %q, want the redaction mask", envValue(res.Stdout, "JIRA_TOKEN"))
+	}
+	// And the closed list is still closed: the two derived names are present, nothing else new is.
+	allowed := map[string]bool{
+		"PATH": true, "LANG": true, "DEVELOPER_DIR": true,
+		"HOME": true, "TMPDIR": true, "PALAI_SIMCTL_SET": true,
+		"JIRA_TOKEN": true, "DATABASE_URL": true,
+	}
+	for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+		name, _, ok := strings.Cut(line, "=")
+		if ok && !allowed[name] {
+			t.Fatalf("environment carries %q, which is neither on the allow-list nor in the attempt's environment:\n%s", name, res.Stdout)
+		}
+	}
+}
+
 // TestHostShellBoundsOutput pins the same caps the OCI executor applies (1 MiB stdout / 64 KiB
 // stderr) and the truncation flag that says so. Unbounded output is how a shell tool takes down the
 // control plane it now runs inside.

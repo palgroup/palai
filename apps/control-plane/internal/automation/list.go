@@ -84,8 +84,13 @@ type AgentRevisionItem struct {
 	// fresh published revision on every bring-up. Ids only — the credential lives on the connection row.
 	MCPConnections []string
 	Instructions   string
-	Published      bool
-	CreatedAt      time.Time
+	// Environment is the id of the environment whose key→value pairs this revision's shell commands receive
+	// (E25 T3), '' for a revision that names none. Listed for the SAME reason Tools and MCPConnections are —
+	// there is no per-revision GET, so the list is the only read path for a config the API lets you write,
+	// and §2 forbids a write-and-pray surface. An ID only: no key name and certainly no value.
+	Environment string
+	Published   bool
+	CreatedAt   time.Time
 }
 
 // ListRevisions returns a tenant-scoped page of one profile's revisions newest-first (spec §10). An
@@ -101,7 +106,7 @@ func (s *Store) ListRevisions(ctx context.Context, org, project, profileID strin
 	var out []AgentRevisionItem
 	for rows.Next() {
 		var it AgentRevisionItem
-		if err := rows.Scan(&it.ID, &it.RevisionNumber, &it.Model, &it.Tools, &it.MCPConnections, &it.Instructions, &it.Published, &it.CreatedAt); err != nil {
+		if err := rows.Scan(&it.ID, &it.RevisionNumber, &it.Model, &it.Tools, &it.MCPConnections, &it.Instructions, &it.Environment, &it.Published, &it.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan agent revision row: %w", err)
 		}
 		out = append(out, it)

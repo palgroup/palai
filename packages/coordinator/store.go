@@ -1025,6 +1025,40 @@ func (s *Store) PinnedExecConfig(ctx context.Context, tenant Tenant, runID strin
 	return *revID, model, tools, toolSetTools, skillPins, nil
 }
 
+// RunEnvironmentKeys resolves a run's environment KEY NAMES and the derived secret_refs name each value is
+// stored under (E25 T3, migration 000046). NAMES ONLY — nothing here reads or returns a value, and there is
+// no query in storage/queries that could (storage/ciphertext_sweep_test.go pins that to two names, neither
+// of them this one).
+//
+// It reads through the run's PINNED revision, so an old run resolves the environment it was published
+// against rather than whatever the profile points at now — PinnedExecConfig's AGT-001 reproducibility rule,
+// applied to a credential set. A run with no pin, a revision naming no environment, or an environment with
+// no keys all return nil, which is every run in every deployment before E25.
+//
+// It lives on the spine beside PinnedExecConfig rather than being a pool read inside the orchestrator: every
+// other durable read in internal/execution goes through a method here, and the one that did not was this
+// one.
+func (s *Store) RunEnvironmentKeys(ctx context.Context, tenant Tenant, runID string) (keys, secretNames []string, err error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("RunEnvironmentKeys"), runID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read run environment keys: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, secretName string
+		if err := rows.Scan(&key, &secretName); err != nil {
+			return nil, nil, fmt.Errorf("scan run environment key: %w", err)
+		}
+		keys = append(keys, key)
+		secretNames = append(secretNames, secretName)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate run environment keys: %w", err)
+	}
+	return keys, secretNames, nil
+}
+
 // RunSkillPinInputs returns the pinned revision's REQUESTED skill names and whether the run's skill_pins
 // are already frozen (E12 Task 7, spec §28.16) — the inputs the run-start pin write consults. A run whose
 // pins are already frozen returns alreadyPinned=true so the resolver skips re-resolution on a resume.

@@ -43,8 +43,17 @@ var ErrReadOnlyUnsupported = errors.New("read-only execution has no host equival
 // rather than filtered against a deny-list: a variable nobody thought of cannot arrive.
 //
 // Each entry earns its place: PATH finds the host's tools, LANG decides how tools encode their
-// output, DEVELOPER_DIR selects the Xcode a `xcrun` resolves against. Together with sessionDirs
-// below, these are the COMPLETE environment — nothing else reaches the command.
+// output, DEVELOPER_DIR selects the Xcode a `xcrun` resolves against.
+//
+// TOGETHER WITH sessionDirs BELOW, THESE WERE THE COMPLETE ENVIRONMENT UNTIL E25 T3, AND THAT
+// SENTENCE STOOD HERE VERBATIM UNTIL IT STOPPED BEING TRUE. There is now exactly one other source and
+// it is a CALLER-SUPPLIED LAYER, never an inheritance: ShellCommand.Env carries the attempt's own
+// environment values (an operator-authored environment, resolved from secret_refs at exec time) and
+// toolbroker.LayerEnv adds them ON TOP of what allowedEnv builds. Nothing in this file's two lists can
+// be overwritten by that layer — a colliding key is refused and the command does not run — so the
+// property the allow-list exists for is unchanged: a variable nobody named cannot ARRIVE, and a
+// variable this file derived cannot be REPLACED. What changed is that a variable an operator named
+// explicitly, for one environment, can now be present.
 var envAllowList = []string{"PATH", "LANG", "DEVELOPER_DIR"}
 
 // sessionDir is the allocation subdirectory holding a run's own machine-local state. It is
@@ -123,6 +132,16 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 	if err != nil {
 		return toolbroker.ShellResult{}, err
 	}
+	// The attempt's own environment values, layered on top. A refused key returns BEFORE the process is
+	// started: a command that ran under a caller-supplied PATH and reported an error afterwards would
+	// already have executed the caller's binaries.
+	env, err = toolbroker.LayerEnv(env, reservedEnvNames(), cmd.Env)
+	if err != nil {
+		return toolbroker.ShellResult{}, err
+	}
+	// The values this attempt carries, masked in whatever the command writes. Computed once here rather
+	// than per output stream, and used for BOTH streams below — an accidental echo is as likely on stderr.
+	envValues := toolbroker.EnvValueList(cmd.Env)
 
 	c := exec.CommandContext(ctx, runArgv[0], runArgv[1:]...)
 	c.Dir = cmd.WorkspaceRoot
@@ -138,11 +157,19 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 	stderr := &cappedBuffer{limit: e.maxStderrBytes}
 	c.Stdout, c.Stderr = stdout, stderr
 
+	// redact runs BOTH redactors over every captured byte: the shape-based one (provider keys, bearer
+	// tokens) and the value-based one (this attempt's own environment values). Both, because neither sees
+	// what the other does — RedactSecrets cannot recognise an operator's database password, and
+	// RedactValues cannot recognise a token the agent obtained some other way.
+	redact := func(s string) string {
+		return toolbroker.RedactValues(toolbroker.RedactSecrets(s), envValues)
+	}
+
 	start := time.Now()
 	err = c.Run()
 	result := toolbroker.ShellResult{
-		Stdout:     toolbroker.RedactSecrets(stdout.String()),
-		Stderr:     toolbroker.RedactSecrets(stderr.String()),
+		Stdout:     redact(stdout.String()),
+		Stderr:     redact(stderr.String()),
 		Truncated:  stdout.truncated || stderr.truncated,
 		DurationMS: time.Since(start).Milliseconds(),
 	}
@@ -152,7 +179,7 @@ func (e *Executor) Run(ctx context.Context, cmd toolbroker.ShellCommand) (toolbr
 		// A shell reports a missing command as 127 rather than as a failure to run anything; the
 		// container posture surfaces exactly that, and so does this one.
 		result.ExitCode = 127
-		result.Stderr = toolbroker.RedactSecrets(strings.TrimSpace(stderr.String() + "\n" + runArgv[0] + ": command not found"))
+		result.Stderr = redact(strings.TrimSpace(stderr.String() + "\n" + runArgv[0] + ": command not found"))
 		return result, nil
 	case err != nil && c.ProcessState == nil:
 		return result, fmt.Errorf("host shell: %w", err)
@@ -199,6 +226,24 @@ func allowedEnv(workspaceRoot string) ([]string, error) {
 		env = append(env, d[0]+"="+path)
 	}
 	return env, nil
+}
+
+// reservedEnvNames is every variable name THIS POSTURE CLAIMS, whether or not it populated one. It is
+// derived from the same two slices allowedEnv builds from, so a variable added to either list is
+// reserved by that edit alone.
+//
+// IT IS SEPARATE FROM allowedEnv'S OUTPUT BECAUSE THE TWO SETS DIFFER, and the difference was measured
+// (2026-07-30, E25 T3): allowedEnv uses os.LookupEnv, so a name the control plane does not carry never
+// appears among its entries. On a Mac with no exported DEVELOPER_DIR the environment it returns has no
+// DEVELOPER_DIR — and an environment key by that name was accepted, which would have chosen the Xcode
+// the agent's `xcrun` resolved against. "Not populated" is not "not claimed".
+func reservedEnvNames() []string {
+	names := make([]string, 0, len(envAllowList)+len(sessionDirs))
+	names = append(names, envAllowList...)
+	for _, d := range sessionDirs {
+		names = append(names, d[0])
+	}
+	return names
 }
 
 // cappedBuffer captures at most limit bytes and remembers that it dropped the rest. It always

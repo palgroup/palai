@@ -68,6 +68,10 @@ func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 		WorkspaceRoot: env.WorkspaceRoot,
 		ReadOnly:      env.ReadOnly,
 		Shell:         shellMode,
+		// The attempt's environment (E25 T3). It is handed straight to the executor and NEVER read here:
+		// this function must not be able to put a value into `findings`, into an error message or into the
+		// returned map, all three of which are committed to the tool ledger.
+		Env: env.EnvValues,
 	})
 	if err != nil {
 		return nil, err
