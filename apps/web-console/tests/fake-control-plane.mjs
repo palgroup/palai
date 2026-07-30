@@ -1147,6 +1147,37 @@ export const ROUTES = [
     pattern: "/v1/tools/{tool_id}/revisions",
     handle: (_req, res, { tool_id: id }) => sendJSON(res, 200, { data: (toolRevisionsByTool.get(id) ?? []).map(toolRevisionRow), has_more: false }),
   },
+  // The single-resource read POST /v1/tools/{tool_id}/revisions names in its 201 Location. It is served
+  // here for the reason the sweep's route arm cannot catch on its own: that arm checks only that every
+  // route the FIXTURE serves is registered by the real router, never the other direction, so a route
+  // mounted on the real side and missing here is INVISIBLE to it. Its projection is toolRevisionRow —
+  // the list's, field for field — because the real route shares one projection helper with the list.
+  {
+    method: "GET",
+    pattern: "/v1/tools/{tool_id}/revisions/{revision_id}",
+    handle: (_req, res, { tool_id: id, revision_id: revID }) => {
+      const rev = (toolRevisionsByTool.get(id) ?? []).find((r) => r.id === revID);
+      return sendJSON(
+        res,
+        200,
+        toolRevisionRow(
+          rev ?? {
+            id: revID,
+            tool_id: id,
+            revision_number: 1,
+            executor: "control_plane",
+            description: "",
+            input_schema: { type: "object" },
+            digest: "sha256:fixturesynthesised",
+            status: "draft",
+            approval_required: false,
+            approval_label: "",
+            created_at: fixtureTime(0),
+          },
+        ),
+      );
+    },
+  },
   {
     method: "POST",
     pattern: "/v1/tools/{tool_id}/revisions/{revision_id}/publish",

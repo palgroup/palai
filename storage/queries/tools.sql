@@ -37,6 +37,21 @@ WHERE tool_id = $1 AND organization_id = $2 AND project_id = $3
 ORDER BY created_at DESC, id DESC
 LIMIT $8;
 
+-- GetToolRevision reads ONE revision of ONE lineage, with the same projection the list carries. It is what
+-- makes the Location header of POST /v1/tools/{tool_id}/revisions resolvable: that create has advertised
+-- `/v1/tool-revisions/<id>` since E12 and no epic ever mounted that prefix, so a client that followed the
+-- address the API gave it got a 404.
+--
+-- BOTH tool_id AND id ARE IN THE PREDICATE, for the reason its set-revision twin below gives verbatim: the
+-- route is /v1/tools/{tool_id}/revisions/{revision_id} and a revision belongs to exactly one lineage, so a
+-- revision of tool A read under tool B's id must be a 404 rather than a row — otherwise the path segment
+-- would be decorative and a screen could show one tool's revision under another tool's heading.
+-- name: GetToolRevisionOfTool
+SELECT id, tool_id, revision_number, executor, description, input_schema, digest,
+       published_at IS NOT NULL, approval_required, approval_label, created_at
+FROM tool_revisions
+WHERE id = $1 AND tool_id = $2 AND organization_id = $3 AND project_id = $4;
+
 -- GetToolSetRevision reads ONE set revision INCLUDING ITS PINS (E25 T7). The list projection carries a
 -- digest and a revision number but not tool_pins, so "which tools did I actually grant?" had no answer on
 -- the public API — which the tree recorded as a `ponytail:` note on ListToolSets: "no single-resource GET

@@ -24,6 +24,10 @@ type fakeToolRegistry struct {
 	// page on GET /v1/tools/{tool_id}/revisions (E25 T7).
 	revsFound bool
 	getSetRev ToolResult
+	getRev    ToolResult
+	// lastRevision records the (tool_id, revision_id) pair the single-resource read was asked for, so the
+	// Location a create advertises is proven to resolve to THAT lineage's revision.
+	lastRevision [2]string
 	// lastRevisionsTool records which lineage the handler asked for, so the path segment is proven to
 	// reach the seam rather than assumed from a 200.
 	lastRevisionsTool string
@@ -66,6 +70,10 @@ func (f *fakeToolRegistry) ListToolRevisions(_ context.Context, _ middleware.Sco
 func (f *fakeToolRegistry) GetToolSetRevision(_ context.Context, _ middleware.Scope, setName, revisionID string) (ToolResult, error) {
 	f.lastSetRevision = [2]string{setName, revisionID}
 	return f.getSetRev, nil
+}
+func (f *fakeToolRegistry) GetToolRevision(_ context.Context, _ middleware.Scope, toolID, revisionID string) (ToolResult, error) {
+	f.lastRevision = [2]string{toolID, revisionID}
+	return f.getRev, nil
 }
 
 func toolTestServer(t *testing.T, reg *fakeToolRegistry) string {

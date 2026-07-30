@@ -389,6 +389,10 @@ async function seedBothStacks() {
     seeded[label].set = setName;
     // SCOPED, because `{revision_id}` already means the AGENT revision above — see seededPath.
     seeded[label]["/v1/tool-sets/{set}/revisions/{revision_id}|revision_id"] = setBody.id;
+    // The THIRD meaning of `{revision_id}` in this table, and the one that makes the tool revision's own
+    // Location resolvable. Without this scoped key the pattern would inherit the agent revision's id, the
+    // real route would correctly 404, and arm 3 would `continue` past it in silence.
+    seeded[label]["/v1/tools/{tool_id}/revisions/{revision_id}|revision_id"] = revisionBody.id;
   }
 
   // E25 T8 SEEDS A RUN ON EACH SIDE, which populates TWO collections at once and is why it is one seed
