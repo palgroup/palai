@@ -28,6 +28,10 @@ import (
 // WHAT REPLACES THE CONTEXT AS THE BOUND: a `deadline_at` column and a reaper that reads it (E26 §0.2).
 // A context cannot do that job because a context does not survive a restart and the process does.
 
+// The host executor is a BackgroundRunner as well as a ShellRunner. Asserted here rather than in a test
+// so that it is the compiler, not a tier someone has to remember to run, that keeps it true.
+var _ toolbroker.BackgroundRunner = (*Executor)(nil)
+
 // bgSeparator splits a host handle into its two halves: the process-group id and the start time of the
 // process that led it. BOTH are required and the second is the whole point — a pgid alone is a number
 // the kernel hands out again.
