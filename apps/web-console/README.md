@@ -36,9 +36,22 @@ the server-side relay (`app/api/palai/**`) and never reaches the browser — the
   undone. A run is pinned to a published revision from `/runs`, where the agent and revision pickers are
   **optional**: with none chosen the stream relay's body is unchanged, which is why the E17 T10 journey specs
   needed no edit. A **draft** is listed and labelled rather than hidden, because the server refuses to run one
-  (409 `revision_not_published`) and an operator who cannot see their draft cannot tell why. `tool_sets` and
-  `mcp_connections` are **deliberately not offered yet** — the read routes that would list a tool revision or a
-  tool set's contents do not exist (E25 T7), and an empty dropdown is a control that cannot be satisfied.
+  (409 `revision_not_published`) and an operator who cannot see their draft cannot tell why. `tool_sets` (the
+  GRANT) and `mcp_connections` (the CEILING) are **pickers as of E25 T7**, published sets only, and both read
+  back on the revision list — the grant half was write-only until then, so a revision could name a set nobody
+  could confirm.
+
+- **Tools (`/tools`, E25 T7):** register an upstream **MCP connection** (`secret_ref` chosen from a list, never
+  typed), **discover** its tools, read each DRAFT revision **with the description the server wrote**, approve it
+  by publishing — carrying the `approval_required` gate and the operator's label on the same call — then pin the
+  approved revisions into a set, publish the set and read its **contents** back. Two of those calls are routes
+  E25 T7 added (`GET /v1/tools/{tool_id}/revisions`, `GET /v1/tool-sets/{set}/revisions/{revision_id}`); a
+  SHIPPED runbook had told operators to publish a `$REV_ID` no route returned. **This is a registration screen,
+  not the approval queue** — it shows the server's description because that is what is being decided, while
+  `/approvals` does not carry that field at all. The description is rendered as **text** (proven by attack, not
+  by claim), and the gate **defaults ON for every tool** because Palai does not classify write tools and will
+  not start (`HIL-P5` is made visible, not closed). Operator guide:
+  **[docs/operations/console.md](../../docs/operations/console.md) §4b**.
 
 ### Public-API GAP: richer approval detail
 

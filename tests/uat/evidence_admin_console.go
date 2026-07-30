@@ -42,4 +42,12 @@ package uat
 // its last proof is a component-real Go test that drives the SAME public HTTP routes the screens call, with no
 // SQL below the tenant seed, and then watches a real `printenv` receive the keys. That test is the one place
 // in the tree where E25 T3's pipe and T6's console meet, and it is why neither task's claim is the other's.
-var AdminConsoleCaseIDs = []string{"CON-001", "CON-002", "CON-003", "CON-004", "CON-005", "CON-006"}
+// CON-007 IS THE ONLY CASE IN THIS LIST WHOSE FIRST MEASUREMENT WAS OF A SHIPPED DOCUMENT. T7's RED is not a
+// missing feature, it is docs/operations/jira-mcp-connection.md §3 telling operators for three and a half days
+// to publish a `$REV_ID` that no /v1 response has ever contained — and the step being unreachable is what made
+// the E23 T5 decision hung on it (approval_required) unreachable too. Its component leg EXECUTES that runbook
+// over the public API alone, which is the only way a document is verified: it was edited three times while it
+// was wrong, so being read is not verification and being edited is not either. Its browser legs are the screen,
+// and its untrusted-text leg is an ATTACK rather than an assertion — the discovered description carries a
+// <script> and an <a>, and the spec then counts elements, anchors and navigations.
+var AdminConsoleCaseIDs = []string{"CON-001", "CON-002", "CON-003", "CON-004", "CON-005", "CON-006", "CON-007"}

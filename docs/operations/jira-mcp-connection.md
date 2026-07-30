@@ -59,7 +59,8 @@ PALAI_MCP_SECRET_FILE_<ORG>__JIRA_API_TOKEN=/run/secrets/jira-api-token
 
 ## 3. Register, discover, approve, grant
 
-Five calls. `discover` is the only one that touches Atlassian.
+Seven calls. `discover` is the only one that touches Atlassian; two of the others are reads that tell you
+what you are about to approve.
 
 ```sh
 # (a) Register the connection. The credential is a HANDLE — never inline.
@@ -73,7 +74,21 @@ curl -X POST "$PALAI_BASE_URL/v1/mcp-connections" -H "Authorization: Bearer $PAL
 #     model-visible as jira__<tool>. Nothing is advertised yet.
 curl -X POST "$PALAI_BASE_URL/v1/mcp-connections/$CONN_ID/discover" -H "Authorization: Bearer $PALAI_API_KEY"
 
-# (c) Approve the tools you want. Find the ids with GET /v1/tools, then publish each revision.
+# (c) Find the tool LINEAGE ids. This gives you $TOOL_ID and nothing else — the ids of the lineages
+#     discovery created, with their canonical and model-visible names.
+curl "$PALAI_BASE_URL/v1/tools" -H "Authorization: Bearer $PALAI_API_KEY"
+# → {"data":[{"id":"tool_...","canonical_name":"mcp.jira.getJiraIssue","model_visible_name":"jira__getJiraIssue"}, ...]}
+
+# (c2) Find the REVISION ids, and read what you are about to approve. This is where $REV_ID comes from,
+#      and it carries the two fields the decision is actually about: the `description` the SERVER wrote
+#      (it goes into a model's context) and the `input_schema` (the shape the model will be able to call).
+curl "$PALAI_BASE_URL/v1/tools/$TOOL_ID/revisions" -H "Authorization: Bearer $PALAI_API_KEY"
+# → {"data":[{"id":"trev_...","tool_id":"tool_...","revision_number":1,"executor":"mcp",
+#             "description":"Get the details of a Jira issue by its key.","input_schema":{...},
+#             "digest":"sha256:...","status":"draft","approval_required":false,"approval_label":"",
+#             "created_at":"..."}]}
+
+# (d) Approve the tools you want, by publishing the revision.
 #     A READ tool needs no body.
 curl -X POST "$PALAI_BASE_URL/v1/tools/$TOOL_ID/revisions/$REV_ID/publish" -H "Authorization: Bearer $PALAI_API_KEY"
 
@@ -83,12 +98,20 @@ curl -X POST "$PALAI_BASE_URL/v1/tools/$WRITE_TOOL_ID/revisions/$WRITE_REV_ID/pu
   -d '{"approval_required":true,
        "approval_label":"the shared Jira service account may move tickets in PAL"}'
 
-# (d) Pin the approved revisions into a tool set, and publish the set.
+# (e) Pin the approved revisions into a tool set, and publish the set.
 curl -X POST "$PALAI_BASE_URL/v1/tool-sets/jira/revisions" -H "Authorization: Bearer $PALAI_API_KEY" \
   -d '{"tools":[{"tool_revision_id":"'"$REV_ID"'"}]}'
+# → {"id":"tsrev_...", ...}   ← this is $SET_REV_ID
 curl -X POST "$PALAI_BASE_URL/v1/tool-sets/jira/revisions/$SET_REV_ID/publish" -H "Authorization: Bearer $PALAI_API_KEY"
 
-# (e) Grant them to an agent revision. BOTH fields are required:
+# (e2) Read the set's CONTENTS back — the exact revisions it grants. GET /v1/tool-sets lists sets with a
+#      digest, and a digest tells you two sets differ without telling you how; this is the only place the
+#      API says WHICH tool revisions a set pins.
+curl "$PALAI_BASE_URL/v1/tool-sets/jira/revisions/$SET_REV_ID" -H "Authorization: Bearer $PALAI_API_KEY"
+# → {"id":"tsrev_...","set":"jira","revision_number":1,"digest":"sha256:...","status":"published",
+#    "tools":[{"tool_revision_id":"trev_..."}],"created_at":"..."}
+
+# (f) Grant them to an agent revision. BOTH fields are required:
 #     tool_sets grants the tools, mcp_connections is the capability ceiling.
 curl -X POST "$PALAI_BASE_URL/v1/agents/$AGENT_ID/revisions" -H "Authorization: Bearer $PALAI_API_KEY" \
   -d '{"model":"...","tool_sets":["'"$SET_REV_ID"'"],"mcp_connections":["'"$CONN_ID"'"]}'
@@ -97,9 +120,49 @@ curl -X POST "$PALAI_BASE_URL/v1/agents/$AGENT_ID/revisions" -H "Authorization: 
 Then publish the agent revision and start a run with `agent_revision_id` set. The tool is advertised to the
 model, which calls it by its model-visible name (`jira__getJiraIssue`).
 
+**All of §3 is also a screen.** The admin console's `/tools` page walks the same seven calls — register with
+a `secret_ref` chosen from a list, discover, read each draft revision **with the description you are
+approving**, publish it with the gate declaration, pin, publish the set, and read the set's contents back —
+and `/agents` binds the published set and the connection to a revision. See
+[`console.md`](console.md#4b-tools--mcp-connections-and-tool-registration), which also explains why that screen
+shows the server's description and the approval queue does not.
+
 **You do not need to write a `config_policy`.** A fresh project's is NULL, and the tool-set grant unions onto
 that empty baseline. (Guarded by `TestResolveGrantsToolSetsOnANullProjectBaseline`, because the failure mode
 otherwise is silent: a model that simply never calls the tool.)
+
+### 3a. The repair, and how long the wrong instruction stood
+
+Step (c) used to read, in one line: *"Approve the tools you want. Find the ids with `GET /v1/tools`, then
+publish each revision."* **`GET /v1/tools` has never returned a revision id.** Its projection is
+`{id, object, canonical_name, model_visible_name}` and always was; so was `GET /v1/tools/{id}`'s. The
+`$REV_ID` the next line put in a URL could be obtained only by reading the database. Step (e) pinned it and
+step (f) granted the set it went into, so **three of this runbook's calls rested on one nobody could make.**
+
+Measured from this repository's own history rather than estimated:
+
+| | |
+|---|---|
+| The instruction shipped | `684076e8`, 2026-07-27 03:28 +03:00 |
+| It was repaired | `bbf4df4b`, 2026-07-30 17:01 +03:00 |
+| **It stood** | **3 days, 13 hours, 33 minutes** |
+| The file was edited in between | **three times** (`6e931863`, `2322832f`, `324bb61c`) |
+| The read side it needed | `GET /v1/tools/{tool_id}/revisions`, which did not exist until E25 T7 |
+
+**The three intervening edits are the part worth keeping.** Each author read past the broken step to change
+something else — one added a second secret-resolution path, one added the Slack section, and the third,
+E23 T5, made it **worse**: it hung a new decision (`approval_required`, `approval_label`) on the same
+unobtainable id, so the step that could not be performed became the step that also decided whether a human
+is asked. A document is not verified by being read, and it is not verified by being edited either.
+
+What found it was **executing it**. `apps/control-plane/internal/execution/jira_runbook_component_test.go`
+walks §3 (a)–(f) with an HTTP client and a bearer token and nothing else, against the shipped router and a
+real database. It failed at step (c) with `405` — not `404`, because the path was already mounted for POST:
+the tree could **write** a revision at exactly the address it refused to **read** one from. That test now
+runs green end to end, and it is the reason this section can promise the steps work rather than assert it.
+
+**The lesson is filed as a rule rather than as an anecdote:** a runbook step that names a `$VARIABLE` must
+show the call that produces it. Every `$` in §3 above now has a preceding call whose output contains it.
 
 ## 3b. Write tools — the one extra question, and the warning that comes with it
 
@@ -153,7 +216,7 @@ same lookup that will execute it, your label, and **every argument that will be 
 `TestApprovedMCPArgumentsReachThePeerByteForByte` is the proof that those are the same bytes — if the screen
 and the wire could differ, every approval here would be theatre.
 
-## 4. Both fields in step (e), or nothing happens
+## 4. Both fields in step (f), or nothing happens
 
 `tool_sets` and `mcp_connections` do different jobs and the failure is quiet:
 
@@ -164,7 +227,7 @@ and the wire could differ, every approval here would be theatre.
 ## 4b. Using it from Slack
 
 §3 is the general path. If the agent you want to reach Jira is the **Slack** agent, `palai up` does steps
-(d) and (e) for you — but only if you tell it which connection:
+(e) and (f) for you — but only if you tell it which connection:
 
 ```sh
 # .env.local
@@ -187,7 +250,7 @@ deliberately. Changing the value mints and publishes a **new** agent revision on
 reordering the list does not.
 
 **`SLACK_AGENT_MCP` is only half of it.** The rider is the ceiling, not the grant — the Jira **tools** still
-have to be approved and pinned into a tool set the revision names (§3 c–d, and §4 on why both are needed).
+have to be approved and pinned into a tool set the revision names (§3 c–e, and §4 on why both are needed).
 `palai up` does not discover or approve tools for you: approving an upstream tool description is an admin
 act, because the description is text Atlassian wrote and it lands in a model's context.
 
@@ -296,6 +359,8 @@ Recorded in the §3.5 style. Every row was checked against a primary source on t
 | Claim | Where |
 |---|---|
 | The whole chain — register → discover → approve → pin → grant → advertise → call — against a fake MCP server built to the published protocol, driving the **real** manager over real TLS | `apps/control-plane/internal/extensions/mcp_jira_component_test.go` (`TestJiraMCPConnectionEndToEnd`) |
+| **§3 (a)–(f) executed over the PUBLIC API alone** — no store call, no SQL below the tenant seed — which is what makes this document executable rather than merely correct-looking | `apps/control-plane/internal/execution/jira_runbook_component_test.go` (`TestTheJiraRunbookRunsOnThePublicAPIAlone`) |
+| Another tenant's tool revision and tool set are **404**, for ids that exist | same file (`TestAForeignTenantsToolRevisionIsNotFound`) |
 | An MCP server's output grants no capability | same file (`TestJiraMCPServerOutputCannotGrantCapability`) |
 | A ticket body carrying an injection earns five refusals, each re-derived from the database | `apps/control-plane/internal/extensions/jira_ticket_injection_component_test.go` (`TestJiraTicketBodyCannotInstructTheAgent`) |
 | A ticket body **cannot approve itself** — five more refusals, against the approval path this time: it cannot skip the gate, fill a field on the approval screen, change the operator's label, move the `approval_required` flag, or consume another call's approval | `apps/control-plane/internal/execution/mcp_write_approval_component_test.go` (`TestAJiraTicketBodyCannotApproveItself`) |
