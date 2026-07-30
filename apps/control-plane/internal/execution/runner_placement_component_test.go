@@ -90,6 +90,9 @@ func newPlacementFixture(t *testing.T) *poolKeyFixture {
 	// line a machine joining a pool wakes nothing — which is the posture every Docker-free wire proof
 	// runs in, and the reason the production call site is fenced by name in a test of its own.
 	f.gateway.SetCapacityWaker(cs)
+	// Kept so E24 T5's park-reaper proofs can drive the same spine the waker uses: the park and the thing
+	// that expires it have to be the same store, or the test proves two halves of two systems.
+	f.spine = cs
 	return f
 }
 
