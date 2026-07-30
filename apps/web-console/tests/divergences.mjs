@@ -33,34 +33,26 @@
 /** @type {Divergence[]} */
 export const DIVERGENCES = [
   // =====================================================================================================
-  // ROUTE SURFACE — three of the fifteen routes the fixture serves are not registered by the real router
-  // on a compose stack. The console reads all three.
-  // =====================================================================================================
-  {
-    id: "DIV-RTE-001",
-    kind: "route",
-    subject: "GET /v1/secret-refs",
-    detail:
-      "The console's admin page lists secret refs. router.go mounts the whole /v1/secret-refs family only when cfg.secrets != nil, which main.go passes only when a master key is configured; deploy/compose/compose.yaml configures none, so the route is absent and the panel is permanently empty against a compose stack. Not a defect — an unconfigured capability — but the fixture presented it as always-there.",
-    owner: "compose tier (no master key by design); the console must render an absent capability honestly rather than assume the route",
-  },
-  {
-    id: "DIV-RTE-002",
-    kind: "route",
-    subject: "GET /v1/responses/{response_id}/artifacts",
-    detail:
-      "Unmounted for the same reason as DIV-RTE-003 — see there; this is the list half of the same gate.",
-    owner: "REAL COMPOSE WIRING GAP — see DIV-RTE-003",
-  },
-  {
-    id: "DIV-RTE-003",
-    kind: "route",
-    subject: "GET /v1/artifacts/{artifact_id}/content",
-    detail:
-      "THE ARTIFACT RETRIEVAL SURFACE IS UNREACHABLE ON COMPOSE, AND THE REASON IS A WIRING GAP RATHER THAN A DELIBERATE TIER CHOICE. router.go gates all three artifact routes on `artifacts != nil`, which main.go derives from artifactStoreFromEnv — and that returns nil the moment PALAI_S3_ENDPOINT is empty. deploy/compose/compose.yaml starts a seaweedfs `object-store` service, publishes its port, healthchecks it, and makes the control-plane depend_on it healthy — and then never passes PALAI_S3_ENDPOINT to the control-plane. So compose runs an object store that the control plane cannot see, and the console's artifact download (which is the ONE relay path carrying untrusted bytes) has no real counterpart to be proven against.",
-    owner: "REAL GAP in deploy/compose/compose.yaml — E19 T8 mount-derivation work; NOT closable from apps/web-console",
-  },
-
+  // ROUTE SURFACE — EMPTY, AND THAT IS A MEASUREMENT (E25 T2). This section held three rows: GET
+  // /v1/secret-refs (unmounted because compose configured no secret master key) and the two artifact
+  // retrieval routes (unmounted because compose never passed PALAI_S3_ENDPOINT). All three reasons had
+  // become FALSE — compose.yaml:116 passes PALAI_SECRET_MASTER_KEY_FILE and compose.yaml:77-78 pass
+  // PALAI_S3_ENDPOINT/PALAI_S3_BUCKET — and the rows sat unrepaired for months because the only thing that
+  // reads them is a sweep nothing routine runs (§6 leg 2).
+  //
+  // They were not deleted on the strength of reading compose.yaml. A compose stack was brought up
+  // (packaged CLI, `:local` images, no build) and probed the way ARM 2 probes, and all three answered
+  // 405 with an Allow header — which means the PATTERN is registered:
+  //     OPTIONS /v1/secret-refs                  -> 405  Allow: GET, HEAD, POST
+  //     OPTIONS /v1/artifacts/{id}/content       -> 405  Allow: GET, HEAD
+  //     OPTIONS /v1/responses/{id}/artifacts     -> 405  Allow: GET, HEAD
+  // The staleness arm then named exactly these three and nothing else. So the divergence is CLOSED, and
+  // this ledger's own rule for a closed row is to delete it — a row nobody can re-observe is decoration,
+  // and decoration is what let the false sentences survive. The MECHANISM they recorded is not lost: both
+  // families are still mounted CONDITIONALLY (router.go on cfg.secrets != nil and artifacts != nil), so a
+  // deployment that configures neither still serves neither, and the console still has to render an absent
+  // capability honestly rather than assume a route.
+  //
   // =====================================================================================================
   // RESPONSE SHAPE — routes both serve, answered differently.
   // =====================================================================================================
@@ -93,14 +85,15 @@ export const DIVERGENCES = [
     kind: "shape",
     subject: "GET /v1/agents",
     detail:
-      "ENVELOPE divergence, not just item fields: the real paginated envelope is {data, has_more}; the fixture adds next_cursor and previous_cursor. A console paginating on the fixture's cursors would page nothing against the real API. Same for GET /v1/agents/{id}/revisions.",
-    owner: "console fixture — the E13 T10 list-envelope family; the real envelope is the contract",
+      "ENVELOPE divergence, and REPAIRED (E25 T2, plan §3.6 D6): the measurement was right and the conclusion was too strong. Over a page that ENDS the collection the real envelope is {data, has_more} — next_cursor and previous_cursor are omitempty pointers (contracts.Page) and neither is set. But renderPage GENUINELY MINTS next_cursor whenever has_more is true (api/pagination.go:226-227), so the real API does have forward cursors and this row used to read as though it had none. What is structurally absent is ONLY previous_cursor: beginList refuses ?before= with a 400 (pagination.go:179) and renderPage never populates PreviousCursor, so backward pagination does not exist on this surface at all. The divergence that remains is the fixture serving BOTH cursor keys as explicit nulls on an exhausted page where the real envelope omits them, and offering a previous_cursor the API will never mint. A console that paged on previous_cursor would page nothing — which is why components/Panel.tsx reads has_more + next_cursor and renders no backward control. Same for GET /v1/agents/{id}/revisions.",
+    owner: "console fixture — the E13 T10 list-envelope family; the real envelope is the contract, and its forward half WORKS",
   },
   {
     id: "DIV-SHP-005",
     kind: "shape",
     subject: "GET /v1/agents/{agent_id}/revisions",
-    detail: "The same {data, has_more} vs {data, has_more, next_cursor, previous_cursor} envelope divergence as DIV-SHP-004.",
+    detail:
+      "The same envelope divergence as DIV-SHP-004, and repaired the same way: the real envelope is {data, has_more} plus a MINTED next_cursor when has_more is true (pagination.go:226-227); only previous_cursor is structurally absent. The fixture serves both cursor keys as explicit nulls.",
     owner: "console fixture",
   },
   {
@@ -170,7 +163,7 @@ export const DIVERGENCES = [
     kind: "event",
     subject: "artifact.created.v1",
     detail:
-      "The fixture announces each artifact on the stream and the console reveals the download link mid-run. The real write path inserts the artifacts row with NO journal event, so a real client can only learn about artifacts by polling GET /v1/responses/{id}/artifacts after terminal — a route that is itself unmounted on compose (DIV-RTE-002).",
+      "The fixture announces each artifact on the stream and the console reveals the download link mid-run. The real write path inserts the artifacts row with NO journal event, so a real client can only learn about artifacts by polling GET /v1/responses/{id}/artifacts after terminal. CORRECTED (E25 T2): this row used to add 'a route that is itself unmounted on compose (DIV-RTE-002)', which was measured false — the artifact routes ARE registered on a compose stack. The gap that remains is the one this row is about: artifact creation is invisible to the stream, so the only way to learn of an artifact is to poll after terminal.",
     owner: "REAL GAP — artifact creation is invisible to the stream. E19 T8 public-API gap disposition",
   },
   {
@@ -281,7 +274,7 @@ export const DIVERGENCES = [
     kind: "ui",
     subject: "the hostile-artifact download hardening suite",
     detail:
-      "The suite drives /v1/artifacts/art_evil/content — a fixture that deliberately replays an active content type, an `inline` disposition and a traversal filename. On compose that route is not even mounted (DIV-RTE-003), and no real object store would serve such a response on demand anyway. The relay hardening it pins (coerced type, nosniff, forced attachment, sanitized filename, CSP) is real relay code; only the hostile INPUT is fixture-only. This row exists so the skip is never mistaken for the hardening being unproven — it is proven, on the profile that can produce an attacker.",
+      "The suite drives /v1/artifacts/art_evil/content — a fixture that deliberately replays an active content type, an `inline` disposition and a traversal filename. No real object store would serve such a response on demand, and no real stack holds an artifact called art_evil. The relay hardening it pins (coerced type, nosniff, forced attachment, sanitized filename, CSP) is real relay code; only the hostile INPUT is fixture-only. This row exists so the skip is never mistaken for the hardening being unproven — it is proven, on the profile that can produce an attacker. CORRECTED (E25 T2, plan §3.6 D6): this row used to carry a second reason — that on compose the artifact route is not even mounted — and that was MEASURED FALSE on a running stack: OPTIONS /v1/artifacts/{id}/content answers 405 with an Allow header, so the pattern is registered. The row STANDS on its first reason, which was always the load-bearing one and blocks on its own: a hostile artifact has to be synthesised, and nothing on a real stack synthesises one. A ledger is worth exactly the truth of its lines.",
     owner: "console fixture, correctly — synthesising a hostile upstream is what a fixture is FOR",
   },
   {
@@ -291,6 +284,14 @@ export const DIVERGENCES = [
     detail:
       "The fixture exposes /__introspect so 'the relay addressed ONLY /v1/*, every one Bearered' is checkable from the UPSTREAM end. A real control plane has no such endpoint, so on the real profile only the BROWSER end runs: every captured request is same-origin under /api/palai/, none reached the upstream origin, the key appears in no request/chunk/source-map/response body, no websocket, no service worker. The browser end is the half that would actually catch a backchannel, so the loss is small — but it is a loss, and it is named rather than quietly dropped.",
     owner: "console fixture, correctly — an introspection endpoint is not something a control plane should ship",
+  },
+  {
+    id: "DIV-UI-005",
+    kind: "ui",
+    subject: "the list-truncation proof over a collection larger than one page",
+    detail:
+      "tests/pagination.spec.ts drives a TWENTY-ONE row collection so the twenty-first row — the one components/Panel.tsx used to drop in silence (plan §3.6 D18, api/pagination.go defaultPageLimit = 20) — is observable: twenty rows, a truncation notice in TEXT, then a continuation with the server's own ?after= cursor. A fresh compose stack holds ZERO agents: nothing creates one, and no /v1 collection on a bootstrap stack exceeds a page, so has_more is false everywhere and there is no truncation to see. Synthesising a collection larger than a page is what the fake upstream is for, exactly as with the hostile artifact (DIV-UI-003). What does NOT narrow to the fixture is the absence claim: 'no list renders a previous control, and no request carries ?before=' runs on BOTH profiles, because beginList answers ?before= with a 400 (pagination.go:179) and a backward control could therefore never work against the real API.",
+    owner: "console fixture, correctly — a collection larger than one page is state a bootstrap stack does not have; the sweep re-derives that the real agents list is short",
   },
 ];
 

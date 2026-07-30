@@ -66,10 +66,13 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
   await page.goto("/");
   await expect(page.getByTestId("panel-organizations")).toContainText("org_local", { timeout: 15_000 });
   if (IS_REAL) {
-    // /v1/secret-refs is not registered on a compose stack (DIV-RTE-001), so the panel renders its ERROR
-    // state. That path is exercised here on purpose: an unmounted capability is a real operator-facing
-    // state, and it still has to ride the relay like everything else.
-    await expect(page.getByTestId("panel-secret-refs")).toBeVisible();
+    // E25 T2 — THIS USED TO SAY "/v1/secret-refs is not registered on a compose stack (DIV-RTE-001), so the
+    // panel renders its ERROR state", and that was measured FALSE: compose.yaml:116 passes the secret master
+    // key file, the route family mounts, and a running stack answers OPTIONS /v1/secret-refs with 405 + Allow.
+    // What a compose stack actually shows is the honest EMPTY state — the route works and nothing has written
+    // a secret ref — which is a stronger assertion than "visible", and it is the state T4's secret form will
+    // write into. The ledger row is deleted because the divergence is closed, not because the check moved.
+    await expect(page.getByTestId("panel-secret-refs-empty")).toBeVisible({ timeout: 15_000 });
   } else {
     await expect(page.getByTestId("panel-secret-refs")).toContainText("provider-key");
   }

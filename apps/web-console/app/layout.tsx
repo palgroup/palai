@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
+import { CONSOLE_ROUTES } from "@/lib/routes";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -12,6 +14,10 @@ export const metadata: Metadata = {
 // with keyboard-reachable nav, and a single <main> landmark the skip link targets. Everything below is
 // framed by these landmarks so a screen-reader/keyboard user can navigate the regions (axe: landmarks,
 // bypass-block, html-has-lang).
+//
+// The nav links are DERIVED from lib/routes.ts (E25 T2) — the same list tests/a11y.spec.ts scans. They were
+// two hand-written anchors, which is one half of how a new page could reach production both unlinked and
+// unscanned.
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
@@ -22,8 +28,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <header className="app-header">
           <h1>Palai Console</h1>
           <nav aria-label="Primary">
-            <a href="/">Admin</a>
-            <a href="/runs">Live runs</a>
+            {CONSOLE_ROUTES.map((route) => (
+              <a key={route.path} href={route.path}>
+                {route.label}
+              </a>
+            ))}
           </nav>
         </header>
         <main id="main">{children}</main>

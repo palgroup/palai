@@ -139,16 +139,50 @@ before(async () => {
     env: { ...process.env, FAKE_UPSTREAM_PORT: String(FAKE_PORT) },
     stdio: ["ignore", "ignore", "inherit"],
   });
-  for (let i = 0; i < 100; i++) {
+  let up = false;
+  for (let i = 0; i < 100 && !up; i++) {
     try {
-      if ((await fetch(`${FAKE_BASE}/healthz`)).ok) return;
+      up = (await fetch(`${FAKE_BASE}/healthz`)).ok;
     } catch {
       /* not up yet */
     }
-    await delay(50);
+    if (!up) await delay(50);
   }
-  throw new Error(`the fixture did not come up on ${FAKE_BASE}`);
+  if (!up) throw new Error(`the fixture did not come up on ${FAKE_BASE}`);
+  await seedRealStack();
 });
+
+// --- SEEDING THE REAL SIDE (E25 T2) ---------------------------------------------------------------------
+//
+// The item-shape arm can only compare a collection that has a row on BOTH sides, and a bootstrap stack seeds
+// exactly three: organizations, projects, api-keys. So this sweep has been comparing three item shapes and
+// PROVING ENVELOPES for the rest — which is honest but thin, and it is why the knowledge-base fixture row
+// carried `display_name` (the real projection's field is `name`) for months with nothing to catch it.
+//
+// The seed creates one knowledge base, because /v1/knowledge-bases is mounted UNCONDITIONALLY (main.go's
+// WithKnowledge needs no external key material, unlike secret-refs' master key), which makes the floor below
+// a fixed number rather than a stack-dependent one. THE FLOOR RISES WITH EVERY LATER E25 TASK: T3/T4 add
+// environments, T7 adds tool revisions, and each seeds its own collection here and raises the assert. A
+// baseline that never rises is a baseline nobody notices going stale.
+//
+// ABSENCE IS A FAILURE, NEVER A SKIP: a seed that cannot be created throws, because a sweep that quietly
+// compares fewer collections reports green for exactly the drift it exists to find. The seed is idempotent
+// only in the sense that it does not need to be: rows accumulate on a test stack, and one is enough.
+async function seedRealStack() {
+  const res = await realFetch("/v1/knowledge-bases", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: `conformance-sweep-seed-${Date.now()}` }),
+  });
+  const body = await res.json().catch(() => ({}));
+  assert.ok(
+    res.status === 200 || res.status === 201,
+    `the sweep could not seed a knowledge base on the real stack: POST /v1/knowledge-bases returned ${res.status} ` +
+      `(${body.code ?? "?"}). The item-shape arm needs a row on BOTH sides to compare anything, so a failed seed ` +
+      "is a sweep that would pass by comparing nothing. The bootstrap key holds every capability implicitly " +
+      "(api/middleware/auth.go HasScope on an empty scope set), so this is a real failure, not a permission gap.",
+  );
+}
 after(() => fake?.kill());
 
 describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
@@ -242,11 +276,16 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
         requireLedgerRow("shape", subject, `list item: real ${keyShape(realItem)}\n  fixture ${keyShape(fakeItem)}`);
       }
     }
+    // THE FLOOR, AND IT RISES EVERY TASK (E25 T2). It was 3 — the three collections a bootstrap stack seeds —
+    // and this sweep is now SEEDED (see seedRealStack), so knowledge-bases has a row on both sides too. Four is
+    // the number that must hold: organizations, projects, api-keys, knowledge-bases. E25's later tasks seed
+    // environments and tool revisions and raise it again; it must never fall.
     assert.ok(
-      itemsCompared >= 3,
+      itemsCompared >= 4,
       `only ${itemsCompared} collections had a row on BOTH sides, so this arm compared almost no item shapes — ` +
-        "the bootstrap seeds organizations/projects/api-keys, so fewer than three means the real stack is not " +
-        "seeded and this arm would pass vacuously",
+        "the bootstrap seeds organizations/projects/api-keys and this sweep seeds a knowledge base, so fewer " +
+        "than four means either the real stack is not seeded or the seed did not land, and this arm would pass " +
+        "vacuously",
     );
   });
 
@@ -391,6 +430,25 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     await introspect.body?.cancel().catch(() => {});
     assert.equal(introspect.status, 404, `the real stack served /__introspect with ${introspect.status} — DIV-UI-004 is stale`);
     requireLedgerRow("ui", "the upstream half of the public-API-only proof (/__introspect)", "no upstream introspection on a real control plane");
+
+    // DIV-UI-005 (E25 T2): the truncation proof needs a collection LARGER than one page, and a bootstrap stack
+    // has none. Re-derived from the envelope the real API actually returns rather than assumed: has_more false
+    // means there is no second page and therefore nothing for a "load more" control to fetch. If a real
+    // collection ever does exceed a page, this fails and tests/pagination.spec.ts must stop skipping on real.
+    const agents = await realFetch("/v1/agents");
+    assert.equal(agents.status, 200, `GET /v1/agents on the real stack returned ${agents.status}`);
+    const agentsPage = await agents.json();
+    assert.equal(
+      agentsPage.has_more,
+      false,
+      `the real agents collection reports has_more=${agentsPage.has_more} — it EXCEEDS one page, so DIV-UI-005 is ` +
+        "stale and the list-truncation spec can run on the real profile",
+    );
+    requireLedgerRow(
+      "ui",
+      "the list-truncation proof over a collection larger than one page",
+      `a real stack's agents list holds ${agentsPage.data?.length ?? 0} row(s) with has_more=false — no page is ever truncated`,
+    );
   });
 
   // THE STALENESS DIRECTION. A ledger that only grows is a ledger nobody trusts: a row whose divergence has

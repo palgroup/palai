@@ -16,6 +16,7 @@ package uat
 // tests/uat/extensions refuses a CON- dir that no catalog owns, and tests/uat/admin-console refuses an id in
 // this list that has no directory or whose declared proofs are not in the tree.
 //
-// THIS LIST GROWS ONE ID PER TASK, and only when the directory exists. T1 opens CON-001; the remaining ids
-// the plan names (CON-002..007) join as their tasks land, and the E25 exit gate is where they meet a bundle.
-var AdminConsoleCaseIDs = []string{"CON-001"}
+// THIS LIST GROWS ONE ID PER TASK, and only when the directory exists. T1 opens CON-001, T2 opens CON-002; the
+// remaining ids the plan names (CON-003..007) join as their tasks land, and the E25 exit gate is where they
+// meet a bundle.
+var AdminConsoleCaseIDs = []string{"CON-001", "CON-002"}

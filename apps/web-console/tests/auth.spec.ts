@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "@playwright/test";
 
-import { CONSOLE_PASSWORD, NEXT_PORT, UNCONFIGURED_PORT, UPSTREAM } from "./constants";
+import { CONSOLE_PASSWORD, IS_REAL, NEXT_PORT, UNCONFIGURED_PORT, UPSTREAM, WCAG_TAGS } from "./constants";
 import { announceProfile, sessionHeaders, signIn, signInViaForm } from "./profile";
 
 // CON-001: THE CONSOLE ASKS FOR AN IDENTITY, AND DOES NOT OPEN WITHOUT A PASSWORD.
@@ -21,6 +21,35 @@ const ORIGIN = `http://127.0.0.1:${NEXT_PORT}`;
 const UNCONFIGURED = `http://127.0.0.1:${UNCONFIGURED_PORT}`;
 
 test.beforeAll(() => announceProfile("auth.spec.ts"));
+
+// THE UPSTREAM HALF OF THE REFUSAL CLAIM IS FIXTURE-ONLY, AND E25 T2 MEASURED IT THE HARD WAY.
+//
+// Two arms of this file read `${UPSTREAM}/__introspect` to prove the refused request never LEFT the console.
+// A real control plane has no such endpoint — DIV-UI-004 records exactly that, and public-api-only.spec.ts
+// already narrows the same way — so on the real profile the fetch 404s, `v1Requests` is undefined, and both
+// arms failed with `NaN`. That was measured by running this suite against a real compose stack, which T1 never
+// did (CON-001 says so: every proof there ran against the fake upstream).
+//
+// What is NOT done about it: skipping the tests. Every 401/503 assertion is profile-independent and still runs
+// on both. What narrows on the real profile is only the SECOND, stronger half — the proof that nothing reached
+// the upstream — and it narrows out loud rather than silently: on the fake profile the counter MUST be
+// readable, so this cannot decay into a null that always passes.
+async function upstreamV1Requests(): Promise<number | null> {
+  if (IS_REAL) return null; // DIV-UI-004: no /__introspect on a real control plane.
+  const body = (await (await fetch(`${UPSTREAM}/__introspect`)).json()) as { v1Requests?: number };
+  expect(typeof body.v1Requests, "the FAKE upstream must expose /__introspect — the upstream half of this proof is not optional here").toBe("number");
+  return body.v1Requests as number;
+}
+
+function expectNoUpstreamContact(before: number | null, after: number | null, why: string): void {
+  if (before === null || after === null) {
+    // Real profile only — see upstreamV1Requests. The refusals above already ran.
+    // eslint-disable-next-line no-console -- a narrowed claim that says nothing is how a green report lies.
+    console.log(`NARROWED ON REAL PROFILE — DIV-UI-004: no upstream introspection, so "${why}" is asserted at the door only`);
+    return;
+  }
+  expect(after - before, why).toBe(0);
+}
 
 interface Probe {
   status: number;
@@ -61,8 +90,8 @@ const RELAY_SURFACE = [
   { what: "download artifact bytes", method: "GET", path: "/api/palai/v1/artifacts/art_1/content" },
 ];
 
-test("an unauthenticated client gets 401 from EVERY relay method — including the approval decision surface", async ({ request }) => {
-  const before = await (await request.get(`${UPSTREAM}/__introspect`)).json();
+test("an unauthenticated client gets 401 from EVERY relay method — including the approval decision surface", async () => {
+  const before = await upstreamV1Requests();
 
   for (const a of RELAY_SURFACE) {
     const res = await probe(ORIGIN, a.method, a.path, a.data);
@@ -74,8 +103,8 @@ test("an unauthenticated client gets 401 from EVERY relay method — including t
   // back; this shows the request never left the console at all. The upstream saw not one additional /v1
   // request while nine anonymous calls were being refused. Before the gate existed, the same nine put five
   // NEW paths into this list — /v1/projects/proj_local and /v1/approvals/apv_1/approve among them.
-  const after = await (await request.get(`${UPSTREAM}/__introspect`)).json();
-  expect(after.v1Requests - before.v1Requests, "an anonymous call reached the control plane").toBe(0);
+  const after = await upstreamV1Requests();
+  expectNoUpstreamContact(before, after, "an anonymous call reached the control plane");
 });
 
 test("the correct password opens a session; the wrong one is refused in constant time and says nothing about which half", async ({ page }) => {
@@ -177,8 +206,8 @@ test("a write carrying a foreign Origin is refused 403 even WITH a valid session
   expect(read.status).toBe(200);
 });
 
-test("FAIL-CLOSED: a console with no PALAI_CONSOLE_PASSWORD_HASH serves nothing — not a read, not a write, not a sign-in", async ({ request }) => {
-  const before = await (await request.get(`${UPSTREAM}/__introspect`)).json();
+test("FAIL-CLOSED: a console with no PALAI_CONSOLE_PASSWORD_HASH serves nothing — not a read, not a write, not a sign-in", async () => {
+  const before = await upstreamV1Requests();
 
   for (const a of RELAY_SURFACE) {
     const res = await probe(UNCONFIGURED, a.method, a.path, a.data);
@@ -192,8 +221,8 @@ test("FAIL-CLOSED: a console with no PALAI_CONSOLE_PASSWORD_HASH serves nothing 
   const login = await probe(UNCONFIGURED, "POST", "/api/console/login", { password: CONSOLE_PASSWORD }, { Origin: UNCONFIGURED });
   expect(login.status, "an unconfigured console must not issue a session").toBe(401);
 
-  const after = await (await request.get(`${UPSTREAM}/__introspect`)).json();
-  expect(after.v1Requests - before.v1Requests, "an unconfigured console must not talk to the control plane").toBe(0);
+  const after = await upstreamV1Requests();
+  expectNoUpstreamContact(before, after, "an unconfigured console must not talk to the control plane");
 
   // HONEST CEILING, asserted rather than written in prose: the static shell STILL renders 200. The gate is
   // in the relay, deliberately not in the layout (§3.5 N5 — Partial Rendering does not re-run a layout on
@@ -208,10 +237,12 @@ test("the login page is axe-clean and operable with the keyboard alone", async (
   await page.goto("/login");
   await expect(page.getByTestId("login-form")).toBeVisible();
 
-  // The same rule set the rest of the console is held to today (a11y.spec.ts). WCAG 2.1/2.2 tags are T2's
-  // step and are expected to find pre-existing violations across every page, so adding them here would mix
-  // T1's surface with that measurement.
-  const clean = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
+  // The same rule set the rest of the console is held to (tests/constants.ts WCAG_TAGS). E25 T2 widened it to
+  // include the WCAG 2.1/2.2 tags and this form was re-measured under them: it found NOTHING here, on a page
+  // whose criteria (3.3.8 Accessible Authentication, 3.3.7 Redundant Entry) are precisely the 2.2 additions —
+  // and the reason is measured in a11y.spec.ts rather than assumed, because widening a tag set adds only the
+  // three axe rules that carry those tags, none of which a single-field login form can violate.
+  const clean = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
   expect(clean.violations, JSON.stringify(clean.violations, null, 2)).toEqual([]);
 
   // The field is a real password field with the token WCAG 2.2's 3.3.8 Accessible Authentication needs: a
@@ -234,6 +265,6 @@ test("the login page is axe-clean and operable with the keyboard alone", async (
 
   // The error state is also axe-clean — a live region added at runtime is exactly where a form's a11y
   // usually breaks.
-  const withError = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze();
+  const withError = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
   expect(withError.violations, JSON.stringify(withError.violations, null, 2)).toEqual([]);
 });

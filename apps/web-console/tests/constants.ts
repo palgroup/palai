@@ -47,6 +47,20 @@ export function consolePasswordHash(): string {
   return line.slice(prefix.length);
 }
 
+// THE AXE TAG SET, IN ONE PLACE (E25 T2, plan §3.6 D16). Every axe scan in this suite uses these tags, and
+// the list is here rather than inline because it was inline in four places and all four said WCAG 2.0.
+//
+// axe-core's own tag table defines `wcag2a`/`wcag2aa` as "WCAG 2.0 Level A"/"Level AA"; `wcag21a`,
+// `wcag21aa` and `wcag22aa` are SEPARATE tags and were not included. So the console's accessibility evidence
+// covered WCAG 2.0 only, and 2.4.11 Focus Not Obscured, 3.3.7 Redundant Entry and 3.3.8 Accessible
+// Authentication — all new in 2.2, all criteria a FORM is judged by — sat entirely outside it, on a surface
+// E25 is adding six forms to.
+//
+// What widening this proves is "axe-clean with the WCAG 2.0+2.1+2.2 tags", NOT "accessible": Deque's own
+// figure is that axe finds "on average 57% of WCAG issues", and no scanner judges whether an error message
+// MEANS anything. That gap is §6 operator leg 1 and it does not narrow here.
+export const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
+
 // The fake profile's API key is a distinctive sentinel so the browser-surface secret scan is meaningful:
 // this exact string is the server-only credential, and it must appear in NO browser surface (request
 // headers, URLs, bodies, source maps, static chunks). The relay is its only holder. On the real profile the
