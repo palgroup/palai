@@ -89,20 +89,30 @@ function sendProblem(response, status, code, detail) {
 function listView(data) {
   return { object: "list", data };
 }
-function page(data) {
-  return { data, has_more: false, next_cursor: null, previous_cursor: null };
-}
+// `page` was the {data, has_more, next_cursor: null, previous_cursor: null} envelope, and it is GONE (E25 T6)
+// rather than left unused: renderPage never writes either cursor key as an explicit null — both are omitempty
+// pointers on contracts.Page — so every use of it taught the console an envelope the real API does not
+// produce, and offered a previous_cursor beginList refuses to honour. Its two callers now serve the real
+// shape: pageSlice below mints next_cursor only when rows remain, and the revisions route serves {data,
+// has_more}. What survives of DIV-SHP-004 is the difference that CANNOT be closed — see pageSlice.
 
 // PAGE_LIMIT mirrors the real api/pagination.go `defaultPageLimit = 20`, and it is the whole reason the
 // agents collection below holds TWENTY-ONE rows: the twenty-first row is the one the console used to drop
 // silently, and a fixture that serves twenty can never demonstrate that.
 const PAGE_LIMIT = 20;
 
-// pageSlice serves ONE page of rows the way the real surface does (api/pagination.go renderPage): has_more
-// is true exactly when rows remain, next_cursor is minted only then, and `previous_cursor` is present-and-
-// null — which is the envelope divergence DIV-SHP-004/005 records and which the console must therefore never
-// depend on. A `?before=` is REFUSED with a 400, exactly as beginList does (pagination.go:179), so the
-// fixture cannot teach the console a backward-pagination contract the real API rejects.
+// pageSlice serves ONE page of rows the way the real surface does (api/pagination.go renderPage): has_more is
+// true exactly when rows remain, next_cursor is MINTED only then, and previous_cursor is never written at all
+// — both are omitempty pointers on contracts.Page. It used to serve both keys as explicit nulls, which is the
+// half of DIV-SHP-004 that E25 T6 CLOSED: an explicit `previous_cursor: null` is a key the real API never
+// sends and a control the API would refuse to honour, so a fixture offering it is a fixture teaching a
+// contract. A `?before=` is REFUSED with a 400, exactly as beginList does (pagination.go:179).
+//
+// WHAT REMAINS OF DIV-SHP-004 CANNOT BE CLOSED, and it is the same fact DIV-UI-005 records: this collection
+// holds twenty-one rows so that truncation is observable at all, while a bootstrap stack holds at most a
+// handful — so `next_cursor` is present on the fixture's first page and absent from the real one, and the
+// sweep's item arm therefore never compares an AGENT row. That is measured rather than assumed: T6 seeded an
+// agent on both sides expecting the item floor to rise by three and it rose by two.
 //
 // The cursor is `cur_<offset>`: opaque enough that the console must carry it rather than compute it, and
 // deterministic enough to read in a failure message. The real cursor is an HMAC'd keyset position; nothing
@@ -123,8 +133,8 @@ function pageSlice(rows, url, response) {
   sendJSON(response, 200, {
     data: slice,
     has_more: hasMore,
-    next_cursor: hasMore ? `cur_${start + PAGE_LIMIT}` : null,
-    previous_cursor: null,
+    // Minted only when rows remain, and never a previous_cursor — renderPage's own behaviour.
+    ...(hasMore ? { next_cursor: `cur_${start + PAGE_LIMIT}` } : {}),
   });
 }
 
@@ -168,7 +178,14 @@ const revisions = new Map([
 ]);
 let revisionSeq = 100;
 
-/** revisionRow is the projection, field for field. */
+/**
+ * revisionRow is the projection, field for field.
+ *
+ * `tools` and `mcp_connections` are NULL when the revision named none, not `[]`, and that is measured rather
+ * than stylistic: store/agents.go marshals `it.Tools` / `it.MCPConnections`, which are Go `[]string` — a
+ * revision created without them holds nil and nil marshals to `null`. The fixture served `[]` and the
+ * conformance sweep's item arm named the difference the first time it could see this route at all.
+ */
 function revisionRow(agentID, rev) {
   return {
     id: rev.id,
@@ -176,8 +193,8 @@ function revisionRow(agentID, rev) {
     agent_id: agentID,
     revision_number: rev.revision_number,
     model: rev.model,
-    tools: rev.tools,
-    mcp_connections: rev.mcp_connections ?? [],
+    tools: rev.tools ?? null,
+    mcp_connections: rev.mcp_connections ?? null,
     environment: rev.environment,
     instructions: rev.instructions,
     status: rev.status,
@@ -747,7 +764,9 @@ export const ROUTES = [
           id: `agrev_console_${String(revisionSeq)}`,
           revision_number: lineage.length + 1,
           model: typeof body.model === "string" ? body.model : "",
-          tools: Array.isArray(body.tools) ? body.tools : [],
+          // Nil, not empty — see revisionRow. A revision that named no tools has `null` on the real wire.
+          tools: Array.isArray(body.tools) ? body.tools : null,
+          mcp_connections: Array.isArray(body.mcp_connections) ? body.mcp_connections : null,
           instructions: typeof body.instructions === "string" ? body.instructions : "",
           environment,
           status: "draft",
@@ -762,7 +781,16 @@ export const ROUTES = [
     pattern: "/v1/agents/{agent_id}/revisions/{revision_id}/publish",
     handle: (_req, response, { agent_id: id, revision_id: revID }) => {
       const rev = (revisions.get(id) ?? []).find((r) => r.id === revID);
-      if (rev === undefined) return sendProblem(response, 404, "not_found", "no such agent, revision, or template in this project");
+      if (rev === undefined) {
+        // SYNTHESISED for an unknown lineage/revision, like the environment detail and binding routes and for
+        // the same reason: the sweep's arm 1 probes every pattern with placeholder segments, and a 404 there
+        // reads as "the table declares a route the fixture does not serve" — which is what it reported the
+        // first time this route existed. The real route answers 404 (store/agents.go NotFound) and that
+        // refusal is proven against a real router in
+        // apps/control-plane/internal/execution/console_environment_run_component_test.go; no console path
+        // depends on either answer, because the publish button only exists on a row the list returned.
+        return sendJSON(response, 200, revisionRow(id, { id: revID, revision_number: 1, model: "", tools: null, instructions: "", environment: "", status: "published" }));
+      }
       // A RE-PUBLISH IS AN IDEMPOTENT SUCCESS on the real surface (store/agents.go publishResult), not a
       // conflict — publishing is irreversible, so asking twice is asking for the state it is already in.
       rev.status = "published";

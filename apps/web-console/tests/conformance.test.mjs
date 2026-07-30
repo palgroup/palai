@@ -387,6 +387,11 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     assert.ok(comparable.length >= 10, `expected the fixture to serve the console's read surfaces, got ${comparable.length}`);
 
     let itemsCompared = 0;
+    // WHICH collections were compared, printed rather than counted (E25 T6). A bare number told nobody which
+    // one had dropped out, and T6 spent a sweep run discovering by elimination that GET /v1/agents is not on
+    // this list and structurally cannot be (DIV-SHP-004). A floor whose members are invisible is a floor
+    // nobody can raise deliberately.
+    const comparedSubjects = [];
     for (const route of comparable) {
       const subject = `${route.method} ${route.pattern}`;
       // SEEDED IDS, NOT A PROBE, for the patterns a seed created a row under (E25 T6). Arms 1 and 2 keep the
@@ -413,24 +418,35 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
       const [realItem, fakeItem] = [real.data?.[0], fk.data?.[0]];
       if (realItem === undefined || fakeItem === undefined) continue; // no row on one side — nothing to compare
       itemsCompared += 1;
+      comparedSubjects.push(subject);
       if (keyShape(realItem) !== keyShape(fakeItem)) {
         requireLedgerRow("shape", subject, `list item: real ${keyShape(realItem)}\n  fixture ${keyShape(fakeItem)}`);
       }
     }
+    // eslint-disable-next-line no-console -- the membership IS the evidence; a bare count hides which one left.
+    console.log(`ITEM SHAPES COMPARED — ${itemsCompared}: ${comparedSubjects.join(", ")}`);
+
     // THE FLOOR, AND IT RISES EVERY TASK (E25 T2, raised by T4 and again by T6). It was 3 — the three
     // collections a bootstrap stack seeds — then 4 once this sweep began seeding a knowledge base, then 6 when
-    // T4's seed created an ENVIRONMENT and wrote one VALUE into it (a SECRET_REFS row), and it is now 9: T6
-    // seeds a REPOSITORY BINDING, an AGENT and a published AGENT REVISION, three collections that are empty on
-    // every bootstrap stack because nothing without Slack creates any of them. The nine that must hold:
-    // organizations, projects, api-keys, knowledge-bases, environments, secret-refs, repository-bindings,
-    // agents, agent-revisions. T7 seeds tool revisions and raises it again; it must never fall.
+    // T4's seed created an ENVIRONMENT and wrote one VALUE into it (a SECRET_REFS row), and it is now 8.
+    //
+    // T6 SEEDED THREE COLLECTIONS AND THE FLOOR ROSE BY TWO, and that gap is the measurement rather than a
+    // shortfall. The seeds are a REPOSITORY BINDING, an AGENT and a published AGENT REVISION — three
+    // collections empty on every bootstrap stack, because nothing without Slack creates any of them. Two
+    // became comparable; `GET /v1/agents` did NOT, and structurally cannot: the fixture's agents collection
+    // must exceed one page for truncation to be observable at all (DIV-UI-005/DIV-SHP-004), so its first page
+    // carries a minted `next_cursor` the real stack's short list omits, and an envelope difference SUBSUMES
+    // the item comparison. The eight that must hold: organizations, projects, api-keys, knowledge-bases,
+    // environments, secret-refs, repository-bindings, agent-revisions. T7 seeds tool revisions and raises it
+    // again; it must never fall.
     //
     // WHAT THE T6 RAISE FOUND, because a floor that rises is only worth the drift it catches: the fixture's
-    // agent row was missing `name`, and its REVISION row said `published: true` where the real projection says
+    // agent row was missing `name`; its REVISION row said `published: true` where the real projection says
     // `status: "published"` and carried none of agent_id / revision_number / mcp_connections / environment /
-    // instructions. The second was invisible for a further reason — DIV-SHP-005 recorded an envelope
-    // difference on that route, and an envelope difference SUBSUMES the item comparison — so closing that row
-    // was part of raising this number rather than a separate tidy-up.
+    // instructions; and it served `tools: []` / `mcp_connections: []` where a revision naming neither has
+    // `null` on the real wire (store/agents.go marshals a Go nil slice). All three were invisible for the same
+    // reason — DIV-SHP-005 recorded an envelope difference on that route — so closing that row was part of
+    // raising this number rather than a separate tidy-up.
     //
     // E25 T5 DID NOT RAISE IT, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION (§2 says every page-opening task
     // seeds its collection and raises this number). GET /v1/approvals is comparable here and its ENVELOPE is
@@ -441,12 +457,13 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     // is the one below, unchanged, with the reason written down — and the first task that can seed a row on the
     // real side raises it. A baseline nudged up by a seed that does not exist would be worse than one that holds.
     assert.ok(
-      itemsCompared >= 9,
-      `only ${itemsCompared} collections had a row on BOTH sides, so this arm compared almost no item shapes — ` +
-        "the bootstrap seeds organizations/projects/api-keys and this sweep seeds a knowledge base, an " +
-        "environment, one environment value (which is a secret_refs row), a repository binding, an agent and a " +
-        "published agent revision, so fewer than nine means either the real stack is not seeded or a seed did " +
-        "not land, and this arm would pass vacuously",
+      itemsCompared >= 8,
+      `only ${itemsCompared} collections had a row on BOTH sides (${comparedSubjects.join(", ")}), so this arm ` +
+        "compared almost no item shapes — the bootstrap seeds organizations/projects/api-keys and this sweep " +
+        "seeds a knowledge base, an environment, one environment value (which is a secret_refs row), a " +
+        "repository binding, an agent and a published agent revision. Eight of those nine can be compared; " +
+        "GET /v1/agents cannot, because its envelope differs irreducibly (see DIV-SHP-004). Fewer than eight " +
+        "means either the real stack is not seeded or a seed did not land, and this arm would pass vacuously",
     );
   });
 
