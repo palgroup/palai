@@ -113,6 +113,62 @@ groups, so deleting one would orphan them all. E25 ships no such operation.
 
 ---
 
+## Doing all of that from the console
+
+The admin console has an **Environments** page (`/environments`). It signs you in first — the console does
+not open without `PALAI_CONSOLE_PASSWORD_HASH` — and everything it does goes through the same five routes
+above, through the same relay, with the API key staying server-side.
+
+What the page gives you, in the order you will use it:
+
+1. **The list**, with each environment's key COUNT.
+2. **Create an environment.** A name unique in your organization; it starts with no keys.
+3. **Write a value.** Pick an environment from a dropdown, type a key name, type the value.
+4. **Rotate.** The same form, the same button. Write the key again and the version goes up.
+5. **Unbind.** One button per key, with a confirmation that says what it actually removes.
+
+### The value field, and why it looks the way it does
+
+It is `type="password"` with **`autocomplete="new-password"`**. That token is not decoration and it is not
+`off`: browsers do not honour `off` on a password field, and MDN reserves it for CAPTCHA and one-time-token
+fields. `new-password` is the token documented to *"avoid accidentally filling in an existing password"* —
+which here means stopping your browser from dropping your **console password** into a box whose contents an
+agent will then use as a credential.
+
+**Paste is not blocked.** A real credential is forty random characters; retyping one by eye is how you get a
+typo in a value nobody can read back to check. WCAG 2.2 §3.3.8 counts paste and password-manager support as
+the mechanisms that satisfy it, so blocking either would be an accessibility failure as well as a bad idea.
+
+**The field clears when you submit** — on success and on refusal. A refused write means retyping. That is
+deliberate: a secret left sitting in a form field after a `400`, on a screen you may then walk away from, is
+the leak this whole design is about.
+
+### There is no "show value" button, and there never will be
+
+The screen shows key **names**, **versions** and **when each version was written**. It shows no value and it
+has no control that would reveal one — not a masked `••••` you can click, not a copy button. This is not a
+UI preference: no route returns a value, the only query that decrypts one is reachable from no API route at
+all, and the console's own test suite fails if a control appears whose label or test id looks like a reveal.
+
+The practical consequence, stated so it is not a surprise later: **if you lose a value, you cannot get it
+back from Palai.** Write a new one — that is what rotate is — and if the credential itself matters, get a
+fresh one from the service that issued it.
+
+### Three things about the console specifically
+
+- **Your browser may offer to save the value.** `new-password` is documented to affect *filling*; whether
+  it suppresses the *save* offer is not documented by any browser vendor and **we did not measure it**, so
+  nothing here claims it does. If your password manager offers, decline it — or accept it knowingly. This is
+  the accepted cost of typing a credential into a browser at all, and it is filed as `CON-P5`.
+- **The value passes through the console's Node process, once, in memory.** The relay is a pass-through;
+  there is no way to type a value into a browser and have it reach the control plane without crossing the
+  process serving that browser. What that crossing gets: TLS in front of it, `Cache-Control: no-store` on
+  every environment response, and a relay that logs no request body anywhere.
+- **The screen says the value cannot be read back, in words, before you write one.** It also says the
+  environment is org-scoped, for the reason the next section gives.
+
+---
+
 ## Two facts about scope that will surprise you if nobody says them
 
 **1. An environment belongs to an ORGANIZATION, not to a project.** Two projects in the same organization
@@ -162,9 +218,9 @@ Of OWASP's three relevant lines, one is closed and two are not:
 
 | OWASP | Status here |
 |---|---|
-| §2.7.2 Rotation | **Closed.** Write the key again; the next command gets the new value with no restart. |
-| §2.3 Access Control / §6.3 least privilege | **Partly.** These routes need the `provision` capability. There are no per-environment permissions and no roles — any key that can provision can read every key NAME and write every value in the organization. |
-| §2.6 Auditing | **Open — `CON-P3`.** No read audit exists. |
+| §2.7.2 Rotation | **Closed.** Write the key again; the next command gets the new value with no restart. The console makes it one button, and it is the same button as create. |
+| §2.3 Access Control / §6.3 least privilege | **Partly.** These routes need the `provision` capability. There are no per-environment permissions and no roles — any key that can provision can read every key NAME and write every value in the organization. The console does not narrow this: it holds one key, and anyone who knows the operator password acts as that key. |
+| §2.6 Auditing | **Open — `CON-P3`.** No read audit exists. Nor does the console add one: it records who typed a value nowhere, because there is nowhere to record it. |
 
 ---
 
