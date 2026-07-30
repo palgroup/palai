@@ -63,9 +63,21 @@ function sendJSON(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-function sendProblem(response, status, code) {
+// `detail` is optional because most fixture refusals never had one; the real middleware.WriteProblem always
+// carries the field, and the approval routes pass a DELIBERATELY BLAND one (E25 T5) so a proof can show the
+// console authoring its own sentence per typed refusal rather than echoing the server's prose.
+function sendProblem(response, status, code, detail) {
   response.writeHead(status, { "content-type": "application/problem+json; charset=utf-8" });
-  response.end(JSON.stringify({ type: `https://docs.palai.dev/problems/${code}`, title: code, status, code, request_id: "req_fake_console" }));
+  response.end(
+    JSON.stringify({
+      type: `https://docs.palai.dev/problems/${code}`,
+      title: code,
+      status,
+      code,
+      ...(detail === undefined ? {} : { detail }),
+      request_id: "req_fake_console",
+    }),
+  );
 }
 
 function listView(data) {
@@ -164,6 +176,230 @@ function environmentDetail(id) {
 
 /** VALID_ENV_KEY mirrors toolbroker.ValidEnvKey's name rule, so the fixture refuses what the real route refuses. */
 const VALID_ENV_KEY = /^[A-Z][A-Z0-9_]*$/;
+
+// --- THE TOOL-APPROVAL QUEUE (E25 T5) -------------------------------------------------------------------
+//
+// THE ROW SHAPE IS api.PendingApproval FIELD FOR FIELD (apps/control-plane/api/approvals.go:52-67), and its
+// last four fields ARE THE APPROVAL SCREEN as the server computed it — slack.DeriveApprovalDisplay's output,
+// reaching the HTTP surface at internal/store/approvals.go:60. They are written below as LITERAL strings
+// rather than serialized from an object, and that is the point: the canonical form is a Go one (encoding/json
+// sorts every level's keys, two-space indent, and HTML escaping OFF), so a fixture that re-serialized in
+// JavaScript would be teaching the console a formatting the API does not produce. The console must render
+// these bytes VERBATIM; a fixture that cannot express the exact bytes cannot catch a console that reformats
+// them.
+//
+// ONE ROW CARRIES `<@U0THERS>` ALREADY ESCAPED, ON PURPOSE. The HTTP surface inherits
+// slack.NeutralizeBroadcasts (`<!` and `<@` become `&lt;!` / `&lt;@`, slack/stream.go:163) because both
+// surfaces share the ONE derivation — so the console's screen is Slack-flavoured whether it wants to be or
+// not, and the honest console shows the escape rather than "repairing" it back into a mention. That is what
+// "render the screen the server computed" costs, and it is asserted rather than described.
+//
+// ANOTHER CARRIES ACTIVE MARKUP. The arguments are the ONE piece of model-authored prose on this screen (§2):
+// no MCP `description` is even on the wire here. `<img src=x onerror=…>` therefore rides the fixture, because
+// React's default escaping is the whole defence and a defence nobody attacks is a claim.
+//
+// THREE REFUSALS ARE KEYED TO ROWS, AND THAT IS SYNTHESIS RATHER THAN FIDELITY — named, because a fixture is
+// exactly as honest as its comments. The real API keys 404 to an ID (unknown and foreign are
+// indistinguishable on purpose) and both 403s to the PRINCIPAL (the key's `approve` capability; the project's
+// approver list), while the console's key is fixed for the life of its process — so a per-row synthesis is the
+// only way a BROWSER proof reaches those branches at all. Each branch is proven against a real store at the
+// component tier (apps/control-plane/internal/execution/http_tool_approval_component_test.go). What is under
+// test HERE is that the console does not FLATTEN them into one sentence, which is a rendering property.
+//
+// THE OTHER TWO REFUSALS ARE MECHANICAL, and they are the ones that matter: a decision with NO request_hash is
+// refused exactly as api/approvals.go:200-204 refuses it, and `apvl_console_drift` ROTATES its arguments and
+// its hash every time it is LISTED — so whatever hash the console carried is always the previous one, and its
+// 409 comes from the one-shot binding genuinely failing rather than from a status literal. Rotating on EVERY
+// serve (not once) is deliberate: the console polls, and a one-shot drift would make the 409 depend on whether
+// a poll landed between the render and the click.
+export const APPROVAL_ARGS_JIRA = `{
+  "labels": [
+    "&lt;@U0THERS>"
+  ],
+  "project": "OPS",
+  "summary": "<img src=x onerror=window.__approval_xss_executed=true>"
+}`;
+
+// The CUT block, with truncateVisibly's own sentence and its own two numbers (slack/approval_display.go:178).
+// The body is short here — carrying 8,000 real bytes would prove nothing extra — but the marker is verbatim,
+// because the console must show the server's admission of the cut rather than author its own.
+export const APPROVAL_ARGS_CUT = `{
+  "body": "the first 8000 bytes of a very long patch"
+… truncated: 8000 of 9214 bytes shown; the full arguments are on the tool call this button is bound to`;
+
+/** approvalRow is the projection, field for field. `expires_at` is omitempty on the real view. */
+function approvalRow(a) {
+  return {
+    id: a.id,
+    object: "approval",
+    tool_call_id: a.tool_call_id,
+    run_id: a.run_id,
+    session_id: a.session_id,
+    response_id: a.response_id,
+    request_hash: a.request_hash,
+    ...(a.expires_at === undefined ? {} : { expires_at: a.expires_at }),
+    created_at: a.created_at,
+    identity: a.identity,
+    operator_label: a.operator_label,
+    arguments: a.arguments,
+    truncated: a.truncated,
+  };
+}
+
+const approvals = new Map(
+  [
+    {
+      id: "apvl_console_0001",
+      tool_call_id: "tc_jira_1",
+      run_id: "run_console_apvl",
+      session_id: "ses_console_apvl",
+      response_id: "resp_console_apvl",
+      request_hash: "sha256:1c0ffee1",
+      expires_at: "2026-07-30T12:25:00Z",
+      created_at: "2026-07-30T12:00:00Z",
+      identity: "mcp:jira:create_issue",
+      operator_label: "Files a ticket in the team's Jira project — everyone in the company can read it.",
+      arguments: APPROVAL_ARGS_JIRA,
+      truncated: false,
+    },
+    {
+      id: "apvl_console_0002",
+      tool_call_id: "tc_patch_1",
+      run_id: "run_console_apvl",
+      session_id: "ses_console_apvl",
+      response_id: "resp_console_apvl",
+      request_hash: "sha256:2beaded2",
+      // NO expires_at: the real field is a pointer and omitempty, so a gate configured with no deadline
+      // renders as one. A console that printed "Invalid Date" here would be showing its own bug as a fact.
+      created_at: "2026-07-30T12:01:00Z",
+      identity: "shell:apply_patch",
+      // slack.NoOperatorLabel, verbatim: "nobody wrote one" is a different fact from "there is nothing to
+      // say", and the human deciding is entitled to know which they are reading.
+      operator_label: "(no operator label)",
+      arguments: APPROVAL_ARGS_CUT,
+      truncated: true,
+    },
+    {
+      // TWO ROWS EXIST ONLY TO BE ANSWERED, and their existence is a measurement of this fixture rather than a
+      // convenience: the queue is STATEFUL and an answered row LEAVES it (which is the only observable
+      // difference between a question that has been answered and one that has not), so a row cannot be both the
+      // subject of a read assertion and the subject of a decision. The first draft used one row for both and
+      // every spec after the approve leg failed on "no such row" — the fixture's own state, not the console.
+      id: "apvl_console_approve",
+      tool_call_id: "tc_approve_1",
+      run_id: "run_console_apvl",
+      session_id: "ses_console_apvl",
+      response_id: "resp_console_apvl",
+      request_hash: "sha256:a11a11a1",
+      expires_at: "2026-07-30T12:45:00Z",
+      created_at: "2026-07-30T12:05:00Z",
+      identity: "mcp:jira:create_issue",
+      operator_label: "Files a ticket in the team's Jira project — everyone in the company can read it.",
+      arguments: `{\n  "project": "OPS",\n  "summary": "release notes for 0.1.1"\n}`,
+      truncated: false,
+    },
+    {
+      id: "apvl_console_deny",
+      tool_call_id: "tc_deny_1",
+      run_id: "run_console_apvl",
+      session_id: "ses_console_apvl",
+      response_id: "resp_console_apvl",
+      request_hash: "sha256:d11d11d1",
+      expires_at: "2026-07-30T12:50:00Z",
+      created_at: "2026-07-30T12:06:00Z",
+      identity: "mcp:jira:create_issue",
+      operator_label: "Files a ticket in the team's Jira project — everyone in the company can read it.",
+      arguments: `{\n  "project": "OPS",\n  "summary": "please file this in the public project"\n}`,
+      truncated: false,
+    },
+    {
+      id: "apvl_console_drift",
+      tool_call_id: "tc_drift_1",
+      run_id: "run_console_apvl",
+      session_id: "ses_console_apvl",
+      response_id: "resp_console_apvl",
+      // Seeded OUTSIDE the rotation series (which starts at …d0000001). The first draft seeded it AT the first
+      // rotated value, so the first serve handed out a hash the ledger then re-derived identically and the
+      // decision was ACCEPTED — a drift row that did not drift, and a 409 leg that would have been green by
+      // never happening. Probed, found, fixed.
+      request_hash: "sha256:d0000000",
+      expires_at: "2026-07-30T12:30:00Z",
+      created_at: "2026-07-30T12:02:00Z",
+      identity: "shell:git.push",
+      operator_label: "Pushes a branch to the origin remote.",
+      arguments: `{\n  "branch": "release",\n  "remote": "origin"\n}`,
+      truncated: false,
+      drifts: true,
+    },
+    {
+      id: "apvl_console_gone",
+      tool_call_id: "tc_gone_1",
+      run_id: "run_console_apvl",
+      session_id: "ses_console_apvl",
+      response_id: "resp_console_apvl",
+      request_hash: "sha256:900e900e",
+      expires_at: "2026-07-30T12:35:00Z",
+      created_at: "2026-07-30T12:03:00Z",
+      identity: "mcp:jira:delete_issue",
+      operator_label: "Deletes a ticket. There is no undo.",
+      arguments: `{\n  "issue": "OPS-41"\n}`,
+      truncated: false,
+      refusal: "gone",
+    },
+    {
+      id: "apvl_console_locked",
+      tool_call_id: "tc_locked_1",
+      run_id: "run_console_apvl",
+      session_id: "ses_console_apvl",
+      response_id: "resp_console_apvl",
+      request_hash: "sha256:10cked10",
+      expires_at: "2026-07-30T12:40:00Z",
+      created_at: "2026-07-30T12:04:00Z",
+      identity: "shell:terraform.apply",
+      operator_label: "Applies infrastructure changes to production.",
+      arguments: `{\n  "workspace": "prod"\n}`,
+      truncated: false,
+      refusal: "not_an_approver",
+    },
+  ].map((a) => [a.id, a]),
+);
+let driftSeq = 0;
+
+// THE TWO DECISION ROWS ARE RE-PARKED AFTER THEY ARE ANSWERED, with a NEW id each time.
+//
+// A fixture that its own proofs can EMPTY is a suite that passes once. Playwright reuses a running webServer
+// locally (`reuseExistingServer: !CI`), and an answered row leaves this queue for good — so a second run of the
+// same specs met the first run's leftovers and failed on "no such row", which is the fixture's state and not the
+// console's behaviour. A run whose gated call was answered parks the next one; this is that, and nothing more.
+//
+// A NEW ID RATHER THAN THE SAME ONE, deliberately: "an answered row LEAVES the queue" has to stay true of the
+// row that was answered, because that disappearance is the only observable difference between a question that
+// has been answered and one that has not. The specs therefore select by PREFIX rather than by a fixed id.
+let decisionSeq = 1;
+function ensureDecisionRows() {
+  for (const kind of ["approve", "deny"]) {
+    const open = [...approvals.values()].some((a) => a.decided === undefined && a.id.startsWith(`apvl_console_${kind}`));
+    if (open) continue;
+    decisionSeq += 1;
+    const id = `apvl_console_${kind}_${decisionSeq}`;
+    approvals.set(id, {
+      id,
+      tool_call_id: `tc_${kind}_${decisionSeq}`,
+      run_id: "run_console_apvl",
+      session_id: "ses_console_apvl",
+      response_id: "resp_console_apvl",
+      request_hash: `sha256:${kind === "approve" ? "a11a11" : "d11d11"}${String(decisionSeq).padStart(2, "0")}`,
+      expires_at: "2026-07-30T12:45:00Z",
+      // Later than every seeded row, so the oldest-first order keeps the hand-written rows at the top of the
+      // list and a re-parked one does not shuffle what the read-only specs are looking at.
+      created_at: `2026-07-30T13:${String(decisionSeq).padStart(2, "0")}:00Z`,
+      identity: "mcp:jira:create_issue",
+      operator_label: "Files a ticket in the team's Jira project — everyone in the company can read it.",
+      arguments: `{\n  "project": "OPS",\n  "summary": "release notes for 0.1.1"\n}`,
+      truncated: false,
+    });
+  }
+}
 
 // The static admin fixtures — the §47.1 surface. Secret-ref rows are metadata only (name/version); a
 // connection carries a secret REF name, never a value; an api-key row is metadata only.
@@ -323,6 +559,42 @@ const adminList = (name) => (_req, res) => sendJSON(res, 200, ADMIN[name]);
 /** requestURL re-parses a handler's request URL so a paginated route can read ?after= / ?before=. */
 const requestURL = (request) => new URL(request.url ?? "/", `http://127.0.0.1:${PORT}`);
 
+// decideApproval is BOTH decision routes — /approve and /deny are different URLs for the same reason
+// POST /v1/schedules/{id}/pause and /resume are, and the body they take is identical (api/approvals.go:82-84).
+//
+// The refusal ORDER matters and it is the real handler's: the hash is checked at the EDGE before anything is
+// resolved (api/approvals.go:200-204, so "no such approval" can never be the answer to a malformed decision),
+// then resolution (404, unknown and foreign indistinguishable), then the approver policy (403), then the
+// one-shot binding and the deadline (409). A fixture that checked them in a different order would let the
+// console pass while mapping the wrong sentence onto the wrong cause.
+const decideApproval = (approve) => (request, response, { approval_id: id }) =>
+  drainBody(request, (raw) => {
+    let body = {};
+    try {
+      body = JSON.parse(raw || "{}");
+    } catch {
+      /* tolerate — the real route answers 400 for a bad body, which arm 1 probes with "{}" */
+    }
+    const hash = typeof body.request_hash === "string" ? body.request_hash : "";
+    if (hash === "") {
+      return sendProblem(response, 400, "invalid_request", "request_hash is required: an approval id alone authorizes nothing");
+    }
+    const row = approvals.get(id);
+    if (row === undefined || row.decided !== undefined || row.refusal === "gone") {
+      return sendProblem(response, 404, "not_found", "no such approval");
+    }
+    if (row.refusal === "not_an_approver") {
+      return sendProblem(response, 403, "not_an_approver", "this principal is not in the project's approver list");
+    }
+    if (hash !== row.request_hash) {
+      return sendProblem(response, 409, "approval_not_decidable", "the approval was no longer decidable");
+    }
+    // ANSWERED. The row leaves the queue, which is the only observable difference between a question that has
+    // been answered and one that has not — there is no `status` field on this projection to read instead.
+    row.decided = approve ? "approved" : "denied";
+    sendJSON(response, 200, { id, object: "approval.decision", decision: row.decided });
+  });
+
 export const ROUTES = [
   { method: "GET", pattern: "/v1/organizations", handle: adminList("organizations") },
   { method: "GET", pattern: "/v1/projects", handle: adminList("projects") },
@@ -415,6 +687,37 @@ export const ROUTES = [
       });
     },
   },
+
+  // --- THE TOOL-APPROVAL QUEUE (E25 T5). Three routes, in api/router.go:277-279's registration order. ---
+  {
+    method: "GET",
+    pattern: "/v1/approvals",
+    handle: (request, response) => {
+      const url = requestURL(request);
+      // ?before= is a 400 here exactly as beginList answers it (api/pagination.go:179), so the fixture cannot
+      // teach the console a backward-pagination contract the real API rejects.
+      if (url.searchParams.get("before") !== null) return sendProblem(response, 400, "invalid_request");
+      ensureDecisionRows();
+      // OLDEST FIRST — these are questions, and the oldest is closest to its deadline (store/approvals.go:34).
+      const open = [...approvals.values()].filter((a) => a.decided === undefined).sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+      const rows = open.map(approvalRow);
+      // THE DRIFT HAPPENS ON THE WAY OUT. The row the browser is about to hold is the PREVIOUS binding; the
+      // ledger moves on. See the block comment above for why it is every serve rather than one.
+      for (const a of open) {
+        if (a.drifts !== true) continue;
+        driftSeq += 1;
+        a.arguments = `{\n  "branch": "release-${driftSeq}",\n  "remote": "origin"\n}`;
+        a.request_hash = `sha256:d000000${driftSeq}`;
+      }
+      // The envelope is renderPage's over an EXHAUSTED page: {data, has_more} and NOTHING else. next_cursor and
+      // previous_cursor are omitempty pointers on contracts.Page and neither is set when nothing remains, which
+      // is why this route does not go through pageSlice — that helper serves both cursor keys as explicit nulls
+      // (DIV-SHP-004) and the conformance sweep compares this envelope against the real one key for key.
+      sendJSON(response, 200, { data: rows, has_more: false });
+    },
+  },
+  { method: "POST", pattern: "/v1/approvals/{approval_id}/approve", handle: decideApproval(true) },
+  { method: "POST", pattern: "/v1/approvals/{approval_id}/deny", handle: decideApproval(false) },
 
   {
     method: "POST",

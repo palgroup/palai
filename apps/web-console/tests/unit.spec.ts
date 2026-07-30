@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 
+import { refusalText } from "../components/ApprovalRow";
 import { SecretField } from "../components/SecretField";
 import { laneFor } from "../lib/timeline";
 
@@ -75,3 +76,51 @@ function findNode(node: unknown, tag: string): Record<string, unknown> | undefin
   if (el.type === tag) return el.props ?? {};
   return el.props === undefined ? undefined : findNode(el.props.children, tag);
 }
+
+// THE FOUR TYPED REFUSALS OF THE APPROVAL SURFACE, AS A PURE FUNCTION (E25 T5, plan §T5).
+//
+// The browser suite drives three of these end to end (a 404, a 403 from the approver list, and a 409 from a
+// binding that genuinely went stale). The fourth — `insufficient_scope` — is NOT drivable from a browser: the
+// console holds ONE key for the life of its process, and the same capability gates reading this queue and
+// deciding on it, so a key that could render the page can always decide on it. Asserting it here is the honest
+// alternative to a fixture that pretends otherwise: the MAPPING is what the console owns, and this is that
+// mapping, over the exact `code` strings api/approvals.go writes.
+//
+// AND THE PLAN'S §T5 SAYS THREE REFUSALS. It is FOUR: 403 arrives with two independent codes, from two
+// independent gates (`authorize()` on the key's `approve` capability; the project's approver list), and the
+// operator's fix is different for each. Collapsing them would be the same flattening this test exists to refuse,
+// one level up.
+test("the approval queue gives every typed refusal its own sentence, and none of them is a generic failure", () => {
+  const sentences = new Map<string, string>();
+  for (const [code, status] of [
+    ["invalid_request", 400],
+    ["insufficient_scope", 403],
+    ["not_an_approver", 403],
+    ["not_found", 404],
+    ["approval_not_decidable", 409],
+  ] as const) {
+    // The detail is deliberately BLAND, exactly as the fixture serves it: a console that echoed the server's
+    // prose would produce five near-identical shrugs and fail the distinctness assertion below.
+    sentences.set(code, refusalText({ code, status, detail: "refused" }));
+  }
+
+  expect(sentences.get("invalid_request")).toContain("carried no request hash");
+  expect(sentences.get("insufficient_scope")).toContain("approve");
+  expect(sentences.get("not_an_approver")).toContain("approver list");
+  expect(sentences.get("not_found")).toContain("no longer exists");
+  expect(sentences.get("approval_not_decidable")).toContain("can no longer be decided");
+
+  const all = [...sentences.values()];
+  expect(new Set(all).size, "two typed refusals produced the same sentence").toBe(all.length);
+  for (const sentence of all) {
+    expect(/something went wrong|unexpected error|an error occurred/i.test(sentence), `a typed refusal was flattened: ${sentence}`).toBe(false);
+    expect(sentence).not.toBe("refused");
+  }
+
+  // A code this console has never met still names the code and the status rather than shrugging — the last line
+  // of api/approvals.go's problem space is "some other refusal", and that has to read as one too.
+  const unknown = refusalText({ code: "teapot_error", status: 418, detail: "the server is a teapot" });
+  expect(unknown).toContain("teapot_error");
+  expect(unknown).toContain("418");
+  expect(unknown).toContain("the server is a teapot");
+});

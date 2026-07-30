@@ -30,4 +30,9 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // except the environment picker, and BOTH of its states — a select, or the "create one first" note — are
   // real states worth scanning), while the panel is the one part that can still be a spinner.
   { path: "/environments", label: "Environments", readyTestId: "panel-environments" },
+  // E25 T5. The readiness signal is the list PANEL, and it is the honest one on both profiles: the fixture
+  // parks five gated calls while a compose stack can park none (DIV-UI-006), so on the real profile this panel
+  // renders its EMPTY state — which is a state worth scanning, because an empty queue plus the page's scope
+  // sentence is the difference between "nothing is waiting" and "nothing of this KIND is waiting".
+  { path: "/approvals", label: "Approvals", readyTestId: "panel-approvals" },
 ];
