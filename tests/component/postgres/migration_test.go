@@ -89,6 +89,10 @@ var allTables = []string{
 	// holds a credential — the values are secret_refs versions under the derived name
 	// `env:<environment_id>:<key>` — which is why there is no third table here.
 	"environments", "environment_values",
+	// The E26 T1 background task table (000047): one row per PROCESS a run owns, which is a different
+	// thing from the tool_calls row that spawned it — the process outlives that row, which is exactly why
+	// it needs one of its own.
+	"background_tasks",
 	"schema_migrations",
 }
 

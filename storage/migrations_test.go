@@ -45,16 +45,19 @@ func TestOrderedMigrationsIsContiguousVersionOrder(t *testing.T) {
 		}
 	}
 
-	// E25 T3's environments is the current chain head; E24 T1's runner fleet is the link before it.
-	// E25, like E24, has exactly ONE migration and exactly one task owns it, so this pin stays true for
-	// the whole epic — that is the structural half of "two parallel tasks cannot both take 000046".
+	// E26 T1's background_tasks is the current chain head; E25 T3's environments is the link before it.
+	// E26, like E25 and E24, has exactly ONE migration and exactly one task owns it, so this pin stays
+	// true for the whole epic — that is the structural half of "two parallel tasks cannot both take
+	// 000047". THE NAME IS PINNED AS WELL AS THE NUMBER, and that is what makes this a rename guard too:
+	// `git mv` stages the OLD content, so a renumbering whose header edit is never re-added would leave a
+	// file whose name says 47 and whose marker says 46, and only the pair below catches it.
 	head := migrations[len(migrations)-1]
-	if head.Version != 46 || head.Name != "environments" {
-		t.Fatalf("chain head = %06d_%s, want 000046_environments", head.Version, head.Name)
+	if head.Version != 47 || head.Name != "background_tasks" {
+		t.Fatalf("chain head = %06d_%s, want 000047_background_tasks", head.Version, head.Name)
 	}
 	penultimate := migrations[len(migrations)-2]
-	if penultimate.Version != 45 || penultimate.Name != "runner_fleet" {
-		t.Fatalf("penultimate migration = %06d_%s, want 000045_runner_fleet", penultimate.Version, penultimate.Name)
+	if penultimate.Version != 46 || penultimate.Name != "environments" {
+		t.Fatalf("penultimate migration = %06d_%s, want 000046_environments", penultimate.Version, penultimate.Name)
 	}
 
 	// The concatenated MigrationUp() must carry exactly the same forward SQL the per-migration path
