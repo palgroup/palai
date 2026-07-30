@@ -138,7 +138,8 @@ type BackgroundObserver func(ctx context.Context, task BackgroundTask) (outcome 
 //
 // Each row settles in its OWN transaction so one wedged run cannot hold the whole sweep, and a per-row
 // failure ends the pass rather than being swallowed — the reconciler treats a sweep error as non-fatal
-// and the next tick retries. Returns the number of notifications this pass actually landed.
+// and the next tick retries. Returns the number of tasks this pass SETTLED — which is not the same as
+// the number of models told, because an orphaned notice settles a task and tells nobody.
 func (s *Store) SweepFinishedBackgroundTasks(ctx context.Context, observe BackgroundObserver) (int, error) {
 	if observe == nil {
 		return 0, nil
