@@ -1,8 +1,9 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ApprovalPanel, type PendingApproval } from "@/components/ApprovalPanel";
+import { Picker } from "@/components/Picker";
 import { Status } from "@/components/Status";
 import { Timeline, type Frame } from "@/components/Timeline";
 import { apiGet, artifactHref, RelayError, streamRun } from "@/lib/api";
@@ -29,6 +30,16 @@ interface Usage {
 interface ArtifactRow {
   id: string;
 }
+interface AgentRow {
+  id: string;
+  name?: string;
+}
+interface RevisionRow {
+  id: string;
+  revision_number?: number;
+  model?: string;
+  status?: string;
+}
 
 // The §47.2 live surface: start a run, watch its canonical timeline sorted into lanes, act on an approval
 // (the exact-detail panel), see recovery/attempt transitions, read usage, and download artifacts — all
@@ -47,8 +58,62 @@ export default function RunsPage() {
   const [artifacts, setArtifacts] = useState<ArtifactRow[]>([]);
   const [running, setRunning] = useState(false);
 
+  // THE OPTIONAL PIN (E25 T6). Both default to "", which is the unpinned run this page has always started —
+  // the relay omits the field entirely then, so the upstream body is bit-identical to before.
+  const [agents, setAgents] = useState<AgentRow[] | null>(null);
+  const [agentId, setAgentId] = useState("");
+  const [revisions, setRevisions] = useState<RevisionRow[]>([]);
+  // The pickers read page ONE of each collection. Both are newest-first and neither offers a continuation, so
+  // the cut is said in words rather than left to look like the whole list (§2). What an operator pins is a
+  // recent revision, which is why a "load more" is not what the honesty costs here.
+  const [agentsTruncated, setAgentsTruncated] = useState(false);
+  const [revisionsTruncated, setRevisionsTruncated] = useState(false);
+  const [revisionId, setRevisionId] = useState("");
+  // The run's own refusal, announced rather than only rendered. A 409 for a draft revision means NO RUN
+  // STARTED, which is a different thing from a run that failed — and the difference has to be on the screen.
+  const [runError, setRunError] = useState("");
+
   const responseIdRef = useRef<string>("");
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    apiGet<{ data?: AgentRow[]; has_more?: boolean }>("/agents")
+      .then((body) => {
+        if (!live) return;
+        setAgents(body.data ?? []);
+        setAgentsTruncated(body.has_more === true);
+      })
+      .catch(() => {
+        // An unreadable list leaves the picker absent and the note in its place. A run with no pin still
+        // works, which is why this is not fatal to the page.
+        if (live) setAgents([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    setRevisionId("");
+    if (agentId === "") {
+      setRevisions([]);
+      return;
+    }
+    let live = true;
+    apiGet<{ data?: RevisionRow[]; has_more?: boolean }>(`/agents/${encodeURIComponent(agentId)}/revisions`)
+      .then((body) => {
+        if (!live) return;
+        setRevisions(body.data ?? []);
+        setRevisionsTruncated(body.has_more === true);
+      })
+      .catch(() => {
+        if (live) setRevisions([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [agentId]);
 
   function reset() {
     setStatus("streaming");
@@ -61,6 +126,7 @@ export default function RunsPage() {
     setSessionId("");
     setTerminal(null);
     setArtifacts([]);
+    setRunError("");
     responseIdRef.current = "";
   }
 
@@ -83,7 +149,27 @@ export default function RunsPage() {
     }
     if (type === "error") {
       setStatus("error");
-      setTerminal({ status: "error", model: null, output: f.detail });
+      // THE REFUSAL, IN THE SERVER'S OWN WORDS — and, for the two refusals that happen BEFORE anything is
+      // created, what did not happen. api/responses.go answers a draft pin with 409 `revision_not_published`
+      // and an unknown pin with 404, both decided before the idempotency reserve, so there is no run, no
+      // session and no idempotency record. The distinction is not cosmetic: an operator who read only
+      // "failed" would go looking for a run that does not exist, and the failure mode this sentence rules out
+      // — a silent fall back to some other configuration — would be worse than either.
+      const detail = String(f.detail ?? "the run could not be started");
+      const code = String(f.code ?? "");
+      const admissionRefusal = code === "revision_not_published" || code === "not_found";
+      setRunError(
+        admissionRefusal
+          ? `${detail} — this run did not start: no run and no session were created, and no default ` +
+              "configuration was substituted for the revision you chose. Publish the revision on the Agents " +
+              "page, or clear the revision to run with the project's own configuration."
+          : detail,
+      );
+      // AND NO "TERMINAL RESULT" PANEL FOR A RUN THAT HAS NO TERMINAL. An admission refusal happens before
+      // anything is created, so there is no run whose end state could be reported — a panel headed "Terminal
+      // result" over it would be exactly the silent-lie shape the rest of this console is built to avoid.
+      // Every OTHER error still fills it, unchanged: a run that started and then failed does have a terminal.
+      if (!admissionRefusal) setTerminal({ status: "error", model: null, output: f.detail });
       return;
     }
 
@@ -116,7 +202,7 @@ export default function RunsPage() {
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      await streamRun(prompt, onFrame, controller.signal);
+      await streamRun(prompt, onFrame, controller.signal, revisionId);
       // The run reached its terminal — load the artifacts it produced (through the relay).
       const rid = responseIdRef.current;
       if (rid !== "") {
@@ -130,7 +216,9 @@ export default function RunsPage() {
     } catch (err) {
       if (!controller.signal.aborted) {
         setStatus("error");
-        setTerminal({ status: "error", model: null, output: err instanceof RelayError ? err.problem.detail : "stream failed" });
+        const detail = err instanceof RelayError ? err.problem.detail : "stream failed";
+        setTerminal({ status: "error", model: null, output: detail });
+        setRunError(detail);
       }
     } finally {
       setRunning(false);
@@ -149,6 +237,79 @@ export default function RunsPage() {
         <h2 id="run-h">Start a run</h2>
         <label htmlFor="prompt-input">Prompt</label>
         <textarea id="prompt-input" data-testid="prompt-input" rows={2} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+
+        {/* THE OPTIONAL PIN (E25 T6). Two pickers, because a revision belongs to one agent and that is the
+            shape the API has: GET /v1/agents, then GET /v1/agents/{id}/revisions. Neither degrades to a
+            free-text box, and with no agents at all the controls are absent rather than empty.
+
+            A DRAFT IS OFFERED AND LABELLED RATHER THAN HIDDEN. Filtering drafts out would have made the
+            server's 409 unreachable from this console, and an operator who cannot see their draft cannot tell
+            why the agent they just configured is not running. What they see is the reason. */}
+        {/* Nothing while the list is still loading: rendering the empty note first would state "no agents
+            yet" about a collection nobody has read, and axe scans this page in whatever state it finds. */}
+        {agents === null ? null : (
+          <Picker
+            id="run-agent-select"
+            label="Agent (optional)"
+            value={agentId}
+            onChange={setAgentId}
+            options={agents.map((a) => ({ value: a.id, label: a.name === undefined || a.name === "" ? a.id : `${a.name} (${a.id})` }))}
+            placeholder="None — use the project's configuration"
+            testId="run-agent-select"
+            emptyNote={
+              <>
+                <strong>No agents yet</strong>, so this run uses the project&apos;s own configuration.{" "}
+                <a href="/agents">Create an agent</a> to pin a run to a published revision.
+              </>
+            }
+          />
+        )}
+        {agentId === "" ? null : (
+          <Picker
+            id="run-revision-select"
+            label="Revision (optional)"
+            value={revisionId}
+            onChange={setRevisionId}
+            options={revisions.map((r) => ({
+              value: r.id,
+              label:
+                `${r.id}${r.revision_number === undefined ? "" : ` (#${String(r.revision_number)})`}` +
+                ` — ${r.status === "published" ? "published" : "draft, cannot be run until published"}` +
+                `${r.model === undefined || r.model === "" ? "" : ` — model ${r.model}`}`,
+            }))}
+            placeholder="None — use the project's configuration"
+            testId="run-revision-select"
+            hint="Only a PUBLISHED revision can be run. A draft is refused by the server, which is why it is listed rather than hidden."
+            emptyNote={
+              <>
+                <strong>This agent has no revisions yet.</strong> <a href="/agents">Create one</a> and publish
+                it before a run can be pinned to it.
+              </>
+            }
+          />
+        )}
+
+        {agentsTruncated ? (
+          <p data-testid="run-agent-select-more">
+            Showing the {(agents ?? []).length} newest agents — <strong>older ones exist and are not offered
+            here</strong>. Pin an older one through the API.
+          </p>
+        ) : null}
+        {revisionsTruncated ? (
+          <p data-testid="run-revision-select-more">
+            Showing the {revisions.length} newest revisions — <strong>older ones exist and are not offered
+            here</strong>.
+          </p>
+        ) : null}
+
+        {runError === "" ? null : (
+          <p role="alert" className="form-error" data-testid="run-error">
+            <span className="glyph" aria-hidden="true">
+              ✖
+            </span>{" "}
+            {runError}
+          </p>
+        )}
         <p>
           <button type="button" data-testid="run-button" onClick={run} disabled={running}>
             Run

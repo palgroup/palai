@@ -43,11 +43,17 @@ const introspect = { v1Requests: 0, nonV1Requests: 0, beareredV1Requests: 0, unb
 const sessions = new Map(); // sid -> { approved: boolean, denied: boolean }
 let seq = 0;
 
-function newRun() {
+// `model` is carried on the session so GET /v1/responses/{id} can project the model this run actually ran
+// with (E25 T6). A run pinned to a published agent revision runs with the REVISION's model — ResolveInput
+// layers it above the project route and the deployment default (execution/config.go layerAgentRevision) — and
+// the terminal projection is where a console can see which configuration was used. On a compose stack it
+// CANNOT be seen, because the fake adapter answers with a constant model whatever it is asked for; that is
+// DIV-UI-007 and the sweep re-derives it.
+function newRun(model = MODEL) {
   seq += 1;
   const n = String(seq).padStart(4, "0");
   const sid = `ses_console_${n}`;
-  sessions.set(sid, { approved: false, denied: false });
+  sessions.set(sid, { approved: false, denied: false, model });
   return { sid, rid: `resp_console_${n}`, runId: `run_console_${n}` };
 }
 
@@ -123,7 +129,81 @@ function pageSlice(rows, url, response) {
 }
 
 // TWENTY-ONE agents: one more than a page. See PAGE_LIMIT.
-const AGENTS = Array.from({ length: 21 }, (_, i) => ({ id: `agt_${String(i + 1).padStart(2, "0")}`, object: "agent" }));
+//
+// STATEFUL SINCE E25 T6, and for the same reason the environment surface is: the console CREATES an agent and
+// a revision, and a static row cannot express "this lineage now has a draft" or "that draft is now published"
+// — which is the one observable difference between a revision a run can be pinned to and one it cannot. The
+// twenty-one seeded rows stay, because they are what makes list truncation observable (DIV-UI-005), and a
+// created row is appended so the collection only ever grows past a page.
+//
+// `name` IS ON THE ROW. The real projection is {id, object, name} (store/agents.go ListAgentProfiles), and the
+// fixture said {id, object} until now — invisible to the conformance sweep's item arm because a bootstrap
+// stack has ZERO agents, so the real side never had a row to compare against. T6's seed gives it one.
+const AGENTS = Array.from({ length: 21 }, (_, i) => ({
+  id: `agt_${String(i + 1).padStart(2, "0")}`,
+  object: "agent",
+  name: `seeded-agent-${String(i + 1).padStart(2, "0")}`,
+}));
+let agentSeq = 0;
+
+// --- THE AGENT LINEAGE (E25 T6) --------------------------------------------------------------------------
+//
+// revisions maps an agent id to its revision rows, NEWEST FIRST (which is the order ListAgentRevisions
+// returns and the order components/AgentDiff.tsx diffs in: [0] against [1]).
+//
+// THE ROW SHAPE IS store/agents.go's ListAgentRevisions PROJECTION, field for field: {id, object, agent_id,
+// revision_number, model, tools, mcp_connections, environment, instructions, status}. It used to be
+// {id, object, model, tools, published} — a `published` BOOLEAN the real API has never sent, where the real
+// field is a `status` STRING of "draft"/"published". Nothing caught it because the sweep's item arm probes
+// /v1/agents/{agent_id}/revisions with a placeholder id, which on a real stack is an unknown profile and
+// answers an EMPTY page. T6's seed substitutes a REAL agent id there, so this shape is now compared.
+const revisions = new Map([
+  [
+    "agt_01",
+    [
+      { id: "agrev_2", revision_number: 2, model: "fake", tools: ["add", "push"], instructions: "", environment: "", status: "published" },
+      { id: "agrev_1", revision_number: 1, model: "fake", tools: ["add"], instructions: "", environment: "", status: "draft" },
+    ],
+  ],
+]);
+let revisionSeq = 100;
+
+/** revisionRow is the projection, field for field. */
+function revisionRow(agentID, rev) {
+  return {
+    id: rev.id,
+    object: "agent_revision",
+    agent_id: agentID,
+    revision_number: rev.revision_number,
+    model: rev.model,
+    tools: rev.tools,
+    mcp_connections: rev.mcp_connections ?? [],
+    environment: rev.environment,
+    instructions: rev.instructions,
+    status: rev.status,
+  };
+}
+
+/** findRevision locates a revision across every lineage — the pin on POST /v1/responses names no agent. */
+function findRevision(id) {
+  for (const [agentID, rows] of revisions) {
+    const found = rows.find((r) => r.id === id);
+    if (found !== undefined) return { agentID, revision: found };
+  }
+  return null;
+}
+
+// --- REPOSITORY BINDINGS (E25 T6) ------------------------------------------------------------------------
+//
+// STATEFUL, because the console's claim is "register one and it reads back on the list" and a static row
+// cannot express that. The projection is what store/repository_bindings.go returns.
+//
+// AND IT REFUSES A NON-http(s) CLONE URL exactly as api/repository_bindings.go does (allowedCloneScheme): a
+// fixture that accepted a `file:` URL would teach the console that the field takes one, and the real refusal
+// is a §24 trust boundary — on a collapsed single-host deployment a local path would let one tenant point a
+// clone at another tenant's allocation.
+const bindings = [];
+let bindingSeq = 0;
 
 // --- THE ENVIRONMENT SURFACE (E25 T4) -----------------------------------------------------------------
 //
@@ -423,11 +503,6 @@ const ADMIN = {
   // comparison when either side has no row. T2's seed gives the real side a row, so this now has to be right.
   "knowledge-bases": listView([{ id: "kb_1", object: "knowledge_base", name: "Docs KB", created_at: "2026-07-24T00:00:00Z" }]),
 };
-const AGENT_REVISIONS = page([
-  { id: "agrev_2", object: "agent_revision", model: "fake", tools: ["add", "push"], published: true },
-  { id: "agrev_1", object: "agent_revision", model: "fake", tools: ["add"], published: false },
-]);
-
 // The scripted canonical event stream — covers every §47.2 lane: model steps, tool activity, an approval
 // (PAUSED until approved), recovery/attempt transitions, usage, and the terminal result. The frame after
 // approval.requested is GATED on the approve command.
@@ -559,6 +634,19 @@ const adminList = (name) => (_req, res) => sendJSON(res, 200, ADMIN[name]);
 /** requestURL re-parses a handler's request URL so a paginated route can read ?after= / ?before=. */
 const requestURL = (request) => new URL(request.url ?? "/", `http://127.0.0.1:${PORT}`);
 
+/**
+ * parseBody decodes a request body, tolerating garbage — the real routes answer 400 for a bad body and the
+ * sweep's arm 1 probes every POST with "{}", so a throw here would fail that arm instead of the route.
+ */
+function parseBody(raw) {
+  try {
+    const value = JSON.parse(raw || "{}");
+    return value === null || typeof value !== "object" ? {} : value;
+  } catch {
+    return {};
+  }
+}
+
 // decideApproval is BOTH decision routes — /approve and /deny are different URLs for the same reason
 // POST /v1/schedules/{id}/pause and /resume are, and the body they take is identical (api/approvals.go:82-84).
 //
@@ -604,7 +692,147 @@ export const ROUTES = [
   { method: "GET", pattern: "/v1/secret-refs", handle: adminList("secret-refs") },
   { method: "GET", pattern: "/v1/knowledge-bases", handle: adminList("knowledge-bases") },
   { method: "GET", pattern: "/v1/agents", handle: (request, response) => pageSlice(AGENTS, requestURL(request), response) },
-  { method: "GET", pattern: "/v1/agents/{agent_id}/revisions", handle: (_req, res) => sendJSON(res, 200, AGENT_REVISIONS) },
+
+  // --- THE AGENT LINEAGE (E25 T6). Create → revise → publish, in api/router.go:52-58's order. ---
+  {
+    method: "POST",
+    pattern: "/v1/agents",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        // `name is required` is the real refusal (store/agents.go MissingName → 400).
+        if (name === "") return sendProblem(response, 400, "invalid_request", "name is required");
+        agentSeq += 1;
+        const agent = { id: `agt_console_${String(agentSeq).padStart(4, "0")}`, object: "agent", name };
+        // UNSHIFT, NOT PUSH, and it is a fidelity fix rather than a convenience. ListAgentProfiles orders
+        // `created_at DESC, id DESC` (storage/queries/agents.sql:33) — NEWEST FIRST — so on a real stack a
+        // freshly created agent is always on page ONE. Appending put it at position 22 of a 21-row fixture,
+        // behind defaultPageLimit, and the console's own picker then could not offer the agent the operator
+        // had just made. Found by the console's create-then-select leg; the sweep could never have found it,
+        // because ORDER is not a shape and its item arm compares keys.
+        AGENTS.unshift(agent);
+        revisions.set(agent.id, []);
+        sendJSON(response, 201, agent);
+      }),
+  },
+  {
+    method: "GET",
+    pattern: "/v1/agents/{agent_id}/revisions",
+    // {data, has_more} AND NOTHING ELSE — renderPage's envelope over a page that ends the collection, which
+    // is what the real route answers for any lineage shorter than defaultPageLimit (every lineage there is).
+    // THIS CLOSED DIV-SHP-005: the fixture used to serve both cursor keys as explicit nulls here, and that
+    // envelope difference made the conformance sweep skip the ITEM comparison for this route ("an envelope
+    // difference subsumes the item comparison") — which is how the row shape stayed wrong for months. It said
+    // `published: true` where the real projection says `status: "published"`, and it was missing agent_id,
+    // revision_number, mcp_connections, environment and instructions. GET /v1/agents keeps pageSlice, because
+    // its twenty-one rows are what makes truncation observable (DIV-UI-005) and DIV-SHP-004 records that.
+    handle: (_req, res, { agent_id: id }) => sendJSON(res, 200, { data: (revisions.get(id) ?? []).map((rev) => revisionRow(id, rev)), has_more: false }),
+  },
+  {
+    method: "POST",
+    pattern: "/v1/agents/{agent_id}/revisions",
+    handle: (request, response, { agent_id: id }) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        // An environment naming no row is a 400 rather than a 404, exactly as store/agents.go answers it: the
+        // PROFILE in the path exists, so a 404 would point the operator at the wrong thing.
+        const environment = typeof body.environment === "string" ? body.environment : "";
+        if (environment !== "" && !environments.has(environment)) {
+          return sendProblem(response, 400, "invalid_request", "the revision carries an unsupported field (accepted: model, tools, instructions, tool_sets, mcp_connections, skills, hooks)");
+        }
+        const lineage = revisions.get(id) ?? [];
+        revisionSeq += 1;
+        const rev = {
+          id: `agrev_console_${String(revisionSeq)}`,
+          revision_number: lineage.length + 1,
+          model: typeof body.model === "string" ? body.model : "",
+          tools: Array.isArray(body.tools) ? body.tools : [],
+          instructions: typeof body.instructions === "string" ? body.instructions : "",
+          environment,
+          status: "draft",
+        };
+        // NEWEST FIRST, which is the order ListAgentRevisions returns and the order AgentDiff diffs in.
+        revisions.set(id, [rev, ...lineage]);
+        sendJSON(response, 201, revisionRow(id, rev));
+      }),
+  },
+  {
+    method: "POST",
+    pattern: "/v1/agents/{agent_id}/revisions/{revision_id}/publish",
+    handle: (_req, response, { agent_id: id, revision_id: revID }) => {
+      const rev = (revisions.get(id) ?? []).find((r) => r.id === revID);
+      if (rev === undefined) return sendProblem(response, 404, "not_found", "no such agent, revision, or template in this project");
+      // A RE-PUBLISH IS AN IDEMPOTENT SUCCESS on the real surface (store/agents.go publishResult), not a
+      // conflict — publishing is irreversible, so asking twice is asking for the state it is already in.
+      rev.status = "published";
+      sendJSON(response, 200, revisionRow(id, rev));
+    },
+  },
+
+  // --- REPOSITORY BINDINGS (E25 T6). Three routes, in api/router.go:44-46's registration order. ---
+  {
+    method: "POST",
+    pattern: "/v1/repository-bindings",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const provider = typeof body.provider === "string" ? body.provider : "";
+        const identity = typeof body.repository_identity === "string" ? body.repository_identity : "";
+        const cloneURL = typeof body.clone_url === "string" ? body.clone_url : "";
+        // The scheme gate FIRST, exactly as api/repository_bindings.go orders it — before the store is asked
+        // anything, so a `file:` URL can never be the answer to a missing-field question.
+        if (!/^https?:\/\//i.test(cloneURL)) {
+          return sendProblem(response, 400, "invalid_request", "clone_url must be an http(s) URL");
+        }
+        if (provider === "" || identity === "") {
+          return sendProblem(response, 400, "invalid_request", "provider, repository_identity, and clone_url are required");
+        }
+        bindingSeq += 1;
+        // omitempty, field for field, like contracts.RepositoryBinding: an absent connection_ref/policy/
+        // classification/region is ABSENT rather than "".
+        const binding = {
+          id: `rbind_console_${String(bindingSeq).padStart(4, "0")}`,
+          object: "repository_binding",
+          provider,
+          repository_identity: identity,
+          clone_url: cloneURL,
+          default_branch: typeof body.default_branch === "string" && body.default_branch !== "" ? body.default_branch : "main",
+          organization_id: "org_local",
+          project_id: "proj_local",
+          created_at: new Date(Date.UTC(2026, 6, 30, 2, 0, bindingSeq)).toISOString(),
+          ...(typeof body.connection_ref === "string" && body.connection_ref !== "" ? { connection_ref: body.connection_ref } : {}),
+          ...(Array.isArray(body.allowed_operations) && body.allowed_operations.length > 0 ? { allowed_operations: body.allowed_operations } : {}),
+          ...(body.policy !== undefined && body.policy !== null ? { policy: body.policy } : {}),
+          ...(typeof body.data_classification === "string" && body.data_classification !== "" ? { data_classification: body.data_classification } : {}),
+          ...(typeof body.region_constraint === "string" && body.region_constraint !== "" ? { region_constraint: body.region_constraint } : {}),
+        };
+        // Newest first, like ListRepositoryBindings' `created_at DESC, id DESC`.
+        bindings.unshift(binding);
+        sendJSON(response, 201, binding);
+      }),
+  },
+  {
+    method: "GET",
+    pattern: "/v1/repository-bindings",
+    // {data, has_more} AND NOTHING ELSE, which is renderPage's envelope over a page that ENDS the collection
+    // (next_cursor and previous_cursor are omitempty pointers on contracts.Page and neither is set). This is
+    // the same reason GET /v1/approvals does not go through pageSlice: that helper serves both cursor keys as
+    // explicit nulls, which is the recorded DIV-SHP-004/005 divergence, and a third route reproducing it
+    // would need a third ledger row for a difference that need not exist.
+    handle: (_req, res) => sendJSON(res, 200, { data: bindings, has_more: false }),
+  },
+  {
+    method: "GET",
+    pattern: "/v1/repository-bindings/{binding_id}",
+    handle: (_req, response, { binding_id: id }) => {
+      const found = bindings.find((b) => b.id === id);
+      // Synthesised for an unknown id, like the environment detail route and for the same reason: the sweep's
+      // arm 1 probes every pattern with a placeholder and a 404 there would read as "the table declares a
+      // route the fixture does not serve". The real route 404s; no console path depends on either answer.
+      sendJSON(response, 200, found ?? { id, object: "repository_binding", provider: "github", repository_identity: id, clone_url: `https://example.invalid/${id}.git`, default_branch: "main" });
+    },
+  },
 
   // --- ENVIRONMENTS (E25 T4). Five routes, matching api/router.go's registration order. ---
   {
@@ -722,12 +950,33 @@ export const ROUTES = [
   {
     method: "POST",
     pattern: "/v1/responses",
-    handle: (request, response) => {
-      const { sid, rid, runId } = newRun();
-      drain(request, () =>
-        sendJSON(response, 202, { id: rid, object: "response", status: "queued", model: MODEL, session_id: sid, run_id: runId, created_at: "2026-07-24T00:00:00Z", output: [], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } }),
-      );
-    },
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        // THE OPTIONAL PIN (E25 T6), and its two refusals in the REAL ORDER. api/responses.go answers a pin
+        // naming an unknown revision with a tenant-scoped 404 and a pin onto a DRAFT with 409
+        // `revision_not_published`; both are decided by admission BEFORE the idempotency reserve
+        // (coordinator/store.go PinnedRevisionNotFound / PinnedRevisionNotPublished), so neither leaves a run,
+        // a session or an idempotency record behind. The fixture leaves nothing behind either — newRun() is
+        // called only after both gates pass — which is what makes the console's "this run did not start"
+        // sentence checkable rather than decorative.
+        const pin = typeof body.agent_revision_id === "string" ? body.agent_revision_id : "";
+        let model = MODEL;
+        if (pin !== "") {
+          const found = findRevision(pin);
+          if (found === null) {
+            return sendProblem(response, 404, "not_found", "no such agent revision or run template in this project");
+          }
+          if (found.revision.status !== "published") {
+            return sendProblem(response, 409, "revision_not_published", "the pinned revision is a draft; publish it before running it");
+          }
+          // The revision's model wins over the deployment default, which is what execution/config.go's
+          // layerAgentRevision does. A revision that pins no model inherits, so an empty one is not a pin.
+          if (found.revision.model !== "") model = found.revision.model;
+        }
+        const { sid, rid, runId } = newRun(model);
+        sendJSON(response, 202, { id: rid, object: "response", status: "queued", model, session_id: sid, run_id: runId, created_at: "2026-07-24T00:00:00Z", output: [], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } });
+      }),
   },
   {
     method: "GET",
@@ -737,12 +986,15 @@ export const ROUTES = [
       // The terminal projection reflects the ACTUAL outcome: a denied run is canceled with no output (the
       // side effect was blocked), an approved run completed with its output. This is the canonical terminal
       // Response the SDK retrieves after the stream's terminal event.
-      const denied = sessions.get(sid)?.denied === true;
+      const state = sessions.get(sid);
+      const denied = state?.denied === true;
       sendJSON(response, 200, {
         id: rid,
         object: "response",
         status: denied ? "canceled" : "completed",
-        model: MODEL,
+        // The model this run actually ran with — the pinned revision's when it had one (E25 T6). An unknown
+        // response id (the sweep's probe) has no session and falls back to the deployment default.
+        model: state?.model ?? MODEL,
         session_id: sid,
         created_at: "2026-07-24T00:00:00Z",
         updated_at: "2026-07-24T00:00:03Z",

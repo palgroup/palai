@@ -56,15 +56,21 @@ export function artifactHref(artifactId: string): string {
 // streamRun starts a run and yields each projected ndjson frame. It POSTs the prompt to the stream relay
 // and reads the newline-delimited canonical projection (lib/timeline lanes). The signal aborts the read
 // (a disconnect closes the upstream transport but does NOT cancel the run — LP6).
+// `agentRevisionId` is the OPTIONAL pin (E25 T6). Omitted — not sent as an empty string — when no revision is
+// chosen, so an unpinned run's request body stays exactly `{prompt}` and the relay's upstream body stays
+// exactly `{input}`. tests/config-journey.spec.ts asserts that on the WIRE rather than by outcome.
 export async function streamRun(
   prompt: string,
   onFrame: (frame: Record<string, unknown>) => void,
   signal?: AbortSignal,
+  agentRevisionId?: string,
 ): Promise<void> {
   const res = await fetch(`${RELAY}/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify(
+      agentRevisionId === undefined || agentRevisionId === "" ? { prompt } : { prompt, agent_revision_id: agentRevisionId },
+    ),
     signal,
   });
   if (!res.ok || res.body === null) throw await toProblem(res);

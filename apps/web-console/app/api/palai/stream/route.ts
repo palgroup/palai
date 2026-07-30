@@ -26,12 +26,25 @@ export async function POST(request: Request): Promise<Response> {
   if (refused !== null) return refused;
 
   let prompt: string;
+  // The OPTIONAL pin (E25 T6). A run may be pinned to a PUBLISHED agent revision, and the field is optional
+  // deliberately rather than incidentally: with no revision the upstream body is `{input}` and NOTHING else,
+  // bit-identical to what this handler has always sent, so /runs' existing behaviour and every assertion in
+  // tests/journey.spec.ts hold without an edit. An empty string is refused rather than forwarded — the API
+  // would have to decide what a revision named "" means, and the honest answer is that the browser sent a
+  // control it should not have.
+  let agentRevisionID = "";
   try {
-    const body = (await request.json()) as { prompt?: unknown };
+    const body = (await request.json()) as { prompt?: unknown; agent_revision_id?: unknown };
     if (typeof body.prompt !== "string" || body.prompt.trim() === "") {
       return problemResponse(400, "invalid_request", "a non-empty 'prompt' string is required");
     }
     prompt = body.prompt;
+    if (body.agent_revision_id !== undefined && body.agent_revision_id !== null) {
+      if (typeof body.agent_revision_id !== "string" || body.agent_revision_id.trim() === "") {
+        return problemResponse(400, "invalid_request", "'agent_revision_id', when present, must be a non-empty string");
+      }
+      agentRevisionID = body.agent_revision_id;
+    }
   } catch {
     return problemResponse(400, "invalid_request", "request body must be JSON with a 'prompt' string");
   }
@@ -45,7 +58,11 @@ export async function POST(request: Request): Promise<Response> {
         controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
       };
       try {
-        const palaiStream = client.responses.stream({ input: prompt }, { signal: request.signal });
+        const palaiStream = client.responses.stream(
+          // The spread is what keeps the unpinned body bit-unchanged: an absent pin adds no key at all.
+          { input: prompt, ...(agentRevisionID === "" ? {} : { agent_revision_id: agentRevisionID }) },
+          { signal: request.signal },
+        );
         enqueue({ type: "status", status: "streaming" });
 
         let metaSent = false;

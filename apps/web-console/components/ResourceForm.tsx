@@ -2,6 +2,8 @@
 
 import type { ReactNode } from "react";
 
+import { Picker, type PickerOption } from "@/components/Picker";
+
 // THE FORM DISCIPLINE, ESTABLISHED ONCE (E25 T2, plan §3.5 N11). E25 adds six configuration forms across
 // T4/T5/T6 and every one of them owes the same four things. They are written here so those tasks inherit them
 // instead of re-deriving them five times — and so a reviewer checks one file rather than six:
@@ -33,10 +35,8 @@ import type { ReactNode } from "react";
 // satisfied, and the tempting alternative — degrade to a free-text box — invites an operator to type an id
 // that does not exist, which then fails at admission with a refusal about something else entirely.
 
-export interface FormOption {
-  value: string;
-  label: string;
-}
+/** FormOption is Picker's option shape — one spelling, so a caller can hand the same list to either. */
+export type FormOption = PickerOption;
 
 export interface FormField {
   /** Field name; also the source of the control's id, so the label can never be orphaned. */
@@ -115,36 +115,33 @@ export function ResourceForm({
         {fields.map((field) => {
           const id = `field-${field.name}`;
           const describedBy = field.hint ? `${id}-hint` : undefined;
-          // An options-less select renders its caller's note INSTEAD of a control, and no label either: a
-          // label pointing at nothing is an axe violation and a lie to a screen reader.
-          if (field.kind === "select" && (field.options ?? []).length === 0) {
+          // The select arm — INCLUDING the options-less rule in the header — moved to components/Picker.tsx in
+          // E25 T6, when three standalone pickers appeared that are not form fields (an agent chooser, and the
+          // agent + revision pins on /runs). The rule and the `${testId}-empty` contract are now written once
+          // and this markup is unchanged: a form field is still labelled, described and keyboard-reachable
+          // here, it is just no longer a second copy of the rule.
+          if (field.kind === "select") {
             return (
-              <p key={field.name} className="muted" data-testid={field.testId === undefined ? undefined : `${field.testId}-empty`}>
-                {field.emptyNote}
-              </p>
+              <Picker
+                key={field.name}
+                id={id}
+                name={field.name}
+                label={field.label}
+                value={field.value}
+                onChange={field.onChange}
+                options={field.options ?? []}
+                placeholder={field.placeholder}
+                emptyNote={field.emptyNote}
+                testId={field.testId}
+                hint={field.hint === undefined || field.hint === "" ? undefined : field.hint}
+                required={field.required}
+              />
             );
           }
           return (
             <div key={field.name}>
               <label htmlFor={id}>{field.label}</label>
-              {field.kind === "select" ? (
-                <select
-                  id={id}
-                  name={field.name}
-                  required={field.required}
-                  value={field.value}
-                  aria-describedby={describedBy}
-                  onChange={(e) => field.onChange(e.target.value)}
-                  data-testid={field.testId}
-                >
-                  {field.placeholder === undefined ? null : <option value="">{field.placeholder}</option>}
-                  {(field.options ?? []).map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              ) : field.kind === "textarea" ? (
+              {field.kind === "textarea" ? (
                 <textarea
                   id={id}
                   name={field.name}

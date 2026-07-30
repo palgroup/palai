@@ -21,10 +21,28 @@ test("a collection larger than one page shows 20 rows, SAYS more exist, and cont
   // DIV-UI-003). The sweep re-derives that the real collection is short — it does not take this comment's word.
   skipOnReal("DIV-UI-005");
 
+  // NOTHING BELOW NAMES A ROW OR A COUNT, and that is a repair rather than a loosening (E25 T6). This test
+  // used to assert `agt_20` at row 19, `agt_21` after the continuation, and `?after=cur_20` — three fixture
+  // constants that held only while the fixture's agents collection was frozen at twenty-one seeded rows.
+  // E25 T6's console CREATES agents, tests/config-journey.spec.ts creates several, and Playwright runs one
+  // shared fixture process for the whole suite — so those constants made this test's greenness a property of
+  // WHICH FILE RAN FIRST. That is the exact trap E25 T4 already paid for once ("an assertion that held only by
+  // file order"), and the assertions that replace them are stronger: the cut is 20 whatever the collection
+  // holds, the continuation's cursor is the one the SERVER minted rather than a matching literal, and the
+  // second page is DISJOINT from the first — which is the bug a re-fetch of page one would be.
   const requested: string[] = [];
+  const cursors: (string | null)[] = [];
   page.on("request", (r) => {
     const url = new URL(r.url());
     if (url.pathname === "/api/palai/v1/agents") requested.push(url.search === "" ? "<first page>" : url.search);
+  });
+  page.on("response", (r) => {
+    const url = new URL(r.url());
+    if (url.pathname !== "/api/palai/v1/agents") return;
+    void r
+      .json()
+      .then((body: { next_cursor?: string | null }) => cursors.push(body.next_cursor ?? null))
+      .catch(() => {});
   });
 
   await page.goto("/");
@@ -34,26 +52,49 @@ test("a collection larger than one page shows 20 rows, SAYS more exist, and cont
   // The truncation is stated IN TEXT — not a colour, not a disabled arrow, not silence.
   await expect(page.getByTestId("panel-agents-more")).toContainText(/20 .*more/i);
 
-  // The 21st row does not exist yet, and the last row of page one is the 20th.
-  await expect(panel).not.toContainText("agt_21");
-  await expect(panel.locator("tbody tr").nth(19)).toContainText("agt_20");
+  const rowIDs = async () => panel.locator("tbody tr td:first-child").allInnerTexts();
+  const firstPage = await rowIDs();
+  expect(new Set(firstPage).size, "page one served a duplicate row").toBe(20);
 
   await page.getByTestId("panel-agents-load-more").click();
+  await expect(panel.locator("tbody tr")).not.toHaveCount(20, { timeout: 15_000 });
 
-  await expect(panel.locator("tbody tr")).toHaveCount(21, { timeout: 15_000 });
-  await expect(panel).toContainText("agt_21");
-  // Exhausted: the control goes away and so does the truncation notice, because has_more is now false.
-  await expect(page.getByTestId("panel-agents-load-more")).toHaveCount(0);
+  // THE SECOND PAGE IS NEW ROWS. A continuation that re-fetched page one would append twenty rows the list
+  // already had, and a count-only assertion would call that a pass.
+  const afterFirstClick = await rowIDs();
+  expect(afterFirstClick.slice(0, 20), "the continuation reordered or replaced page one").toEqual(firstPage);
+  const appended = afterFirstClick.slice(20);
+  expect(appended.length, "the continuation appended nothing").toBeGreaterThan(0);
+  expect(appended.filter((id) => firstPage.includes(id)), "the continuation re-served rows page one already had").toEqual([]);
+
+  // EXHAUSTION, driven rather than assumed: keep continuing while the control exists. The bound is generous
+  // and finite — an unbounded loop here would hang instead of failing.
+  for (let i = 0; i < 10; i++) {
+    const control = page.getByTestId("panel-agents-load-more");
+    if ((await control.count()) === 0) break;
+    const before = await panel.locator("tbody tr").count();
+    await control.click();
+    // Each continuation must GROW the list; a click that changed nothing would otherwise spin the loop out.
+    await expect(panel.locator("tbody tr")).not.toHaveCount(before, { timeout: 15_000 });
+  }
+  // Exhausted: the control is gone and so is the truncation notice, because has_more is now false.
+  await expect(page.getByTestId("panel-agents-load-more")).toHaveCount(0, { timeout: 15_000 });
   await expect(page.getByTestId("panel-agents-more")).toHaveCount(0);
 
-  // The continuation carried the SERVER's cursor, and there was EXACTLY ONE of them. The console must not
-  // compute an offset of its own: a real cursor is an HMAC'd keyset position bound to the tenant
-  // (api/pagination.go encodeCursor), so a client-side guess comes back 400 invalid_cursor.
-  //
-  // The first page is fetched TWICE on this surface and that is measured, not overlooked: the Agents panel
-  // reads /agents, and AgentDiff independently reads /agents to find an agent whose revisions it can diff.
-  // Both are unparameterised reads through the relay; only the CONTINUATION is this test's subject.
-  expect(requested.filter((q) => q !== "<first page>")).toEqual(["?after=cur_20"]);
+  // EVERY CONTINUATION CARRIED A CURSOR THE SERVER MINTED. The console must not compute an offset of its own:
+  // a real cursor is an HMAC'd keyset position bound to the tenant (api/pagination.go encodeCursor), so a
+  // client-side guess comes back 400 invalid_cursor. Checked against the `next_cursor` values that actually
+  // arrived on this page's own responses, so a console that hardcoded the fixture's `cur_20` would fail.
+  const served = new Set(cursors.filter((c): c is string => typeof c === "string" && c !== ""));
+  const continuations = requested.filter((q) => q !== "<first page>");
+  expect(continuations.length, "no continuation request was made").toBeGreaterThan(0);
+  for (const query of continuations) {
+    const carried = new URLSearchParams(query).get("after") ?? "";
+    expect(served.has(carried), `the console asked for ?after=${carried}, which no response ever offered`).toBe(true);
+  }
+  // The first page is fetched more than once on this surface and that is measured, not overlooked: the Agents
+  // panel reads /agents, and AgentDiff independently reads /agents to find an agent whose revisions it can
+  // diff. Both are unparameterised reads through the relay; only the CONTINUATION is this test's subject.
   expect(requested.filter((q) => q === "<first page>").length).toBeGreaterThan(0);
 });
 

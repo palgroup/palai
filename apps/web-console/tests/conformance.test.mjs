@@ -67,6 +67,15 @@ const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 // was actually seen. A row nobody observes is either closed (delete it) or decoration (worse).
 const observed = new Set();
 
+// seeded holds the ids seedBothStacks created on each side, so a wildcard PATH can be made concrete with a
+// row that actually exists (E25 T6). `{agent_id}` used to be filled with a probe token, which on a real stack
+// is an unknown profile answering an empty page — an item comparison over nothing.
+const seeded = { real: {}, fixture: {} };
+
+// The model the seeded revision pins. Distinctive, so the DIV-UI-007 arm can say something about whether it
+// travelled — and never equal to the deployment default, which is what would make that arm vacuous.
+const SEEDED_REVISION_MODEL = "sweep-pinned-by-revision";
+
 // requireLedgerRow is the single gate every arm funnels through: a difference with no ledger row FAILS with
 // the difference spelled out, which is the D15 requirement in one function.
 function requireLedgerRow(kind, subject, detail) {
@@ -90,6 +99,14 @@ const fakeFetch = (path, init = {}) =>
 
 /** concretePath substitutes a probe token for each {wildcard} so a pattern becomes a requestable path. */
 const concretePath = (pattern) => pattern.replace(/\{[a-z_]+\}/g, PROBE);
+
+/**
+ * seededPath is concretePath with the ids seedBothStacks actually created substituted in, per side (E25 T6).
+ * A wildcard with no seed still gets the probe token — the only thing that changes is that a route whose
+ * item shape CAN be compared now is.
+ */
+const seededPath = (pattern, side) =>
+  pattern.replace(/\{([a-z_]+)\}/g, (_m, name) => (typeof seeded[side][name] === "string" ? encodeURIComponent(seeded[side][name]) : PROBE));
 
 /** allowProbe reads a running router's method set for one path pattern — see the header for why this works. */
 async function allowProbe(base, pattern, key) {
@@ -229,6 +246,78 @@ async function seedBothStacks() {
         "against an empty real collection, which is a pass over nothing.",
     );
   }
+
+  // E25 T6 SEEDS THREE MORE COLLECTIONS, and one of them needs a REAL ID in the path.
+  //
+  // repository-bindings and agents are EMPTY on a bootstrap stack — nothing creates either without Slack, and
+  // that is the whole reason T6's console pages exist — so their item shapes had never been compared. The
+  // agents row was missing `name` on the fixture side for exactly that long.
+  //
+  // agent-revisions is the interesting one: its pattern carries a wildcard, and arm 3 has always substituted a
+  // PROBE token, which on a real stack is an unknown profile and answers an EMPTY page — so the comparison
+  // silently did nothing. `seededPathIDs` below is what fixes it, and it took closing DIV-SHP-005 to make the
+  // fix reachable at all: while the envelopes differed, arm 3 skipped the item comparison for this route by
+  // design.
+  for (const [label, doFetch] of [
+    ["real", realFetch],
+    ["fixture", fakeFetch],
+  ]) {
+    const binding = await doFetch("/v1/repository-bindings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "github",
+        repository_identity: `palai-example/sweep-seed-${Date.now()}`,
+        clone_url: "https://github.com/palai-example/sweep-seed.git",
+        default_branch: "main",
+        allowed_operations: ["clone"],
+      }),
+    });
+    const bindingBody = await binding.json().catch(() => ({}));
+    assert.ok(
+      binding.status === 200 || binding.status === 201,
+      `the sweep could not seed a repository binding on the ${label} side: POST /v1/repository-bindings ` +
+        `returned ${binding.status} (${bindingBody.code ?? "?"}). The route mounts only when the store is wired ` +
+        "(api/router.go:42), and an unmounted family means the item-shape floor below would drop silently.",
+    );
+
+    const agent = await doFetch("/v1/agents", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: `sweep-seed-agent-${Date.now()}` }),
+    });
+    const agentBody = await agent.json().catch(() => ({}));
+    assert.ok(
+      agent.status === 200 || agent.status === 201,
+      `the sweep could not seed an agent on the ${label} side: POST /v1/agents returned ${agent.status} ` +
+        `(${agentBody.code ?? "?"})`,
+    );
+    const revision = await doFetch(`/v1/agents/${encodeURIComponent(agentBody.id)}/revisions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: SEEDED_REVISION_MODEL }),
+    });
+    const revisionBody = await revision.json().catch(() => ({}));
+    assert.ok(
+      revision.status === 200 || revision.status === 201,
+      `the sweep could not seed an agent revision on the ${label} side: POST /v1/agents/{id}/revisions ` +
+        `returned ${revision.status} (${revisionBody.code ?? "?"}). Without it the revision item shape is ` +
+        "compared against an empty page, which is the pass-over-nothing this seed exists to end.",
+    );
+    // PUBLISHED, because the DIV-UI-007 arm below needs a revision a run can be pinned to — and because a
+    // published row is the one whose `status` field the item comparison should be reading.
+    const publish = await doFetch(
+      `/v1/agents/${encodeURIComponent(agentBody.id)}/revisions/${encodeURIComponent(revisionBody.id)}/publish`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    assert.ok(
+      publish.status === 200 || publish.status === 201,
+      `the sweep could not publish the seeded revision on the ${label} side: ${publish.status}`,
+    );
+    await publish.body?.cancel().catch(() => {});
+
+    seeded[label] = { agent_id: agentBody.id, revision_id: revisionBody.id };
+  }
 }
 after(() => fake?.kill());
 
@@ -300,8 +389,13 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     let itemsCompared = 0;
     for (const route of comparable) {
       const subject = `${route.method} ${route.pattern}`;
-      const path = concretePath(route.pattern);
-      const [realRes, fakeRes] = await Promise.all([realFetch(path), fakeFetch(path)]);
+      // SEEDED IDS, NOT A PROBE, for the patterns a seed created a row under (E25 T6). Arms 1 and 2 keep the
+      // probe deliberately — they ask whether a PATTERN is registered, and a real id would not test that — but
+      // an item comparison over `/v1/agents/zzsweepprobe/revisions` is a comparison against an empty page on
+      // the real side, which is how the fixture's revision shape stayed wrong. Each side gets ITS OWN id: the
+      // two stacks are different databases and neither knows the other's rows.
+      const [path, fakePath] = [seededPath(route.pattern, "real"), seededPath(route.pattern, "fixture")];
+      const [realRes, fakeRes] = await Promise.all([realFetch(path), fakeFetch(fakePath)]);
       if (realRes.status !== 200) {
         // Arm 2 already established whether the pattern exists; a non-200 here is an unmounted capability or
         // an unknown probe id, neither of which is a shape fact.
@@ -323,12 +417,20 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
         requireLedgerRow("shape", subject, `list item: real ${keyShape(realItem)}\n  fixture ${keyShape(fakeItem)}`);
       }
     }
-    // THE FLOOR, AND IT RISES EVERY TASK (E25 T2, raised by T4). It was 3 — the three collections a bootstrap
-    // stack seeds — then 4 once this sweep began seeding a knowledge base, and it is now 6: T4's seed creates
-    // an ENVIRONMENT and writes one VALUE into it, and the value is a SECRET_REFS row, so two collections that
-    // were empty on every bootstrap stack now have one each. The six that must hold: organizations, projects,
-    // api-keys, knowledge-bases, environments, secret-refs. T7 seeds tool revisions and raises it again; it
-    // must never fall.
+    // THE FLOOR, AND IT RISES EVERY TASK (E25 T2, raised by T4 and again by T6). It was 3 — the three
+    // collections a bootstrap stack seeds — then 4 once this sweep began seeding a knowledge base, then 6 when
+    // T4's seed created an ENVIRONMENT and wrote one VALUE into it (a SECRET_REFS row), and it is now 9: T6
+    // seeds a REPOSITORY BINDING, an AGENT and a published AGENT REVISION, three collections that are empty on
+    // every bootstrap stack because nothing without Slack creates any of them. The nine that must hold:
+    // organizations, projects, api-keys, knowledge-bases, environments, secret-refs, repository-bindings,
+    // agents, agent-revisions. T7 seeds tool revisions and raises it again; it must never fall.
+    //
+    // WHAT THE T6 RAISE FOUND, because a floor that rises is only worth the drift it catches: the fixture's
+    // agent row was missing `name`, and its REVISION row said `published: true` where the real projection says
+    // `status: "published"` and carried none of agent_id / revision_number / mcp_connections / environment /
+    // instructions. The second was invisible for a further reason — DIV-SHP-005 recorded an envelope
+    // difference on that route, and an envelope difference SUBSUMES the item comparison — so closing that row
+    // was part of raising this number rather than a separate tidy-up.
     //
     // E25 T5 DID NOT RAISE IT, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION (§2 says every page-opening task
     // seeds its collection and raises this number). GET /v1/approvals is comparable here and its ENVELOPE is
@@ -339,11 +441,12 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
     // is the one below, unchanged, with the reason written down — and the first task that can seed a row on the
     // real side raises it. A baseline nudged up by a seed that does not exist would be worse than one that holds.
     assert.ok(
-      itemsCompared >= 6,
+      itemsCompared >= 9,
       `only ${itemsCompared} collections had a row on BOTH sides, so this arm compared almost no item shapes — ` +
         "the bootstrap seeds organizations/projects/api-keys and this sweep seeds a knowledge base, an " +
-        "environment and one environment value (which is a secret_refs row), so fewer than six means either " +
-        "the real stack is not seeded or a seed did not land, and this arm would pass vacuously",
+        "environment, one environment value (which is a secret_refs row), a repository binding, an agent and a " +
+        "published agent revision, so fewer than nine means either the real stack is not seeded or a seed did " +
+        "not land, and this arm would pass vacuously",
     );
   });
 
@@ -534,6 +637,89 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
       "the tool-approval queue over a PARKED gated tool call",
       `GET /v1/approvals answers 200 with ${queue.data?.length ?? 0} row(s) after a real run reached terminal, and the ` +
         `envelope is {${Object.keys(queue).sort().join(",")}} — the screen is real on this profile, the rows cannot be`,
+    );
+  });
+
+  // DIV-UI-007 (E25 T6) — THE PIN TRAVELS, AND ITS MODEL CANNOT BE SEEN.
+  //
+  // Its own arm, because it needs a SECOND real run and a pinned one. Both halves are re-derived from that run
+  // rather than from the row's prose: the DRAFT refusal proves the field reaches admission at all on this
+  // profile (a 409 can only come from the server resolving the id), and the terminal projection's model proves
+  // the observation is impossible here (main.go's fake adapter answers with a constant). If a compose stack
+  // ever echoes the model it was asked for, the second assertion fails, the row is stale, and the crown leg in
+  // tests/config-journey.spec.ts must stop skipping on the real profile.
+  it("the ui-007 evidence holds: a pinned revision reaches admission, and its model cannot be observed on compose", async () => {
+    const { agent_id: agentID, revision_id: revisionID } = seeded.real;
+    assert.ok(
+      typeof revisionID === "string" && revisionID !== "",
+      "the seed created no agent revision on the real side, so this arm would prove nothing",
+    );
+
+    // A DRAFT is created fresh (the seeded one is published) so the 409 is about a draft rather than about a
+    // re-publish.
+    const draft = await realFetch(`/v1/agents/${encodeURIComponent(agentID)}/revisions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: SEEDED_REVISION_MODEL }),
+    });
+    const draftBody = await draft.json();
+    assert.ok(draft.status === 200 || draft.status === 201, `seeding a draft revision returned ${draft.status}`);
+    const refused = await realFetch("/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": `sweep-draft-${Date.now()}` },
+      body: JSON.stringify({ input: "sweep — a draft pin must be refused", agent_revision_id: draftBody.id }),
+    });
+    const refusal = await refused.json().catch(() => ({}));
+    assert.equal(
+      refused.status,
+      409,
+      `POST /v1/responses pinned to a DRAFT revision returned ${refused.status} (${refusal.code ?? "?"}), want 409 ` +
+        "revision_not_published. This is the half of the pin that DOES run on the real profile, and if it stopped " +
+        "working the console's honest-refusal leg would be asserting a fixture behaviour",
+    );
+    assert.equal(refusal.code, "revision_not_published", `the draft refusal's code is ${refusal.code}`);
+
+    // AND THE PUBLISHED PIN RUNS — to terminal, with a model that is NOT the one the revision names.
+    const created = await realFetch("/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": `sweep-pinned-${Date.now()}` },
+      body: JSON.stringify({ input: "sweep — a published pin must run", agent_revision_id: revisionID }),
+    });
+    assert.ok(created.status === 200 || created.status === 202, `a pinned admission returned ${created.status}`);
+    const run = await created.json();
+
+    // Read the canonical stream to its close, which is the run's terminal — the same idiom realRun uses.
+    const stream = await realFetch(`/v1/sessions/${encodeURIComponent(run.session_id)}/events`, {
+      headers: { accept: "text/event-stream" },
+      signal: AbortSignal.timeout(RUN_BUDGET_MS),
+    });
+    assert.equal(stream.status, 200, `the pinned run's event stream returned ${stream.status}`);
+    const reader = stream.body.getReader();
+    try {
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
+
+    const terminal = await realFetch(`/v1/responses/${encodeURIComponent(run.id)}`);
+    const projection = await terminal.json();
+    assert.equal(terminal.status, 200, `retrieving the pinned run returned ${terminal.status}`);
+    assert.notEqual(
+      projection.model,
+      SEEDED_REVISION_MODEL,
+      `the pinned run's terminal projection reports model=${projection.model}, which IS the revision's model — the ` +
+        "compose adapter has started echoing the model it was asked for, DIV-UI-007 is stale, and the crown leg of " +
+        "tests/config-journey.spec.ts must stop skipping on the real profile",
+    );
+    requireLedgerRow(
+      "ui",
+      "a run pinned to a published agent revision reporting THAT revision's model",
+      `a real run pinned to a revision naming ${SEEDED_REVISION_MODEL} reached ${projection.status} reporting ` +
+        `model=${projection.model} — while the DRAFT pin was refused ${refused.status} ${refusal.code}, so the field ` +
+        "does reach admission and only its observable effect is missing",
     );
   });
 

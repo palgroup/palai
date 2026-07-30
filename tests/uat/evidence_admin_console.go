@@ -34,4 +34,12 @@ package uat
 // hash, so T5 is a PAGE. What it claims is bounded by one thing no console profile can produce — a PARKED
 // gated tool call on a real stack (DIV-UI-006) — so the release of the parked run stays a component-tier
 // claim and the browser's claim ends at the decision reaching the single throat with the row's own binding.
-var AdminConsoleCaseIDs = []string{"CON-001", "CON-002", "CON-003", "CON-004", "CON-005"}
+// CON-006 IS THE FIRST CASE IN THIS LIST WITH LEGS ON BOTH SIDES OF THE BROWSER, and the split is a
+// measurement rather than a structure: T6's console can be shown creating a repository binding, an agent, a
+// revision bound to an environment and a run pinned to it, but it can NEVER be shown the consequence — no
+// console profile reaches a tool call at all (the fake upstream scripts its events; the compose adapter is
+// hardcoded with no ToolCalls, DIV-UNX-001), and a browser cannot read a subprocess's environment anyway. So
+// its last proof is a component-real Go test that drives the SAME public HTTP routes the screens call, with no
+// SQL below the tenant seed, and then watches a real `printenv` receive the keys. That test is the one place
+// in the tree where E25 T3's pipe and T6's console meet, and it is why neither task's claim is the other's.
+var AdminConsoleCaseIDs = []string{"CON-001", "CON-002", "CON-003", "CON-004", "CON-005", "CON-006"}
