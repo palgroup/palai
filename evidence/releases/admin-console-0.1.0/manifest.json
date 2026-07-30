@@ -4201,7 +4201,7 @@
           {
             "kind": "dom",
             "subject": "/environments after a create + a value write: outerHTML plus every input's live .value",
-            "bytes_scanned": 15159,
+            "bytes_scanned": 15163,
             "sentinel_hits": 0,
             "probe": "SWEEP_TOKEN",
             "probe_found": true
@@ -4209,7 +4209,7 @@
           {
             "kind": "response-body",
             "subject": "every response the browser retained during the whole journey (17 bodies)",
-            "bytes_scanned": 564692,
+            "bytes_scanned": 564698,
             "sentinel_hits": 0,
             "probe": "SWEEP_TOKEN",
             "probe_found": true
@@ -4529,14 +4529,14 @@
         "runbook_steps_on_the_public_api": 10,
         "approval_ledger": [
           {
-            "approval_id": "apvl_console_open_1",
+            "approval_id": "apvl_console_approve",
             "decision": "approve",
             "request_hash_matched": true,
             "applied": true,
             "outcome": "the run was released; the row left the queue, which is the whole of what \"it was answered\" looks like on this projection"
           },
           {
-            "approval_id": "apvl_console_open_2",
+            "approval_id": "apvl_console_deny",
             "decision": "deny",
             "request_hash_matched": true,
             "applied": true,

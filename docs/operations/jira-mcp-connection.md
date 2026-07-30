@@ -59,8 +59,13 @@ PALAI_MCP_SECRET_FILE_<ORG>__JIRA_API_TOKEN=/run/secrets/jira-api-token
 
 ## 3. Register, discover, approve, grant
 
-Seven calls. `discover` is the only one that touches Atlassian; two of the others are reads that tell you
-what you are about to approve.
+**Ten calls**, and the count is dated because it has been wrong since the two reads were added: `discover` is
+the only one that touches Atlassian, three of the others are READS that tell you what you are about to
+approve or what you just granted, and one — the write-tool publish — is the same call as its read-tool sibling
+with one more answer in the body. Counted 2026-07-30 by `grep -c '^curl'` over this section; it said "seven"
+until then, which was true before E23 T5 added the gate declaration and E25 T7 added (c2) and (e2).
+
+
 
 ```sh
 # (a) Register the connection. The credential is a HANDLE — never inline.
@@ -120,7 +125,7 @@ curl -X POST "$PALAI_BASE_URL/v1/agents/$AGENT_ID/revisions" -H "Authorization: 
 Then publish the agent revision and start a run with `agent_revision_id` set. The tool is advertised to the
 model, which calls it by its model-visible name (`jira__getJiraIssue`).
 
-**All of §3 is also a screen.** The admin console's `/tools` page walks the same seven calls — register with
+**All of §3 is also a screen.** The admin console's `/tools` page walks the same chain — register with
 a `secret_ref` chosen from a list, discover, read each draft revision **with the description you are
 approving**, publish it with the gate declaration, pin, publish the set, and read the set's contents back —
 and `/agents` binds the published set and the connection to a revision. See

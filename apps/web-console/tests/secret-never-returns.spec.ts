@@ -76,7 +76,17 @@ test("a value written through the console appears in no DOM node, no response bo
   expect(domHaystack.includes("SWEEP_TOKEN"), "the DOM scan read nothing — the sweep would be vacuous").toBe(true);
 
   // --- ARM 2: EVERY RESPONSE BODY the browser received during the whole journey. ---
+  //
+  // EACH ARM NAMES A TOKEN IT ACTUALLY FOUND (E25 T9). Arm 1 always did — it looks for SWEEP_TOKEN in the
+  // DOM — and arms 2 and 3 only ever proved they had SOMETHING to scan (`scannedBodies > 0`,
+  // `assets.length > 0`), never that the scan could see a string genuinely in the bytes. A haystack nobody
+  // has shown was READ is not a haystack, and the exit gate's byte-scan group refuses a layer that names no
+  // probe. The probe must be a token that is ALLOWED to be there: the key NAME comes back from the API by
+  // design, which is exactly the difference between a name and a value that this screen is about.
+  const BODY_PROBE = "SWEEP_TOKEN";
   let scannedBodies = 0;
+  let bodyProbeHits = 0;
+  let scannedBodyBytes = 0;
   for (const resp of responses) {
     let body: string;
     try {
@@ -85,24 +95,48 @@ test("a value written through the console appears in no DOM node, no response bo
       continue; // not retained (redirect / aborted / 204) — nothing to scan
     }
     scannedBodies += 1;
+    scannedBodyBytes += body.length;
+    if (body.includes(BODY_PROBE)) bodyProbeHits += 1;
     expect(body.includes(SENTINEL), `the written value came back in a response body from ${resp.url()}`).toBe(false);
   }
   expect(scannedBodies, "no response bodies were retained — arm 2 would be vacuous").toBeGreaterThan(0);
+  expect(
+    bodyProbeHits,
+    `no response body contained "${BODY_PROBE}" — the key NAME is what the API is allowed to return, so a scan ` +
+      "that cannot find it has not been shown to read these bodies at all, and its zero is a statement about " +
+      "a haystack rather than about a secret",
+  ).toBeGreaterThan(0);
 
   // --- ARM 3: EVERY BROWSER-SERVED ASSET, INCLUDING SOURCE MAPS. Enumerated by walking .next/static
   // recursively — every file under it is fetchable at /_next/static/..., so this is the browser surface, and
   // it is the same walk the credential sweep uses. ---
+  //
+  // Its probe is a string this console's OWN client code carries and which a browser is meant to receive: the
+  // environment panel's test id. It is searched in the SOURCE MAPS specifically, because that is the layer
+  // whose whole reason to exist is that it carries text the minified chunk does not — a sentinel planted in a
+  // source COMMENT is stripped from the chunk and survives verbatim in `sourcesContent`.
+  const MAP_PROBE = "panel-environment-keys";
   const assets = browserServedAssets();
+  const maps = assets.filter((a) => a.path.endsWith(".js.map"));
   expect(assets.length, "no browser-served assets were found — arm 3 would be vacuous").toBeGreaterThan(0);
-  expect(assets.some((a) => a.path.endsWith(".js.map")), "expected browser source maps (next.config.ts productionBrowserSourceMaps)").toBe(true);
+  expect(maps.length, "expected browser source maps (next.config.ts productionBrowserSourceMaps)").toBeGreaterThan(0);
+  expect(
+    maps.filter((m) => m.body.includes(MAP_PROBE)).length,
+    `no source map contained "${MAP_PROBE}" — the maps are the layer that carries text the minified chunk does ` +
+      "not, so a scan that cannot find this console's own markup in them has not been shown to read them",
+  ).toBeGreaterThan(0);
   for (const asset of assets) {
     expect(asset.body.includes(SENTINEL), `the written value is in ${asset.path}`).toBe(false);
   }
 
-  // eslint-disable-next-line no-console -- the counts ARE the evidence; an absence proven over nothing is nothing.
+  // eslint-disable-next-line no-console -- the counts ARE the evidence; an absence proven over nothing is
+  // nothing, and the PROBE counts are what say the scan read anything at all. tests/uat/admin-console parses
+  // this line, so its shape is a contract rather than a log.
   console.log(
-    `SENTINEL SWEEP — DOM: ${domHaystack.length} chars, response bodies: ${scannedBodies}, ` +
-      `browser assets: ${assets.length} (${assets.filter((a) => a.path.endsWith(".js.map")).length} source maps); ` +
+    `SENTINEL SWEEP — dom=${domHaystack.length} probe=SWEEP_TOKEN found; ` +
+      `response-body=${scannedBodyBytes} bodies=${scannedBodies} probe=${BODY_PROBE} hits=${bodyProbeHits}; ` +
+      `source-map=${maps.reduce((n, m) => n + m.body.length, 0)} maps=${maps.length} assets=${assets.length} ` +
+      `probe=${MAP_PROBE} hits=${maps.filter((m) => m.body.includes(MAP_PROBE)).length}; ` +
       "sentinel found in 0",
   );
 });

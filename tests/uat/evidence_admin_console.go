@@ -874,9 +874,16 @@ const AdminConsoleRouteLedger = `[
 // arms 2 and 3 previously proved only that they had SOMETHING to scan. Each probe is a token that is ALLOWED
 // to be there — the key NAME comes back from the API by design, which is exactly the distinction this screen
 // is about.
+//
+// THE BYTE COUNTS ARE A MEASUREMENT OF ONE BUILD, NOT A PIN, and the difference is stated because a reader
+// will otherwise assume the stronger thing. They are the LIGHT project's numbers from the run that produced
+// this bundle; the dark project scans a slightly different DOM (14307 chars against 15163) because the
+// rendered markup differs by scheme. What the exit gate DIFFS against a run is the ZERO and the three probe
+// names — never these totals, which would turn a stylesheet edit into a red bundle and teach the next reader
+// to regenerate rather than to read.
 const AdminConsoleByteScanLedger = `[
-  {"kind": "dom", "subject": "/environments after a create + a value write: outerHTML plus every input's live .value", "bytes_scanned": 15159, "sentinel_hits": 0, "probe": "SWEEP_TOKEN", "probe_found": true},
-  {"kind": "response-body", "subject": "every response the browser retained during the whole journey (17 bodies)", "bytes_scanned": 564692, "sentinel_hits": 0, "probe": "SWEEP_TOKEN", "probe_found": true},
+  {"kind": "dom", "subject": "/environments after a create + a value write: outerHTML plus every input's live .value", "bytes_scanned": 15163, "sentinel_hits": 0, "probe": "SWEEP_TOKEN", "probe_found": true},
+  {"kind": "response-body", "subject": "every response the browser retained during the whole journey (17 bodies)", "bytes_scanned": 564698, "sentinel_hits": 0, "probe": "SWEEP_TOKEN", "probe_found": true},
   {"kind": "source-map", "subject": "every file under .next/static, walked recursively (43 assets, 19 .js.map)", "bytes_scanned": 3430410, "sentinel_hits": 0, "probe": "panel-environment-keys", "probe_found": true}
 ]`
 
@@ -984,8 +991,8 @@ const AdminConsoleRunbookLedger = `[
 // and tests/uat/admin-console/journey_test.go diffs those lines against this table, so a row nobody produced
 // fails the gate.
 const AdminConsoleApprovalLedger = `[
-  {"approval_id": "apvl_console_open_1", "decision": "approve", "request_hash_matched": true, "applied": true, "outcome": "the run was released; the row left the queue, which is the whole of what \"it was answered\" looks like on this projection"},
-  {"approval_id": "apvl_console_open_2", "decision": "deny", "request_hash_matched": true, "applied": true, "outcome": "the operator's reason reached the API verbatim \u2014 a colon, a newline and a quote all survived, because that text is what the MODEL is handed"},
+  {"approval_id": "apvl_console_approve", "decision": "approve", "request_hash_matched": true, "applied": true, "outcome": "the run was released; the row left the queue, which is the whole of what \"it was answered\" looks like on this projection"},
+  {"approval_id": "apvl_console_deny", "decision": "deny", "request_hash_matched": true, "applied": true, "outcome": "the operator's reason reached the API verbatim \u2014 a colon, a newline and a quote all survived, because that text is what the MODEL is handed"},
   {"approval_id": "apvl_console_drift", "decision": "approve", "request_hash_matched": false, "applied": false, "outcome": "409 no-longer-decidable: the fixture's drift row rotates its arguments and its hash on every serve, so the console's carried binding is always the previous one and the refusal comes from the one-shot binding genuinely failing"},
   {"approval_id": "apvl_console_drift", "decision": "approve", "request_hash_matched": false, "applied": false, "outcome": "409 again, reached through the typed-refusal sweep, where it must produce a DIFFERENT sentence from the 404 and the 403 beside it"},
   {"approval_id": "apvl_console_gone", "decision": "approve", "request_hash_matched": true, "applied": false, "outcome": "404 unknown-or-foreign, indistinguishable on purpose \u2014 the screen must not imply the approval exists somewhere else"},

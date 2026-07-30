@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# Admin-console UAT — the E25 EXIT gate (plan §T9). One target, a Docker-free CORE + a Docker-bound JOURNEY
+# tier + a REAL-UPSTREAM tier, shaped exactly like E24's `fleet`. The core is the load-bearing gate: it needs
+# no Docker and no credential — but it DOES need the console toolchain, and it EXITS rather than skipping.
+#
+# WHY THIS TARGET CO-RUNS THE BACKING SUITES (the E17 T11 review's MUST-FIX 1, inherited verbatim through
+# E19..E24): the bundle's per-case `status` is AUTHORED deterministic data, and so are the eight ledgers the
+# admin-console proof carries. Only what a verifier can re-derive is judged by a verifier; the rest is a
+# claim. So `evidence-verify` on its own certifies "UAT declared green", NOT "UAT green". THIS SCRIPT is what
+# makes the authored status honest: the SAME invocation that verifies the bundle also RUNS the suites that
+# back the seven cases it certifies, and tests/uat/admin-console/journey_test.go then DIFFS the ledgers
+# against the numbers this run printed. A ledger row nobody produced fails the gate.
+#
+#   Docker-free core (always):
+#     1. `pnpm typecheck` in apps/web-console. §3.6 D15 measured that a TypeScript error hits NO gate in this
+#        tree — the Makefile's typecheck target covers sdks/typescript only, and next.config.ts sets
+#        `typescript: { ignoreBuildErrors: true }` with the comment "Typechecking is a separate CLI concern"
+#        for a concern that ran nowhere. In an epic that added nine pages of TSX that is non-negotiable.
+#     2. go test -v ./tests/uat/admin-console/... — five gates in one package:
+#        a. the committed admin-console-0.1.0 bundle is BYTE-identical to its generator and verifies clean
+#           through the SHIPPED verifier;
+#        b. the REFUSAL matrix: shape-consistent manifests claiming a property they did not earn, each
+#           moving one ledger so a guard fires while the declared counter stays put;
+#        c. the promote gate: rc PASSES, stable is REFUSED, and a dropped claim marker still routes HERE;
+#        d. the seven cases' catalog, plus the CON- orphan sweep and the guard that keeps `CON-` inside the
+#           only sweep in the tree that walks tests/uat/cases;
+#        e. the reachability sweep over E25's new exported surface, and the guard that every component test
+#           this epic added is NAMED in scripts/test/component's -run allow-list.
+#     3. the two layers of the "no value comes back" claim that are pure logic: the ciphertext query pin
+#        (storage) and the environment projection pin (identity). They are untagged and ride `make verify`
+#        too — the evidence is stronger for running in both places, and this is the target that CERTIFIES
+#        them.
+#     4. evidence-verify RELEASE=admin-console-0.1.0 through the shipped command (0/0/0/0).
+#     5. the automation catalog corpus + the operator-doc corpus. E25 adds SEVEN case.yaml files and edits
+#        docs/operations/console.md and known-gaps-1.0.md, both in tests/docs's owned set — the re-verify
+#        rule this repository learned the hard way, twice.
+#     6. the console specs on the FAKE profile, in BOTH colour schemes, with `--reporter=list` rather than
+#        the config's `line`. The reporter is overridden ON PURPOSE and it is the only deviation from
+#        `pnpm test:e2e`: `line` prints a test's title when it STARTS, so a title in the output proves
+#        nothing about whether it passed, and this gate's journey test diffs PASS marks against the legs it
+#        claims. Read the diff, never the selector.
+#
+#   Journey tier (Docker, no credential — SKIP_JOURNEYS=1 to opt out):
+#     7. against a throwaway Postgres: the TENANCY corpus (migration 000046 opened TWO new tenant tables, and
+#        every test in that corpus t.Skips without PALAI_SECURITY_POSTGRES_URL, so a plain `go test` reports
+#        `ok` over skips — a green that certifies nothing), then the component-real legs where E25's Go seams
+#        live: the environment pipe reaching a real shell, the console-written environment reaching a run's
+#        `printenv` through PUBLIC HTTP ROUTES ALONE, and the shipped Jira runbook executed on /v1 alone.
+#        The -run selector is EXTRACTED from scripts/test/component rather than retyped, because a retyped
+#        selector is a selector that drifts and this repository has paid for that six times.
+#
+#   Real-upstream tier (RUN_CONSOLE_REAL=1 — `make uat-admin-console-live`):
+#     8. the SAME spec files against a compose control plane, plus the fake-vs-real conformance sweep. It
+#        needs a RUNNING stack (`PALAI_DISPATCH_WORKERS=1 PALAI_MODEL_PROVIDER=fake palai local up`, plus
+#        PALAI_BASE_URL and PALAI_API_KEY in the environment) and the sweep REFUSES TO SKIP without them.
+#        THIS IS THE TIER THAT RE-OBSERVES THE FIVE REPAIRED LEDGER ROWS (§6 leg 2): a repair made on a
+#        source read is the same move that put the false sentences there.
+#
+# HONEST CEILING (plan §6), and it is in this release's NAME: `admin-console`, not "console verified".
+# THERE IS NO DEPLOYED CONSOLE AND NO OPERATOR. Every browser leg here drives a Chromium against a
+# deterministic fixture upstream or against a compose stack on ONE box, and compose is not a deployment —
+# `capabilities_mount_test.go` makes the console being a separate deployable the basis of this tier's
+# derivation. There is no manual screen-reader pass; axe's own published figure is "on average 57% of WCAG
+# issues"; and E25 added nine pages of FORMS, which is where axe is weakest and where an error message's
+# MEANING — which no scanner reads — matters most. This epic measured that directly: SC 1.4.11 has no axe
+# rule at all, and every control in this console failed it in both colour schemes until the contrast was
+# measured by hand. NO TIER ADVANCES: `console` closes PREVIEW, and it closes PREVIEW in the epic that made
+# it bigger.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# The console toolchain is REQUIRED, not optional (plan §3.6 D7, the same posture scripts/uat/extensions has
+# always had and scripts/uat/wiring gained in this task). Six of this bundle's eight counters are produced by
+# the specs below; a run without them would verify a bundle whose numbers nothing in this invocation made.
+if ! command -v pnpm >/dev/null 2>&1 || [ ! -d apps/web-console/node_modules ]; then
+  echo "uat-admin-console: the console toolchain is absent, and this gate's crown claims are BROWSER claims" >&2
+  echo "  (the identity gate, the axe coverage, the sentinel sweep, the approval decisions). Install it with:" >&2
+  echo "  corepack pnpm install && (cd apps/web-console && pnpm exec playwright install chromium)" >&2
+  exit 2
+fi
+
+echo "uat-admin-console: [1/6] the console typecheck — §3.6 D15's gap, closed (it hit no gate in this tree)" >&2
+( cd apps/web-console && pnpm typecheck )
+
+echo "uat-admin-console: [2/6] the E25 bundle + refusal matrix + promote gate + catalog + CON- orphan sweep + the reachability and allow-list sweeps" >&2
+# -v because EXIT 0 IS NOT PROOF: the sweeps and the refusal matrix are the load-bearing half, and a package
+# that compiled to zero matching tests exits 0 exactly like a package whose tests all passed.
+go test -count=1 -v ./tests/uat/admin-console/...
+
+echo "uat-admin-console: [3/6] the two pure-logic layers of \"no written value comes back\": the ciphertext query pin + the environment projection pin" >&2
+go test -count=1 -v -run 'TestOnlyTwoQueriesTouchTheCiphertextColumn' ./storage
+go test -count=1 -v -run 'TestEnvironment|TestNoEnvironmentViewCarries' ./apps/control-plane/internal/identity
+
+echo "uat-admin-console: [4/6] evidence-verify RELEASE=admin-console-0.1.0 (want 0 failed / 0 missing / 0 secret)" >&2
+RELEASE=admin-console-0.1.0 scripts/evidence/verify
+
+echo "uat-admin-console: [5/6] the automation catalog corpus + the operator-doc corpus" >&2
+# E25 adds SEVEN case.yaml files and edits two docs in tests/docs's owned set, so neither is optional.
+go test -count=1 ./tests/uat/automation/... ./tests/docs/...
+
+echo "uat-admin-console: [6/6] the console specs, FAKE upstream profile, BOTH colour schemes" >&2
+# --reporter=list, not the config's `line`: see the header. This is the only place this target departs from
+# `pnpm test:e2e`, and it departs so that a PASS is readable per test rather than inferred from a title.
+( cd apps/web-console && pnpm exec next build >/dev/null && pnpm exec playwright test --reporter=list )
+
+# ---- the journey tier: real PostgreSQL, no credential -------------------------------------------------------
+journeys="the E25 Go backing legs CO-RUN green (the environment pipe, the console-written environment reaching a real printenv, the shipped runbook on /v1 alone) + the tenancy corpus"
+if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
+  # Said plainly, because the closing line must never imply a tier that did not run.
+  echo "uat-admin-console: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — the component-real backing" >&2
+  echo "  legs and the tenancy corpus did NOT run; this invocation does not back the bundle's authored PASS" >&2
+  echo "  for CON-003, CON-006 or CON-007" >&2
+  journeys="Docker-bound backing legs + tenancy corpus NOT RUN (SKIP_JOURNEYS=1)"
+else
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "uat-admin-console: docker is not available; the E25 backing legs need a throwaway Postgres" >&2
+    exit 2
+  fi
+  image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  label="io.palai.uat=admin-console"
+  container="palai-uat-admin-console-$$-${RANDOM}"
+  # Throwaway local credential, generated per run; never written to a file, never echoed.
+  password="palai-uat-console-${RANDOM}${RANDOM}"
+  cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+  before="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  trap cleanup EXIT
+
+  docker run --detach --pull=never --name "$container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 "$image" >/dev/null
+  ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "uat-admin-console: the journey postgres did not become ready" >&2
+    exit 1
+  fi
+  binding="$(docker port "$container" 5432/tcp)"; port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+  dead_url="postgres://postgres:$password@127.0.0.1:1/palai?sslmode=disable"
+
+  echo "uat-admin-console: [journey] the tenancy corpus against real PostgreSQL (000046 opened TWO tenant tables)" >&2
+  set +e
+  PALAI_SECURITY_POSTGRES_URL="$url" go test -tags=security -count=1 -v ./tests/security/tenancy
+  status=$?
+  set -e
+  if test "$status" -ne 0; then
+    echo "uat-admin-console: the tenancy corpus FAILED — two new tenant tables and seven case.yaml files must re-run it" >&2
+    cleanup; trap - EXIT
+    exit "$status"
+  fi
+
+  # THE SELECTOR IS EXTRACTED FROM THE SHIPPED SCRIPT, NEVER RETYPED. A retyped `-run` is a selector that
+  # drifts silently, and a `-run` matching nothing exits 0 — the green-by-omission shape this repository has
+  # now paid for six times, twice inside E21's own gate. `scripts/test/component` is the one place that
+  # decides which execution-package tests run at all, so this reads its line rather than owning a copy.
+  selector="$(sed -n "s/^[[:space:]]*-run '\(TestApplied|.*\)' \\\\$/\1/p" scripts/test/component)"
+  if [ -z "$selector" ]; then
+    echo "uat-admin-console: could not EXTRACT the execution-package -run selector from scripts/test/component" >&2
+    echo "  — the line moved or its shape changed, and a retyped copy is exactly what this refuses to hold" >&2
+    cleanup; trap - EXIT
+    exit 1
+  fi
+
+  suites=(
+    "./apps/control-plane/internal/identity"
+    "./apps/control-plane/internal/automation"
+    "./apps/control-plane/internal/execution/tools"
+  )
+  for suite in "${suites[@]}"; do
+    suite_url="$url"
+    if [ "${PALAI_CONSOLE_FAULT_SUITE:-}" = "$suite" ]; then
+      suite_url="$dead_url"
+      echo "uat-admin-console: FAULT INJECTED — $suite points at a DEAD Postgres; this run MUST fail" >&2
+    fi
+    echo "uat-admin-console: [journey] backing suite $suite" >&2
+    set +e
+    PALAI_COMPONENT_POSTGRES_URL="$suite_url" go test -tags=component -count=1 -v "$suite"
+    status=$?
+    set -e
+    if test "$status" -ne 0; then
+      echo "uat-admin-console: backing suite $suite FAILED — the bundle's authored PASS for its cases is not honest" >&2
+      break
+    fi
+  done
+
+  if test "$status" -eq 0; then
+    exec_url="$url"
+    if [ "${PALAI_CONSOLE_FAULT_SUITE:-}" = "./apps/control-plane/internal/execution" ]; then
+      exec_url="$dead_url"
+      echo "uat-admin-console: FAULT INJECTED — ./apps/control-plane/internal/execution points at a DEAD Postgres; this run MUST fail" >&2
+    fi
+    echo "uat-admin-console: [journey] backing suite ./apps/control-plane/internal/execution (shipped selector)" >&2
+    set +e
+    PALAI_COMPONENT_POSTGRES_URL="$exec_url" go test -tags=component -count=1 -v \
+      -run "$selector" ./apps/control-plane/internal/execution
+    status=$?
+    set -e
+    if test "$status" -ne 0; then
+      echo "uat-admin-console: backing suite ./apps/control-plane/internal/execution FAILED — the bundle's authored PASS for its cases is not honest" >&2
+    fi
+  fi
+
+  cleanup
+  trap - EXIT
+  after="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if test "$after" -ne "$before"; then
+    echo "uat-admin-console: the journey tier leaked a container" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+fi
+
+# ---- the real-upstream tier: a running compose control plane -------------------------------------------------
+real="REAL-upstream profile + conformance sweep NOT RUN (RUN_CONSOLE_REAL unset)"
+if [ "${RUN_CONSOLE_REAL:-0}" = "1" ]; then
+  echo "uat-admin-console: the console REAL-upstream profile + the fake-vs-real sweep (needs a compose stack)" >&2
+  # THE SWEEP IS WHAT RE-OBSERVES THE REPAIRED LEDGER ROWS (§6 leg 2). It refuses to skip without
+  # PALAI_BASE_URL/PALAI_API_KEY, so asking for this tier without a stack fails at config load rather than
+  # reporting a green over nothing.
+  ( cd apps/web-console && pnpm exec next build >/dev/null && PALAI_CONSOLE_PROFILE=real pnpm exec playwright test --reporter=list && pnpm sweep )
+  real="REAL-upstream profile green + the conformance sweep re-observed the repaired ledger rows"
+fi
+
+echo "uat-admin-console=PASS (E25 exit gate: bundle 0/0/0/0, the relay's exported method count and the count" >&2
+echo "  behind the identity gate re-derived and EQUAL, the declared routes and the axe-scanned routes" >&2
+echo "  re-derived and EQUAL in BOTH colour schemes, the sentinel hits in the DOM / every response body /" >&2
+echo "  every browser-served source map re-derived as ZERO over layers that each name a token they DID find," >&2
+echo "  the SQL statements touching \`ciphertext\` re-derived as exactly two, the conformance sweep's compared" >&2
+echo "  item shapes re-derived above their pre-E25 floor, the repaired divergence rows each re-observed, the" >&2
+echo "  shipped runbook's steps on /v1 alone, and the approvals decided from a screen beside the ones a" >&2
+echo "  changed request refused, $journeys, $real)" >&2
+echo "uat-admin-console: NO TIER ADVANCED — \`console\` closes PREVIEW, and it closes PREVIEW in the epic that" >&2
+echo "  made it BIGGER: an identity gate, a secret-writing form, an approval decision surface, nine new pages" >&2
+echo "  and eight new /v1 routes. §6 leg 8 is OPEN and grew with them — there is no DEPLOYED console (compose" >&2
+echo "  is not a deployment) and no manual screen-reader pass, while axe's own figure is 57% of WCAG issues on" >&2
+echo "  average and no scanner reads an error message for MEANING. THIS BUNDLE DOES NOT CLAIM THAT A REAL" >&2
+echo "  OPERATOR CONFIGURED A DEPLOYED CONSOLE. It claims a configuration surface through which no write" >&2
+echo "  passes without a session, which does not open without a password, whose every page is scanned, and" >&2
+echo "  from which no written secret VALUE comes back — measured from carried bytes, projection fields and" >&2
+echo "  SQL query names rather than declared — plus that FIVE rows of this tree's own divergence ledger, the" >&2
+echo "  record the console's evidence rested on, were measured WRONG and repaired." >&2
