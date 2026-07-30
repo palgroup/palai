@@ -71,7 +71,13 @@ var dockerBoundClasses = map[string]bool{"component-real": true, "live-provider"
 // that gets skipped: this sweep is the ONLY place in the tree that walks the cases DIRECTORY, so a prefix
 // left outside it is a family whose dirs nothing checks. Ownership may live in uat.FleetCaseIDs; escaping
 // the sweep may not.
-var extensionIDPrefixes = []string{"SLK-", "A2A-", "KNO-", "QUA-", "TLM-", "CAS-", "HIL-", "FLT-", "UI-", "WRK-"}
+// CON- (E25) joins as the SIXTH family whose ownership lives elsewhere, and it joins with a measurement
+// rather than by analogy: a tests/uat/cases/CON-001 directory was created while `CON-` was outside this
+// list and the WHOLE UAT tree was run — every package reported ok, this sweep and the checksum sweep
+// included. So the silence the HIL- paragraph describes is not historical; it is reproducible on demand,
+// and it is why the prefix lands in the same change as the first CON- case rather than at E25's exit gate.
+// Ownership may live in uat.AdminConsoleCaseIDs; escaping the sweep may not.
+var extensionIDPrefixes = []string{"SLK-", "A2A-", "KNO-", "QUA-", "TLM-", "CAS-", "HIL-", "FLT-", "CON-", "UI-", "WRK-"}
 
 // expectedExtensionsCatalog is the E17 UAT catalog: every case this epic materializes (plan §T11 + §7) mapped
 // to the proof class its case.yaml must declare and the in-tree proof(s) that prove it. A missing dir, a drifted
@@ -489,8 +495,9 @@ func TestExtensionsCatalogMaterialized(t *testing.T) {
 					!slices.Contains(uat.ToolsMemoryCaseIDs, e.Name()) &&
 					!slices.Contains(uat.CodeAndShipCaseIDs, e.Name()) &&
 					!slices.Contains(uat.ToolApprovalCaseIDs, e.Name()) &&
-					!slices.Contains(uat.FleetCaseIDs, e.Name()) {
-					t.Errorf("%s: a case dir under a guarded prefix is in NONE of expectedExtensionsCatalog, uat.AgentSurfaceCaseIDs, uat.ToolsMemoryCaseIDs, uat.CodeAndShipCaseIDs, uat.ToolApprovalCaseIDs or uat.FleetCaseIDs (add it to one, or it escapes proof resolution entirely)", e.Name())
+					!slices.Contains(uat.FleetCaseIDs, e.Name()) &&
+					!slices.Contains(uat.AdminConsoleCaseIDs, e.Name()) {
+					t.Errorf("%s: a case dir under a guarded prefix is in NONE of expectedExtensionsCatalog, uat.AgentSurfaceCaseIDs, uat.ToolsMemoryCaseIDs, uat.CodeAndShipCaseIDs, uat.ToolApprovalCaseIDs, uat.FleetCaseIDs or uat.AdminConsoleCaseIDs (add it to one, or it escapes proof resolution entirely)", e.Name())
 				}
 				break
 			}
@@ -510,6 +517,7 @@ func TestTheSLKCatalogsAreDisjoint(t *testing.T) {
 		"uat.CodeAndShipCaseIDs":  uat.CodeAndShipCaseIDs,
 		"uat.ToolApprovalCaseIDs": uat.ToolApprovalCaseIDs,
 		"uat.FleetCaseIDs":        uat.FleetCaseIDs,
+		"uat.AdminConsoleCaseIDs": uat.AdminConsoleCaseIDs,
 	}
 	for name, ids := range owners {
 		for _, id := range ids {
