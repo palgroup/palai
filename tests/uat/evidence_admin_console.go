@@ -17,10 +17,15 @@ package uat
 // this list that has no directory or whose declared proofs are not in the tree.
 //
 // THIS LIST GROWS ONE ID PER TASK, and only when the directory exists. T1 opens CON-001, T2 opens CON-002,
-// T3 opens CON-003; the remaining ids the plan names (CON-004..007) join as their tasks land, and the E25
-// exit gate is where they meet a bundle.
+// T3 opens CON-003, T4 opens CON-004; the remaining ids the plan names (CON-005..007) join as their tasks
+// land, and the E25 exit gate is where they meet a bundle.
 //
 // CON-003 IS THE FIRST NON-BROWSER CASE IN THIS LIST, and its proof_class says so: `component-real` rather
 // than `e2e-deterministic`, because T3 is the Go half of R1 and touches no console file. Its proofs are Go
 // test FUNCTIONS, so the catalog gate resolves them as `func Name(` rather than as `test("title"`.
-var AdminConsoleCaseIDs = []string{"CON-001", "CON-002", "CON-003"}
+//
+// CON-004 IS ITS BROWSER HALF, and the pair is what R1 is: T3 proves an operator-authored value reaches a
+// real shell command and enters no durable row; T4 proves the surface a HUMAN types it into returns it
+// nowhere — in no DOM node, no response body and no source map. Neither claim is the other's, and neither
+// is the ceiling both share: giving an agent a secret is the agent having that secret.
+var AdminConsoleCaseIDs = []string{"CON-001", "CON-002", "CON-003", "CON-004"}

@@ -25,4 +25,9 @@ export interface ConsoleRoute {
 export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   { path: "/", label: "Admin", readyTestId: "panel-organizations" },
   { path: "/runs", label: "Live runs", readyTestId: "run-button" },
+  // E25 T4. Its readiness signal is the LIST panel rather than a form, for the same reason "/" uses
+  // panel-organizations: the forms on this page render their final markup synchronously (no data feeds them
+  // except the environment picker, and BOTH of its states — a select, or the "create one first" note — are
+  // real states worth scanning), while the panel is the one part that can still be a spinner.
+  { path: "/environments", label: "Environments", readyTestId: "panel-environments" },
 ];

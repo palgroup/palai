@@ -149,10 +149,10 @@ before(async () => {
     if (!up) await delay(50);
   }
   if (!up) throw new Error(`the fixture did not come up on ${FAKE_BASE}`);
-  await seedRealStack();
+  await seedBothStacks();
 });
 
-// --- SEEDING THE REAL SIDE (E25 T2) ---------------------------------------------------------------------
+// --- SEEDING BOTH SIDES (E25 T2, extended by T4) --------------------------------------------------------
 //
 // The item-shape arm can only compare a collection that has a row on BOTH sides, and a bootstrap stack seeds
 // exactly three: organizations, projects, api-keys. So this sweep has been comparing three item shapes and
@@ -168,7 +168,12 @@ before(async () => {
 // ABSENCE IS A FAILURE, NEVER A SKIP: a seed that cannot be created throws, because a sweep that quietly
 // compares fewer collections reports green for exactly the drift it exists to find. The seed is idempotent
 // only in the sense that it does not need to be: rows accumulate on a test stack, and one is enough.
-async function seedRealStack() {
+// E25 T4 ALSO SEEDS THE FIXTURE, AND ONLY FOR ENVIRONMENTS. Every other fixture collection is a static row;
+// the environment surface is STATEFUL there (the console rotates and unbinds, which a static row cannot
+// express) and it therefore starts EMPTY, on purpose — that is what lets the browser suite meet a console
+// with no environments. So the sweep creates one on each side rather than one, which is also the honest
+// symmetry: the shape being compared is the shape a CREATE returns on both.
+async function seedBothStacks() {
   const res = await realFetch("/v1/knowledge-bases", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -182,6 +187,48 @@ async function seedRealStack() {
       "is a sweep that would pass by comparing nothing. The bootstrap key holds every capability implicitly " +
       "(api/middleware/auth.go HasScope on an empty scope set), so this is a real failure, not a permission gap.",
   );
+
+  // AND IT WRITES ONE VALUE, WHICH SEEDS A SECOND COLLECTION. An environment value IS a secret_refs row
+  // under the derived name `env:<id>:<key>`, and secret_refs is EMPTY on a bootstrap stack — so the item arm
+  // has never once compared a secret-ref shape, and the fixture's row was missing `updated_at` for months
+  // with nothing able to notice. That is not a hypothetical: this seed's first run found it.
+  //
+  // The value is a SENTINEL, not a credential: it opens nothing, it is never printed, and it is written in a
+  // request BODY (never a path, never an argument), which is the same discipline the route itself enforces.
+  const name = `sweep-env-${Date.now()}`;
+  const create = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name, description: "conformance sweep seed" }),
+  };
+  const write = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key: "SWEEP_SEED_TOKEN", value: "conformance-sweep-sentinel-not-a-credential" }),
+  };
+  for (const [label, doFetch] of [
+    ["real", realFetch],
+    ["fixture", fakeFetch],
+  ]) {
+    const created = await doFetch("/v1/environments", create);
+    const createdBody = await created.json().catch(() => ({}));
+    assert.ok(
+      created.status === 200 || created.status === 201,
+      `the sweep could not seed an environment on the ${label} side: POST /v1/environments returned ` +
+        `${created.status} (${createdBody.code ?? "?"}). The environment routes mount only when a secret master ` +
+        "key is configured (main.go WithEnvironments); compose passes PALAI_SECRET_MASTER_KEY_FILE, so an " +
+        "unmounted family on the real side means the stack was brought up without it and the item-shape floor " +
+        "below would drop silently.",
+    );
+    const wrote = await doFetch(`/v1/environments/${encodeURIComponent(createdBody.id)}/values`, write);
+    const wroteBody = await wrote.json().catch(() => ({}));
+    assert.ok(
+      wrote.status === 200 || wrote.status === 201,
+      `the sweep could not seed an environment VALUE on the ${label} side: POST /v1/environments/{id}/values ` +
+        `returned ${wrote.status} (${wroteBody.code ?? "?"}). Without it the secret-refs item shape is compared ` +
+        "against an empty real collection, which is a pass over nothing.",
+    );
+  }
 }
 after(() => fake?.kill());
 
@@ -276,16 +323,18 @@ describe("fake-vs-real conformance sweep (D15)", { concurrency: 1 }, () => {
         requireLedgerRow("shape", subject, `list item: real ${keyShape(realItem)}\n  fixture ${keyShape(fakeItem)}`);
       }
     }
-    // THE FLOOR, AND IT RISES EVERY TASK (E25 T2). It was 3 — the three collections a bootstrap stack seeds —
-    // and this sweep is now SEEDED (see seedRealStack), so knowledge-bases has a row on both sides too. Four is
-    // the number that must hold: organizations, projects, api-keys, knowledge-bases. E25's later tasks seed
-    // environments and tool revisions and raise it again; it must never fall.
+    // THE FLOOR, AND IT RISES EVERY TASK (E25 T2, raised by T4). It was 3 — the three collections a bootstrap
+    // stack seeds — then 4 once this sweep began seeding a knowledge base, and it is now 6: T4's seed creates
+    // an ENVIRONMENT and writes one VALUE into it, and the value is a SECRET_REFS row, so two collections that
+    // were empty on every bootstrap stack now have one each. The six that must hold: organizations, projects,
+    // api-keys, knowledge-bases, environments, secret-refs. T7 seeds tool revisions and raises it again; it
+    // must never fall.
     assert.ok(
-      itemsCompared >= 4,
+      itemsCompared >= 6,
       `only ${itemsCompared} collections had a row on BOTH sides, so this arm compared almost no item shapes — ` +
-        "the bootstrap seeds organizations/projects/api-keys and this sweep seeds a knowledge base, so fewer " +
-        "than four means either the real stack is not seeded or the seed did not land, and this arm would pass " +
-        "vacuously",
+        "the bootstrap seeds organizations/projects/api-keys and this sweep seeds a knowledge base, an " +
+        "environment and one environment value (which is a secret_refs row), so fewer than six means either " +
+        "the real stack is not seeded or a seed did not land, and this arm would pass vacuously",
     );
   });
 

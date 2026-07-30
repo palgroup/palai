@@ -146,6 +146,7 @@ button:disabled {
 
 input[type="text"],
 input[type="password"],
+select,
 textarea {
   font: inherit;
   padding: 0.4rem 0.6rem;

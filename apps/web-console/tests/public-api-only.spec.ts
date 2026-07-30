@@ -1,10 +1,7 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 import { test, expect, type Request, type Response as NetResponse } from "@playwright/test";
 
 import { API_KEY, IS_REAL, NEXT_PORT, UPSTREAM, UPSTREAM_PORT } from "./constants";
-import { announceProfile, runToTerminal, signInViaForm } from "./profile";
+import { announceProfile, browserServedAssets, runToTerminal, signInViaForm } from "./profile";
 
 test.beforeAll(() => announceProfile("public-api-only.spec.ts"));
 
@@ -17,18 +14,9 @@ const RELAY_PREFIX = `${APP_ORIGIN}/api/palai/`;
 // exception unless it is counted.
 const LOGIN_PATH = `${APP_ORIGIN}/api/console/login`;
 
-// browserServedAssets scans .next/static — every file there is browser-fetchable (/_next/static/...), so
-// this is a real browser-surface scan of both the minified chunks (*.js) and their source maps (*.js.map).
-function browserServedAssets(): { path: string; body: string }[] {
-  const root = resolve(process.cwd(), ".next", "static");
-  const out: { path: string; body: string }[] = [];
-  for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const full = resolve(entry.parentPath ?? root, entry.name);
-    out.push({ path: full, body: readFileSync(full, "utf8") });
-  }
-  return out;
-}
+// browserServedAssets moved to tests/profile.ts in E25 T4 — the SAME walk now backs two sweeps (this file's
+// credential scan and secret-never-returns.spec.ts's environment-value scan), and one walk is one thing to
+// keep correct.
 
 // THE CROWN (§47.6): the console is public-API-only. This is the mechanically un-foolable proof — the
 // browser physically CANNOT reach the upstream control-plane or any privileged backchannel/DB, because
@@ -69,10 +57,36 @@ test("every console request rides the /v1 relay — no privileged backchannel, n
     // E25 T2 — THIS USED TO SAY "/v1/secret-refs is not registered on a compose stack (DIV-RTE-001), so the
     // panel renders its ERROR state", and that was measured FALSE: compose.yaml:116 passes the secret master
     // key file, the route family mounts, and a running stack answers OPTIONS /v1/secret-refs with 405 + Allow.
-    // What a compose stack actually shows is the honest EMPTY state — the route works and nothing has written
-    // a secret ref — which is a stronger assertion than "visible", and it is the state T4's secret form will
-    // write into. The ledger row is deleted because the divergence is closed, not because the check moved.
-    await expect(page.getByTestId("panel-secret-refs-empty")).toBeVisible({ timeout: 15_000 });
+    // The ledger row is deleted because the divergence is closed, not because the check moved.
+    //
+    // E25 T4 — AND IT THEN SAID "the honest EMPTY state", WHICH T4 MADE UNTRUE. An environment value IS a
+    // secret_refs row (the derived name `env:<id>:<key>`), so the moment T4's own suite writes one, this
+    // stack's secret-refs collection has rows FOREVER — secret_refs grants no DELETE. Asserting `-empty` here
+    // was passing only because `p` sorts before `s` and this file therefore ran before
+    // secret-never-returns.spec.ts; a second run against the same stack would have failed it, and an
+    // assertion that depends on file order is not an assertion.
+    //
+    // What is asserted instead is that the panel RENDERED — route mounted, request authorized, which is the
+    // thing DIV-RTE-001 was wrong about — and then ONE of two pinned arms depending on what the stack holds.
+    // Both arms assert something; neither is a skip, and which one ran is printed. The claim this file is
+    // actually about (assertion 6: no credential in any response body) runs either way.
+    const rows = page.getByTestId("panel-secret-refs").locator("tbody tr");
+    const empty = page.getByTestId("panel-secret-refs-empty");
+    await expect(async () => {
+      expect((await rows.count()) + (await empty.count()), "the secret-refs panel rendered neither rows nor its empty state").toBeGreaterThan(0);
+    }).toPass({ timeout: 15_000 });
+    const rowCount = await rows.count();
+    // eslint-disable-next-line no-console -- which arm ran is part of reading this run's output.
+    console.log(`REAL SECRET-REFS PANEL — ${rowCount} row(s); asserting the ${rowCount === 0 ? "EMPTY-state" : "metadata-only column"} arm`);
+    if (rowCount === 0) {
+      // A bootstrap stack nothing has written to. The honest empty state, which is what T2 measured.
+      await expect(empty).toBeVisible();
+    } else {
+      // Rows exist — every one of them an environment value's derived name (`env:<id>:<key>`), because that is
+      // the only thing in this tree that writes a secret ref. What they must NOT carry is a value column.
+      const headers = await page.getByTestId("panel-secret-refs").locator("thead th").allTextContents();
+      expect(headers, "the secret-refs panel must project metadata only").toEqual(["Name", "Version"]);
+    }
   } else {
     await expect(page.getByTestId("panel-secret-refs")).toContainText("provider-key");
   }

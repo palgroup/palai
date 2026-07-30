@@ -22,10 +22,21 @@ import type { ReactNode } from "react";
 // records that browsers ignore autocomplete="off" for password fields anyway. T4's secret field passes
 // autoComplete="new-password" through this component for exactly that reason.
 //
-// ponytail: text / password / textarea fields, one submit, one optional extra action. No validation DSL, no
-// field-level error map, no select arm — the first form that needs a <select> (T4's environment picker) adds
-// that arm with its own caller and its own scan. A form component that grows options nobody calls is how the
-// discipline it exists to enforce stops being read.
+// ponytail: text / password / textarea / select fields, one submit, one optional extra action. No validation
+// DSL and no field-level error map. The `select` arm arrived with its first caller in E25 T4 (the environment
+// picker) exactly as this comment said it should, and T6 reuses it on the agent-revision form rather than
+// hand-rolling a second dropdown. A form component that grows options nobody calls is how the discipline it
+// exists to enforce stops being read.
+//
+// A `select` WITH NO OPTIONS IS NOT RENDERED AT ALL, and the caller says what stands in its place (T4's
+// `emptyNote`). That is a rule rather than a nicety: an empty dropdown is a control that cannot be
+// satisfied, and the tempting alternative — degrade to a free-text box — invites an operator to type an id
+// that does not exist, which then fails at admission with a refusal about something else entirely.
+
+export interface FormOption {
+  value: string;
+  label: string;
+}
 
 export interface FormField {
   /** Field name; also the source of the control's id, so the label can never be orphaned. */
@@ -33,13 +44,19 @@ export interface FormField {
   label: string;
   value: string;
   onChange: (value: string) => void;
-  kind?: "text" | "password" | "textarea";
+  kind?: "text" | "password" | "textarea" | "select";
   /** Never "off" for a credential — see the header. */
   autoComplete?: string;
   required?: boolean;
   /** Rendered under the control as a programmatic description, for the "or instructions" half of §3.3.2. */
   hint?: string;
   testId?: string;
+  /** kind "select" only. An EMPTY list renders `emptyNote` instead of the control — see the header. */
+  options?: FormOption[];
+  /** kind "select" only: what to render when there is nothing to choose from. */
+  emptyNote?: ReactNode;
+  /** kind "select" only: the placeholder row's label, when one is wanted. */
+  placeholder?: string;
 }
 
 export function ResourceForm({
@@ -55,6 +72,7 @@ export function ResourceForm({
   testId,
   note,
   actions,
+  children,
 }: {
   title: string;
   fields: FormField[];
@@ -71,6 +89,14 @@ export function ResourceForm({
   note?: ReactNode;
   /** An extra control (a cancel, an abort) rendered beside the submit, still in the tab order. */
   actions?: ReactNode;
+  /**
+   * A field this component deliberately does NOT own, rendered after `fields` and still inside the form, so
+   * it stays in document order and therefore in tab order. Its one caller is E25 T4's SecretField: that field
+   * is UNCONTROLLED on purpose (the secret lives in the DOM node and nowhere else), which is the opposite of
+   * FormField's controlled value/onChange contract — so it is passed in rather than modelled here. A
+   * `kind: "secret"` arm would have meant putting a credential through this component's state contract.
+   */
+  children?: ReactNode;
 }) {
   return (
     <section className="panel" data-testid={testId} aria-labelledby={`${title.replace(/\W+/g, "-").toLowerCase()}-h`}>
@@ -89,10 +115,36 @@ export function ResourceForm({
         {fields.map((field) => {
           const id = `field-${field.name}`;
           const describedBy = field.hint ? `${id}-hint` : undefined;
+          // An options-less select renders its caller's note INSTEAD of a control, and no label either: a
+          // label pointing at nothing is an axe violation and a lie to a screen reader.
+          if (field.kind === "select" && (field.options ?? []).length === 0) {
+            return (
+              <p key={field.name} className="muted" data-testid={field.testId === undefined ? undefined : `${field.testId}-empty`}>
+                {field.emptyNote}
+              </p>
+            );
+          }
           return (
             <div key={field.name}>
               <label htmlFor={id}>{field.label}</label>
-              {field.kind === "textarea" ? (
+              {field.kind === "select" ? (
+                <select
+                  id={id}
+                  name={field.name}
+                  required={field.required}
+                  value={field.value}
+                  aria-describedby={describedBy}
+                  onChange={(e) => field.onChange(e.target.value)}
+                  data-testid={field.testId}
+                >
+                  {field.placeholder === undefined ? null : <option value="">{field.placeholder}</option>}
+                  {(field.options ?? []).map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              ) : field.kind === "textarea" ? (
                 <textarea
                   id={id}
                   name={field.name}
@@ -124,6 +176,7 @@ export function ResourceForm({
             </div>
           );
         })}
+        {children}
         {error === "" ? null : (
           <p role="alert" className="form-error" data-testid={testId ? `${testId}-error` : undefined}>
             <span className="glyph" aria-hidden="true">
