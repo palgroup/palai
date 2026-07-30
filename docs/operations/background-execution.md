@@ -93,8 +93,16 @@ be written against, not a contract the protocol enforces**. If a model treats an
 instruction from the user, that is this ceiling and not a bug in your prompt. Closing it means a
 `role`/`source` field on the `message.deliver` frame, which is a protocol version.
 
-Two more, named rather than implied:
+Three more, named rather than implied:
 
+- **The output is not redacted, and the notification's excerpt is not either.** A synchronous shell
+  result is masked before it is stored; a background task writes its own file, which nothing masks, and
+  `palai.workspace.file` has never masked anything it reads. Since the exit notification quotes the last
+  2 KiB of that file, those bytes also land in a durable row (`commands.payload`, then
+  `delivered_messages`) — which the synchronous path does not do. **If your background commands receive
+  credentials in their environment, assume anything they print is readable and stored.** Closing this is
+  E26 T6's, and `background_tasks.env_keys` — key names, never values — exists so a read path can
+  re-resolve and mask them.
 - **There is no live progress stream.** Nobody tells the model that ten more lines arrived; it reads the
   file, or it waits for the exit.
 - **A control-plane restart does not stop a task**, and it is not supposed to: the process belongs to
