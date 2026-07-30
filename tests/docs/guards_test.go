@@ -451,6 +451,10 @@ func ownedDocs(t *testing.T) []string {
 		vulnProcessPath,
 		"docs/operations/support-matrix.md",
 		"docs/operations/known-gaps-1.0.md",
+		// E24 T6: the fleet operator page. It is guarded for the reason the rows above are — it cites repo
+		// paths and links to four sibling pages, and a runbook that names a file which has moved is a runbook
+		// an operator follows into a dead end.
+		"docs/operations/runner-fleet.md",
 	}
 	root := repoRoot(t)
 	entries, err := os.ReadDir(filepath.Join(root, "docs", "operations", "runbooks"))

@@ -53,6 +53,9 @@ func TestSubcommandsHitCorrectEndpoint(t *testing.T) {
 		{"project list", []string{"project", "list"}, "", "GET", "/v1/projects", ""},
 		{"project get", []string{"project", "get", "prj_1"}, "", "GET", "/v1/projects/prj_1", ""},
 		{"project set-policy", []string{"project", "set-policy", "prj_1", "--allowed-models", "m1,m2"}, "", "PATCH", "/v1/projects/prj_1", `"allowed_models":["m1","m2"]`},
+		// --pool is E24's central knob and had no flag until T6 measured it while writing the operator page:
+		// `config_policy.pool` shipped on the endpoint (T2) and could only be set with a raw PATCH.
+		{"project set-policy pool", []string{"project", "set-policy", "prj_1", "--pool", "pool_mac"}, "", "PATCH", "/v1/projects/prj_1", `"pool":"pool_mac"`},
 		{"apikey create", []string{"apikey", "create", "--project", "prj_1", "--scope", "run"}, "", "POST", "/v1/api-keys", `"project_id":"prj_1"`},
 		{"apikey list", []string{"apikey", "list"}, "", "GET", "/v1/api-keys", ""},
 		{"apikey get", []string{"apikey", "get", "key_1"}, "", "GET", "/v1/api-keys/key_1", ""},

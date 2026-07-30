@@ -128,17 +128,21 @@ func (s *Store) Approve(ctx context.Context, org, project, id, principal string)
 // NO list means everything is permitted, bit-for-bit as before the check existed, and a list means deny by
 // default with an unidentified principal deciding nothing. A project with a NULL config_policy (every
 // project alive today) decodes to the zero value, which is the no-list case.
+// THERE IS EXACTLY ONE `ApproverAllowed` CALL IN THIS FILE and that is enforced rather than intended:
+// `TestApproverAllowedHasExactlyOneProductionCallSite` counts the call sites in the whole tree, and it went
+// RED on this file's first draft — which had two, one for the no-project-row case. The zero-value policy
+// carries that case instead, so there is one place where the answer is decided.
 func approverAllowed(ctx context.Context, tx pgx.Tx, org, project, principal string) (bool, error) {
+	// The zero value IS the no-list case, so a project row that is absent (and a NULL config_policy, which is
+	// every project alive today) needs no branch of its own below.
+	var policy coordinator.ConfigPolicy
 	var raw []byte
 	err := tx.QueryRow(ctx, storage.Query("GetProjectConfig"), org, project).Scan(&raw)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return coordinator.ConfigPolicy{}.ApproverAllowed(principal), nil
-	}
-	if err != nil {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
 		return false, fmt.Errorf("read the project approver list: %w", err)
-	}
-	var policy coordinator.ConfigPolicy
-	if len(raw) > 0 {
+	case len(raw) > 0:
 		if err := json.Unmarshal(raw, &policy); err != nil {
 			// A policy document that will not decode must not read as "no list configured": that would turn one
 			// malformed write into an open door. It is the one case here that refuses rather than defaults.

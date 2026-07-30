@@ -109,6 +109,11 @@ func (f *flags) register(fs *flag.FlagSet, resource string) {
 		fs.StringVar(&f.allowedTools, "allowed-tools", "", "comma-separated allowed tools (set-policy)")
 		fs.StringVar(&f.defaultTools, "default-tools", "", "comma-separated default tools (set-policy)")
 		fs.StringVar(&f.approvers, "approvers", "", "comma-separated approver principals, slack:<team>:<user> or key:<api_key_id> (set-policy)")
+		// The runner pool this project's runs are placed in (E24 T2). MEASURED IN T6 WHILE WRITING THE
+		// OPERATOR PAGE: the field shipped on the API and there was no flag for it, so the epic's central
+		// knob could only be set with a raw PATCH — the same half-shipped shape T2 found on the endpoint
+		// itself, one layer up. `palai admin runner list` prints the pool ids to choose from.
+		fs.StringVar(&f.pool, "pool", "", "runner pool id this project's runs are placed in (set-policy)")
 	case "apikey":
 		fs.StringVar(&f.project, "project", "", "project id the key belongs to (create)")
 		fs.Var(&f.scopes, "scope", "capability scope (repeatable; omit for a full-capability admin key)")
@@ -225,9 +230,17 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 			if f.approvers != "" {
 				policy["approvers"] = csv(f.approvers)
 			}
-			if len(policy) == 0 {
-				return errors.New("set-policy requires at least one of --allowed-models/--allowed-tools/--default-tools/--approvers")
+			// The runner pool (E24 T2). ONE id, not a list: a project's runs go to one posture.
+			if f.pool != "" {
+				policy["pool"] = strings.TrimSpace(f.pool)
 			}
+			if len(policy) == 0 {
+				return errors.New("set-policy requires at least one of --allowed-models/--allowed-tools/--default-tools/--approvers/--pool")
+			}
+			// THE WRITE REPLACES THE WHOLE DOCUMENT — `UpdateProjectConfigPolicy` is an assignment, not a
+			// merge — so a call that names one flag CLEARS every other key the policy carried. That is
+			// pre-existing behaviour and it is stated in docs/operations/runner-fleet.md §1 where an operator
+			// meets it, because the realistic accident is setting --pool and silently dropping --approvers.
 			return c.do(http.MethodPatch, "/v1/projects/"+esc(pos[0]), body(map[string]any{"config_policy": policy}))
 		}
 	case "apikey":
@@ -542,7 +555,7 @@ func writeLine(w io.Writer, b []byte) error {
 func usageErr(resource string) error {
 	subs := map[string]string{
 		"org":     "create --display-name <n> | list | get <org_id>",
-		"project": "create --display-name <n> | list | get <prj_id> | set-policy <prj_id> [--allowed-models <a,b>] [--approvers <p,q>]",
+		"project": "create --display-name <n> | list | get <prj_id> | set-policy <prj_id> [--allowed-models <a,b>] [--approvers <p,q>] [--pool <pool_id>] (set-policy REPLACES the whole policy)",
 		"apikey":  "create --project <prj_id> [--scope <s>]... | list | get <key_id> | revoke <key_id>",
 		"secret":  "create --name <n> (value on stdin) | list | get <name> | rotate <name> (value on stdin)",
 		"poolkey": "create --pool <pool_id> [--expires-at <rfc3339>] (value printed once) | list --pool <pool_id> | revoke <key_id>",
