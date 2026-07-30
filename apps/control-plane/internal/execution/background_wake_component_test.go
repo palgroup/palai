@@ -149,8 +149,7 @@ func (f *wakeFixture) sweepOnce(t *testing.T) {
 // SECOND control plane or from a restarted one.
 func (f *wakeFixture) sweepWith(t *testing.T, orch *Orchestrator) {
 	t.Helper()
-	_ = orch
-	r := NewReconciler(f.spine, time.Hour, 5) // RED: no observer exists yet
+	r := NewReconciler(f.spine, time.Hour, 5).WithBackgroundTasks(orch.BackgroundObserver())
 	if _, err := r.Sweep(context.Background()); err != nil {
 		t.Fatalf("Reconciler.Sweep() error = %v", err)
 	}
@@ -331,8 +330,7 @@ func TestTwoTicksTwoPlanesAndARestartProduceOneBackgroundNotice(t *testing.T) {
 		wg.Add(1)
 		go func(o *Orchestrator) {
 			defer wg.Done()
-			_ = o
-			r := NewReconciler(f.spine, time.Hour, 5) // RED: no observer exists yet
+			r := NewReconciler(f.spine, time.Hour, 5).WithBackgroundTasks(o.BackgroundObserver())
 			_, _ = r.Sweep(context.Background())
 		}(orch)
 	}

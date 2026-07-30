@@ -91,7 +91,7 @@ func shellExec(ctx context.Context, env toolbroker.ExecEnv, args map[string]any)
 		if env.Background == nil {
 			return nil, fmt.Errorf("shell tool: %w", toolbroker.ErrBackgroundUnsupported)
 		}
-		ticket, err := env.Background.StartBackground(ctx, cmd)
+		ticket, err := env.Background.StartBackground(ctx, cmd, env.CallID)
 		if err != nil {
 			return nil, fmt.Errorf("shell tool: %w", err)
 		}

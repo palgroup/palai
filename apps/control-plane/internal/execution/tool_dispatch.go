@@ -364,7 +364,10 @@ func (o *Orchestrator) execEnv(st *attemptState) toolbroker.ExecEnv {
 		// The background orchestration, BOUND TO THIS RUN (E26 T2). The run id travels with the seam rather
 		// than being read off an argument, so "kill task X" can be answered safely: a task id belongs to the
 		// run that started it, and a model naming somebody else's id is refused by the lookup itself.
-		Background:   &backgroundTasks{orch: o, runID: string(st.attempt.RunID)},
+		Background: &backgroundTasks{
+			orch: o, tenant: st.tenant, runID: string(st.attempt.RunID),
+			sessionID: st.sessionID, responseID: st.responseID, fence: st.attempt.Fence,
+		},
 		Tasks:        o.tasks,
 		Publications: o.publications,
 		Artifacts:    o.artifacts, // the research tool persists a large body here; nil ⇒ excerpt-only

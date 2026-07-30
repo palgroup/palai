@@ -3,6 +3,8 @@ package execution
 import (
 	"context"
 	"time"
+
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 // ReconcileStore is the coordinator seam the reconciler sweeps through: it dead-letters
@@ -26,6 +28,12 @@ type ReconcileStore interface {
 	// "how long until a rented Mac arrives". The projection is the terminal Response body, passed in because
 	// it lives in this package with the other terminal projections.
 	SweepExpiredCapacityParks(ctx context.Context, ttl time.Duration, projection []byte) (int, error)
+	// SweepFinishedBackgroundTasks turns a finished background PROCESS into the model's next turn
+	// (E26 T4): each running task row is probed through the observer, and each one that has finished
+	// produces EXACTLY ONE notification — enqueued as a background_notice command, and waking the run
+	// only if it parked on the task. A nil observer makes it a no-op, which is the honest reading of a
+	// deployment with no background runner wired.
+	SweepFinishedBackgroundTasks(ctx context.Context, observe coordinator.BackgroundObserver) (int, error)
 }
 
 // Reconciler periodically dead-letters jobs whose lease has lapsed and whose attempts
@@ -42,6 +50,12 @@ type Reconciler struct {
 	// DEFAULT AND IT MEANS NEVER, deliberately: a default here would be a guess about how long a rented Mac
 	// takes to arrive, and AWS's own documented range for starting a Mac host is 6 to 20 minutes.
 	capacityParkTTL time.Duration
+	// background probes one background task's handle and reads the bounded tail of its output (E26 T4).
+	// NIL IS THE DEFAULT AND IT MEANS "THIS DEPLOYMENT STARTS NO BACKGROUND TASKS": the observer is the
+	// orchestrator's, and an orchestrator with no background runner wired hands back nil rather than a
+	// probe that would answer wrongly. The shipped compose file sets neither PALAI_SANDBOX_IMAGE nor
+	// PALAI_SHELL_NATIVE, so there is no shell tool there at all and nothing to sweep.
+	background coordinator.BackgroundObserver
 }
 
 // NewReconciler binds a sweep interval and attempt ceiling to the store.
@@ -54,6 +68,14 @@ func NewReconciler(store ReconcileStore, interval time.Duration, maxAttempts int
 // default is "off" — see the field.
 func (r *Reconciler) WithCapacityParkTTL(ttl time.Duration) *Reconciler {
 	r.capacityParkTTL = ttl
+	return r
+}
+
+// WithBackgroundTasks opts the deployment into the exit-notification sweep (E26 T4). A setter for the
+// same two reasons WithCapacityParkTTL is one: every existing caller compiles unchanged, and the honest
+// default is off — a control plane that cannot start a background task has none to notice finishing.
+func (r *Reconciler) WithBackgroundTasks(observe coordinator.BackgroundObserver) *Reconciler {
+	r.background = observe
 	return r
 }
 
@@ -85,6 +107,18 @@ func (r *Reconciler) Sweep(ctx context.Context) (int, error) {
 	// already spans tenants, and is already supervised — and because an unconfigured TTL makes the call a
 	// return-immediately no-op, so a deployment that opts out pays one comparison per tick.
 	if _, err := r.store.SweepExpiredCapacityParks(ctx, r.capacityParkTTL, capacityTimeoutProjection); err != nil {
+		return dead, err
+	}
+	// And the BACKGROUND half (E26 T4): a process that outlived the attempt that started it, and has now
+	// finished. It rides this loop for the reason the capacity sweep rides it — the loop exists, spans
+	// tenants and is supervised — and it is the ONLY path by which an exit reaches a model, which makes
+	// `PALAI_DISPATCH_WORKERS=0` (main.go's early return, and the shipped compose file's own value) a
+	// deployment where no notification ever lands. That is written down in
+	// docs/operations/background-execution.md rather than left to be discovered.
+	//
+	// Non-fatal like the rest of the pass: a Docker socket that blinked means the next tick delivers the
+	// notification instead of this one, and the exactly-once claim is a row, so nothing is delivered twice.
+	if _, err := r.store.SweepFinishedBackgroundTasks(ctx, r.background); err != nil {
 		return dead, err
 	}
 	return dead, nil

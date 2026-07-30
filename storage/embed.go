@@ -586,6 +586,14 @@ var secretsSQL string
 //go:embed queries/environments.sql
 var environmentsSQL string
 
+// The background-task statements (E26, migration 000047). They live beside the migration's own file
+// rather than inside jobs.sql or tools.sql because a background PROCESS is neither: it is spawned by a
+// tool call and outlives that call's ledger row, and it is swept by the reconciler without ever being
+// a durable job.
+//
+//go:embed queries/background.sql
+var backgroundSQL string
+
 //go:embed queries/jobs.sql
 var jobsSQL string
 
@@ -662,7 +670,7 @@ func MigrationDown() string {
 	return migrationDown47 + "\n" + migrationDown46 + "\n" + migrationDown45 + "\n" + migrationDown44 + "\n" + migrationDown43 + "\n" + migrationDown42 + "\n" + migrationDown41 + "\n" + migrationDown40 + "\n" + migrationDown39 + "\n" + migrationDown38 + "\n" + migrationDown37 + "\n" + migrationDown36 + "\n" + migrationDown35 + "\n" + migrationDown34 + "\n" + migrationDown33 + "\n" + migrationDown32 + "\n" + migrationDown31 + "\n" + migrationDown30 + "\n" + migrationDown29 + "\n" + migrationDown28 + "\n" + migrationDown27 + "\n" + migrationDown26 + "\n" + migrationDown25 + "\n" + migrationDown24 + "\n" + migrationDown23 + "\n" + migrationDown22 + "\n" + migrationDown21 + "\n" + migrationDown20 + "\n" + migrationDown19 + "\n" + migrationDown18 + "\n" + migrationDown17 + "\n" + migrationDown16 + "\n" + migrationDown15 + "\n" + migrationDown14 + "\n" + migrationDown13 + "\n" + migrationDown12 + "\n" + migrationDown11 + "\n" + migrationDown10 + "\n" + migrationDown9 + "\n" + migrationDown8 + "\n" + migrationDown7 + "\n" + migrationDown6 + "\n" + migrationDown5 + "\n" + migrationDown4 + "\n" + migrationDown3 + "\n" + migrationDown2 + "\n" + migrationDown
 }
 
-var namedQueries = parseNamedQueries(usageSQL, agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, provisioningSQL, secretsSQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL, triggersSQL, schedulesSQL, toolsSQL, remoteToolsSQL, mcpSQL, skillsSQL, hooksSQL, modelRoutesSQL, metricsSQL, slackSQL, knowledgeSQL, queuesSQL, a2aSQL, workersSQL, runnersSQL, environmentsSQL)
+var namedQueries = parseNamedQueries(usageSQL, agentsSQL, jobsSQL, eventsSQL, responsesSQL, identitySQL, provisioningSQL, secretsSQL, sessionsSQL, commandsSQL, configSQL, auditSQL, workspacesSQL, artifactsSQL, repositoryBindingsSQL, mergeRecordsSQL, changesetsSQL, tasksSQL, publicationsSQL, recoverySQL, webhooksSQL, triggersSQL, schedulesSQL, toolsSQL, remoteToolsSQL, mcpSQL, skillsSQL, hooksSQL, modelRoutesSQL, metricsSQL, slackSQL, knowledgeSQL, queuesSQL, a2aSQL, workersSQL, runnersSQL, environmentsSQL, backgroundSQL)
 
 // Query returns the SQL statement labelled "-- name: <name>" in storage/queries.
 // It panics on an unknown name because query names are compile-time constants.

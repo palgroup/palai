@@ -455,3 +455,68 @@ func TestNativeShellPostureDeclarationNamesTheOperatingRule(t *testing.T) {
 		t.Fatalf("the boot declaration cites %s, which does not exist: %v", cited, err)
 	}
 }
+
+// TestNoDispatchWorkerMeansNoBackgroundExitNotificationEverLands pins E26 §3.6 D14 as a DECLARATION
+// rather than leaving it to be discovered by an operator whose build finished and whose model was
+// never told.
+//
+// The behavioural half is in the execution package (TestWithoutTheReconcilerSweepNoBackgroundNoticeEverLands):
+// the reconciler's sweep is the ONLY path by which a finished background task reaches a model. This half
+// is the composition root's, and it is three facts that have to agree:
+//
+//	(1) production reads PALAI_DISPATCH_WORKERS through dispatchWorkerCount, and zero means zero;
+//	(2) the SHIPPED compose file sets that variable to 0 by default, so the stack most people run is
+//	    the stack with no reconciler;
+//	(3) the operations document says so in its FIRST paragraph, where a reader meets it.
+//
+// If any one of the three moves, this test says which.
+func TestNoDispatchWorkerMeansNoBackgroundExitNotificationEverLands(t *testing.T) {
+	// (1) The gate production actually evaluates, at the two values that matter.
+	t.Setenv("PALAI_DISPATCH_WORKERS", "0")
+	if got := dispatchWorkerCount(); got > 0 {
+		t.Fatalf("dispatchWorkerCount() with PALAI_DISPATCH_WORKERS=0 = %d, want <= 0: startDispatch would build a reconciler", got)
+	}
+	t.Setenv("PALAI_DISPATCH_WORKERS", "1")
+	if got := dispatchWorkerCount(); got <= 0 {
+		t.Fatalf("dispatchWorkerCount() with PALAI_DISPATCH_WORKERS=1 = %d, want > 0; the check above would be free", got)
+	}
+
+	// (2) The shipped compose file's own value. Read from the file rather than remembered, because the
+	// whole point of the declaration is that it is true of what ships.
+	compose, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "deploy", "compose", "compose.yaml"))
+	if err != nil {
+		t.Fatalf("read the shipped compose file: %v", err)
+	}
+	if !strings.Contains(string(compose), "PALAI_DISPATCH_WORKERS: ${PALAI_DISPATCH_WORKERS:-0}") {
+		t.Fatalf("deploy/compose/compose.yaml no longer defaults PALAI_DISPATCH_WORKERS to 0; the declaration in docs/operations/background-execution.md describes a stack that no longer exists")
+	}
+
+	// (3) The document, in its first paragraph — not somewhere in it.
+	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "docs", "operations", "background-execution.md"))
+	if err != nil {
+		t.Fatalf("read the background execution runbook: %v", err)
+	}
+	first := firstParagraphAfterTitle(string(doc))
+	for _, phrase := range []string{"PALAI_DISPATCH_WORKERS", "0", "no", "notification"} {
+		if !strings.Contains(first, phrase) {
+			t.Fatalf("the runbook's first paragraph does not mention %q; it reads:\n%s", phrase, first)
+		}
+	}
+}
+
+// firstParagraphAfterTitle returns the first non-heading, non-empty block of a markdown document — the
+// paragraph a reader meets.
+func firstParagraphAfterTitle(doc string) string {
+	var para []string
+	for _, line := range strings.Split(doc, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			if len(para) > 0 {
+				break
+			}
+			continue
+		}
+		para = append(para, trimmed)
+	}
+	return strings.Join(para, " ")
+}

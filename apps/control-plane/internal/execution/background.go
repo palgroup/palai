@@ -7,9 +7,12 @@ import (
 	"log"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/palgroup/palai/packages/contracts"
+	"github.com/palgroup/palai/packages/coordinator"
 	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
@@ -18,10 +21,11 @@ import (
 // and answers which handle a task id names. The adapters own process groups and container ids; the tools
 // own a task id and a path; nothing crosses.
 //
-// WHAT THIS LAYER DELIBERATELY DOES NOT DO YET, named rather than implied: it does not write the
-// background_tasks row migration 000047 opened. That row is what makes a task survive the process that
-// started it, and the three things that read it — the park gate, the exit notification and the reaper —
-// are T3, T4 and T5. Until then the ceiling below is real and is stated where it can be read.
+// SINCE T4 IT ALSO WRITES THE ROW migration 000047 opened, and reads it back on the way out. The row is
+// what makes a task survive the process that started it: the in-memory registry below dies with this
+// program, and the reconciler's sweep — which may be running in a DIFFERENT control plane, or in one
+// that restarted since the spawn — works entirely from the row. T5 still owns the reaper's half of it
+// (deadlines, adoption, cancellation).
 
 // backgroundLogDir is the subtree a background task's merged output goes into. It is under
 // `.palai-session` for a reason that was measured rather than chosen: Snapshot skips that whole subtree
@@ -75,9 +79,18 @@ type backgroundTask struct {
 // that is calling. The run id is what makes "kill task X" a question with a safe answer: a task started
 // by one run cannot be named by another, and the check is here rather than in the tool because the tool
 // is handed a string by a model.
+//
+// It carries the rest of the attempt's identity because the DURABLE ROW needs it (E26 T4): a
+// background_tasks row names the run that owns the process, the session and response its notification
+// belongs to, the call that spawned it and the fence that attempt held. Every one of those is known at
+// execEnv time and none of them can be recovered later from a handle.
 type backgroundTasks struct {
-	orch  *Orchestrator
-	runID string
+	orch       *Orchestrator
+	tenant     coordinator.Tenant
+	runID      string
+	sessionID  string
+	responseID string
+	fence      uint64
 }
 
 var _ toolbroker.BackgroundTasks = (*backgroundTasks)(nil)
@@ -86,7 +99,7 @@ var _ toolbroker.BackgroundTasks = (*backgroundTasks)(nil)
 //
 // ORDER MATTERS AND IS THE POINT: the kill switch and the missing-runner refusal both happen BEFORE
 // anything is started, so a refused call leaves no process, no log file and no directory behind.
-func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.ShellCommand) (toolbroker.BackgroundTicket, error) {
+func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.ShellCommand, callID contracts.ToolCallID) (toolbroker.BackgroundTicket, error) {
 	if backgroundDisabled() {
 		return toolbroker.BackgroundTicket{}, errBackgroundDisabled
 	}
@@ -104,6 +117,32 @@ func (b *backgroundTasks) StartBackground(ctx context.Context, cmd toolbroker.Sh
 	// resolvable. A probe that failed in between would otherwise leave a running process whose handle
 	// nobody holds, which is the orphan this epic is about.
 	b.orch.rememberBackgroundTask(&backgroundTask{taskID: taskID, runID: b.runID, handle: handle, outputPath: spec.OutputPath})
+
+	// THE DURABLE ROW, and it is written for a reader that is not this program (E26 T4). The registry
+	// above answers "which handle does this run's task id name" for as long as this process lives; the
+	// row answers it for the reconciler, which may be a different control plane or this one after a
+	// restart, and which is the ONLY thing that will ever notice this process finish.
+	//
+	// A FAILED INSERT KILLS THE PROCESS. It is the one place in this file that undoes work rather than
+	// reporting around it, and the reason is what a row-less task IS: a process running under a handle
+	// nothing durable holds, which no reaper will look at, no deadline will end and no cancellation will
+	// reach. That is precisely the orphan this epic exists to make impossible, so a task that cannot be
+	// recorded is a task that must not be left running.
+	if err := b.orch.spine.RecordBackgroundTask(ctx, b.tenant, coordinator.BackgroundTaskInput{
+		TaskID: taskID, RunID: b.runID, SessionID: b.sessionID, ResponseID: b.responseID,
+		ToolCallID: string(callID), Fence: b.fence,
+		Posture: string(handle.Posture), Handle: handle.Value, OutputPath: spec.OutputPath,
+		// env_keys holds KEY NAMES so the read path can re-resolve and mask them (T6). The VALUES are in
+		// cmd.Env and stay there; sorted so the column does not depend on Go's map iteration order.
+		EnvKeys: sortedEnvKeys(cmd.Env),
+	}); err != nil {
+		if kerr := b.orch.background.Kill(ctx, handle); kerr != nil {
+			// Both failures matter and neither replaces the other: the caller learns the task was refused,
+			// and the log names the process that is now genuinely unaccounted for.
+			log.Printf("background task %s could not be recorded (%v) AND could not be killed (%v): handle %s is now an orphan", taskID, err, kerr, handle.Value)
+		}
+		return toolbroker.BackgroundTicket{}, fmt.Errorf("record background task: %w", err)
+	}
 
 	// `status` is what the operating system says, not what we hope: a command that has already failed
 	// reports `exited` rather than a comfortable `running`, and a model reading `running` can trust it.
@@ -203,6 +242,116 @@ func (o *Orchestrator) runHasLiveBackgroundTask(ctx context.Context, runID strin
 		}
 	}
 	return false
+}
+
+// sortedEnvKeys is the KEY NAMES of an attempt's environment, sorted. Nothing here touches a value, and
+// the sort is not cosmetic: an unsorted column would differ between two otherwise identical spawns, and
+// a column that changes for no reason is a column a diff cannot be read against.
+func sortedEnvKeys(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// BackgroundObserver is what this orchestrator hands the reconciler: the function that answers, for one
+// background_tasks row, what the OPERATING SYSTEM says about its handle and what its output ends with
+// (E26 T4). Nil when no background runner is wired, which makes the sweep a no-op — the honest reading
+// of a deployment that cannot start a background task in the first place.
+//
+// It is a method value rather than a captured closure so that a composition-root test can ask an
+// orchestrator what production would hand over, the same reason backgroundRunnerFor is a named function
+// in main.go.
+func (o *Orchestrator) BackgroundObserver() coordinator.BackgroundObserver {
+	if o == nil || o.background == nil {
+		return nil
+	}
+	return o.observeBackgroundTask
+}
+
+// observeBackgroundTask probes ONE row's handle and, if the task has finished, reads the bounded tail of
+// its log.
+//
+// THE ROW IS THE ONLY INPUT. Nothing here consults the in-memory registry, and that is what makes the
+// sweep work from a control plane that never saw the spawn: the handle, the posture and the output path
+// all come off the row, and the answer comes off the kernel or the container daemon.
+//
+// A STILL-RUNNING TASK IS THE COMMON ANSWER and costs one probe. An UNREADABLE probe is an error rather
+// than a guess: reporting `exited` for a build that is still compiling would tell a model its work
+// finished when it did not, and the next tick can ask again. A `lost` handle IS reported as finished,
+// which is not the same as claiming it died — it means this control plane can no longer prove the
+// process is ours, so it will never be signalled again (T1's absolute rule) and leaving the row
+// `running` forever would park its run on a question nothing can answer.
+func (o *Orchestrator) observeBackgroundTask(ctx context.Context, task coordinator.BackgroundTask) (coordinator.BackgroundOutcome, bool, error) {
+	if o.background == nil {
+		return coordinator.BackgroundOutcome{}, false, toolbroker.ErrBackgroundUnsupported
+	}
+	handle := toolbroker.Handle{Posture: toolbroker.BackgroundPosture(task.Posture), Value: task.Handle}
+	status, err := o.background.Probe(ctx, handle)
+	if err != nil {
+		return coordinator.BackgroundOutcome{}, false, err
+	}
+	var state string
+	switch status.State {
+	case toolbroker.BackgroundRunning:
+		return coordinator.BackgroundOutcome{}, false, nil
+	case toolbroker.BackgroundLost:
+		state = string(toolbroker.BackgroundLost)
+	default:
+		state = string(toolbroker.BackgroundExited)
+	}
+	tail, note := o.backgroundTail(task)
+	return coordinator.BackgroundOutcome{State: state, ExitCode: status.ExitCode, Tail: tail, TailNote: note}, true, nil
+}
+
+// backgroundTail reads the LAST bytes of a finished task's output, bounded by
+// coordinator.BackgroundTailLimit, and explains itself when it can read nothing.
+//
+// IT IS A BOUNDED READ, NOT A READ THEN A TRUNCATION: a five-minute build can write a log larger than
+// this control plane's memory, so the file is seeked to its end rather than loaded. The path is joined
+// from the allocation root the sweep resolved and the row's allocation-RELATIVE output_path, which is
+// the same pair every other reader of that file uses.
+//
+// A MISSING TAIL NEVER STOPS A NOTIFICATION. An unreadable file, a run with no allocation, a log the
+// retention reaper already removed — each yields a note the model is told instead of an excerpt, because
+// losing the exit is strictly worse than losing the excerpt.
+//
+// ponytail: THIS EXCERPT IS NOT REDACTED, AND NEITHER IS THE FILE palai.workspace.file READS. The bytes
+// here cross the same boundary as an ordinary read of the same path (E26 T2's recorded gap, §3.6 D8) —
+// this widens nothing — but T6 owns the redacting read path, and when it lands THIS CALL IS ONE OF THE
+// TWO IT HAS TO COVER. The row's env_keys column exists for exactly that: the keys are on task.EnvKeys.
+func (o *Orchestrator) backgroundTail(task coordinator.BackgroundTask) (tail string, note string) {
+	if task.AllocationRoot == "" {
+		return "", "this run has no workspace allocation on this machine, so its output file could not be located"
+	}
+	abs, err := toolbroker.BackgroundSpec{TaskID: task.ID, OutputPath: task.OutputPath}.Resolve(task.AllocationRoot)
+	if err != nil {
+		return "", "the output path could not be resolved against this run's allocation"
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		return "", "the output file could not be opened (it may have been removed)"
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", "the output file could not be read"
+	}
+	size := info.Size()
+	offset := int64(0)
+	if size > coordinator.BackgroundTailLimit {
+		offset = size - coordinator.BackgroundTailLimit
+	}
+	buf := make([]byte, size-offset)
+	if _, err := f.ReadAt(buf, offset); err != nil && len(buf) > 0 {
+		return "", "the output file could not be read"
+	}
+	return string(buf), ""
 }
 
 // backgroundTaskOf resolves a task id AND checks it belongs to the asking run in one step, so no caller
