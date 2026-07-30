@@ -51,6 +51,11 @@ type RunnerLifecycle interface {
 	CordonRunner(runnerID string)
 	ResumeRunner(runnerID string)
 	RevokeRunner(runnerID string)
+	// ApproveRunner admits a machine held in a strict pool's waiting room (E24 T6). It is on this interface
+	// and not a second one because it is the same kind of fact as the other three — a decision the ROW
+	// records and the live gateway has to be told about — and the reason it needs telling is sharper here
+	// than for a cordon: the machine is holding a session open right now, waiting for exactly this.
+	ApproveRunner(runnerID string)
 	// RunnerActiveLeases is how many leases that machine is serving right now — the answer to the question
 	// a cordon exists to let an operator ask, which is whether the Mac can be taken away yet.
 	RunnerActiveLeases(runnerID string) int64

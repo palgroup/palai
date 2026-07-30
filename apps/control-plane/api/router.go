@@ -349,6 +349,12 @@ func NewRouter(verifier middleware.Verifier, admitter Admitter, events EventRead
 		mux.HandleFunc("POST /v1/runners/{runner_id}/cordon", rh.setRunnerState("cordon"))
 		mux.HandleFunc("POST /v1/runners/{runner_id}/resume", rh.setRunnerState("resume"))
 		mux.HandleFunc("POST /v1/runners/{runner_id}/revoke", rh.setRunnerState("revoke"))
+		// THE WAITING ROOM'S DOOR (E24 T6): the human who admits a machine that enrolled into a pool with
+		// `strict_enrollment`. It is a route of its own rather than a fourth verb on setRunnerState because it
+		// carries a different gate — `approve`, not `provision`, since a provision key can rewrite the approver
+		// list it would be checked against — and because a decision carries the deciding PRINCIPAL, which the
+		// three verbs above do not. api/runners.go's approveRunner says why it is not E23's throat.
+		mux.HandleFunc("POST /v1/runners/{runner_id}/approve", rh.approveRunner)
 	}
 
 	var root http.Handler = mux

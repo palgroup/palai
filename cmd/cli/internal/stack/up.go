@@ -185,7 +185,10 @@ func Bootstrap(envFile string, native bool) error {
 	// HOW MANY RUNS AT ONCE (§3.6 D11). Unconditional for the same reason: a second machine that nothing
 	// can reach is the shape of a fleet that was bought and is not being used.
 	slackWarns = appendWarn(slackWarns, dispatchWorkerFleetWarning(api, get))
-	printReport(cfg, posture, rt, caps, observedFacts(rt, slackFact), red, slackWarns...)
+	// WHAT THE FLEET IS DOING (E24 T6). Unconditional and NOT a warning: a machine held in a strict pool's
+	// waiting room is a machine an operator will otherwise read as broken, and it is the report — not a
+	// conditional line — that they look at after a bring-up.
+	printReport(cfg, posture, rt, caps, observedFacts(rt, slackFact), fleetLine(api.fleet()), red, slackWarns...)
 	return nil
 }
 
@@ -1200,6 +1203,97 @@ func (c *apiClient) enrolledRunnerCount() (int, error) {
 	return len(body.Data), nil
 }
 
+// fleetSummary is the fleet as `palai up` reports it (E24 T6): how many pools, how many machines are
+// serving, and how many are WAITING FOR A HUMAN. `err` is kept rather than swallowed for the reason
+// dispatchWorkerFleetWarning keeps its: a summary that silently becomes "nothing to say" when a read fails
+// is worse than no summary.
+type fleetSummary struct {
+	pools   int
+	active  int
+	pending int
+	// partial is set when the page was full, so the counts are a floor rather than a total. The line says so
+	// rather than presenting a first page as a fleet.
+	partial bool
+	err     error
+}
+
+// fleetPageLimit bounds the read. The question this line answers is "is anything waiting", and a hundred
+// machines answer it; a fleet larger than that gets a count marked as a floor.
+//
+// ponytail: one page, no cursor following. A `?state=pending` filter or a server-side count is the upgrade
+// when somebody runs a fleet where 100 is not enough — and neither exists on this surface today.
+const fleetPageLimit = 100
+
+// fleet reads the pools and the machines in the caller's tenant and counts them by state.
+//
+// A `pending` MACHINE IS THE WHOLE REASON THIS EXISTS. Strict enrolment holds a machine out of its pool's
+// rendezvous until a human admits it, and a waiting room nobody is shown is a waiting room an operator will
+// read as a broken runner — E21 T2's silent-SKIP lesson, on a surface where the silence lasts until somebody
+// notices a Mac has been idle for a day.
+func (c *apiClient) fleet() fleetSummary {
+	var summary fleetSummary
+	var machines struct {
+		Data []struct {
+			State string `json:"state"`
+		} `json:"data"`
+	}
+	status, err := c.do(http.MethodGet, fmt.Sprintf("/v1/runners?limit=%d", fleetPageLimit), nil, &machines)
+	switch {
+	case err != nil:
+		summary.err = err
+		return summary
+	case status == http.StatusNotFound:
+		// A stack with no runner gateway does not mount the route: a queued-only deployment has no fleet, which
+		// is a supported posture and not a failure.
+		return summary
+	case status != http.StatusOK:
+		summary.err = fmt.Errorf("GET /v1/runners = %d", status)
+		return summary
+	}
+	summary.partial = len(machines.Data) >= fleetPageLimit
+	for _, m := range machines.Data {
+		switch m.State {
+		case "pending":
+			summary.pending++
+		case "active":
+			summary.active++
+		}
+	}
+	var pools struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if status, err := c.do(http.MethodGet, fmt.Sprintf("/v1/runner-pools?limit=%d", fleetPageLimit), nil, &pools); err != nil {
+		summary.err = err
+	} else if status == http.StatusOK {
+		summary.pools = len(pools.Data)
+	} else if status != http.StatusNotFound {
+		summary.err = fmt.Errorf("GET /v1/runner-pools = %d", status)
+	}
+	return summary
+}
+
+// fleetLine renders the summary for the report. A machine WAITING is the one state that changes the wording:
+// it is the only one an operator has to act on, and it names the command that acts.
+func fleetLine(summary fleetSummary) string {
+	if summary.err != nil {
+		return fmt.Sprintf("could not be read, so nothing here can tell you what your machines are doing: %v", summary.err)
+	}
+	if summary.pools == 0 && summary.active == 0 && summary.pending == 0 {
+		return "no pools and no enrolled machines (a queued-only stack has none)"
+	}
+	line := fmt.Sprintf("%d pool(s), %d active runner(s), %d pending approval", summary.pools, summary.active, summary.pending)
+	if summary.partial {
+		line += fmt.Sprintf(" (first %d machines only)", fleetPageLimit)
+	}
+	if summary.pending > 0 {
+		line += " — a PENDING machine holds a certificate and takes NO work until a human admits it: " +
+			"`palai admin runner approve <runner_id>`"
+	}
+	return line
+}
+
 // projectApprovers reads a project's configured approver principals off the running stack.
 func (c *apiClient) projectApprovers(projectID string) ([]string, error) {
 	var body struct {
@@ -1278,7 +1372,7 @@ func capabilityRows(caps map[string]string, facts map[string]string) []capRow {
 
 // printReport writes the operator-facing result to stdout. Every line states what was PROVEN, not
 // what was attempted — "stack up" is not a proof.
-func printReport(cfg Config, posture string, rt roundTrip, caps map[string]string, facts map[string]string, red []string, warnings ...string) {
+func printReport(cfg Config, posture string, rt roundTrip, caps map[string]string, facts map[string]string, fleet string, red []string, warnings ...string) {
 	out := os.Stdout
 	fmt.Fprintln(out, "\nPROVEN LIVE")
 	fmt.Fprintf(out, "  round-trip   %s -> %s\n", rt.ResponseID, rt.Status)
@@ -1289,6 +1383,10 @@ func printReport(cfg Config, posture string, rt roundTrip, caps map[string]strin
 	// port, so nothing else on this report distinguishes a control plane in a container from one on
 	// this machine — and the difference is the whole of whether `xcodebuild` is reachable.
 	fmt.Fprintf(out, "  posture      %s\n", posture)
+	// THE FLEET, on the report rather than in a warning (E24 T6): how many pools, how many machines are
+	// serving, and how many are waiting for a human. A pending machine that nothing prints is a Mac an
+	// operator assumes is working.
+	fmt.Fprintf(out, "  fleet        %s\n", fleet)
 
 	fmt.Fprintln(out, "\nCAPABILITIES (from GET /v1/capabilities on this running stack)")
 	for _, r := range capabilityRows(caps, facts) {

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/palgroup/palai/apps/control-plane/api"
+	"github.com/palgroup/palai/apps/control-plane/api/middleware"
+	"github.com/palgroup/palai/packages/coordinator"
 )
 
 // The adapter that makes Store the api.RunnerRegistryAPI the read routes take. It is a projection and
@@ -114,6 +116,37 @@ func (a *RegistryAPI) SetRunnerState(ctx context.Context, org, project, id, acti
 		}
 	}
 	return a.decorate(row), true, nil
+}
+
+// ApproveRunner implements api.RunnerRegistryAPI: admit ONE machine out of a strict pool's waiting room
+// (E24 T6).
+//
+// THE PRINCIPAL IS DERIVED HERE, from the verified key and nowhere else — `key:<api_key_id>`,
+// coordinator.ApproverPrincipal's HTTP form, the same string store.DecideApproval stamps. That is why this
+// method takes the whole middleware.Scope while the lifecycle verbs take org/project strings: a decision
+// carries an identity, and a caller that could pass one would be a caller that could name somebody else.
+//
+// THE ROW FIRST, THEN THE LIVE GATEWAY, for SetRunnerState's reason exactly: a decision that reached only
+// the gateway is erased by the next restart, and one that reached only the row leaves the machine's own
+// session still waiting. The gateway is told on every FOUND approval rather than only on the one that moved
+// the row — see RunnerGateway.ApproveRunner for the race that makes the retry the fix.
+func (a *RegistryAPI) ApproveRunner(ctx context.Context, scope middleware.Scope, id string) (api.RunnerItem, api.ApprovalOutcome, error) {
+	admission, err := a.Store.Approve(ctx, scope.Organization, scope.Project, id,
+		coordinator.ApproverPrincipal(coordinator.ApproverSurfaceKey, "", scope.APIKeyID))
+	switch {
+	case errors.Is(err, coordinator.ErrApproverNotAuthorized):
+		// A TYPED refusal rather than an error: the receiver worked and the request authorized nothing, which
+		// is the ApprovalOutcome convention this reuses rather than restates.
+		return api.RunnerItem{}, api.ApprovalOutcome{Found: true, Unauthorized: true}, nil
+	case err != nil:
+		return api.RunnerItem{}, api.ApprovalOutcome{}, err
+	case !admission.Found:
+		return api.RunnerItem{}, api.ApprovalOutcome{}, nil
+	}
+	if a.live != nil {
+		a.live.ApproveRunner(admission.Runner.ID)
+	}
+	return a.decorate(admission.Runner), api.ApprovalOutcome{Found: true, Applied: admission.Admitted}, nil
 }
 
 // GetRunner shadows the embedded Store's so a single machine's read carries its LIVE lease count. It is

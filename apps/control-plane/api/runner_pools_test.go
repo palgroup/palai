@@ -37,6 +37,12 @@ type fakeRunnerRegistry struct {
 	// activeLeases is the live count the single read decorates with, so the rendering of zero can be
 	// distinguished from its absence.
 	activeLeases *int64
+	// approvedScope and approvedRunner record the E24 T6 admission: WHICH scope reached the store (the
+	// principal is derived from it, so a route that dropped it would approve as nobody) and WHICH machine.
+	// approveRefused scripts the approver list's refusal.
+	approvedScope  middleware.Scope
+	approvedRunner string
+	approveRefused bool
 }
 
 func (f *fakeRunnerRegistry) ListRunners(context.Context, string, string, RunnerListWindow) ([]RunnerItem, error) {
@@ -184,6 +190,23 @@ func (f *fakeRunnerRegistry) SetRunnerState(_ context.Context, org, project, id,
 		}[action],
 		CreatedAt: time.Unix(1_700_000_000, 0).UTC(), ActiveLeases: f.activeLeases,
 	}, true, nil
+}
+
+// ApproveRunner records the SCOPE the handler passed down (E24 T6) — not just the tenant, because the
+// deciding principal is derived from the key id on it and a route that dropped the scope would silently
+// approve as nobody. approveOutcome scripts the three answers the store can give.
+func (f *fakeRunnerRegistry) ApproveRunner(_ context.Context, scope middleware.Scope, id string) (RunnerItem, ApprovalOutcome, error) {
+	f.askedOrg, f.askedProject, f.approvedScope, f.approvedRunner = scope.Organization, scope.Project, scope, id
+	if !f.runnerFound {
+		return RunnerItem{}, ApprovalOutcome{}, nil
+	}
+	if f.approveRefused {
+		return RunnerItem{}, ApprovalOutcome{Found: true, Unauthorized: true}, nil
+	}
+	return RunnerItem{
+		ID: id, PoolID: "pool_mac", State: "active",
+		CreatedAt: time.Unix(1_700_000_000, 0).UTC(), ActiveLeases: f.activeLeases,
+	}, ApprovalOutcome{Found: true, Applied: true}, nil
 }
 
 // scopedRouter serves the router with a verifier whose key carries `scopes`. An empty slice is the

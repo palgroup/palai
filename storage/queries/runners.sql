@@ -19,9 +19,9 @@ SELECT id, organization_id, project_id, posture, os, arch, strict_enrollment
 
 -- name: InsertRunner
 -- Record an enrolled machine. The id is minted by the CALLER (server-side, `rnr_`), never by the
--- enrolling party: that is the whole property this table exists to hold. state starts 'active'
--- because a non-strict pool admits on presentation of a valid credential; T6's strict mode is what
--- makes 'pending' reachable.
+-- enrolling party: that is the whole property this table exists to hold. state is 'active' for a
+-- non-strict pool, which admits on presentation of a valid credential, and 'pending' when the pool
+-- carries `strict_enrollment` (E24 T6) — the caller passes it in $8 and the pool row is what decides.
 --
 -- $14 is enrolled_via_key_id (E24 T3): WHICH credential admitted this machine. NULL means the file
 -- bootstrap token, which is not a row and cannot be revoked individually — the honest representation
@@ -75,37 +75,74 @@ RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_ke
 -- ('pending','active','cordoned','revoked') and E24 owns exactly one migration, which is T1's. Health is
 -- derived from last_seen_at instead — see RunnerGateway.Heartbeat for why that is the better answer
 -- rather than the available one.
+--
+-- A `pending` MACHINE IS NOT REACHABLE FROM THESE THREE VERBS, AND THAT CLAUSE IS T6'S WAITING ROOM
+-- (E24 T6). Without it `resume` — an operator verb with no approver check on it — would move a machine
+-- out of `pending` into `active`, which is the whole of strict enrolment, bypassed by a different route.
+-- A `cordon` would be worse than a bypass: it would ERASE the fact that the machine was never admitted,
+-- and the resume after it would then be legitimate. A REVOKE is deliberately still allowed, because
+-- refusing an enrolment is exactly what an operator does with a machine they did not order.
 UPDATE runners
    SET state = $4
  WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
    AND (state <> 'revoked' OR $4 = 'revoked')
+   AND (state <> 'pending' OR $4 = 'revoked')
 RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
           state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at, created_at;
 
--- name: AppendRunnerRevocation
--- The journal entry for a decommission (E24 T5), appended AT MOST ONCE per machine.
+-- name: ApproveRunner
+-- Admit ONE machine that is waiting in a strict pool's waiting room (E24 T6). It is a SEPARATE statement
+-- from SetRunnerState rather than a fourth verb on it, and the separation is the control: the three
+-- lifecycle verbs are gated on `provision` and this one is gated on `approve` and on the project's
+-- approver list, so collapsing them would make the waiting room openable by the capability that can
+-- rewrite the list it is checked against.
+--
+-- `state IN ('pending','active')` IS THE IDEMPOTENCY, and it is doing two jobs. The operator-facing one:
+-- an approve that answered 404 on its second call would read as "the id was wrong" to whoever retried a
+-- request that timed out. The structural one: the API writes the ROW and then tells the live gateway, so
+-- an approve that raced a machine's own connect can leave the row admitted and that session still
+-- waiting — and the retry is what reaches the session, which a 404 would refuse to do.
+--
+-- What it does NOT admit is a cordoned or revoked machine: `active` is the only other state here, so an
+-- approval can never resurrect a decommissioned identity or silently un-cordon a Mac an operator took
+-- out of service.
+UPDATE runners
+   SET state = 'active'
+ WHERE id = $1 AND organization_id = $2 AND ($3 = '' OR project_id = $3)
+   AND state IN ('pending', 'active')
+RETURNING id, organization_id, project_id, pool_id, label, runner_dns, public_key_sha256,
+          state, os, arch, posture, capacity, cert_not_after, enrolled_at, last_seen_at, created_at;
+
+-- name: AppendRunnerDecision
+-- The journal entry for a decision about ONE MACHINE — a decommission (E24 T5, `revoked`) or an
+-- admission out of the waiting room (E24 T6, `approved`) — appended AT MOST ONCE per machine per kind.
 --
 -- The `NOT EXISTS` is what makes it once, and it is here rather than in Go because the alternative is a
--- read-then-write: SetRunnerState is idempotent by design (an operator must be able to repeat a revoke
--- and see the same answer), so a second call arrives with the row already revoked and must record
--- nothing. A Go-side "was it already revoked?" would need its own locking read, and two concurrent ones
--- would both see `active`.
+-- read-then-write: both writers are idempotent by design (an operator must be able to repeat a revoke or
+-- an approve and see the same answer), so a second call arrives with the row already in its target state
+-- and must record nothing. A Go-side "was it already decided?" would need its own locking read, and two
+-- concurrent ones would both see the pre-state.
 --
 -- Concurrency beyond that is handled by the journal's own spine: `UNIQUE (runner_id, entry_seq)` means two
 -- writers computing the same next seq collide (23505) and exactly one lands — the capability_jobs fence,
 -- and the same one AppendRunnerEnrollment relies on.
 --
--- key_id is deliberately empty: a revocation is a decision about the MACHINE, and the key that admitted
--- it is already recorded on the `issued` entry. Writing it again here would suggest the key was revoked.
+-- ONE STATEMENT FOR TWO KINDS rather than a near-copy per verb: the at-most-once reasoning above is the
+-- part a reader has to get right, and two copies of it are two places for it to drift. $6 is the kind and
+-- it is a literal at each Go call site, never caller input — `entry_kind` is CHECK-constrained by 000045
+-- R4 to ('requested','approved','refused','issued','revoked','renewed') either way.
+--
+-- key_id is deliberately empty: a decision like this is about the MACHINE, and the key that admitted it is
+-- already recorded on the `issued` entry. Writing it again here would suggest the key was the subject.
 INSERT INTO runner_enrollments (
     id, organization_id, project_id, runner_id, pool_id, key_id, entry_kind, entry_seq, detail
 )
-SELECT $1, $2, $3, $4, $5, '', 'revoked',
+SELECT $1, $2, $3, $4, $5, '', $6,
        coalesce((SELECT max(entry_seq) FROM runner_enrollments WHERE runner_id = $4), 0) + 1,
-       $6::jsonb
+       $7::jsonb
  WHERE NOT EXISTS (SELECT 1
                      FROM runner_enrollments
-                    WHERE runner_id = $4 AND entry_kind = 'revoked');
+                    WHERE runner_id = $4 AND entry_kind = $6);
 
 -- name: GetRunner
 -- One runner inside the caller's tenant. A row belonging to another tenant returns NO row, so the

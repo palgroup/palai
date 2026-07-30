@@ -173,7 +173,10 @@ var positionalArity = map[string]int{
 	// A machine is named by ONE id (E24 T5); `list` takes none. An extra positional is refused for the
 	// reason every other row here refuses one: `revoke rnr_a rnr_b` must not silently decommission only the
 	// first while an operator believes both are down.
-	"runner/list": 0, "runner/cordon": 1, "runner/resume": 1, "runner/revoke": 1,
+	// `approve` (E24 T6) names ONE machine for the same reason: admitting a fleet with one command is not a
+	// thing an operator should be able to do by accident, and a human approval that could name several is a
+	// human approval nobody read.
+	"runner/list": 0, "runner/cordon": 1, "runner/resume": 1, "runner/revoke": 1, "runner/approve": 1,
 }
 
 // execute maps (resource, subcommand) to the one E13 endpoint it fronts and dispatches it. It first enforces
@@ -302,11 +305,15 @@ func (c *Client) execute(resource, sub string, pos []string, f *flags) error {
 	// `revoke` IS IRREVERSIBLE and the CLI does not prompt, deliberately: neither `apikey revoke` nor
 	// `poolkey revoke` does, and a confirmation on only one of the three teaches an operator the others are
 	// safe.
+	// AND `approve` (E24 T6): the human a strict pool waits for. It rides the same one-machine-one-verb shape
+	// as the three above, and the difference is on the server — the route is gated on the `approve`
+	// capability rather than on `provision`, so the key an operator uses here may be a key that can do
+	// nothing else. That is the point of the separate capability rather than an accident of routing.
 	case "runner":
 		switch sub {
 		case "list":
 			return c.do(http.MethodGet, "/v1/runners", nil)
-		case "cordon", "resume", "revoke":
+		case "cordon", "resume", "revoke", "approve":
 			return c.do(http.MethodPost, "/v1/runners/"+esc(pos[0])+"/"+sub, nil)
 		}
 	}
@@ -541,7 +548,7 @@ func usageErr(resource string) error {
 		"poolkey": "create --pool <pool_id> [--expires-at <rfc3339>] (value printed once) | list --pool <pool_id> | revoke <key_id>",
 		// Spelled with its prefix, because that is the only spelling that works: the lifecycle is reached as
 		// `palai admin runner …` so it cannot be confused with the local runner container.
-		"runner": "list | cordon <runner_id> | resume <runner_id> | revoke <runner_id> (revoke is IRREVERSIBLE)",
+		"runner": "list | approve <runner_id> | cordon <runner_id> | resume <runner_id> | revoke <runner_id> (revoke is IRREVERSIBLE)",
 	}
 	return fmt.Errorf("usage: palai %s <%s>", resource, subs[resource])
 }
