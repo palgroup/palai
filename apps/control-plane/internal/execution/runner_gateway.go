@@ -807,6 +807,7 @@ func (g *RunnerGateway) handleRenew(w http.ResponseWriter, r *http.Request) {
 // deployment's runs forever the moment the control plane was upgraded — a queue keyed by tenant is
 // exactly as good at excluding your own runner as somebody else's. Reading the tenant off the default
 // pool row gives that machine the tenant a single-runner install has always had.
+//
 // IT ALSO REPORTS THE DURABLE LIFECYCLE STATE (E24 T5), and that is what makes a revocation survive a
 // restart: the row is read on the same write that records the liveness, so a new process learns that a
 // machine is decommissioned from the database rather than from the memory it no longer has. A machine the
