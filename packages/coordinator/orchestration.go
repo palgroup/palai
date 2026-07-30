@@ -802,6 +802,62 @@ func (s *Store) PendingToolOperations(ctx context.Context, tenant Tenant, runID 
 	return json.Marshal(ops)
 }
 
+// AdvanceResponse drives ONE Response lifecycle transition through statemachines.ResponseTable and
+// returns the state the response reached (spec §8.3, E26 T3).
+//
+// THIS IS ResponseTable's FIRST PRODUCTION CALLER, and the measurement behind that sentence is worth
+// keeping: RunTable has been applied since the beginning, but every one of ResponseTable's eleven states
+// existed only in its own tests. InsertResponse wrote 'queued' and the terminal UpdateResponse wrote the
+// end, so a response was `queued` for the entire life of its run — while the published schema
+// (protocols/schemas/execution/response.json) has advertised provisioning, in_progress and three
+// waiting_* states the whole time, and tests/conformance asserts that enum. E26 binds the entry
+// transitions and waiting_for_tool, because waiting_for_tool is the state THIS epic's park produces;
+// waiting_for_approval and waiting_for_input belong to E23's and E08's paths and their owners bind them.
+//
+// A REFUSED COMMAND IS statemachines.ErrInvalidState AND IS OFTEN THE CORRECT ANSWER, not a failure: the
+// terminal states are absorbing in ResponseTable, so a terminal response refuses every command, and that
+// IS the monotonicity rule rather than an approximation of it. The caller decides — the run's entry
+// ladder skips it, the park treats it as "there is nothing to say about a response that has finished".
+//
+// The read and the write are not in one transaction on purpose. AdvanceResponseState carries the state it
+// read as a predicate, so a row that moved in between takes zero rows and reports ErrInvalidState — the
+// same single-winner shape FinalizeResponse relies on, without holding a row lock across a round trip.
+//
+// IT WRITES THE STATE AND JOURNALS NO EVENT, which is a smaller step than it could have been and is named
+// here rather than left to be discovered. ResponseTable carries an event name per transition and
+// protocols/asyncapi declares all four response.* types, so the journal COULD carry them and the console
+// already sorts response.in_progress.v1 into a lane. It does not, because a run's own run.* events already
+// tell an attached consumer everything E26 changes — a parked run emits run.waiting.v1 and the stream stays
+// open on it — and starting to emit four new event types would change the journal of every run in the tree
+// for no claim this task makes. Upgrade path, by name: pass the event Apply already returns into the same
+// session-event write applyRunTransitionTx uses.
+func (s *Store) AdvanceResponse(ctx context.Context, tenant Tenant, responseID string, cmd statemachines.ResponseCommand) (statemachines.ResponseState, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	view, err := s.GetResponse(ctx, tenant, responseID)
+	if err != nil {
+		return "", err
+	}
+	if !view.Found {
+		return "", fmt.Errorf("advance response %s: no such response in this tenant", responseID)
+	}
+	from := statemachines.ResponseState(view.State)
+	to, _, err := statemachines.Apply(from, cmd, statemachines.ResponseTable)
+	if err != nil {
+		return from, err
+	}
+	tag, err := s.pool.Exec(ctx, storage.Query("AdvanceResponseState"),
+		responseID, tenant.Organization, tenant.Project, string(from), string(to))
+	if err != nil {
+		return "", fmt.Errorf("advance response %s to %s: %w", responseID, to, err)
+	}
+	if tag.RowsAffected() == 0 {
+		// The row left `from` between the read and the write — a cancel or an engine terminal won. The
+		// state machine's own verdict on that is ErrInvalidState, so it is what a racing caller gets.
+		return from, statemachines.ErrInvalidState
+	}
+	return to, nil
+}
+
 // FinalizeResponse writes the terminal Response projection built from committed run,
 // output, and usage. It is the last durable write of a run, so a restart reads the
 // same terminal status and body (spec §24.7, LP-008).

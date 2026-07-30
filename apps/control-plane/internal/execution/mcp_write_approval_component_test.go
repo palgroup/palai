@@ -502,8 +502,8 @@ func TestAGatedMCPWriteToolSendsNoRequestWithoutAHuman(t *testing.T) {
 	writeCall := redeliveryID("tc")
 	args := map[string]any{"issueKey": "PAL-42", "status": "Done"}
 	err := fx.dispatch(t, writeCall, "jira__transitionIssue", 2, args)
-	if err == nil || err.Error() != errRunAwaitingApproval.Error() {
-		t.Fatalf("dispatchTool = %v, want errRunAwaitingApproval (the call must PARK, not run)", err)
+	if err == nil || err.Error() != errRunParked.Error() {
+		t.Fatalf("dispatchTool = %v, want errRunParked (the call must PARK, not run)", err)
 	}
 	if got := fx.peer.callCount("transitionIssue"); got != 0 {
 		t.Fatalf("the gated write reached Jira %d time(s) with NO human decision, want 0", got)
@@ -574,7 +574,7 @@ func TestApprovedMCPArgumentsReachThePeerByteForByte(t *testing.T) {
 		},
 	}
 	callID := redeliveryID("tc")
-	if err := fx.dispatch(t, callID, "jira__transitionIssue", 1, args); err == nil || err.Error() != errRunAwaitingApproval.Error() {
+	if err := fx.dispatch(t, callID, "jira__transitionIssue", 1, args); err == nil || err.Error() != errRunParked.Error() {
 		t.Fatalf("dispatchTool = %v, want the park", err)
 	}
 
@@ -811,7 +811,7 @@ func TestAJiraTicketBodyCannotApproveItself(t *testing.T) {
 	// ---- R1 — IT CANNOT SKIP THE APPROVAL ------------------------------------------------------------
 	writeCall := redeliveryID("tc")
 	writeArgs := map[string]any{"issueKey": "PAL-42", "status": "Done"}
-	if err := fx.dispatch(t, writeCall, "jira__transitionIssue", 2, writeArgs); err == nil || err.Error() != errRunAwaitingApproval.Error() {
+	if err := fx.dispatch(t, writeCall, "jira__transitionIssue", 2, writeArgs); err == nil || err.Error() != errRunParked.Error() {
 		t.Errorf("R1: the transition did not park (dispatchTool = %v) — the ticket's 'pre-approved' skipped the gate", err)
 	} else if got := fx.callState(t, writeCall); got != "approval_pending" {
 		t.Errorf("R1: tool_call state = %q, want approval_pending", got)
@@ -955,7 +955,7 @@ func TestAJiraTicketBodyCannotApproveItself(t *testing.T) {
 	otherSession, otherRun := fx.newRun(t)
 	otherCall := redeliveryID("tc")
 	if err := fx.dispatchOn(t, otherSession, otherRun, otherCall, "jira__transitionIssue", 1, writeArgs); err == nil ||
-		err.Error() != errRunAwaitingApproval.Error() {
+		err.Error() != errRunParked.Error() {
 		t.Fatalf("R5: the second gated call did not park: %v", err)
 	}
 	first, _, err := fx.spine.ToolApprovalForCall(ctx, fx.tenant, writeCall)

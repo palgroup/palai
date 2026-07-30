@@ -166,6 +166,23 @@ SET state = $4, output = $5, updated_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3
   AND state NOT IN ('completed', 'failed', 'canceled', 'timed_out', 'budget_exceeded', 'failed_with_uncertain_side_effect');
 
+-- AdvanceResponseState writes ONE NON-TERMINAL Response lifecycle state (spec §8.3, E26 T3). It is the
+-- write half of packages/state-machines' ResponseTable, whose FIRST production caller this is: the Go
+-- side asks the table whether the command is legal from the state it read, and this statement commits
+-- the answer ONLY IF the row is still in that state.
+--
+-- THE `state = $4` PREDICATE IS THE MONOTONICITY GUARD AND IT IS THE SAME DISCIPLINE UpdateResponse
+-- CARRIES. Between the read and this write, a cancel or an engine terminal can finalize the response;
+-- the from-state predicate makes such a write affect zero rows rather than reopening a finished
+-- response into a waiting one, which a caller would read as a run that is still going. Excluding
+-- terminal states explicitly would be the weaker form of the same rule — this one also refuses a write
+-- onto any OTHER state that moved underneath, so a lost update is impossible rather than merely
+-- unlikely.
+-- name: AdvanceResponseState
+UPDATE responses
+SET state = $5, updated_at = clock_timestamp()
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = $4;
+
 -- HasUncertainSideEffect reports whether a run has an UNRESOLVED uncertain side effect — an
 -- irreversible/interactive tool_call still `uncertain` or in `manual_resolution` (spec §26.10, SES-010,
 -- E10 T7). A cancel racing a kill terminalizes such a run as failed_with_uncertain_side_effect (the

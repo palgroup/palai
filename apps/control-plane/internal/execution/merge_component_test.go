@@ -122,7 +122,7 @@ func (h *mergeHarness) pumpMerge() int {
 // the provider's own answer to an operation a human already authorized.
 func (h *mergeHarness) openAndPublishAPullRequest() {
 	h.t.Helper()
-	if _, err := h.dispatch(tools.PullRequestTool(), redeliveryID("tc"), 1, map[string]any{"title": "t", "body": "b"}); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(tools.PullRequestTool(), redeliveryID("tc"), 1, map[string]any{"title": "t", "body": "b"}); !errors.Is(err, errRunParked) {
 		h.t.Fatalf("the pull-request dispatch did not park: %v", err)
 	}
 	if got := h.click("Uapprover", "approve", h.requestHash()); got.Rejected != "" {
@@ -147,7 +147,7 @@ func TestMergePullRequestWithoutAnApprovalPublishesNothing(t *testing.T) {
 
 	// The model asks for a merge. The tool records a pending publication and the run PARKS — no answer goes
 	// back, so the model cannot carry on as if the merge had happened.
-	if _, err := h.dispatch(tools.MergeTool(), redeliveryID("tc"), 2, nil); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(tools.MergeTool(), redeliveryID("tc"), 2, nil); !errors.Is(err, errRunParked) {
 		t.Fatalf("the merge dispatch returned %v, want the park — a run that answers here is a run whose "+
 			"approval can no longer be applied", err)
 	}
@@ -251,7 +251,7 @@ func TestMergePullRequestRefusesWhenTheHeadMovedAfterTheApproval(t *testing.T) {
 	h := newMergeHarness(t)
 	h.openAndPublishAPullRequest()
 
-	if _, err := h.dispatch(tools.MergeTool(), redeliveryID("tc"), 2, nil); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(tools.MergeTool(), redeliveryID("tc"), 2, nil); !errors.Is(err, errRunParked) {
 		t.Fatalf("the merge dispatch did not park: %v", err)
 	}
 	pubID, _, _, _, _, display := h.publicationRow("merge_pull_request")
@@ -334,7 +334,7 @@ func TestMergePullRequestWithNoPublishedPullRequestRefuses(t *testing.T) {
 func TestMergePullRequestDeniedPreventsTheMergeAndReleasesTheRun(t *testing.T) {
 	h := newMergeHarness(t)
 	h.openAndPublishAPullRequest()
-	if _, err := h.dispatch(tools.MergeTool(), redeliveryID("tc"), 2, nil); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(tools.MergeTool(), redeliveryID("tc"), 2, nil); !errors.Is(err, errRunParked) {
 		t.Fatalf("the merge dispatch did not park: %v", err)
 	}
 	if got := h.click("Uapprover", "deny", h.requestHash()); got.Rejected != "" {
@@ -372,7 +372,7 @@ func TestMergePullRequestMethodComesFromTheBindingNotTheModel(t *testing.T) {
 	}
 
 	h.openAndPublishAPullRequest()
-	if _, err := h.dispatch(tools.MergeTool(), redeliveryID("tc"), 2, nil); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(tools.MergeTool(), redeliveryID("tc"), 2, nil); !errors.Is(err, errRunParked) {
 		t.Fatalf("the merge dispatch did not park: %v", err)
 	}
 	if got := h.click("Uapprover", "approve", h.requestHash()); got.Rejected != "" {

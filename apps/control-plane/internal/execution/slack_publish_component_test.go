@@ -634,7 +634,7 @@ func TestPublicationFromSlackTargetsTheBindingsBaseBranch(t *testing.T) {
 func TestPublicationFromSlackPostsAnApprovalMessageIntoTheThread(t *testing.T) {
 	h := newPublishHarness(t)
 
-	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunParked) {
 		t.Fatalf("dispatchTool error = %v, want the park", err)
 	}
 	// Nothing has been asked yet — the ORDER is durable, the message is not. That split is the loss-lessness
@@ -709,7 +709,7 @@ func TestPublicationFromSlackParksTheRunSoTheApproveLands(t *testing.T) {
 	h := newPublishHarness(t)
 
 	ch, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil)
-	if !errors.Is(err, errRunAwaitingApproval) {
+	if !errors.Is(err, errRunParked) {
 		t.Fatalf("dispatchTool error = %v, want the park — a run that answers here is a run whose approval "+
 			"can no longer be applied", err)
 	}
@@ -789,7 +789,7 @@ func TestPublicationFromSlackParksTheRunSoTheApproveLands(t *testing.T) {
 func TestPublicationFromSlackCeilingATerminalRunStillRefusesTheClick(t *testing.T) {
 	ctx := context.Background()
 	h := newPublishHarness(t)
-	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunParked) {
 		t.Fatalf("dispatchTool error = %v, want the park", err)
 	}
 	hash := h.requestHash()
@@ -819,7 +819,7 @@ func TestPublicationFromSlackCeilingATerminalRunStillRefusesTheClick(t *testing.
 // worse one.
 func TestPublicationFromSlackDenyWakesTheParkedRunAndPublishesNothing(t *testing.T) {
 	h := newPublishHarness(t)
-	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunParked) {
 		t.Fatalf("dispatchTool error = %v, want the park", err)
 	}
 	if got := h.click("Uapprover", "deny", h.requestHash()); got.Rejected != "" {
@@ -849,7 +849,7 @@ func TestPublicationFromSlackDeliveryFailureKeepsTheApprovalAndReleasesTheRun(t 
 	h := newPublishHarness(t)
 	h.slackRefuses = true
 
-	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(tools.PushTool(), redeliveryID("tc"), 1, nil); !errors.Is(err, errRunParked) {
 		t.Fatalf("dispatchTool error = %v, want the park", err)
 	}
 	h.post()

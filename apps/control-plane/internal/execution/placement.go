@@ -23,7 +23,7 @@ import (
 // errRunAwaitingCapacity ends an attempt cleanly when the attempt's pool holds no machine of its tenant
 // (§3.6 D12): the run is now WAITING, no engine process was ever opened, and the next machine to join
 // that pool re-enters it through coordinator.WakeRunAwaitingCapacity. Like errRunPaused, errRunReleased
-// and errRunAwaitingApproval it is NOT a failure — ExecuteAttempt returns nil on it, so the dispatch
+// and errRunParked it is NOT a failure — ExecuteAttempt returns nil on it, so the dispatch
 // worker is freed even in a single-worker stack and a parked run costs no compute while nothing can run
 // it.
 var errRunAwaitingCapacity = errors.New("run_awaiting_capacity")
@@ -76,7 +76,7 @@ func (o *Orchestrator) place(ctx context.Context, tenant coordinator.Tenant, att
 // parkForCapacity releases the run's compute because there is no machine to run it on, following E23
 // T1's choreography and adding no second parking mechanism — two parking paths mean two waking bugs.
 //
-// IT CAPTURES NO CHECKPOINT, and that is a deliberate departure from parkForApproval, which takes one
+// IT CAPTURES NO CHECKPOINT, and that is a deliberate departure from parkRun, which takes one
 // when a sink is wired. An approval parks at a boundary an engine REACHED; this parks at the dial,
 // before any engine exists, so there is no boundary to capture and nothing that could offer one.
 // Recovery is ladder rung 2 — the woken attempt replays the committed transcript — which is always

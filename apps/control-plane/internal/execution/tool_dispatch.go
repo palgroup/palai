@@ -51,7 +51,7 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 			// A human still owes an answer. This attempt replayed the transcript back to the same request;
 			// park again rather than asking a second time — the first park is authoritative, so the button
 			// already in front of a human stays the live one.
-			return o.parkForApproval(ctx, st)
+			return o.parkRun(ctx, st, "") // waiting_for_approval is E23's to bind (see parkRun)
 		case "ready":
 			// A human approved THESE BYTES. The binding is checked before anything runs: if the request
 			// hash on the row is not this request's, the approval that exists authorizes a different call.
@@ -181,7 +181,7 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 			}); err != nil {
 				return err
 			}
-			return o.parkForApproval(ctx, st)
+			return o.parkRun(ctx, st, "") // waiting_for_approval is E23's to bind (see parkRun)
 		}
 	}
 
@@ -294,7 +294,7 @@ func (o *Orchestrator) dispatchTool(ctx context.Context, st *attemptState, frame
 	case perr != nil:
 		return perr
 	case parked:
-		return errRunAwaitingApproval
+		return errRunParked
 	}
 
 	// after_tool fires on the delivery path (fresh here; a committed replay re-fires it in the consult above).

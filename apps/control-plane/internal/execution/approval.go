@@ -33,18 +33,25 @@ const publishTimeout = 60 * time.Second
 // publication pump; everything below gates ANY tool call and knows nothing about repositories.
 // ---------------------------------------------------------------------------------------------------
 
-// errRunAwaitingApproval ends an attempt cleanly when a gated tool call is waiting on a human (spec
-// §22.4, §26.7): the run is now WAITING, the attempt ends with no engine process held, and the decision
-// (or the expiry reaper) opens a fresh attempt through coordinator.wakeParkedRunTx. Like errRunPaused and
-// errRunReleased it is NOT a failure — ExecuteAttempt returns nil on it, so the worker is freed even in a
-// single-runner stack and a parked run costs no compute while a human reads.
-var errRunAwaitingApproval = errors.New("run_awaiting_approval")
+// errRunParked ends an attempt cleanly when the run has been released to WAITING at a boundary it will
+// be woken back to (spec §22.4, §26.7): the attempt ends with no engine process held, and whatever the
+// run is waiting on — a human's decision, the approval expiry reaper, or a background task's exit —
+// opens a fresh attempt through coordinator.wakeParkedRunTx. Like errRunPaused and errRunReleased it is
+// NOT a failure: ExecuteAttempt returns nil on it, so the worker is freed even in a single-runner stack
+// and a parked run costs no compute while whatever it waits for happens.
+//
+// It was named for the approval gate until E26 T3 gave it a second producer. The name is the only thing
+// that changed: renaming rather than adding a sibling sentinel is the same rule as parkRun below — a second
+// value would mean a second arm in the run loop, and an arm somebody forgets is a run that fails instead
+// of parking.
+var errRunParked = errors.New("run_parked")
 
-// parkForApproval releases the run's compute while a human decides (spec §22.4, §26.5). It follows the
-// pause/detach choreography: capture a durable checkpoint of this boundary if a sink is wired, drive the
-// run running→waiting, and hand back errRunAwaitingApproval so the attempt ends without sending a
-// tool.result — the model is given NOTHING to continue on, which is the whole difference between this
-// gate and a tool that returns "pending_approval" as an answer and lets the run finish.
+// parkRun releases the run's compute while something outside this attempt happens (spec §22.4, §26.5).
+// It follows the pause/detach choreography: capture a durable checkpoint of this boundary if a sink is
+// wired, drive the run running→waiting, move the response to the state that says WHY it is waiting, and
+// hand back errRunParked so the attempt ends without sending a tool.result — the model is given NOTHING
+// to continue on, which is the whole difference between this and a tool that answers "pending" and lets
+// the run finish.
 //
 // IT DOES NOT REFUSE A CHECKPOINT-LESS PARK, and that is a deliberate departure from detach.go, which
 // does. §26.5 forbids releasing with no recoverable boundary, and a detached child HAS no other boundary
@@ -52,8 +59,16 @@ var errRunAwaitingApproval = errors.New("run_awaiting_approval")
 // does: the woken attempt replays the committed transcript, reaches the SAME tool.request, and consults
 // the SAME ledger row — recovery ladder rung 2, which is always available. Requiring a checkpoint sink
 // would make the approval gate unavailable on every deployment without object storage, which is most of
-// them, and an unavailable gate is a gate nobody has.
-func (o *Orchestrator) parkForApproval(ctx context.Context, st *attemptState) error {
+// them, and an unavailable gate is a gate nobody has. E26 T3's background park inherits that reasoning
+// VERBATIM and needed no second version of it: the woken attempt replays the transcript, reaches the same
+// terminal frame, and re-reads the same task state.
+//
+// respCmd IS OPTIONAL AND EMPTY MEANS "SAY NOTHING", which is what E23's and E08's parks pass. Their
+// response states (waiting_for_approval, waiting_for_input) are declared in ResponseTable and have never
+// been written either; binding them is those paths' owners' change, and doing it here would move two
+// surfaces this task cannot test through their own flows. What it must not do is bind the WRONG one, so
+// the parameter is explicit rather than defaulted.
+func (o *Orchestrator) parkRun(ctx context.Context, st *attemptState, respCmd statemachines.ResponseCommand) error {
 	if o.checkpoints != nil {
 		if err := o.checkpointBeforePause(ctx, st); err != nil {
 			return err
@@ -62,7 +77,12 @@ func (o *Orchestrator) parkForApproval(ctx context.Context, st *attemptState) er
 	if _, err := o.spine.ApplyRunTransition(ctx, st.tenant, string(st.attempt.RunID), statemachines.RunCmdWait); err != nil {
 		return err
 	}
-	return errRunAwaitingApproval
+	if respCmd != "" {
+		if err := o.advanceResponse(ctx, st.tenant, st.responseID, respCmd); err != nil {
+			return err
+		}
+	}
+	return errRunParked
 }
 
 // parkOnPendingPublication is E23 T3, and it builds nothing: it makes E22's closing claim true. E22 said
@@ -74,7 +94,7 @@ func (o *Orchestrator) parkForApproval(ctx context.Context, st *attemptState) er
 // pressed in the flow that needed it.
 //
 // So the run parks on its own pending publication, through the SAME path a gated tool call parks on
-// (parkForApproval): running→waiting, no tool.result, no engine process held. The fix is the ROOT one and
+// (parkRun): running→waiting, no tool.result, no engine process held. The fix is the ROOT one and
 // lives in one place — the dispatcher, after any tool commits — rather than in each publication tool, so
 // merge (T6) and whatever the fourth publication operation turns out to be inherit it without a line.
 //
@@ -92,7 +112,8 @@ func (o *Orchestrator) parkOnPendingPublication(ctx context.Context, st *attempt
 	if err != nil || !found || pub.RunID != string(st.attempt.RunID) {
 		return false, err
 	}
-	return true, o.parkForApproval(ctx, st)
+	// No response command: waiting_for_approval is ResponseTable's, not this epic's (see parkRun).
+	return true, o.parkRun(ctx, st, "")
 }
 
 // WHY THE PUBLICATION'S APPROVAL DISPLAY STAYS SEPARATE FROM THE GENERIC ONE (E23 T3, and this is the

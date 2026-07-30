@@ -103,13 +103,59 @@ func mustCapacityTimeoutProjection() []byte {
 	return body
 }
 
-// finalize handles run.terminal: it applies exactly one terminal run transition and
-// writes the terminal Response projection from the committed run, output, and usage.
+// advanceResponse drives one ResponseTable transition on a run's response (spec §8.3, E26 T3), and
+// tolerates the two outcomes that are not failures.
+//
+// A RUN WITH NO RESPONSE ROW says nothing: runs.response_id is nullable and a run reached through
+// recovery or a fixture may carry none, and there is no response state to advance in that case.
+//
+// A REFUSED COMMAND IS THE MONOTONICITY GUARANTEE, not an error to propagate. ResponseTable's terminal
+// states are absorbing, so a response finalized by a cancel or by an engine terminal refuses every
+// command and this returns cleanly, leaving the terminal exactly as it was found — the same rule
+// UpdateResponse's terminal-excluding WHERE enforces for the projection, applied to the lifecycle.
+func (o *Orchestrator) advanceResponse(ctx context.Context, tenant coordinator.Tenant, responseID string, cmd statemachines.ResponseCommand) error {
+	if responseID == "" {
+		return nil
+	}
+	switch _, err := o.spine.AdvanceResponse(ctx, tenant, responseID, cmd); {
+	case errors.Is(err, statemachines.ErrInvalidState):
+		return nil
+	default:
+		return err
+	}
+}
+
+// finalize handles run.terminal: it parks the run if the model has left a background task running,
+// and otherwise applies exactly one terminal run transition and writes the terminal Response
+// projection from the committed run, output, and usage.
 func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame contracts.EngineFrame) error {
 	outcome, _ := frame.Data["outcome"].(string)
 	terminal, ok := terminalCommands[outcome]
 	if !ok {
 		return fmt.Errorf("engine terminal frame has unknown outcome %q", outcome)
+	}
+
+	// THE BACKGROUND PARK (E26 T3, §2.3). The model has said it is done; the operating system says a
+	// process this run started is still running. Finishing here would strand that process — nothing
+	// would fold its exit back in, because a terminal run has no next turn — so the run is RELEASED to
+	// waiting instead, through the same parkRun the approval gate uses, and T4's exit notification
+	// re-enters it. No second parking mechanism, because two parking paths mean two waking bugs.
+	//
+	// ONLY A COMPLETED TERMINAL PARKS, and that is a decision rather than an omission. A run that
+	// failed, was canceled, timed out or exhausted its budget has nowhere for a notification to land:
+	// parking it would leave it waiting for a wake whose whole purpose is to give the model another
+	// turn, and there is no model turn left. Those terminals finalize, and what deals with the process
+	// is the run's cancellation (T5).
+	//
+	// THE HONEST CEILING, AND IT IS A PRODUCT DECISION RATHER THAN AN OVERSIGHT — written here because
+	// this is where a reader meets it. The response stays OPEN for as long as the task runs: a caller
+	// polling GET /v1/responses/{id} reads `waiting_for_tool`, and an attached SSE consumer keeps its
+	// connection, for the whole of a five-minute build. The alternative — finish the run now and let the
+	// exit notification open a NEW response — was refused by §2 for one reason: it is a SECOND waking
+	// path, and this tree has shipped the first one twice (E23 T1, E24 T4) and paid for every divergence
+	// between them. One waking path with an open response beats two with closed ones.
+	if outcome == "completed" && o.runHasLiveBackgroundTask(ctx, string(st.attempt.RunID)) {
+		return o.parkRun(ctx, st, statemachines.ResponseCmdRequestTool)
 	}
 
 	// Exactly one terminal transition, and exactly one terminal projection. A run that is

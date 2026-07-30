@@ -308,7 +308,7 @@ func TestSlackToolApprovalAsksInTheThreadAndAnAuthorizedClickReleasesTheRun(t *t
 
 	// 1. THE MODEL CALLS THE GATED TOOL. The dispatcher parks the run and hands the model nothing.
 	ch, err := h.dispatch(1, gatedToolArgs)
-	if !errors.Is(err, errRunAwaitingApproval) {
+	if !errors.Is(err, errRunParked) {
 		t.Fatalf("dispatchTool error = %v, want the park", err)
 	}
 	if n := h.ran(); n != 0 {
@@ -448,7 +448,7 @@ func TestSlackToolApprovalAsksInTheThreadAndAnAuthorizedClickReleasesTheRun(t *t
 func TestSlackToolApprovalRefusesAnUnauthorizedClicker(t *testing.T) {
 	ctx := context.Background()
 	h := newToolApprovalSlackHarness(t)
-	if _, err := h.dispatch(1, gatedToolArgs); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(1, gatedToolArgs); !errors.Is(err, errRunParked) {
 		t.Fatalf("dispatchTool error = %v, want the park", err)
 	}
 	h.post()
@@ -569,7 +569,7 @@ func TestSlackToolApprovalCarriesTheOperatorsOwnLabelForARegisteredTool(t *testi
 	}
 	callID := redeliveryID("tc")
 	args := map[string]any{"issue": "PAL-77"}
-	if err := orch.dispatchTool(context.Background(), st, toolRequestFrame(callID, "transitionIssue", args)); !errors.Is(err, errRunAwaitingApproval) {
+	if err := orch.dispatchTool(context.Background(), st, toolRequestFrame(callID, "transitionIssue", args)); !errors.Is(err, errRunParked) {
 		t.Fatalf("dispatchTool error = %v, want the park — a REGISTERED approval_required revision must gate", err)
 	}
 
@@ -596,7 +596,7 @@ func TestSlackToolApprovalCarriesTheOperatorsOwnLabelForARegisteredTool(t *testi
 // never happens.
 func TestSlackToolApprovalDenyReleasesTheRunAndRunsNothing(t *testing.T) {
 	h := newToolApprovalSlackHarness(t)
-	if _, err := h.dispatch(1, gatedToolArgs); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(1, gatedToolArgs); !errors.Is(err, errRunParked) {
 		t.Fatalf("dispatchTool error = %v, want the park", err)
 	}
 	h.post()
