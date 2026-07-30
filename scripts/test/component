@@ -1056,6 +1056,71 @@ run_native_shell() {
   echo "component_native_shell=PASS"
 }
 
+# The background suite proves E26 T1's container posture against a REAL Docker daemon: a container that
+# is still running after the call that started it returned, a command form that interprets no
+# metacharacter, and a container we cannot prove is ours that is never signalled. Every liveness claim is
+# read from ContainerInspect rather than from our own bookkeeping.
+#
+# It pins the same busybox digest scripts/test/live-provider and scripts/uat/coding pin, because a
+# background task needs a real /bin/sh and the fixture engine the runner tiers build is FROM scratch.
+#
+# -run names the tests EXPLICITLY, and the list below is the allow-list: a proof this list does not name
+# is a proof that never runs. This tier has shipped green-by-omission six times.
+run_background() {
+  local shell_ref="busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
+  local label="io.palai.sandbox"
+  docker pull --quiet "$shell_ref" >/dev/null
+  local image_id
+  image_id="$(docker image inspect "$shell_ref" --format '{{.Id}}')"
+  if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "busybox shell image id is not immutable" >&2
+    exit 1
+  fi
+
+  count_sandboxes() { docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' '; }
+  local before after
+  before="$(count_sandboxes)"
+
+  set +e
+  PALAI_SHELL_IMAGE_ID="$image_id" \
+    go test -tags=component -count=1 -v \
+      -run 'TestTodayAShellContainerIsGoneWhenTheCallReturns|TestADetachedContainerIsStillRunningAfterTheCallReturns|TestTheDetachedCommandFormInterpretsNoMetacharacter|TestADetachedTaskReportsItsExitCodeFromTheDaemon|TestKillingADetachedTaskRemovesTheContainerAndIsIdempotent|TestADetachedContainerWeCannotProveIsOursIsNeverSignalled' \
+      ./tests/component/background
+  local status=$?
+  set -e
+
+  # THE LEAK COUNT IS PART OF THE PROOF HERE, not hygiene around it: this suite deliberately starts
+  # containers nothing removes on a defer, so "the tests cleaned up after themselves" is the assertion
+  # that the kill path actually removes what the start path leaves.
+  after="$(count_sandboxes)"
+  if test "$after" -ne "$before"; then
+    echo "background suite leaked a sandbox container ($before -> $after)" >&2
+    docker ps -a --filter "label=$label" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then
+    exit "$status"
+  fi
+
+  # The HOST posture's half needs no Docker and no Postgres — a Mac deployment runs the control plane
+  # natively — and it is re-run here beside the container one so a single command covers both postures of
+  # the same claim. Untagged, so it also rides `make verify`.
+  go test -count=1 -v \
+    -run 'TestTodayAHostProcessGroupDiesWithTheAttempt|TestAHostBackgroundProcessSurvivesTheAttempt|TestABackgroundTaskWritesItsOwnLogAndCreatesTheSessionDirectory|TestAnEscapingOutputPathIsRefusedBeforeAnythingStarts|TestABackgroundTaskGetsTheSameClosedEnvironmentAsASynchronousOne|TestAFinishedBackgroundTaskReportsItsExitCodeOnlyWhenItIsKnown|TestAPgidWeCannotProveIsOursIsNeverSignalled|TestKillingABackgroundTaskTwiceIsKillingItOnce|TestTheKillReachesTheWholeProcessGroup' \
+    ./adapters/sandboxes/host
+  # The STRUCTURAL half: the detached path builds no container options of its own, and dockerDriver.Run
+  # did not change by one byte while a new lifetime was added beside it.
+  go test -count=1 -v \
+    -run 'TestTheDetachedPathBuildsNoContainerOptionsOfItsOwn|TestTheHardenedContainerOptionsAreExactlyThese|TestDockerDriverRunIsByteUnchanged' \
+    ./adapters/sandboxes/oci
+  # The COMPOSITION ROOT's half: production wires a background runner for the posture it wires a shell
+  # runner for. A test that builds its own executor never sees the config production builds.
+  go test -count=1 -v \
+    -run 'TestTheCompositionRootWiresABackgroundRunnerOnTheNativePosture|TestABackgroundRunnerIsNotWiredForAPostureThatCannotDetach' \
+    ./apps/control-plane/cmd/palai-control-plane
+  echo "component_background=PASS containers=$after"
+}
+
 case "$suite" in
   postgres) run_postgres ;;
   packaged) run_packaged ;;
@@ -1069,8 +1134,9 @@ case "$suite" in
   skills) run_skills ;;
   hooks) run_hooks ;;
   native-shell) run_native_shell ;;
+  background) run_background ;;
   *)
-    echo "unknown component suite: $suite (known: postgres, packaged, queue, runner, artifacts, repository, remote-tools, tool-sdk, mcp, skills, hooks, native-shell)" >&2
+    echo "unknown component suite: $suite (known: postgres, packaged, queue, runner, artifacts, repository, remote-tools, tool-sdk, mcp, skills, hooks, native-shell, background)" >&2
     exit 2
     ;;
 esac

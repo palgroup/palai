@@ -644,6 +644,15 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 			// body-artifact seam); a workspace-bound run reuses that same writer for its changeset compile.
 			if shell := shellRunnerFromEnv(); shell != nil {
 				orch.SetShellRunner(shell)
+				// The DETACHED half of the same posture (E26 T1). Both shipped executors can start a command
+				// that outlives the attempt, so the assertion holds for both today — but it is written as a
+				// type assertion rather than assumed, because ShellRunner is the interface main.go builds
+				// against and a posture that could only run synchronously must produce a nil background
+				// runner here rather than a half-wired one. backgroundRunnerFor is where that decision lives,
+				// so a composition-root test can ask it what production wires.
+				if bg := backgroundRunnerFor(shell); bg != nil {
+					orch.SetBackgroundRunner(bg)
+				}
 			}
 		}
 		handler = execution.ExecuteRun(spine, repo, orch)
@@ -842,6 +851,26 @@ func shellRunnerFromEnv() toolbroker.ShellRunner {
 		return nil
 	}
 	return workspace.NewShellExecutor(driver, image, sandboxLimitsFromEnv())
+}
+
+// backgroundRunnerFor reports the DETACHED runner for a wired shell posture, or nil when that posture
+// cannot start a command that outlives the attempt (E26 T1).
+//
+// It is a named function for the same reason sandboxLimitsFromEnv is one: so a test can assert what the
+// COMPOSITION ROOT actually builds. Every sandbox test in this tree constructs its own executor, which
+// is exactly how a wall time that was unbounded on one posture and refused every call on the other
+// stayed invisible to all of them.
+//
+// NIL IS THE HONEST ANSWER AND NOT A DEGRADED ONE. A posture that cannot detach must leave this seam
+// unwired so the tool refuses; falling back to a synchronous run would block the model in precisely the
+// way background execution exists to prevent.
+func backgroundRunnerFor(shell toolbroker.ShellRunner) toolbroker.BackgroundRunner {
+	background, ok := shell.(toolbroker.BackgroundRunner)
+	if !ok {
+		log.Printf("shell posture %T cannot start background tasks (the background parameter will be refused)", shell)
+		return nil
+	}
+	return background
 }
 
 // defaultSandboxWallTime bounds ONE shell tool call in BOTH postures. It is a default rather than a

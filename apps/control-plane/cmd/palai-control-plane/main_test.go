@@ -13,6 +13,7 @@ import (
 	"github.com/palgroup/palai/apps/control-plane/internal/artifacts"
 	"github.com/palgroup/palai/apps/control-plane/internal/extensions"
 	"github.com/palgroup/palai/packages/coordinator"
+	toolbroker "github.com/palgroup/palai/packages/tool-broker"
 )
 
 // TestWebhookSecretResolverIsOrgScoped pins F2: the env-key namespace is scoped by org, so a tenant's
@@ -315,6 +316,59 @@ func TestShellRunnerFromEnvBindsTheHostExecutorOnTheNativePosture(t *testing.T) 
 	if _, ok := runner.(*host.Executor); !ok {
 		t.Fatalf("native posture bound %T, want *host.Executor", runner)
 	}
+}
+
+// TestTheCompositionRootWiresABackgroundRunnerOnTheNativePosture asserts what PRODUCTION wires, not what
+// a test can construct. The distinction is not pedantry here: this tree has already shipped a shell wall
+// time that was unbounded on one posture and refused every call on the other, invisible to every sandbox
+// test because each of them built its own executor and none of them traversed shellRunnerFromEnv.
+//
+// The claim is the composition root's half of E26 T1: the posture main.go binds is also the thing that
+// can start a process the attempt does not own. A stack that bound a shell runner and no background
+// runner would accept a `background:true` call and refuse it at dispatch — which is honest, and is also
+// exactly the state this test exists to make visible.
+func TestTheCompositionRootWiresABackgroundRunnerOnTheNativePosture(t *testing.T) {
+	t.Setenv("PALAI_SANDBOX_IMAGE", "")
+	t.Setenv("PALAI_SHELL_NATIVE", shellPostureNative)
+	t.Setenv("PALAI_SANDBOX_WALL_TIME", "")
+
+	shell := shellRunnerFromEnv()
+	if shell == nil {
+		t.Fatal("the native posture bound no shell runner")
+	}
+	background := backgroundRunnerFor(shell)
+	if background == nil {
+		t.Fatalf("the native posture bound %T as a shell runner but no background runner: every "+
+			"background:true call on a Mac deployment would be refused", shell)
+	}
+	if _, ok := background.(*host.Executor); !ok {
+		t.Fatalf("the native posture's background runner is %T, want the same *host.Executor that runs "+
+			"synchronous calls — two executors would mean two environments", background)
+	}
+	// And it is the SAME VALUE, not a second executor built beside it: the environment allow-list, the
+	// session directories and the collision refusal are one object's behaviour under both entry points.
+	if any(background) != any(shell) {
+		t.Fatal("the background runner is a different value from the shell runner; the posture's environment " +
+			"would then be built twice and could differ once")
+	}
+}
+
+// TestABackgroundRunnerIsNotWiredForAPostureThatCannotDetach pins the nil half, and it is the half that
+// matters for honesty: an executor that can only run synchronously must leave the seam UNWIRED so the
+// tool refuses, rather than being silently downgraded into a blocking call the model believes is
+// detached.
+func TestABackgroundRunnerIsNotWiredForAPostureThatCannotDetach(t *testing.T) {
+	if got := backgroundRunnerFor(syncOnlyRunner{}); got != nil {
+		t.Fatalf("a shell runner that cannot detach produced a background runner: %T", got)
+	}
+}
+
+// syncOnlyRunner implements ShellRunner and nothing else — the shape of any future posture (a relay, a
+// remote executor) that can run a command but cannot leave one behind.
+type syncOnlyRunner struct{}
+
+func (syncOnlyRunner) Run(context.Context, toolbroker.ShellCommand) (toolbroker.ShellResult, error) {
+	return toolbroker.ShellResult{}, nil
 }
 
 // TestTheNativePostureBoundsAShellCallWithNoEnvironmentSet is one half of the wall-time defect, and it
