@@ -26,9 +26,31 @@ same shape as the E13-T10 modelRoutes write-only gap), E18/hardening input, **no
 console renders those fields the moment the event (or a publications read endpoint) provides them. Until then
 it honestly shows only what the API emits, and the proposal `display` string never stands in for it.
 
+## The door (E25 T1)
+
+The console asks for an operator password, and **does not serve without one**. One operator, one password, one
+signed cookie; the identity check lives inside each relay method, not in a `middleware.ts`/`proxy.ts` and not
+in a layout. Full operator guide: **[docs/operations/console.md](../../docs/operations/console.md)**.
+
+```sh
+printf %s 'a-long-console-password' | node scripts/hash-password.mjs >> .env.local
+```
+
+Then start with `PALAI_CONSOLE_PASSWORD_HASH` set, and open **`/login`** first — an unauthenticated visitor is
+not redirected, they get `401` from every panel.
+
+**Read the ceilings before relying on this.** It is a single-operator door, not an identity system: no users,
+no roles, no audit trail (every approval is recorded against the console's *key*, `HIL-P2`), no session
+revocation list, no sign-in rate limit, and the hash sits in an env var rather than a KMS. And **the key
+behind the door is still unlimited** unless you narrow it — `Scope.HasScope`
+(`apps/control-plane/api/middleware/auth.go:31-34`) grants every capability to an empty scope set, which is
+exactly the bootstrap key the real-profile recipe below exports.
+
 ## Public-API-only relay
 
-The browser talks ONLY to `/api/palai/*`:
+The browser talks ONLY to `/api/palai/*`, with **one** exception — `POST /api/console/login`, which is how a
+session is obtained and which carries no Bearer. `tests/public-api-only.spec.ts` counts that exception in both
+directions: it must occur, and nothing else may join it.
 
 - `app/api/palai/v1/[...path]/route.ts` — the one generic data relay. It reconstructs the upstream path
   from the browser URL, so the ONLY thing the browser can address is a `/v1/*` public-API route; it
@@ -40,15 +62,23 @@ The browser talks ONLY to `/api/palai/*`:
 
 ```
 pnpm install                # from the repo root (workspace)
-PALAI_BASE_URL=http://127.0.0.1:8080 PALAI_API_KEY=palai-sk-... pnpm --filter @palai/web-console dev
+printf %s 'a-long-console-password' | node apps/web-console/scripts/hash-password.mjs   # → PALAI_CONSOLE_PASSWORD_HASH=…
+PALAI_BASE_URL=http://127.0.0.1:8080 PALAI_API_KEY=palai-sk-... PALAI_CONSOLE_PASSWORD_HASH='scrypt$...' \
+  pnpm --filter @palai/web-console dev
 ```
 
 ## Prove
 
 ```
 pnpm --filter @palai/web-console typecheck
-pnpm --filter @palai/web-console test:e2e   # next build + playwright: public-API-only + axe + keyboard + UI-002
+pnpm --filter @palai/web-console test:e2e   # next build + playwright: auth + relay-gate + public-API-only + axe + keyboard + UI-002
 ```
+
+`test:e2e` starts **two** consoles: the configured one, and a second identical process on port 3202 with **no**
+`PALAI_CONSOLE_PASSWORD_HASH` — the fail-closed control, so "a console with no password does not serve" is
+asserted against a real process rather than a mock. Neither needs a password from you: the Playwright config
+runs the shipped `scripts/hash-password.mjs` to derive the hash it gives the first one, which is also what
+binds the generator to the reader.
 
 ### Two profiles, one spec set (E19 T7)
 
