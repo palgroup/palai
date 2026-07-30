@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"strconv"
@@ -157,6 +158,51 @@ func (o *Orchestrator) rememberBackgroundTask(task *backgroundTask) {
 		o.bgTasks = map[string]*backgroundTask{}
 	}
 	o.bgTasks[task.taskID] = task
+}
+
+// runHasLiveBackgroundTask reports whether this run owns a background task the OPERATING SYSTEM still
+// says is running (E26 T3). It is what decides whether a completed run parks instead of finishing.
+//
+// THE AUTHORITY IS THE PROBE, NEVER THE MAP. The registry remembers every task this process started and
+// never forgets one; a task that exited ten minutes ago is still in it. Asking our own bookkeeping
+// "is anything running" would park every run that ever backgrounded anything, forever. So the map
+// answers only "which handles belong to this run" and the kernel — or the container daemon — answers
+// the question that matters, which is the same discipline T1 built the whole seam on.
+//
+// A HANDLE WE CANNOT PROVE IS OURS DOES NOT PARK ANYTHING. `lost` means a process may be running and may
+// be somebody else's (PID reuse), and the rule for a lost handle is already absolute: it is never
+// signalled. Parking on one would be the same mistake in the other direction — the run would wait for an
+// exit notification about a process nothing can watch, and only T5's reaper would ever free it.
+//
+// A PROBE THAT ERRORS DOES NOT PARK EITHER, and the asymmetry is deliberate: parking on an unreadable
+// probe strands the run until a reaper, while not parking loses one exit notification for a run that
+// finished. The second failure is recoverable by the operator reading the log file the task wrote; the
+// first is a run that never ends. The error is logged rather than swallowed, so an operator whose Docker
+// socket has gone away learns it here.
+func (o *Orchestrator) runHasLiveBackgroundTask(ctx context.Context, runID string) bool {
+	if o.background == nil {
+		return false
+	}
+	o.bgMu.Lock()
+	mine := make([]*backgroundTask, 0, len(o.bgTasks))
+	for _, task := range o.bgTasks {
+		if task.runID == runID {
+			mine = append(mine, task)
+		}
+	}
+	o.bgMu.Unlock()
+
+	for _, task := range mine {
+		status, err := o.background.Probe(ctx, task.handle)
+		if err != nil {
+			log.Printf("probe background task %s of run %s: %v", task.taskID, runID, err)
+			continue
+		}
+		if status.State == toolbroker.BackgroundRunning {
+			return true
+		}
+	}
+	return false
 }
 
 // backgroundTaskOf resolves a task id AND checks it belongs to the asking run in one step, so no caller

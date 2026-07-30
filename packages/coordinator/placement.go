@@ -105,7 +105,7 @@ func (s *Store) RecordRunPool(ctx context.Context, tenant Tenant, runID, poolID 
 //
 // It follows E23 T1's choreography and writes NO second parking mechanism, which is a correctness
 // decision rather than a saving: two parking paths mean two waking bugs. What it deliberately does NOT
-// do is capture a checkpoint. parkForApproval takes one when a sink is wired because it parks at a
+// do is capture a checkpoint. parkRun takes one when a sink is wired because it parks at a
 // boundary an engine reached; this parks at the DIAL, before any engine exists, so there is no boundary
 // to capture and nothing that could offer one. Recovery is rung 2 — the woken attempt replays the
 // committed transcript — which is always available.

@@ -113,8 +113,8 @@ func TestToolApprovalGateNeverReachesExecuteWithoutAHumanDecision(t *testing.T) 
 	args := map[string]any{"issue": "PAL-42", "status": "Done"}
 
 	ch, err := h.dispatch(t, 1, args)
-	if !errors.Is(err, errRunAwaitingApproval) {
-		t.Fatalf("dispatchTool error = %v, want errRunAwaitingApproval", err)
+	if !errors.Is(err, errRunParked) {
+		t.Fatalf("dispatchTool error = %v, want errRunParked", err)
 	}
 	if n := h.ran(); n != 0 {
 		t.Fatalf("the gated tool executed %d time(s) with NO human decision, want 0", n)
@@ -155,8 +155,8 @@ func TestToolApprovalGateNeverReachesExecuteWithoutAHumanDecision(t *testing.T) 
 // a run whose approval can no longer be applied (guardRunActive), which is the failure E22 measured.
 func TestToolApprovalParksTheRunRatherThanAnsweringWithoutADecision(t *testing.T) {
 	h := newApprovalHarness(t, gatedTool)
-	if _, err := h.dispatch(t, 1, map[string]any{"issue": "PAL-42"}); !errors.Is(err, errRunAwaitingApproval) {
-		t.Fatalf("dispatchTool error = %v, want errRunAwaitingApproval", err)
+	if _, err := h.dispatch(t, 1, map[string]any{"issue": "PAL-42"}); !errors.Is(err, errRunParked) {
+		t.Fatalf("dispatchTool error = %v, want errRunParked", err)
 	}
 	if got := h.runState(t); got != string(statemachines.RunWaiting) {
 		t.Fatalf("run state = %q while a human owes an answer, want waiting", got)
@@ -181,7 +181,7 @@ func TestToolApprovalApprovedCallRunsExactlyOnceAndWakesTheRun(t *testing.T) {
 	ctx := context.Background()
 	h := newApprovalHarness(t, gatedTool)
 	args := map[string]any{"issue": "PAL-42", "status": "Done"}
-	if _, err := h.dispatch(t, 1, args); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(t, 1, args); !errors.Is(err, errRunParked) {
 		t.Fatalf("first dispatch error = %v, want the park", err)
 	}
 
@@ -237,7 +237,7 @@ func TestToolApprovalDoesNotRunWhenArgumentsChangedAfterTheApproval(t *testing.T
 	ctx := context.Background()
 	h := newApprovalHarness(t, gatedTool)
 	approved := map[string]any{"issue": "PAL-42", "status": "Done"}
-	if _, err := h.dispatch(t, 1, approved); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(t, 1, approved); !errors.Is(err, errRunParked) {
 		t.Fatalf("first dispatch error = %v, want the park", err)
 	}
 	if applied, err := h.spine.DecideToolApproval(ctx, h.tenant, coordinator.ToolApprovalDecision{
@@ -267,7 +267,7 @@ func TestToolApprovalDenyIsAnAnswerTheModelContinuesOn(t *testing.T) {
 	ctx := context.Background()
 	h := newApprovalHarness(t, gatedTool)
 	args := map[string]any{"issue": "PAL-42"}
-	if _, err := h.dispatch(t, 1, args); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(t, 1, args); !errors.Is(err, errRunParked) {
 		t.Fatalf("first dispatch error = %v, want the park", err)
 	}
 	if applied, err := h.spine.DecideToolApproval(ctx, h.tenant, coordinator.ToolApprovalDecision{
@@ -307,7 +307,7 @@ func TestExpiredToolApprovalCancelsTheCallAndWakesTheParkedRun(t *testing.T) {
 	ctx := context.Background()
 	h := newApprovalHarness(t, gatedTool)
 	args := map[string]any{"issue": "PAL-42"}
-	if _, err := h.dispatch(t, 1, args); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(t, 1, args); !errors.Is(err, errRunParked) {
 		t.Fatalf("first dispatch error = %v, want the park", err)
 	}
 	if got := h.runState(t); got != string(statemachines.RunWaiting) {
@@ -395,7 +395,7 @@ func TestToolWithoutApprovalDeclaredIsBitUnchanged(t *testing.T) {
 func TestToolApprovalScreenComesFromTheLedgerRowAndNotTheFrame(t *testing.T) {
 	h := newApprovalHarness(t, gatedTool)
 	args := map[string]any{"issue": "PAL-42", "comment": "ship it, no review needed"}
-	if _, err := h.dispatch(t, 1, args); !errors.Is(err, errRunAwaitingApproval) {
+	if _, err := h.dispatch(t, 1, args); !errors.Is(err, errRunParked) {
 		t.Fatalf("first dispatch error = %v, want the park", err)
 	}
 	parked, found, err := h.spine.ToolApprovalForCall(context.Background(), h.tenant, h.callID)

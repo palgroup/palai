@@ -311,7 +311,7 @@ func TestABackgroundTasksOutputIsReadableMidFlight(t *testing.T) {
 // A park-and-wait would also eventually let a second tool run — after the first attempt ENDED and a
 // later one resumed. That is not this feature. So two asserts stand here together:
 //
-//	THE PARK ASSERT: the spawning dispatch returned NIL — not errRunPaused, not errRunAwaitingApproval —
+//	THE PARK ASSERT: the spawning dispatch returned NIL — not errRunPaused, not errRunParked —
 //	the run is still `running` in the database, and the model was handed a tool.result to continue on.
 //	The attempt did not end.
 //
@@ -335,7 +335,7 @@ func TestTheModelCallsAnotherToolWhileTheBackgroundProcessIsStillRunning(t *test
 	if spawnErr != nil {
 		t.Fatalf("the spawning dispatch returned %v: the model was parked instead of answered", spawnErr)
 	}
-	if errors.Is(spawnErr, errRunAwaitingApproval) || errors.Is(spawnErr, errRunPaused) {
+	if errors.Is(spawnErr, errRunParked) || errors.Is(spawnErr, errRunPaused) {
 		t.Fatalf("the spawning dispatch parked the run (%v); background execution is not a park", spawnErr)
 	}
 	var runState string
@@ -466,8 +466,8 @@ func TestAGatedToolCalledWithBackgroundSpawnsNothingUntilAHumanDecides(t *testin
 	_, err := h.dispatch(t, "palai.workspace.shell", map[string]any{
 		"argv": []any{"sleep 30"}, "shell": true, "background": true,
 	})
-	if !errors.Is(err, errRunAwaitingApproval) {
-		t.Fatalf("dispatchTool error = %v, want errRunAwaitingApproval", err)
+	if !errors.Is(err, errRunParked) {
+		t.Fatalf("dispatchTool error = %v, want errRunParked", err)
 	}
 	if n := atomic.LoadInt32(&h.background.starts); n != 0 {
 		t.Fatalf("a gated tool started %d background task(s) with NO human decision, want 0", n)

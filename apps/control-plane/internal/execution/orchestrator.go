@@ -361,6 +361,30 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 		}
 	}
 
+	// THE RESPONSE'S OWN LIFECYCLE (E26 T3, §3.6 D3), driven through the same skip-on-ErrInvalidState
+	// ladder the run above uses, and for the same reason: a redelivered or resumed attempt re-applies
+	// whichever command is legal from where the response actually is, and the others are no-ops.
+	//
+	// IT IS HERE BECAUSE OF WHAT WAS MEASURED, not because the plan asked for it. §3.6 D3 said a live
+	// response reads `in_progress`; it read `queued`, for the whole life of every run this tree has ever
+	// executed — InsertResponse wrote 'queued' and the terminal UpdateResponse wrote the end, and nothing
+	// in between existed. So ResponseTable had no production caller at all, its `provisioning` and
+	// `in_progress` states were unreachable, and `waiting_for_tool` — which the published schema has
+	// advertised since §8.3 was written and which E26's park must produce — is legal ONLY from
+	// `in_progress`. Binding the park without binding the entry would have made every park's response
+	// transition illegal, which is a fix that reports success and changes nothing.
+	//
+	// resume is the third rung and it is what a WOKEN run needs: an attempt re-entered after a park finds
+	// its response in waiting_for_tool, where provision and start are both illegal, and resume is the one
+	// command that returns it to in_progress. Ordered after them so a fresh run never touches it.
+	for _, cmd := range []statemachines.ResponseCommand{
+		statemachines.ResponseCmdProvision, statemachines.ResponseCmdStart, statemachines.ResponseCmdResume,
+	} {
+		if err := o.advanceResponse(ctx, tenant, responseID, cmd); err != nil {
+			return err
+		}
+	}
+
 	// Recovery ladder rung 1 — exact (spec §26.3, E10 T4): BEFORE dialing or touching the checkpoint,
 	// stand down if the ORIGINAL attempt is still driving the run (a live response.run lease other than
 	// this attempt's own claimed job). The original continues untouched; this attempt records the rung
@@ -635,7 +659,7 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 				// tool.result was sent, so the engine subprocess closes without hanging, and the reconcile
 				// job resolves the row and re-enqueues the run. Not a failure, like a pause.
 				return nil
-			case errors.Is(err, errRunAwaitingApproval):
+			case errors.Is(err, errRunParked):
 				// A gated tool call is waiting on a human (spec §22.4, E23 T1): the run is WAITING, this
 				// attempt ends cleanly and releases its compute — the worker is freed and no engine process
 				// is held while somebody reads — and the decision (or the expiry reaper) opens a fresh
@@ -667,7 +691,17 @@ func (o *Orchestrator) ExecuteAttempt(ctx context.Context, attempt AttemptDescri
 				return abortIfTerminal(err)
 			}
 		case "run.terminal":
-			return o.finalize(ctx, st, frame)
+			switch err := o.finalize(ctx, st, frame); {
+			case errors.Is(err, errRunParked):
+				// The model finished its turn while a background task it started is still running (E26
+				// T3): the run is WAITING, this attempt ends cleanly and releases its compute, and the
+				// task's exit re-enters it through the one wake. Exactly as a pause ends and resume
+				// reopens — and exactly as the approval arm above, which is the point of there being one
+				// sentinel rather than two.
+				return nil
+			default:
+				return err
+			}
 		case "protocol.error":
 			return fmt.Errorf("engine protocol error: %v", frame.Data)
 		default:

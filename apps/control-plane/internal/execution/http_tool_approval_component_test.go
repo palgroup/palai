@@ -98,7 +98,7 @@ func parkGatedCall(t *testing.T, cs *coordinator.Store, tenant coordinator.Tenan
 		sessionID: sessionID,
 		ch:        &recordingChannel{},
 	}
-	if err := orch.dispatchTool(context.Background(), st, toolRequestFrame(callID, name, args)); !errors.Is(err, errRunAwaitingApproval) {
+	if err := orch.dispatchTool(context.Background(), st, toolRequestFrame(callID, name, args)); !errors.Is(err, errRunParked) {
 		t.Fatalf("dispatchTool(%s) error = %v, want the park — a REGISTERED approval_required revision must gate", name, err)
 	}
 }
