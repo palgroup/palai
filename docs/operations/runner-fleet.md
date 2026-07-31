@@ -117,6 +117,12 @@ fleet, and the refusal is recorded in the enrolment journal.
 deliberate — a fleet credential has to be retirable without taking the fleet down — and it means
 decommissioning a compromised machine is **two** calls: the machine (§4) and the key.
 
+**From the console: `/fleet` (§3c of [`console.md`](console.md)).** The key panel mints the value and shows it
+**once**, in one place on the screen, and it survives no reload — the browser mirrors the server, which keeps
+no copy either. Revoking it there opens a confirmation naming the key, its pool and when it was last used, and
+the result **counts the machines it already admitted and names them**, because an operator shown "revoked" and
+nothing else reads it as "removed".
+
 **What the key does not do:** nothing on the enrolment wire attests what the machine *is*. The machine
 STATES its posture and the control plane COMPARES it with the pool's; it cannot verify it. So the key
 catches an operator's mistake, not a lying machine (`FLT-P2`, `FLT-P4`).
@@ -143,6 +149,10 @@ palai pool create --name mac-pool --posture unsandboxed-host --strict   # born w
 palai pool set-strict pool_…  --strict                                  # open an existing pool's
 palai pool set-strict pool_…                                            # and close it again
 ```
+
+**Or from the console.** `/fleet` (§3c of [`console.md`](console.md)) creates the pool with the same posture
+choice, and each pool row carries a **Require approval / Open enrolment** button that is the `PATCH` above.
+Switching a pool strict does **not** re-ask about the machines already in it.
 
 With it **on**, a machine that presents a valid key for that pool:
 
@@ -216,6 +226,12 @@ palai admin runner revoke  rnr_…    # IRREVERSIBLE: sessions cut, in-flight le
 - **Revoking a machine does not revoke the key it holds** (`FLT-P11`). A machine that still has a live pool
   key can enrol again as a new identity. Decommissioning means both calls.
 
+**From the console, and the two ask differently on purpose.** On `/fleet` a **cordon** goes through the
+browser's own confirmation, because a resume undoes it. A **revoke** opens a dialog that first reads
+`GET /v1/runners/{runner_id}` and shows you the machine, its label and **how many leases it is serving right
+now** — the drain question above, answered at the moment you are about to act on it — because an irreversible
+action has to be reviewable and that number is not on the listing. If the read fails, no dialog opens.
+
 ## 5. When there is no machine
 
 A run placed in a pool with **no machine of its tenant** does not fail: it **parks**, costing nothing, and
@@ -250,6 +266,12 @@ says *that*, rather than going quiet and reading as "nothing is waiting".
 
 `palai up` also warns when you have more than one machine and `PALAI_DISPATCH_WORKERS=1`: concurrency is
 bounded by the control plane there, not by the fleet, so the second machine parks and is never reached.
+
+**The console carries the same three facts and one of them only half.** `/fleet` shows the pools, the active
+machines and the waiting room, and it writes `FLT-P15` above all of them. The concurrency warning is the half
+measure: `PALAI_DISPATCH_WORKERS` is read by the control-plane process and is published on **no `/v1` route**,
+so the console shows the notice on the machine count alone and says which half of the condition it could not
+check (`FLC-P7`). `palai up` reads the variable from its own environment; a browser cannot.
 
 ## 7. Where the limits are written down
 

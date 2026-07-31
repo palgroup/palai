@@ -46,12 +46,17 @@ the console. Each step names the screen and the page that goes deeper.
 8. **Publish the revision.** Publishing is what makes a run pinned to it reproducible, and it cannot be
    undone. A draft cannot be pinned: the API answers 409 and the screen says no run and no session were
    created, with no default substituted.
-9. **Set the project's policy** at `/policy` (§3b) — the approver list that decides who may answer a gate,
-   the tool ceiling, and the runner pool the project's runs are placed in. **This form writes the WHOLE
-   policy document**, which is what the API does; see §3b before you use it, because the same is true of
-   `palai admin project set-policy` and there the read-first step is yours.
-10. **Run it** at `/runs`, pinned to that revision. The run's shell commands now see the environment's keys.
-11. **Answer its gates** at `/approvals` (§4), and **read what it did** at `/history`.
+9. **Create the pool the project's runs will be placed in**, if the default is not what you want, at
+   `/fleet` (§3c). A pool is a POSTURE — `sandboxed-linux` or `unsandboxed-host` — and it is decided once,
+   because a machine inherits it at enrolment. Mint its enrolment key there too; the value is shown ONCE.
+   Until E28 T1 there was no way to create a second pool at all, so every deployment had exactly one.
+10. **Set the project's policy** at `/policy` (§3b) — the approver list that decides who may answer a gate,
+   the tool ceiling, and the runner pool (step 9) the project's runs are placed in. **This form writes the
+   WHOLE policy document**, which is what the API does; see §3b before you use it, because the same is true
+   of `palai admin project set-policy` and there the read-first step is yours.
+11. **Run it** at `/runs`, pinned to that revision. The run's shell commands now see the environment's keys.
+12. **Answer its gates** at `/approvals` (§4) — and, if you took a pool strict in step 9, **admit its
+   machines** at `/fleet` (§3c). **Read what it did** at `/history`.
 
 **The two things this path does NOT include, on purpose.** There is no button that tests a model route or
 validates an environment: verifying that a handle has a value behind it means USING the value, which is a run,
@@ -244,6 +249,106 @@ dialog.
 
 ---
 
+## 3c. `/fleet` — pools, keys, machines, and the room a machine waits in
+
+`/fleet` is the console's screen for E24's runner registry plus E28 T1's write half. Before it, **no screen in
+this console mentioned the fleet at all**: `grep -rc "runner-pools\|/v1/runners\|runner_pool"
+apps/web-console/{app,lib,components}` answered 0 in every file, while E24 T6's approve route sat correctly
+written and reachable from nothing.
+
+Four sections, in the order an operator acquires them.
+
+### 1. Pools — and a pool's posture is decided once
+
+A pool is a **posture** plus the shape of machine expected in it. `sandboxed-linux` is a container the control
+plane isolates; `unsandboxed-host` is a real machine, which is what a rented Mac is.
+
+The create form is `POST /v1/runner-pools`. **The posture cannot be changed afterwards and that is
+correctness, not a limitation**: a machine INHERITS its pool's posture when it enrols, so moving a populated
+pool would retroactively change what the machines already in it are. The only field the PATCH route accepts is
+`strict_enrollment`, which the **Require approval / Open enrolment** button on each row switches.
+
+**The `Waiting` column carries a distinction the API is careful about and the screen does not flatten.** It is
+`RunnerGateway.Waiting(pool_id)` — attempts queued for this pool with no free machine — and it is a POINTER on
+the wire:
+
+| What you see | What it means |
+|---|---|
+| `0 queued with no free machine` | The gateway was asked and nothing is waiting. **The pool is keeping up.** |
+| `3 queued with no free machine` | Three runs are parked for want of a machine in this pool. |
+| `— the gateway could not be asked` | This deployment bound **no runner listener**, so nobody counted. This is not zero. |
+
+A console that printed `0` for the third row would tell you an empty Mac pool is healthy.
+
+### 2. Enrolment keys — minted once, and revoked without stopping anything
+
+The key's value is in the mint response **and nowhere else**: the store keeps no copy, so there is no route
+that reads one back. The screen shows it once, in one DOM node, and it survives no reload — the same rule
+`/policy`'s API key follows, for the same reason.
+
+**Revoking a key does not stop the machines it already let in, and the screen counts them.** The revoke
+response carries `enrolled_runners_still_running`, named for what it means, and the confirmation names each
+machine. Revoking is how you stop the NEXT machine. Decommissioning the ones already in is the third section.
+
+### 3. Machines — and there is no health column
+
+`Last seen` is the last time the machine **authenticated** — enrolled, connected, or renewed its certificate.
+**Nothing polls it and nothing expires a row**, so a stale stamp means *"has not authenticated since"*, not
+*"is down"*. There is no `healthy` field on the API and there is no health column on this screen: a badge with
+nothing behind it is worse than a column that is not there, because you would act on it.
+
+**Cordon and revoke ask you differently, and the difference is a published criterion rather than a taste.**
+WCAG 2.2 SC 3.3.4 is satisfied by any ONE of three legs. A cordon satisfies *Reversible* — Resume undoes it —
+so it goes through the browser's own `window.confirm`, which is keyboard-operable, screen-reader-announced and
+focus-trapped for free. A revoke cannot: *a revoked runner identity is decommissioned, not paused*. So it gets
+the *Confirmed* leg, and the word **reviewing** inside that leg is a requirement — the dialog must show what
+is about to die.
+
+**Which is why opening that dialog makes a request.** `active_leases` — how many sessions the machine is
+serving right now — is on `GET /v1/runners/{runner_id}` and **not** on the listing, because it is a live value
+and a page of them would be a page of separate instants presented as one. The dialog is opened from that
+answer, not from the row; if the read fails, no dialog appears and the screen says the machine could not be
+read. `— the gateway could not be asked` appears here too, and means the same thing it means on a pool.
+
+### 4. The waiting room — and why it is here rather than on `/approvals`
+
+A machine that presents a valid key into a pool with strict enrolment waits until a human admits it.
+**Admitting takes the `approve` capability, which `provision` deliberately does not cover** (§3's argument, on
+its other subject: a key that could provision could add itself to the approver list it is about to be checked
+against).
+
+**It is not in `/approvals` and it cannot be.** That queue reads `PendingToolApprovals` and its decision route
+requires a `request_hash`; a machine enrolment has none — there are no arguments, no parked call, and the
+certificate was issued before anybody was asked. Both screens say so and each links to the other.
+
+**Three refusals, three different fixes:**
+
+| Refusal | What happened | What to do |
+|---|---|---|
+| **403 `insufficient_scope`** | The key has no `approve` capability | Mint one that does (§3) and restart the console with it |
+| **403 `approver_not_authorized`** | The key holds `approve`, and the project's `config_policy.approvers` does not name its principal | Add `key:<api_key_id>` on `/policy` |
+| **404** | Not yours, not there, or no longer admissible (cordoned or revoked) — **the three are indistinguishable on purpose** | Re-read the list before concluding which |
+
+### Ceilings, named
+
+- **`FLT-P15`, and it bounds everything else on the page.** A machine in a pool runs a run's **engine**;
+  every tool — shell, files, git — still runs in the control plane's own process. **A Mac does not run
+  `xcodebuild` unless the control plane is on it**, and enrolling more Macs does not change that. Remote
+  execution was deferred and has never shipped. The screen says this above the first panel.
+- **Concurrency is bounded by the control plane, and this console can only check half of that.**
+  `palai up` warns when `PALAI_DISPATCH_WORKERS=1` **and** two or more machines are enrolled. The worker count
+  is read by the control-plane process (`main.go` `dispatchWorkerCount`) and is on **no `/v1` route**, so the
+  console cannot read it: the notice appears on the machine count alone and says which half it could not
+  check. Filed as `FLC-P7`.
+- **`FLT-P4`/`FLT-P12`: with enrolment open, the pool key IS the admission control.** Nothing attests what an
+  enrolling host is — the posture it declares is compared, not verified — so the defences are the key's
+  secrecy and how fast you revoke it.
+- **`FLT-P13`: an admission admits an ENROLMENT, not a machine.** The same Mac asks again after every reboot.
+- **`FLC-P3`: this screen polls nothing.** A machine that starts waiting while the browser is closed is here
+  when you open it, and not before.
+
+---
+
 ## 4. The approval queue — what it decides, and what it does not show
 
 `/approvals` is the console's screen for the surface E23 T9 opened: **`GET /v1/approvals`**, plus
@@ -262,6 +367,11 @@ is approved inside a **live run's event stream** (`/runs`), because the public A
 `API-3`/`API-4` in `known-gaps-1.0.md` have been filed three times and are still unapproved. The page says so in
 a sentence and links to `/runs`, and that sentence is load-bearing: an operator who learns "approvals live here"
 will otherwise miss the ones that do not.
+
+**And a machine waiting to be admitted is not here either.** A strict runner pool holds a new machine until a
+human admits it, and that decision cannot ride this queue: `POST /v1/approvals/{id}/approve` **requires** a
+`request_hash`, and a machine enrolment has none. Those are on `/fleet` (§3c), and both screens name the
+other's.
 
 ### What you are reading when you decide
 
@@ -489,7 +599,7 @@ stale quietly.
 | `N17` | MDN: `new-password` is the token for a NEW secret field — *"to avoid accidentally filling in an existing password"* — and `off` is for *"CAPTCHA or one-time token fields"* | The environment value field is `type="password"` + `autocomplete="new-password"`, uncontrolled, and **paste is not blocked** (WCAG 2.2 SC 3.3.8) |
 | `N18` | [OWASP Secrets Management](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html) §2.7.2 rotation, §2.3 least privilege, §2.6 auditing | Rotation is **closed** (a button on the same route as create). Least privilege is **bounded** (§3, and `CON-P2`). Auditing is **open and filed** (`CON-P3`): no resolve is recorded anywhere |
 | `N20` | `playwright-core@1.51.1` writes its own default down: *"Defaults to `light`."* | A second Playwright project runs the WHOLE spec set in `dark`. Before it, every axe scan this console had ever run looked at one of the two palettes `globals.css` ships — which is how a 2.63:1 skip link, the first Tab stop on every page, stayed green |
-| `N21` | axe-core has **no rule** for SC 1.4.11 (a control's own boundary); Radix Colors guarantees its steps in APCA, not WCAG 2.x | Contrast is measured with WCAG 2.2's own formula against the rendered page, on all 11 routes and both schemes. Radix's published role for step 7 re-measures at 1.53:1, so the step mapping here is ours: step 10 is the first usable control border |
+| `N21` | axe-core has **no rule** for SC 1.4.11 (a control's own boundary); Radix Colors guarantees its steps in APCA, not WCAG 2.x | Contrast is measured with WCAG 2.2's own formula against the rendered page, on every route `lib/routes.ts` declares plus `/login`, in both schemes. It found `button.danger` at 1.55:1 on its first run over `/fleet` Radix's published role for step 7 re-measures at 1.53:1, so the step mapping here is ours: step 10 is the first usable control border |
 
 **One row is deliberately ABSENT.** Whether a browser offers to SAVE a lone `type="password"` field outside a
 login form — and whether `new-password` suppresses that offer — could not be read on any published page. It is
@@ -508,12 +618,14 @@ silence is not a design freedom.
 | The hash generator (stdin, zero dependencies) | `apps/web-console/scripts/hash-password.mjs` |
 | The gated relay | `apps/web-console/app/api/palai/v1/[...path]/route.ts`, `app/api/palai/stream/route.ts` |
 | The approval queue and one parked call | `apps/web-console/app/approvals/page.tsx`, `components/ApprovalRow.tsx` |
+| The policy form, the fleet screen, and the two components they share | `apps/web-console/app/policy/page.tsx`, `app/fleet/page.tsx`, `components/RevealOnce.tsx`, `components/ConfirmDestructive.tsx` |
+| The pool write half, the strict switch and the queue depth | `apps/control-plane/api/runners.go`, `internal/fleet/api.go`, `storage/queries/runners.sql` |
 | The shared approval-screen derivation | `adapters/integrations/slack/approval_display.go` (reached from `apps/control-plane/internal/store/approvals.go`) |
 | The approval routes and the capability | `apps/control-plane/api/approvals.go` |
 | The proofs | `apps/web-console/tests/auth.spec.ts`, `tests/relay-gate.spec.ts`, `tests/public-api-only.spec.ts`, `tests/approval-queue.spec.ts` |
 
-The control plane's public API is **133 method+path pairs over 101 distinct paths** as of `6ddb85ac`
-(2026-07-30), all registered in `apps/control-plane/api/router.go`. The console relays a subset of them and
+The control plane's public API is **135 method+path pairs over 102 distinct paths** as of `e38db20f`
+(2026-07-31), all registered in `apps/control-plane/api/router.go`. The console relays a subset of them and
 can reach no other path.
 
 That number is dated on purpose, with the command that produces it, because it has now gone stale FIVE times

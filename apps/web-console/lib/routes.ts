@@ -86,4 +86,10 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // that can still be a spinner. It is `panel-api-keys` specifically because that collection is non-empty on
   // every stack — a bootstrap seeds the admin key — so the scan meets rendered rows on both profiles.
   { path: "/policy", label: "Policy & keys", readyTestId: "panel-api-keys", lead: "A project's whole configuration policy, and the keys that reach it. Saving here writes the policy document ENTIRELY — the five fields on this screen are what the project will have afterwards, and a value you cannot see is one you did not send." },
+  // E28 T3. The readiness signal is the POOL panel — the first thing on the page, the only collection that is
+  // non-empty on every stack (a tenant is seeded one pool at birth), and the one every section below it
+  // depends on: the key panel picks from it and the machines carry its id. Every other panel here renders its
+  // EMPTY state on a real stack, because nothing in the public API can enrol a machine (DIV-UI-009), and
+  // those empty states are the fleet screen a first-day operator actually meets.
+  { path: "/fleet", label: "Fleet", readyTestId: "panel-runner-pools", lead: "The machines this deployment can place a run on: the pools they join, the keys that let them in, and the ones waiting to be admitted. A machine here runs a run's ENGINE — every tool still runs in the control plane's own process." },
 ];
