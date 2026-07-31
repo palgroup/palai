@@ -34,6 +34,10 @@ type ReconcileStore interface {
 	// only if it parked on the task. A nil observer makes it a no-op, which is the honest reading of a
 	// deployment with no background runner wired.
 	SweepFinishedBackgroundTasks(ctx context.Context, observe coordinator.BackgroundObserver) (int, error)
+	// BackgroundLogRetention is the log garbage sweep's two inputs (E26 T5): the allocation roots that
+	// may hold a background log, and the ids of the tasks still writing to one. The deletion itself is
+	// this package's, because the coordinator owns transactions and not files.
+	BackgroundLogRetention(ctx context.Context) (roots []string, live map[string]bool, err error)
 }
 
 // Reconciler periodically dead-letters jobs whose lease has lapsed and whose attempts
@@ -120,6 +124,16 @@ func (r *Reconciler) Sweep(ctx context.Context) (int, error) {
 	// notification instead of this one, and the exactly-once claim is a row, so nothing is delivered twice.
 	if _, err := r.store.SweepFinishedBackgroundTasks(ctx, r.background); err != nil {
 		return dead, err
+	}
+	// And the GARBAGE (E26 T5): the output file of a task that finished longer ago than
+	// PALAI_BACKGROUND_LOG_TTL. It is gated on the same observer for the same reason the sweep above is —
+	// a deployment that cannot start a background task has no logs to collect — and that gate is also its
+	// one honest ceiling: a deployment that switches background execution OFF stops collecting the logs it
+	// already wrote, which are bounded by what it wrote and are removed with the allocation itself.
+	if r.background != nil {
+		if err := sweepBackgroundLogs(ctx, r.store); err != nil {
+			return dead, err
+		}
 	}
 	return dead, nil
 }

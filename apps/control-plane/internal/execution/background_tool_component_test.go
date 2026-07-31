@@ -629,24 +629,14 @@ func TestBackgroundKillStopsTheProcessGroupAndKillingTwiceIsKillingOnce(t *testi
 //	it, and what is missing is only this control plane's ability to name it again.
 //
 // This is T5's RED, already failing, in the place a reader of T2 will look for it.
-func TestABackgroundTaskCannotBeKilledByIdAfterAControlPlaneRestart(t *testing.T) {
-	h := newBackgroundHarness(t)
-	ticket, pgid := h.spawn(t, "survivor", "sleep 20")
-	taskID, _ := ticket["task_id"].(string)
-
-	// A restarted control plane: the same spine, the same allocation and the same host executor, behind a
-	// NEW orchestrator — which is exactly what survives a restart and what does not.
-	h.orch = nil
-
-	if _, err := h.dispatch(t, "palai.workspace.background_kill", map[string]any{"task_id": taskID}); err == nil {
-		t.Fatal("a restarted control plane resolved a task id whose handle it can only have held in memory; " +
-			"if this now passes, the durable row landed and this ceiling should be deleted rather than relaxed")
-	}
-	if !alive(pgid) {
-		t.Fatalf("process group %d died with the orchestrator that started it: a background task belongs to "+
-			"the RUN, not to the process that spawned it", pgid)
-	}
-}
+// TestABackgroundTaskCannotBeKilledByIdAfterAControlPlaneRestart WAS HERE, and E26 T5 deleted it rather
+// than relaxing it — which is what its own failure message asked for. It pinned T2's honest ceiling: the
+// id -> handle mapping lived in a map built at spawn time, so a restarted control plane could not stop a
+// build it had started. T5 replaced that map with the background_tasks row, and the claim is now the
+// opposite one, proven in background_reaper_component_test.go by
+// TestARestartedControlPlaneAdoptsItsRunningTasksFromTheRowRatherThanFromMemory — against a genuinely
+// second control plane (its own store handle, its own orchestrator, its own executor) rather than a
+// nil-ed field.
 
 // nonBackgroundShellResultKeys is the EXACT key set a shell tool call produced before background
 // execution existed, recorded by running this test against the tree at d634c1a6 (E26 T1's merge, the

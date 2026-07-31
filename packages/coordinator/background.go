@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	statemachines "github.com/palgroup/palai/packages/state-machines"
@@ -96,6 +98,11 @@ type BackgroundTask struct {
 	OutputPath     string
 	EnvKeys        []string
 	AllocationRoot string
+	// DeadlineAt is the WALL CLOCK the reaper enforces (E26 T5, §0.2), and it is the only time anything
+	// here reads. NIL means the operator wrote an explicit `0` and asked for no ceiling; unset is 60
+	// minutes, because the silent case has to be the bounded one — an unbounded background process is the
+	// orphan this epic is named after.
+	DeadlineAt *time.Time
 }
 
 // BackgroundOutcome is what an observer learned about one task from the OPERATING SYSTEM plus the
@@ -180,7 +187,8 @@ func (s *Store) runningBackgroundTasks(ctx context.Context) ([]BackgroundTask, e
 	for rows.Next() {
 		var t BackgroundTask
 		if err := rows.Scan(&t.ID, &t.Tenant.Organization, &t.Tenant.Project, &t.RunID, &t.SessionID,
-			&t.ResponseID, &t.Posture, &t.Handle, &t.OutputPath, &t.EnvKeys, &t.AllocationRoot); err != nil {
+			&t.ResponseID, &t.Posture, &t.Handle, &t.OutputPath, &t.EnvKeys, &t.DeadlineAt,
+			&t.AllocationRoot); err != nil {
 			return nil, fmt.Errorf("scan running background task: %w", err)
 		}
 		out = append(out, t)
@@ -348,6 +356,9 @@ type BackgroundTaskInput struct {
 	Posture    string
 	Handle     string
 	OutputPath string
+	// DeadlineAt is the ceiling the reaper will enforce, computed by the spawning attempt from the
+	// deployment's PALAI_BACKGROUND_MAX_WALL_TIME. NIL is an explicit `0` and means unbounded.
+	DeadlineAt *time.Time
 	// EnvKeys is KEY NAMES, NEVER VALUES (migration 000047). The read path re-resolves them to redact
 	// the log file before a byte reaches the model, which is T6's; a value here would put a credential
 	// in a row a read route will one day return.
@@ -369,8 +380,194 @@ func (s *Store) RecordBackgroundTask(ctx context.Context, tenant Tenant, in Back
 	}
 	if _, err := s.pool.Exec(ctx, storage.Query("InsertBackgroundTask"),
 		in.TaskID, tenant.Organization, tenant.Project, in.RunID, in.SessionID, in.ResponseID,
-		in.ToolCallID, int64(in.Fence), in.Posture, in.Handle, in.OutputPath, keys, nil); err != nil {
+		in.ToolCallID, int64(in.Fence), in.Posture, in.Handle, in.OutputPath, keys, in.DeadlineAt); err != nil {
 		return fmt.Errorf("record background task: %w", err)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------------------------------
+// E26 T5 — the reaper's durable half: the ceilings, the adoption lookups and the settle a KILL performs.
+// ---------------------------------------------------------------------------------------------------
+
+// ErrNoBackgroundTask reports a task id that names no row of the asking run. It is a typed error because
+// its two callers mean different things by it: the kill tool turns it into a refusal a model reads, and
+// nothing else may treat it as "the task is gone".
+var ErrNoBackgroundTask = errors.New("no background task with that id belongs to this run")
+
+// BackgroundKiller ends one task's operating-system object and reports WHICH terminal state that leaves
+// the row in — `killed` when the signal landed, `lost` when the handle could not be proven to be ours.
+//
+// It is a function for the reason BackgroundObserver is one: the coordinator must not learn what a
+// process group or a container id is. It returns the STATE rather than an error to classify, because the
+// vocabulary of background_tasks.state belongs to this package and the meaning of a signal belongs to the
+// adapter — and translating an error into a state at this end would put the two halves of that decision
+// in different packages.
+//
+// A NIL KILLER KILLS NOTHING, and that is the honest reading of a deployment with no background runner
+// wired: it cannot have started a task, so it has none to end.
+type BackgroundKiller func(ctx context.Context, task BackgroundTask) (state string, err error)
+
+// SetBackgroundKiller injects the seam a run CANCELLATION reaches a live process through (E26 T5). A
+// setter rather than a constructor parameter for the reason WithCapacityParkTTL is one: every existing
+// caller compiles unchanged, and the honest default is off.
+func (s *Store) SetBackgroundKiller(kill BackgroundKiller) { s.background = kill }
+
+// CountRunningBackgroundTasks answers the two ceilings of §0.3 FROM THE DATABASE: how many tasks this run
+// has running, and how many are running on this machine at all.
+//
+// It reads under WithSystemScope, which is what makes the second number true. A tenant-scoped count would
+// give every tenant its own twenty and the machine as many as there are tenants; the per-run half is
+// scoped in the predicate instead, so the widened session buys exactly the one fact it has to.
+//
+// THE CEILING IT SERVES IS ENFORCED AND NOT DECLARED, which is the whole point of the query existing:
+// E24 opened `runners.capacity` with a CHECK constraint and no Go expression ever read it (§3.6 D12).
+func (s *Store) CountRunningBackgroundTasks(ctx context.Context, tenant Tenant, runID string) (perRun, perHost int, err error) {
+	if err := s.pool.QueryRow(storage.WithSystemScope(ctx), storage.Query("CountRunningBackgroundTasks"),
+		runID, tenant.Organization, tenant.Project).Scan(&perRun, &perHost); err != nil {
+		return 0, 0, fmt.Errorf("count running background tasks: %w", err)
+	}
+	return perRun, perHost, nil
+}
+
+// BackgroundTaskForRun resolves one task id to the handle that can stop it, refusing an id that belongs
+// to another run.
+//
+// THIS IS ADOPTION. Before it, the mapping lived in a map built at spawn time, so a control plane that
+// restarted could not stop a build it had started — E24 T5's lesson, which this task applies verbatim: an
+// in-memory flag is erased by a restart and a column is not.
+func (s *Store) BackgroundTaskForRun(ctx context.Context, tenant Tenant, runID, taskID string) (BackgroundTask, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	var t BackgroundTask
+	var state string
+	err := s.pool.QueryRow(ctx, storage.Query("BackgroundTaskForRun"), taskID, runID, tenant.Organization, tenant.Project).
+		Scan(&t.ID, &t.Posture, &t.Handle, &t.OutputPath, &state)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return BackgroundTask{}, ErrNoBackgroundTask
+	case err != nil:
+		return BackgroundTask{}, fmt.Errorf("read background task: %w", err)
+	}
+	t.Tenant, t.RunID = tenant, runID
+	return t, nil
+}
+
+// RunningBackgroundTasksOfRun lists one run's live tasks. It answers the park gate's question ("is
+// anything of this run still going") and the cancellation's ("what must I end"), both of which used to be
+// answered by a map that a restart emptied — wrongly in two opposite directions: a run that should have
+// parked did not, and a cancellation killed nothing.
+func (s *Store) RunningBackgroundTasksOfRun(ctx context.Context, tenant Tenant, runID string) ([]BackgroundTask, error) {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	rows, err := s.pool.Query(ctx, storage.Query("RunningBackgroundTasksOfRun"), runID, tenant.Organization, tenant.Project)
+	if err != nil {
+		return nil, fmt.Errorf("select running background tasks of run: %w", err)
+	}
+	defer rows.Close()
+	var out []BackgroundTask
+	for rows.Next() {
+		t := BackgroundTask{Tenant: tenant, RunID: runID}
+		if err := rows.Scan(&t.ID, &t.Posture, &t.Handle, &t.OutputPath); err != nil {
+			return nil, fmt.Errorf("scan running background task of run: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// SettleEndedBackgroundTask records a task THIS CONTROL PLANE ENDED. It is the counterpart of the sweep's
+// claim: that one settles a task we OBSERVED finishing and tells the model; this one settles a task
+// somebody deliberately ended and tells nobody, because whoever ended it already knows.
+//
+// It takes the run lock FIRST, before touching background_tasks, and the order is the point rather than a
+// preference — it is the same order settleBackgroundTask takes, settled before the second writer existed
+// rather than after two loops touched the same rows in opposite orders.
+func (s *Store) SettleEndedBackgroundTask(ctx context.Context, tenant Tenant, runID, taskID, state string) error {
+	ctx = storage.ScopeToTenant(ctx, tenant.Organization, tenant.Project)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin background task settle: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tx.QueryRow(ctx, storage.Query("LockRun"), runID, tenant.Organization, tenant.Project).
+		Scan(new(string), new(*string), new(string)); err != nil {
+		return fmt.Errorf("lock run for background settle: %w", err)
+	}
+	if _, err := tx.Exec(ctx, storage.Query("SettleEndedBackgroundTask"), taskID, tenant.Organization, tenant.Project, state); err != nil {
+		return fmt.Errorf("settle ended background task: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// killRunBackgroundTasks ends every live task of a run and records what that left. It is the answer to
+// §3.6 D10 — "a run cancellation stops running work", which was measured FALSE: CancelRunReconciled drove
+// the run canceled, cancelled its children and finalized the response, and signalled no process anywhere.
+// A backgrounded build survived the cancellation of the run that owned it.
+//
+// THE KILL HAPPENS OUTSIDE ANY TRANSACTION, deliberately. Signalling a process group or asking a daemon
+// to remove a container is an operating-system round trip, and holding a row lock across one would make a
+// wedged Docker socket into a stuck run lock. The rows are settled afterwards, each under the run lock,
+// in the order every other writer in this package takes it.
+//
+// A TASK THAT CANNOT BE KILLED IS LEFT `running` AND THE CANCEL STILL SUCCEEDS. The reaper will meet it
+// again on the next tick, and a cancellation that failed because a Docker socket blinked would leave the
+// run itself un-cancelled, which is strictly worse than one process outliving its run for thirty seconds.
+func (s *Store) killRunBackgroundTasks(ctx context.Context, tenant Tenant, runID string) error {
+	if s.background == nil {
+		return nil
+	}
+	tasks, err := s.RunningBackgroundTasksOfRun(ctx, tenant, runID)
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		state, kerr := s.background(ctx, task)
+		if kerr != nil && state == "" {
+			log.Printf("cancelling run %s: background task %s could not be ended (%v); the reaper will meet it again", runID, task.ID, kerr)
+			continue
+		}
+		if err := s.SettleEndedBackgroundTask(ctx, tenant, runID, task.ID, state); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BackgroundLogRetention is the log sweep's two inputs in one round trip: the allocation roots that may
+// hold a background log, and the ids of the tasks still writing to one.
+//
+// THE ROOTS COME FROM THE ALLOCATIONS RATHER THAN FROM THE TASK HISTORY, and that is what makes the sweep
+// stateless. There is no column marking a log as deleted — E26's one migration is T1's and this task owns
+// none — so a sweep driven by rows would re-examine every task that ever ran, forever. Driven by
+// directories it is self-limiting: a file it deletes is never listed again.
+func (s *Store) BackgroundLogRetention(ctx context.Context) (roots []string, live map[string]bool, err error) {
+	sys := storage.WithSystemScope(ctx)
+	rows, err := s.pool.Query(sys, storage.Query("BackgroundLogRoots"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("select background log roots: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var root string
+		if err := rows.Scan(&root); err != nil {
+			return nil, nil, fmt.Errorf("scan background log root: %w", err)
+		}
+		roots = append(roots, root)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	ids, err := s.pool.Query(sys, storage.Query("RunningBackgroundTaskIDs"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("select running background task ids: %w", err)
+	}
+	defer ids.Close()
+	live = map[string]bool{}
+	for ids.Next() {
+		var id string
+		if err := ids.Scan(&id); err != nil {
+			return nil, nil, fmt.Errorf("scan running background task id: %w", err)
+		}
+		live[id] = true
+	}
+	return roots, live, ids.Err()
 }

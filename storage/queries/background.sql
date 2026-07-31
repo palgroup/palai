@@ -38,9 +38,14 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'running', $11, $12, $13);
 -- An empty root is a legitimate answer (a run with no workspace attached): the sweep then notifies
 -- WITHOUT a tail rather than skipping the notification, because losing an exit is worse than losing an
 -- excerpt.
+--
+-- deadline_at RIDES THIS READ because it is the reaper's only clock (E26 T5, §0.2). It is a column and
+-- not a context for the reason the table exists: a context dies with the process that made it, and the
+-- whole point of a background task is to outlive that process. NULL means the operator asked for no
+-- ceiling and wrote a `0` to say so.
 -- name: RunningBackgroundTasks
 SELECT b.id, b.organization_id, b.project_id, b.run_id, b.session_id, b.response_id,
-       b.posture, b.handle, b.output_path, b.env_keys,
+       b.posture, b.handle, b.output_path, b.env_keys, b.deadline_at,
        COALESCE((
            SELECT a.host_path
            FROM workspace_allocations a
@@ -83,3 +88,75 @@ SET state = CASE WHEN state = 'running' THEN $4 ELSE state END,
     notified_at = clock_timestamp()
 WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND notified_at IS NULL
 RETURNING run_id, session_id, response_id, state, exit_code, output_path;
+
+-- CountRunningBackgroundTasks IS THE CEILING'S ONLY SOURCE OF TRUTH (E26 T5, §0.3), and it counts ROWS
+-- rather than anything this process remembers — E24 opened `runners.capacity` and no Go expression ever
+-- read it, which is the mistake §3.6 D12 names and this query exists not to repeat.
+--
+-- THE HOST COUNT IS DELIBERATELY CROSS-TENANT and the run count deliberately is not. A machine ceiling
+-- that saw only the caller's tenant would let every tenant have twenty and the Mac have as many as there
+-- are tenants; the caller therefore runs this under WithSystemScope, exactly as the reconciler's sweeps
+-- do, and scopes the per-run half in the predicate instead of in the session.
+-- name: CountRunningBackgroundTasks
+SELECT count(*) FILTER (WHERE run_id = $1 AND organization_id = $2 AND project_id = $3) AS per_run,
+       count(*) AS per_host
+FROM background_tasks
+WHERE state = 'running';
+
+-- BackgroundTaskForRun resolves a task id AND enforces that it belongs to the asking run in ONE
+-- statement, so no caller can do the lookup without doing the check. It is what makes a restart
+-- survivable: before it, the id -> handle mapping lived in a map that died with the process that made
+-- it, and a control plane that restarted could no longer stop a build it had started.
+--
+-- It is NOT filtered by state. A kill of a task that already finished must be idempotent (§3.5 P7's
+-- "cancelling twice is idempotent"), and a row filtered out by state would report "no such task" for a
+-- task the model can see in its own transcript.
+-- name: BackgroundTaskForRun
+SELECT id, posture, handle, output_path, state
+FROM background_tasks
+WHERE id = $1 AND run_id = $2 AND organization_id = $3 AND project_id = $4;
+
+-- RunningBackgroundTasksOfRun is the park gate's read (E26 T3) and the cancellation's kill list (T5).
+-- Both used to ask an in-memory map; a map answers wrongly after a restart in two opposite directions —
+-- a run that should park does not, and a cancellation kills nothing.
+-- name: RunningBackgroundTasksOfRun
+SELECT id, posture, handle, output_path
+FROM background_tasks
+WHERE run_id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'running'
+ORDER BY started_at, id;
+
+-- SettleEndedBackgroundTask records a task THIS CONTROL PLANE ENDED — a model's explicit kill or a run
+-- cancellation — as opposed to one it merely observed finishing.
+--
+-- IT STAMPS notified_at AND THAT IS THE POINT. The sweep's exactly-once claim is `notified_at IS NULL`,
+-- so a row left unstamped would be picked up on the next tick and turned into an exit notification for a
+-- task somebody deliberately ended; on a cancelled run that notification has no turn to land in and
+-- would become an orphaned-notice warning an operator has to explain. A kill we performed needs no
+-- notification: the caller that performed it already knows.
+--
+-- `state = 'running'` in the predicate keeps it monotonic: a task the sweep already settled keeps the
+-- answer the probe gave.
+-- name: SettleEndedBackgroundTask
+UPDATE background_tasks
+SET state = $4,
+    finished_at = COALESCE(finished_at, clock_timestamp()),
+    notified_at = COALESCE(notified_at, clock_timestamp())
+WHERE id = $1 AND organization_id = $2 AND project_id = $3 AND state = 'running';
+
+-- BackgroundLogRoots and RunningBackgroundTaskIDs are the log retention sweep's two inputs (E26 T5).
+--
+-- THE ROOTS COME FROM THE ALLOCATIONS AND NOT FROM THE TASK HISTORY, and that is what keeps the sweep
+-- proportional to what is on disk rather than to what has ever run. A DISTINCT over background_tasks
+-- would grow with the table forever; the allocation set is bounded by the workspaces this machine
+-- currently holds, and an allocation that is gone took its logs with it.
+-- name: BackgroundLogRoots
+SELECT DISTINCT host_path
+FROM workspace_allocations
+WHERE state = 'active' AND host_path <> ''
+ORDER BY host_path;
+
+-- The live ids are the sweep's only exclusion, and it is by TASK ID rather than by age: a build that
+-- prints nothing for a day is not a finished build, and truncating its output mid-flight would be worse
+-- than keeping it. The log file is named for the task, so the id is the join.
+-- name: RunningBackgroundTaskIDs
+SELECT id FROM background_tasks WHERE state = 'running' ORDER BY id;

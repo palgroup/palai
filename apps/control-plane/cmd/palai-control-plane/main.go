@@ -675,6 +675,13 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 					// rebuilt here so the probe that decides a task is done is the same one the park gate and
 					// the kill tool use — a second prober would be a second answer to "is it still running".
 					backgroundObserver = orch.BackgroundObserver()
+					// AND THE KILL HALF (E26 T5): cancelling a run must end its live background work.
+					// Before this line CancelRunReconciled drove the run canceled, cancelled its children,
+					// finalized the response and signalled NO PROCESS ANYWHERE (§3.6 D10) — a backgrounded
+					// build outlived the cancellation of the run that owned it. Injected on the spine
+					// rather than passed as an argument because CancelRunReconciled is reached from the
+					// API edge as well as from here, and both must kill.
+					spine.SetBackgroundKiller(orch.BackgroundKiller())
 				}
 			}
 		}
@@ -704,6 +711,15 @@ func startDispatch(ctx context.Context, repo *store.Store, gateway *execution.Ru
 	// deploy/compose/compose.yaml does — builds no reconciler and therefore delivers NO background exit
 	// notification at all. That is a declaration, not a defect, and it is the first paragraph of
 	// docs/operations/background-execution.md.
+	// E26 T5's FOUR CEILINGS take no line here and that is deliberate, but they are NAMED here so an
+	// operator reading the composition root finds them: PALAI_BACKGROUND_MAX_WALL_TIME (60m; `0` is
+	// unbounded and must be written), PALAI_BACKGROUND_MAX_PER_RUN (5), PALAI_BACKGROUND_MAX_PER_HOST (20)
+	// and PALAI_BACKGROUND_LOG_TTL (24h). Three of the four are read at SPAWN time inside the dispatcher
+	// and the fourth on the sweep, each through the function production itself calls
+	// (internal/execution/background.go) — capturing them here instead would have put production's own
+	// defaults out of reach of every test that constructs its own Orchestrator, which is the exact trap
+	// that let a shell wall time be unbounded on the host and refuse every call in the container while
+	// every sandbox test was green. They are documented in docs/operations/background-execution.md.
 	reconciler := execution.NewReconciler(spine, 30*time.Second, retry.MaxAttempts).
 		WithCapacityParkTTL(envDuration("PALAI_FLEET_PARK_TTL")).
 		WithBackgroundTasks(backgroundObserver)

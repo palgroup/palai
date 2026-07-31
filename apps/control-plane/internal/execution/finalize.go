@@ -154,7 +154,7 @@ func (o *Orchestrator) finalize(ctx context.Context, st *attemptState, frame con
 	// exit notification open a NEW response — was refused by §2 for one reason: it is a SECOND waking
 	// path, and this tree has shipped the first one twice (E23 T1, E24 T4) and paid for every divergence
 	// between them. One waking path with an open response beats two with closed ones.
-	if outcome == "completed" && o.runHasLiveBackgroundTask(ctx, string(st.attempt.RunID)) {
+	if outcome == "completed" && o.runHasLiveBackgroundTask(ctx, st.tenant, string(st.attempt.RunID)) {
 		return o.parkRun(ctx, st, statemachines.ResponseCmdRequestTool)
 	}
 

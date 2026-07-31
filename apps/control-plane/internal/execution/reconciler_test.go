@@ -29,6 +29,8 @@ type fakeReclaimer struct {
 	// rather than as a call the caller skipped.
 	backgroundSweeps   int
 	backgroundObserved bool
+	// logRetentionReads counts E26 T5's log garbage passes.
+	logRetentionReads int
 }
 
 func (f *fakeReclaimer) ReclaimExpired(_ context.Context, maxAttempts int) (int, error) {
@@ -66,6 +68,14 @@ func (f *fakeReclaimer) SweepFinishedBackgroundTasks(_ context.Context, observe 
 	f.backgroundSweeps++
 	f.backgroundObserved = observe != nil
 	return 0, nil
+}
+
+// BackgroundLogRetention counts the log garbage sweep's reads (E26 T5). It returns NO roots, so the pass
+// walks nothing: what this fake is for is proving the reconciler asks at all, and the deletion itself is
+// proven against a real filesystem in the component tier.
+func (f *fakeReclaimer) BackgroundLogRetention(context.Context) ([]string, map[string]bool, error) {
+	f.logRetentionReads++
+	return nil, nil, nil
 }
 
 // TestReconcilerSweepsCapacityParksWithTheConfiguredTTL is E24 T5's half of this file. The two assertions

@@ -111,6 +111,10 @@ func newParkFixture(t *testing.T) *parkFixture {
 	f.orch = NewOrchestrator(repo, nil, modelbroker.New(modelbroker.Config{}), toolbroker.New(tools.ShellTool(), tools.FileTool()))
 	f.orch.SetShellRunner(exec)
 	f.orch.SetBackgroundRunner(exec)
+	// AND THE KILL SEAM ON THE SPINE, exactly as startDispatch wires it (E26 T5): cancelling a run reaches
+	// a live process through the coordinator, which must not learn what a process group is. A fixture that
+	// omitted this would prove a cancellation against a store production does not build.
+	cs.SetBackgroundKiller(f.orch.BackgroundKiller())
 	return f
 }
 
