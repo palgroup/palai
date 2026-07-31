@@ -24,8 +24,9 @@ the console. Each step names the screen and the page that goes deeper.
    export `PALAI_CONSOLE_PASSWORD_HASH`. **Without it the console serves nothing** — not a read, not a write,
    not a sign-in (§2). Restart the console after setting it: the hash is read from the process environment.
 2. **Give the console a narrow key.** `palai apikey create --project <prj_id> --scope provision --scope
-   approve` (§3). Skipping this leaves the console holding a key with EVERY capability; the door is shut, the
-   key is not narrow, and `CON-P2` says how far that goes.
+   approve` (§3), or mint it from `/policy` (§3b) — the screen offers the two capabilities by name and says
+   what each opens. Skipping this leaves the console holding a key with EVERY capability; the door is shut,
+   the key is not narrow, and `CON-P2` says how far that goes.
 3. **Sign in** at `/login`, and confirm `/` shows your organization and project. If it shows an error panel
    instead, the console is running but its upstream is not — see §5.
 4. **Create an environment and write its keys** at `/environments`. An environment is a named `KEY=value` set
@@ -45,8 +46,12 @@ the console. Each step names the screen and the page that goes deeper.
 8. **Publish the revision.** Publishing is what makes a run pinned to it reproducible, and it cannot be
    undone. A draft cannot be pinned: the API answers 409 and the screen says no run and no session were
    created, with no default substituted.
-9. **Run it** at `/runs`, pinned to that revision. The run's shell commands now see the environment's keys.
-10. **Answer its gates** at `/approvals` (§4), and **read what it did** at `/history`.
+9. **Set the project's policy** at `/policy` (§3b) — the approver list that decides who may answer a gate,
+   the tool ceiling, and the runner pool the project's runs are placed in. **This form writes the WHOLE
+   policy document**, which is what the API does; see §3b before you use it, because the same is true of
+   `palai admin project set-policy` and there the read-first step is yours.
+10. **Run it** at `/runs`, pinned to that revision. The run's shell commands now see the environment's keys.
+11. **Answer its gates** at `/approvals` (§4), and **read what it did** at `/history`.
 
 **The two things this path does NOT include, on purpose.** There is no button that tests a model route or
 validates an environment: verifying that a handle has a value behind it means USING the value, which is a run,
@@ -157,6 +162,85 @@ tested configuration.
 (`docs/operations/known-gaps-1.0.md`) measured that an unconfigured `config_policy.approvers` **permits every
 principal**. So a key holding `approve` on a project with no configured approvers is not additionally
 constrained by that list.
+
+---
+
+## 3b. `/policy` — the whole policy document, and a key shown once
+
+`/policy` is two halves of one job: the project's `config_policy`, and the API keys that reach it. They are
+one screen because §3's argument above is a sentence about the approver field on this page — a key that could
+provision could add itself to the list it is about to be checked against — and minting the narrow key and
+naming its principal in `approvers` was two tools until now.
+
+### The form writes the WHOLE document, because the API does
+
+**`PATCH /v1/projects/{project_id}` is an ASSIGNMENT, not a merge.** `UpdateProjectPolicy`
+(`apps/control-plane/internal/identity/store.go`) marshals the decoded `configPolicyInput` and hands the bytes
+to `UpdateProjectConfigPolicy`; the four list fields are nil-able, so **a request naming only `pool` stores
+`approvers: null`**. And `HIL-P11` measured that an empty approver list is *permissive*: every principal in
+the project may approve. So the most innocent action an admin console can offer — putting a project on a Mac
+pool — would silently open the approval gate, and your own action would succeed while it happened.
+
+The screen's answer is not a repair, it is a shape: it **reads the current document first**, shows all five
+fields, and **sends all five**. A field you cannot see is a field you did not send, and the page says so above
+the form. Two tests hold it — one asserts the stored document after a pool-only edit still carries the
+approvers, and one asserts the request BODY carried five keys, because a server that merged would let the
+first pass over a form still sending one.
+
+**The same is true of the CLI, and there nothing reads first.** `palai admin project set-policy` sends exactly
+the flags you pass, and its own help says the realistic accident is `--pool` without `--approvers`. If you use
+it, pass every flag you want to keep:
+
+```sh
+palai admin project set-policy prj_local \
+  --allowed-models 'claude-sonnet-5' --allowed-tools 'git.push' --default-tools 'git.push' \
+  --approvers 'key:key_9f2c1d' --pool pool_mac
+```
+
+**An empty approver list is shown as permissive, in words**, right where you would leave it empty. Writing a
+ceiling on screen does not close it; what it prevents is an empty box reading as a locked door.
+
+### A minted key is shown once, and is retrievable from nowhere
+
+`POST /v1/api-keys` returns the plaintext on the create response and on nothing else — `apiKeyView.Key`
+carries `omitempty` and every read leaves it empty. The console mirrors that exactly: the value appears in one
+DOM node, and after you dismiss it, it is in no storage, no URL, no later response body and no part of the
+page. **If you lose it, mint a new one and revoke this one.** There is no reveal control anywhere, because
+there is no route that could feed one.
+
+**The copy button is only there when the browser can offer one.** `Clipboard.writeText` works only in a
+**secure context**, so a console you reach over plain `http://` — which the base compose profile serves, TLS
+being in the `production.yml` overlay — has no clipboard API at all. There the button is not rendered and a
+"select the value and copy it" sentence stands in its place; the value is always selectable and nothing
+blocks a copy. A clipboard refusal is shown with its error name rather than swallowed, and the value stays on
+screen while you read it.
+
+**Selecting no capability mints an UNLIMITED key.** An empty scope set holds *every* capability
+(`Scope.HasScope`), so it is not a key that can do nothing — it is the bootstrap key's power in a new
+credential. The screen says this next to the checkboxes.
+
+### Revoking asks differently from cordoning, and that difference is a criterion
+
+A revoke cannot be undone, so it gets a dialog that **reviews** what is about to die: the key's id, its
+project and its capabilities. That is WCAG 2.2 SC 3.3.4's *Confirmed* leg, which is the only one of the three
+a one-way action can satisfy. Reversible actions — unbinding an environment key, and the fleet's
+cordon/resume — keep the browser's own `window.confirm`, which is keyboard-operable, announced and
+focus-trapped for free. **Do not convert them**: a test drives the environment unbind and counts the native
+dialog.
+
+### Ceilings, named
+
+- **`CON-P2` is not closed by this screen and it says so on the page.** Minting a narrow key here does not
+  narrow the key the console process itself is holding — that one comes from `PALAI_API_KEY`, so narrowing it
+  means restarting the console with a key minted here.
+- **`FLC-P6`: the form is last-writer-wins.** Two operators saving one project inside one read-edit-save
+  window means the second overwrites the first. `PATCH /v1/projects/{project_id}` carries no `If-Match` and
+  the projection publishes no version, so there is nothing to refuse a stale write with.
+- **`FLC-P5`: focus starts on *cancel* in the revoke dialog, and no accessibility requirement is claimed for
+  that.** It is what `window.confirm` already does here, and matching it is how the change claims nothing.
+- **The value passes through the console's Node process once, in memory.** The relay is a pass-through; there
+  is no way for a control plane to hand a browser a credential without crossing the process serving that
+  browser. This is [`environments.md`](environments.md)'s ceiling pointed the other way.
 
 ---
 
