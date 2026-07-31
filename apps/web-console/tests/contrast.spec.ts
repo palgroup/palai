@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { CONSOLE_ROUTES } from "../lib/routes";
-import { announceProfile, signIn } from "./profile";
+import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
+import { announceProfile, concreteDynamicPath, signIn } from "./profile";
 
 // WHAT AXE CANNOT SEE, MEASURED ON THE RENDERED PAGE (console design pass, spec §2.1 / §4.4 / §7).
 //
@@ -132,7 +132,12 @@ const ROUTES = ["/login", ...CONSOLE_ROUTES.map((r) => r.path)];
 
 test("every interactive control carries a 3:1 boundary against the surface behind it (SC 1.4.11)", async ({ page }) => {
   const measured: Boundary[] = [];
-  for (const route of ROUTES) {
+  // The dynamic routes are resolved to concrete paths and swept with the rest (E29). A transcript screen
+  // carries controls no static route does — a row-select per event, the Rendered/Raw pair, a tab strip — and
+  // a compact bordered control is exactly the shape that fails this criterion while looking fine.
+  const dynamic: string[] = [];
+  for (const route of DYNAMIC_CONSOLE_ROUTES) dynamic.push(await concreteDynamicPath(page, route));
+  for (const route of [...ROUTES, ...dynamic]) {
     await page.goto(route);
     // The route's own content, not a spinner: a page still loading renders no controls and would report a
     // clean sweep of nothing. `main` is always present; the controls are what is being counted below.
@@ -149,7 +154,7 @@ test("every interactive control carries a 3:1 boundary against the surface behin
   const worst = [...measured].sort((a, b) => strongest(a) - strongest(b))[0];
   // eslint-disable-next-line no-console -- the numbers ARE the measurement; a bare pass/fail proves nothing.
   console.log(
-    `CONTROL BOUNDARY SWEEP — ${String(measured.length)} control(s) on ${String(ROUTES.length)} route(s), ` +
+    `CONTROL BOUNDARY SWEEP — ${String(measured.length)} control(s) on ${String(ROUTES.length + dynamic.length)} route(s), ` +
       `${String(failing.length)} below 3:1; weakest ${worst.tag}[${worst.testId}] on ${worst.route} at ${String(strongest(worst))}:1`,
   );
   expect(

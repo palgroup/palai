@@ -66,6 +66,11 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // as the overview's own registry strip; model connections, model routes and knowledge bases, which no spec
   // pins to this path, are on /registry where they belong.
   { path: "/", label: "Overview", group: "Overview", readyTestId: "panel-organizations", lead: "What this deployment is running right now — the scope you are in, what it holds, and what is waiting on you." },
+  // E29. FIRST IN "Operate", because a session is the thing every other row on this surface belongs to: a run
+  // has a session, a response has a session, an approval is raised inside one. Until now the console could
+  // list RESPONSES (/history) and had no screen for the container they live in, so "what has this deployment
+  // been asked to do" had no answer and "who asked it twice" had none either.
+  { path: "/sessions", label: "Sessions", group: "Operate", readyTestId: "panel-sessions", lead: "Every conversation this project has held, newest first — what it was called, what it ran, and what it cost." },
   { path: "/runs", label: "Live runs", group: "Operate", readyTestId: "run-button", lead: "Start a run and watch it happen — the canonical event stream as it arrives, the approval it parks on, and whatever it leaves behind." },
   // E25 T4. Its readiness signal is the LIST panel rather than a form, for the same reason "/" uses
   // panel-organizations: the forms on this page render their final markup synchronously (no data feeds them
@@ -130,4 +135,50 @@ export const CONSOLE_ROUTES: readonly ConsoleRoute[] = [
   // first panel and the one that can still be a spinner. All three are empty on a bootstrap stack, so on
   // the real profile this scan covers their empty states.
   { path: "/registry", label: "Model wiring", group: "Govern", readyTestId: "panel-model-connections", lead: "How a model is reached from this deployment: the provider connections, the routes that name them, and the knowledge bases a run can retrieve from. This is a read surface — every row here is created by the API or the CLI." },
+];
+
+/**
+ * A route with a DYNAMIC SEGMENT — a screen keyed by a resource id, which CONSOLE_ROUTES structurally cannot
+ * hold and which was therefore, until now, a page with no accessibility coverage at all.
+ *
+ * THE HOLE IS RECORDED IN THIS FILE'S OWN HISTORY. The E25 T8 comment on `/history` says a `/history/[id]`
+ * row "would be a declared row with no scannable path, which is exactly the unscanned-page hole this file
+ * exists to close", and the conclusion drawn was to avoid dynamic routes entirely — three screens folded onto
+ * one path. That works until a screen genuinely IS a resource: a session transcript is about ONE session, its
+ * breadcrumb names that session, and a query parameter would be the same dynamic segment wearing a disguise.
+ *
+ * So the list is declared, and what it declares is how to MAKE the path concrete: `sampleFrom` is the /v1
+ * collection whose first row fills the segment, and `create` is what to POST when that collection is empty.
+ * tests/a11y.spec.ts resolves each row through the relay and scans the result — and because `create` exists,
+ * an empty collection produces a row rather than a skip. That is the whole point: a deployment with no
+ * sessions must not be a deployment whose transcript screen is silently unscanned.
+ *
+ * These rows are NOT in the sidebar and must not be: a link to one particular session is not navigation.
+ * components/Chrome.tsx reads CONSOLE_ROUTES only, which is why the two lists are separate rather than one
+ * list with a flag.
+ */
+export interface DynamicConsoleRoute {
+  /** The Next route pattern, exactly as the directory declares it — the identity a coverage assertion uses. */
+  pattern: string;
+  /** What this screen is, for a failure message. */
+  label: string;
+  /** The data-testid whose visibility means the page has rendered its content (same contract as above). */
+  readyTestId: string;
+  /** The /v1 collection path (after /v1) whose rows can fill the segment. */
+  sampleFrom: string;
+  /** The body to POST to `sampleFrom` when it holds no row. An empty object is a valid create here. */
+  create: Record<string, unknown>;
+  /** The concrete browser path for one row's id. */
+  build: (id: string) => string;
+}
+
+export const DYNAMIC_CONSOLE_ROUTES: readonly DynamicConsoleRoute[] = [
+  {
+    pattern: "/sessions/[id]",
+    label: "Session transcript",
+    readyTestId: "session-transcript",
+    sampleFrom: "/sessions",
+    create: {},
+    build: (id) => `/sessions/${encodeURIComponent(id)}`,
+  },
 ];

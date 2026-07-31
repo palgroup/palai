@@ -12,6 +12,16 @@ export interface Column<Row> {
    * ordering that makes sense (a set of scopes, a rendered chip) simply does not offer one.
    */
   sort?: (row: Row) => string | number;
+  /**
+   * A NUMERIC column: right-aligned, tabular figures, header included.
+   *
+   * It is the one rule this console took verbatim from a published design system — Shopify Polaris, "Numeric
+   * cells and titles should be right aligned" — and it was unreachable from a caller until now, because the
+   * stylesheet's `td.num` selector needs the class on the CELL and Panel writes every cell itself. A column
+   * of figures that do not share a decimal position cannot be compared by eye, which is the only thing a
+   * column of figures is for.
+   */
+  numeric?: boolean;
 }
 
 /** NameCell is the name-first row identity: the human name leads, the id stays under it, complete.
@@ -99,6 +109,21 @@ interface Page<Row> {
 //                budget list says nothing about whether this deployment caps spending, and on a read-only
 //                screen with no control to change it, a sentence that does not say so is a blank region
 //                with two words on it.
+// AND FOUR MORE IN E29, all so the SESSIONS screen is this component rather than a second table:
+//
+//   action     — the list's own primary action, in the head, at the end of the line. A collection an
+//                operator can CREATE a row in has that control beside its name; a screen that offered no way
+//                to make the first one is what an empty state with no action looks like.
+//   tools      — extra controls in the panel's toolbar, rendered BEFORE the filter box. The session filters
+//                (status, created) are server-side query parameters rather than a narrowing of what is on
+//                screen, so they cannot be the generic filter and must not look like it.
+//                Passing them also LIFTS THE EIGHT-ROW FLOOR: a status filter that narrowed the collection to
+//                three rows would otherwise take its own control off the screen with it, which is a trap
+//                rather than a saving.
+//   filterLabel / filterPlaceholder / matchOn — the generic box matches the whole row as JSON, which is the
+//                right default and the wrong behaviour for a list whose search is scoped to one field. A
+//                caller that says which field it searches gets the box named after it, so the control's
+//                promise and its behaviour are the same thing.
 export function Panel<Row extends Record<string, unknown>>({
   title,
   testId,
@@ -109,6 +134,12 @@ export function Panel<Row extends Record<string, unknown>>({
   onRows,
   selectRows,
   emptyNote,
+  action,
+  tools,
+  filterLabel,
+  filterPlaceholder,
+  matchOn,
+  narrow,
 }: {
   title: string;
   testId: string;
@@ -119,6 +150,20 @@ export function Panel<Row extends Record<string, unknown>>({
   onRows?: (rows: Row[]) => void;
   selectRows?: (body: Record<string, unknown>) => Row[];
   emptyNote?: ReactNode;
+  action?: ReactNode;
+  tools?: ReactNode;
+  filterLabel?: string;
+  filterPlaceholder?: string;
+  matchOn?: (row: Row) => string;
+  /**
+   * An EXTRA client-side predicate, applied with the filter box and counted the same way ("N of M rows").
+   *
+   * It exists for a filter the SERVER cannot do. GET /v1/sessions accepts ?status= and the created_at bounds
+   * and nothing else (api/pagination.go beginList), while `agents` is an aggregate over the session's runs —
+   * so an agent control either narrows what is on screen or does not exist. It narrows, and the row count
+   * says so, which is the same honesty the filter box already carries.
+   */
+  narrow?: (row: Row) => boolean;
 }) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -240,8 +285,9 @@ export function Panel<Row extends Record<string, unknown>>({
   // The filter matches the row AS THE API RETURNED IT rather than as this panel rendered it: a render is a
   // ReactNode and cannot be searched, and matching only the rendered columns would silently fail to find a
   // row by a field that is on the wire but not in this panel's column list. The scope is stated below.
-  const matches = (row: Row) => JSON.stringify(row).toLowerCase().includes(query.trim().toLowerCase());
-  const filtered = query.trim() === "" ? settled : settled.filter(matches);
+  const matches = (row: Row) => (matchOn?.(row) ?? JSON.stringify(row)).toLowerCase().includes(query.trim().toLowerCase());
+  const kept = narrow === undefined ? settled : settled.filter(narrow);
+  const filtered = query.trim() === "" ? kept : kept.filter(matches);
   const ordered =
     order === AS_SERVED
       ? filtered
@@ -260,7 +306,9 @@ export function Panel<Row extends Record<string, unknown>>({
 
   const shown = ordered.length;
   const total = settled.length;
-  const tools = total >= TOOLS_FROM;
+  // A caller that brought its own controls always gets the toolbar: those controls are how the collection was
+  // narrowed in the first place, and hiding them under the eight-row floor would remove the only way back.
+  const showTools = total >= TOOLS_FROM || tools !== undefined;
 
   return (
     <section className="panel" data-testid={testId} aria-labelledby={`${testId}-h`}>
@@ -275,15 +323,17 @@ export function Panel<Row extends Record<string, unknown>>({
             {shown === total ? `${String(total)} ${total === 1 ? "row" : "rows"}` : `${String(shown)} of ${String(total)} rows`}
           </span>
         )}
-        {tools && error === null ? (
-          <div className="panel-tools">
+        {action === undefined ? null : <div className="panel-action">{action}</div>}
+        {showTools && error === null ? (
+          <div className="panel-tools" data-wrap={action === undefined ? undefined : "true"}>
+            {tools}
             <input
               type="search"
               // A visible label on every list toolbar would be six words of chrome per panel; the accessible
               // name names the LIST as well as the action, because "Filter" alone is ambiguous the moment a
               // screen carries four of these.
-              aria-label={`Filter ${title}`}
-              placeholder="Filter…"
+              aria-label={filterLabel ?? `Filter ${title}`}
+              placeholder={filterPlaceholder ?? "Filter…"}
               data-testid={`${testId}-filter`}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -323,7 +373,16 @@ export function Panel<Row extends Record<string, unknown>>({
               was deleted when they have simply mistyped it. */}
           {shown === 0 ? (
             <p className="empty" data-testid={`${testId}-no-match`}>
-              No row here matches <strong>{query}</strong>. {total} {total === 1 ? "row is" : "rows are"} loaded
+              {query.trim() === "" ? (
+                // NARROWED BY A TOOLBAR CONTROL RATHER THAN BY THE BOX, which is a state the message above
+                // could not describe: it named a query, and with `narrow` in play there is none to name.
+                <>No row here matches the filters above.</>
+              ) : (
+                <>
+                  No row here matches <strong>{query}</strong>.
+                </>
+              )}{" "}
+              {total} {total === 1 ? "row is" : "rows are"} loaded
               {truncated ? " and the server has more" : ""}; clear the filter to see them.
             </p>
           ) : (
@@ -331,7 +390,7 @@ export function Panel<Row extends Record<string, unknown>>({
               <thead>
                 <tr>
                   {columns.map((c) => (
-                    <th key={c.header} scope="col">
+                    <th key={c.header} scope="col" className={c.numeric === true ? "num" : undefined}>
                       {c.header}
                     </th>
                   ))}
@@ -341,7 +400,9 @@ export function Panel<Row extends Record<string, unknown>>({
                 {ordered.map((row, i) => (
                   <tr key={String(row.id ?? row.name ?? i)}>
                     {columns.map((c) => (
-                      <td key={c.header}>{c.render(row)}</td>
+                      <td key={c.header} className={c.numeric === true ? "num" : undefined}>
+                        {c.render(row)}
+                      </td>
                     ))}
                   </tr>
                 ))}

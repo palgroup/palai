@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
-import { CONSOLE_ROUTES } from "../lib/routes";
-import { announceProfile, signIn } from "./profile";
+import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
+import { announceProfile, concreteDynamicPath, signIn } from "./profile";
 
 // WORDS THAT ARRIVE GLUED TOGETHER, AND THE COMPILER IS THE ONE DOING IT (console design pass).
 //
@@ -73,7 +73,11 @@ test("no rendered sentence has a space the JSX transform ate", async ({ page }) 
   const runOn: string[] = [];
   let scanned = 0;
   let prose = 0;
-  for (const route of ["/login", ...CONSOLE_ROUTES.map((r) => r.path)]) {
+  // The dynamic routes too (E29): the transcript screen renders more generated copy than any static page —
+  // a caption, an empty state, a chip row — and it is the newest, which is where this transform bites.
+  const dynamic: string[] = [];
+  for (const route of DYNAMIC_CONSOLE_ROUTES) dynamic.push(await concreteDynamicPath(page, route));
+  for (const route of ["/login", ...CONSOLE_ROUTES.map((r) => r.path), ...dynamic]) {
     await page.goto(route);
     await expect(page.locator("main")).toBeVisible();
     await page.waitForLoadState("networkidle");
@@ -94,7 +98,7 @@ test("no rendered sentence has a space the JSX transform ate", async ({ page }) 
   }
   // eslint-disable-next-line no-console -- the volume scanned is what makes "none found" mean anything.
   console.log(
-    `RENDERED COPY SWEEP — ${String(scanned)} characters over ${String(CONSOLE_ROUTES.length + 1)} route(s), ` +
+    `RENDERED COPY SWEEP — ${String(scanned)} characters over ${String(CONSOLE_ROUTES.length + 1 + dynamic.length)} route(s), ` +
       `${String(found.length)} glued; ${String(prose)} prose characters (code excluded), ${String(runOn.length)} run-on`,
   );
   expect(found, "an em dash is touching a word. Every em dash in this console's copy is spaced, so this is a space the JSX transform trimmed away — add an explicit {\" \"}.").toEqual([]);

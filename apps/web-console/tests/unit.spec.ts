@@ -2,6 +2,17 @@ import { test, expect } from "@playwright/test";
 
 import { refusalText } from "../components/ApprovalRow";
 import { SecretField } from "../components/SecretField";
+import {
+  compactTokens,
+  elapsedStamp,
+  eventState,
+  eventSubject,
+  formatDuration,
+  isFailureEvent,
+  LANE_LABEL,
+  positionOf,
+  relativeTime,
+} from "../lib/sessions";
 import { laneFor } from "../lib/timeline";
 
 // The runnable check for the §47.2 lane table: if the mapping drifts (a tool event landing in the model
@@ -123,4 +134,95 @@ test("the approval queue gives every typed refusal its own sentence, and none of
   expect(unknown).toContain("teapot_error");
   expect(unknown).toContain("418");
   expect(unknown).toContain("the server is a teapot");
+});
+
+// THE SESSION SCREENS' DERIVATIONS (E29), driven with no browser.
+//
+// Every value on the two session screens that is not a field verbatim is one of these functions: a relative
+// stamp, a compact token figure, a duration, an elapsed offset, a scrubber position. They live in
+// lib/sessions.ts precisely so they can be driven here — a derivation written inline in JSX is a derivation
+// whose edge cases are only ever exercised by whatever the fixture happens to contain.
+test("relativeTime reads like a list, and a null is an em dash rather than an Invalid Date", () => {
+  const now = Date.parse("2026-07-31T12:00:00Z");
+  expect(relativeTime("2026-07-31T11:59:40Z", now)).toBe("just now");
+  expect(relativeTime("2026-07-31T11:30:00Z", now)).toBe("30 minutes ago");
+  expect(relativeTime("2026-07-31T02:00:00Z", now)).toBe("10 hours ago");
+  expect(relativeTime("2026-07-29T12:00:00Z", now)).toBe("2 days ago");
+  // A session whose row says it never ran, and one whose timestamp is unreadable, are the SAME thing to a
+  // reader — a value that is not there — and neither may render as NaN or "Invalid Date".
+  expect(relativeTime(null, now)).toBe("—");
+  expect(relativeTime("", now)).toBe("—");
+  expect(relativeTime("not a timestamp", now)).toBe("—");
+});
+
+test("compactTokens keeps small counts exact and only abbreviates past a thousand", () => {
+  // 44 and 161 are what a fake-provider run actually meters on this stack; "0.0k" is not a smaller way to
+  // write 44, which is why the cut is at a thousand rather than lower.
+  expect(compactTokens(44)).toBe("44");
+  expect(compactTokens(999)).toBe("999");
+  expect(compactTokens(1000)).toBe("1k");
+  expect(compactTokens(22_500)).toBe("22.5k");
+  expect(compactTokens(1_250_000)).toBe("1.3M");
+});
+
+test("formatDuration distinguishes a session that lasted zero from one that never ran", () => {
+  expect(formatDuration(19_900)).toBe("19.9s");
+  expect(formatDuration(940)).toBe("940ms");
+  expect(formatDuration(124_000)).toBe("2m 04s");
+  expect(formatDuration(4_320_000)).toBe("1h 12m");
+  // THE DISTINCTION session.json spells out: null is "a session with no duration, not one lasting zero".
+  expect(formatDuration(0)).toBe("0ms");
+  expect(formatDuration(null)).toBe("—");
+});
+
+test("elapsedStamp is the transcript's offset column, floored at the journal's first frame", () => {
+  expect(elapsedStamp(0)).toBe("0:00:00");
+  expect(elapsedStamp(4_000)).toBe("0:00:04");
+  expect(elapsedStamp(3_671_000)).toBe("1:01:11");
+  // A frame timestamped before the span's start is a clock disagreement, not a negative elapsed time.
+  expect(elapsedStamp(-5_000)).toBe("0:00:00");
+});
+
+test("positionOf never places a scrubber mark outside its own track", () => {
+  const span = { start: 1000, end: 5000 };
+  expect(positionOf("1970-01-01T00:00:01.000Z", span)).toBe(0);
+  expect(positionOf("1970-01-01T00:00:03.000Z", span)).toBe(50);
+  expect(positionOf("1970-01-01T00:00:05.000Z", span)).toBe(100);
+  // A ZERO-LENGTH SPAN IS THE INTERESTING ONE: every frame of a fast failure shares one timestamp, and a
+  // division by zero would put every mark at `left: NaN%`, which is to say nowhere.
+  expect(positionOf("1970-01-01T00:00:01.000Z", { start: 1000, end: 1000 })).toBe(0);
+  expect(positionOf("", span)).toBe(0);
+  expect(positionOf("1970-01-01T00:00:00.000Z", null)).toBe(0);
+});
+
+test("isFailureEvent is the error pill's predicate — terminal is not the same as failed", () => {
+  expect(isFailureEvent("run.failed.v1")).toBe(true);
+  expect(isFailureEvent("run.canceled.v1")).toBe(true);
+  expect(isFailureEvent("response.timed_out.v1")).toBe(true);
+  expect(isFailureEvent("approval.denied.v1")).toBe(true);
+  // run.completed.v1 IS terminal and is the good outcome; a pill on it would mark every finished run as an
+  // error, which is exactly what "terminal" would have meant if it were the predicate.
+  expect(isFailureEvent("run.completed.v1")).toBe(false);
+  expect(isFailureEvent("model_step.created.v1")).toBe(false);
+});
+
+test("eventSubject reads the identifier a frame carries, and admits when there is none", () => {
+  // The two shapes the live journal actually serves, measured 2026-07-31.
+  expect(eventSubject({ run_id: "run_1", state: "queued" })).toBe("run_1");
+  expect(eventSubject({ model_request_id: "mreq_1", run_id: "run_1" })).toBe("mreq_1");
+  expect(eventState({ run_id: "run_1", state: "queued" })).toBe("queued");
+  expect(eventState({ model_request_id: "mreq_1" })).toBe("");
+  // A frame with nothing to identify gets an empty string, which the cell renders as an em dash. There is no
+  // fallback to a made-up label: "the frame carries no subject" is a fact worth showing.
+  expect(eventSubject({})).toBe("");
+  expect(eventSubject(undefined)).toBe("");
+});
+
+test("every §47.2 lane has a word, so a badge can never render undefined", () => {
+  // A lane laneFor can return with no entry here would render as literally nothing on the transcript's most
+  // repeated element. The keys are compared as a SET rather than spot-checked.
+  const lanes = ["message", "model_step", "tool", "approval", "recovery", "usage", "progress", "terminal"];
+  expect(Object.keys(LANE_LABEL).sort()).toEqual([...lanes].sort());
+  // And no lane wears a speaker's name — the transcript labels lanes, not authors.
+  expect(Object.values(LANE_LABEL).filter((v) => /^(user|assistant|human|system)$/i.test(v))).toEqual([]);
 });
