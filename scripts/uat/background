@@ -23,10 +23,12 @@
 #        e. the reachability sweep over E26's new exported surface, the guard that every component test this
 #           epic added is NAMED in scripts/test/component's -run allow-list, and the guard that every test a
 #           bundle LEDGER names both exists and is selected.
-#     2. the pure-logic halves that need no service: the tool-broker seam's field-for-field pin and the
-#        structural proof that the detached container path builds no options of its own. Both are untagged
-#        and ride `make verify` too — the evidence is stronger for running in both places, and this is the
-#        target that CERTIFIES them.
+#     2. the pure-logic halves that need no service: the tool-broker seam's field-for-field pin, the
+#        structural proof that the detached container path builds no options of its own, and the SSE leg that
+#        keeps a client's stream open across a park. All three are untagged and ride `make verify` too — the
+#        evidence is stronger for running in both places, and this is the target that CERTIFIES them. The
+#        third is here because diffing the journey's leg list against `--- PASS` found this gate naming it
+#        and not running it.
 #     3. evidence-verify RELEASE=background-execution-0.1.0 through the shipped command (0/0/0/0).
 #     4. the automation catalog corpus + the operator-doc corpus. E26 adds a case.yaml and edits
 #        docs/operations/known-gaps-1.0.md, both in owned sets — the re-verify rule this repository learned
@@ -70,6 +72,12 @@ go test -count=1 -v ./tests/uat/background/...
 echo "uat-background: [2/4] the pure-logic halves: the synchronous seam is field-for-field unchanged, and the detached container path builds no options of its own" >&2
 go test -count=1 -v -run 'TestTheSynchronousShellSeamIsFieldForFieldUnchanged' ./packages/tool-broker
 go test -count=1 -v -run 'TestTheDetachedPathBuildsNoContainerOptionsOfItsOwn|TestTheHardenedContainerOptionsAreExactlyThese|TestDockerDriverRunIsByteUnchanged' ./adapters/sandboxes/oci
+# BGT-003's SSE leg, and it is here because DIFFING THE LEG LIST AGAINST `--- PASS` FOUND IT MISSING. The
+# journey names "the event stream stays open across a park" as backing BGT-003; the test is UNTAGGED, so it
+# rides `make verify` and was never absent from the tree — what it was absent from was THIS invocation, which
+# is the invocation that claims it. Read the diff, never the selector: a leg named by a gate that does not run
+# it is the same green as a leg that does not exist.
+go test -count=1 -v -run 'TestTheEventStreamStaysOpenAcrossAParkAndClosesOnATerminal' ./apps/control-plane/api
 
 echo "uat-background: [3/4] evidence-verify RELEASE=background-execution-0.1.0 (want 0 failed / 0 missing / 0 secret)" >&2
 RELEASE=background-execution-0.1.0 scripts/evidence/verify
