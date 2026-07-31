@@ -7,6 +7,7 @@
 package metering_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -321,4 +322,274 @@ func TestLedgerNarrowsBySessionAndMeterAndLeavesTheUnfilteredPageWhole(t *testin
 	if len(none) != 0 {
 		t.Fatalf("a filter for a session that does not exist returned %d rows, want 0 — it was returning other sessions' rows under that session's name", len(none))
 	}
+}
+
+// settleAt is `settle` with an explicit occurred_at. The bucketing tests need to place rows inside
+// KNOWN buckets, which clock_timestamp() cannot do — every row would land in the current hour and the
+// series would be one bucket wide no matter what the SQL did.
+func settleAt(t *testing.T, cs *coordinator.Store, org, project, meter, unit string, quantity float64, at time.Time) {
+	t.Helper()
+	if _, err := cs.Pool().Exec(storage.WithSystemScope(context.Background()),
+		`INSERT INTO usage_ledger (id, organization_id, project_id, run_id, meter, quantity, unit, dedupe_key, occurred_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $1, $8)`,
+		newID("use"), org, project, newID("run"), meter, quantity, unit, at); err != nil {
+		t.Fatalf("settle %s at %s: %v", meter, at, err)
+	}
+}
+
+// seriesPoint mirrors the store's projection for assertion. It is declared in the TEST because the
+// production type is unexported: a test that reached into the package's own struct would pass on a
+// projection whose JSON never rendered, and the JSON is the thing the dashboard consumes.
+type seriesPoint struct {
+	Object      string    `json:"object"`
+	BucketStart time.Time `json:"bucket_start"`
+	Meter       string    `json:"meter"`
+	Unit        string    `json:"unit"`
+	Quantity    float64   `json:"quantity"`
+	Entries     int64     `json:"entries"`
+}
+
+type seriesEnvelope struct {
+	Object string        `json:"object"`
+	Bucket string        `json:"bucket"`
+	Points []seriesPoint `json:"points"`
+}
+
+// TestUsageSeriesBucketsZeroFillsAndOrdersTotally is the whole contract of the chart source in one
+// window, and every clause of it was a way the series could be wrong while looking right:
+//
+//   - BUCKETING: two rows ten minutes apart fall in ONE hourly bucket and are summed. A series that
+//     returned them as two points would draw the same total as two half-height columns.
+//   - ZERO-FILL: the 11:00 bucket has no rows at all and must still appear, at zero, for every meter.
+//     A chart that omits it does not show a gap — it slides 12:00 left and draws continuous spend
+//     across an hour where there was none.
+//   - TOTAL ORDER: three meters share every bucket, so `ORDER BY bucket_start` alone is a PARTIAL order
+//     and the points within a bucket could arrive in any order. The assertion below is the exact
+//     sequence, so an untied ordering is a failure rather than a coin flip.
+//   - SCOPE: a sibling project's row inside the same window must not reach a project-scoped caller,
+//     and MUST reach an org-scoped one. usage_ledger is secured at the ORGANIZATION level (000032), so
+//     the project narrowing is the query's own job — RLS will not catch its absence.
+func TestUsageSeriesBucketsZeroFillsAndOrdersTotally(t *testing.T) {
+	cs := openHarness(t)
+	store := metering.New(cs.Pool())
+	org, projectA, projectB := tenant(t, cs)
+
+	// A fixed instant, not time.Now(): the buckets a series returns must be the same on every run and at
+	// every hour of the day, and a relative seed would make this test's expectations drift with the clock.
+	base := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	settleAt(t, cs, org, projectA, "model.input_tokens", "token", 100, base)
+	settleAt(t, cs, org, projectA, "model.input_tokens", "token", 50, base.Add(10*time.Minute))
+	settleAt(t, cs, org, projectA, "model.output_tokens", "token", 7, base.Add(10*time.Minute))
+	settleAt(t, cs, org, projectA, "run.admitted", "run", 1, base.Add(10*time.Minute))
+	// 11:00 is deliberately EMPTY — the zero-fill is what has to invent it.
+	settleAt(t, cs, org, projectA, "model.input_tokens", "token", 20, base.Add(2*time.Hour))
+	// A sibling project, inside the window, on a meter project A also uses.
+	settleAt(t, cs, org, projectB, "model.input_tokens", "token", 9999, base)
+
+	q := api.UsageSeriesQuery{Bucket: "hour", Start: base, End: base.Add(2 * time.Hour)}
+	got := readSeries(t, store, middleware.Scope{Organization: org, Project: projectA}, q)
+
+	want := []seriesPoint{
+		{BucketStart: base, Meter: "model.input_tokens", Unit: "token", Quantity: 150, Entries: 2},
+		{BucketStart: base, Meter: "model.output_tokens", Unit: "token", Quantity: 7, Entries: 1},
+		{BucketStart: base, Meter: "run.admitted", Unit: "run", Quantity: 1, Entries: 1},
+		{BucketStart: base.Add(time.Hour), Meter: "model.input_tokens", Unit: "token", Quantity: 0, Entries: 0},
+		{BucketStart: base.Add(time.Hour), Meter: "model.output_tokens", Unit: "token", Quantity: 0, Entries: 0},
+		{BucketStart: base.Add(time.Hour), Meter: "run.admitted", Unit: "run", Quantity: 0, Entries: 0},
+		{BucketStart: base.Add(2 * time.Hour), Meter: "model.input_tokens", Unit: "token", Quantity: 20, Entries: 1},
+		{BucketStart: base.Add(2 * time.Hour), Meter: "model.output_tokens", Unit: "token", Quantity: 0, Entries: 0},
+		{BucketStart: base.Add(2 * time.Hour), Meter: "run.admitted", Unit: "run", Quantity: 0, Entries: 0},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("series returned %d points, want %d (3 buckets x 3 meters, zero-filled): %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		g, w := got[i], want[i]
+		if !g.BucketStart.UTC().Equal(w.BucketStart) || g.Meter != w.Meter || g.Unit != w.Unit ||
+			g.Quantity != w.Quantity || g.Entries != w.Entries {
+			t.Fatalf("point %d = %s %s/%s q=%v n=%d, want %s %s/%s q=%v n=%d",
+				i, g.BucketStart.UTC().Format(time.RFC3339), g.Meter, g.Unit, g.Quantity, g.Entries,
+				w.BucketStart.Format(time.RFC3339), w.Meter, w.Unit, w.Quantity, w.Entries)
+		}
+		if g.Object != "usage_series_point" {
+			t.Fatalf("point %d object = %q, want usage_series_point", i, g.Object)
+		}
+	}
+
+	// The org-scoped read of the SAME window sees the sibling project too: 100 + 50 + 9999 in the first
+	// bucket. This is the other half of the narrowing — a scope that is supposed to widen must actually
+	// widen, or the project filter is just broken in the safe direction.
+	orgGot := readSeries(t, store, middleware.Scope{Organization: org}, q)
+	if len(orgGot) == 0 || orgGot[0].Quantity != 10149 {
+		t.Fatalf("org-scoped first bucket = %+v, want model.input_tokens 10149 (both projects)", orgGot)
+	}
+
+	// A meter narrowing collapses the series to one line per bucket and must NOT disturb the buckets:
+	// the same three, still zero-filled.
+	q.Meter = "model.output_tokens"
+	filtered := readSeries(t, store, middleware.Scope{Organization: org, Project: projectA}, q)
+	if len(filtered) != 3 {
+		t.Fatalf("meter-filtered series returned %d points, want 3 (one meter x three buckets): %+v", len(filtered), filtered)
+	}
+	for _, p := range filtered {
+		if p.Meter != "model.output_tokens" {
+			t.Fatalf("meter-filtered series carried %q — a filter that is accepted and ignored returns other meters under this one's name", p.Meter)
+		}
+	}
+}
+
+// TestUsageSeriesEmptyWindowIsAnEmptyChartNotAZeroChart pins the one case the zero-fill deliberately
+// does NOT cover. Buckets are invented for meters PRESENT in the window; a window with no rows has no
+// meters, so it returns no points. The alternative — emitting a zero line for every meter ever seen —
+// would require this table to hold an authoritative meter vocabulary, and it holds only what has been
+// settled. `points` must still be [] rather than null, so a client draws an empty chart rather than
+// crashing on a nil.
+func TestUsageSeriesEmptyWindowIsAnEmptyChartNotAZeroChart(t *testing.T) {
+	cs := openHarness(t)
+	store := metering.New(cs.Pool())
+	org, projectA, _ := tenant(t, cs)
+
+	base := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	settleAt(t, cs, org, projectA, "model.input_tokens", "token", 100, base)
+
+	// A window that ends before the only row exists.
+	out, err := store.UsageSeries(context.Background(), middleware.Scope{Organization: org, Project: projectA},
+		api.UsageSeriesQuery{Bucket: "hour", Start: base.Add(-5 * time.Hour), End: base.Add(-time.Hour)})
+	if err != nil {
+		t.Fatalf("UsageSeries(empty window) error = %v", err)
+	}
+	var env seriesEnvelope
+	mustDecode(t, out.Body, &env)
+	if len(env.Points) != 0 {
+		t.Fatalf("empty window returned %d points, want 0", len(env.Points))
+	}
+	if !bytes.Contains(out.Body, []byte(`"points":[]`)) {
+		t.Fatalf("empty series rendered %s, want an empty ARRAY — a null points field makes every client special-case it", out.Body)
+	}
+}
+
+// TestUsageSeriesDayBucketsTruncateInUTCNotTheSessionTimezone is the reason UsageSeries calls the
+// three-argument date_trunc. The two-argument form truncates a timestamptz in the SESSION's TimeZone,
+// so a connection that inherited a non-UTC timezone would put the SAME instant in a different day —
+// silently re-slicing every chart, with no error and no wrong-looking number to notice.
+//
+// The test sets the session timezone to one far from UTC and asserts the day boundary does not move.
+// It is the shape this repository keeps finding: the behaviour depends on ambient configuration, so
+// reading the query proves nothing and only running it under the other configuration does.
+func TestUsageSeriesDayBucketsTruncateInUTCNotTheSessionTimezone(t *testing.T) {
+	cs := openHarness(t)
+	ctx := context.Background()
+	store := metering.New(cs.Pool())
+	org, projectA, _ := tenant(t, cs)
+
+	// 22:30 UTC on the 30th is already the 31st in Asia/Kathmandu (+05:45) and still the 30th in UTC.
+	at := time.Date(2026, 7, 30, 22, 30, 0, 0, time.UTC)
+	settleAt(t, cs, org, projectA, "model.input_tokens", "token", 5, at)
+
+	if _, err := cs.Pool().Exec(storage.WithSystemScope(ctx), `SET TIME ZONE 'Asia/Kathmandu'`); err != nil {
+		t.Fatalf("SET TIME ZONE: %v", err)
+	}
+	t.Cleanup(func() { _, _ = cs.Pool().Exec(storage.WithSystemScope(ctx), `SET TIME ZONE 'UTC'`) })
+
+	got := readSeries(t, store, middleware.Scope{Organization: org, Project: projectA},
+		api.UsageSeriesQuery{Bucket: "day", Start: at.Add(-24 * time.Hour), End: at.Add(time.Hour)})
+	for _, p := range got {
+		if p.Quantity == 0 {
+			continue
+		}
+		if want := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC); !p.BucketStart.UTC().Equal(want) {
+			t.Fatalf("22:30Z landed in the %s bucket, want %s — date_trunc followed the session timezone",
+				p.BucketStart.UTC().Format(time.RFC3339), want.Format(time.RFC3339))
+		}
+	}
+}
+
+func readSeries(t *testing.T, store *metering.Store, scope middleware.Scope, q api.UsageSeriesQuery) []seriesPoint {
+	t.Helper()
+	out, err := store.UsageSeries(context.Background(), scope, q)
+	if err != nil {
+		t.Fatalf("UsageSeries error = %v", err)
+	}
+	var env seriesEnvelope
+	mustDecode(t, out.Body, &env)
+	if env.Object != "usage_series" {
+		t.Fatalf("series object = %q, want usage_series", env.Object)
+	}
+	return env.Points
+}
+
+// TestUsageSeriesOrdersTotallyWithinABucket is the test that PINS the (meter, unit) tiebreaker, and it
+// exists as its own case because the obvious version of it does not work.
+//
+// `ORDER BY bucket_start` alone is a PARTIAL order here: grouping by meter puts one row per meter in
+// every bucket, so the sort key repeats and the rows within a bucket may arrive in any order at all. A
+// chart drawn from that interleaves its series.
+//
+// THE TRAP, MEASURED (2026-07-31), because the obvious test does NOT catch this. Deleting
+// `, p.meter, p.unit` from the ORDER BY and running the whole suite left every case GREEN — first with
+// the three meters the bucketing test seeds, then again with the eight below. The rows come back sorted
+// anyway, and the reason is the PLAN, not the query: the LEFT JOIN's key is (bucket_start, meter, unit),
+// so when the planner chooses a merge join it sorts both inputs on exactly that triple and the output is
+// incidentally ordered. Take that plan away and the accident disappears:
+//
+//	-- same untied query, 8 meters in one bucket
+//	ORDER BY bucket_start                      -> a.alpha | b.beta | m.mid | model.input_tokens | ...
+//	SET enable_mergejoin=off; ORDER BY bucket_start
+//	                                           -> b.beta | model.input_tokens | ... | z.omega | a.alpha
+//	SET enable_mergejoin=off; ORDER BY bucket_start, meter, unit
+//	                                           -> a.alpha | b.beta | m.mid | model.input_tokens | ...
+//
+// So the untied form is correct only for as long as the planner keeps choosing a sorting join — which
+// it decides from row-count estimates that change as a tenant's ledger grows. That is precisely a
+// partial order that looks total in the small. This test therefore asserts the sequence under BOTH
+// plans: the default one, and one where the sorting join is unavailable. The second leg is what makes
+// the mutation fail, and disabling a join strategy is not a fabricated configuration — it is one of the
+// plans the planner is free to pick on its own.
+func TestUsageSeriesOrdersTotallyWithinABucket(t *testing.T) {
+	cs := openHarness(t)
+	store := metering.New(cs.Pool())
+	org, projectA, _ := tenant(t, cs)
+
+	base := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
+	// Eight meters in ONE bucket. The names are deliberately not the four the coordinator settles: the
+	// meter column is free text and this test is about the ORDER of whatever is there, not the
+	// vocabulary. They are chosen so hash order and sorted order visibly disagree (see above).
+	seeded := []struct{ meter, unit string }{
+		{"z.omega", "x"}, {"model.output_tokens", "token"}, {"a.alpha", "x"}, {"run.admitted", "run"},
+		{"m.mid", "x"}, {"model.input_tokens", "token"}, {"step.interrupted", "step"}, {"b.beta", "x"},
+	}
+	for i, s := range seeded {
+		settleAt(t, cs, org, projectA, s.meter, s.unit, float64(i+1), base.Add(time.Duration(i)*time.Minute))
+	}
+
+	q := api.UsageSeriesQuery{Bucket: "hour", Start: base, End: base.Add(30 * time.Minute)}
+	want := []string{
+		"a.alpha", "b.beta", "m.mid", "model.input_tokens",
+		"model.output_tokens", "run.admitted", "step.interrupted", "z.omega",
+	}
+	assertOrder := func(plan string) {
+		got := readSeries(t, store, middleware.Scope{Organization: org, Project: projectA}, q)
+		if len(got) != len(want) {
+			t.Fatalf("[%s] one bucket returned %d points, want %d (eight meters in a single bucket)", plan, len(got), len(want))
+		}
+		for i := range want {
+			if got[i].Meter != want[i] {
+				order := make([]string, len(got))
+				for j, p := range got {
+					order[j] = p.Meter
+				}
+				t.Fatalf("[%s] point %d = %q, want %q — the within-bucket order is untied.\n got: %v\nwant: %v",
+					plan, i, got[i].Meter, want[i], order, want)
+			}
+		}
+	}
+	assertOrder("default plan")
+
+	// Now take away the sorting join, so the ordering can only come from the ORDER BY itself.
+	ctx := storage.WithSystemScope(context.Background())
+	if _, err := cs.Pool().Exec(ctx, `SET enable_mergejoin = off`); err != nil {
+		t.Fatalf("SET enable_mergejoin: %v", err)
+	}
+	t.Cleanup(func() { _, _ = cs.Pool().Exec(ctx, `SET enable_mergejoin = on`) })
+	assertOrder("merge join disabled")
 }
