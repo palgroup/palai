@@ -56,9 +56,19 @@ fallback to "the nearest free machine". Structurally, each pool is its own queue
 cannot be reached by a run in pool B at all.
 
 ```bash
+palai pool create --name mac-pool --posture unsandboxed-host --os darwin --arch arm64
+palai pool list                    # every pool: posture, shape, strict mode, queue depth
 palai admin runner list            # every machine: pool, state, last seen
-curl -H "Authorization: Bearer $PALAI_API_KEY" $PALAI_BASE_URL/v1/runner-pools
 ```
+
+**A pool's posture is fixed when you create it, and that is deliberate.** A machine **inherits** its pool's
+posture when it enrols, so changing a populated pool's posture would retroactively change what the machines
+already in it *are*. If you need a different posture, create a different pool.
+
+`palai pool list` also prints **`waiting`** — how many runs are queued for that pool with no machine free to
+take them. It is the answer to *"why is nothing running in my Mac pool"*, and until now there was none.
+`waiting` is **absent** rather than `0` when the control plane has no runner listener bound: *"nobody could
+ask"* and *"nothing is waiting"* are different answers.
 
 Which pool a project's runs go to is `config_policy.pool`:
 
@@ -78,9 +88,14 @@ Resolution order, highest first: the run's own recorded pool (so a resumed run r
 posture) → the agent revision's binding → the project policy → the tenant's own pool named `default`.
 The second of those has nowhere to read from yet (`FLT-P3` in [known-gaps-1.0.md](known-gaps-1.0.md)).
 
-**Creating a pool is not a public route.** The API reads pools; it does not create them. A tenant gets one
-`default` pool when it is created, and a second pool is an `INSERT INTO runner_pools` on the control-plane
-host today.
+**Creating a pool IS a public route** — `POST /v1/runner-pools`, which `palai pool create` fronts. This
+paragraph used to say the opposite, and it was true: until E28 the API only read pools, a tenant got exactly
+one `default` pool at birth, and a second one meant raw SQL on the control-plane host. Two code comments had
+handed the work to "T5/T6" and both of those shipped without it.
+
+**Deleting a pool is still not a route**, deliberately: `runner_pool_keys` cascades from `runner_pools`, so
+deleting a pool would silently delete its enrolment keys, and what should become of the machines whose
+`pool_id` names it is a separate decision. Nothing has asked for it.
 
 ## 2. Enrolment: one key per pool
 
@@ -116,6 +131,18 @@ in a pool that scales on demand cancels the scaling: a rented Mac takes 6–20 m
 operator who added capacity to absorb load would find it parked behind an approval queue. So the default
 is off, everywhere — the bootstrap pool, every new organization's `default` pool, and every pool that
 existed before the column did.
+
+**It can now be turned on, which until E28 it could not.** The column has existed since `000045` and the
+waiting room since E24 T6, but nothing wrote it: the only statement that created a pool wrote `false` as a
+literal and there was no `UPDATE` anywhere, so the only two places that ever set it were two test files
+issuing raw SQL. The approve route below therefore decided a state no operator could reach. Two commands
+reach it now:
+
+```bash
+palai pool create --name mac-pool --posture unsandboxed-host --strict   # born with the waiting room open
+palai pool set-strict pool_…  --strict                                  # open an existing pool's
+palai pool set-strict pool_…                                            # and close it again
+```
 
 With it **on**, a machine that presents a valid key for that pool:
 
@@ -238,7 +265,7 @@ with the measurement that produced it. The three worth reading before you rely o
 - **`FLT-P2`** — the posture a machine declares is compared with the pool's and never verified. There is
   no attestation on this wire.
 
-And one that will cost you time rather than safety: **`FLT-P14`** — nothing reports how many runs are queued
-for a pool with no free machine. The count exists inside the gateway and no surface reads it, so the question
-§5 tells you to ask ("why is nothing running in my Mac pool") has no answer you can query. Until that row is
-closed, the answer is `GET /v1/runners` for that pool and `state` on each machine.
+And one that used to cost you time and no longer does: **`FLT-P14`** is **closed**. How many runs are queued
+for a pool with no free machine is the `waiting` field on `palai pool list` / `GET /v1/runner-pools` (§1). The
+count had existed inside the gateway since E24 and no surface read it, so the question §5 tells you to ask —
+*"why is nothing running in my Mac pool"* — had no answer you could query.

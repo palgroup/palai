@@ -111,6 +111,7 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 	environment := newID("env")
 	tool, toolRevision, setRevision := newID("tool"), newID("trev"), newID("tsrev")
 	toolCall, backgroundTask := newID("call"), newID("bgt")
+	runnerPool := newID("pool")
 	stmts := []struct {
 		sql  string
 		args []any
@@ -170,6 +171,20 @@ func (s *suite) seedTenant(t *testing.T, org string) {
 		    posture, handle, state, output_path)
 		  VALUES ($1,$2,$3,$4,$5,$6,$7,'unsandboxed-host','4242:2026-07-30T12:00:00Z','running','.palai-session/bg/'||$1||'.log')`,
 			[]any{backgroundTask, org, project, run, session, response, toolCall}},
+		// The E28 T1 pool (000045, PROJECT-scoped). The table has been tenant-policied since E24 and the
+		// catalogue sweeps have covered it since — but only VACUOUSLY, because nothing seeded a row: E24's
+		// surface was read-only and every pool in this corpus's database belonged to nobody in it.
+		//
+		// WHAT MAKES IT WORTH A ROW NOW. T1 opened `POST /v1/runner-pools` and
+		// `PATCH /v1/runner-pools/{pool_id}`, so a pool is a thing an operator CREATES and MUTATES rather than
+		// a row a migration seeded. `posture` decides WHERE a tenant's runs execute and `strict_enrollment`
+		// decides whether a machine joining that pool needs a human — so a cross-tenant read of this row hands
+		// one tenant the name of another's Mac pool, and a cross-tenant write places another tenant's runs on
+		// hardware they did not choose or opens their waiting room. The canary below is what has something to
+		// fail on; TestForeignPoolWriteAndUpdateAreRejected is the write half.
+		{`INSERT INTO runner_pools (id, organization_id, project_id, name, posture, os, arch, strict_enrollment)
+		  VALUES ($1,$2,$3,'mac-pool','unsandboxed-host','darwin','arm64',true)`,
+			[]any{runnerPool, org, project}},
 	}
 	for _, stmt := range stmts {
 		if _, err := s.owner.Exec(ctx, stmt.sql, stmt.args...); err != nil {
@@ -205,7 +220,7 @@ func (s *suite) asOrg(t *testing.T, org string, fn func(tx pgx.Tx)) {
 func TestWhereLessQueryIsRejectedByTheDatabase(t *testing.T) {
 	s := newSuite(t)
 	for _, table := range []string{"runs", "responses", "sessions", "projects", "artifacts", "environments", "environment_values",
-		"tools", "tool_revisions", "tool_set_revisions", "background_tasks"} {
+		"tools", "tool_revisions", "tool_set_revisions", "background_tasks", "runner_pools"} {
 		s.asOrg(t, s.orgA, func(tx pgx.Tx) {
 			var foreign int
 			// The only predicate names the OTHER tenant: the query asks for exactly the rows the
@@ -261,6 +276,59 @@ func TestForeignWriteIsRejected(t *testing.T) {
 			t.Fatalf("insert failed with SQLSTATE %q, want 42501 (insufficient_privilege from the RLS policy): %v", code, err)
 		}
 	})
+}
+
+// TestForeignPoolWriteAndUpdateAreRejected is E28 T1's two new write paths at the layer beneath them.
+//
+// The routes carry an organization/project predicate in their SQL and the handler takes the tenant from
+// the verified bearer scope — and that is exactly the kind of claim this corpus exists to distrust. So the
+// WITH CHECK half is asked about `POST /v1/runner-pools`'s statement (a pool planted in another
+// organization) and the USING half about `PATCH /v1/runner-pools/{pool_id}`'s (a foreign pool's waiting
+// room opened), both issued directly on the runtime role.
+//
+// THE UPDATE IS ASSERTED BY ROW COUNT RATHER THAN BY AN ERROR, and the difference is the whole reason it is
+// written out: RLS does not REFUSE a foreign UPDATE, it makes the row invisible, so the statement succeeds
+// and touches nothing. A test that only checked for an error would have passed on a build where the policy
+// was dropped entirely — and the row would have been rewritten.
+func TestForeignPoolWriteAndUpdateAreRejected(t *testing.T) {
+	s := newSuite(t)
+	ctx := context.Background()
+	s.asOrg(t, s.orgA, func(tx pgx.Tx) {
+		var foreignProject string
+		if err := s.owner.QueryRow(ctx, `SELECT id FROM projects WHERE organization_id = $1`, s.orgB).Scan(&foreignProject); err != nil {
+			t.Fatalf("read the foreign tenant's project: %v", err)
+		}
+		_, err := tx.Exec(ctx,
+			`INSERT INTO runner_pools (id, organization_id, project_id, name, posture) VALUES ($1,$2,$3,'planted','unsandboxed-host')`,
+			newID("pool"), s.orgB, foreignProject)
+		if err == nil {
+			t.Fatal("a pool was planted in the foreign organization: a create that lands in another tenant places their runs on hardware they did not choose")
+		}
+		if code := sqlState(err); code != "42501" {
+			t.Fatalf("the foreign pool insert failed with SQLSTATE %q, want 42501: %v", code, err)
+		}
+	})
+	// A SECOND TRANSACTION, because the refused INSERT above aborted the first one: a follow-up statement in
+	// an aborted transaction comes back 25P02, which would have been an "error" this test could have read as
+	// a refusal it never actually made.
+	s.asOrg(t, s.orgA, func(tx pgx.Tx) {
+		tag, err := tx.Exec(ctx, `UPDATE runner_pools SET strict_enrollment = false WHERE organization_id = $1`, s.orgB)
+		if err != nil {
+			t.Fatalf("the foreign pool update errored rather than matching nothing: %v", err)
+		}
+		if tag.RowsAffected() != 0 {
+			t.Fatalf("a PATCH-shaped UPDATE touched %d row(s) of the foreign tenant; the waiting room of somebody else's Mac pool was closed", tag.RowsAffected())
+		}
+	})
+	// The row the foreign tenant owns is unchanged, read as the OWNER so the check is not itself confined by
+	// the policy it is checking.
+	var strict bool
+	if err := s.owner.QueryRow(ctx, `SELECT strict_enrollment FROM runner_pools WHERE organization_id = $1`, s.orgB).Scan(&strict); err != nil {
+		t.Fatalf("re-read the foreign tenant's pool: %v", err)
+	}
+	if !strict {
+		t.Fatal("the foreign tenant's pool is no longer strict; the UPDATE matched nothing and the row changed anyway")
+	}
 }
 
 // TestRuntimeRoleIsNotTheTableOwner keeps the corpus honest: RLS is silently inert for a superuser or
