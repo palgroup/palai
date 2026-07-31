@@ -46,7 +46,11 @@ func (h *hookHandler) createHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := h.hooks.CreateHook(r.Context(), scope, raw)
-	h.write(w, r, out, err, http.StatusCreated, "/v1/hooks/")
+	// No Location: `/v1/hooks/<id>` is not mounted — the family has POST and POST-disable and not one GET
+	// (E29 T2). The store side of the read already exists and is tested against a real Postgres; what is
+	// missing is a method on HookAPI and a handler, and that is the task that opens the hooks read half.
+	// When GET /v1/hooks/{id} lands, this header comes back with it and the guard accepts it.
+	h.write(w, r, out, err, http.StatusCreated, "")
 }
 
 // disableHook flips a hook's admin kill-switch (POST /v1/hooks/{id}/disable). A disabled hook never fires.

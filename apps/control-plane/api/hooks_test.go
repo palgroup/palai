@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/palgroup/palai/apps/control-plane/api/middleware"
@@ -33,7 +34,8 @@ func hookTestServer(t *testing.T, reg *fakeHookRegistry) string {
 	return srv.URL
 }
 
-// TestHookManagementSurface pins the ADMIN routes (spec §28.17): a valid create is a 201 with a Location; the
+// TestHookManagementSurface pins the ADMIN routes (spec §28.17): a valid create is a 201 carrying the minted
+// id and NO Location (E29 T2 — the family mounts no GET to address); the
 // disable action is a 200; an unknown point / out-of-matrix pair / inline secret is a 400; a name collision is
 // a 409; an unknown hook disable is a 404. There is deliberately no model-facing surface here — these are
 // admin routes only.
@@ -48,8 +50,16 @@ func TestHookManagementSurface(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create hook status = %d, want 201", resp.StatusCode)
 	}
-	if loc := resp.Header.Get("Location"); loc != "/v1/hooks/hook_1" {
-		t.Fatalf("create Location = %q, want /v1/hooks/hook_1", loc)
+	// No Location, and this is the THIRD test that pinned an address nothing served (E29 T2). The hooks
+	// family mounts POST and POST-disable and not one GET, so "/v1/hooks/hook_1" was a header a client could
+	// only follow into a 404 — and the assert was green for it, because it proved the header was WRITTEN.
+	// The read half is a later task's work and it is genuinely close (the store method exists and is tested
+	// against a real Postgres); when GET /v1/hooks/{id} lands, the header comes back with it.
+	if loc := resp.Header.Get("Location"); loc != "" {
+		t.Fatalf("create Location = %q, want none: /v1/hooks/{id} is not mounted, so any address here is one a client cannot follow", loc)
+	}
+	if body := readBody(t, resp); !strings.Contains(body, `"hook_1"`) {
+		t.Fatalf("create hook body = %s, want the minted id — dropping the Location must not drop the only way to learn it", body)
 	}
 
 	if resp := do(t, "POST", base+"/v1/hooks/hook_1/disable", ``, nil); resp.StatusCode != http.StatusOK {

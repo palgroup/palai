@@ -116,7 +116,12 @@ func (h *webhookHandler) createEndpoint(w http.ResponseWriter, r *http.Request) 
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")
 		return
 	}
-	w.Header().Set("Location", "/v1/webhook-endpoints/"+id)
+	// No Location: `/v1/webhook-endpoints/<id>` is not mounted, so following the header 404'd (E29 T2).
+	// This one is a header removed under protest — the family SHOULD have a singular read, and the comment
+	// six lines above depends on something stronger still ("a duplicate endpoint is operator-visible +
+	// deletable" is the stated reason this create takes no Idempotency-Key, and nothing in the tree deletes
+	// or disables an endpoint). Both belong to the task that opens GET and DELETE on this family; when the
+	// route lands, this header comes back with it and the guard accepts it.
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 

@@ -42,7 +42,12 @@ func (h *skillHandler) createSkill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := h.skills.CreateSkill(r.Context(), scope, raw)
-	h.write(w, r, out, err, http.StatusCreated, "/v1/skills/")
+	// No Location: `/v1/skills/<id>` is not mounted — the family has a LIST and no singular read (E29 T2).
+	// Mounting one was considered and deferred rather than done here, because it would serve the list's
+	// three-field projection ({id, object, name}: no revision id, no enabled bit, no digest) and a singular
+	// read that answers none of the questions a caller has is a second thing to fix later. The projection and
+	// the route belong in one change. The minted id is in the 201 body.
+	h.write(w, r, out, err, http.StatusCreated, "")
 }
 
 // installRevision installs a revision by URL (POST /v1/skills/{skill_id}/revisions). The body carries
@@ -54,7 +59,11 @@ func (h *skillHandler) installRevision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := h.skills.InstallSkillRevision(r.Context(), scope, r.PathValue("skill_id"), raw)
-	h.write(w, r, out, err, http.StatusCreated, "/v1/skill-revisions/")
+	// No Location: `/v1/skill-revisions/` is the exact twin of the `/v1/tool-revisions/` case router.go
+	// describes — a prefix NO epic ever mounted, named in a 201 since the family shipped (E29 T2). The
+	// revision id this returns is load-bearing (enable takes it) and the 201 body is the only place it has
+	// ever existed; that is a real read gap, and it is not fixed by pointing at an address that 404s.
+	h.write(w, r, out, err, http.StatusCreated, "")
 }
 
 // enableRevision enables an approved revision (POST /v1/skills/{skill_id}/revisions/{revision_id}/enable).

@@ -38,6 +38,24 @@ SELECT id, name, kind, direction, capacity, visibility_seconds, max_deliveries, 
  ORDER BY created_at DESC, id DESC
  LIMIT $7;
 
+-- GetQueueConnectionItem is the SINGULAR read of the same admin projection ListQueueConnections returns —
+-- the address POST /v1/queue-connections has named in its 201 Location since the family shipped, and which
+-- nothing served until E29 T2. The column list is deliberately IDENTICAL to the list's, and the store scans
+-- both through one function so the two cannot drift into disagreeing about what a connection is; the
+-- non-secret argument the list states applies unchanged (config carries the run target, never a credential:
+-- secret material lives in secret_refs). The org/project predicate is defence in depth behind RLS.
+--
+-- It needs no ORDER BY and takes no LIMIT, and that is a MEASUREMENT rather than an omission: `id` is
+-- `id TEXT PRIMARY KEY` (000037_queues.up.sql:22), globally unique and not per-tenant, so `WHERE id = $1`
+-- matches at most one row whatever the other predicates say. The store therefore reads a single row without
+-- an ambiguity refusal. If that key ever becomes per-tenant, this becomes the third-generation form of the
+-- `LIMIT 1`-without-a-total-ORDER-BY bug — one tenant squatting another's id — and the store must gain a
+-- refuse-the-second-row check at the same commit.
+-- name: GetQueueConnectionItem
+SELECT id, name, kind, direction, capacity, visibility_seconds, max_deliveries, enabled, config, created_at
+  FROM queue_connections
+ WHERE id = $1 AND organization_id = $2 AND project_id = $3;
+
 -- QueueRunPrincipalInScope confirms the principal named by an inbound connection's config belongs to the
 -- connection's OWN org/project (the SlackRunPrincipalInScope twin, kept as its own name so the queue bridge
 -- does not read a query the Slack surface owns). Without it a project admin could name a FOREIGN principal

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,6 +33,20 @@ import (
 // closures are "mount the route" and "delete the header" and both of them make this guard pass on
 // their own. The header's ABSENCE is honest; its presence pointing nowhere is a lie. secret_refs.go:99
 // is the shipped precedent — a resource addressed by name writes no Location and says why.
+//
+// RFC 9110 (June 2022) grounds BOTH halves of that, verbatim (fetched 2026-07-31 from
+// https://www.rfc-editor.org/rfc/rfc9110.txt):
+//
+//	§10.2.2: "For 201 (Created) responses, the Location value refers to the primary resource created
+//	          by the request."
+//	§15.3.2: "The primary resource created by the request is identified by either a Location header
+//	          field in the response or, if no Location header field is received, by the target URI."
+//
+// The first is why a Location naming an unserved address is wrong rather than merely untidy: the field
+// is defined to REFER to the created resource, and a reference into a 404 refers to nothing. The second
+// is why deleting the header is a legitimate closure and not a loss of contract — the no-Location case
+// is specified, and identification falls back to the target URI. Removing a dangling header moves a
+// response from "wrong" to "defined", and the minted id stays in the 201 body either way.
 //
 // TWO DIRECTIONS, because a sweep only ever looks in one and there is a different bug in each.
 //
@@ -79,12 +94,11 @@ func TestEveryLocationHeaderResolvesToAMountedRoute(t *testing.T) {
 		t.Fatal("no Location producers found: the parser stopped matching the tree's shape, which makes this guard vacuous")
 	}
 
-	srv := httptest.NewServer(everyRouteMountedRouter(t))
-	t.Cleanup(srv.Close)
+	router := everyRouteMountedRouter(t)
 
 	var dangling []string
 	for _, p := range producers {
-		if routerServes(t, srv.URL, p.addr) {
+		if routerServes(router, p.addr) {
 			continue
 		}
 		line := "  " + p.addr + "\n      written at " + p.where
@@ -96,7 +110,9 @@ func TestEveryLocationHeaderResolvesToAMountedRoute(t *testing.T) {
 	if len(dangling) > 0 {
 		sort.Strings(dangling)
 		t.Fatalf("%d Location header(s) name an address the router does not serve; a client following one gets %q.\n"+
-			"Close each ONE of two ways — mount the route, or delete the header. There is no third option and no exception list:\n%s",
+			"Close each ONE of two ways — mount the route, or delete the header. There is no third option and no exception list.\n"+
+			"(If the address IS mounted, everyRouteMountedRouter below is missing the surface that mounts it: the probe is only\n"+
+			"as complete as that fixture, so add the wiring there rather than exempting the address.)\n%s",
 			len(dangling), muxMiss, strings.Join(dangling, "\n"))
 	}
 	t.Logf("%d Location producers, every one resolving against the shipped router", len(producers))
@@ -166,27 +182,54 @@ func TestNoLocationHeaderIsWrittenOutsideTheScannedPackage(t *testing.T) {
 
 // routerServes reports whether the router has a route for addr. The signal is Go's OWN ServeMux miss
 // rather than any status this tree chooses: a handler that runs may answer 404 for a hundred reasons,
-// but only an unrouted path produces net/http's plain-text not-found. A panic inside a handler counts
-// as SERVED — it can only happen after the mux dispatched, which is the only question asked here.
-func routerServes(t *testing.T, base, addr string) bool {
-	t.Helper()
-	req, err := http.NewRequest("GET", base+addr, nil)
-	if err != nil {
-		t.Fatalf("probe %s: %v", addr, err)
+// but only an unrouted path produces net/http's plain-text not-found.
+//
+// It drives the handler directly rather than over a socket, so the only two outcomes are "the mux
+// dispatched" and "the mux did not". A panic counts as SERVED — it can only happen after dispatch, and
+// dispatch is the only question asked here — and it is caught explicitly rather than being folded in
+// with transport errors, because a transport error is the guard failing to ask, not an answer.
+func routerServes(h http.Handler, addr string) bool {
+	// An address a client cannot even form is not one it can follow. This is the fail-closed answer for a
+	// Location assembled at run time (fmt.Sprintf and friends), where the parser has no literal to read
+	// and renders the whole thing as a probe segment.
+	if !strings.HasPrefix(addr, "/") {
+		return false
+	}
+	if _, err := url.Parse(addr); err != nil {
+		return false
+	}
+	// httptest.NewRequest panics on a target it cannot turn into a request. That is still "a client could
+	// not follow this", so it is resolved to false HERE rather than inside the dispatch recover below,
+	// where a panic means the opposite.
+	req, ok := func() (r *http.Request, ok bool) {
+		defer func() {
+			if recover() != nil {
+				r, ok = nil, false
+			}
+		}()
+		return httptest.NewRequest("GET", addr, nil), true
+	}()
+	if !ok {
+		return false
 	}
 	req.Header.Set("Authorization", "Bearer probe")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		// A handler that panicked closed the connection; the mux had already routed it.
+	rec := httptest.NewRecorder()
+	dispatched := func() (panicked bool) {
+		defer func() {
+			if recover() != nil {
+				panicked = true
+			}
+		}()
+		h.ServeHTTP(rec, req)
+		return false
+	}()
+	if dispatched {
 		return true
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
+	if rec.Code != http.StatusNotFound {
 		return true
 	}
-	buf := make([]byte, 64)
-	n, _ := resp.Body.Read(buf)
-	return !strings.Contains(string(buf[:n]), muxMiss)
+	return !strings.Contains(rec.Body.String(), muxMiss)
 }
 
 // everyRouteMountedRouter builds the router with EVERY optional surface wired. That is the deliberate
@@ -429,6 +472,8 @@ func expandProducer(t *testing.T, pkgFiles map[string]*ast.File, fn *ast.FuncDec
 	// method exactly when it sits inside a method of the SAME receiver type whose receiver is `h`.
 	recvType := receiverType(fn)
 	var out []locationProducer
+	sites := 0 // counted apart from `out`: a helper every caller passes "" to writes no header at all,
+	// which is legitimate, whereas a helper whose callers the guard cannot FIND is a hole in the sweep.
 	for _, f := range pkgFiles {
 		for _, decl := range f.Decls {
 			caller, ok := decl.(*ast.FuncDecl)
@@ -464,6 +509,7 @@ func expandProducer(t *testing.T, pkgFiles map[string]*ast.File, fn *ast.FuncDec
 				if idx >= len(c.Args) {
 					return true
 				}
+				sites++
 				siteAtoms, ok := resolveAtoms(c.Args[idx], consts, stringParams(caller))
 				if !ok {
 					t.Fatalf("%s: this guard cannot resolve the %s argument passed here", pos(c), param)
@@ -495,9 +541,9 @@ func expandProducer(t *testing.T, pkgFiles map[string]*ast.File, fn *ast.FuncDec
 			})
 		}
 	}
-	if len(out) == 0 {
-		t.Fatalf("%s: %s.%s writes a Location but this guard found no call site supplying its prefix; that would "+
-			"silently drop an address from the sweep", pos(call), recvType, fn.Name.Name)
+	if sites == 0 {
+		t.Fatalf("%s: %s.%s writes a Location but this guard found NO call site supplying its prefix; that would "+
+			"silently drop every address it renders from the sweep", pos(call), recvType, fn.Name.Name)
 	}
 	return out
 }
