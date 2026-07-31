@@ -91,6 +91,25 @@ var dockerBoundClasses = map[string]bool{"component-real": true, "live-provider"
 // green by silence. Ownership may live in uat.FleetConsoleCaseIDs; escaping the sweep may not.
 var extensionIDPrefixes = []string{"SLK-", "A2A-", "KNO-", "QUA-", "TLM-", "CAS-", "HIL-", "FLT-", "CON-", "BGT-", "UI-", "WRK-", "FLC-"}
 
+// legacyCasePrefixes are the case-id families that already existed when TestEveryCasePrefixIsClaimed was
+// written, and that are owned by OTHER catalogs and gates — tests/uat/automation, tests/uat/managed-cloud,
+// tests/uat/self-host, tests/uat/recovery, tests/uat/dr and the rest. Enumerated 2026-07-31 by
+// `ls tests/uat/cases | sed -E 's/^([^-]+)-.*/\1-/' | sort -u`, minus extensionIDPrefixes: 35 distinct
+// prefixes in the tree, 13 in that list, these 22. Pulling them into the E17 orphan sweep would be a
+// different change with a different blast radius, so they are named here rather than moved.
+//
+// THIS LIST IS CLOSED. A prefix may never be added to it. It is the record of what predates the guard, not
+// a second place to register a family — a new family goes in extensionIDPrefixes, where the orphan sweep
+// above actually walks its directories. legacyCasePrefixCount below is the tripwire that says so out loud.
+var legacyCasePrefixes = []string{
+	"AGT-", "API-", "APV-", "AUT-", "DEL-", "DET-", "DR-", "ENG-", "EXT-", "LP-", "MCI-",
+	"MOD-", "OPS-", "PER-", "REC-", "REG-", "REP-", "SAN-", "SEC-", "SES-", "SUB-", "TOL-",
+}
+
+// legacyCasePrefixCount pins the size of a list that is closed, so growing it is a deliberate act that
+// reddens a test rather than a one-line edit nobody reviews.
+const legacyCasePrefixCount = 22
+
 // expectedExtensionsCatalog is the E17 UAT catalog: every case this epic materializes (plan §T11 + §7) mapped
 // to the proof class its case.yaml must declare and the in-tree proof(s) that prove it. A missing dir, a drifted
 // class, a changed proof list, or a proof reference that does not resolve fails the gate.
@@ -562,6 +581,46 @@ func TestTheSLKCatalogsAreDisjoint(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestEveryCasePrefixIsClaimed closes the hole that the FLC-, BGT-, CON- and HIL- paragraphs above each
+// describe from the inside. The orphan sweep is total over the prefixes it is GIVEN, and blind to every
+// prefix it is not: a directory whose family appears in no list is swept by nothing, and `go test
+// ./tests/uat/...` reports ok. That failure shipped in three consecutive epics — E25 (CON-), E26 (four
+// BGT- dirs) and E28 (FLC-001/002/003 across three tasks) — because registering the prefix is not part of
+// the task that creates the family's first case, so it is remembered only by whoever writes the exit gate.
+//
+// This test removes the remembering. It walks the same directory the sweep walks, but keyed on the PREFIX
+// rather than on a list of prefixes, so a family cannot be absent from it. Every prefix must be claimed:
+// by extensionIDPrefixes, or by the closed legacyCasePrefixes record above. There is no third option and
+// no silence.
+func TestEveryCasePrefixIsClaimed(t *testing.T) {
+	if len(legacyCasePrefixes) != legacyCasePrefixCount {
+		t.Errorf("legacyCasePrefixes holds %d prefixes, want %d — that list is CLOSED: a new family goes in extensionIDPrefixes, where the orphan sweep walks its directories",
+			len(legacyCasePrefixes), legacyCasePrefixCount)
+	}
+
+	casesDir := filepath.Join(repoRoot(t), "tests", "uat", "cases")
+	entries, err := os.ReadDir(casesDir)
+	if err != nil {
+		t.Fatalf("read cases dir: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dash := strings.Index(e.Name(), "-")
+		if dash < 0 {
+			t.Errorf("%s: a case directory with no `-` carries no prefix, so no prefix list can ever claim it — name it <FAMILY>-<NNN>", e.Name())
+			continue
+		}
+		prefix := e.Name()[:dash+1]
+		if slices.Contains(extensionIDPrefixes, prefix) || slices.Contains(legacyCasePrefixes, prefix) {
+			continue
+		}
+		t.Errorf("%s: the case-id prefix %q is claimed by NOTHING, so nothing in the tree walks its directories — add %q to extensionIDPrefixes in this file (legacyCasePrefixes is CLOSED and may never gain a prefix; if you were about to put it there, you are wrong).",
+			e.Name(), prefix, prefix)
 	}
 }
 
