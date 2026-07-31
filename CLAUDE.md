@@ -20,10 +20,15 @@ Task o komutu yeniden koşar; değişen sayı anında görünür.
 üç literal aramıştı, MASTER-SPEC `single-use` yazıyordu ve hiçbirine eşleşmiyordu. Sayı yanlış değildi,
 **arama yanlıştı ve arama görünmüyordu.**
 
-**2. "Bugün çalışıyor" iddiası bir TRANSCRIPT ister, bir atıf değil.**
-Bir rotanın var olması, bir alanın kabul edildiği anlamına gelmez.
-*Gerekçe:* `config_policy.pool` için plan rota tablosuna baktı ve "yazma yolu shipped" dedi;
+**2. "Bugün çalışıyor" iddiası bir TRANSCRIPT ister, bir atıf değil — VE AYNISI "bugün açık" için de geçerlidir.**
+Bir rotanın var olması, bir alanın kabul edildiği anlamına gelmez. Ve bir maruziyetin *adlandırılmış*
+olması, o mekanizmanın hedef platformda **işlediği** anlamına gelmez.
+*Gerekçe (yetenek):* `config_policy.pool` için plan rota tablosuna baktı ve "yazma yolu shipped" dedi;
 `DisallowUnknownFields` o alanı **400**'lüyordu. Aynı hata E23 T2'de `approvers` için de yapılmıştı.
+*Gerekçe (tavan):* plan "aynı uid `ps -E` / `/proc/<pid>/environ` ile değeri okuyabilir" dedi; macOS
+26.3'te `ps -E` **hiçbir ortam ifşa etmiyor** ve `/proc` yok — ve bu epic'in hedefi native bir Mac.
+**Bir tavanı abartmak, onu küçümsemek kadar yanlıştır**: operatöre koşturunca çalışmayan bir gösterim
+bırakır ve gerçek riskin yerini kaydırır.
 
 **3. Çalışma zamanı durumu hakkındaki her iddia bir YAZAR gösterir.**
 Bir durumdan/alandan bahsediyorsan, onu **yazan** kodu göster. Gösteremiyorsan iddian şudur:
