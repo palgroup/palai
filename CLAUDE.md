@@ -96,3 +96,19 @@ hiçbiri `main`'e yanlış inmedi. Maliyet tespit maliyetiydi. Bu dört kural on
   kullanılıyorsa, gidiş-dönüşü gerçek bir bağımlılığa karşı doğrula.
 - **Kendi konfigürasyonunu kuran bir test, production'ın kurduğu konfigürasyonu hiç görmez.** Kanıtları
   production kablolamasından geçir.
+
+- **Bir testin YEŞİLİ, harness'ın bir özelliği olabilir — ürünün değil.** 2026-07-31 gecesinde konsolun
+  dört kanıtı, CI'ın ve git worktree'sinin sağladığı ama gerçek bir kurulumun sağlamadığı bir koşul yüzünden
+  geçiyordu: `apps/web-console/.env.local`'in **yokluğu** — yani dokümanın her operatöre yarattırdığı dosya.
+  En keskini: *"parolası olmayan bir konsol hiçbir şey servis etmez"* testi, sunucusunu değişkeni **atlayarak**
+  başlatıyordu; `next start` uygulama dizininden `.env.local` okuyunca o konsol **yapılandırılmış** hâle
+  geliyor ve 503 yerine 401 dönüyordu. **Ürünün reddettiğini kanıtlayan test, servis eden bir konsolu
+  ölçüyordu.** Aynı gece bu sınıfın dördüncü örneği erişilebilirlikteydi: hiçbir axe taraması **açık bir
+  dialog** ile koşmamıştı, çünkü döngü rotayı yüklenirken tarıyor ve `expectAxeClean` dialog kapandıktan
+  sonra oturuyordu — yani bir form dialog'a taşınınca kanıttan sessizce çıkıyor ve **süpürme kapsam
+  daralırken daha temiz bir sayı raporluyordu.**
+  *Kural:* bir test bir **reddi** iddia ediyorsa, reddedilen koşulu **kimin sağladığını** sor. Harness onu
+  **yoklukla** sağlıyorsa, operatörün makinesi **varlıkla** sağlayacaktır. Koşulunu **sahiplenen** bir test
+  yaz (kendi dosyasını yazsın, kendi boş değerini açıkça geçsin), bir yokluğu devralan değil. Ve süiti,
+  dokümanın tarif ettiği gibi kurulmuş bir makinede **en az bir kez** koştur: bu dördünün üçü worktree'de
+  görünmezdi, ki her agent orada çalışır.
