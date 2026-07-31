@@ -708,6 +708,45 @@ fixed once (artifact downloads, E17 T10).
 
 ---
 
+## 4e. `/approvals` and `/history` — a queue you can triage, and a list whose ids are readable
+
+### `/approvals` was the worst screen in the console
+
+Measured before and after (built console, 2026-07-31 → 2026-08-01): `<main>` **7529 → 1917** rendered
+characters, grey prose **3626 → 606**, forms on the page **7 → 0**, table columns **1 → 5**, `<h2>` headings
+**8 → 2**. Every parked call rendered its whole ledger *and* a full decision form, inline, in a one-column
+table — so the one thing a queue exists for, seeing what is waiting, was the one thing it could not do.
+
+The table carries ID, Tool, Operator label, Run and Deadline. The decision is one panel below it, for the
+call you select, and the selection is in the URL (`?approval=…`): a reload lands on the call you were
+reading, and a parked call can be sent to a colleague as a link.
+
+**There is no `/approvals/{id}` page and there cannot be one.** `api/router.go` mounts a list and two
+decision routes — no per-approval read — and **no `/v1` route can park an approval at all**: one exists only
+when a gated tool call parks. A dynamic route would therefore be a page the accessibility sweep cannot reach
+on a real stack, which is precisely the unscanned-page hole `lib/routes.ts` exists to close.
+
+**The scope note stays**, because every clause in it changes what an *empty* queue means. So do the three
+standing facts (the principal a decision is recorded against, the two gates, the polling period) — a real
+compose stack's queue is permanently empty, so a sentence that renders only beside a selected row is one a
+real operator can never read.
+
+### `/history`
+
+Already mostly table, so the character count barely moved (2278 → 2113) and the change is in what the columns
+*are*: a readable short id that is also the opening control (it was a raw 36-character id that was not a
+control, next to a fourth column holding one button reading "Open"), a status pill, the **session as a link**,
+and a relative timestamp (it was a raw ISO string).
+
+The session link is the cross-reference this console did not have: a run belongs to a session,
+`/sessions/{id}` replays that session's journal, and an operator holding a response id previously had no way
+to reach the conversation it came from without retyping an id.
+
+Selection is in the URL (`?run=…`). A `?run=` naming a row past the twenty-row cut says so rather than
+sitting blank.
+
+---
+
 ## 5. When it does not work
 
 | Symptom | Cause | Fix |

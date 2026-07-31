@@ -255,7 +255,7 @@ function ApprovalQueue() {
           {/* The region's name, not the form's. components/ApprovalRow.tsx renders its own heading carrying the
               tool identity and the approval id, which is what a reader needs to know they are answering the
               call they clicked; repeating it here would be two headings saying one thing. */}
-          <h2 id="approval-decision-h">{chosen === null ? "No call selected" : "Selected call"}</h2>
+          <h2 id="approval-decision-h">Decision</h2>
           {chosen === null ? null : (
             <button type="button" className="detail-close" data-testid="approval-close" onClick={() => choose("")}>
               Close
