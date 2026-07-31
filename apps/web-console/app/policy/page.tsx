@@ -7,8 +7,11 @@ import { Panel } from "@/components/Panel";
 import { Picker, type PickerOption } from "@/components/Picker";
 import { ResourceForm } from "@/components/ResourceForm";
 import { RevealOnce } from "@/components/RevealOnce";
+import { CopyButton, shortId, Stamp } from "@/components/Session";
+import { Status } from "@/components/Status";
 import { apiGet, apiSend, RelayError } from "@/lib/api";
 import { rememberedProject, rememberProject } from "@/lib/scope";
+import { useQueryParam } from "@/lib/urlState";
 
 // THE POLICY SCREEN — AND EVERY FIELD ON IT IS SENT EVERY TIME (E28 T2, plan §3.6 D9).
 //
@@ -17,24 +20,32 @@ import { rememberedProject, rememberProject } from "@/lib/scope";
 // four list fields are nil-able Go slices — so a request naming only `pool` stores `approvers: null`. And
 // `HIL-P11` measured that an empty approver list is PERMISSIVE. The most innocent button an admin console can
 // carry — "put this project on the Mac pool" — therefore opens the approval gate to every principal in the
-// project, silently, and the operator's own action succeeds while it happens.
+// project, silently, and the operator's own action succeeds while it happens. THE FORM IS THE CONTROL: it
+// reads the current document first, shows all five fields, and sends all five.
 //
-// The tree already knew this in a COMMENT (cmd/cli/internal/admin/admin.go:241-244, verbatim: "the realistic
-// accident is setting --pool and silently dropping --approvers") and in a runbook paragraph
-// (docs/operations/runner-fleet.md:70). A comment is not a control. THE FORM IS THE CONTROL: it reads the
-// current document first, shows all five fields, and sends all five. tests/policy.spec.ts asserts both the
-// stored outcome and the request BODY, because a server that merged would make the outcome assertion pass
-// over a form that still only sent one field.
+// WHAT THIS PASS CHANGED, MEASURED FIRST (2026-07-31, `PROSE MEASURE /policy`): 3235 characters of page, of
+// which 2486 sat in FIFTEEN paragraphs longer than sixty characters — and ONE table, five header cells, one
+// row. The screen was an essay with a form in it.
 //
-// AND THE FORM DOES NOT HIDE THE ASSIGNMENT — it states it. A screen that quietly repaired the semantics
-// would leave an operator who then uses `palai project set-policy` with a wrong mental model, and that CLI
-// call has no read-first step to save them.
+//   THE KEYS ARE A TABLE NOW. An id you can read and copy, the project, the capability set as chips, when it
+//   expires, whether it is live, and a row-end ⋯ carrying the one action a key has. `revoked_at` used to be
+//   a raw timestamp in a column called "Revoked" whose usual value was an em dash; the status of a key is a
+//   STATE, and it reads as one.
+//   THE SELECTED PROJECT IS IN THE URL. `/policy?project=prj_…` — the pattern app/sessions/[id]/page.tsx
+//   landed. The back button undoes a selection, a project's policy can be sent to somebody as a link, and
+//   the overview's project rows now link straight here. lib/scope.ts is still written, so the shell's scope
+//   picker and this screen can never show different projects.
+//   THE PARAGRAPHS THAT SURVIVED ARE THE TWO THAT CHANGE WHAT YOU DO: the whole-document warning above the
+//   form, and CON-P2 under the mint. The rest moved to docs/operations/console.md §3b, which already carried
+//   most of it in more detail, and to the hints under the fields they describe.
 //
-// THE SECOND HALF IS THE KEYS THAT REACH THIS POLICY, and the two belong on one page for a measured reason:
-// docs/operations/console.md §3's narrow-key recipe explains why `approve` is NOT covered by `provision` —
-// "a key that could provision could add ITSELF to the approver list and then approve" — which is a sentence
-// about the approver field on THIS page. Minting the key and naming its principal in `approvers` is one task,
-// and it was two tools.
+// THE TWO FORMS ARE STILL ON THE PAGE, AND THAT IS A BLOCKED MOVE RATHER THAN A CHOICE.
+// TODO(component-layer): Dialog — "Mint an API key" wants to be a dialog behind a primary action on the key
+// panel, the way the reference does it. Two shipped guards stop it and both are on the do-not-weaken list:
+// tests/reveal-once.spec.ts's mint() helper checks `key-scope-provision` with no intervening interaction (a
+// dialog would hide it from Playwright's visibility requirement), and tests/auth.spec.ts asserts the served
+// form sweep sees at least EIGHT forms — `grep -rc "<ResourceForm" app` is 10 today, and a dialog-mounted
+// form is not in the server-rendered HTML. Moving this one and the fleet's two takes that count to 7.
 
 interface ProjectRow {
   id?: string;
@@ -60,6 +71,8 @@ interface APIKeyRow extends Record<string, unknown> {
   id?: string;
   project_id?: string;
   scopes?: string[];
+  expires_at?: string | null;
+  created_at?: string | null;
   revoked_at?: string | null;
 }
 
@@ -84,10 +97,17 @@ const csv = (raw: string): string[] =>
  *  is honest, because the API stores `null` for both and the resolver reads them the same way. */
 const joinList = (list: string[] | null | undefined): string => (list ?? []).join(", ");
 
+/** live is the one predicate this screen has about a key, and it is used by the table, the dialog's review
+ *  and the revoke control — so the three can never disagree about what "revoked" means. */
+const live = (row: { revoked_at?: string | null }): boolean => row.revoked_at === null || row.revoked_at === undefined;
+
 export default function PolicyPage() {
+  // THE SELECTED PROJECT IS IN THE ADDRESS BAR. `replace` rather than `push`, because this is also written
+  // on ARRIVAL when the URL names no project — see lib/urlState.ts.
+  const [project, setProject] = useQueryParam("project", "replace");
+
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [pools, setPools] = useState<PoolRow[]>([]);
-  const [project, setProject] = useState("");
   const [loadError, setLoadError] = useState("");
 
   // THE FIVE FIELDS. They are five pieces of state and one submit, deliberately: a "changed fields" set is
@@ -103,6 +123,10 @@ export default function PolicyPage() {
 
   const [keyReload, setKeyReload] = useState(0);
   const [keyRows, setKeyRows] = useState<APIKeyRow[]>([]);
+  // THE OPEN ROW MENU, BY ID. A menu ITEM does not close it: components/ConfirmDestructive.tsx returns focus
+  // to the element that was focused when it opened, and an element removed from the DOM in the same click
+  // cannot receive it — Escape would then drop focus to <body>, which tests/policy.spec.ts asserts against.
+  const [menu, setMenu] = useState("");
   const [scopeProvision, setScopeProvision] = useState(false);
   const [scopeApprove, setScopeApprove] = useState(false);
   const [expiresOn, setExpiresOn] = useState("");
@@ -120,37 +144,45 @@ export default function PolicyPage() {
   const [revokeStatus, setRevokeStatus] = useState("");
   const [revokeError, setRevokeError] = useState("");
 
+  /** choose writes the selection to the address bar AND to lib/scope.ts, so the shell's picker follows. */
+  const choose = useCallback(
+    (id: string) => {
+      rememberProject(id);
+      setProject(id);
+    },
+    [setProject],
+  );
+
   // The project list feeds the picker directly rather than through a Panel + onRows. MEASURED, so nobody
   // reads a truncation ceiling into it that is not there: ListProjects (storage/queries/projects.sql) carries
   // no LIMIT and the handler returns a plain {object, data} list — this collection is never cut, exactly like
   // /v1/environments. A page of projects is also not what this screen is for.
   useEffect(() => {
-    let live = true;
+    let cancelled = false;
     Promise.all([apiGet<{ data?: ProjectRow[] }>("/projects"), apiGet<{ data?: PoolRow[] }>("/runner-pools")])
       .then(([projectBody, poolBody]) => {
-        if (!live) return;
-        const rows = projectBody.data ?? [];
-        setProjects(rows);
+        if (cancelled) return;
+        setProjects(projectBody.data ?? []);
         setPools(poolBody.data ?? []);
-        // Select a project so the screen opens showing a REAL policy. A form that opens empty invites a save
-        // over a document nobody read.
-        //
-        // THE SHELL'S SCOPE PICKER IS WHAT THIS PREFERS, and that is what makes that picker a control rather
-        // than an ornament (components/Chrome.tsx <Scope />): this console's /v1 reads are all scoped by its
-        // one API key, so the only thing a project choice can change is a screen that takes a project as a
-        // PARAMETER — and this is that screen. A remembered id that this deployment does not have is ignored
-        // rather than selected, so a stale session value cannot open the form on nothing.
-        const remembered = rememberedProject();
-        const preferred = rows.some((r) => r.id === remembered) ? remembered : String(rows[0]?.id ?? "");
-        setProject((current) => (current === "" ? preferred : current));
       })
       .catch((err: unknown) => {
-        if (live) setLoadError(detail(err, "the projects and pools could not be read"));
+        if (!cancelled) setLoadError(detail(err, "the projects and pools could not be read"));
       });
     return () => {
-      live = false;
+      cancelled = true;
     };
   }, []);
+
+  // THE DEFAULT SELECTION, ONCE THE COLLECTION IS KNOWN. A form that opens empty invites a save over a
+  // document nobody read, so the screen picks: whatever the URL names, else the shell's remembered scope,
+  // else the first row. AN ID THIS DEPLOYMENT DOES NOT HAVE IS IGNORED rather than selected, so neither a
+  // stale session value nor a hand-typed query string can open the form on nothing.
+  useEffect(() => {
+    if (projects.length === 0) return;
+    if (projects.some((r) => r.id === project)) return;
+    const remembered = rememberedProject();
+    choose(projects.some((r) => r.id === remembered) ? remembered : String(projects[0]?.id ?? ""));
+  }, [projects, project, choose]);
 
   // loadPolicy is the READ-FIRST step, and it is the whole mechanism. Every field the form will send is
   // filled from the stored document, so an operator who changes one has explicitly kept the other four.
@@ -271,29 +303,14 @@ export default function PolicyPage() {
         </p>
       )}
 
-      {/* THE ASSIGNMENT SENTENCE STAYS OPEN. It changes what you DO on this screen every single time you use
-          it, which is the same test the environments page applied to decide what collapses. */}
-      <p className="muted" data-testid="policy-assignment-note">
-        <strong>This form writes the WHOLE policy.</strong>{" "}
-        The five fields you see here are, after you save,
-        the entirety of the project&apos;s <code>config_policy</code> — <code>PATCH /v1/projects/{"{id}"}</code>{" "}
-        replaces the stored document rather than merging into it. That is why the form reads the current policy
-        before it shows you anything: a field you cannot see is a field you did not send.
-      </p>
-
       <Picker
         id="policy-project"
         label="Project"
         value={project}
-        // Written back through the same module the shell's scope picker reads, so the two controls can never
-        // show different projects.
-        onChange={(id) => {
-          setProject(id);
-          rememberProject(id);
-        }}
+        onChange={choose}
         options={projectOptions}
         testId="policy-project-select"
-        hint="Both halves of this page act on this project: its policy document, and the keys that reach it."
+        hint="Both halves of this page act on this project: its policy document, and the keys that reach it. The choice is in the address bar, so it survives a reload and can be sent to somebody."
         emptyNote={
           <>
             <strong>No projects.</strong> There is nothing to configure yet — create one with{" "}
@@ -305,13 +322,22 @@ export default function PolicyPage() {
       <ResourceForm
         title="Project policy"
         testId="policy"
+        // THE ASSIGNMENT SENTENCE IS THE FORM'S OWN NOTE RATHER THAN A PARAGRAPH BESIDE IT. It changes what
+        // you DO every single time you use this control — the test this console applies to decide what
+        // collapses — and as a sibling it drifted onto the wrong form the first time the page was reordered.
         note={
-          <>
-            Empty means <em>unset</em>, and unset is not the same as restrictive: an empty{" "}
-            <code>allowed_tools</code> lets the deployment default decide, and an empty <code>approvers</code>{" "}
-            permits everyone. Lists are comma-separated, exactly as{" "}
-            <code>palai admin project set-policy</code> takes them.
-          </>
+          <span data-testid="policy-assignment-note">
+            {/* THE EXPLICIT SPACE IS LOAD-BEARING, and tests/rendered-copy.spec.ts is why it is written as
+                one: the same sentence lost the same space the FIRST time this note was authored, on this
+                page, and the guard added after that caught this move too. A text child that starts on the
+                line after a closing tag has its leading whitespace trimmed by the JSX transform. */}
+            <strong>This form writes the WHOLE policy.</strong>{" "}
+            The five fields below are, after you save, the entirety of the project&apos;s{" "}
+            <code>config_policy</code> —{" "}
+            <code>PATCH /v1/projects/{"{id}"}</code> replaces the stored document rather than merging into it,
+            which is why the form reads the current policy before it shows you anything. A field you cannot
+            see is a field you did not send.
+          </span>
         }
         fields={[
           {
@@ -319,7 +345,7 @@ export default function PolicyPage() {
             label: "Allowed models",
             value: allowedModels,
             onChange: setAllowedModels,
-            hint: "Model names a run in this project may ask for. Empty leaves the deployment's own routing in charge.",
+            hint: "Comma-separated model names a run in this project may ask for. Empty means UNSET, which leaves the deployment's own routing in charge — not restricted.",
             testId: "policy-allowed-models-input",
           },
           {
@@ -327,7 +353,7 @@ export default function PolicyPage() {
             label: "Allowed tools",
             value: allowedTools,
             onChange: setAllowedTools,
-            hint: "The ceiling: a tool not named here cannot be granted by an agent revision or a tool set.",
+            hint: "The ceiling: a tool not named here cannot be granted by an agent revision or a tool set. Empty lets the deployment default decide.",
             testId: "policy-allowed-tools-input",
           },
           {
@@ -343,7 +369,7 @@ export default function PolicyPage() {
             label: "Approvers",
             value: approvers,
             onChange: setApprovers,
-            hint: "Principals allowed to decide this project's approvals: a principal id, key:<api_key_id>, or slack:<team>:<user>.",
+            hint: "Principals allowed to decide this project's approvals: a principal id, key:<api_key_id>, or slack:<team>:<user>. Empty PERMITS EVERYONE.",
             testId: "policy-approvers-input",
           },
           {
@@ -378,18 +404,24 @@ export default function PolicyPage() {
         {/* HIL-P11, WHERE THE OPERATOR CAN ACT ON IT. Writing a ceiling on screen does not close it; what it
             prevents is an empty box reading as a locked door. */}
         {approversEmpty ? (
-          <p className="status" data-glyph="warn" data-testid="policy-approvers-permissive">
+          // TODO(component-layer): Callout — see app/fleet/page.tsx. `.status` is a nowrap PILL and this
+          // is a paragraph; `.form-status` is the block-shaped sibling that wraps.
+          <p className="form-status" data-glyph="warn" data-testid="policy-approvers-permissive">
             <span className="glyph" aria-hidden="true">
               !
             </span>{" "}
+            <span>
             <strong>An empty approver list permits every key in this project to approve.</strong> It is not a
             closed gate — <code>ConfigPolicy.ApproverAllowed</code> admits every principal when the list is
             unconfigured (<code>HIL-P11</code>). Name at least one principal if the approval gate is meant to
             decide anything.
+            </span>
           </p>
         ) : null}
       </ResourceForm>
 
+      {/* THE KEYS, UNDER THE POLICY THEY REACH — the table first and the mint form after it, because a
+          create control belongs below the collection it adds to rather than above it. */}
       <Panel<APIKeyRow>
         title="API keys"
         testId="panel-api-keys"
@@ -398,36 +430,113 @@ export default function PolicyPage() {
         onRows={setKeyRows}
         note="Metadata only. A key's value is returned by the create call and by nothing else — there is no route that reads one back."
         columns={[
-          { header: "ID", render: (r) => <code>{String(r.id ?? "")}</code> },
-          { header: "Project", render: (r) => <code>{String(r.project_id ?? "")}</code> },
+          {
+            header: "ID",
+            sort: (r) => String(r.id ?? ""),
+            render: (r) => (
+              <span className="cell-id-group">
+                <code className="cell-id" title={String(r.id ?? "")}>
+                  {shortId(String(r.id ?? ""))}
+                </code>
+                <CopyButton value={String(r.id ?? "")} label="API key ID" testId={`copy-${String(r.id ?? "")}`} />
+              </span>
+            ),
+          },
+          { header: "Project", sort: (r) => String(r.project_id ?? ""), render: (r) => <code>{String(r.project_id ?? "")}</code> },
           {
             header: "Capabilities",
+            // NO SORT: a capability set is a SET, and sorting a list of keys by the alphabetical first of
+            // their scopes is a control that produces motion and no information (Column's own rule).
             render: (r) =>
               (r.scopes ?? []).length === 0 ? (
-                // THE EMPTY SET IS THE DANGEROUS ONE and it must not render as a blank cell: middleware's
-                // Scope.HasScope returns true for EVERY capability when the set is empty.
-                <strong>every capability</strong>
+                // THE EMPTY SET IS THE DANGEROUS ONE and it must not render as a blank cell:
+                // middleware's Scope.HasScope returns true for EVERY capability when the set is empty.
+                <span className="chip" data-kind="danger">
+                  <strong>every capability</strong>
+                </span>
               ) : (
-                <>{(r.scopes ?? []).join(", ")}</>
+                <ul className="chip-list">
+                  {(r.scopes ?? []).map((scope) => (
+                    <li key={scope}>
+                      <span className="chip">{scope}</span>
+                    </li>
+                  ))}
+                </ul>
               ),
           },
-          { header: "Revoked", render: (r) => (r.revoked_at === null || r.revoked_at === undefined ? "—" : String(r.revoked_at)) },
           {
-            header: "Revoke",
+            header: "Expires",
+            sort: (r) => String(r.expires_at ?? ""),
             render: (r) =>
-              r.revoked_at === null || r.revoked_at === undefined ? (
-                <button type="button" data-testid={`revoke-${String(r.id ?? "")}`} onClick={() => setRevoking(r)}>
-                  Revoke {String(r.id ?? "")}
-                </button>
-              ) : (
-                <>—</>
-              ),
+              r.expires_at === null || r.expires_at === undefined ? <span className="cell-none">— never</span> : <Stamp iso={r.expires_at} />,
+          },
+          {
+            // A STATE, NOT A TIMESTAMP IN A COLUMN CALLED "Revoked" whose usual value was an em dash. The
+            // stamp is still readable — it is the pill's title — but what a reader needs at a glance is
+            // whether this credential still opens the door.
+            header: "Status",
+            sort: (r) => (live(r) ? "live" : "revoked"),
+            render: (r) => (
+              <span title={live(r) ? "This key still authenticates." : `Revoked ${String(r.revoked_at)}`}>
+                <Status value={live(r) ? "live" : "revoked"} testId={`key-state-${String(r.id ?? "")}`} />
+              </span>
+            ),
+          },
+          {
+            header: "",
+            render: (r) => {
+              const id = String(r.id ?? "");
+              if (!live(r)) return <span className="cell-none">—</span>;
+              return (
+                <div className="row-menu">
+                  <button
+                    type="button"
+                    className="row-menu-toggle"
+                    aria-expanded={menu === id}
+                    aria-controls={`menu-${id}`}
+                    aria-label={`Actions for API key ${id}`}
+                    data-testid={`key-menu-${id}`}
+                    onClick={() => setMenu(menu === id ? "" : id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setMenu("");
+                    }}
+                  >
+                    <span aria-hidden="true">⋯</span>
+                  </button>
+                  {menu === id ? (
+                    <div className="row-menu-panel" id={`menu-${id}`}>
+                      {/* ONE ITEM, AND THAT IS THE API RATHER THAN THE DESIGN. A key's whole write surface
+                          after creation is POST /v1/api-keys/{id}/revoke — there is no rename, no re-scope
+                          and no un-revoke — so a second entry here would be a control that refuses. */}
+                      <button
+                        type="button"
+                        className="danger"
+                        data-testid={`revoke-${id}`}
+                        onClick={() => setRevoking(r)}
+                      >
+                        Revoke {id}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            },
           },
         ]}
+        emptyNote={
+          <>
+            <p className="empty-title">No API keys</p>
+            <p className="empty-body">
+              An API key is what a client presents to reach this deployment, and its capabilities are what
+              that client may then do. This list cannot be empty on a running stack — a bootstrap seeds the
+              admin key — so an empty table here means the read did not reach the collection it named.
+            </p>
+          </>
+        }
       />
 
       {revokeStatus === "" ? null : (
-        <p data-testid="key-revoke-status">
+        <p role="status" className="form-status" data-testid="key-revoke-status">
           <span className="glyph" aria-hidden="true">
             ✔
           </span>{" "}
@@ -443,14 +552,16 @@ export default function PolicyPage() {
         </p>
       )}
 
+      {/* TODO(component-layer): Dialog — this form is the key panel's primary action wearing a section. See
+          the header for the two shipped guards that hold it here. */}
       <ResourceForm
         title="Mint an API key"
         testId="key-mint"
         note={
           <>
-            The value is shown <strong>once</strong>, here, and is retrievable from nowhere afterwards.{" "}
-            <code>docs/operations/console.md</code> §3 explains why the console wants a key holding{" "}
-            <code>provision</code> and <code>approve</code> and nothing else.
+            The value is shown <strong>once</strong>, here, and is retrievable from nowhere afterwards. It is
+            minted into the project selected above; <code>docs/operations/console.md</code> §3 is the recipe
+            for the narrow key this console wants.
           </>
         }
         fields={[
@@ -489,11 +600,11 @@ export default function PolicyPage() {
               aria-describedby="key-scope-provision-hint"
               onChange={(e) => setScopeProvision(e.target.checked)}
             />{" "}
-            <code>provision</code> — organizations, projects, keys, model wiring, environments, tools, and{" "}
-            <strong>this policy form</strong>
+            <code>provision</code> — the whole admin surface, including <strong>this policy form</strong>
           </label>
           <p className="muted" id="key-scope-provision-hint">
-            Everything on the admin surface. A key with this can rewrite the approver list above.
+            Organizations, projects, keys, model wiring, environments and tools. A key with this can rewrite
+            the approver list above.
           </p>
           <label htmlFor="key-scope-approve">
             <input
@@ -514,13 +625,14 @@ export default function PolicyPage() {
         </fieldset>
       </ResourceForm>
 
+
       {/* THE CEILING THIS SCREEN CANNOT CLOSE (CON-P2). Minting a narrow key here does not narrow the key the
           console itself is holding — that one is in the server process's environment. */}
       <p className="muted" data-testid="policy-console-key-note">
         <strong>This console&apos;s own key may still hold every capability</strong> — minting a narrow key
         here does not change it. The relay presents whatever <code>PALAI_API_KEY</code> the console process was
         started with, so narrowing that one means restarting the console with a key minted here
-        (<code>CON-P2</code>).
+        (<code>CON-P2</code>). <code>docs/operations/console.md</code> §3b is the long form of this screen.
       </p>
 
       {minted === null ? null : (
@@ -566,7 +678,7 @@ export default function PolicyPage() {
               <dt>Capabilities</dt>
               <dd>{(revoking.scopes ?? []).length === 0 ? "EVERY capability" : (revoking.scopes ?? []).join(", ")}</dd>
               <dt>Keys left in this organization</dt>
-              <dd>{String(keyRows.filter((k) => k.revoked_at === null || k.revoked_at === undefined).length - 1)} still live after this one</dd>
+              <dd>{String(keyRows.filter(live).length - 1)} still live after this one</dd>
             </dl>
           }
           confirmLabel="Revoke it"
