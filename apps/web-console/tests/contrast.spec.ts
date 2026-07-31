@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { CONSOLE_ROUTES, DYNAMIC_CONSOLE_ROUTES } from "../lib/routes";
+import { FORM_DIALOGS } from "./a11y.spec";
 import { announceProfile, concreteDynamicPath, signIn } from "./profile";
 
 // WHAT AXE CANNOT SEE, MEASURED ON THE RENDERED PAGE (console design pass, spec §2.1 / §4.4 / §7).
@@ -146,6 +147,34 @@ test("every interactive control carries a 3:1 boundary against the surface behin
     measured.push(...(await measureBoundaries(page, route)));
   }
 
+  // EVERY CONTROL BEHIND A DIALOG, WHICH THIS SWEEP HAD STOPPED MEASURING ENTIRELY.
+  //
+  // The loop above walks routes with their dialogs CLOSED, so a control that moves behind a `+ Create X`
+  // button leaves this measurement — and the report gets SMALLER and CLEANER while the coverage shrinks,
+  // which is the worst way for a number to move. It is not hypothetical: the page-parity passes moved five
+  // forms into dialogs (an agent name, eight repository-binding fields, an API-key mint, two fleet forms),
+  // which is roughly forty controls, and app/globals.css:134 records that a `button.danger` inside one went
+  // unmeasured for an entire epic exactly this way.
+  //
+  // The list is a11y.spec.ts's `FORM_DIALOGS`, imported rather than re-typed: that file already asserts the
+  // count of rows equals the number of `FormDialog` mounts in `app/**/page.tsx`, so a sixth dialog cannot
+  // ship without a row, and importing means it cannot ship with a row this file does not know about either.
+  const beforeDialogs = measured.length;
+  for (const d of FORM_DIALOGS) {
+    await page.goto(d.route);
+    // The opener lives in a PANEL's head, so it does not exist until that panel has settled.
+    await expect(page.getByTestId(d.open)).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId(d.open).click();
+    await expect(page.getByTestId(d.dialog)).toBeVisible();
+    const inside = await measureBoundaries(page, `${d.route} (${d.dialog})`);
+    // THE POSITIVE CONTROL, PER DIALOG. A dialog that rendered nothing measurable would otherwise contribute
+    // zero rows and pass — the same empty-haystack shape reveal-once.spec.ts was caught by this morning.
+    expect(inside.length, `${d.dialog} opened and offered no measurable control — this sweep would be judging an empty dialog`).toBeGreaterThan(1);
+    measured.push(...inside);
+  }
+  // eslint-disable-next-line no-console -- the delta is the evidence that opening them was worth doing.
+  console.log(`CONTROL BOUNDARY DIALOGS — ${String(FORM_DIALOGS.length)} dialog(s) opened, ${String(measured.length - beforeDialogs)} control(s) that the closed-route walk never measured`);
+
   // A SWEEP THAT MEASURED NOTHING WOULD PASS. The count is the evidence that it looked at anything at all.
   expect(measured.length, "no control was measured on any route — the sweep found nothing to judge").toBeGreaterThan(10);
 
@@ -154,7 +183,8 @@ test("every interactive control carries a 3:1 boundary against the surface behin
   const worst = [...measured].sort((a, b) => strongest(a) - strongest(b))[0];
   // eslint-disable-next-line no-console -- the numbers ARE the measurement; a bare pass/fail proves nothing.
   console.log(
-    `CONTROL BOUNDARY SWEEP — ${String(measured.length)} control(s) on ${String(ROUTES.length + dynamic.length)} route(s), ` +
+    `CONTROL BOUNDARY SWEEP — ${String(measured.length)} control(s) on ${String(ROUTES.length + dynamic.length)} route(s) ` +
+      `plus ${String(FORM_DIALOGS.length)} open dialog(s), ` +
       `${String(failing.length)} below 3:1; weakest ${worst.tag}[${worst.testId}] on ${worst.route} at ${String(strongest(worst))}:1`,
   );
   expect(
