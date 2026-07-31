@@ -156,15 +156,15 @@ test("every interactive control carries a 3:1 boundary against the surface behin
   // which is roughly forty controls, and app/globals.css:134 records that a `button.danger` inside one went
   // unmeasured for an entire epic exactly this way.
   //
-  // The list is a11y.spec.ts's `FORM_DIALOGS`, imported rather than re-typed: that file already asserts the
-  // count of rows equals the number of `FormDialog` mounts in `app/**/page.tsx`, so a sixth dialog cannot
-  // ship without a row, and importing means it cannot ship with a row this file does not know about either.
+  // The list is `FORM_DIALOGS` in tests/constants.ts, imported rather than re-typed — and it is CHECKED
+  // AGAINST THE SOURCE right here, one line down, rather than only in tests/a11y.spec.ts.
   //
-  // AND THE LIST IS CHECKED AGAINST THE SOURCE **HERE**, not only in tests/a11y.spec.ts. Importing the rows
-  // made this sweep consistent with that one; it did not make it complete, because a sixth dialog with no row
-  // would have reddened the axe loop and left this sweep quietly measuring five of six with nothing in this
-  // file to say so. A sweep that is correct only because another file runs is a sweep whose coverage somebody
-  // else can withdraw.
+  // Those are two separate properties and this comment used to conflate them, which is the defect this file
+  // spends its whole length refusing. Importing the rows made this sweep CONSISTENT with the axe loop; it did
+  // not make it COMPLETE. A sixth dialog with no row would have reddened that loop and left this sweep
+  // quietly measuring five of six, with nothing in this file to say so. A sweep that is correct only because
+  // another file runs is a sweep whose coverage somebody else can withdraw — so the mount count is asserted
+  // in both places, and one synthetic mount produces two failures rather than one.
   expect(
     formDialogMountCount(),
     "the tree mounts a number of FormDialogs that FORM_DIALOGS does not describe, so this sweep is measuring " +
@@ -193,6 +193,19 @@ test("every interactive control carries a 3:1 boundary against the surface behin
   const strongest = (b: Boundary) => Math.max(b.border ?? 0, b.fill ?? 0);
   const failing = measured.filter((b) => strongest(b) < 3);
   const worst = [...measured].sort((a, b) => strongest(a) - strongest(b))[0];
+  // THE COUNT IS NOT A CONSTANT AND MUST NEVER BE ASSERTED ON — measured across the two colour-scheme
+  // projects in one run: 415 controls / 146 inside dialogs in the first, 506 / 185 in the second. Same code,
+  // same five dialogs. The fixture is STATEFUL and the first project populates it, so by the second several
+  // `Picker`s have options and render as a `<select>` where they had rendered their `emptyNote` — a control
+  // that exists because a collection stopped being empty.
+  //
+  // AND THAT ASYMMETRY IS THIS SWEEP'S ALONE, which is worth knowing before anybody tries to make it
+  // symmetrical with the served-form sweep in tests/auth.spec.ts. That one derives a count too and CANNOT
+  // drift this way: it reads server-rendered bytes with no session cookie, and every page here is a client
+  // component whose data arrives in an effect — so no collection has been read at render time and no control
+  // can appear because one filled up. Rendered property versus source property, the same line that decides
+  // why that sweep does not need to open these dialogs at all. What is asserted below is `0 below 3:1`; the
+  // number beside it is evidence of what was looked at, never a threshold.
   // eslint-disable-next-line no-console -- the numbers ARE the measurement; a bare pass/fail proves nothing.
   console.log(
     `CONTROL BOUNDARY SWEEP — ${String(measured.length)} control(s) on ${String(ROUTES.length + dynamic.length)} route(s) ` +
