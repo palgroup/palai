@@ -384,17 +384,22 @@ a {
 /* THE PAGE TITLE IS THE h1 AND THE BRAND IS NOT. Every page carried one h1 — "Palai Console" — repeated in
    the header on all eleven screens, so the largest text on screen never said which screen it was. */
 h1.page-title {
-  font-size: var(--font-size-8);
-  line-height: var(--line-height-8);
+  /* MEASURED PARITY, 2026-07-31. The reference console's page title is 22px/28px at weight 500, and ours
+     was 28px/34px at 600. Hierarchy there is carried by COLOUR and SPACE, not by a large bold title, and
+     the calmer heading is why its pages read as a product rather than as a document. */
+  font-size: var(--font-size-7);
+  line-height: var(--line-height-7);
   letter-spacing: var(--letter-spacing-8);
-  font-weight: var(--font-weight-semibold);
+  font-weight: var(--font-weight-medium);
   margin: 0;
 }
 
 /* The page's first sentence: what this screen is for, in prose, at reading size. */
 .page-lead {
-  font-size: var(--font-size-5);
-  line-height: var(--line-height-6);
+  /* 14px/20px, measured. Was 16px/26px — a lead set larger than the body it introduces competes with the
+     title instead of supporting it. */
+  font-size: var(--font-size-4);
+  line-height: var(--line-height-4);
   color: var(--text-muted);
   max-width: 62ch;
   margin: var(--space-3) 0 0;
@@ -706,13 +711,20 @@ nav[aria-label="Primary"] {
 
 /* A panel is a hairline and a shadow on the SAME surface as the page — not a fill. Measured on the old
    palette, the panel fill carried 1.06:1, i.e. it was doing no work at all. */
+/* THE CARD IS WHY THIS CONSOLE READ AS A FORM, and the fix is structural rather than cosmetic.
+   Every screen wrapped its content in a bordered, rounded, shadowed box — so a page of data looked like a
+   WIDGET sitting on a page instead of being the page. The reference console has no such box: its title,
+   its filter row and its table share one column and the table itself carries the visual weight.
+   Measured 2026-07-31: theirs, no panel; ours, 1px border + 8px radius + shadow around all 27 usages.
+   The grouping survives — a subtle surface and the spacing rhythm still say "these things belong
+   together" — but the frame is gone, which is what the eye was reading as a form. */
 .panel {
-  border: var(--border-w) solid var(--border-hairline);
-  border-radius: var(--radius-3);
-  padding: var(--space-5);
+  border: 0;
+  border-radius: 0;
+  padding: 0;
   margin: 0;
-  background: var(--bg-page);
-  box-shadow: var(--shadow-1);
+  background: transparent;
+  box-shadow: none;
   overflow-x: auto;
 }
 /* The panel's own note sits under its heading as secondary prose, never as a second paragraph of equal
@@ -897,11 +909,14 @@ table {
    is the cheapest single move that stops a data table reading as a government form, and it is the one the
    old stylesheet did not make — its th was the same size as its td and differed only in weight. */
 thead th {
-  font-size: var(--font-size-1);
-  line-height: var(--line-height-1);
+  /* MEASURED PARITY, 2026-07-31: the reference's column head is 13px at weight 500 and is NOT uppercased.
+     Ours was 11px semibold uppercase — three devices stacked on one label, which shouts at the reader and
+     makes the head compete with the data it introduces. Keeping the tracking and the muted colour is
+     enough separation; the size does the rest. */
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-3);
   letter-spacing: var(--letter-spacing-1);
-  text-transform: uppercase;
-  font-weight: var(--font-weight-semibold);
+  font-weight: var(--font-weight-medium);
   color: var(--text-muted);
   background: var(--bg-subtle);
   text-align: left;
@@ -976,6 +991,21 @@ textarea {
   color: var(--text);
   width: 100%;
   transition: border-color var(--duration-1) var(--ease-out);
+}
+
+/* A NATIVE SELECT ARROW IS THE LOUDEST "UNSTYLED FORM" SIGNAL A DARK CONSOLE CAN EMIT. Measured
+   2026-07-31: `appearance: auto` on every select here, so the operating system drew its own control on top
+   of a box this stylesheet had already styled — the one element on the page that did not belong to the
+   design. The chevron is an inline SVG in the background so it needs no icon font and no component, and
+   the right padding reserves its lane. `appearance: none` keeps the keyboard behaviour, the listbox and
+   the accessibility tree exactly as they were: only the paint changes. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: calc(var(--space-3) * 2 + 10px);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23b0b4ba' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-3) center;
 }
 /* A CONTROL IS AS WIDE AS ITS CONTENT NEEDS, NOT AS WIDE AS THE PAGE. At `width: 100%` inside a 90rem
    panel, a password field and a repository name were both 1350px of empty box — which reads as an
