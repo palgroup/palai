@@ -70,15 +70,34 @@ async function firstMachineWith(page: Page, action: "cordon" | "revoke"): Promis
     const toggle = toggles.nth(i);
     const id = (await toggle.getAttribute("data-testid"))?.replace("runner-menu-", "") ?? "";
     await toggle.click();
+    // THE MENU IS AWAITED BEFORE IT IS PROBED, and that is a real behavioural difference rather than a
+    // flake being papered over (E29 component layer). The old `⋯` was React state: the panel re-rendered
+    // synchronously with the click, so `count()` — which does NOT auto-wait — saw the item immediately.
+    // components/ui/Menu.tsx portals the popup to <body> and positions it with Floating UI, which lands a
+    // frame later, so an immediate `count()` reads zero and the walk reports "none of the seven carried it".
+    // Measured: exactly that, on all seven rows.
+    await expect(page.getByRole("menu"), `the ${id} row menu did not open`).toBeVisible();
     if ((await page.getByTestId(`runner-${action}-${id}`).count()) > 0) return id;
-    await toggle.click();
+    // Escape rather than a second click on the trigger: a click while open is a toggle in both
+    // implementations, but Escape is the one the menu itself owns and it leaves focus on the trigger, so the
+    // next iteration starts from a known place.
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
   }
   throw new Error(`no machine on this stack offers ${action} — ${String(count)} row menu(s) were opened and none carried it`);
 }
 
-/** openRowMenu opens one row's ⋯ so the control inside it can be clicked. */
+/**
+ * openRowMenu opens one row's ⋯ so the control inside it can be clicked.
+ *
+ * The wait is the same one findMachineOffering needs and for the same reason: the popup is portalled, so it
+ * exists a frame after the click. Every caller here clicks something INSIDE the menu next, and a Playwright
+ * click auto-waits — so this would usually work without the wait and fail on a slow machine, which is the
+ * worst of both. Waiting for the menu says what the helper is for.
+ */
 async function openRowMenu(page: Page, testId: string): Promise<void> {
   await page.getByTestId(testId).click();
+  await expect(page.getByRole("menu"), `the ${testId} menu did not open`).toBeVisible();
 }
 
 /** singleReadWatcher records every GET /v1/runners/{id} the BROWSER makes — the network assertion below. */

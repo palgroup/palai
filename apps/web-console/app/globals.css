@@ -2,10 +2,33 @@
    decoration: a visible skip link, an always-visible focus ring, reduced-motion honored, and status
    conveyed by text + glyph (color is now a genuinely redundant hint on top of both). Light/dark follow the OS.
 
-   THE PALETTE IS A TOKEN SYSTEM (docs/superpowers/plans/console-design-language.md, "Operator"). Two layers,
-   and the split is what keeps dark mode to one block: layer 1 is raw scale steps (--slate-10), layer 2 is
-   semantic aliases (--border-control). RULE BODIES USE LAYER 2 ONLY. Radix's light and dark scales carry the
-   same step numbers, so the dark block below redefines 27 raw steps and touches ONE semantic token.
+   THE PALETTE IS A TOKEN SYSTEM IN TWO LAYERS, AND LAYER 1 IS NOW HSL COMPONENTS (E29, ported from
+   design-reference/design-system-measured.md §1). Layer 1 is the raw scale, private behind `--_`, stored as
+   `H S% L%` with NO `hsl()` wrapper; layer 2 is the semantic roles built on it. RULE BODIES USE LAYER 2 ONLY.
+
+   WHY COMPONENTS RATHER THAN COLOURS, in the reference's own words: alpha becomes composable —
+   `hsl(var(--_slate-12) / 45%)` — so an opacity does not need a token of its own. What that buys HERE is
+   smaller than it buys there and the difference is worth stating rather than glossing: their variants are
+   opacities of one colour, ours are Radix STEPS, so this does not collapse --ok-bg / --ok-border / --ok-text
+   into anything. It collapses the places we hard-coded an rgba: the shadow scale below (eight literals across
+   the two schemes, now two alphas) and the dialog scrim. The rest is the architecture being in place for the
+   next translucent surface rather than a saving today.
+
+   THE CONVERSION IS LOSSLESS AND THAT IS ENFORCED, not hoped: every step round-trips to the identical rgb
+   triple at four decimal places (the same precision the reference uses), checked before it was written. Each
+   line carries its original hex in a trailing comment so the round trip stays auditable by eye. Every WCAG
+   ratio in this file is computed from a resolved triple, so a conversion off by one channel would move a
+   published number — tests/contrast.spec.ts re-measures them on the rendered page and they are unchanged.
+
+   Radix's light and dark scales carry the same step numbers, so the dark block below redefines 27 raw steps
+   and touches ONE semantic token.
+
+   WHAT WAS DELIBERATELY NOT TAKEN FROM THE REFERENCE, and this is a limit of the measurement rather than a
+   preference: its GREY RAMP. §1 names 29 steps (0,10,20,…,870,890,900) and the measurement captured four
+   values. Adopting it would mean inventing the other twenty-five and re-measuring every pair in this file
+   against a ramp with no published contrast guarantees, where Radix's steps come with theirs. The reference's
+   `rgba(255,255,255,0.10)` border is separately refused: 1.30:1 on this background against SC 1.4.11's 3:1,
+   and tests/contrast.spec.ts cannot even judge a translucent value — it throws, by design.
 
    The colour values are Radix Colors (MIT, radix-ui/colors src/light.ts / src/dark.ts), extracted rather
    than hand-copied. The package is not a dependency: it ships constants and nothing else, so the 27 steps
@@ -26,18 +49,23 @@
 :root {
   color-scheme: light dark;
 
-  /* --- LAYER 1: raw scale steps. NOT used in rule bodies. Unused steps are deliberately not emitted; a new
-     one is added when it is needed, and MEASURED at that moment. --- */
-  --slate-1: #fcfcfd;
-  --slate-2: #f9f9fb;
-  --slate-3: #f0f0f3;
-  --slate-4: #e8e8ec;
-  --slate-5: #e0e1e6;
-  --slate-6: #d9d9e0;
-  --slate-9: #8b8d98;
-  --slate-10: #80838d;
-  --slate-11: #60646c;
-  --slate-12: #1c2024;
+  /* --- LAYER 1: raw scale steps, as HSL COMPONENTS behind a private `--_`. NOT used in rule bodies. Each
+     line carries its source hex so the round trip stays checkable by eye. Unused steps are deliberately not
+     emitted; a new one is added when it is needed, and MEASURED at that moment. --- */
+  /* White is a component triple too, and not because it needs one for itself: it is what --text-on-solid
+     resolves to, and having it here means an overlay ON a solid fill can be written as
+     `hsl(var(--_white) / 12%)` without minting a token for that opacity. That is the whole point of layer 1. */
+  --_white: 0 0% 100%;
+  --_slate-1: 240 20% 99.0196%; /* #fcfcfd */
+  --_slate-2: 240 20% 98.0392%; /* #f9f9fb */
+  --_slate-3: 240 11.1111% 94.7059%; /* #f0f0f3 */
+  --_slate-4: 240 9.5238% 91.7647%; /* #e8e8ec */
+  --_slate-5: 230 10.7143% 89.0196%; /* #e0e1e6 */
+  --_slate-6: 240 10.1449% 86.4706%; /* #d9d9e0 */
+  --_slate-9: 230.7692 5.9361% 57.0588%; /* #8b8d98 */
+  --_slate-10: 226.1538 5.3942% 52.7451%; /* #80838d */
+  --_slate-11: 220 5.8824% 40%; /* #60646c */
+  --_slate-12: 210 12.5% 12.549%; /* #1c2024 */
   /* THE ACCENT IS IRIS AND THE STATE COLOUR IS BLUE, AND THEY USED TO BE THE SAME SCALE — which is why a
      selected row and an "in progress" chip were the same colour, and why the console had no colour of its
      own. The design spec named this as the thing a token system cannot give ("the palette is MIT and
@@ -49,47 +77,47 @@
      which the spec itself flagged as the system's weakest pair. Iris step 11 measures 5.92 / 5.78 (light)
      and 8.97 / 8.37 (dark). Same formula, same script, re-run: the values below come from
      @radix-ui/colors@3.0.0 (MIT) iris.css / iris-dark.css, extracted rather than typed. */
-  --iris-3: #f0f1fe;
-  --iris-6: #cbcdff;
-  --iris-9: #5b5bd6; /* the wordmark mark ONLY — never a text or control colour; see .brand-mark */
-  --iris-11: #5753c6;
-  --iris-12: #272962;
-  --blue-3: #e6f4fe;
-  --blue-6: #acd8fc;
-  --blue-12: #113264;
-  --red-3: #feebec;
-  --red-6: #fdbdbe;
-  --red-9: #e5484d;
-  --red-11: #ce2c31;
-  --red-12: #641723;
-  --grass-3: #e9f6e9;
-  --grass-6: #b2ddb5;
-  --grass-11: #2a7e3b;
-  --grass-12: #203c25;
-  --amber-3: #fff7c2;
-  --amber-6: #f3d673;
-  --amber-12: #4f3422;
+  --_iris-3: 235.7143 87.5% 96.8627%; /* #f0f1fe */
+  --_iris-6: 237.6923 100% 89.8039%; /* #cbcdff */
+  --_iris-9: 240 60% 59.8039%; /* #5b5bd6 */ /* the wordmark mark ONLY — never a text or control colour; see .brand-mark */
+  --_iris-11: 242.087 50.2183% 55.098%; /* #5753c6 */
+  --_iris-12: 237.9661 43.0657% 26.8627%; /* #272962 */
+  --_blue-3: 205 92.3077% 94.902%; /* #e6f4fe */
+  --_blue-6: 207 93.0233% 83.1373%; /* #acd8fc */
+  --_blue-12: 216.1446 70.9402% 22.9412%; /* #113264 */
+  --_red-3: 356.8421 90.4762% 95.8824%; /* #feebec */
+  --_red-6: 359.0625 94.1176% 86.6667%; /* #fdbdbe */
+  --_red-9: 358.0892 75.1196% 59.0196%; /* #e5484d */
+  --_red-11: 358.1481 64.8% 49.0196%; /* #ce2c31 */
+  --_red-12: 350.6494 62.6016% 24.1176%; /* #641723 */
+  --_grass-3: 120 41.9355% 93.9216%; /* #e9f6e9 */
+  --_grass-6: 124.186 38.7387% 78.2353%; /* #b2ddb5 */
+  --_grass-11: 132.1429 50% 32.9412%; /* #2a7e3b */
+  --_grass-12: 130.7143 30.4348% 18.0392%; /* #203c25 */
+  --_amber-3: 52.1311 100% 88.0392%; /* #fff7c2 */
+  --_amber-6: 46.4063 84.2105% 70.1961%; /* #f3d673 */
+  --_amber-12: 24 39.823% 22.1569%; /* #4f3422 */
 
   /* --- LAYER 2: surfaces. Page and panel are the SAME colour on purpose: measured on the old palette, the
      panel fill carried 1.06:1 (light) and 1.09:1 (dark), i.e. a surface hierarchy that did not exist. The
      separation is carried by a hairline + a shadow instead of by a fill nobody can see. --- */
-  --bg-page: var(--slate-1);
-  --bg-subtle: var(--slate-2); /* table head band */
-  --bg-inset: var(--slate-3); /* code block, kv label column, disabled control */
-  --bg-hover: var(--slate-4);
-  --bg-active: var(--slate-5);
+  --bg-page: hsl(var(--_slate-1));
+  --bg-subtle: hsl(var(--_slate-2)); /* table head band */
+  --bg-inset: hsl(var(--_slate-3)); /* code block, kv label column, disabled control */
+  --bg-hover: hsl(var(--_slate-4));
+  --bg-active: hsl(var(--_slate-5));
 
   /* --- LAYER 2: text --- */
-  --text: var(--slate-12);
-  --text-muted: var(--slate-11);
-  --text-on-solid: #ffffff; /* the ONE semantic token the dark block inverts */
+  --text: hsl(var(--_slate-12));
+  --text-muted: hsl(var(--_slate-11));
+  --text-on-solid: hsl(var(--_white)); /* the ONE semantic token the dark block inverts */
 
   /* --- LAYER 2: borders. The distinction is the whole of SC 1.4.11: a hairline is structural decoration, a
      control border is the only thing that says where an input IS. They are not the same colour and must
      never be collapsed back into one token. --- */
-  --border-hairline: var(--slate-6); /* row separators, panel edge — decorative, SC 1.4.11 does not apply */
-  --border-control: var(--slate-10); /* interactive control boundary — 3.69/3.60/3.33 light, 4.45/4.15/3.75 dark */
-  --border-control-hover: var(--slate-11);
+  --border-hairline: hsl(var(--_slate-6)); /* row separators, panel edge — decorative, SC 1.4.11 does not apply */
+  --border-control: hsl(var(--_slate-10)); /* interactive control boundary — 3.69/3.60/3.33 light, 4.45/4.15/3.75 dark */
+  --border-control-hover: hsl(var(--_slate-11));
 
   /* --- LAYER 2: accent. Measured with tests/contrast.spec.ts's own formula, light | dark:
      --accent-text on --bg-page 5.92 | 8.97, on --bg-subtle 5.78 | 8.37, on --bg-inset 5.34 | 7.57, on
@@ -97,33 +125,33 @@
      13.29 | 14.51 · --text on --accent-bg 14.61 | 13.07 · --text-muted on --accent-bg 5.29 | 7.29 ·
      --focus-ring on --bg-hover (a ring on a hovered row) 4.97 | 6.86. Every one clears its floor, and the
      WEAKEST pair in the system is no longer an accent pair — which it was, at 4.53. --- */
-  --accent-text: var(--iris-11);
-  --accent-bg: var(--iris-3);
-  --accent-border: var(--iris-6);
-  --accent-solid: var(--iris-11);
-  --accent-solid-hover: var(--iris-12);
-  --focus-ring: var(--iris-11);
+  --accent-text: hsl(var(--_iris-11));
+  --accent-bg: hsl(var(--_iris-3));
+  --accent-border: hsl(var(--_iris-6));
+  --accent-solid: hsl(var(--_iris-11));
+  --accent-solid-hover: hsl(var(--_iris-12));
+  --focus-ring: hsl(var(--_iris-11));
 
   /* The wordmark's two fills. Aliased rather than written into the <svg> so the mark follows the palette in
      both schemes, and named so nothing else reaches for iris step 9 by accident — it is the one step in this
      file that is decoration and carries no contrast obligation (the word beside it is what names the
      product; the <svg> is aria-hidden). */
-  --brand-mark-quiet: var(--slate-9);
-  --brand-mark-live: var(--iris-9);
+  --brand-mark-quiet: hsl(var(--_slate-9));
+  --brand-mark-live: hsl(var(--_iris-9));
 
   /* --- LAYER 2: status. Five states x 3, plus two inline text colours.
      --warn-text-inline IS DELIBERATELY ABSENT: amber step 11 (#ab6400) clears 4.5:1 on NO surface in this
      system — 4.50 on slate-1 with zero margin, 4.38 on slate-2, 4.05 on slate-3. So amber is a chip colour
      only, and its text is step 12. --- */
-  --ok-bg: var(--grass-3);
-  --ok-border: var(--grass-6);
-  --ok-text: var(--grass-12);
-  --ok-text-inline: var(--grass-11);
-  --warn-bg: var(--amber-3);
-  --warn-border: var(--amber-6);
-  --warn-text: var(--amber-12);
-  --danger-bg: var(--red-3);
-  --danger-border: var(--red-6);
+  --ok-bg: hsl(var(--_grass-3));
+  --ok-border: hsl(var(--_grass-6));
+  --ok-text: hsl(var(--_grass-12));
+  --ok-text-inline: hsl(var(--_grass-11));
+  --warn-bg: hsl(var(--_amber-3));
+  --warn-border: hsl(var(--_amber-6));
+  --warn-text: hsl(var(--_amber-12));
+  --danger-bg: hsl(var(--_red-3));
+  --danger-border: hsl(var(--_red-6));
   /* THE DESTRUCTIVE CONTROL'S OWN BOUNDARY, and it is a SEPARATE token from --danger-border for the reason
      --border-control is separate from --border-hairline: one draws a region, the other draws a CONTROL, and
      SC 1.4.11 judges only the second. --danger-border (step 6) is 1.55:1 against the page — fine for the
@@ -133,15 +161,15 @@
      FOUND BY E28 T3, and it had been failing since E28 T2 shipped `button.danger`: its only caller until then
      was inside a dialog, which the sweep walks the routes with CLOSED, so no measurement had ever seen it.
      The fleet screen puts one in a table row and the sweep found it on the first run. */
-  --danger-border-control: var(--red-9);
-  --danger-text: var(--red-12);
-  --danger-text-inline: var(--red-11);
-  --info-bg: var(--blue-3);
-  --info-border: var(--blue-6);
-  --info-text: var(--blue-12);
-  --neutral-bg: var(--slate-3);
-  --neutral-border: var(--slate-6);
-  --neutral-text: var(--slate-12);
+  --danger-border-control: hsl(var(--_red-9));
+  --danger-text: hsl(var(--_red-12));
+  --danger-text-inline: hsl(var(--_red-11));
+  --info-bg: hsl(var(--_blue-3));
+  --info-border: hsl(var(--_blue-6));
+  --info-text: hsl(var(--_blue-12));
+  --neutral-bg: hsl(var(--_slate-3));
+  --neutral-border: hsl(var(--_slate-6));
+  --neutral-text: hsl(var(--_slate-12));
 
   /* --- Typography. system-ui is KEPT: zero network requests, no font-src in any CSP, no FOUT, nothing new
      on the audit surface of a console whose whole claim is that it talks to one origin. What is given up is
@@ -181,10 +209,16 @@
   --letter-spacing-8: -0.015em;
   --letter-spacing-9: -0.02em;
 
+  /* FOUR STEPS, AND 580 IS NOT A TYPO (design-system-measured.md §2). The reference ships
+     400 / 500 / 580 / 600, where 580 is a variable-font intermediate — a semibold that is genuinely between
+     medium and bold rather than a jump past it. Ours were 400/500/600/700, i.e. the top two both heavier than
+     anything the reference uses, which is most of why our headings read as a document rather than a product.
+     system-ui is not a variable font on every platform, so 580 rounds to the nearest available face there;
+     that is a graceful degradation to exactly what we had, not a regression. */
   --font-weight-regular: 400;
   --font-weight-medium: 500;
-  --font-weight-semibold: 600;
-  --font-weight-bold: 700;
+  --font-weight-semibold: 580;
+  --font-weight-bold: 600;
 
   /* --- Space, density, radius, border width, shadow, motion --- */
   --space-1: 0.25rem;
@@ -229,66 +263,90 @@
   --ring-w: 2px;
   --ring-offset: 2px;
 
-  --shadow-1: 0 1px 2px rgb(0 0 0 / 4%), 0 1px 1px rgb(0 0 0 / 3%);
-  --shadow-2: 0 8px 24px rgb(0 0 0 / 10%), 0 2px 6px rgb(0 0 0 / 6%);
+  /* THREE STEPS, TWO LAYERS EACH (design-system-measured.md §2). Every step carries a NEAR shadow that
+     defines the edge and a FAR one that defines height; a single-layer shadow can do one or the other and
+     reads as a smudge when asked for both. We had two steps and the far layer was the smaller of the pair,
+     which is backwards.
+
+     AND THIS IS WHERE LAYER 1 PAYS FOR ITSELF. The alphas are two tokens, so the dark block redefines TWO
+     NUMBERS instead of re-stating four multi-layer values — eight rgba literals across the two schemes became
+     two. That is the concrete saving of storing components rather than colours, and it is the only one this
+     port can honestly claim today.
+
+     Three steps, three elevations, no spare: --shadow-sm is a panel resting on the page, --shadow-md is a
+     popup over it (listbox, menu), --shadow-lg is the modal over everything. A dialog sitting at the same
+     height as a dropdown was the old scale's real defect. */
+  --_shadow: 0 0% 0%;
+  --shadow-a-near: 6%;
+  --shadow-a-far: 8%;
+  --shadow-sm: 0 1px 2px hsl(var(--_shadow) / var(--shadow-a-near)), 0 2px 8px hsl(var(--_shadow) / var(--shadow-a-far));
+  --shadow-md: 0 2px 4px hsl(var(--_shadow) / var(--shadow-a-near)), 0 6px 16px hsl(var(--_shadow) / var(--shadow-a-far));
+  --shadow-lg: 0 4px 8px hsl(var(--_shadow) / var(--shadow-a-near)), 0 12px 28px -2px hsl(var(--_shadow) / var(--shadow-a-far));
 
   --duration-1: 90ms;
   --duration-2: 150ms;
   --duration-3: 240ms;
-  --ease-out: cubic-bezier(0.2, 0, 0, 1);
-  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
-  /* The reference console ships exactly ONE easing curve and this is it, measured. It is added rather than
-     substituted for --ease-out because collapsing this file to a single curve moves every transition in the
-     console, which is the tree-wide pass's line item and not this one's. E29's own screens use it. */
-  --ease-reference: cubic-bezier(0.165, 0.84, 0.44, 1);
+  /* ONE CURVE (design-system-measured.md §2). The reference ships exactly one and this file shipped three —
+     --ease-out on the controls, --ease-in-out on nothing at all (zero rule bodies referenced it), and
+     --ease-reference added by E29's session screens as a fourth name for the right answer. A console where
+     two transitions ease differently is a console where the difference means nothing, because nothing chose
+     it. The value is the reference's, measured. */
+  --ease: cubic-bezier(0.165, 0.84, 0.44, 1);
 }
 
 /* ORDERING RULE — THIS BLOCK MUST COME AFTER EVERY :root DECLARATION, AND IT FAILS SILENTLY OTHERWISE.
-   It overrides --shadow-1 and --shadow-2, which are declared in the :root above at the same specificity. A
-   :root written BELOW this block would win, and dark mode would quietly get the light shadows with no test
-   anywhere able to say so. */
+   It overrides the shadow ALPHAS (and --shadow-sm, which carries the dark scheme's inner highlight), which
+   are declared in the :root above at the same specificity. A :root written BELOW this block would win, and
+   dark mode would quietly get the light shadows with no test anywhere able to say so. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --slate-1: #111113;
-    --slate-2: #18191b;
-    --slate-3: #212225;
-    --slate-4: #272a2d;
-    --slate-5: #2e3135;
-    --slate-6: #363a3f;
-    --slate-9: #696e77;
-    --slate-10: #777b84;
-    --slate-11: #b0b4ba;
-    --slate-12: #edeef0;
-    --iris-3: #202248;
-    --iris-6: #3d3e82;
-    --iris-9: #5b5bd6;
-    --iris-11: #b1a9ff;
-    --iris-12: #e0dffe;
-    --blue-3: #0d2847;
-    --blue-6: #104d87;
-    --blue-12: #c2e6ff;
-    --red-3: #3b1219;
-    --red-6: #72232d;
-    --red-9: #e5484d;
-    --red-11: #ff9592;
-    --red-12: #ffd1d9;
-    --grass-3: #1b2a1e;
-    --grass-6: #2d5736;
-    --grass-11: #71d083;
-    --grass-12: #c2f0c2;
-    --amber-3: #302008;
-    --amber-6: #5c3d05;
-    --amber-12: #ffe7b3;
+    --_slate-1: 240 5.5556% 7.0588%; /* #111113 */
+    --_slate-2: 220 5.8824% 10%; /* #18191b */
+    --_slate-3: 225 5.7143% 13.7255%; /* #212225 */
+    --_slate-4: 210 7.1429% 16.4706%; /* #272a2d */
+    --_slate-5: 214.2857 7.0707% 19.4118%; /* #2e3135 */
+    --_slate-6: 213.3333 7.6923% 22.9412%; /* #363a3f */
+    --_slate-9: 218.5714 6.25% 43.9216%; /* #696e77 */
+    --_slate-10: 221.5385 5.1793% 49.2157%; /* #777b84 */
+    --_slate-11: 216 6.7568% 70.9804%; /* #b0b4ba */
+    --_slate-12: 220 9.0909% 93.5294%; /* #edeef0 */
+    --_iris-3: 237 38.4615% 20.3922%; /* #202248 */
+    --_iris-6: 239.1304 36.1257% 37.451%; /* #3d3e82 */
+    --_iris-9: 240 60% 59.8039%; /* #5b5bd6 */
+    --_iris-11: 245.5814 100% 83.1373%; /* #b1a9ff */
+    --_iris-12: 241.9355 93.9394% 93.5294%; /* #e0dffe */
+    --_blue-3: 212.069 69.0476% 16.4706%; /* #0d2847 */
+    --_blue-6: 209.2437 78.8079% 29.6078%; /* #104d87 */
+    --_blue-12: 204.5902 100% 88.0392%; /* #c2e6ff */
+    --_red-3: 349.7561 53.2468% 15.098%; /* #3b1219 */
+    --_red-6: 352.4051 53.0201% 29.2157%; /* #72232d */
+    --_red-9: 358.0892 75.1196% 59.0196%; /* #e5484d */
+    --_red-11: 1.6514 100% 78.6275%; /* #ff9592 */
+    --_red-12: 349.5652 100% 90.9804%; /* #ffd1d9 */
+    --_grass-3: 132 21.7391% 13.5294%; /* #1b2a1e */
+    --_grass-6: 132.8571 31.8182% 25.8824%; /* #2d5736 */
+    --_grass-11: 131.3684 50.2646% 62.9412%; /* #71d083 */
+    --_grass-12: 120 60.5263% 85.098%; /* #c2f0c2 */
+    --_amber-3: 36 71.4286% 10.9804%; /* #302008 */
+    --_amber-6: 38.6207 89.6907% 19.0196%; /* #5c3d05 */
+    --_amber-12: 41.0526 100% 85.098%; /* #ffe7b3 */
 
     /* A solid fill is LIGHT in dark mode, so the text on it goes dark. This inversion is the structural fix
        for the skip link: it hard-coded `color: #fff` on a background that lightens here, which measured
        2.63:1 against a required 4.5:1 — on the first Tab stop of every page. Nothing hard-codes it now. */
-    --text-on-solid: var(--slate-1);
+    --text-on-solid: hsl(var(--_slate-1));
 
-    /* A drop shadow is invisible on a dark surface; the card edge is carried by the hairline plus a top
-       inner highlight instead. */
-    --shadow-1: 0 1px 2px rgb(0 0 0 / 40%), inset 0 1px 0 rgb(255 255 255 / 3%);
-    --shadow-2: 0 8px 24px rgb(0 0 0 / 60%), 0 2px 6px rgb(0 0 0 / 40%);
+    /* TWO NUMBERS. This block used to re-state both shadow values in full; with the alphas as tokens it
+       changes only how dark they are, and the three-step structure above is inherited. A drop shadow is
+       weaker on a dark surface, so both layers go up. */
+    --shadow-a-near: 40%;
+    --shadow-a-far: 45%;
+    /* The card edge is ALSO carried by a top inner highlight here, which is a measured decision about our
+       dark surfaces rather than the reference's: a drop shadow alone does not describe an edge against
+       #111113. It rides on --shadow-sm because that is the panel's step. */
+    --shadow-sm:
+      0 1px 2px hsl(var(--_shadow) / var(--shadow-a-near)), 0 2px 8px hsl(var(--_shadow) / var(--shadow-a-far)),
+      inset 0 1px 0 hsl(var(--_white) / 3%);
   }
 }
 
@@ -644,7 +702,7 @@ nav[aria-label="Primary"] {
   border-radius: var(--radius-2);
   color: var(--text-muted);
   text-decoration: none;
-  transition: background var(--duration-1) var(--ease-out), color var(--duration-1) var(--ease-out);
+  transition: background var(--duration-1) var(--ease), color var(--duration-1) var(--ease);
 }
 .nav-group a:hover {
   background: var(--bg-hover);
@@ -781,7 +839,7 @@ details.notes > :last-child {
   background: var(--bg-page);
   border: var(--border-w) solid var(--border-hairline);
   border-radius: var(--radius-3);
-  box-shadow: var(--shadow-1);
+  box-shadow: var(--shadow-sm);
 }
 .stat-value {
   font-size: var(--font-size-9);
@@ -989,7 +1047,7 @@ textarea {
   background: var(--bg-page);
   color: var(--text);
   width: 100%;
-  transition: border-color var(--duration-1) var(--ease-out);
+  transition: border-color var(--duration-1) var(--ease);
 }
 
 /* THE NATIVE SELECT AND THE CHEVRON PAINTED ONTO IT ARE BOTH GONE (E29 component layer), and the second
@@ -1047,7 +1105,7 @@ input[type="checkbox"] {
   background: var(--bg-page);
   border: var(--border-w) solid var(--border-control);
   border-radius: var(--radius-1);
-  transition: border-color var(--duration-1) var(--ease-out);
+  transition: border-color var(--duration-1) var(--ease);
 }
 input[type="checkbox"]:hover:not(:disabled) {
   border-color: var(--border-control-hover);
@@ -1145,7 +1203,7 @@ button {
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
-  transition: background var(--duration-1) var(--ease-out), border-color var(--duration-1) var(--ease-out);
+  transition: background var(--duration-1) var(--ease), border-color var(--duration-1) var(--ease);
 }
 button:hover:not(:disabled) {
   background: var(--bg-hover);
@@ -1259,7 +1317,7 @@ form > p:last-of-type {
   background: var(--bg-page);
   border: var(--border-w) solid var(--border-hairline);
   border-radius: var(--radius-2);
-  box-shadow: var(--shadow-2);
+  box-shadow: var(--shadow-md);
 }
 .ui-menu-popup {
   min-width: 10rem;
@@ -1408,6 +1466,41 @@ form > p:last-of-type {
   font-weight: var(--font-weight-bold);
 }
 
+/* THE SENTENCE IS ONE FLEX ITEM, AND UNTIL NOW IT WAS ACCIDENTALLY ONE (page-parity-govern's finding #3).
+   These two rules are `display: flex`, so EVERY child is a flex item — including each bare text run between
+   a <strong> and a <code>. Every pre-existing caller happened to pass exactly a glyph plus one string, so
+   nobody had met it; the first caller to write a real sentence got one narrow column per run, which they
+   described as "a broken newspaper". They worked around it by wrapping the sentence in a <span> at three
+   call sites and left the fix here.
+
+   This is the fix here: the glyph keeps its own lane and everything else is ONE item that fills the row. It
+   makes the <span> wrappers harmless rather than required, so those call sites can drop them or not — which
+   is the point of fixing it at the source instead of at the callers. */
+.form-error > :not(.glyph),
+.form-status > :not(.glyph) {
+  flex: 1;
+  min-width: 0;
+}
+
+/* A WARNING IS A THIRD OUTCOME AND IT HAD NOWHERE TO GO (page-parity-govern's finding #2). Three
+   multi-sentence warnings — /fleet's concurrency notice, the pool-key revoke result, /policy's permissive
+   approver list — were wearing `.status`, which is a PILL: inline-flex, a fixed --pill-h, and
+   `white-space: nowrap`. The measured consequence was a full-page screenshot 3296 CSS pixels wide for a
+   1440px viewport, from one notice that could not wrap.
+
+   `data-glyph="warn"` is the hook they already left on the elements, so this is the rule that was missing
+   rather than a new contract. The GLYPH takes --warn-text on --warn-bg (10.47:1 light, 12.98:1 dark) and the
+   sentence keeps --text (15.09:1 / 13.54:1) — a block is longer than a pill, so the reading colour stays the
+   body colour and amber is carried by the glyph and the border, which is the rule .form-error and
+   .form-status already follow. contrast.spec.ts's own formula, re-run 2026-08-01. */
+.form-status[data-glyph="warn"] {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+.form-status[data-glyph="warn"] .glyph {
+  color: var(--warn-text);
+}
+
 /* An empty collection is a SENTENCE in a region that looks deliberate, never a blank strip. No icon and no
    illustration: this console has no icon set and inventing one glyph for the occasion is worse than none.
 
@@ -1517,7 +1610,8 @@ pre.code {
 .dialog-backdrop {
   position: fixed;
   inset: 0;
-  background: rgb(0 0 0 / 45%);
+  /* The last hard-coded colour in a rule body, now composed off layer 1 like everything else. */
+  background: hsl(var(--_shadow) / 45%);
   z-index: 10;
 }
 .dialog {
@@ -1533,7 +1627,9 @@ pre.code {
   background: var(--bg-page);
   border: var(--border-w) solid var(--border-hairline);
   border-radius: var(--radius-3);
-  box-shadow: var(--shadow-2);
+  /* THE THIRD STEP, AND THE REASON THERE IS ONE. A modal sat at the same elevation as a dropdown under the
+     old two-step scale; --shadow-lg is what separates "over the page" from "over everything". */
+  box-shadow: var(--shadow-lg);
 }
 .dialog > h2 {
   margin-top: 0;
@@ -1887,7 +1983,7 @@ tbody tr[data-selected="true"] td {
   font-size: var(--font-size-2);
   line-height: 1;
   border-radius: var(--radius-pill);
-  transition: background var(--duration-1) var(--ease-reference), border-color var(--duration-1) var(--ease-reference);
+  transition: background var(--duration-1) var(--ease), border-color var(--duration-1) var(--ease);
 }
 
 /* MEASURED: table row 46px, header row 32px. Scoped to the two session screens rather than written onto the
@@ -1919,7 +2015,7 @@ tbody tr[data-selected="true"] td {
 .row-select,
 .tab {
   border-radius: var(--radius-button);
-  transition: background var(--duration-1) var(--ease-reference), border-color var(--duration-1) var(--ease-reference);
+  transition: background var(--duration-1) var(--ease), border-color var(--duration-1) var(--ease);
 }
 
 /* The detail panel's own head: a title and the close button the reference measured, which also drops
