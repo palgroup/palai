@@ -70,8 +70,14 @@ signed cookie; the identity check lives inside each relay method, not in a `midd
 in a layout. Full operator guide: **[docs/operations/console.md](../../docs/operations/console.md)**.
 
 ```sh
-printf %s 'a-long-console-password' | node scripts/hash-password.mjs >> .env.local
+printf %s 'a-long-console-password' | node scripts/hash-password.mjs --write
 ```
+
+`--write` puts the line in `.env.local` and **replaces** any `PALAI_CONSOLE_PASSWORD_HASH=` already there, so
+the step is idempotent. Without the flag it prints the line instead. The format is `scrypt.N.r.p.salt.key`,
+dot-separated because `$` is expanded by every dotenv reader and the old `$` form did not survive `.env.local`
+at all — `docs/operations/console.md` §2 has the measurement, `tests/env-file.spec.ts` has the proof, and a
+`$` hash generated earlier is still accepted.
 
 Then start with `PALAI_CONSOLE_PASSWORD_HASH` set, and open **`/login`** first — an unauthenticated visitor is
 not redirected, they get `401` from every panel.
@@ -99,8 +105,8 @@ directions: it must occur, and nothing else may join it.
 
 ```
 pnpm install                # from the repo root (workspace)
-printf %s 'a-long-console-password' | node apps/web-console/scripts/hash-password.mjs   # → PALAI_CONSOLE_PASSWORD_HASH=…
-PALAI_BASE_URL=http://127.0.0.1:8080 PALAI_API_KEY=palai-sk-... PALAI_CONSOLE_PASSWORD_HASH='scrypt$...' \
+printf %s 'a-long-console-password' | node apps/web-console/scripts/hash-password.mjs --write   # → .env.local
+PALAI_BASE_URL=http://127.0.0.1:8080 PALAI_API_KEY=palai-sk-... \
   pnpm --filter @palai/web-console dev
 ```
 
