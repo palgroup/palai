@@ -111,6 +111,11 @@ ORDER BY meter;
 -- ListUsageLedger is the shared keyset page over the ledger (the same (created_at, id) cursor every
 -- E13 T4 list uses; occurred_at is this table's created_at). The ledger carries no lifecycle state, so
 -- there is no status filter — the handler rejects ?status= for this kind.
+-- $8 (session) and $9 (meter) are the two narrowings a dashboard asks for: "what did this session cost"
+-- and "input tokens only". '' means NO predicate rather than "match the empty value" — the same idiom $2
+-- already uses for project — so an unfiltered page is unaffected and cannot silently return nothing.
+-- ORDER BY stays (occurred_at DESC, id DESC): total, which a keyset cursor requires. Narrowing the WHERE
+-- does not change the ordering, so a cursor minted on an unfiltered page still resolves.
 -- name: ListUsageLedger
 SELECT id, schema_version, project_id, session_id, run_id, meter, quantity, unit, occurred_at
 FROM usage_ledger
@@ -118,5 +123,7 @@ WHERE organization_id = $1 AND ($2 = '' OR project_id = $2)
   AND ($3::timestamptz IS NULL OR occurred_at >= $3)
   AND ($4::timestamptz IS NULL OR occurred_at <= $4)
   AND ($5::timestamptz IS NULL OR (occurred_at, id) < ($5, $6))
+  AND ($8 = '' OR session_id = $8)
+  AND ($9 = '' OR meter = $9)
 ORDER BY occurred_at DESC, id DESC
 LIMIT $7;

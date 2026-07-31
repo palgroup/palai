@@ -107,8 +107,14 @@ func (h *usageHandler) ledger(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// session_id and meter are parsed HERE rather than in beginList, and the placement is the point: the
+	// shared parse serves every list on this surface, so a filter read there would be accepted on all of
+	// them and honoured by one. A filter that is accepted and ignored is worse than an absent one — it does
+	// not return nothing, it returns other rows under a heading naming one session, and the operator reads
+	// the heading. Empty means unfiltered; the query treats '' as "no predicate", never as a match.
 	rows, err := h.usage.ListUsageLedger(r.Context(), scope, ListQuery{
 		After: q.After, Limit: q.Limit + 1, CreatedGTE: q.CreatedGTE, CreatedLTE: q.CreatedLTE,
+		SessionID: r.URL.Query().Get("session_id"), Meter: r.URL.Query().Get("meter"),
 	})
 	if err != nil {
 		middleware.WriteProblem(w, r, http.StatusInternalServerError, "internal_error", "")

@@ -180,3 +180,38 @@ func getUsagePage(t *testing.T, base, query string) contracts.Page {
 	}
 	return page
 }
+
+// A DASHBOARD ASKS "WHAT DID THIS SESSION COST", AND UNTIL THIS TEST THE ANSWER WAS EVERY SESSION'S ROWS.
+//
+// The ledger row has carried session_id and meter since it was created, and the shared keyset parse reads
+// created_after/created_before — so the time window works and has always worked. What did NOT exist is the
+// narrowing an operator actually asks for: a filter by session, or by meter. `?session_id=` on a session
+// that does not exist returned a full page of OTHER sessions' rows, measured against the live stack on
+// 2026-07-31: `/v1/usage/ledger?limit=20&session_id=ses_YOK` → 20 rows.
+//
+// That shape matters more than a missing feature. A filter that is accepted and ignored does not return
+// nothing, it returns SOMEBODY ELSE'S rows under a heading that names one session — and the operator reads
+// the heading. These two are deliberately parsed by the usage handler rather than by beginList: adding them
+// to the shared parse would give every list on this surface two parameters it silently ignores, which is
+// the very defect being fixed here.
+func TestUsageLedgerNarrowsBySessionAndMeter(t *testing.T) {
+	admin := scopedVerifier{middleware.Scope{Organization: "org_1", Project: "prj_1"}}
+	fake := &fakeUsage{}
+	base := usageTestServer(t, admin, fake)
+
+	getUsagePage(t, base, "limit=20&session_id=ses_wanted&meter=model.input_tokens")
+	if fake.lastQuery.SessionID != "ses_wanted" {
+		t.Fatalf("store saw session_id = %q, want %q — the filter reached the request and stopped there", fake.lastQuery.SessionID, "ses_wanted")
+	}
+	if fake.lastQuery.Meter != "model.input_tokens" {
+		t.Fatalf("store saw meter = %q, want %q", fake.lastQuery.Meter, "model.input_tokens")
+	}
+
+	// Absent means unfiltered, and it must be the empty string rather than a zero value that reads as a
+	// filter for the empty session — a store that translates "" into `session_id = ''` would return nothing
+	// on every unfiltered page.
+	getUsagePage(t, base, "limit=20")
+	if fake.lastQuery.SessionID != "" || fake.lastQuery.Meter != "" {
+		t.Fatalf("an unfiltered page carried session_id=%q meter=%q, want both empty", fake.lastQuery.SessionID, fake.lastQuery.Meter)
+	}
+}
