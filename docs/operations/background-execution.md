@@ -202,3 +202,20 @@ what is running.
 ```sql
 SELECT count(*) FROM background_tasks WHERE state = 'running';
 ```
+
+## The tracked ceilings, by id
+
+Everything this page describes as a limit is also a row in
+[`known-gaps-1.0.md`](known-gaps-1.0.md), so a ceiling you hit here has a place to be read about and a
+place to be closed. None of the four is an RC-blocker.
+
+| Row | What it is, in one line | Who closes it |
+|---|---|---|
+| `BGT-P1` | No live progress stream — reading the log is a PULL, and nothing pushes | E27 (a progress channel on the shell seam + `task_update` chunks) |
+| `BGT-P2` | PID reuse on the host: a handle we cannot prove is ours is `lost` and never signalled, which leaves us the orphan on purpose | nothing at this layer; the ambiguity is the operating system's |
+| `BGT-P3` | The exit notice folds in with a **user-turn role**; the `[palai:background]` prefix is a convention, not a contract | a protocol version adding `role`/`source` to `message.deliver` |
+| `BGT-P4` | Adoption works on the same machine only | E27's execution relay |
+
+`CAS-P2` is the same subject from the other side and it was **narrowed rather than closed** by background
+execution: the silence of a long build can now be broken by reading a file, and what remains open is that
+nobody pushes.

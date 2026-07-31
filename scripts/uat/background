@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# Background-execution UAT — the E26 EXIT gate (plan §T7). One target, a Docker-free CORE + a Docker-bound
+# JOURNEY tier, shaped like E24's `fleet` and E25's `admin-console`. The core is the load-bearing gate and it
+# needs no Docker and no credential.
+#
+# WHY THIS TARGET CO-RUNS THE BACKING SUITES (the E17 T11 review's MUST-FIX 1, inherited verbatim through
+# E19..E25): the bundle's per-case `status` is AUTHORED deterministic data, and so are the six ledgers the
+# background proof carries. Only what a verifier can re-derive is judged by a verifier; the rest is a claim.
+# So `evidence-verify` on its own certifies "UAT declared green", NOT "UAT green". THIS SCRIPT is what makes
+# the authored status honest: the SAME invocation that verifies the bundle also RUNS the suites that back the
+# five cases it certifies, and tests/uat/background/journey_test.go then DIFFS `--- PASS` lines against the
+# legs it claims. A ledger row nobody produced fails the gate.
+#
+#   Docker-free core (always):
+#     1. go test -v ./tests/uat/background/... — five gates in one package:
+#        a. the committed background-execution-0.1.0 bundle is BYTE-identical to its generator and verifies
+#           clean through the SHIPPED verifier;
+#        b. the REFUSAL matrix: the committed manifest mutated so ONE ledger row no longer supports the
+#           counter beside it, with the declared counter left where it was;
+#        c. the promote gate: rc PASSES, stable is REFUSED, and a dropped claim marker still routes HERE;
+#        d. the five cases' catalog, the BGT- orphan sweep, and the guard that keeps `BGT-` inside the only
+#           sweep in the tree that walks tests/uat/cases;
+#        e. the reachability sweep over E26's new exported surface, the guard that every component test this
+#           epic added is NAMED in scripts/test/component's -run allow-list, and the guard that every test a
+#           bundle LEDGER names both exists and is selected.
+#     2. the pure-logic halves that need no service: the tool-broker seam's field-for-field pin and the
+#        structural proof that the detached container path builds no options of its own. Both are untagged
+#        and ride `make verify` too — the evidence is stronger for running in both places, and this is the
+#        target that CERTIFIES them.
+#     3. evidence-verify RELEASE=background-execution-0.1.0 through the shipped command (0/0/0/0).
+#     4. the automation catalog corpus + the operator-doc corpus. E26 adds a case.yaml and edits
+#        docs/operations/known-gaps-1.0.md, both in owned sets — the re-verify rule this repository learned
+#        the hard way, twice.
+#
+#   Journey tier (Docker, no credential — SKIP_JOURNEYS=1 to opt out):
+#     5. against a throwaway Postgres: the TENANCY corpus (migration 000047 opened a new tenant table, and
+#        every test in that corpus t.Skips without PALAI_SECURITY_POSTGRES_URL, so a plain `go test` reports
+#        `ok` over skips — a green that certifies nothing), then the component-real legs where E26's spine
+#        lives. THE SELECTOR IS DERIVED FROM THE TREE AND CHECKED AGAINST THE SHIPPED ONE rather than
+#        retyped: the test names come from this epic's own files, and every one of them must appear in
+#        scripts/test/component's `-run` line or this script EXITS. A retyped selector is a selector that
+#        drifts, and a `-run` matching nothing exits 0 in silence — this repository has paid for that six
+#        times.
+#     6. TEST=background scripts/test/component — the REAL Docker daemon half: a container still running
+#        after the call that started it returned, a command form that interprets no metacharacter, and a
+#        container we cannot prove is ours that is never signalled. That suite counts its own labelled
+#        containers before and after, because it deliberately starts containers nothing removes on a defer.
+#
+# HONEST CEILING (plan §6), and it is in this release's NAME: `background-execution`, not "background
+# execution verified end to end". THERE IS NO LIVE PROGRESS STREAM — a model learns nothing about a running
+# build unless it READS A FILE, and `CAS-P2` narrows rather than closing. AND NO TASK SURVIVES A
+# CONTROL-PLANE MOVE: T5 shipped restart-adopt, but adoption works on the SAME MACHINE, because a host pgid
+# means nothing on another box and an OCI container stays on the old daemon — a direct consequence of there
+# being exactly one machine, since E24 T7's execution relay was never shipped. Every measurement here was
+# taken on ONE box, on darwin/arm64, with no operator: §6 legs 1-6 (a real xcodebuild backgrounded on a real
+# Mac with its duration written down, a restart through a real service manager, the overnight orphan hunt,
+# the real rate of pgid reuse, a credential's observed exposure, and an operator watching a
+# PALAI_DISPATCH_WORKERS=0 stack land nothing) are operator work and are NEVER claimed here.
+# NO TIER ADVANCES, and the reason is a rule: making a tool asynchronous is not evidence about the plane
+# that tool runs on.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+echo "uat-background: [1/4] the E26 bundle + refusal matrix + promote gate + catalog + BGT- orphan sweep + the reachability, allow-list and ledger-name sweeps" >&2
+# -v because EXIT 0 IS NOT PROOF: the sweeps and the refusal matrix are the load-bearing half, and a package
+# that compiled to zero matching tests exits 0 exactly like a package whose tests all passed.
+go test -count=1 -v ./tests/uat/background/...
+
+echo "uat-background: [2/4] the pure-logic halves: the synchronous seam is field-for-field unchanged, and the detached container path builds no options of its own" >&2
+go test -count=1 -v -run 'TestTheSynchronousShellSeamIsFieldForFieldUnchanged' ./packages/tool-broker
+go test -count=1 -v -run 'TestTheDetachedPathBuildsNoContainerOptionsOfItsOwn|TestTheHardenedContainerOptionsAreExactlyThese|TestDockerDriverRunIsByteUnchanged' ./adapters/sandboxes/oci
+
+echo "uat-background: [3/4] evidence-verify RELEASE=background-execution-0.1.0 (want 0 failed / 0 missing / 0 secret)" >&2
+RELEASE=background-execution-0.1.0 scripts/evidence/verify
+
+echo "uat-background: [4/4] the automation catalog corpus + the operator-doc corpus" >&2
+# E26 adds a case.yaml and edits known-gaps-1.0.md, so neither is optional.
+go test -count=1 ./tests/uat/automation/... ./tests/docs/...
+
+# ---- the journey tier: real PostgreSQL and a real Docker daemon ---------------------------------------------
+journeys="the E26 backing legs CO-RUN green (the tool surface, the park, the wake, the reaper, the credential) + the tenancy corpus + the REAL-daemon container posture"
+if [ "${SKIP_JOURNEYS:-0}" = "1" ]; then
+  # Said plainly, because the closing line must never imply a tier that did not run.
+  echo "uat-background: the Docker-bound tier is SKIPPED (SKIP_JOURNEYS=1) — the component-real backing legs," >&2
+  echo "  the tenancy corpus and the real-daemon container posture did NOT run; this invocation does not back" >&2
+  echo "  the bundle's authored PASS for BGT-001..005" >&2
+  journeys="Docker-bound backing legs + tenancy corpus + real-daemon container posture NOT RUN (SKIP_JOURNEYS=1)"
+else
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "uat-background: docker is not available; the E26 backing legs need a throwaway Postgres and a real daemon" >&2
+    exit 2
+  fi
+
+  # THE SELECTOR IS DERIVED FROM THE TREE, THEN CHECKED AGAINST THE SHIPPED ONE. Retyping it is the trap this
+  # family has paid for six times; extracting the shipped line VERBATIM would run every other epic's suites
+  # too, because that one selector carries them all. So the names come from THIS epic's own files, and every
+  # one of them must appear in scripts/test/component's `-run` line — which is the D20 rule enforced by the
+  # script rather than only by a Go guard.
+  shipped="$(sed -n "s/^[[:space:]]*-run '\(Test[^']*\)' \\\\$/\1/p" scripts/test/component | tr '|' '\n' | sort -u)"
+  if [ -z "$shipped" ]; then
+    echo "uat-background: could not EXTRACT any -run selector from scripts/test/component — the line moved or" >&2
+    echo "  its shape changed, and a retyped copy is exactly what this refuses to hold" >&2
+    exit 1
+  fi
+  names="$(grep -hoE '^func (Test[A-Za-z0-9_]+)\(' \
+    apps/control-plane/internal/execution/background_tool_component_test.go \
+    apps/control-plane/internal/execution/background_park_component_test.go \
+    apps/control-plane/internal/execution/background_wake_component_test.go \
+    apps/control-plane/internal/execution/background_reaper_component_test.go \
+    apps/control-plane/internal/execution/background_secret_component_test.go \
+    | sed 's/^func //; s/($//; s/(//' | sort -u)"
+  if [ -z "$names" ]; then
+    echo "uat-background: no test names were derived from this epic's own component files — the selector would" >&2
+    echo "  then be empty, and a -run matching nothing exits 0 in silence" >&2
+    exit 1
+  fi
+  missing=""
+  while IFS= read -r name; do
+    if ! printf '%s\n' "$shipped" | grep -qxF "$name"; then missing="$missing $name"; fi
+  done <<< "$names"
+  if [ -n "$missing" ]; then
+    echo "uat-background: these E26 tests are NOT named in scripts/test/component's -run allow-list, so the" >&2
+    echo "  component tier never runs them:$missing" >&2
+    exit 1
+  fi
+  selector="$(printf '%s' "$names" | paste -sd '|' -)"
+
+  image="postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c"
+  label="io.palai.uat=background"
+  container="palai-uat-background-$$-${RANDOM}"
+  # Throwaway local credential, generated per run; never written to a file, never echoed.
+  password="palai-uat-background-${RANDOM}${RANDOM}"
+  cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+  before="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  trap cleanup EXIT
+
+  docker run --detach --pull=never --name "$container" --label "$label" \
+    --env POSTGRES_DB=palai --env POSTGRES_PASSWORD="$password" \
+    --publish 127.0.0.1::5432 "$image" >/dev/null
+  ready=0
+  for _ in $(seq 1 120); do
+    if docker exec "$container" pg_isready --username postgres --dbname palai >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.25
+  done
+  if test "$ready" -ne 1; then
+    docker logs "$container" >&2 || true
+    echo "uat-background: the journey postgres did not become ready" >&2
+    exit 1
+  fi
+  binding="$(docker port "$container" 5432/tcp)"; port="${binding##*:}"
+  url="postgres://postgres:$password@127.0.0.1:$port/palai?sslmode=disable"
+  # A DEAD Postgres for the fault knob: reachable-looking, connects to nothing.
+  dead_url="postgres://postgres:$password@127.0.0.1:1/palai?sslmode=disable"
+
+  echo "uat-background: [journey] the tenancy corpus against real PostgreSQL (000047 opened a tenant table)" >&2
+  set +e
+  PALAI_SECURITY_POSTGRES_URL="$url" go test -tags=security -count=1 -v ./tests/security/tenancy
+  tenancy_status=$?
+  set -e
+  if test "$tenancy_status" -ne 0; then
+    echo "uat-background: the tenancy corpus FAILED — a new tenant table and five case.yaml files must re-run it" >&2
+    cleanup; trap - EXIT
+    exit "$tenancy_status"
+  fi
+
+  exec_url="$url"
+  if [ "${PALAI_BACKGROUND_FAULT_SUITE:-}" = "./apps/control-plane/internal/execution" ]; then
+    exec_url="$dead_url"
+    echo "uat-background: FAULT INJECTED — ./apps/control-plane/internal/execution points at a DEAD Postgres; this run MUST fail" >&2
+  fi
+  echo "uat-background: [journey] backing suite ./apps/control-plane/internal/execution (selector derived from this epic's own files)" >&2
+  set +e
+  PALAI_COMPONENT_POSTGRES_URL="$exec_url" go test -tags=component -count=1 -v \
+    -run "$selector" ./apps/control-plane/internal/execution
+  status=$?
+  set -e
+  if test "$status" -ne 0; then
+    echo "uat-background: backing suite ./apps/control-plane/internal/execution FAILED — the bundle's authored PASS for its cases is not honest" >&2
+  fi
+
+  if test "$status" -eq 0; then
+    echo "uat-background: [journey] the REAL-daemon container posture (TEST=background scripts/test/component)" >&2
+    set +e
+    TEST=background scripts/test/component
+    status=$?
+    set -e
+    if test "$status" -ne 0; then
+      echo "uat-background: the background component suite FAILED — the container posture's half of BGT-001 is not honest" >&2
+    fi
+  fi
+
+  cleanup
+  trap - EXIT
+  after="$(docker ps -aq --filter "label=$label" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if test "$after" -ne "$before"; then
+    echo "uat-background: the journey tier leaked a container" >&2
+    exit 1
+  fi
+  if test "$status" -ne 0; then exit "$status"; fi
+fi
+
+echo "uat-background=PASS (E26 exit gate: bundle 0/0/0/0, all SIX of §2's semantics re-derived from the" >&2
+echo "  semantics ledger with §2.6 — the model calling another tool while the process was still running —" >&2
+echo "  required BY NUMBER, ZERO processes started under any refusal over refusals that each carry a" >&2
+echo "  non-vacuity control with its unit stated, BOTH sandbox postures outliving the call that started" >&2
+echo "  them and ZERO signals to a handle we could not prove was ours, exactly ONE notice per settled task" >&2
+echo "  across two ticks / two control planes / a restart / a running run / a terminal run, the reaper's" >&2
+echo "  six duties each read from the operating system or the database, and ZERO environment values in five" >&2
+echo "  landing sites each DECODED before it was scanned, $journeys)" >&2
+echo "uat-background: NO TIER ADVANCED, and the reason is a RULE rather than an omission: MAKING A TOOL" >&2
+echo "  ASYNCHRONOUS IS NOT EVIDENCE ABOUT THE PLANE THAT TOOL RUNS ON. THIS BUNDLE DOES NOT CLAIM A LIVE" >&2
+echo "  PROGRESS STREAM — a model learns nothing about a running build unless it READS A FILE, and CAS-P2" >&2
+echo "  narrows rather than closing — AND IT DOES NOT CLAIM A TASK SURVIVES A CONTROL-PLANE MOVE: adoption" >&2
+echo "  shipped and works on the SAME MACHINE only, because a host pgid means nothing on another box and a" >&2
+echo "  container stays on the old daemon. It claims that a tool call can return a PROCESS, that the model" >&2
+echo "  keeps working while that process runs, that nothing starts under a refusal, that an exit calls the" >&2
+echo "  model back exactly once, that a reaper answers for the ceiling / the cancellation / the adoption /" >&2
+echo "  the collector, and that a credential's value lands nowhere — measured from the kernel, the daemon" >&2
+echo "  and the database rather than declared." >&2
