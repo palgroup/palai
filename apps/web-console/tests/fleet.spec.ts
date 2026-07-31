@@ -56,9 +56,29 @@ async function open(page: Page) {
  * the dialog's own testids, and a locator that matched those would depend on whether one was open.
  */
 async function firstMachineWith(page: Page, action: "cordon" | "revoke"): Promise<string> {
-  const button = page.getByTestId("panel-runners").locator(`[data-testid^="runner-${action}-"]`).first();
-  await expect(button, `no machine on this stack offers ${action}`).toBeVisible({ timeout: 15_000 });
-  return (await button.getAttribute("data-testid"))?.replace(`runner-${action}-`, "") ?? "";
+  // THE ROW ACTIONS MOVED INTO A ROW-END ⋯ MENU (page-parity pass), so a row's control does not EXIST until
+  // its menu is open. The menus are walked in order and the first one offering `action` is the answer, which
+  // is the same claim this helper always made — a machine on THIS stack that offers this control — and the
+  // menu is LEFT OPEN, so the caller's own click finds the control where the helper found it.
+  //
+  // Opening a menu makes no request, which the single-read leg below depends on: it asserts that nothing has
+  // read a machine singly before the dialog asked.
+  const toggles = page.getByTestId("panel-runners").locator('[data-testid^="runner-menu-"]');
+  await expect(toggles.first(), "the machines panel rendered no rows at all").toBeVisible({ timeout: 15_000 });
+  const count = await toggles.count();
+  for (let i = 0; i < count; i++) {
+    const toggle = toggles.nth(i);
+    const id = (await toggle.getAttribute("data-testid"))?.replace("runner-menu-", "") ?? "";
+    await toggle.click();
+    if ((await page.getByTestId(`runner-${action}-${id}`).count()) > 0) return id;
+    await toggle.click();
+  }
+  throw new Error(`no machine on this stack offers ${action} — ${String(count)} row menu(s) were opened and none carried it`);
+}
+
+/** openRowMenu opens one row's ⋯ so the control inside it can be clicked. */
+async function openRowMenu(page: Page, testId: string): Promise<void> {
+  await page.getByTestId(testId).click();
 }
 
 /** singleReadWatcher records every GET /v1/runners/{id} the BROWSER makes — the network assertion below. */
@@ -173,6 +193,7 @@ test("an existing pool's waiting room is switched on from the console", async ({
   expect(id).not.toBe("");
 
   await open(page);
+  await openRowMenu(page, `pool-menu-${id}`);
   await page.getByTestId(`pool-strict-${id}`).click();
   await expect(page.getByTestId("pool-strict-status")).toContainText(id, { timeout: 15_000 });
 
@@ -217,6 +238,9 @@ test("revoking a pool key shows the machines it already admitted and does not st
   // SELECTED BY PREFIX, NOT BY A FIXED ID. A revoked key stays revoked, so the fixture re-seeds a fresh
   // revocable one with a new id — the approval queue's rule, and the reason is that this suite runs twice
   // (once per colour scheme) against one fixture process.
+  const menu = page.locator('[data-testid^="poolkey-menu-rpk_seeded_"]').first();
+  await expect(menu).toBeVisible({ timeout: 15_000 });
+  await menu.click();
   const revocable = page.locator('[data-testid^="revoke-poolkey-rpk_seeded_"]').first();
   await expect(revocable).toBeVisible({ timeout: 15_000 });
   await revocable.click();
@@ -311,6 +335,7 @@ test("the review names the machine's label and the count the gateway gave for it
   // constant, and the number is the one an operator decides to unplug on.
   skipOnReal("DIV-UI-009");
   await open(page);
+  await openRowMenu(page, "runner-menu-run_active_02");
   await page.getByTestId("runner-revoke-run_active_02").click();
   const review = page.getByTestId("runner-revoke-dialog-review");
   await expect(review).toBeVisible({ timeout: 15_000 });

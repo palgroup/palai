@@ -8,7 +8,8 @@ Until E25 T1 it had **no authentication of any kind**. This page is about what c
 importantly, what did not.
 
 > **Installation to configured agent, on one page.** §0 is the whole path in order; §1-§3 are the door and
-> the key; §4 is the approval queue; §4b is tool registration. The environment screen keeps its own page
+> the key; §3b-§3e are the screens behind it — policy and keys, the fleet, metering, and the two read-only
+> registries; §4 is the approval queue; §4b is tool registration. The environment screen keeps its own page
 > (`environments.md`) and the MCP chain keeps its own runbook (`jira-mcp-connection.md`), because both are
 > longer than a step; §0 links to them where they belong in the sequence.
 
@@ -317,6 +318,13 @@ Four sections, in the order an operator acquires them.
 A pool is a **posture** plus the shape of machine expected in it. `sandboxed-linux` is a container the control
 plane isolates; `unsandboxed-host` is a real machine, which is what a rented Mac is.
 
+**Until E28 T1's form existed a tenant had exactly one pool, forever**: the only statement that wrote a pool
+row wrote its name, its posture and its enrolment mode as literals, so a rented-Mac pool could not exist and
+the waiting room could not be switched on.
+
+**A revoked machine identity stays listed.** The machines table does not drop it, because decommissioning is
+a fact worth keeping visible — a list that hid it would make the revocation invisible the moment it worked.
+
 The create form is `POST /v1/runner-pools`. **The posture cannot be changed afterwards and that is
 correctness, not a limitation**: a machine INHERITS its pool's posture when it enrols, so moving a populated
 pool would retroactively change what the machines already in it are. The only field the PATCH route accepts is
@@ -400,6 +408,86 @@ certificate was issued before anybody was asked. Both screens say so and each li
 - **`FLT-P13`: an admission admits an ENROLMENT, not a machine.** The same Mac asks again after every reboot.
 - **`FLC-P3`: this screen polls nothing.** A machine that starts waiting while the browser is closed is here
   when you open it, and not before.
+
+---
+
+## 3d. `/usage` — what has been spent, and what caps it
+
+`/usage` is the **read** half of the metering surface, over four routes that were all mounted long before a
+screen showed them: `GET /v1/usage` (per-meter totals for the caller's scope), `GET /v1/usage/ledger` (the
+settled rows), `GET /v1/budgets` and `GET /v1/quotas` (the limits admission enforces).
+
+The screen carries one sentence per table. The rest of what it used to say is here, because it is about the
+metering model rather than about the screen.
+
+### The scope is the key's, and there is no selector
+
+There is **no organization or project selector on this page and that is deliberate**: the scope comes from
+the verified identity behind the console's own API key, never from a query parameter. A dropdown here would
+be a control that either does nothing or names somebody else's tenant.
+
+### What puts a row in each table
+
+- **A meter** appears once a run *settles* usage. `coordinator/usage.go` names three: `run.admitted`
+  (unit `run`, settled inside the admission transaction, so a real stack has this row the moment a run is
+  created) and `model.input_tokens` / `model.output_tokens` (unit `token`).
+- **A ledger row** is settled *exactly once* against the model request or run that produced it, so a
+  redelivery adds nothing. **A zero-quantity fact is never written** — `settleUsage` skips it — which is the
+  usual reason a completed run appears in `/history` and nowhere in the ledger.
+- **A budget** is a cumulative cap on a meter prefix: admission refuses a run once settled usage since the
+  period start reaches the limit. **A quota** is the same limit inside a rolling window.
+
+### Ceilings, named
+
+- **Nothing on this screen is a bill.** The metering surface reports consumption and caps it. It carries no
+  price, no invoice and no adjustment entry, anywhere.
+- **`GET /v1/usage` takes no time window.** `summaryView` answers lifetime totals for the scope and the route
+  parses no bounds, so **"spent today" is not answerable from the summary**. The LEDGER is windowed
+  (`?created_after` / `?created_before`) and the totals are not. This is why the overview's token card is
+  labelled all-time rather than daily: a card labelled "today" would be a lifetime figure with a false label.
+- **The write half is E26.** `POST /v1/budgets` and `POST /v1/quotas` exist, are gated on `provision`, and the
+  relay would forward either — so the absence of a form is a *choice*, it is stated on the screen, and
+  `tests/observability.spec.ts` asserts the absence rather than trusting it. There is no CLI verb for either.
+
+---
+
+## 3e. `/capabilities` and `/registry` — what is advertised, and how a model is reached
+
+Two read-only screens, and neither has any write at all.
+
+### `/capabilities` — the tiers are the API's, verbatim
+
+`GET /v1/capabilities` is the discovery surface every client reads to learn what a deployment supports
+without probing each route, and `palai up` has printed it to a terminal since E22.
+
+**The SET differs between deployments by design.** `a2a`, `slack`, `queues`, `knowledge` and
+`capability-workers` are advertised **only where the binary mounted them** (`api/capabilities.go`), so a
+console rendering a fixed list of names would silently hide the one a deployment stopped mounting. A
+capability this binary did not mount is **absent** from the table rather than shown as unavailable, because
+discovery never claims what a deployment cannot serve.
+
+**The tier word is not the console's to soften.** It is recomputed at the exit gate from per-case outcomes
+(`uat.CapabilityTierProof`) and served bit-equal to that recompute, so a prettified word on the screen would
+be a console disagreeing with the gate that decided it. `tests/observability.spec.ts` diffs the rendered
+table against the route's own answer for exactly this reason.
+
+The posture panel shows `maturity`, `isolation` and the configured `store:false` retention TTL — the two
+fields `palai up` prints above the same table, plus the knob the reaper honours. **A TTL of 0 is the
+*disabled* posture**, not a TTL of zero seconds, and the screen says so in words.
+
+### `/registry` — model connections, routes, and knowledge bases
+
+Read-only projections of how a model is reached. **`/v1` mounts no console-reachable create for any of the
+three**, so the absence of a form is the API's shape rather than a simplification.
+
+- **A model connection binds a provider to a secret REF — a NAME.** The value behind it is written
+  server-side and is readable through no route, this console included.
+- **A model route** is E16 T1's read-back of the E13 write-only route surface: a route is created by the
+  provisioning API, and this screen is where it becomes visible.
+- **A knowledge base** is what a retrieval tool searches, created and indexed outside this console. Its
+  projection carries `name` and not `display_name` (`knowledge/views.go`), which the fixture got wrong until
+  E25 T2 because a bootstrap stack's collection is empty and the conformance sweep skips an item comparison
+  when either side has no row.
 
 ---
 

@@ -208,11 +208,23 @@ test("the pool control stays a dropdown and never degrades to a free-text box", 
 //
 // window.confirm IS NOT REPLACED ANYWHERE, and the last test in this file is what keeps that true.
 
+// openRevoke opens the row's ⋯ menu and clicks Revoke inside it.
+//
+// THE CONTROL MOVED INTO A ROW-END MENU (page-parity pass) and this helper is the only thing that changed
+// about these two legs: every assertion below is the one it was, made against the same dialog. The menu
+// deliberately stays OPEN while the dialog is up, because ConfirmDestructive returns focus to the element
+// that opened it and an element removed from the DOM cannot receive it — which is what the last assertion
+// of the Escape leg checks.
+async function openRevoke(page: Page, key: string): Promise<void> {
+  await page.getByTestId(`key-menu-${key}`).click();
+  await page.getByTestId(`revoke-${key}`).click();
+}
+
 test("the revoke dialog is an alertdialog that reviews what is about to die", async ({ page }) => {
   const key = await mintKey(page, await seedProject(page));
   await page.goto("/policy");
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId(`revoke-${key}`).click();
+  await openRevoke(page, key);
 
   const dialog = page.getByTestId("key-revoke-dialog");
   await expect(dialog).toBeVisible();
@@ -245,7 +257,7 @@ test("Tab cannot leave the open dialog, and Escape cancels it", async ({ page })
   const key = await mintKey(page, await seedProject(page));
   await page.goto("/policy");
   await expect(page.getByTestId("panel-api-keys")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId(`revoke-${key}`).click();
+  await openRevoke(page, key);
   await expect(page.getByTestId("key-revoke-dialog")).toBeVisible();
 
   // TWENTY PRESSES, FORWARD AND BACK. The dialog holds two controls, so twenty presses is nine full cycles —
