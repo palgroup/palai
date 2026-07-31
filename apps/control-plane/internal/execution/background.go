@@ -133,8 +133,12 @@ func backgroundMaxWallTime() (limit time.Duration, bounded bool) {
 // backgroundMaxPerRun and backgroundMaxPerHost are §0.3's two ceilings. A non-positive value is an
 // explicit opt-out and means no ceiling — the same shape as the wall time's zero, and the same rule: the
 // unbounded reading requires a written value.
-func backgroundMaxPerRun() int  { return envCeiling("PALAI_BACKGROUND_MAX_PER_RUN", defaultBackgroundMaxPerRun) }
-func backgroundMaxPerHost() int { return envCeiling("PALAI_BACKGROUND_MAX_PER_HOST", defaultBackgroundMaxPerHost) }
+func backgroundMaxPerRun() int {
+	return envCeiling("PALAI_BACKGROUND_MAX_PER_RUN", defaultBackgroundMaxPerRun)
+}
+func backgroundMaxPerHost() int {
+	return envCeiling("PALAI_BACKGROUND_MAX_PER_HOST", defaultBackgroundMaxPerHost)
+}
 
 func envCeiling(name string, def int) int {
 	raw := strings.TrimSpace(os.Getenv(name))
