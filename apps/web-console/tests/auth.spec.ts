@@ -300,15 +300,25 @@ test("the login page is axe-clean and operable with the keyboard alone", async (
 //   /repositories   repository-binding-form   ?binding-provider=…&binding-identity=…&binding-clone-url=…&…
 //   /tools          mcp-connection-form       ?mcp-name=…&mcp-url=…
 //
-// Ten forms render server-side across seven routes; eight carried values, and all ten navigated with a query
-// string.
+// AT THE TIME OF THAT MEASUREMENT ten forms rendered server-side across seven routes; eight carried values,
+// and all ten navigated with a query string. It is written in the past tense on purpose — the table above is
+// a RECORD of what was measured on a tree that no longer exists, and five of those forms are now behind a
+// dialog (see the next paragraph). Re-reading it as a present-tense inventory is how a measurement becomes a
+// belief; what is true TODAY is derived below rather than described here.
 //
-// TWO OF THE TEN LEFT THE SERVED SWEEP (page-parity pass), AND THE ASSERTION BELOW IS UNCHANGED. `/agents`'
-// `agent-create-form` and `/repositories`' `repository-binding-form` are now behind a `+ Create` button as
-// dialogs, so they are not in the server-rendered HTML and DIRECTION 1 cannot see them: the run prints
-// `FORM METHOD SWEEP — 8 served form(s)` where it printed ten. The floor stays at 8, which is now exactly
-// tight — a third form moving behind a dialog turns this red, and that is the safe direction rather than an
-// oversight: it fails loudly and a human reads two lines.
+// FIVE OF THE TEN HAVE LEFT THE SERVED SWEEP, AND THE COUNT IS NO LONGER A NUMBER ANYBODY TYPES. `/agents`'
+// `agent-create-form` and `/repositories`' `repository-binding-form` went behind a `+ Create` button in the
+// page-parity pass; `/policy`'s `key-mint-form` and `/fleet`'s `pool-create-form` and `poolkey-mint-form`
+// followed in the page-parity-govern pass. A form inside a components/FormDialog.tsx renders only after a
+// click, so it is never in the server-rendered HTML and DIRECTION 1 cannot see it.
+//
+// THE FLOOR IS GONE, AND THAT IS THE POINT. It read `>= 8` while the tree served ten, so it was slack by two
+// on the day it landed; two dialogs made it exactly tight, and the third would have turned it red for a
+// change that weakens nothing. A floor is what a "the sweep saw something" guard decays into — each author
+// lowers it to today's reality and the third time nobody notices it reads `>= 1` — and it cannot be shared,
+// because two people moving forms at once means whoever lands second silently breaks a number the first one
+// set. DIRECTION 1 now DERIVES its expectation: ResourceForm mounts per page, minus FormDialog mounts per
+// page, compared per ROUTE. It self-adjusts as forms move and has no number left to lower.
 //
 // The PROPERTY is not weakened, and DIRECTION 2 is why it cannot be. Both dialogs wrap the same
 // components/ResourceForm.tsx, the source walk still resolves to exactly that one file, and that file still
@@ -352,19 +362,89 @@ test("EVERY form the console serves is method=post — the sweep walks the route
   // No session: the static shell renders for an anonymous client (the gate is in the relay, not the layout —
   // see the FAIL-CLOSED test above), which is why a plain fetch is enough to see this markup.
   const swept: string[] = [];
-  for (const path of ["/login", ...CONSOLE_ROUTES.map((r) => r.path)]) {
+  const servedPerRoute = new Map<string, number>();
+  const routes = ["/login", ...CONSOLE_ROUTES.map((r) => r.path)];
+  for (const path of routes) {
     const html = await (await fetch(`${ORIGIN}${path}`)).text();
-    for (const tag of html.match(/<form[^>]*>/g) ?? []) {
+    const tags = html.match(/<form[^>]*>/g) ?? [];
+    servedPerRoute.set(path, tags.length);
+    for (const tag of tags) {
       const testId = /data-testid="([^"]+)"/.exec(tag)?.[1] ?? "(no testid)";
       swept.push(`${path} ${testId}`);
       expect(tag, `${path} serves a form with no method="post" — a native submit puts every named field in the query string: ${tag}`).toMatch(/method="post"/i);
     }
   }
-  // The sweep must have SEEN something. A regex that silently matches nothing is the failure mode this
-  // repository keeps meeting, and it would report green for the condition it exists to detect.
-  expect(swept.length, "the served sweep found no form at all — it is asserting nothing").toBeGreaterThanOrEqual(8);
   // eslint-disable-next-line no-console -- the inventory IS the claim; a reader must see what was covered.
   console.log(`FORM METHOD SWEEP — ${swept.length} served form(s): ${swept.join(", ")}`);
+
+  // THE COUNT IS DERIVED FROM THE SOURCE, AND IT USED TO BE A HAND-TYPED FLOOR (`>= 8`).
+  //
+  // A floor is what a "the sweep saw something" guard degrades into. It was written when the tree held ten
+  // forms, so it was already slack by two on the day it landed; the first form to move into a dialog
+  // legitimately drops the served count, the author lowers the number to match, and the third time nobody
+  // notices it reads `>= 1`. It also cannot be shared: with two people moving forms at once, whoever lands
+  // second silently breaks a number the first one set.
+  //
+  // So the expectation is COMPUTED. `components/ResourceForm.tsx` is structurally the console's only form
+  // element — direction 2 below asserts exactly that, over the whole tree — so every form the console can
+  // serve is one `<ResourceForm` mount in one `app/**/page.tsx`, and counting those mounts per page gives
+  // the number that page must serve. The comparison is per ROUTE rather than in total: a form that moves
+  // between two pages keeps the total identical and is caught here.
+  //
+  // A MOUNT THE SERVER CANNOT RENDER IS SUBTRACTED FROM THE SOURCE, NOT EXCUSED BY A SMALLER NUMBER — and
+  // the subtrahend is counted rather than declared. components/FormDialog.tsx is the shell a create form is
+  // put behind (`+ Create X`), and a form inside one renders only after a click, so it is in the source and
+  // never in the server-rendered HTML. Counting `<FormDialog` mounts per page therefore gives exactly the
+  // forms this route legitimately does not serve, with no list for anybody to keep up to date.
+  //
+  // THE ASSUMPTION IS ONE FORM PER DIALOG, and it is asserted rather than assumed one line down: a page
+  // mounting more FormDialogs than ResourceForms is either a dialog wrapping something that is not a form or
+  // a form that went missing, and both deserve to be read rather than subtracted away.
+  const mountsPerRoute = new Map<string, number>();
+  const appRoot = resolve(process.cwd(), "app");
+  for (const entry of readdirSync(appRoot, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || entry.name !== "page.tsx") continue;
+    const full = resolve(entry.parentPath ?? appRoot, entry.name);
+    const src = readFileSync(full, "utf8");
+    const mounts = (src.match(/<ResourceForm[\s>]/g) ?? []).length;
+    const behindDialog = (src.match(/<FormDialog[\s>]/g) ?? []).length;
+    if (mounts === 0 && behindDialog === 0) continue;
+    // app/page.tsx -> "/", app/policy/page.tsx -> "/policy". The same mapping Next uses for a static route.
+    const dir = full.slice(appRoot.length + 1).replace(/\/?page\.tsx$/, "");
+    const path = dir === "" ? "/" : `/${dir}`;
+    expect(
+      behindDialog,
+      `${path} mounts ${String(behindDialog)} FormDialog(s) and only ${String(mounts)} ResourceForm(s) — this ` +
+        "derivation subtracts one form per dialog, so either a dialog wraps something that is not a form or a " +
+        "form went missing, and neither should be silently subtracted",
+    ).toBeLessThanOrEqual(mounts);
+    mountsPerRoute.set(path, mounts - behindDialog);
+  }
+
+  // A FORM ON A ROUTE THIS SWEEP NEVER VISITS IS THE HOLE THE DERIVATION OPENS, so it is closed first: a page
+  // mounting a form must be one of the paths fetched above. A dynamic segment (`app/sessions/[id]`) cannot be
+  // fetched by this loop, so a form appearing there would otherwise be swept by nothing at all.
+  const unswept = [...mountsPerRoute.keys()].filter((path) => !routes.includes(path));
+  expect(unswept, "a page mounts a form on a route the served sweep cannot fetch — lib/routes.ts declares the swept paths, and a dynamic segment is not one of them").toEqual([]);
+  const expected = [...mountsPerRoute.entries()]
+    .filter(([, served]) => served > 0)
+    .map(([path, served]) => `${path}=${String(served)}`)
+    .sort();
+  const actual = [...servedPerRoute.entries()]
+    .filter(([, n]) => n > 0)
+    .map(([path, n]) => `${path}=${String(n)}`)
+    .sort();
+  // eslint-disable-next-line no-console -- the derivation is the evidence; a bare pass hides which side moved.
+  console.log(`FORM COUNT DERIVED — source mounts ${expected.join(", ")}; served ${actual.join(", ")}`);
+  // The derivation must have found SOMETHING. A walk that matched nothing would make the comparison below
+  // `[] === []`, which is the shape of green this repository keeps having to re-measure.
+  expect(expected.length, "no page.tsx mounts a ResourceForm — the source walk matched nothing and is asserting nothing").toBeGreaterThan(0);
+  expect(
+    actual,
+    "the forms the server SENT are not the forms the source MOUNTS MINUS the ones behind a FormDialog. A page " +
+      "stopped rendering a form it declares, or a dialog was added around something this walk cannot see. " +
+      "Neither is fixed by a smaller number here — the count is derived and has no number to lower.",
+  ).toEqual(expected);
 
   // DIRECTION 2 — THE SOURCE WALK. Every `<form` element in the tree must be ResourceForm's, because that is
   // the one that carries the attribute. A second `<form>` anywhere else would be a form nobody gave a method,

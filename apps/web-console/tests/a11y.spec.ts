@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Page } from "@playwright/test";
 
@@ -128,6 +131,50 @@ for (const route of DYNAMIC_CONSOLE_ROUTES) {
   }
 }
 
+// THE CREATE DIALOGS, AND THEY WERE SCANNED BY NOTHING AT ALL UNTIL THIS LOOP.
+//
+// The generated loop above scans a route AS IT LOADS. A components/FormDialog.tsx renders only after a click,
+// so every create form that moved behind a `+ Create` button left the accessibility evidence the moment it
+// moved — five forms, on four routes, none of them scanned. It is the same hole this file already documents
+// one loop down for the transcript's second tab ("`hidden` takes the whole Debug panel out of the
+// accessibility tree, so the first scan reports a clean bill of health for markup it did not see"), and a
+// modal is the worse case of it: a dialog owns the focus trap, the accessible name and the Escape contract,
+// which is exactly the surface axe has rules for.
+//
+// THE LIST IS DECLARED AND THEN CHECKED AGAINST THE SOURCE, so a sixth dialog cannot ship unscanned. The
+// coverage test at the bottom of this file walks app/**/page.tsx for `<FormDialog` mounts and fails if the
+// count does not match the rows here — the same shape as the route coverage assertion, and for the same
+// reason: a surface nobody scans must be a red test rather than a thing somebody remembers.
+export const FORM_DIALOGS: { route: string; open: string; dialog: string; label: string }[] = [
+  { route: "/agents", open: "agent-create-open", dialog: "agent-create-dialog", label: "Create an agent" },
+  { route: "/repositories", open: "binding-create-open", dialog: "binding-create-dialog", label: "Register a repository binding" },
+  { route: "/policy", open: "key-mint-open", dialog: "key-mint-dialog", label: "Mint an API key" },
+  { route: "/fleet", open: "pool-create-open", dialog: "pool-create-dialog", label: "Create a runner pool" },
+  { route: "/fleet", open: "poolkey-mint-open", dialog: "poolkey-mint-dialog", label: "Mint an enrolment key" },
+];
+
+const scannedDialogs = new Set<string>();
+
+for (const d of FORM_DIALOGS) {
+  test(`axe-core reports zero violations with ${d.dialog} open`, async ({ page }) => {
+    await page.goto(d.route);
+    // The opener is inside a PANEL's head, so it does not exist until that panel has settled — the same
+    // readiness rule the route loop follows, applied one interaction later.
+    await expect(page.getByTestId(d.open)).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId(d.open).click();
+    await expect(page.getByTestId(d.dialog)).toBeVisible();
+    // The ACCESSIBLE NAME, asserted rather than assumed: components/FormDialog.tsx names itself with
+    // `aria-label` precisely because an aria-labelledby into ResourceForm's derived heading id would produce
+    // an EMPTY name if the wording changed — and an empty name is not something axe reports as a violation.
+    await expect(page.getByTestId(d.dialog)).toHaveAttribute("aria-label", d.label);
+    await expect(page.getByTestId(d.dialog)).toHaveAttribute("aria-modal", "true");
+    const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+    expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+    expect(results.passes.length + results.violations.length + results.incomplete.length).toBeGreaterThan(0);
+    scannedDialogs.add(d.dialog);
+  });
+}
+
 // THIS TEST KEEPS ITS NAME, and the reason is a record rather than a preference: tests/uat/cases/UI-001 —
 // a SHIPPED case inside the committed extensions-0.1.0 bundle — declares this exact title as one of its
 // proofs, and tests/uat/extensions resolves every declared proof to a real `test("<title>"` in the tree. A
@@ -250,6 +297,25 @@ test("every route lib/routes.ts declares was actually scanned by axe", () => {
   // eslint-disable-next-line no-console -- the count is the evidence.
   console.log(`AXE SECOND-TAB COVERAGE — ${scannedSecondTabs.size}/${declaredSecond.length} declared second tab(s) opened and scanned: ${[...scannedSecondTabs].sort().join(", ")}`);
   expect([...scannedSecondTabs].sort(), "a route declares a second tab that no axe scan opened").toEqual(declaredSecond);
+  // AND THE CREATE DIALOGS, DERIVED FROM THE SOURCE RATHER THAN COUNTED BY HAND. A `<FormDialog` mount in a
+  // page is a surface that exists only after a click; if the number of them stops matching the rows in
+  // FORM_DIALOGS, a dialog has shipped that no scan opens — which is the unscanned page in its newest
+  // disguise, and the one this file exists to make impossible.
+  const appRoot = resolve(process.cwd(), "app");
+  let mounted = 0;
+  for (const entry of readdirSync(appRoot, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || entry.name !== "page.tsx") continue;
+    mounted += (readFileSync(resolve(entry.parentPath ?? appRoot, entry.name), "utf8").match(/<FormDialog[\s>]/g) ?? []).length;
+  }
+  // eslint-disable-next-line no-console -- the count is the evidence.
+  console.log(`AXE DIALOG COVERAGE — ${scannedDialogs.size}/${String(FORM_DIALOGS.length)} declared dialog(s) scanned; ${String(mounted)} FormDialog mount(s) in app/**/page.tsx`);
+  expect(scannedDialogs.size, "a dialog declared in FORM_DIALOGS was never opened by a scan").toBe(FORM_DIALOGS.length);
+  expect(
+    mounted,
+    "the tree mounts a number of FormDialogs that FORM_DIALOGS does not describe. A create form behind a " +
+      "button is scanned by nothing until a test opens it, so a mount with no row here is an unscanned modal.",
+  ).toBe(FORM_DIALOGS.length);
+
   // A ROUTE WITH NO LEAD SENTENCE IS THE SAME OMISSION AS ONE WITH NO READINESS SIGNAL, and it fails the
   // same way. Every page in this console used to open with a panel or a wall of equally-weighted notes,
   // and the only h1 on any of them was the brand — so "which page is this and what is it for" had no

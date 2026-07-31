@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { ConfirmDestructive } from "@/components/ConfirmDestructive";
+import { FormDialog } from "@/components/FormDialog";
 import { NameCell, Panel } from "@/components/Panel";
 import { Picker, type PickerOption } from "@/components/Picker";
 import { ResourceForm } from "@/components/ResourceForm";
@@ -47,11 +48,11 @@ import { useQueryParam } from "@/lib/urlState";
 //      why: "A MACHINE ENROLMENT HAS NO REQUEST HASH TO BIND TO", while the /v1/approvals decision route
 //      requires one. Both screens name the other's.
 //
-// THE TWO FORMS ARE STILL ON THE PAGE, AND THAT IS A BLOCKED MOVE RATHER THAN A CHOICE.
-// TODO(component-layer): Dialog — "Create a runner pool" and "Mint an enrolment key" both want to be dialogs
-// behind a primary action in their panel's head. tests/auth.spec.ts asserts the served form sweep sees at
-// least EIGHT forms and `grep -rc "<ResourceForm" app` is 10 today; a dialog-mounted form is not in the
-// server-rendered HTML, so moving these two plus /policy's mint takes that count to 7.
+// BOTH FORMS ARE DIALOGS NOW, BEHIND THE PRIMARY ACTION OF THE PANEL THEY ADD A ROW TO. They sat open in the
+// middle of the page, between the pool table and the key table, so the screen's spine was table-form-table-
+// form and the two tables an operator came to read were the first and fourth things on it.
+// components/FormDialog.tsx is the shell (page-parity pass); tests/auth.spec.ts's served-form sweep derives
+// its expected count as ResourceForm mounts MINUS FormDialog mounts, so this move needed no number lowered.
 
 interface PoolRow extends Record<string, unknown> {
   id?: string;
@@ -144,6 +145,9 @@ export default function FleetPage() {
   const [poolArch, setPoolArch] = useState("");
   const [poolStrict, setPoolStrict] = useState(false);
   const [creating, setCreating] = useState(false);
+  /** The two create dialogs. A create form is a MODE; the panel's own button is what enters it. */
+  const [poolOpen, setPoolOpen] = useState(false);
+  const [mintOpen, setMintOpen] = useState(false);
   const [createError, setCreateError] = useState("");
   const [createStatus, setCreateStatus] = useState("");
   const [strictStatus, setStrictStatus] = useState("");
@@ -211,6 +215,7 @@ export default function FleetPage() {
             : "Enrolling into it needs only a key — anything holding one joins without being asked about."),
       );
       setPoolName("");
+      setPoolOpen(false);
       setPoolReload((n) => n + 1);
     } catch (err: unknown) {
       setCreateError(detail(err, "the pool could not be created"));
@@ -246,6 +251,7 @@ export default function FleetPage() {
     setMinted(null);
     try {
       setMinted(await apiSend<MintedPoolKey>("POST", `/runner-pools/${encodeURIComponent(keyPool)}/keys`));
+      setMintOpen(false);
       setKeyReload((n) => n + 1);
     } catch (err: unknown) {
       setMintError(detail(err, "the enrolment key could not be minted"));
@@ -409,6 +415,11 @@ export default function FleetPage() {
         fetchPath="/runner-pools"
         reloadKey={poolReload}
         onRows={setPools}
+        action={
+          <button type="button" className="primary" data-testid="pool-create-open" onClick={() => setPoolOpen(true)}>
+            + Create pool
+          </button>
+        }
         columns={[
           { header: "ID", sort: (r) => String(r.id ?? ""), render: (r) => <IdCell id={String(r.id ?? "")} label="pool ID" /> },
           {
@@ -504,6 +515,18 @@ export default function FleetPage() {
         }
       />
 
+      {/* THE CREATE OUTCOME IS ON THE LIST, NOT IN THE DIALOG. The dialog closes on success, so a status
+          rendered inside it would be a confirmation that vanishes at the moment it is earned — and what this
+          sentence says (which posture the pool got, and whether enrolling into it now needs a human) is the
+          thing the operator opened the form to decide. Same shape as app/repositories/page.tsx. */}
+      {createStatus === "" ? null : (
+        <p role="status" className="form-status" data-testid="pool-create-status">
+          <span className="glyph" aria-hidden="true">
+            ✔
+          </span>{" "}
+          {createStatus}
+        </p>
+      )}
       {strictStatus === "" ? null : (
         <p role="status" className="form-status" data-testid="pool-strict-status">
           <span className="glyph" aria-hidden="true">
@@ -521,80 +544,92 @@ export default function FleetPage() {
         </p>
       )}
 
-      {/* TODO(component-layer): Dialog — this is the pool panel's primary action wearing a section. See the
-          header for the shipped guard that holds it here. */}
-      <ResourceForm
-        title="Create a runner pool"
-        testId="pool-create"
-        fields={[
-          {
-            name: "pool-name",
-            label: "Name",
-            value: poolName,
-            onChange: setPoolName,
-            required: true,
-            hint: "Unique within this project. A second pool with the same name is refused rather than created.",
-            testId: "pool-name-input",
-          },
-          {
-            name: "pool-posture",
-            label: "Posture",
-            kind: "select",
-            value: posture,
-            onChange: setPosture,
-            options: [
-              { value: "sandboxed-linux", label: "sandboxed-linux — a container the control plane isolates" },
-              { value: "unsandboxed-host", label: "unsandboxed-host — a real machine, e.g. a rented Mac" },
-            ],
-            testId: "pool-posture-select",
-            hint: "Decided once and never afterwards: a machine inherits it at enrolment, so changing it would change what the machines already here are.",
-            emptyNote: <>No postures are available, which cannot happen — this list is fixed in the schema.</>,
-          },
-          {
-            name: "pool-os",
-            label: "Operating system (optional)",
-            value: poolOS,
-            onChange: setPoolOS,
-            hint: "The shape this pool expects, e.g. darwin. Leave it empty to accept any.",
-            testId: "pool-os-input",
-          },
-          {
-            name: "pool-arch",
-            label: "Architecture (optional)",
-            value: poolArch,
-            onChange: setPoolArch,
-            hint: "e.g. arm64. Leave it empty to accept any.",
-            testId: "pool-arch-input",
-          },
-        ]}
-        submitLabel="Create pool"
-        submittingLabel="Creating…"
-        submitTestId="pool-create-button"
-        submitting={creating}
-        error={createError}
-        status={createStatus}
-        onSubmit={createPool}
-      >
-        <fieldset data-testid="pool-strict-fieldset">
-          <legend>Enrolment</legend>
-          <label htmlFor="pool-strict-input">
-            <input
-              id="pool-strict-input"
-              type="checkbox"
-              checked={poolStrict}
-              data-testid="pool-strict-input"
-              aria-describedby="pool-strict-hint"
-              onChange={(e) => setPoolStrict(e.target.checked)}
-            />{" "}
-            Require a human to admit each machine
-          </label>
-          <p className="muted" id="pool-strict-hint">
-            With this off, any machine holding a valid pool key joins immediately. With it on, it waits in the
-            room below until somebody admits it — and admitting takes the <code>approve</code> capability,
-            which <code>provision</code> deliberately does not cover.
-          </p>
-        </fieldset>
-      </ResourceForm>
+      {/* THE CREATE FORM IS BEHIND THE PANEL'S OWN BUTTON. It was five fields and a fieldset sitting open
+          between the pool table and the key table, read past on every visit by an operator who came to look
+          at a machine. It closes on success, so the new row in the table above is what is left on screen. */}
+      {poolOpen ? (
+        <FormDialog
+          label="Create a runner pool"
+          testId="pool-create-dialog"
+          onClose={() => {
+            setPoolOpen(false);
+            setCreateError("");
+          }}
+        >
+          <ResourceForm
+            title="Create a runner pool"
+            testId="pool-create"
+            fields={[
+              {
+                name: "pool-name",
+                label: "Name",
+                value: poolName,
+                onChange: setPoolName,
+                required: true,
+                hint: "Unique within this project. A second pool with the same name is refused rather than created.",
+                testId: "pool-name-input",
+              },
+              {
+                name: "pool-posture",
+                label: "Posture",
+                kind: "select",
+                value: posture,
+                onChange: setPosture,
+                options: [
+                  { value: "sandboxed-linux", label: "sandboxed-linux — a container the control plane isolates" },
+                  { value: "unsandboxed-host", label: "unsandboxed-host — a real machine, e.g. a rented Mac" },
+                ],
+                testId: "pool-posture-select",
+                hint: "Decided once and never afterwards: a machine inherits it at enrolment, so changing it would change what the machines already here are.",
+                emptyNote: <>No postures are available, which cannot happen — this list is fixed in the schema.</>,
+              },
+              {
+                name: "pool-os",
+                label: "Operating system (optional)",
+                value: poolOS,
+                onChange: setPoolOS,
+                hint: "The shape this pool expects, e.g. darwin. Leave it empty to accept any.",
+                testId: "pool-os-input",
+              },
+              {
+                name: "pool-arch",
+                label: "Architecture (optional)",
+                value: poolArch,
+                onChange: setPoolArch,
+                hint: "e.g. arm64. Leave it empty to accept any.",
+                testId: "pool-arch-input",
+              },
+            ]}
+            submitLabel="Create pool"
+            submittingLabel="Creating…"
+            submitTestId="pool-create-button"
+            submitting={creating}
+            error={createError}
+            status={createStatus}
+            onSubmit={createPool}
+          >
+            <fieldset data-testid="pool-strict-fieldset">
+              <legend>Enrolment</legend>
+              <label htmlFor="pool-strict-input">
+                <input
+                  id="pool-strict-input"
+                  type="checkbox"
+                  checked={poolStrict}
+                  data-testid="pool-strict-input"
+                  aria-describedby="pool-strict-hint"
+                  onChange={(e) => setPoolStrict(e.target.checked)}
+                />{" "}
+                Require a human to admit each machine
+              </label>
+              <p className="muted" id="pool-strict-hint">
+                With this off, any machine holding a valid pool key joins immediately. With it on, it waits in the
+                room below until somebody admits it — and admitting takes the <code>approve</code> capability,
+                which <code>provision</code> deliberately does not cover.
+              </p>
+            </fieldset>
+          </ResourceForm>
+        </FormDialog>
+      ) : null}
 
       {/* --- 2. THE KEYS ------------------------------------------------------------------------------- */}
       <Picker
@@ -622,6 +657,11 @@ export default function FleetPage() {
           testId="panel-runner-pool-keys"
           fetchPath={`/runner-pools/${encodeURIComponent(keyPool)}/keys`}
           reloadKey={keyReload}
+          action={
+            <button type="button" className="primary" data-testid="poolkey-mint-open" onClick={() => setMintOpen(true)}>
+              + Mint key
+            </button>
+          }
           note="Metadata only. A key's value exists in the mint response and nowhere else — the store keeps no copy, so there is no route that reads one back."
           emptyNote={
             <>
@@ -729,25 +769,38 @@ export default function FleetPage() {
         </p>
       )}
 
-      {/* TODO(component-layer): Dialog — the key panel's primary action, same as above. */}
-      <ResourceForm
-        title="Mint an enrolment key"
-        testId="poolkey-mint"
-        note={
-          <>
-            The value is shown <strong>once</strong>, here, and is retrievable from nowhere afterwards. It is
-            what a machine presents when it first dials the runner plane, so it belongs in that machine&apos;s
-            configuration and nowhere else.
-          </>
-        }
-        fields={[]}
-        submitLabel="Mint key"
-        submittingLabel="Minting…"
-        submitTestId="poolkey-mint-button"
-        submitting={minting}
-        error={mintError}
-        onSubmit={mintKey}
-      />
+      {/* SAME MOVE, AND THIS ONE HAD NO FIELDS AT ALL — a section, a heading, a paragraph and one button,
+          which is a lot of page for a control that takes no input. It closes on success, leaving the reveal
+          region holding the one-time value as the only thing on screen. */}
+      {mintOpen ? (
+        <FormDialog
+          label="Mint an enrolment key"
+          testId="poolkey-mint-dialog"
+          onClose={() => {
+            setMintOpen(false);
+            setMintError("");
+          }}
+        >
+          <ResourceForm
+            title="Mint an enrolment key"
+            testId="poolkey-mint"
+            note={
+              <>
+                The value is shown <strong>once</strong>, here, and is retrievable from nowhere afterwards. It is
+                what a machine presents when it first dials the runner plane, so it belongs in that machine&apos;s
+                configuration and nowhere else.
+              </>
+            }
+            fields={[]}
+            submitLabel="Mint key"
+            submittingLabel="Minting…"
+            submitTestId="poolkey-mint-button"
+            submitting={minting}
+            error={mintError}
+            onSubmit={mintKey}
+          />
+        </FormDialog>
+      ) : null}
 
       {minted === null ? null : (
         <RevealOnce
