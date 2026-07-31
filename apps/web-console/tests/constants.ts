@@ -2,6 +2,13 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+// NOTHING IN THIS FILE MAY RUN AT MODULE SCOPE, and nothing may import `@playwright/test`.
+// playwright.config.ts imports this module at CONFIG LOAD — before any test context exists — so a top-level
+// call here executes on every single run before collection, and a `@playwright/test` import there fails the
+// whole run outright. Export functions and plain data; let the caller decide when to pay. (Recorded after
+// `formDialogMountCount` moved here from a spec: the next value somebody wants will be tempting to compute
+// once at the top, and that is the shape to refuse.)
+//
 // Shared between the Playwright config (which injects them into the servers) and the tests (which scan
 // for the credential + assert the relay origin).
 //
@@ -130,6 +137,13 @@ export const FORM_DIALOGS: { route: string; open: string; dialog: string; label:
  * NODE BUILTINS ONLY, deliberately. playwright.config.ts imports this module at CONFIG LOAD, before any test
  * context exists, so a `@playwright/test` import here would take the whole run down at collection — the same
  * failure class as the spec-to-spec import that sent FORM_DIALOGS to this file in the first place.
+ *
+ * AND IT IS A FUNCTION RATHER THAN A CONST, WHICH IS THE HALF THE PARAGRAPH ABOVE DOES NOT COVER. The
+ * tempting shape for a value that never changes during a run is `export const FORM_DIALOG_MOUNTS =
+ * countThem()` — and at module scope that walks the whole app tree on EVERY config load, including the ones
+ * that have nothing to do with these two specs, and takes the run down before collection if it ever throws
+ * on a permission or a half-written file. A caller pays for the walk when it needs the number; nobody else
+ * pays for it at all. See the file header: this module must stay side-effect-free.
  */
 export function formDialogMountCount(): number {
   const appRoot = resolve(process.cwd(), "app");
