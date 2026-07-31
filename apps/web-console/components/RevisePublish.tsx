@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { ResourceForm, type FormField } from "@/components/ResourceForm";
 import { apiGet, apiSend, RelayError } from "@/lib/api";
 
@@ -237,7 +238,27 @@ export function RevisePublish({
         </p>
       )}
 
-      <section className="panel" data-testid={`panel-${testId}s`} aria-labelledby={`${testId}s-h`}>
+      {/* THE NAME IS WITHHELD UNTIL THE ROWS SETTLE, which is components/Panel.tsx's rule applied to the one
+          panel in this console that was not following it (found by page-parity).
+
+          This section emitted `panel-<testId>s` from its FIRST PAINT with "Loading…" inside it, so anything
+          waiting on the panel got a truthy answer about a region holding a spinner. That is the defect
+          tests/reveal-once.spec.ts failed on this morning, and the one the popup and dialog scans in
+          tests/a11y.spec.ts exist to stop: a container that answers to its name before it has content makes
+          every downstream measurement look clean while looking at nothing. An axe scan arriving here would
+          have reported zero violations for a table it never saw.
+
+          ONE SECTION, NOT TWO. Panel.tsx returns a separate pending section because it returns EARLY; doing
+          that here would put a second `id="<testId>s-h"` in the document for aria-labelledby to point at,
+          which trades this defect for an ambiguous accessible name. Swapping the testid on the one section
+          buys the same property — the wait cannot be satisfied early — and moves nothing on screen, which is
+          the other half of Panel's rule. `aria-busy` is the machine-readable half of the word. */}
+      <section
+        className="panel"
+        data-testid={listError === "" && revisions === null ? `panel-${testId}s-loading` : `panel-${testId}s`}
+        aria-labelledby={`${testId}s-h`}
+        aria-busy={listError === "" && revisions === null ? "true" : undefined}
+      >
         <h2 id={`${testId}s-h`}>Revisions</h2>
         {/* ONE SENTENCE (page-parity pass). This was three: newest-first, no PATCH, and publishing being
             permanent — all true, all standing background, and all repeated by the create form's own note two
@@ -252,7 +273,7 @@ export function RevisePublish({
             Error: {listError}
           </p>
         ) : revisions === null ? (
-          <p className="loading" data-testid={`panel-${testId}s-loading`}>Loading…</p>
+          <p className="loading">Loading…</p>
         ) : revisions.length === 0 ? (
           // THE MEASURED EMPTY-STATE SHAPE (design-reference/screen-inventory.md §3): a title, then one
           // sentence saying what the thing IS. This read "No revisions yet." — three words that teach
@@ -305,9 +326,9 @@ export function RevisePublish({
                       {published ? (
                         <span>— already published</span>
                       ) : (
-                        <button type="button" data-testid={`publish-${id}`} onClick={() => void publish(rev)}>
+                        <Button testId={`publish-${id}`} onClick={() => void publish(rev)}>
                           Publish {id}
-                        </button>
+                        </Button>
                       )}
                     </td>
                   </tr>

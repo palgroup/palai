@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { apiSend, RelayError } from "@/lib/api";
 
 export interface PendingApproval {
@@ -84,12 +85,12 @@ export function ApprovalPanel({
       ) : null}
 
       <div>
-        <button type="button" className="primary" data-testid="approve-button" disabled={busy} onClick={() => resolve("approve")}>
+        <Button variant="primary" testId="approve-button" disabled={busy} onClick={() => resolve("approve")}>
           Approve this exact operation
-        </button>{" "}
-        <button type="button" data-testid="deny-button" disabled={busy} onClick={() => resolve("deny")}>
+        </Button>{" "}
+        <Button testId="deny-button" disabled={busy} onClick={() => resolve("deny")}>
           Deny
-        </button>
+        </Button>
       </div>
     </section>
   );

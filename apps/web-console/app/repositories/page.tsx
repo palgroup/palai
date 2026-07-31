@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+import { Button } from "@/components/ui/Button";
+import { Menu } from "@/components/ui/Menu";
 import { FormDialog } from "@/components/FormDialog";
 import { Panel, type Column } from "@/components/Panel";
 import { ResourceForm } from "@/components/ResourceForm";
@@ -47,7 +49,6 @@ const csv = (raw: string): string[] =>
 
 export default function RepositoriesPage() {
   const [reloadKey, setReloadKey] = useState(0);
-  const [menu, setMenu] = useState("");
   const [open, setOpen] = useState(false);
 
   const [provider, setProvider] = useState("github");
@@ -192,27 +193,13 @@ export default function RepositoriesPage() {
         const id = String(r.id ?? "");
         return (
           <div className="row-menu">
-            <button
-              type="button"
-              className="row-menu-toggle"
-              aria-expanded={menu === id}
-              aria-controls={`menu-${id}`}
-              aria-label={`Actions for binding ${id}`}
-              data-testid="binding-menu"
-              onClick={() => setMenu(menu === id ? "" : id)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setMenu("");
-              }}
-            >
-              <span aria-hidden="true">⋯</span>
-            </button>
-            {menu === id ? (
-              <div className="row-menu-panel" id={`menu-${id}`}>
-                <a href={`/repositories/${encodeURIComponent(id)}`} data-testid="binding-menu-open">
-                  Open binding
-                </a>
-              </div>
-            ) : null}
+            <Menu
+              label={`Actions for binding ${id}`}
+              trigger={<span aria-hidden="true">⋯</span>}
+              triggerClassName="row-menu-toggle"
+              triggerTestId="binding-menu"
+              items={[{ label: "Open binding", href: `/repositories/${encodeURIComponent(id)}`, testId: "binding-menu-open" }]}
+            />
           </div>
         );
       },
@@ -240,9 +227,9 @@ export default function RepositoriesPage() {
         filterLabel="Search bindings by repository or ID"
         filterPlaceholder="Repository or ID…"
         action={
-          <button type="button" className="primary" data-testid="binding-create-open" onClick={() => setOpen(true)}>
+          <Button variant="primary" testId="binding-create-open" onClick={() => setOpen(true)}>
             + Register binding
-          </button>
+          </Button>
         }
         emptyNote={
           <>
@@ -253,9 +240,9 @@ export default function RepositoriesPage() {
               A binding is the object a coding run attaches its workspace through — the provider, the
               repository&apos;s own identity, and the handle of the credential that reaches it.
             </p>
-            <button type="button" className="primary" data-testid="binding-create-open-empty" onClick={() => setOpen(true)}>
+            <Button variant="primary" testId="binding-create-open-empty" onClick={() => setOpen(true)}>
               Register one
-            </button>
+            </Button>
           </>
         }
       />
@@ -385,16 +372,15 @@ export default function RepositoriesPage() {
             error={error}
             onSubmit={create}
             actions={
-              <button
-                type="button"
-                data-testid="binding-create-cancel"
+              <Button
+                testId="binding-create-cancel"
                 onClick={() => {
                   setOpen(false);
                   setError("");
                 }}
               >
                 Cancel
-              </button>
+              </Button>
             }
           />
         </FormDialog>

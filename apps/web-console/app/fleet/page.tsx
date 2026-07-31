@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+import { Menu } from "@/components/ui/Menu";
+import { Button } from "@/components/ui/Button";
 import { ConfirmDestructive } from "@/components/ConfirmDestructive";
 import { FormDialog } from "@/components/FormDialog";
 import { NameCell, Panel } from "@/components/Panel";
@@ -182,7 +184,6 @@ export default function FleetPage() {
    *  components/ConfirmDestructive.tsx returns focus to the element that was focused when it opened, and an
    *  element removed from the DOM in the same click cannot receive it — Escape would then drop focus to
    *  <body>, which is the one outcome a modal's cancel must not have. The toggle and Escape close it. */
-  const [menu, setMenu] = useState("");
 
   const [admitStatus, setAdmitStatus] = useState("");
   const [admitErrors, setAdmitErrors] = useState<Record<string, string>>({});
@@ -463,41 +464,19 @@ export default function FleetPage() {
               const strict = r.strict_enrollment === true;
               return (
                 <div className="row-menu">
-                  <button
-                    type="button"
-                    className="row-menu-toggle"
-                    aria-expanded={menu === `pool-${id}`}
-                    aria-controls={`menu-pool-${id}`}
-                    aria-label={`Actions for pool ${id}`}
-                    data-testid={`pool-menu-${id}`}
-                    onClick={() => setMenu(menu === `pool-${id}` ? "" : `pool-${id}`)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") setMenu("");
-                    }}
-                  >
-                    <span aria-hidden="true">⋯</span>
-                  </button>
-                  {menu === `pool-${id}` ? (
-                    <div className="row-menu-panel" id={`menu-pool-${id}`}>
-                      {/* TWO ITEMS, AND THAT IS THE API: a pool's whole write surface after creation is
-                          PATCH /v1/runner-pools/{id} with `strict_enrollment`, and there is no delete.
-                          Selecting it is not a write; it is where the keys below are read from. */}
-                      <button
-                        type="button"
-                        data-testid={`pool-strict-${id}`}
-                        onClick={() => void setStrict(r, !strict)}
-                      >
-                        {strict ? "Open enrolment" : "Require approval"}
-                      </button>
-                      <button
-                        type="button"
-                        data-testid={`pool-keys-${id}`}
-                        onClick={() => setKeyPool(id)}
-                      >
-                        Show enrolment keys
-                      </button>
-                    </div>
-                  ) : null}
+                  <Menu
+                    label={`Actions for pool ${id}`}
+                    trigger={<span aria-hidden="true">⋯</span>}
+                    triggerClassName="row-menu-toggle"
+                    triggerTestId={`pool-menu-${id}`}
+                    // TWO ITEMS, AND THAT IS THE API: a pool's whole write surface after creation is
+                    // PATCH /v1/runner-pools/{id} with `strict_enrollment`, and there is no delete.
+                    // Selecting it is not a write; it is where the keys below are read from.
+                    items={[
+                      { label: strict ? "Open enrolment" : "Require approval", testId: `pool-strict-${id}`, onSelect: () => void setStrict(r, !strict) },
+                      { label: "Show enrolment keys", testId: `pool-keys-${id}`, onSelect: () => setKeyPool(id) },
+                    ]}
+                  />
                 </div>
               );
             },
@@ -704,32 +683,13 @@ export default function FleetPage() {
                 if (r.revoked_at !== undefined) return <span className="cell-none">—</span>;
                 return (
                   <div className="row-menu">
-                    <button
-                      type="button"
-                      className="row-menu-toggle"
-                      aria-expanded={menu === `poolkey-${id}`}
-                      aria-controls={`menu-poolkey-${id}`}
-                      aria-label={`Actions for enrolment key ${id}`}
-                      data-testid={`poolkey-menu-${id}`}
-                      onClick={() => setMenu(menu === `poolkey-${id}` ? "" : `poolkey-${id}`)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Escape") setMenu("");
-                      }}
-                    >
-                      <span aria-hidden="true">⋯</span>
-                    </button>
-                    {menu === `poolkey-${id}` ? (
-                      <div className="row-menu-panel" id={`menu-poolkey-${id}`}>
-                        <button
-                          type="button"
-                          className="danger"
-                          data-testid={`revoke-poolkey-${id}`}
-                          onClick={() => setRevokingKey(r)}
-                        >
-                          Revoke {id}
-                        </button>
-                      </div>
-                    ) : null}
+                    <Menu
+                      label={`Actions for enrolment key ${id}`}
+                      trigger={<span aria-hidden="true">⋯</span>}
+                      triggerClassName="row-menu-toggle"
+                      triggerTestId={`poolkey-menu-${id}`}
+                      items={[{ label: `Revoke ${id}`, testId: `revoke-poolkey-${id}`, danger: true, onSelect: () => setRevokingKey(r) }]}
+                    />
                   </div>
                 );
               },
@@ -881,49 +841,23 @@ export default function FleetPage() {
               if (r.state === "revoked") return <span className="cell-none">— decommissioned</span>;
               return (
                 <div className="row-menu">
-                  <button
-                    type="button"
-                    className="row-menu-toggle"
-                    aria-expanded={menu === `runner-${id}`}
-                    aria-controls={`menu-runner-${id}`}
-                    aria-label={`Actions for machine ${id}`}
-                    data-testid={`runner-menu-${id}`}
-                    onClick={() => setMenu(menu === `runner-${id}` ? "" : `runner-${id}`)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") setMenu("");
-                    }}
-                  >
-                    <span aria-hidden="true">⋯</span>
-                  </button>
-                  {menu === `runner-${id}` ? (
-                    <div className="row-menu-panel" id={`menu-runner-${id}`}>
-                      {r.state === "pending" ? null : r.state === "cordoned" ? (
-                        <button
-                          type="button"
-                          data-testid={`runner-resume-${id}`}
-                          onClick={() => void move(r, "resume")}
-                        >
-                          Resume {id}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          data-testid={`runner-cordon-${id}`}
-                          onClick={() => void move(r, "cordon")}
-                        >
-                          Cordon {id}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="danger"
-                        data-testid={`runner-revoke-${id}`}
-                        onClick={() => void openRevoke(r)}
-                      >
-                        Revoke {id}
-                      </button>
-                    </div>
-                  ) : null}
+                  <Menu
+                    label={`Actions for machine ${id}`}
+                    trigger={<span aria-hidden="true">⋯</span>}
+                    triggerClassName="row-menu-toggle"
+                    triggerTestId={`runner-menu-${id}`}
+                    // A PENDING MACHINE HAS NO LIFECYCLE ITEM — it is admitted from the waiting room below,
+                    // not cordoned — so the list is BUILT rather than rendered with a null in it. A menu that
+                    // holds a hole announces its own item count wrong to a screen reader.
+                    items={[
+                      ...(r.state === "pending"
+                        ? []
+                        : r.state === "cordoned"
+                          ? [{ label: `Resume ${id}`, testId: `runner-resume-${id}`, onSelect: () => void move(r, "resume") }]
+                          : [{ label: `Cordon ${id}`, testId: `runner-cordon-${id}`, onSelect: () => void move(r, "cordon") }]),
+                      { label: `Revoke ${id}`, testId: `runner-revoke-${id}`, danger: true, onSelect: () => void openRevoke(r) },
+                    ]}
+                  />
                 </div>
               );
             },
@@ -1040,10 +974,10 @@ export default function FleetPage() {
                           machine is APPENDED to "Admit" rather than replacing it with an aria-label. Seven
                           buttons each reading a 16-character hash is a column of noise; seven buttons all
                           reading "Admit" are indistinguishable to a screen reader. This is both. */}
-                      <button type="button" className="primary" data-testid={`admit-${id}`} onClick={() => void admit(row)}>
+                      <Button variant="primary" testId={`admit-${id}`} onClick={() => void admit(row)}>
                         Admit
                         <span className="sr-only"> {id}</span>
-                      </button>
+                      </Button>
                       {refusal === "" ? null : (
                         <p role="alert" className="form-error" data-testid={`admit-${id}-error`}>
                           <span className="glyph" aria-hidden="true">

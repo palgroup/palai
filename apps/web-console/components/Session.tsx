@@ -2,6 +2,7 @@
 
 import { useId, useState, type ReactNode } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { apiSend, RelayError } from "@/lib/api";
 import { absoluteTime, relativeTime, type NameSource, type SessionRow } from "@/lib/sessions";
 
@@ -54,7 +55,7 @@ export function CopyButton({ value, label, testId, children }: { value: string; 
 
   return (
     <span className="copy">
-      <button type="button" className="copy-button" data-testid={testId} onClick={copy}>
+      <Button className="copy-button" testId={testId} onClick={copy}>
         {children ?? (
           <span className="glyph" aria-hidden="true">
             ⧉
@@ -63,7 +64,7 @@ export function CopyButton({ value, label, testId, children }: { value: string; 
         {/* SC 2.5.3 Label in Name: the accessible name must CONTAIN the visible one, so the action is
             APPENDED to whatever is on screen rather than replacing it with an aria-label. */}
         <span className="sr-only">{children === undefined ? `Copy ${label}` : ` — copy ${label}`}</span>
-      </button>
+      </Button>
       <span role="status" className="sr-only" data-testid={`${testId}-said`}>
         {said}
       </span>
@@ -242,12 +243,12 @@ export function RenameSession({
             if (e.key === "Escape") onCancel();
           }}
         />
-        <button type="button" className="primary" disabled={busy} aria-busy={busy ? "true" : undefined} data-testid={`${testId}-save`} onClick={() => void submit()}>
+        <Button variant="primary" disabled={busy} aria-busy={busy ? "true" : undefined} testId={`${testId}-save`} onClick={() => void submit()}>
           {busy ? "…" : "Save"}
-        </button>
-        <button type="button" onClick={onCancel} data-testid={`${testId}-cancel`}>
+        </Button>
+        <Button onClick={onCancel} testId={`${testId}-cancel`}>
           Cancel
-        </button>
+        </Button>
       </div>
       {error === "" ? null : (
         <p role="alert" className="form-error" data-testid={`${testId}-error`}>

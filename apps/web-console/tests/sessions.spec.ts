@@ -4,7 +4,7 @@ import { shortId } from "../components/Session";
 import { compactTokens, LANE_LABEL, type SessionRow } from "../lib/sessions";
 import { laneFor } from "../lib/timeline";
 import { NEXT_PORT } from "./constants";
-import { announceProfile, resetFakeFixture, sessionHeaders, signIn, skipOnReal } from "./profile";
+import { announceProfile, chooseOption, chooseOptionByLabel, resetFakeFixture, sessionHeaders, signIn, skipOnReal } from "./profile";
 
 // THE TWO SESSION SCREENS, DRIVEN THROUGH THE BROWSER (E29).
 //
@@ -151,6 +151,72 @@ test("the search box is scoped to the ID, and proves it by not finding a name th
   await expect(page.getByTestId("panel-sessions").getByTestId("session-link")).toHaveAttribute("title", data[0].id);
 });
 
+// THE DROPDOWN IS OPERABLE WITH NO MOUSE, AND IT IS THE HEADLINE OF THE COMPONENT LAYER SO IT IS MEASURED
+// RATHER THAN CITED (E29).
+//
+// The seven native <select>s became components/ui/Select over @base-ui/react, and every other test in this
+// file drives one by CLICKING — tests/profile.ts's chooseOption clicks the trigger and clicks a row. That
+// proves the popup opens and the value lands; it proves nothing at all about the keyboard, which is exactly
+// what a hand-rolled dropdown loses first and what a headless library is adopted FOR. A claim that the
+// library "supplies keyboard navigation" is a citation, and this repository does not accept citations for
+// behaviour on the shipped page.
+//
+// So this drives the whole interaction from the keyboard: Tab to the control, open it, move within the
+// listbox, commit, and dismiss the next one with Escape. The ROLES are asserted alongside, because they are
+// what a screen reader reads and they were absent from this console entirely before — measured on d8ca934b,
+// `grep -rn 'role="listbox"' components app` → 0.
+test("the status dropdown opens, moves and commits from the keyboard alone, and Escape abandons", async ({ page }) => {
+  await openList(page);
+  const trigger = page.getByTestId("session-status-filter");
+
+  // THE ROLES FIRST. A <button> that merely looks like a dropdown announces itself as a button; these three
+  // attributes are what make a screen reader say "combo box, collapsed" and then read the list.
+  await expect(trigger).toHaveJSProperty("tagName", "BUTTON");
+  await expect(trigger).toHaveAttribute("role", "combobox");
+  await expect(trigger).toHaveAttribute("aria-haspopup", "listbox");
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+  // GENUINELY REACHED BY Tab, not by .focus() — which succeeds on a tabindex=-1 element Tab can never reach.
+  // The same rule tests/a11y.spec.ts's tabToTestId follows, and the reason it exists.
+  for (let i = 0; i < 40 && !(await trigger.evaluate((el) => el === document.activeElement)); i++) {
+    await page.keyboard.press("Tab");
+  }
+  await expect(trigger, "Tab never reached the status dropdown — it is not keyboard-reachable").toBeFocused();
+
+  await page.keyboard.press("Enter");
+  const listbox = page.getByRole("listbox");
+  await expect(listbox).toBeVisible();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  const options = listbox.getByRole("option");
+  await expect(options).not.toHaveCount(0);
+
+  // ARROW MOVES THE HIGHLIGHT WITHOUT COMMITTING, which is the half a click can never exercise: the control
+  // still reads its old value while the reader walks the list.
+  const before = await trigger.getAttribute("data-value");
+  await page.keyboard.press("ArrowDown");
+  await expect(listbox.locator('[role="option"][data-highlighted]')).toHaveCount(1);
+  expect(await trigger.getAttribute("data-value"), "arrowing through the list changed the value before it was committed").toBe(before);
+
+  // ENTER COMMITS the highlighted row, and the control closes carrying it.
+  const highlighted = await listbox.locator('[role="option"][data-highlighted]').getAttribute("data-value");
+  await page.keyboard.press("Enter");
+  await expect(listbox).toHaveCount(0);
+  await expect(trigger).toHaveAttribute("data-value", String(highlighted));
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+
+  // AND ESCAPE ABANDONS rather than committing. A dropdown an operator cannot back out of with the keyboard
+  // is one they will back out of by reloading the page.
+  const committed = await trigger.getAttribute("data-value");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("listbox")).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  expect(await trigger.getAttribute("data-value"), "Escape committed the highlighted row instead of abandoning it").toBe(committed);
+  // Focus comes BACK to the control it left, so the reader is not returned to the top of the document.
+  await expect(trigger).toBeFocused();
+});
+
 test("the Status control narrows the COLLECTION on the server, not the rows on screen", async ({ page }) => {
   const { data: all } = await served(page, "/sessions");
   const target = all.find((r) => r.status !== all[0].status)?.status ?? all[0].status;
@@ -161,7 +227,7 @@ test("the Status control narrows the COLLECTION on the server, not the rows on s
   // is what separates "narrowed the collection" from "hid some of what was already here".
   const [request] = await Promise.all([
     page.waitForRequest((r) => r.url().includes("/api/palai/v1/sessions?") && r.url().includes(`status=${encodeURIComponent(target)}`)),
-    page.getByTestId("session-status-filter").selectOption(target),
+    chooseOption(page, "session-status-filter", target),
   ]);
   expect(new URL(request.url()).searchParams.get("status")).toBe(target);
 
@@ -174,7 +240,7 @@ test("the Created control sends an RFC3339 lower bound the API actually parses",
   await openList(page);
   const [request] = await Promise.all([
     page.waitForRequest((r) => r.url().includes("/api/palai/v1/sessions?") && r.url().includes("created_after=")),
-    page.getByTestId("session-created-filter").selectOption("24h"),
+    chooseOption(page, "session-created-filter", "24h"),
   ]);
   const bound = new URL(request.url()).searchParams.get("created_after") ?? "";
   // Parseable AND in the past AND roughly a day back: a bound the server rejects is a filter that 400s, and
@@ -194,9 +260,13 @@ test("the Agent control narrows what is on screen, and the count says both numbe
   expect(without > 0 && without < total, "every session has the same agent-ness, so a narrowing cannot be observed").toBe(true);
   await openList(page);
 
-  // The option's words are the cell's words — they select the same rows, so they must not drift apart.
-  await expect(page.getByTestId("session-agent-filter")).toContainText("No revision pinned");
-  await page.getByTestId("session-agent-filter").selectOption("__no_agent__");
+  // The row's words are the cell's words — they select the same rows, so they must not drift apart. Read
+  // by OPENING the listbox rather than off the closed control: a trigger shows the CURRENT choice and no
+  // longer carries every option's text, so `toContainText` on it would have quietly become a test of the
+  // placeholder. chooseOptionByLabel asserts exactly one row carries the words and returns its value, which
+  // binds the two halves — the words and the filter they apply — in one assertion instead of two.
+  const chosen = await chooseOptionByLabel(page, "session-agent-filter", "No revision pinned");
+  expect(chosen, "the row reading 'No revision pinned' does not select the no-agent filter").toBe("__no_agent__");
   await expect(page.getByTestId("panel-sessions").locator("tbody tr")).toHaveCount(without);
   // "N of M rows" is the honesty: this control hid rows rather than un-fetching them, and the header says so.
   await expect(page.getByTestId("panel-sessions-count")).toHaveText(`${String(without)} of ${String(total)} rows`);
@@ -344,7 +414,7 @@ test("the event-type control narrows the transcript and the count keeps both num
   const total = await rows.count();
 
   const type = (await rows.first().getByTestId("event-open").textContent()) ?? "";
-  await page.getByTestId("transcript-type").selectOption(type);
+  await chooseOption(page, "transcript-type", type);
   const kept = await rows.count();
   expect(kept).toBeGreaterThan(0);
   expect(kept).toBeLessThan(total);
@@ -513,7 +583,12 @@ test("renaming from the list replaces a derived label with an operator one", asy
     .locator("tbody tr")
     .filter({ has: page.locator(`[data-testid="session-link"][title="${id}"]`) });
   await row.getByTestId("session-menu").click();
-  await row.getByTestId("session-rename-open").click();
+  // THE ITEM IS ADDRESSED ON THE PAGE, NOT IN THE ROW, and that is the portal rather than a looser selector
+  // (E29 component layer). components/ui/Menu.tsx renders the popup as a child of <body> so it escapes the
+  // panel's horizontal scroll clip — app/globals.css used to keep the old panel in flow precisely because it
+  // could not — so the item is no longer a descendant of its own <tr>. One menu is open at a time, which is
+  // what keeps this unambiguous.
+  await page.getByTestId("session-rename-open").click();
 
   // ESCAPE ABANDONS. The control is deliberately not a <form> (see components/Session.tsx: a form with no
   // method=post is the CON-013 hazard), so Enter and Escape are wired BY HAND — which makes them the two
@@ -524,7 +599,7 @@ test("renaming from the list replaces a derived label with an operator one", asy
   await expect(row).not.toContainText("abandoned");
 
   await row.getByTestId("session-menu").click();
-  await row.getByTestId("session-rename-open").click();
+  await page.getByTestId("session-rename-open").click();
   await row.getByTestId("session-rename-input").fill(label);
   await row.getByTestId("session-rename-input").press("Enter");
 
@@ -575,7 +650,7 @@ test("creating a session adds a row, and the empty state offers the same action"
 
   // THE EMPTY STATE FIRST, reached by a filter that matches nothing rather than by an empty deployment: it
   // must be one sentence and an action, never a blank region with "None yet." on it.
-  await page.getByTestId("session-status-filter").selectOption("deleted");
+  await chooseOption(page, "session-status-filter", "deleted");
   const empty = page.getByTestId("panel-sessions-empty");
   await expect(empty).toBeVisible();
   // THE MEASURED SHAPE: a title, then one sentence saying what the thing IS, then the action. "None yet."
@@ -585,7 +660,7 @@ test("creating a session adds a row, and the empty state offers the same action"
   await expect(empty.locator(".empty-body")).toContainText("A session is one conversation");
   await expect(page.getByTestId("session-create-empty")).toBeVisible();
 
-  await page.getByTestId("session-status-filter").selectOption("");
+  await chooseOption(page, "session-status-filter", "");
   const firstBefore = (await page.getByTestId("panel-sessions").getByTestId("session-link").first().getAttribute("title")) ?? "";
   expect(firstBefore).not.toBe("");
   await page.getByTestId("session-create").click();

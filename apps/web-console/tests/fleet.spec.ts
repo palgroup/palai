@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { NEXT_PORT } from "./constants";
-import { announceProfile, sessionHeaders, signIn, skipOnReal } from "./profile";
+import { announceProfile, chooseOption, chosenValue, sessionHeaders, signIn, skipOnReal } from "./profile";
 
 // THE FLEET SCREEN, AND THE STATE E24 SHIPPED A DECISION FOR THAT NOTHING COULD SHOW (E28 T3, plan §T3).
 //
@@ -70,15 +70,34 @@ async function firstMachineWith(page: Page, action: "cordon" | "revoke"): Promis
     const toggle = toggles.nth(i);
     const id = (await toggle.getAttribute("data-testid"))?.replace("runner-menu-", "") ?? "";
     await toggle.click();
+    // THE MENU IS AWAITED BEFORE IT IS PROBED, and that is a real behavioural difference rather than a
+    // flake being papered over (E29 component layer). The old `⋯` was React state: the panel re-rendered
+    // synchronously with the click, so `count()` — which does NOT auto-wait — saw the item immediately.
+    // components/ui/Menu.tsx portals the popup to <body> and positions it with Floating UI, which lands a
+    // frame later, so an immediate `count()` reads zero and the walk reports "none of the seven carried it".
+    // Measured: exactly that, on all seven rows.
+    await expect(page.getByRole("menu"), `the ${id} row menu did not open`).toBeVisible();
     if ((await page.getByTestId(`runner-${action}-${id}`).count()) > 0) return id;
-    await toggle.click();
+    // Escape rather than a second click on the trigger: a click while open is a toggle in both
+    // implementations, but Escape is the one the menu itself owns and it leaves focus on the trigger, so the
+    // next iteration starts from a known place.
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
   }
   throw new Error(`no machine on this stack offers ${action} — ${String(count)} row menu(s) were opened and none carried it`);
 }
 
-/** openRowMenu opens one row's ⋯ so the control inside it can be clicked. */
+/**
+ * openRowMenu opens one row's ⋯ so the control inside it can be clicked.
+ *
+ * The wait is the same one findMachineOffering needs and for the same reason: the popup is portalled, so it
+ * exists a frame after the click. Every caller here clicks something INSIDE the menu next, and a Playwright
+ * click auto-waits — so this would usually work without the wait and fail on a slow machine, which is the
+ * worst of both. Waiting for the menu says what the helper is for.
+ */
 async function openRowMenu(page: Page, testId: string): Promise<void> {
   await page.getByTestId(testId).click();
+  await expect(page.getByRole("menu"), `the ${testId} menu did not open`).toBeVisible();
 }
 
 /** singleReadWatcher records every GET /v1/runners/{id} the BROWSER makes — the network assertion below. */
@@ -105,7 +124,7 @@ test("a pool is created from the console with the posture it was given", async (
   await page.getByTestId("pool-create-open").click();
   await expect(page.getByTestId("pool-create-dialog")).toBeVisible();
   await page.getByTestId("pool-name-input").fill(name);
-  await page.getByTestId("pool-posture-select").selectOption("unsandboxed-host");
+  await chooseOption(page, "pool-posture-select", "unsandboxed-host");
   await page.getByTestId("pool-os-input").fill("darwin");
   await page.getByTestId("pool-arch-input").fill("arm64");
   await page.getByTestId("pool-strict-input").check();
@@ -212,7 +231,7 @@ test("a pool key is shown once, and nothing reads it back", async ({ page }) => 
   // nothing else (api/runners.go:282 vs :298,:320). Runs on BOTH profiles — minting a pool key is a real
   // write against a real control plane.
   await open(page);
-  const pool = await page.getByTestId("poolkey-pool-select").inputValue();
+  const pool = await chosenValue(page, "poolkey-pool-select");
   expect(pool, "the key panel has no pool selected, so the mint below would be about nothing").not.toBe("");
 
   // Same move, same reason: the mint is behind the key panel's `+ Mint key`.
@@ -241,7 +260,7 @@ test("revoking a pool key shows the machines it already admitted and does not st
   // operator not shown them reads "revoked" as "removed" and believes one call decommissioned a fleet.
   skipOnReal("DIV-UI-009");
   await open(page);
-  await page.getByTestId("poolkey-pool-select").selectOption("pool_mac");
+  await chooseOption(page, "poolkey-pool-select", "pool_mac");
   // SELECTED BY PREFIX, NOT BY A FIXED ID. A revoked key stays revoked, so the fixture re-seeds a fresh
   // revocable one with a new id — the approval queue's rule, and the reason is that this suite runs twice
   // (once per colour scheme) against one fixture process.

@@ -2,7 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Page } from "@playwright/test";
 
 import { WCAG_TAGS } from "./constants";
-import { announceProfile, signIn, skipOnReal } from "./profile";
+import { announceProfile, chooseOption, chooseOptionByLabel, chosenValue, signIn, skipOnReal } from "./profile";
 
 // THE CONFIGURATION JOURNEY — a stranger stands up a repository and an agent from a screen, and RUNS it
 // (E25 T6, plan §T6, CON-006).
@@ -99,10 +99,7 @@ async function createAgentWithRevision(
     // FOUND BY ITS LABEL, selected by the value that label carries. The label is what an operator reads, so a
     // picker that offered the right id under the wrong name would fail here; going straight to the id would
     // not have noticed.
-    const picker = page.getByTestId("revision-environment-select");
-    const option = picker.locator("option").filter({ hasText: opts.environmentName });
-    await expect(option, "the environment the operator just created is not on the revision form's picker").toHaveCount(1);
-    await picker.selectOption(String(await option.getAttribute("value")));
+    await chooseOptionByLabel(page, "revision-environment-select", opts.environmentName);
   }
   await page.getByTestId("agent-revision-create-button").click();
   await expect(page.getByTestId("agent-revision-status")).toContainText("draft", { timeout: 15_000 });
@@ -121,8 +118,8 @@ async function createAgentWithRevision(
 async function runWithRevision(page: Page, agentId: string, revisionId: string): Promise<void> {
   await page.goto("/runs");
   await expect(page.getByTestId("run-button")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId("run-agent-select").selectOption(agentId);
-  await page.getByTestId("run-revision-select").selectOption(revisionId);
+  await chooseOption(page, "run-agent-select", agentId);
+  await chooseOption(page, "run-revision-select", revisionId);
   await page.getByTestId("run-button").click();
 }
 
@@ -194,9 +191,28 @@ test("the connection ref is a HANDLE chosen from the secret-ref list, never a ty
   await page.getByTestId("binding-create-open").click();
 
   const form = page.getByTestId("repository-binding-form");
-  const textFields = await form.locator('input[type="text"], input:not([type]), textarea').evaluateAll((els) =>
-    els.map((el) => el.getAttribute("data-testid") ?? el.getAttribute("name") ?? "<unnamed>"),
-  );
+  // THE SELECTOR EXCLUDES ONE NODE AND PROVES THE EXCLUSION RATHER THAN ASSERTING IT (E29 component layer).
+  //
+  // `input:not([type])` was written to catch a hand-rolled text box that forgot its type attribute. The
+  // connection-ref control is now a components/ui/Select, and @base-ui/react's Select renders a
+  // form-serialisation <input> with no type, carrying the chosen handle — so the enumeration below started
+  // reporting `binding-connection-ref` as a free-text field, which is the opposite of what this test says.
+  //
+  // The claim is about what an operator can TYPE. So the exclusion is aria-hidden + tabindex="-1" — the same
+  // pair tests/contrast.spec.ts exempts, for the same reason: no screen reader has it and no keyboard reaches
+  // it. And the exclusion is CHECKED below rather than trusted, because "the node I excluded is unreachable"
+  // is exactly the sentence that would hide a real free-text box the day the markup changes.
+  const excluded = form.locator('input[aria-hidden="true"][tabindex="-1"]');
+  for (const node of await excluded.all()) {
+    expect(await node.evaluate((el) => (el as HTMLInputElement).readOnly || el.getAttribute("aria-hidden") === "true"), "an excluded node is not actually unreachable").toBe(true);
+    // A 1x1 clipped box is not a control an operator can put a value into. If one ever renders at a size a
+    // pointer could hit, this is what fails.
+    const box = await node.boundingBox();
+    expect((box?.width ?? 0) <= 1 && (box?.height ?? 0) <= 1, "an excluded input is large enough to be typed into").toBe(true);
+  }
+  const textFields = await form
+    .locator('input[type="text"]:not([aria-hidden="true"]), input:not([type]):not([aria-hidden="true"]), textarea')
+    .evaluateAll((els) => els.map((el) => el.getAttribute("data-testid") ?? el.getAttribute("name") ?? "<unnamed>"));
   expect(
     textFields.sort(),
     "the binding form's free-text fields are enumerated: a connection_ref or a credential box among them would " +
@@ -226,7 +242,22 @@ test("the connection ref is a HANDLE chosen from the secret-ref list, never a ty
       const res = await fetch("/api/palai/v1/secret-refs", { headers: { Accept: "application/json" } });
       return ((await res.json()) as { data?: { name: string }[] }).data?.map((r) => r.name) ?? [];
     });
-    const offered = await picker.locator("option").evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value).filter((v) => v !== ""));
+    // READ WITH THE LISTBOX OPEN (E29 component layer). A native <select> kept its options in the DOM
+    // whether or not it was open, so `picker.locator("option")` found them on a closed control; a listbox is
+    // rendered by the popup and there is nothing to enumerate until it exists. Opening it is therefore not a
+    // detour around the assertion — it is the assertion, and it now also proves the popup renders at all.
+    await picker.click();
+    // AND THE POPUP MUST HAVE ROWS BEFORE THEY ARE READ. `evaluateAll` is a SNAPSHOT with no auto-wait, so a
+    // read taken between the click and the popup mounting returns [] and compares an empty list against a
+    // non-empty one — or, if the expectation were the other way round, passes having looked at nothing. That is
+    // the defect tests/reveal-once.spec.ts hit: a container visible before its rows resolved, and a positive
+    // control that found nothing. `expect` retries; `evaluateAll` does not, so the wait is explicit.
+    const listbox = page.getByRole("listbox");
+    await expect(listbox).toBeVisible();
+    await expect(listbox.locator('[role="option"]')).not.toHaveCount(0);
+    const offered = await listbox
+      .locator('[role="option"]')
+      .evaluateAll((els) => els.map((el) => el.getAttribute("data-value") ?? "").filter((v) => v !== ""));
     expect(offered.sort()).toEqual([...listed].sort());
   } else {
     await expect(empty).toContainText("no secret refs");
@@ -478,12 +509,16 @@ test("a run started with an UNPUBLISHED revision is refused honestly and falls b
   // running.
   await page.goto("/runs");
   await expect(page.getByTestId("run-button")).toBeVisible({ timeout: 15_000 });
-  await page.getByTestId("run-agent-select").selectOption(agentId);
-  const option = page.getByTestId("run-revision-select").locator(`option[value="${revisionId}"]`);
+  await chooseOption(page, "run-agent-select", agentId);
+  // THE ROW IS READ WHERE IT LIVES: inside the open popup. The words are the point of this leg — a draft
+  // that is offered without being LABELLED a draft is a control that leads straight to a refusal — so the
+  // listbox is opened, the row is read, and the same row is then clicked. One interaction, not two.
+  await page.getByTestId("run-revision-select").click();
+  const option = page.getByRole("listbox").locator(`[role="option"][data-value="${revisionId}"]`);
   await expect(option).toHaveText(/draft/);
   await expect(option).toHaveText(/cannot be run/);
-
-  await page.getByTestId("run-revision-select").selectOption(revisionId);
+  await option.click();
+  await expect(page.getByTestId("run-revision-select")).toHaveAttribute("data-value", revisionId);
   await page.getByTestId("run-button").click();
 
   // THE SERVER'S OWN SENTENCE, in a role="alert" region — api/responses.go answers 409

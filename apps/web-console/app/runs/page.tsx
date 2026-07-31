@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { Button } from "@/components/ui/Button";
 import { ApprovalPanel, type PendingApproval } from "@/components/ApprovalPanel";
 import { Picker } from "@/components/Picker";
 import { Status } from "@/components/Status";
@@ -311,12 +312,12 @@ export default function RunsPage() {
           </p>
         )}
         <p>
-          <button type="button" data-testid="run-button" onClick={run} disabled={running}>
+          <Button testId="run-button" onClick={run} disabled={running}>
             Run
-          </button>{" "}
-          <button type="button" data-testid="abort-button" onClick={abort} disabled={!running}>
+          </Button>{" "}
+          <Button testId="abort-button" onClick={abort} disabled={!running}>
             Abort
-          </button>{" "}
+          </Button>{" "}
           <Status value={status} testId="status" />
         </p>
       </section>

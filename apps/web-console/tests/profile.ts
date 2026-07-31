@@ -191,4 +191,70 @@ export async function resetFakeFixture(): Promise<void> {
   if (PROFILE === "real") return;
   const res = await fetch(`${UPSTREAM}/__reset`, { method: "POST" });
   if (!res.ok) throw new Error(`the fake fixture refused to reset (${res.status}) — a spec that believes it is isolated and is not will fail somewhere else entirely`);
+// --- DRIVING components/ui/Select (E29 component layer) --------------------------------------------------
+//
+// The seven native `<select>`s became a Base UI listbox, and Playwright's `selectOption` only speaks to a
+// native `<select>` ("Error: Element is not a <select> element"). These three are the replacements, and they
+// are here rather than copied into five spec files for the reason Picker.tsx already gives about the rule it
+// holds: the fourth copy is the one that gets it wrong.
+//
+// THEY DRIVE THE CONTROL THE WAY AN OPERATOR DOES — click the trigger, wait for the popup, click a row —
+// rather than by setting state. That is strictly more than `selectOption` proved: `selectOption` on a native
+// control dispatches a change event without ever opening anything, so a dropdown that failed to open, or
+// opened empty, or rendered its rows unclickable, passed. These fail.
+
+/** openListbox clicks a ui/Select trigger and waits for the listbox its popup carries. */
+async function openListbox(page: Page, testId: string) {
+  const trigger = page.getByTestId(testId);
+  // 15s, THE SAME BUDGET EVERY PANEL WAIT IN THIS SUITE USES, and it is not padding. components/Panel.tsx
+  // returns a head with NO TOOLBAR while `rows === null` — which is every refetch, including the one a
+  // server-side filter triggers — so a control chosen here can unmount and remount between two clicks. The
+  // native `selectOption` absorbed that inside Playwright's own auto-wait; this has to say it. Measured: the
+  // dark project failed at the 5s default on a machine also running a second worktree's suite.
+  await expect(trigger, `no select carries data-testid="${testId}"`).toBeVisible({ timeout: 15_000 });
+  await trigger.click();
+  const listbox = page.getByRole("listbox");
+  await expect(listbox, `the ${testId} listbox did not open`).toBeVisible();
+  return listbox;
+}
+
+/**
+ * chooseOption is `selectOption(value)` for a ui/Select — the value, not the label.
+ *
+ * Addressing by value rather than by the row's words is deliberate and is what keeps these tests about
+ * BEHAVIOUR: the empty choice has no value to name at all in label terms ("Any status", "All event types",
+ * "Order as served" are three different words for it), and a filter's copy is exactly the thing a design
+ * pass changes. components/ui/Select.tsx puts the value on every row for this.
+ */
+export async function chooseOption(page: Page, testId: string, value: string): Promise<void> {
+  const listbox = await openListbox(page, testId);
+  const option = listbox.locator(`[role="option"][data-value="${value}"]`);
+  await expect(option, `the ${testId} listbox offers no option with value "${value}"`).toHaveCount(1);
+  await option.click();
+  await expect(page.getByTestId(testId), `choosing "${value}" in ${testId} did not take`).toHaveAttribute("data-value", value);
+}
+
+/**
+ * chooseOptionByLabel finds the one row whose text carries `label` and selects it, returning its value.
+ *
+ * Two callers need this shape and both said so before the listbox existed: mcp-tools' tool picker labels a
+ * row `<canonical> (<id>)` over a fixture-minted id, and config-journey picks the environment it just
+ * created BY NAME — "the label is what an operator reads, so a picker that offered the right id under the
+ * wrong name would fail here; going straight to the id would not have noticed".
+ */
+export async function chooseOptionByLabel(page: Page, testId: string, label: string): Promise<string> {
+  const listbox = await openListbox(page, testId);
+  const option = listbox.locator('[role="option"]').filter({ hasText: label });
+  await expect(option, `no row in ${testId} carries "${label}"`).toHaveCount(1);
+  const value = await option.getAttribute("data-value");
+  expect(value, `the ${testId} row for "${label}" carries no value`).not.toBeNull();
+  await option.click();
+  return String(value);
+}
+
+/** chosenValue is `inputValue()` for a ui/Select: what the control currently holds, not what it displays. */
+export async function chosenValue(page: Page, testId: string): Promise<string> {
+  const value = await page.getByTestId(testId).getAttribute("data-value");
+  expect(value, `${testId} is not a ui/Select — it carries no data-value`).not.toBeNull();
+  return String(value);
 }

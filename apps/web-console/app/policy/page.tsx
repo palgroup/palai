@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { Menu } from "@/components/ui/Menu";
+import { Button } from "@/components/ui/Button";
 import { ConfirmDestructive } from "@/components/ConfirmDestructive";
 import { FormDialog } from "@/components/FormDialog";
 import { Panel } from "@/components/Panel";
@@ -127,7 +129,6 @@ export default function PolicyPage() {
   // THE OPEN ROW MENU, BY ID. A menu ITEM does not close it: components/ConfirmDestructive.tsx returns focus
   // to the element that was focused when it opened, and an element removed from the DOM in the same click
   // cannot receive it — Escape would then drop focus to <body>, which tests/policy.spec.ts asserts against.
-  const [menu, setMenu] = useState("");
   const [scopeProvision, setScopeProvision] = useState(false);
   const [scopeApprove, setScopeApprove] = useState(false);
   const [expiresOn, setExpiresOn] = useState("");
@@ -498,35 +499,16 @@ export default function PolicyPage() {
               if (!live(r)) return <span className="cell-none">—</span>;
               return (
                 <div className="row-menu">
-                  <button
-                    type="button"
-                    className="row-menu-toggle"
-                    aria-expanded={menu === id}
-                    aria-controls={`menu-${id}`}
-                    aria-label={`Actions for API key ${id}`}
-                    data-testid={`key-menu-${id}`}
-                    onClick={() => setMenu(menu === id ? "" : id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") setMenu("");
-                    }}
-                  >
-                    <span aria-hidden="true">⋯</span>
-                  </button>
-                  {menu === id ? (
-                    <div className="row-menu-panel" id={`menu-${id}`}>
-                      {/* ONE ITEM, AND THAT IS THE API RATHER THAN THE DESIGN. A key's whole write surface
-                          after creation is POST /v1/api-keys/{id}/revoke — there is no rename, no re-scope
-                          and no un-revoke — so a second entry here would be a control that refuses. */}
-                      <button
-                        type="button"
-                        className="danger"
-                        data-testid={`revoke-${id}`}
-                        onClick={() => setRevoking(r)}
-                      >
-                        Revoke {id}
-                      </button>
-                    </div>
-                  ) : null}
+                  <Menu
+                    label={`Actions for API key ${id}`}
+                    trigger={<span aria-hidden="true">⋯</span>}
+                    triggerClassName="row-menu-toggle"
+                    triggerTestId={`key-menu-${id}`}
+                    // ONE ITEM, AND THAT IS THE API RATHER THAN THE DESIGN. A key's whole write surface after
+                    // creation is POST /v1/api-keys/{id}/revoke — there is no rename, no re-scope and no
+                    // un-revoke — so a second entry here would be a control that refuses.
+                    items={[{ label: `Revoke ${id}`, testId: `revoke-${id}`, danger: true, onSelect: () => setRevoking(r) }]}
+                  />
                 </div>
               );
             },

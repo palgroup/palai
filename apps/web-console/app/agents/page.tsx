@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { Button } from "@/components/ui/Button";
+import { Menu } from "@/components/ui/Menu";
 import { FormDialog } from "@/components/FormDialog";
 import { Panel, type Column } from "@/components/Panel";
 import { ResourceForm } from "@/components/ResourceForm";
@@ -99,7 +101,6 @@ export default function AgentsPage() {
   const router = useRouter();
   const [rows, setRows] = useState<AgentRow[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
-  const [menu, setMenu] = useState("");
 
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -214,30 +215,16 @@ export default function AgentsPage() {
         const id = String(r.id ?? "");
         return (
           <div className="row-menu">
-            <button
-              type="button"
-              className="row-menu-toggle"
-              aria-expanded={menu === id}
-              aria-controls={`menu-${id}`}
-              aria-label={`Actions for agent ${id}`}
-              data-testid="agent-menu"
-              onClick={() => setMenu(menu === id ? "" : id)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setMenu("");
-              }}
-            >
-              <span aria-hidden="true">⋯</span>
-            </button>
-            {menu === id ? (
-              <div className="row-menu-panel" id={`menu-${id}`}>
-                <a href={`/agents/${encodeURIComponent(id)}`} data-testid="agent-menu-revisions">
-                  Revisions
-                </a>
-                <a href={`/agents/${encodeURIComponent(id)}?segment=compare`} data-testid="agent-menu-compare">
-                  Compare revisions
-                </a>
-              </div>
-            ) : null}
+            <Menu
+              label={`Actions for agent ${id}`}
+              trigger={<span aria-hidden="true">⋯</span>}
+              triggerClassName="row-menu-toggle"
+              triggerTestId="agent-menu"
+              items={[
+                { label: "Revisions", href: `/agents/${encodeURIComponent(id)}`, testId: "agent-menu-revisions" },
+                { label: "Compare revisions", href: `/agents/${encodeURIComponent(id)}?segment=compare`, testId: "agent-menu-compare" },
+              ]}
+            />
           </div>
         );
       },
@@ -257,9 +244,9 @@ export default function AgentsPage() {
         filterLabel="Search agents by name or ID"
         filterPlaceholder="Name or ID…"
         action={
-          <button type="button" className="primary" data-testid="agent-create-open" onClick={() => setCreating(true)}>
+          <Button variant="primary" testId="agent-create-open" onClick={() => setCreating(true)}>
             + New agent
-          </button>
+          </Button>
         }
         emptyNote={
           <>
@@ -270,9 +257,9 @@ export default function AgentsPage() {
               An agent is a name with a lineage of immutable revisions — a run is pinned to one of them, which
               is what makes it reproducible.
             </p>
-            <button type="button" className="primary" data-testid="agent-create-open-empty" onClick={() => setCreating(true)}>
+            <Button variant="primary" testId="agent-create-open-empty" onClick={() => setCreating(true)}>
               Create one
-            </button>
+            </Button>
           </>
         }
       />
@@ -306,16 +293,15 @@ export default function AgentsPage() {
             error={createError}
             onSubmit={createAgent}
             actions={
-              <button
-                type="button"
-                data-testid="agent-create-cancel"
+              <Button
+                testId="agent-create-cancel"
                 onClick={() => {
                   setCreating(false);
                   setCreateError("");
                 }}
               >
                 Cancel
-              </button>
+              </Button>
             }
           />
         </FormDialog>
