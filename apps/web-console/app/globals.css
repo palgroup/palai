@@ -38,11 +38,24 @@
   --slate-10: #80838d;
   --slate-11: #60646c;
   --slate-12: #1c2024;
+  /* THE ACCENT IS IRIS AND THE STATE COLOUR IS BLUE, AND THEY USED TO BE THE SAME SCALE — which is why a
+     selected row and an "in progress" chip were the same colour, and why the console had no colour of its
+     own. The design spec named this as the thing a token system cannot give ("the palette is MIT and
+     identical in every product that uses Radix"), so the accent is moved off the default dashboard blue and
+     the state band keeps it.
+
+     IT IS ALSO STRICTLY MORE READABLE, and that is measured rather than claimed. `--accent-text` used to be
+     blue step 11 at 4.65:1 on the page and 4.53:1 on the head band — a margin of 0.03 over SC 1.4.3's 4.5,
+     which the spec itself flagged as the system's weakest pair. Iris step 11 measures 5.92 / 5.78 (light)
+     and 8.97 / 8.37 (dark). Same formula, same script, re-run: the values below come from
+     @radix-ui/colors@3.0.0 (MIT) iris.css / iris-dark.css, extracted rather than typed. */
+  --iris-3: #f0f1fe;
+  --iris-6: #cbcdff;
+  --iris-9: #5b5bd6; /* the wordmark mark ONLY — never a text or control colour; see .brand-mark */
+  --iris-11: #5753c6;
+  --iris-12: #272962;
   --blue-3: #e6f4fe;
   --blue-6: #acd8fc;
-  --blue-9: #0090ff;
-  --blue-10: #0588f0;
-  --blue-11: #0d74ce;
   --blue-12: #113264;
   --red-3: #feebec;
   --red-6: #fdbdbe;
@@ -78,14 +91,25 @@
   --border-control: var(--slate-10); /* interactive control boundary — 3.69/3.60/3.33 light, 4.45/4.15/3.75 dark */
   --border-control-hover: var(--slate-11);
 
-  /* --- LAYER 2: accent. --accent-text is NOT used on --bg-inset or darker: it measures 4.53:1 on
-     --bg-subtle, and the margin over 4.5 is 0.03. --- */
-  --accent-text: var(--blue-11);
-  --accent-bg: var(--blue-3);
-  --accent-border: var(--blue-6);
-  --accent-solid: var(--blue-11);
-  --accent-solid-hover: var(--blue-12);
-  --focus-ring: var(--blue-11);
+  /* --- LAYER 2: accent. Measured with tests/contrast.spec.ts's own formula, light | dark:
+     --accent-text on --bg-page 5.92 | 8.97, on --bg-subtle 5.78 | 8.37, on --bg-inset 5.34 | 7.57, on
+     --accent-bg 5.41 | 7.22 · --text-on-solid on --accent-solid 6.07 | 8.97, on --accent-solid-hover
+     13.29 | 14.51 · --text on --accent-bg 14.61 | 13.07 · --text-muted on --accent-bg 5.29 | 7.29 ·
+     --focus-ring on --bg-hover (a ring on a hovered row) 4.97 | 6.86. Every one clears its floor, and the
+     WEAKEST pair in the system is no longer an accent pair — which it was, at 4.53. --- */
+  --accent-text: var(--iris-11);
+  --accent-bg: var(--iris-3);
+  --accent-border: var(--iris-6);
+  --accent-solid: var(--iris-11);
+  --accent-solid-hover: var(--iris-12);
+  --focus-ring: var(--iris-11);
+
+  /* The wordmark's two fills. Aliased rather than written into the <svg> so the mark follows the palette in
+     both schemes, and named so nothing else reaches for iris step 9 by accident — it is the one step in this
+     file that is decoration and carries no contrast obligation (the word beside it is what names the
+     product; the <svg> is aria-hidden). */
+  --brand-mark-quiet: var(--slate-9);
+  --brand-mark-live: var(--iris-9);
 
   /* --- LAYER 2: status. Five states x 3, plus two inline text colours.
      --warn-text-inline IS DELIBERATELY ABSENT: amber step 11 (#ab6400) clears 4.5:1 on NO surface in this
@@ -216,11 +240,13 @@
     --slate-10: #777b84;
     --slate-11: #b0b4ba;
     --slate-12: #edeef0;
+    --iris-3: #202248;
+    --iris-6: #3d3e82;
+    --iris-9: #5b5bd6;
+    --iris-11: #b1a9ff;
+    --iris-12: #e0dffe;
     --blue-3: #0d2847;
     --blue-6: #104d87;
-    --blue-9: #0090ff;
-    --blue-10: #3b9eff;
-    --blue-11: #70b8ff;
     --blue-12: #c2e6ff;
     --red-3: #3b1219;
     --red-6: #72232d;
@@ -344,6 +370,13 @@ h1.page-title {
   margin: 0;
 }
 
+/* The eyebrow names the sidebar SECTION this screen belongs to, above the title. It is the cheapest form of
+   "you are here" that does not cost a glance across the window. */
+.page-eyebrow {
+  margin-bottom: var(--space-2);
+  color: var(--accent-text);
+}
+
 /* A PANEL HEADING IS h2 AND IT IS SIZED AS ONE LEVEL BELOW THE PAGE TITLE, not two. The design spec maps h2
    to 22px and h3 to 18px and gives the panel head an h3 — but every panel in this console is a <section>
    with an <h2>, which is the CORRECT level directly under the page title and is not being rewritten. So h2
@@ -432,64 +465,208 @@ th.num {
 
 /* ============================================================ 5. LAYOUT ==================================== */
 
-header.app-header {
-  border-bottom: var(--border-w) solid var(--border-hairline);
-  padding: 0 var(--space-6);
-  display: flex;
-  gap: var(--space-6);
-  align-items: center;
-  flex-wrap: wrap;
-  min-height: var(--row-h-roomy);
+/* A SIDEBAR, NOT A TOP BAR, AND THE REASON IS THE COUNT. Twelve links in a row is a list rather than a
+   structure: nothing said which screens belong together, which one an operator starts from, or what scope
+   they were reading. A rail gives the sections room to be NAMED (lib/routes.ts's `group`), gives the scope a
+   permanent home, and takes the navigation out of the page's own vertical space. */
+.app-shell {
+  display: grid;
+  grid-template-columns: 16rem minmax(0, 1fr);
+  min-height: 100vh;
+}
+.app-shell-bare {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+header.sidebar {
   background: var(--bg-subtle);
+  border-right: var(--border-w) solid var(--border-hairline);
 }
-
-/* THE BRAND STAYS SMALL. It is chrome repeated on every screen; the page title is what carries the weight. */
-.brand {
-  font-size: var(--font-size-4);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: var(--letter-spacing-2);
-  color: var(--text);
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-header.app-header nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-}
-header.app-header nav a {
-  display: inline-flex;
-  align-items: center;
-  min-height: var(--control-h-sm);
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-2);
-  color: var(--text-muted);
-  text-decoration: none;
-  white-space: nowrap;
-  transition: background var(--duration-1) var(--ease-out), color var(--duration-1) var(--ease-out);
-}
-header.app-header nav a:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-/* The current page is NOT marked by colour alone: aria-current is the machine-readable half and the weight
-   difference is the visual one. */
-header.app-header nav a[aria-current="page"] {
-  color: var(--text);
-  font-weight: var(--font-weight-semibold);
-  background: var(--bg-active);
-}
-
-main {
-  /* 90rem, not 72rem: the widest tables here (the ledger, the artifact list, a tool-set's contents) had a
-     horizontal scrollbar at 72rem for no reason but the number. */
-  max-width: 90rem;
-  margin: 0 auto;
-  padding: var(--space-6);
+.sidebar-inner {
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
+  padding: var(--space-5) var(--space-4) var(--space-7);
+  /* Its own scroll, so a long nav never pushes the page and never scrolls away from a long table. */
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+}
+
+/* THE WORDMARK — the console's one piece of pure identity, and the only thing on this surface that is drawn
+   rather than measured. The mark is three bars at rising heights with the tallest in the accent: a signal
+   meter, which is what a control plane is looking at. It is an inline <svg> for the same reason the typeface
+   is system-ui — no request, no font file, no CSP entry, nothing new on the audit surface of a console whose
+   whole claim is that it talks to one origin. */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  text-decoration: none;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-2);
+}
+.brand-mark {
+  flex: none;
+  display: block;
+}
+.brand-word {
+  font-size: var(--font-size-6);
+  line-height: var(--line-height-6);
+  font-weight: var(--font-weight-bold);
+  /* Tighter than any step in the scale: a five-letter wordmark is set, not typeset. */
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+.brand-kind {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding-left: var(--space-3);
+  border-left: var(--border-w) solid var(--border-hairline);
+  font-size: var(--font-size-1);
+  letter-spacing: var(--letter-spacing-1);
+  text-transform: uppercase;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-muted);
+}
+.brand-standalone {
+  align-self: flex-start;
+  margin-bottom: var(--space-6);
+}
+
+/* THE MICRO LABEL, in one place. 11px, uppercase, tracked out and muted — it is the single cheapest move
+   that stops a dense screen reading as a form, and it was already doing that job in three different rule
+   bodies (thead th, legend, dt) before anything named it. */
+.micro-label {
+  margin: 0;
+  font-size: var(--font-size-1);
+  line-height: var(--line-height-1);
+  letter-spacing: var(--letter-spacing-1);
+  text-transform: uppercase;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-muted);
+}
+
+/* The scope block: a hairline card on the same fill as the rail, because a fill difference at 1.06:1 is not
+   a difference (the token block's own measurement). */
+.scope {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--bg-page);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-2);
+}
+.scope-line {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+.scope-name {
+  font-size: var(--font-size-3);
+  line-height: var(--line-height-3);
+  font-weight: var(--font-weight-medium);
+  color: var(--text);
+}
+.scope-id {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-2);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.scope-select {
+  max-width: 100%;
+}
+
+nav[aria-label="Primary"] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.nav-group ul {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.nav-group a {
+  display: flex;
+  align-items: center;
+  /* Comfortably over SC 2.5.8's 24px floor, and the row rhythm the tables use. */
+  min-height: var(--control-h);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-2);
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: background var(--duration-1) var(--ease-out), color var(--duration-1) var(--ease-out);
+}
+.nav-group a:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+/* THE CURRENT PAGE CARRIES THREE MARKS AND ONLY ONE OF THEM IS COLOUR: aria-current is what a screen reader
+   announces, the weight is legible without colour vision, and the inset rail is a shape. Remove the hue and
+   the current item is still the current item. */
+.nav-group a[aria-current="page"] {
+  color: var(--text);
+  font-weight: var(--font-weight-medium);
+  background: var(--accent-bg);
+  box-shadow: inset var(--border-w-strong) 0 0 var(--accent-solid);
+}
+
+.content {
+  /* 78rem inside a 16rem rail: the widest table here (the usage ledger) fits, and prose stops before the
+     line length at which an operator loses the start of the sentence. */
+  max-width: 78rem;
+  min-width: 0;
+  width: 100%;
+  margin: 0 auto;
+  padding: var(--space-7) var(--space-7) var(--space-9);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+.content-bare {
+  max-width: 32rem;
+  padding-top: var(--space-9);
+}
+
+/* UNDER 64rem THE RAIL BECOMES A HEADER, because a 16rem column on a 40rem window is half the screen. The
+   groups stay named and stay in order; they lay out in a wrapping row instead of a column. */
+@media (max-width: 64rem) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  header.sidebar {
+    border-right: none;
+    border-bottom: var(--border-w) solid var(--border-hairline);
+  }
+  .sidebar-inner {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-5);
+  }
+  nav[aria-label="Primary"] {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--space-3) var(--space-6);
+  }
+  .nav-group ul {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+  }
+  .content {
+    padding: var(--space-6) var(--space-5) var(--space-8);
+  }
 }
 
 /* A panel is a hairline and a shadow on the SAME surface as the page — not a fill. Measured on the old
@@ -537,7 +714,138 @@ details.notes > :last-child {
   margin-bottom: var(--space-4);
 }
 
+/* --- THE STAT ROW (console design pass). The overview's top band: one number per question, at the one size
+   on this surface that is unmistakably a headline. Everything else on the page is 11-18px, so 36px reads as
+   a different KIND of information rather than as a louder version of the same kind.
+
+   THE NUMBER IS NEVER THE ONLY THING IN THE CARD. A count with no unit and no source is a number an operator
+   has to go and verify; each card carries a micro-label above it and a sentence under it saying what the
+   figure is counted from — including, when the collection was cut at a page, that it was. */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-4);
+}
+.stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-4) var(--space-5) var(--space-5);
+  background: var(--bg-page);
+  border: var(--border-w) solid var(--border-hairline);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-1);
+}
+.stat-value {
+  font-size: var(--font-size-9);
+  line-height: var(--line-height-9);
+  letter-spacing: var(--letter-spacing-9);
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+/* A card whose figure is the reason to act carries the accent — and it carries it on the NUMBER only, never
+   as a fill, so the card is still a card and the colour still means "this one". */
+.stat-card[data-tone="attention"] .stat-value {
+  color: var(--accent-text);
+}
+.stat-meta {
+  margin: 0;
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-3);
+  color: var(--text-muted);
+}
+/* An UNREAD figure is an em dash, never a zero. "0 agents" and "the agent list did not load" are different
+   facts and a dashboard that renders them identically is worse than one that renders neither. */
+.stat-value[data-unread="true"] {
+  color: var(--text-muted);
+}
+
 /* ============================================================ 6. TABLE ===================================== */
+
+/* --- THE PANEL HEAD (console design pass): heading, row count, and the tools that act on the list, on one
+   line. The count is part of the heading rather than a note under it because "how many are there" is the
+   first question asked of every list on this surface and the answer used to be "count the rows". */
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-3);
+}
+.panel-head > h2 {
+  margin: 0;
+}
+.panel-count {
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-2);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  background: var(--bg-inset);
+  border-radius: var(--radius-full);
+  padding: 0 var(--space-3);
+  white-space: nowrap;
+}
+.panel-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-left: auto;
+}
+.panel-tools input[type="search"],
+.panel-tools select {
+  width: auto;
+  max-width: 16rem;
+}
+/* The filter's scope, stated. A box that searches only the rows already fetched, over a collection the
+   server cut at twenty, is a box that will fail to find a row that exists — so it says which rows it
+   searched rather than leaving the operator to discover the ceiling. */
+.panel-tools-note {
+  flex-basis: 100%;
+  margin: 0;
+  text-align: right;
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-2);
+  color: var(--text-muted);
+}
+
+/* --- THE NAME-FIRST CELL. Projects rendered as `prj_f89cbd4f78ce3e8d51fb5ea49a8bcfff` and agents as
+   `aprof_239203…`, which is the console showing the operator the one part of a row they cannot read. The
+   name leads, the id stays — one line down, monospace, muted, and COMPLETE.
+
+   IT IS NOT ELLIPSISED, and that is a decision against the obvious one. A truncated id is a value the
+   operator has to hover, focus or copy out to use, and every id on this surface is 36 characters or fewer —
+   which at --font-size-2 in the mono stack fits well inside the max-width below. The clamp is there so a
+   longer value cannot blow the column open; today nothing reaches it, so nothing is being hidden. */
+.cell-name {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.cell-name > .name {
+  font-size: var(--font-size-4);
+  line-height: var(--line-height-4);
+  font-weight: var(--font-weight-medium);
+  color: var(--text);
+}
+/* A row with no name of its own says so in words rather than leaving the cell blank — a blank cell reads as
+   a rendering fault, and "unnamed" is a fact about the record. */
+.cell-name > .name[data-unnamed="true"] {
+  font-weight: var(--font-weight-regular);
+  color: var(--text-muted);
+}
+.cell-name > .id {
+  max-width: 24rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2);
+  line-height: var(--line-height-2);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* border-collapse: SEPARATE, and the reason is structural rather than cosmetic: with `collapse` a cell's
    border belongs to the table rather than to the cell, so a background band on <thead> paints over the line
@@ -620,6 +928,7 @@ label {
    console, in both modes. axe-core has no rule that looks at a control border; tests/contrast.spec.ts does. */
 input[type="text"],
 input[type="password"],
+input[type="search"],
 select,
 textarea {
   font: inherit;
@@ -639,6 +948,7 @@ textarea {
    more because the one on this surface holds a denial reason written for a model to read. */
 input[type="text"],
 input[type="password"],
+input[type="search"],
 select {
   max-width: 34rem;
 }

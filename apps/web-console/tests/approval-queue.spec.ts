@@ -164,9 +164,19 @@ test("the decision carries the request hash the row displayed, and nothing on th
   // ORDER. What is claimed is per-row: every parked call has exactly one editable control, and it is its reason.
   const rendered = await renderedIds(page);
   expect(rendered.length, "the queue rendered no rows, so everything after this would be vacuous").toBeGreaterThan(2);
-  const controls = await page.locator("input, textarea, select").evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-testid") ?? "<no testid>"));
+  // SCOPED TO <main>, AND THE NARROWING IS PAID FOR ON THE NEXT LINE (console design pass). This enumerated
+  // the whole DOCUMENT, so the shell's own controls counted as controls of the queue — and the console shell
+  // now carries a project picker that renders only when the deployment holds more than one project. That made
+  // this assertion a statement about how many projects EARLIER SPECS had created: it passed in the light
+  // project and failed in the dark one, in the same run, on the same code. An assertion whose subject is
+  // "the approval queue" must be scoped to what the approval queue rendered.
+  const controls = await page.locator("main").locator("input, textarea, select").evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-testid") ?? "<no testid>"));
   expect(controls.sort(), "the only editable controls on the approval queue are the per-row deny reasons").toEqual(rendered.map((id) => `tool-approval-reason-${id}`).sort());
-  expect(controls.some((c) => /hash/i.test(c)), "a control asked the operator for a request hash").toBe(false);
+  // The hash arm keeps the WHOLE DOCUMENT, deliberately: "nothing on the page asks the operator for a request
+  // hash" is a claim about the page including its chrome, and narrowing it with the line above would have
+  // quietly dropped the shell out of the one assertion that must still cover it.
+  const everyControl = await page.locator("input, textarea, select").evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-testid") ?? "<no testid>"));
+  expect(everyControl.some((c) => /hash/i.test(c)), "a control asked the operator for a request hash").toBe(false);
 
   const target = await pickOpen(page, APPROVE_PREFIX);
   const displayed = await page.getByTestId(`tool-approval-request-hash-${target}`).innerText();

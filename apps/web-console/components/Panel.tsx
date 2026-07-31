@@ -1,13 +1,49 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { apiGet, RelayError } from "@/lib/api";
 
 export interface Column<Row> {
   header: string;
   render: (row: Row) => ReactNode;
+  /**
+   * The value this column sorts on. Providing it is what makes the column SORTABLE — a column with no
+   * ordering that makes sense (a set of scopes, a rendered chip) simply does not offer one.
+   */
+  sort?: (row: Row) => string | number;
 }
+
+/** NameCell is the name-first row identity: the human name leads, the id stays under it, complete.
+ *
+ * THE ID USED TO BE THE WHOLE CELL. Projects rendered as `prj_f89cbd4f78ce3e8d51fb5ea49a8bcfff`, agents as
+ * `aprof_239203512c3f88a6433ab3a976165ad8` — the console showing the operator the one part of the row they
+ * cannot read, while the display name it had already fetched went unrendered. On a stack carrying eighteen
+ * test fixtures and one real agent, that is the difference between a list and a wall.
+ *
+ * A ROW WITH NO NAME SAYS SO. The real projections do not all carry one (a knowledge base created by the API
+ * may have an empty `name`), and a blank cell reads as a rendering fault rather than as a fact about the
+ * record.
+ */
+export function NameCell({ name, id }: { name: string; id: string }) {
+  const named = name.trim() !== "";
+  return (
+    <span className="cell-name">
+      <span className="name" data-unnamed={named ? undefined : "true"}>
+        {named ? name : "— unnamed"}
+      </span>
+      {id === "" ? null : <span className="id">{id}</span>}
+    </span>
+  );
+}
+
+/** ORDER AS SERVED is the default and it is not merely a placeholder: the API's own order is meaningful
+ *  (newest first on every paginated collection), and a console that re-sorted on arrival would hide it. */
+const AS_SERVED = "";
+
+/** A list is given tools when it is long enough to need them. Below this, a filter box over four rows is
+ *  furniture — and every control added here is a control the contrast sweep and the tab order both pay for. */
+const TOOLS_FROM = 8;
 
 // Page is the /v1 list envelope, as api/pagination.go's renderPage actually writes it: `data`, `has_more`,
 // and a `next_cursor` MINTED only when has_more is true. `previous_cursor` is deliberately not here — see
@@ -90,6 +126,12 @@ export function Panel<Row extends Record<string, unknown>>({
   const [truncated, setTruncated] = useState(false);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  // THE FILTER AND THE ORDER ARE CLIENT-SIDE, OVER THE ROWS THIS PANEL HAS ACTUALLY FETCHED, and the UI says
+  // so in words. /v1 offers no `?q=` on any collection and no `?order=` on any either, so a box that claimed
+  // to search the collection would be a box that silently fails to find the twenty-first row. What it does
+  // instead is narrow what is on screen and state its own scope.
+  const [query, setQuery] = useState("");
+  const [order, setOrder] = useState(AS_SERVED);
   // A ref, so a caller passing an inline arrow does not re-trigger the fetch on every render. The effect
   // depends on the DATA inputs (path, reload signal) and nothing else.
   const onRowsRef = useRef(onRows);
@@ -142,9 +184,80 @@ export function Panel<Row extends Record<string, unknown>>({
     }
   }
 
+  // The sortable columns, in the order they are declared — so the select reads like the table.
+  const sortable = columns.filter((c) => c.sort !== undefined);
+  // The filter matches the row AS THE API RETURNED IT rather than as this panel rendered it: a render is a
+  // ReactNode and cannot be searched, and matching only the rendered columns would silently fail to find a
+  // row by a field that is on the wire but not in this panel's column list. The scope is stated below.
+  const matches = (row: Row) => JSON.stringify(row).toLowerCase().includes(query.trim().toLowerCase());
+  const filtered = rows === null ? null : query.trim() === "" ? rows : rows.filter(matches);
+  const ordered =
+    filtered === null || order === AS_SERVED
+      ? filtered
+      : (() => {
+          const [index, direction] = order.split(":");
+          const by = sortable[Number(index)]?.sort;
+          if (by === undefined) return filtered;
+          const sign = direction === "desc" ? -1 : 1;
+          return [...filtered].sort((a, b) => {
+            const va = by(a);
+            const vb = by(b);
+            if (typeof va === "number" && typeof vb === "number") return (va - vb) * sign;
+            return String(va).localeCompare(String(vb), undefined, { numeric: true }) * sign;
+          });
+        })();
+
+  const shown = ordered?.length ?? 0;
+  const total = rows?.length ?? 0;
+  const tools = total >= TOOLS_FROM;
+
   return (
     <section className="panel" data-testid={testId} aria-labelledby={`${testId}-h`}>
-      <h2 id={`${testId}-h`}>{title}</h2>
+      <div className="panel-head">
+        <h2 id={`${testId}-h`}>{title}</h2>
+        {/* THE COUNT, IN THE HEADING. "How many are there" is the first question asked of every list on this
+            surface and the answer used to be "count the rows yourself". When a filter is narrowing the list
+            it says BOTH numbers, so a filter that hides everything is legible as a filter rather than as an
+            empty collection. */}
+        {rows === null || error !== null ? null : (
+          <span className="panel-count" data-testid={`${testId}-count`}>
+            {shown === total ? `${String(total)} ${total === 1 ? "row" : "rows"}` : `${String(shown)} of ${String(total)} rows`}
+          </span>
+        )}
+        {tools && error === null ? (
+          <div className="panel-tools">
+            <input
+              type="search"
+              // A visible label on every list toolbar would be six words of chrome per panel; the accessible
+              // name names the LIST as well as the action, because "Filter" alone is ambiguous the moment a
+              // screen carries four of these.
+              aria-label={`Filter ${title}`}
+              placeholder="Filter…"
+              data-testid={`${testId}-filter`}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            {sortable.length === 0 ? null : (
+              <select aria-label={`Order ${title}`} data-testid={`${testId}-sort`} value={order} onChange={(e) => setOrder(e.target.value)}>
+                <option value={AS_SERVED}>Order as served</option>
+                {sortable.map((c, i) => (
+                  <Fragment key={c.header}>
+                    <option value={`${String(i)}:asc`}>{c.header} A → Z</option>
+                    <option value={`${String(i)}:desc`}>{c.header} Z → A</option>
+                  </Fragment>
+                ))}
+              </select>
+            )}
+            {/* The scope of the box, stated. Over a collection the server cut at twenty, a filter that says
+                nothing will fail to find a row that exists and look like an answer. */}
+            <p className="panel-tools-note">
+              {truncated
+                ? `Filtering the ${String(total)} rows loaded — more remain on the server.`
+                : `Filtering all ${String(total)} rows.`}
+            </p>
+          </div>
+        ) : null}
+      </div>
       {note ? <p className="muted">{note}</p> : null}
       {error ? (
         <p role="alert" className="form-error" data-testid={`${testId}-error`}>
@@ -156,26 +269,36 @@ export function Panel<Row extends Record<string, unknown>>({
         <p className="empty" data-testid={`${testId}-empty`}>{emptyNote ?? "None yet."}</p>
       ) : (
         <>
-          <table>
-            <thead>
-              <tr>
-                {columns.map((c) => (
-                  <th key={c.header} scope="col">
-                    {c.header}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, i) => (
-                <tr key={String(row.id ?? row.name ?? i)}>
+          {/* A FILTER THAT MATCHED NOTHING IS NOT AN EMPTY COLLECTION, and it does not get the empty
+              collection's testid or its sentence. Conflating the two is how an operator concludes a resource
+              was deleted when they have simply mistyped it. */}
+          {shown === 0 ? (
+            <p className="empty" data-testid={`${testId}-no-match`}>
+              No row here matches <strong>{query}</strong>. {total} {total === 1 ? "row is" : "rows are"} loaded
+              {truncated ? " and the server has more" : ""}; clear the filter to see them.
+            </p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
                   {columns.map((c) => (
-                    <td key={c.header}>{c.render(row)}</td>
+                    <th key={c.header} scope="col">
+                      {c.header}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {(ordered ?? []).map((row, i) => (
+                  <tr key={String(row.id ?? row.name ?? i)}>
+                    {columns.map((c) => (
+                      <td key={c.header}>{c.render(row)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
           {/* The cut, in WORDS. Not a colour, not a greyed arrow, not silence. */}
           {truncated ? (
             <p className="table-more" data-testid={`${testId}-more`}>

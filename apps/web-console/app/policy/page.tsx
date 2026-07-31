@@ -8,6 +8,7 @@ import { Picker, type PickerOption } from "@/components/Picker";
 import { ResourceForm } from "@/components/ResourceForm";
 import { RevealOnce } from "@/components/RevealOnce";
 import { apiGet, apiSend, RelayError } from "@/lib/api";
+import { rememberedProject, rememberProject } from "@/lib/scope";
 
 // THE POLICY SCREEN — AND EVERY FIELD ON IT IS SENT EVERY TIME (E28 T2, plan §3.6 D9).
 //
@@ -131,9 +132,17 @@ export default function PolicyPage() {
         const rows = projectBody.data ?? [];
         setProjects(rows);
         setPools(poolBody.data ?? []);
-        // Select the first project so the screen opens showing a REAL policy. A form that opens empty invites
-        // a save over a document nobody read.
-        setProject((current) => (current === "" ? String(rows[0]?.id ?? "") : current));
+        // Select a project so the screen opens showing a REAL policy. A form that opens empty invites a save
+        // over a document nobody read.
+        //
+        // THE SHELL'S SCOPE PICKER IS WHAT THIS PREFERS, and that is what makes that picker a control rather
+        // than an ornament (components/Chrome.tsx <Scope />): this console's /v1 reads are all scoped by its
+        // one API key, so the only thing a project choice can change is a screen that takes a project as a
+        // PARAMETER — and this is that screen. A remembered id that this deployment does not have is ignored
+        // rather than selected, so a stale session value cannot open the form on nothing.
+        const remembered = rememberedProject();
+        const preferred = rows.some((r) => r.id === remembered) ? remembered : String(rows[0]?.id ?? "");
+        setProject((current) => (current === "" ? preferred : current));
       })
       .catch((err: unknown) => {
         if (live) setLoadError(detail(err, "the projects and pools could not be read"));
@@ -265,7 +274,8 @@ export default function PolicyPage() {
       {/* THE ASSIGNMENT SENTENCE STAYS OPEN. It changes what you DO on this screen every single time you use
           it, which is the same test the environments page applied to decide what collapses. */}
       <p className="muted" data-testid="policy-assignment-note">
-        <strong>This form writes the WHOLE policy.</strong> The five fields you see here are, after you save,
+        <strong>This form writes the WHOLE policy.</strong>{" "}
+        The five fields you see here are, after you save,
         the entirety of the project&apos;s <code>config_policy</code> — <code>PATCH /v1/projects/{"{id}"}</code>{" "}
         replaces the stored document rather than merging into it. That is why the form reads the current policy
         before it shows you anything: a field you cannot see is a field you did not send.
@@ -275,7 +285,12 @@ export default function PolicyPage() {
         id="policy-project"
         label="Project"
         value={project}
-        onChange={setProject}
+        // Written back through the same module the shell's scope picker reads, so the two controls can never
+        // show different projects.
+        onChange={(id) => {
+          setProject(id);
+          rememberProject(id);
+        }}
         options={projectOptions}
         testId="policy-project-select"
         hint="Both halves of this page act on this project: its policy document, and the keys that reach it."

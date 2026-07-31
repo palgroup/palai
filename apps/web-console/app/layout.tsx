@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
-import { Nav, PageHeader } from "@/components/Chrome";
+import { Shell } from "@/components/Chrome";
 
 import "./globals.css";
 
@@ -24,6 +24,11 @@ export const metadata: Metadata = {
 // first sentence. It is chrome — a link home — and components/Chrome.tsx renders the PAGE's title and lead
 // inside <main>, from the same route table the nav and the axe sweep already read. No panel heading moved:
 // they are <h2>s, which is the correct level directly under a page title.
+//
+// THE FRAME ITSELF NOW LIVES IN components/Chrome.tsx, and the reason is `/login`. The shell has to render a
+// SIDEBAR on twelve screens and no navigation at all on the front door, which is a decision about the current
+// path — something a Server Component cannot see without threading it. `children` is still whatever the route
+// rendered on the server; only the frame around it is a client boundary.
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
@@ -31,16 +36,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <a className="skip-link" href="#main">
           Skip to main content
         </a>
-        <header className="app-header">
-          <a className="brand" href="/">
-            Palai Console
-          </a>
-          <Nav />
-        </header>
-        <main id="main">
-          <PageHeader />
-          {children}
-        </main>
+        <Shell>{children}</Shell>
       </body>
     </html>
   );
