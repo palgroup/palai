@@ -111,34 +111,68 @@ test("the documented command lands one working hash in .env.local, and running i
   expect(snapshot(resolve(APP_DIR, ".env.local")), "the test wrote apps/web-console/.env.local — the fail-closed console in auth.spec.ts would stop being unconfigured").toBe(appEnvBefore);
 });
 
-// A HASH GENERATED BEFORE THE SEPARATOR CHANGED STILL OPENS THE DOOR, ASSERTED AGAINST A REAL CONSOLE.
+// A LEGACY `$` HASH IS REFUSED, AND THE REFUSAL SAYS WHY — THE COMPATIBILITY CLAIM IS WITHDRAWN.
 //
-// lib/session.ts now splits on `[.$]` so nobody has to regenerate. That is a claim about a running process,
-// not about a regex, and reading the regex is exactly the "declared, therefore it happens" mistake this
-// tree's CLAUDE.md is written about — so a real `next start` is spawned with a legacy `$` hash in its
-// environment and the real login route is asked.
+// This test asserted the opposite yesterday and PASSED, and how it passed is the finding. `lib/session.ts`
+// splits on `[.$]`, so the parse handles both forms; the value never reaches the parse. Measured 2026-08-01
+// with `@next/env`, the loader this console actually runs under:
 //
-// The environment, NOT a .env.local, and that is the honest scope: a `$` hash routed through .env.local was
-// never intact (test one measured it), so the installs that work today are the ones that export it. Those are
-// what must not break.
+//   PALAI_CONSOLE_PASSWORD_HASH='scrypt$16384$8$1$SALT$KEY'  →  loadEnvConfig(dir)  →  'scrypt6384'
+//
+// dotenv-expand rewrites values ALREADY IN process.env, not only the ones it reads out of a file — and it
+// runs whenever any `.env` file is present. A git worktree has none, which is where the old version of this
+// test ran and why it was green. **Its green was a property of the harness, not of the product**, on the one
+// surface whose entire purpose is the path an operator actually walks. That is this tree's recurring defect
+// landing on the fix written to cure it.
+//
+// The value is DESTROYED rather than reshaped, so nothing can be compatible with it. What is left is a
+// recognisable signature, and the console owes the operator the reason rather than a generic "not set"
+// about a variable they can see is set.
 //
 // The wrong-password arm is not decoration: without it, a console that accepted anything would pass.
-test("a `$`-separated hash from before the fix still opens a real console", async () => {
-  const legacy = legacyDollarHash(CONSOLE_PASSWORD);
+test("a `$`-separated hash cannot survive the loader, and the console says so when it arrives destroyed", async () => {
+  // TWO DETERMINISTIC ARMS, BECAUSE THE ONE-ARM VERSION OF THIS TEST DEPENDED ON ITS OWN ENVIRONMENT AND
+  // I WROTE BOTH OF THEM. The first said a legacy `$` hash still WORKS, and passed only where no `.env`
+  // file exists; the second said it is REFUSED, and passed only where one does. Neither was wrong about
+  // the console — both were measuring the machine. Inverting a harness dependency is not removing it.
+  //
+  // So neither arm below spawns a console with a `$` value and asks what happens. The first measures the
+  // LOADER against a file it creates itself, in a directory it owns. The second hands the console a value
+  // that is ALREADY destroyed, which is deterministic everywhere.
+
+  // ARM ONE: the destruction, measured against @next/env in a directory this test controls.
+  const dir = mkdtempSync(join(tmpdir(), "palai-legacy-"));
+  try {
+    const legacy = legacyDollarHash(CONSOLE_PASSWORD);
+    writeFileSync(join(dir, ".env.local"), `${PREFIX}${legacy}\n`, { mode: 0o600 });
+    const loaded = loadThroughNextEnv(dir);
+    expect(loaded, "@next/env produced nothing at all from a file that has a hash in it").not.toBe(undefined);
+    expect(loaded, "a `$` hash survived @next/env — then dotenv-expand changed behaviour and the dot separator is no longer load-bearing").not.toBe(legacy);
+    expect((loaded ?? "").includes("$"), `the loader left a "$" in the value: ${String(loaded)}`).toBe(false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  // ARM TWO: what the console says when the destroyed value reaches it. `scrypt6384` is the measured
+  // remains of `scrypt$16384$8$1$…` — the prefix survives, every separator and everything they delimited
+  // does not. The operator can SEE the variable is set, so "not set" would send them hunting; the refusal
+  // has to name the cause and the one command that repairs it.
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(resolve(APP_DIR, "node_modules/.bin/next"), ["start", "-p", String(port)], {
     cwd: APP_DIR,
-    // The hash rides the ENV, never argv — `ps` is a process listing anyone on the box can read.
-    env: { ...process.env, PALAI_API_KEY: API_KEY, PALAI_BASE_URL: UPSTREAM, PALAI_CONSOLE_PASSWORD_HASH: legacy },
+    env: { ...process.env, PALAI_API_KEY: API_KEY, PALAI_BASE_URL: UPSTREAM, PALAI_CONSOLE_PASSWORD_HASH: "scrypt6384" },
     stdio: "ignore",
   });
   try {
     await waitForConsole(base);
-    const accepted = await postPassword(base, CONSOLE_PASSWORD);
-    const refused = await postPassword(base, `${CONSOLE_PASSWORD}-wrong`);
-    expect(accepted, "a legacy `$` hash no longer opens the console — every operator who exported one is locked out").toBe(204);
-    expect(refused, "this console accepted a wrong password, so the arm above proves nothing").toBe(401);
+    expect(await postPassword(base, CONSOLE_PASSWORD), "a console holding a destroyed hash opened for a password").toBe(401);
+
+    const relay = await fetch(`${base}/api/palai/v1/agents`);
+    expect(relay.status, "the relay must answer 503 console_not_configured — this console has no usable credential at all").toBe(503);
+    const detail = ((await relay.json()) as { detail?: string }).detail ?? "";
+    expect(detail.includes("separators stripped"), `the refusal did not name the cause: ${detail}`).toBe(true);
+    expect(detail.includes("--write"), `the refusal did not name the command that repairs it: ${detail}`).toBe(true);
   } finally {
     child.kill("SIGTERM");
   }

@@ -15,8 +15,8 @@
 -- failure mode worse than an error. Naming the dedupe unique keeps the replay a no-op while a genuine id
 -- collision (or any unique constraint added later) raises 23505 loudly instead of dropping revenue.
 -- name: SettleUsage
-INSERT INTO usage_ledger (id, organization_id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key)
-VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, $7, $9, $8)
+INSERT INTO usage_ledger (id, organization_id, project_id, session_id, run_id, meter, quantity, unit, dedupe_key, model_request_id)
+VALUES ($1, $2, $3, nullif($4, ''), nullif($5, ''), $6, $7, $9, $8, nullif($10, ''))
 ON CONFLICT (organization_id, project_id, dedupe_key) DO NOTHING;
 
 -- ExhaustedBudget returns the caller's first budget whose cumulative settled usage since period_start
@@ -108,6 +108,72 @@ WHERE organization_id = $1 AND ($2 = '' OR project_id = $2)
 GROUP BY meter, unit
 ORDER BY meter;
 
+-- UsageSeries is the BUCKETED read behind GET /v1/usage/series: quantity per meter per time bucket for
+-- the caller's scope, so a dashboard draws a chart from one aggregate instead of paging the ledger.
+-- UsageTotals answers "how much, ever"; this answers "how much, when", and neither is derivable from
+-- the other without a page loop the client should not be running.
+--
+-- $3 is the bucket unit and Go has ALREADY restricted it to 'hour' or 'day' before it arrives — it is
+-- the only parameter interpolated into an interval literal below, and a bound parameter is a VALUE at
+-- execution time, never re-parsed as SQL, so the concatenation cannot inject. The allow-list is what
+-- keeps it a bucket the index and the row ceiling were sized for, not what keeps it safe.
+--
+-- date_trunc's THREE-argument form is used deliberately. The two-argument form truncates a timestamptz
+-- in the SESSION's TimeZone, so the same window would bucket differently against a server whose
+-- timezone drifted from the container default — a silent, invisible re-slicing of every chart. Pinning
+-- 'UTC' makes a bucket mean the same instant everywhere. It requires PostgreSQL 16; the deployed image
+-- is pinned by digest and IS 16:
+--   docker inspect palai-<id>-postgres-1 --format '{{.Config.Image}}'
+--     -> postgres@sha256:17e67d7b9890c99b055ba1e0d5c5be4ec27c9d3a72bda32db24a5e5d8a85af0c
+--   psql -tAc 'SHOW server_version;' -> 16.14 (Debian 16.14-1.pgdg13+1)   (2026-07-31)
+-- and scripts/test/component:25 pins that SAME digest, so the tier that proves this cannot drift from
+-- the tier that runs it.
+--
+-- ZERO-FILL. `present` collects the (meter, unit) pairs that actually occur in the window and the final
+-- CROSS JOIN gives each of them EVERY bucket, so a meter that stopped spending renders as zeros rather
+-- than as absent points a chart would silently close over. The fill is deliberately scoped to the
+-- window: a window with no rows at all returns NO points, because nothing here knows which meters the
+-- caller expected, and inventing a vocabulary would be a claim this table cannot support.
+--
+-- `present` is derived FROM `agg` rather than from a second pass over usage_ledger, and that is not a
+-- tidiness point — it halves the work and removes a duplicated predicate. Measured on 500k seeded rows
+-- (2026-07-31, see the migration 000049 header for the harness):
+--   two ledger scans: Buffers: shared hit=10081, Execution Time: 103.040 ms
+--   one ledger scan:  Buffers: shared hit=5042,  Execution Time:  56.024 ms
+-- The second copy of the WHERE clause was also the kind this tree keeps paying for: two predicates that
+-- must agree forever, where a filter added to one and not the other silently changes which meters the
+-- chart admits without changing any number on it.
+--
+-- ORDERING. (bucket_start, meter, unit) is the CROSS JOIN's own key — generate_series emits each bucket
+-- once, `present` holds each (meter, unit) once (DISTINCT), so the triple is unique per output row by
+-- construction and the ORDER BY is TOTAL. `ORDER BY bucket_start` alone would NOT be: grouping by meter
+-- puts several rows in every bucket, and their order between runs would be whatever the join happened
+-- to emit — a chart drawn from an arbitrary interleaving of meters.
+-- name: UsageSeries
+WITH bounds AS (
+    SELECT date_trunc($3::text, $4::timestamptz, 'UTC') AS series_start,
+           $5::timestamptz                              AS series_end
+),
+agg AS (
+    SELECT date_trunc($3::text, l.occurred_at, 'UTC') AS bucket_start,
+           l.meter, l.unit, sum(l.quantity) AS quantity, count(*) AS entries
+    FROM usage_ledger l, bounds b
+    WHERE l.organization_id = $1 AND ($2 = '' OR l.project_id = $2)
+      AND l.occurred_at >= b.series_start AND l.occurred_at <= b.series_end
+      AND ($6 = '' OR l.meter = $6)
+    GROUP BY 1, 2, 3
+),
+present AS (
+    SELECT DISTINCT meter, unit FROM agg
+)
+SELECT g.bucket_start, p.meter, p.unit,
+       coalesce(a.quantity, 0), coalesce(a.entries, 0)
+FROM bounds b
+CROSS JOIN generate_series(b.series_start, b.series_end, ('1 ' || $3::text)::interval) AS g(bucket_start)
+CROSS JOIN present p
+LEFT JOIN agg a ON a.bucket_start = g.bucket_start AND a.meter = p.meter AND a.unit = p.unit
+ORDER BY g.bucket_start, p.meter, p.unit;
+
 -- ListUsageLedger is the shared keyset page over the ledger (the same (created_at, id) cursor every
 -- E13 T4 list uses; occurred_at is this table's created_at). The ledger carries no lifecycle state, so
 -- there is no status filter — the handler rejects ?status= for this kind.
@@ -117,7 +183,7 @@ ORDER BY meter;
 -- ORDER BY stays (occurred_at DESC, id DESC): total, which a keyset cursor requires. Narrowing the WHERE
 -- does not change the ordering, so a cursor minted on an unfiltered page still resolves.
 -- name: ListUsageLedger
-SELECT id, schema_version, project_id, session_id, run_id, meter, quantity, unit, occurred_at
+SELECT id, schema_version, project_id, session_id, run_id, meter, quantity, unit, occurred_at, model_request_id
 FROM usage_ledger
 WHERE organization_id = $1 AND ($2 = '' OR project_id = $2)
   AND ($3::timestamptz IS NULL OR occurred_at >= $3)

@@ -80,21 +80,60 @@ type summaryView struct {
 // exporter reads. schema_version travels WITH the row (not just in the docs) so an exporter can tell
 // which field contract produced an entry it did not write.
 type ledgerEntryView struct {
-	ID            string    `json:"id"`
-	Object        string    `json:"object"`
-	SchemaVersion int       `json:"schema_version"`
-	ProjectID     string    `json:"project_id"`
-	SessionID     string    `json:"session_id,omitempty"`
-	RunID         string    `json:"run_id,omitempty"`
-	Meter         string    `json:"meter"`
-	Quantity      float64   `json:"quantity"`
-	Unit          string    `json:"unit"`
-	OccurredAt    time.Time `json:"occurred_at"`
+	ID            string `json:"id"`
+	Object        string `json:"object"`
+	SchemaVersion int    `json:"schema_version"`
+	ProjectID     string `json:"project_id"`
+	SessionID     string `json:"session_id,omitempty"`
+	RunID         string `json:"run_id,omitempty"`
+	// ModelRequestID is the TURN this settlement is attributed to (migration 000050), omitted for the
+	// meters that describe no model call. It is rendered here because a column nothing reads must not be
+	// stored: this is what lets a dashboard join a cost to the turn that incurred it.
+	ModelRequestID string    `json:"model_request_id,omitempty"`
+	Meter          string    `json:"meter"`
+	Quantity       float64   `json:"quantity"`
+	Unit           string    `json:"unit"`
+	OccurredAt     time.Time `json:"occurred_at"`
 }
 
 type listView struct {
 	Object string `json:"object"`
 	Data   any    `json:"data"`
+}
+
+// seriesPoint is one (bucket, meter) cell of the chart. quantity is 0 rather than absent for a bucket
+// in which a meter recorded nothing — see seriesView for why the server fills it and not the client.
+type seriesPoint struct {
+	Object      string    `json:"object"`
+	BucketStart time.Time `json:"bucket_start"`
+	Meter       string    `json:"meter"`
+	Unit        string    `json:"unit"`
+	Quantity    float64   `json:"quantity"`
+	Entries     int64     `json:"entries"`
+}
+
+// seriesView is the bucketed answer to "how much, WHEN" — the shape a dashboard draws. It is a separate
+// object from summaryView, not a mode of it, because the two answer different questions: the summary is
+// a lifetime total and carries the limits it is measured against, which a time series has no use for.
+//
+// THE BUCKETS ARE ZERO-FILLED BY THE SERVER, and that is a deliberate cost. The client could fill them,
+// but only by re-deriving where a bucket BEGINS — and truncation is not a client-side fact: it depends
+// on the boundary Postgres truncates to and the timezone it does it in. Two clients filling the same
+// gap would disagree at DST edges and at the first bucket, and a chart with holes in the meantime does
+// not read as "no spend", it reads as a shorter chart with the remaining points slid together. The
+// server owns date_trunc, so the server owns the fill.
+//
+// The fill spans only the meters PRESENT in the window: a window with no rows returns no points at all.
+// Emitting a zero line per meter would mean naming a meter vocabulary, and the ledger has no such list
+// to be authoritative about — the meters are whatever has been settled.
+type seriesView struct {
+	Object         string        `json:"object"`
+	OrganizationID string        `json:"organization_id"`
+	ProjectID      string        `json:"project_id"`
+	Bucket         string        `json:"bucket"`
+	Start          time.Time     `json:"start"`
+	End            time.Time     `json:"end"`
+	Points         []seriesPoint `json:"points"`
 }
 
 // SetBudget upserts a cumulative spend cap for the caller's own scope. The scope is NOT a body field: an
@@ -204,6 +243,43 @@ func (s *Store) UsageSummary(ctx context.Context, scope middleware.Scope) (api.P
 	return api.ProvisionResult{Body: mustJSON(out)}, nil
 }
 
+// UsageSeries totals the settled ledger per meter per time bucket for the caller's scope — the chart
+// source. The handler has already validated the bucket against a two-value allow-list and bounded the
+// window, so this method's job is the scope binding and the projection; the aggregation, the zero-fill
+// and the total ordering are the SQL's (see storage/queries/usage.sql, UsageSeries).
+//
+// The envelope echoes the window the query RAN with, after the handler's defaults. Each point carries
+// its own bucket_start, which is the aligned truth — Start here is the requested boundary and the first
+// point's bucket_start is the truncated one containing it, and they differ by design. Nothing in Go
+// re-derives the truncation: date_trunc is the single implementation of what a bucket is.
+func (s *Store) UsageSeries(ctx context.Context, scope middleware.Scope, q api.UsageSeriesQuery) (api.ProvisionResult, error) {
+	ctx = s.scoped(ctx, scope)
+	rows, err := s.pool.Query(ctx, storage.Query("UsageSeries"),
+		scope.Organization, scope.Project, q.Bucket, q.Start, q.End, q.Meter)
+	if err != nil {
+		return api.ProvisionResult{}, fmt.Errorf("read usage series: %w", err)
+	}
+	defer rows.Close()
+	out := seriesView{
+		Object: "usage_series", OrganizationID: scope.Organization, ProjectID: scope.Project,
+		Bucket: q.Bucket, Start: q.Start, End: q.End,
+		// Never nil: an empty window must render as `"points": []` rather than `null`, so a client can
+		// draw an empty chart without special-casing the JSON.
+		Points: []seriesPoint{},
+	}
+	for rows.Next() {
+		p := seriesPoint{Object: "usage_series_point"}
+		if err := rows.Scan(&p.BucketStart, &p.Meter, &p.Unit, &p.Quantity, &p.Entries); err != nil {
+			return api.ProvisionResult{}, fmt.Errorf("scan usage series point: %w", err)
+		}
+		out.Points = append(out.Points, p)
+	}
+	if err := rows.Err(); err != nil {
+		return api.ProvisionResult{}, fmt.Errorf("iterate usage series: %w", err)
+	}
+	return api.ProvisionResult{Body: mustJSON(out)}, nil
+}
+
 // ListUsageLedger returns a keyset page of settled entries. The store fetches exactly the Limit the
 // handler asked for (already the page size + 1), so has_more is decided without a second round trip.
 func (s *Store) ListUsageLedger(ctx context.Context, scope middleware.Scope, q api.ListQuery) ([]api.ListRow, error) {
@@ -223,9 +299,9 @@ func (s *Store) ListUsageLedger(ctx context.Context, scope middleware.Scope, q a
 	out := []api.ListRow{}
 	for rows.Next() {
 		v := ledgerEntryView{Object: "usage_ledger_entry"}
-		var session, run *string
+		var session, run, modelRequest *string
 		if err := rows.Scan(&v.ID, &v.SchemaVersion, &v.ProjectID, &session, &run,
-			&v.Meter, &v.Quantity, &v.Unit, &v.OccurredAt); err != nil {
+			&v.Meter, &v.Quantity, &v.Unit, &v.OccurredAt, &modelRequest); err != nil {
 			return nil, fmt.Errorf("scan usage ledger entry: %w", err)
 		}
 		if session != nil {
@@ -233,6 +309,9 @@ func (s *Store) ListUsageLedger(ctx context.Context, scope middleware.Scope, q a
 		}
 		if run != nil {
 			v.RunID = *run
+		}
+		if modelRequest != nil {
+			v.ModelRequestID = *modelRequest
 		}
 		// The keyset coordinates are the ledger's own (occurred_at, id) — the same pair the shared
 		// cursor carries for every other list.
