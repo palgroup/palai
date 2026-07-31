@@ -46,6 +46,7 @@
   --blue-12: #113264;
   --red-3: #feebec;
   --red-6: #fdbdbe;
+  --red-9: #e5484d;
   --red-11: #ce2c31;
   --red-12: #641723;
   --grass-3: #e9f6e9;
@@ -99,6 +100,16 @@
   --warn-text: var(--amber-12);
   --danger-bg: var(--red-3);
   --danger-border: var(--red-6);
+  /* THE DESTRUCTIVE CONTROL'S OWN BOUNDARY, and it is a SEPARATE token from --danger-border for the reason
+     --border-control is separate from --border-hairline: one draws a region, the other draws a CONTROL, and
+     SC 1.4.11 judges only the second. --danger-border (step 6) is 1.55:1 against the page — fine for the
+     .form-error band it surrounds, and below the 3:1 floor for a button. Step 9 is the first red that clears
+     it, MEASURED with the same formula tests/contrast.spec.ts uses: 3.82:1 / 3.72:1 / 3.44:1 against page,
+     subtle and inset in light, and 4.82:1 / 4.49:1 / 4.06:1 in dark.
+     FOUND BY E28 T3, and it had been failing since E28 T2 shipped `button.danger`: its only caller until then
+     was inside a dialog, which the sweep walks the routes with CLOSED, so no measurement had ever seen it.
+     The fleet screen puts one in a table row and the sweep found it on the first run. */
+  --danger-border-control: var(--red-9);
   --danger-text: var(--red-12);
   --danger-text-inline: var(--red-11);
   --info-bg: var(--blue-3);
@@ -213,6 +224,7 @@
     --blue-12: #c2e6ff;
     --red-3: #3b1219;
     --red-6: #72232d;
+    --red-9: #e5484d;
     --red-11: #ff9592;
     --red-12: #ffd1d9;
     --grass-3: #1b2a1e;
@@ -1020,7 +1032,7 @@ pre.code {
 button.danger {
   color: var(--danger-text);
   background: var(--danger-bg);
-  border-color: var(--danger-border);
+  border-color: var(--danger-border-control);
 }
 button.danger:hover:not(:disabled) {
   border-color: var(--danger-text-inline);

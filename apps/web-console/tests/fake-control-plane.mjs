@@ -763,12 +763,193 @@ function assignPolicy(id, policy) {
 // THE POOLS THE POLICY CAN NAME (E24 T2's read route, E28 T1's write half). `config_policy.pool` is a pool
 // ID and not a name — fleet/placement.go ResolvePool feeds it straight through as PolicyPoolID — so the
 // picker's option VALUE is the id and its label is what an operator recognises. Two rows, because one is how
-// a picker looks correct while offering no choice at all, and `waiting` is E28 T1's `*int64`: present here,
-// and absent on a pool the gateway could not be asked about.
+// a picker looks correct while offering no choice at all, and `waiting` is E28 T1's `*int64`.
+//
+// EVERY ROW CARRIES `waiting` OR NONE DOES, AND THAT IS A MEASUREMENT RATHER THAN A CONVENIENCE (E28 T3).
+// internal/fleet/api.go's ListRunnerPools sets the pointer in a loop guarded by `a.live == nil` — the live
+// gateway is a DEPLOYMENT-level thing, not a per-pool one — so the absent-key state is what a stack with no
+// runner listener bound answers for its WHOLE list, and a fixture serving one pool with the key and one
+// without would be teaching a wire that cannot happen. tests/fleet.spec.ts reaches that state by rewriting
+// the response at the browser boundary instead, which is the same bytes and no fiction here.
+//
+// STATEFUL SINCE E28 T3, for the reason the environments and agents collections are: the console CREATES a
+// pool (E28 T1's POST) and switches an existing one strict (its PATCH), and a static row cannot express
+// either. The two seeded rows stay — one sandboxed and quiet, one unsandboxed with a queue behind it.
 const RUNNER_POOLS = [
   { id: "pool_default", object: "runner_pool", name: "default", posture: "sandboxed-linux", os: "", arch: "", strict_enrollment: false, created_at: "2026-07-24T00:00:00Z", waiting: 0 },
   { id: "pool_mac", object: "runner_pool", name: "mac-pool", posture: "unsandboxed-host", os: "darwin", arch: "arm64", strict_enrollment: true, created_at: "2026-07-25T00:00:00Z", waiting: 2 },
 ];
+let poolSeq = 0;
+
+// --- THE POOL KEYS (E24 T3's surface, driven from a screen by E28 T3) -----------------------------------
+//
+// poolKeyView's shape, verbatim: {id, object, pool_id, key_prefix, created_at} always, `key` on the CREATE
+// alone, and expires_at / revoked_at / last_used_at only when set. The store keeps no value, so the mint
+// response is the only thing in the world that has one — the fixture keeps none either, which is what makes
+// the browser proof's "no later response carries it" a real search rather than a lucky one.
+const POOL_KEYS = [
+  { id: "rpk_seeded_01", object: "runner_pool_key", pool_id: "pool_mac", key_prefix: "palai-rk", created_at: "2026-07-25T00:00:00Z" },
+];
+let poolKeySeq = 0;
+let seededKeySeq = 1;
+const FIXTURE_POOL_KEY_PREFIX = "palai-rk-console-minted-";
+
+// WHICH MACHINES A KEY ALREADY ADMITTED. The real store answers this from a join on `enrolled_via_key_id`
+// (ListRunnersEnrolledViaKey); here it is a map, because what matters is the SENTENCE it makes possible
+// rather than the join — revoking a key stops nothing that is already in, and a console showing a bare
+// "revoked" teaches the opposite.
+const KEY_ENROLMENTS = new Map([["rpk_seeded_01", ["run_active_02", "run_pending_01"]]]);
+
+// THE REVOCABLE KEY IS RE-SEEDED AFTER IT IS REVOKED, WITH A NEW ID — the approval queue's rule applied to
+// a second consumable row, and for the identical reason. A fixture its own proofs can EMPTY is a suite that
+// passes once: Playwright reuses a running webServer locally (`reuseExistingServer: !CI`) AND runs every
+// spec twice, once per colour-scheme project, so the second pass met the first pass's revoked key and failed
+// on the fixture's state rather than on the console's behaviour.
+//
+// A NEW ID RATHER THAN UN-REVOKING THE OLD ONE, deliberately: "a revoked key stays revoked" has to remain
+// true of the key that was revoked, because that is the property being proven. The spec selects by PREFIX.
+function ensureRevocableKey() {
+  if (POOL_KEYS.some((k) => k.id.startsWith("rpk_seeded_") && k.revoked_at === undefined)) return;
+  seededKeySeq += 1;
+  const id = `rpk_seeded_${String(seededKeySeq).padStart(2, "0")}`;
+  POOL_KEYS.unshift({ id, object: "runner_pool_key", pool_id: "pool_mac", key_prefix: "palai-rk", created_at: new Date().toISOString() });
+  KEY_ENROLMENTS.set(id, ["run_active_02", "run_pending_01"]);
+}
+
+// --- THE MACHINES (E24 T1/T5/T6, and the state nothing could show until E28 T3) --------------------------
+//
+// A COMPOSE STACK HAS NONE OF THIS AND CANNOT BE MADE TO (DIV-UI-009): a row in `runners` is written by
+// fleet.Store.Register over the RUNNER PLANE — a separate mTLS listener a host agent dials with a pool key
+// and a CSR — and no /v1 route puts one there. So the machine half of the fleet screen is proven here, and
+// the ledger row says so rather than the skip being silent.
+//
+// `active_leases` IS DELIBERATELY NOT ON THESE ROWS. api/runners.go:49-59: it is on the SINGLE read because
+// it is a live value, and "a page of them would be a page of separate instants presented as one". That
+// absence is what forces the revoke dialog to make a second request, which tests/fleet.spec.ts asserts as a
+// NETWORK call — a fixture generous enough to put the count on the listing would make that assertion pass
+// over a dialog that never read anything.
+//
+// TWO of them are `active`, which is the condition cmd/cli/internal/stack/up.go's dispatchWorkerFleetWarning
+// fires on (it counts ROWS from /v1/runners?limit=10, whatever their state, and pairs that with
+// PALAI_DISPATCH_WORKERS=1).
+//
+// NEWEST FIRST, because ListRunners orders `created_at DESC, id DESC` (storage/queries/runners.sql:167).
+// That is the same fidelity fix E25 T6 made to the agents collection after a created row landed behind a
+// page boundary and the console's own picker could not offer what the operator had just made.
+const RUNNERS = [
+  {
+    id: "run_pending_gone", object: "runner", pool_id: "pool_mac", label: "mac-mini-05",
+    runner_dns: "run-pending-gone.runners.palai.local", public_key_sha256: "e6438d1b2a90c75f", state: "pending",
+    os: "darwin", arch: "arm64", posture: "unsandboxed-host", capacity: 2,
+    created_at: "2026-07-31T06:30:00Z", enrolled_at: "2026-07-31T06:30:00Z",
+    cert_not_after: "2026-10-31T06:30:00Z", last_seen_at: "2026-07-31T06:30:00Z",
+  },
+  {
+    id: "run_pending_noscope", object: "runner", pool_id: "pool_mac", label: "mac-mini-04",
+    runner_dns: "run-pending-noscope.runners.palai.local", public_key_sha256: "a7c2019ef4b5d386", state: "pending",
+    os: "darwin", arch: "arm64", posture: "unsandboxed-host", capacity: 2,
+    created_at: "2026-07-31T06:20:00Z", enrolled_at: "2026-07-31T06:20:00Z",
+    cert_not_after: "2026-10-31T06:20:00Z", last_seen_at: "2026-07-31T06:20:00Z",
+  },
+  {
+    id: "run_pending_locked", object: "runner", pool_id: "pool_mac", label: "mac-mini-03",
+    runner_dns: "run-pending-locked.runners.palai.local", public_key_sha256: "5d90ba3c6e18f472", state: "pending",
+    os: "darwin", arch: "arm64", posture: "unsandboxed-host", capacity: 2,
+    created_at: "2026-07-31T06:10:00Z", enrolled_at: "2026-07-31T06:10:00Z",
+    cert_not_after: "2026-10-31T06:10:00Z", last_seen_at: "2026-07-31T06:10:00Z",
+  },
+  {
+    id: "run_pending_01", object: "runner", pool_id: "pool_mac", label: "mac-mini-02",
+    runner_dns: "run-pending-01.runners.palai.local", public_key_sha256: "c41e77b0a9d2f358", state: "pending",
+    os: "darwin", arch: "arm64", posture: "unsandboxed-host", capacity: 2,
+    created_at: "2026-07-31T06:00:00Z", enrolled_at: "2026-07-31T06:00:00Z",
+    cert_not_after: "2026-10-31T06:00:00Z", last_seen_at: "2026-07-31T06:00:00Z",
+  },
+  {
+    id: "run_active_02", object: "runner", pool_id: "pool_mac", label: "mac-mini-01",
+    runner_dns: "run-active-02.runners.palai.local", public_key_sha256: "8b02d5fa71cc39e4", state: "active",
+    os: "darwin", arch: "arm64", posture: "unsandboxed-host", capacity: 2,
+    created_at: "2026-07-25T10:00:00Z", enrolled_at: "2026-07-25T10:00:00Z",
+    cert_not_after: "2026-10-25T10:00:00Z", last_seen_at: "2026-07-31T07:55:00Z",
+  },
+  {
+    id: "run_active_01", object: "runner", pool_id: "pool_default", label: "ci-linux-01",
+    runner_dns: "run-active-01.runners.palai.local", public_key_sha256: "3f1a9c7e2b4d5061", state: "active",
+    os: "linux", arch: "amd64", posture: "sandboxed-linux", capacity: 1,
+    created_at: "2026-07-24T09:00:00Z", enrolled_at: "2026-07-24T09:00:00Z",
+    cert_not_after: "2026-10-24T09:00:00Z",
+    // DELIBERATELY STALE. The screen must say this means "has not authenticated since" and not "is down".
+    last_seen_at: "2026-07-20T04:12:00Z",
+  },
+];
+
+// THE ADMITTABLE MACHINE IS RE-SEEDED AFTER IT IS ADMITTED, with a NEW id — ensureRevocableKey's argument
+// again, and the approval queue's before that. An admitted machine leaves the waiting room for good, so a
+// second colour-scheme pass (or a locally reused server) met an empty room and failed on the fixture's own
+// state. `run_pending_locked` / `_noscope` / `_gone` are NOT re-seeded and never leave: their admissions are
+// always refused, which is what makes them stable subjects for the typed-refusal legs.
+let waitingSeq = 0;
+function ensureWaitingMachine() {
+  if (RUNNERS.some((r) => r.state === "pending" && r.id.startsWith("run_waiting_"))) return;
+  waitingSeq += 1;
+  const n = String(waitingSeq).padStart(2, "0");
+  RUNNERS.unshift({
+    id: `run_waiting_${n}`, object: "runner", pool_id: "pool_mac", label: `mac-mini-w${n}`,
+    runner_dns: `run-waiting-${n}.runners.palai.local`, public_key_sha256: `9c${n}4e0b7d1a635f`, state: "pending",
+    os: "darwin", arch: "arm64", posture: "unsandboxed-host", capacity: 2,
+    created_at: new Date().toISOString(), enrolled_at: new Date().toISOString(),
+    cert_not_after: "2026-10-31T12:00:00Z", last_seen_at: new Date().toISOString(),
+  });
+}
+
+// THE LIVE LEASE COUNT, KEPT OFF THE ROWS ABOVE so it can only be served by the reads that actually have it.
+//
+// A DEFAULT OF ZERO RATHER THAN AN ABSENCE, and that is fidelity rather than laziness: fleet/api.go's
+// `decorate` sets the pointer for every machine whenever `a.live != nil` and RunnerGateway.RunnerActiveLeases
+// answers 0 for a machine it holds no sessions for. So "the gateway could not be asked" is a DEPLOYMENT-wide
+// state (no runner listener bound), never a per-machine one, and a fixture that omitted the key for one
+// machine would be teaching a wire that cannot happen. tests/fleet.spec.ts reaches the absent-key state by
+// rewriting the response at the browser boundary, which is the same bytes and no fiction here.
+const ACTIVE_LEASES = new Map([["run_active_02", 2]]);
+const leasesFor = (id) => ACTIVE_LEASES.get(id) ?? 0;
+
+// THE THREE TYPED REFUSALS OF AN ADMISSION, AND THEY ARE SYNTHESIS — named as such, exactly like the
+// per-row canned refusals on the approval queue (E25 T5). The real route keys them to the CALLER: 403
+// `insufficient_scope` when the key lacks `approve` (api/runners.go:540-543), 403 `approver_not_authorized`
+// when the project's approver list excludes the principal the key resolves to (:549-555), and 404 for
+// unknown / foreign / not-admissible, which are deliberately indistinguishable (:556-560). This console
+// presents ONE key, so it cannot reach the first two by being itself; keying them to the machine is how the
+// three sentences get rendered at all. The refusal ORDER is the real handler's: capability, then policy,
+// then resolution.
+const ADMISSION_REFUSALS = new Map([
+  ["run_pending_noscope", [403, "insufficient_scope", "this API key lacks the approve capability"]],
+  ["run_pending_locked", [403, "approver_not_authorized", "this project's approver list does not include the principal this key resolves to"]],
+  ["run_pending_gone", [404, "not_found", "no such runner awaiting approval in this project"]],
+]);
+
+/** poolKeyView is api/runners.go's, including the field NAMED for what it means on a revoke. */
+function poolKeyView(row, { key, enrolled } = {}) {
+  return {
+    id: row.id, object: "runner_pool_key", pool_id: row.pool_id, key_prefix: row.key_prefix,
+    created_at: row.created_at,
+    ...(key === undefined ? {} : { key }),
+    ...(row.expires_at === undefined ? {} : { expires_at: row.expires_at }),
+    ...(row.revoked_at === undefined ? {} : { revoked_at: row.revoked_at }),
+    ...(row.last_used_at === undefined ? {} : { last_used_at: row.last_used_at }),
+    ...(enrolled === undefined ? {} : { enrolled_runners_still_running: enrolled }),
+  };
+}
+
+/**
+ * runnerView adds `active_leases`, which the LISTING never carries and these reads always do — fleet/api.go
+ * shadows GetRunner, SetRunnerState and ApproveRunner with `decorate` and leaves ListRunners alone.
+ */
+function runnerView(row) {
+  return { ...row, active_leases: leasesFor(row.id) };
+}
+
+/** findRunner is the lookup every machine route shares; `undefined` for an id the fixture does not hold. */
+const findRunner = (id) => RUNNERS.find((r) => r.id === id);
 
 // --- API KEYS, MINTED ONCE (E28 T2) ---------------------------------------------------------------------
 //
@@ -1078,9 +1259,178 @@ export const ROUTES = [
       sendJSON(response, 200, { id, object: "api_key", project_id: "proj_local", scopes: row?.scopes ?? [], revoked_at: "2026-07-31T00:00:00Z" });
     },
   },
+  // --- THE FLEET (E24 T1/T2/T3/T5/T6's routes + E28 T1's write half), in api/router.go's order ----------
+  //
   // The pools a policy's `pool` can name (E24 T2). renderPage's envelope, so the console's Panel/Picker meet
   // the same {data, has_more} shape here as on a real stack.
   { method: "GET", pattern: "/v1/runner-pools", handle: (request, response) => pageSlice(RUNNER_POOLS, requestURL(request), response) },
+  {
+    // E28 T1's birth path. The refusals are the route's own, in its order: a blank name is a 400, a posture
+    // outside 000045's CHECK is a 400 *from the route* (the constraint is the last defence, not the first),
+    // and a duplicate name is a 409 rather than the 500 an unhandled unique violation would be.
+    method: "POST",
+    pattern: "/v1/runner-pools",
+    handle: (request, response) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        if (name === "") return sendProblem(response, 400, "invalid_request", "name is required and must not be blank");
+        if (body.posture !== "sandboxed-linux" && body.posture !== "unsandboxed-host") {
+          return sendProblem(response, 400, "invalid_request", "posture must be one of sandboxed-linux, unsandboxed-host");
+        }
+        if (RUNNER_POOLS.some((p) => p.name === name)) {
+          return sendProblem(response, 409, "already_exists", "this project already has a runner pool with that name");
+        }
+        poolSeq += 1;
+        const pool = {
+          id: `pool_console_${String(poolSeq).padStart(4, "0")}`, object: "runner_pool", name,
+          posture: body.posture, os: typeof body.os === "string" ? body.os : "",
+          arch: typeof body.arch === "string" ? body.arch : "",
+          strict_enrollment: body.strict_enrollment === true,
+          created_at: new Date().toISOString(),
+          // The live gateway answers for the WHOLE list or for none of it, so a new pool joins the list
+          // carrying the same key its siblings carry — see RUNNER_POOLS.
+          waiting: 0,
+        };
+        // UNSHIFT, NOT PUSH: ListRunnerPools orders `created_at DESC, id DESC` (storage/queries/runners.sql),
+        // so a freshly created pool is always on page ONE of a real stack. Appending would put it behind the
+        // page limit on any deployment with twenty pools, and the picker below would not offer the pool the
+        // operator had just made — the exact defect E25 T6 found on the agents collection.
+        RUNNER_POOLS.unshift(pool);
+        // THE SAME PROJECTION THE LISTING RENDERS. A create answering a different shape is what T1's
+        // one-projection rule exists to prevent, and a fixture that diverged here would hide it.
+        sendJSON(response, 201, pool);
+      }),
+  },
+  {
+    // E28 T1's second route: ONE field. `posture` is not patchable because a machine INHERITS its pool's
+    // posture at enrolment, so moving a populated pool would retroactively change what the machines in it
+    // ARE — the fixture refuses an unknown field for the same reason the route's DisallowUnknownFields does.
+    method: "PATCH",
+    pattern: "/v1/runner-pools/{pool_id}",
+    handle: (request, response, { pool_id: id }) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        if (typeof body.strict_enrollment !== "boolean") {
+          return sendProblem(response, 400, "invalid_request",
+            "strict_enrollment is required; a pool's posture is fixed at creation because its machines inherit it");
+        }
+        const pool = RUNNER_POOLS.find((p) => p.id === id);
+        // A REAL 404 HERE, unlike the id-bearing routes below, and it is safe for the sweep's arm 1: that arm
+        // probes a PATCH with NO body, which this route refuses at the 400 above before any lookup happens.
+        if (pool === undefined) return sendProblem(response, 404, "not_found", "no such runner pool in this project");
+        pool.strict_enrollment = body.strict_enrollment;
+        sendJSON(response, 200, pool);
+      }),
+  },
+  {
+    // Metadata only — never a value, never a digest. An unknown pool yields an EMPTY list rather than a 404,
+    // which is the real route's shape too: ListRunnerPoolKeys reports no found flag.
+    method: "GET",
+    pattern: "/v1/runner-pools/{pool_id}/keys",
+    handle: (_req, response, { pool_id: id }) => {
+      ensureRevocableKey();
+      sendJSON(response, 200, { object: "list", data: POOL_KEYS.filter((k) => k.pool_id === id).map((k) => poolKeyView(k)) });
+    },
+  },
+  {
+    // THE ONE TIME A VALUE EXISTS. poolKeyView(item, true) is used here and on no other call site.
+    //
+    // SYNTHESISED ON AN UNKNOWN POOL, like the environment detail and agent publish routes and for the same
+    // arm-1 reason: the sweep probes every pattern with a placeholder segment and reads a 404 as "the table
+    // declares a route the fixture does not serve". The real route 404s an unknown or foreign pool and no
+    // console path depends on either answer — the mint button only ever names a pool the list returned.
+    method: "POST",
+    pattern: "/v1/runner-pools/{pool_id}/keys",
+    handle: (request, response, { pool_id: id }) =>
+      drainBody(request, (raw) => {
+        const body = parseBody(raw);
+        poolKeySeq += 1;
+        const keyID = `rpk_console_${String(poolKeySeq).padStart(4, "0")}`;
+        // A DISTINCTIVE, SINGLE-USE VALUE, for the reason the minted API key's is: the browser proof scans
+        // the reloaded document and every listing for exactly these bytes, so a value that could match by
+        // accident would make the search meaningless. It authenticates nothing.
+        const value = `${FIXTURE_POOL_KEY_PREFIX}${keyID}-6d1f84ba0c37`;
+        const row = {
+          id: keyID, object: "runner_pool_key", pool_id: id, key_prefix: value.slice(0, 8),
+          created_at: new Date().toISOString(),
+          ...(typeof body.expires_at === "string" && body.expires_at !== "" ? { expires_at: body.expires_at } : {}),
+        };
+        // Newest first, like the pools and the machines — ListRunnerPoolKeys is `created_at DESC, id DESC`.
+        POOL_KEYS.unshift(row);
+        sendJSON(response, 201, poolKeyView(row, { key: value }));
+      }),
+  },
+  {
+    // A REVOKE ANSWERS WITH THE MACHINES IT DOES NOT STOP, and the field is named for what it means. An
+    // operator not shown them reads "revoked" as "removed" and believes one call decommissioned a fleet.
+    // Synthesised on an unknown key, for the arm-1 reason above.
+    method: "POST",
+    pattern: "/v1/runner-pool-keys/{key_id}/revoke",
+    handle: (_req, response, { key_id: id }) => {
+      const row = POOL_KEYS.find((k) => k.id === id) ?? { id, object: "runner_pool_key", pool_id: "pool_mac", key_prefix: "palai-rk", created_at: "2026-07-25T00:00:00Z" };
+      row.revoked_at = "2026-07-31T00:00:00Z";
+      const enrolled = (KEY_ENROLMENTS.get(id) ?? [])
+        .map(findRunner)
+        .filter((r) => r !== undefined)
+        .map((r) => ({ id: r.id, label: r.label, runner_dns: r.runner_dns, state: r.state, pool_id: r.pool_id, enrolled_at: r.enrolled_at }));
+      sendJSON(response, 200, poolKeyView(row, { enrolled }));
+    },
+  },
+  {
+    method: "GET",
+    pattern: "/v1/runners",
+    handle: (request, response) => {
+      ensureWaitingMachine();
+      pageSlice(RUNNERS, requestURL(request), response);
+    },
+  },
+  {
+    // THE SINGLE READ, and the ONLY place `active_leases` exists. Synthesised on an unknown id (arm 1).
+    method: "GET",
+    pattern: "/v1/runners/{runner_id}",
+    handle: (_req, response, { runner_id: id }) => {
+      const row = findRunner(id) ?? {
+        id, object: "runner", pool_id: "pool_default", label: "", runner_dns: "", public_key_sha256: "",
+        state: "active", os: "linux", arch: "amd64", posture: "sandboxed-linux", capacity: 1,
+        created_at: "2026-07-24T00:00:00Z",
+      };
+      sendJSON(response, 200, runnerView(row));
+    },
+  },
+  ...["cordon", "resume", "revoke"].map((action) => ({
+    // THE ACTION IS BOUND AT REGISTRATION, exactly as api/runners.go binds it: three patterns, one closure
+    // each, so there is no caller-supplied string to validate. A revoke is ONE-WAY here too — the state it
+    // writes is terminal and neither of the other two brings it back.
+    method: "POST",
+    pattern: `/v1/runners/{runner_id}/${action}`,
+    handle: (_req, response, { runner_id: id }) => {
+      const row = findRunner(id);
+      if (row === undefined) {
+        return sendJSON(response, 200, runnerView({ id, object: "runner", pool_id: "pool_default", state: action === "resume" ? "active" : `${action}ed`, created_at: "2026-07-24T00:00:00Z" }));
+      }
+      if (row.state === "revoked") return sendProblem(response, 404, "not_found", "no such runner in this project");
+      row.state = action === "resume" ? "active" : action === "cordon" ? "cordoned" : "revoked";
+      sendJSON(response, 200, runnerView(row));
+    },
+  })),
+  {
+    // THE WAITING ROOM'S DOOR (E24 T6), gated on `approve` and not on `provision`. The three refusals are
+    // SYNTHESIS keyed to the machine — see ADMISSION_REFUSALS for why they cannot be keyed to the caller.
+    method: "POST",
+    pattern: "/v1/runners/{runner_id}/approve",
+    handle: (_req, response, { runner_id: id }) => {
+      const refusal = ADMISSION_REFUSALS.get(id);
+      if (refusal !== undefined) return sendProblem(response, refusal[0], refusal[1], refusal[2]);
+      const row = findRunner(id);
+      // Synthesised on an unknown id (arm 1). The real route answers 404 and the console only ever names a
+      // machine the waiting room just listed.
+      if (row === undefined) return sendJSON(response, 200, runnerView({ id, object: "runner", pool_id: "pool_mac", state: "active", created_at: "2026-07-31T00:00:00Z" }));
+      if (row.state !== "pending") return sendProblem(response, 404, "not_found", "no such runner awaiting approval in this project");
+      row.state = "active";
+      sendJSON(response, 200, runnerView(row));
+    },
+  },
 
   { method: "GET", pattern: "/v1/model-connections", handle: adminList("model-connections") },
   { method: "GET", pattern: "/v1/model-routes", handle: adminList("model-routes") },

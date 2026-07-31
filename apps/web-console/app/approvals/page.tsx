@@ -64,7 +64,17 @@ export default function ApprovalsPage() {
         request or a merge is approved inside a live run&apos;s event stream, because the public API has no list
         route for them (filed as <code>API-3</code>/<code>API-4</code> and not approved). If you are waiting to
         approve a push, watch it on <a href="/runs">Live runs</a>; an empty queue on this page does not mean
-        nothing is waiting for you.
+        nothing is waiting for you.{" "}
+        {/* E28 T3, plan §3.6 D20. A MACHINE waiting to be admitted into a strict runner pool is a pending
+            decision that is structurally not in this list, and the reason is the server's own: this queue
+            reads spine.PendingToolApprovals, and the decision route requires a request_hash that a machine
+            enrolment does not have. Naming it here is the same rule the sentences above already apply to
+            publication approvals — a queue whose scope is unstated teaches an operator that everything
+            pending is on one screen. */}
+        <strong>A machine waiting to be admitted is not here either.</strong> A strict runner pool holds a new
+        machine until a human admits it, and that decision cannot ride this queue: a machine enrolment has{" "}
+        <strong>no request hash</strong> to bind a decision to, and everything decided here binds to one.
+        Those are on <a href="/fleet">Fleet</a>.
       </p>
       {/* WHAT STAYS OPEN AND WHAT COLLAPSES IS THE DECISION, not the styling. The scope note above changes
           what an EMPTY queue means — "nothing is waiting" versus "nothing of this kind is waiting" — so it is
