@@ -100,6 +100,10 @@ test("a pool is created from the console with the posture it was given", async (
   const name = `t3-fleet-${Date.now()}`;
   await open(page);
 
+  // THE CREATE FORM IS BEHIND THE PANEL'S `+ Create pool` BUTTON (page-parity-govern pass). A driver change:
+  // every assertion below is the one it was, made against the same form.
+  await page.getByTestId("pool-create-open").click();
+  await expect(page.getByTestId("pool-create-dialog")).toBeVisible();
   await page.getByTestId("pool-name-input").fill(name);
   await page.getByTestId("pool-posture-select").selectOption("unsandboxed-host");
   await page.getByTestId("pool-os-input").fill("darwin");
@@ -211,6 +215,9 @@ test("a pool key is shown once, and nothing reads it back", async ({ page }) => 
   const pool = await page.getByTestId("poolkey-pool-select").inputValue();
   expect(pool, "the key panel has no pool selected, so the mint below would be about nothing").not.toBe("");
 
+  // Same move, same reason: the mint is behind the key panel's `+ Mint key`.
+  await page.getByTestId("poolkey-mint-open").click();
+  await expect(page.getByTestId("poolkey-mint-dialog")).toBeVisible();
   await page.getByTestId("poolkey-mint-button").click();
   const value = page.getByTestId("poolkey-reveal-value");
   await expect(value).toBeVisible({ timeout: 15_000 });

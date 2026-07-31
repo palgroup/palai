@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { ConfirmDestructive } from "@/components/ConfirmDestructive";
+import { FormDialog } from "@/components/FormDialog";
 import { Panel } from "@/components/Panel";
 import { Picker, type PickerOption } from "@/components/Picker";
 import { ResourceForm } from "@/components/ResourceForm";
@@ -39,13 +40,13 @@ import { useQueryParam } from "@/lib/urlState";
 //   form, and CON-P2 under the mint. The rest moved to docs/operations/console.md §3b, which already carried
 //   most of it in more detail, and to the hints under the fields they describe.
 //
-// THE TWO FORMS ARE STILL ON THE PAGE, AND THAT IS A BLOCKED MOVE RATHER THAN A CHOICE.
-// TODO(component-layer): Dialog — "Mint an API key" wants to be a dialog behind a primary action on the key
-// panel, the way the reference does it. Two shipped guards stop it and both are on the do-not-weaken list:
-// tests/reveal-once.spec.ts's mint() helper checks `key-scope-provision` with no intervening interaction (a
-// dialog would hide it from Playwright's visibility requirement), and tests/auth.spec.ts asserts the served
-// form sweep sees at least EIGHT forms — `grep -rc "<ResourceForm" app` is 10 today, and a dialog-mounted
-// form is not in the server-rendered HTML. Moving this one and the fleet's two takes that count to 7.
+// THE MINT IS A DIALOG NOW, AND THE TWO GUARDS THAT HELD IT HERE WERE ANSWERED RATHER THAN LOWERED.
+// components/FormDialog.tsx landed in the page-parity pass, so there is a primitive to move into.
+// tests/auth.spec.ts's served-form sweep no longer carries a hand-typed floor: it DERIVES the expected count
+// per route as ResourceForm mounts minus FormDialog mounts, so a form moving behind a dialog self-adjusts
+// instead of turning a number red. tests/reveal-once.spec.ts's mint() gained ONE `.click()` to open the
+// dialog — a driver change, not a weakening: every assertion in that file is the one it was, and its five
+// probes still report `probe_found=true`, which is what makes its zeros mean something.
 
 interface ProjectRow {
   id?: string;
@@ -132,6 +133,8 @@ export default function PolicyPage() {
   const [expiresOn, setExpiresOn] = useState("");
   const [mintError, setMintError] = useState("");
   const [minting, setMinting] = useState(false);
+  /** The mint dialog. A create form is a MODE, and the control that enters it is the panel's own button. */
+  const [mintOpen, setMintOpen] = useState(false);
   // THE MINTED VALUE LIVES HERE AND NOWHERE ELSE, for as long as the region is on screen. This is a client
   // component, so this state is never serialized into an RSC flight payload; dismissal drops the reference.
   // What is NOT claimed is that the bytes leave browser memory — a fetch response body lives until GC and no
@@ -257,6 +260,7 @@ export default function PolicyPage() {
         ...(expiresOn === "" ? {} : { expires_at: `${expiresOn}T23:59:59Z` }),
       });
       setMinted(body);
+      setMintOpen(false);
       setKeyReload((n) => n + 1);
     } catch (err: unknown) {
       setMintError(detail(err, "the key could not be minted"));
@@ -429,6 +433,11 @@ export default function PolicyPage() {
         reloadKey={keyReload}
         onRows={setKeyRows}
         note="Metadata only. A key's value is returned by the create call and by nothing else — there is no route that reads one back."
+        action={
+          <button type="button" className="primary" data-testid="key-mint-open" onClick={() => setMintOpen(true)}>
+            + Mint key
+          </button>
+        }
         columns={[
           {
             header: "ID",
@@ -552,78 +561,91 @@ export default function PolicyPage() {
         </p>
       )}
 
-      {/* TODO(component-layer): Dialog — this form is the key panel's primary action wearing a section. See
-          the header for the two shipped guards that hold it here. */}
-      <ResourceForm
-        title="Mint an API key"
-        testId="key-mint"
-        note={
-          <>
-            The value is shown <strong>once</strong>, here, and is retrievable from nowhere afterwards. It is
-            minted into the project selected above; <code>docs/operations/console.md</code> §3 is the recipe
-            for the narrow key this console wants.
-          </>
-        }
-        fields={[
-          {
-            name: "key-expires",
-            label: "Expires on (optional)",
-            kind: "date",
-            value: expiresOn,
-            onChange: setExpiresOn,
-            hint: "The key stops authenticating at the end of this day, UTC. Leave it empty for a key that never expires.",
-            testId: "key-expires-input",
-          },
-        ]}
-        submitLabel="Mint key"
-        submittingLabel="Minting…"
-        submitTestId="key-mint-button"
-        submitting={minting}
-        error={mintError}
-        onSubmit={mintKey}
-      >
-        {/* CHECKBOXES IN A GROUPED FIELDSET, which is the grouping a screen reader reads as one question.
-            ResourceForm's `fields` are single controls with one value; a capability set is neither. */}
-        <fieldset data-testid="key-scopes">
-          <legend>Capabilities</legend>
-          <p className="muted" id="key-scopes-hint">
-            <strong>Selecting nothing mints an UNLIMITED key.</strong> An empty capability set holds every
-            capability (<code>middleware.Scope.HasScope</code>) — it is not a key that can do nothing, it is
-            the bootstrap key&apos;s power in a new credential.
-          </p>
-          <label htmlFor="key-scope-provision">
-            <input
-              id="key-scope-provision"
-              type="checkbox"
-              checked={scopeProvision}
-              data-testid="key-scope-provision"
-              aria-describedby="key-scope-provision-hint"
-              onChange={(e) => setScopeProvision(e.target.checked)}
-            />{" "}
-            <code>provision</code> — the whole admin surface, including <strong>this policy form</strong>
-          </label>
-          <p className="muted" id="key-scope-provision-hint">
-            Organizations, projects, keys, model wiring, environments and tools. A key with this can rewrite
-            the approver list above.
-          </p>
-          <label htmlFor="key-scope-approve">
-            <input
-              id="key-scope-approve"
-              type="checkbox"
-              checked={scopeApprove}
-              data-testid="key-scope-approve"
-              aria-describedby="key-scope-approve-hint"
-              onChange={(e) => setScopeApprove(e.target.checked)}
-            />{" "}
-            <code>approve</code> — deciding a parked tool call, and admitting a machine into a strict pool
-          </label>
-          <p className="muted" id="key-scope-approve-hint">
-            Deliberately <em>not</em> covered by <code>provision</code>: a key that could provision could add
-            itself to the approver list and then approve. Holding this alone is what makes an approver an
-            approver rather than an administrator.
-          </p>
-        </fieldset>
-      </ResourceForm>
+      {/* THE CREATE FORM IS A MODE, AND THE PANEL'S BUTTON IS THE CONTROL THAT ENTERS IT. It sat open under
+          the table on every visit, so an operator who came to READ the key list scrolled past a credential
+          minter to do it. The dialog closes on success, which leaves the one-time value's reveal region as
+          the only thing on screen — the one moment this page has that must not be scrolled past. */}
+      {mintOpen ? (
+        <FormDialog
+          label="Mint an API key"
+          testId="key-mint-dialog"
+          onClose={() => {
+            setMintOpen(false);
+            setMintError("");
+          }}
+        >
+          <ResourceForm
+            title="Mint an API key"
+            testId="key-mint"
+            note={
+              <>
+                The value is shown <strong>once</strong>, here, and is retrievable from nowhere afterwards. It is
+                minted into the project selected above; <code>docs/operations/console.md</code> §3 is the recipe
+                for the narrow key this console wants.
+              </>
+            }
+            fields={[
+              {
+                name: "key-expires",
+                label: "Expires on (optional)",
+                kind: "date",
+                value: expiresOn,
+                onChange: setExpiresOn,
+                hint: "The key stops authenticating at the end of this day, UTC. Leave it empty for a key that never expires.",
+                testId: "key-expires-input",
+              },
+            ]}
+            submitLabel="Mint key"
+            submittingLabel="Minting…"
+            submitTestId="key-mint-button"
+            submitting={minting}
+            error={mintError}
+            onSubmit={mintKey}
+          >
+            {/* CHECKBOXES IN A GROUPED FIELDSET, which is the grouping a screen reader reads as one question.
+                ResourceForm's `fields` are single controls with one value; a capability set is neither. */}
+            <fieldset data-testid="key-scopes">
+              <legend>Capabilities</legend>
+              <p className="muted" id="key-scopes-hint">
+                <strong>Selecting nothing mints an UNLIMITED key.</strong> An empty capability set holds every
+                capability (<code>middleware.Scope.HasScope</code>) — it is not a key that can do nothing, it is
+                the bootstrap key&apos;s power in a new credential.
+              </p>
+              <label htmlFor="key-scope-provision">
+                <input
+                  id="key-scope-provision"
+                  type="checkbox"
+                  checked={scopeProvision}
+                  data-testid="key-scope-provision"
+                  aria-describedby="key-scope-provision-hint"
+                  onChange={(e) => setScopeProvision(e.target.checked)}
+                />{" "}
+                <code>provision</code> — the whole admin surface, including <strong>this policy form</strong>
+              </label>
+              <p className="muted" id="key-scope-provision-hint">
+                Organizations, projects, keys, model wiring, environments and tools. A key with this can rewrite
+                the approver list above.
+              </p>
+              <label htmlFor="key-scope-approve">
+                <input
+                  id="key-scope-approve"
+                  type="checkbox"
+                  checked={scopeApprove}
+                  data-testid="key-scope-approve"
+                  aria-describedby="key-scope-approve-hint"
+                  onChange={(e) => setScopeApprove(e.target.checked)}
+                />{" "}
+                <code>approve</code> — deciding a parked tool call, and admitting a machine into a strict pool
+              </label>
+              <p className="muted" id="key-scope-approve-hint">
+                Deliberately <em>not</em> covered by <code>provision</code>: a key that could provision could add
+                itself to the approver list and then approve. Holding this alone is what makes an approver an
+                approver rather than an administrator.
+              </p>
+            </fieldset>
+          </ResourceForm>
+        </FormDialog>
+      ) : null}
 
 
       {/* THE CEILING THIS SCREEN CANNOT CLOSE (CON-P2). Minting a narrow key here does not narrow the key the
