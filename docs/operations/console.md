@@ -674,6 +674,17 @@ Same pass, same three moves. Measured before and after on the built console (202
 rendered characters with 1650 of grey prose and an eight-field registration form open on the page, under two
 standing paragraphs.
 
+**Provider + repository identity are the authoritative name.** A display name or a URL is not trusted as
+one anywhere in this system, which is why the list shows the identity rather than the clone URL.
+
+**No credential is on this surface, and it is structural rather than a courtesy.**
+`RepositoryBindingCreate` carries a `connection_ref` and no credential field at all
+(`api/repository_bindings.go:28-39`), and the read side of `secret_refs` projects `{name, version,
+updated_at}` with no value (`identity/secrets.go`). The strongest thing this screen can leak is the NAME of
+a credential — the name an operator chose. The ref is **chosen** from the secret-ref list and never typed:
+a typo'd ref is accepted by a form and then fails at CLONE TIME, inside a run, with a refusal about git
+authentication — as far from the field that caused it as a refusal can get.
+
 **Registering a binding proves nothing.** Nothing is cloned on that screen, no credential is exercised and
 no permission is checked — a wrong provider, a wrong identity or a revoked credential shows up at CLONE
 TIME, inside a run. That sentence is now in the create dialog, where somebody is about to register one,
