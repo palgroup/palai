@@ -5,7 +5,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { type DynamicConsoleRoute } from "../lib/routes";
 import { DIVERGENCE_BY_ID } from "./divergences.mjs";
-import { CONSOLE_PASSWORD, IS_REAL, NEXT_PORT, PROFILE } from "./constants";
+import { CONSOLE_PASSWORD, IS_REAL, NEXT_PORT, PROFILE, UPSTREAM } from "./constants";
 
 // skipOnReal is the ONLY way a spec may decline to run on the real profile, and it makes that decision
 // expensive on purpose (E19 T7).
@@ -172,4 +172,23 @@ export async function runToTerminal(page: Page): Promise<void> {
     await expect(page.getByTestId("approval-panel")).toHaveCount(0);
   }
   await expect(page.getByTestId("terminal-status")).toContainText(/completed/i, { timeout: 60_000 });
+}
+
+/**
+ * resetFakeFixture restores the fake control plane's mutable collections to the fixture as authored.
+ *
+ * IT EXISTS BECAUSE THE FIXTURE IS ONE PROCESS AND THE SUITE RUNS TWO PROJECTS OVER IT. `playwright.config`
+ * declares chromium-fake and chromium-fake-dark, both pointed at a single `node tests/fake-control-plane.mjs`,
+ * and a spec that writes — PATCH a session's name, publish a tool revision — leaves that write in place for
+ * whichever project runs second. Measured 2026-08-01: sessions.spec.ts failed 16 assertions in the dark
+ * project and passed 22/22 when the dark project ran alone. mcp-tools.spec.ts had already shown the same
+ * shape three times over `trev_console_0001`.
+ *
+ * A file that MUTATES shared fixture state calls this in a `beforeAll`. A file that only reads does not need
+ * it. On the real profile it is a no-op: there is no fake to reset, and a compose stack's state is the point.
+ */
+export async function resetFakeFixture(): Promise<void> {
+  if (PROFILE === "real") return;
+  const res = await fetch(`${UPSTREAM}/__reset`, { method: "POST" });
+  if (!res.ok) throw new Error(`the fake fixture refused to reset (${res.status}) — a spec that believes it is isolated and is not will fail somewhere else entirely`);
 }

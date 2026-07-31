@@ -4,7 +4,7 @@ import { shortId } from "../components/Session";
 import { compactTokens, LANE_LABEL, type SessionRow } from "../lib/sessions";
 import { laneFor } from "../lib/timeline";
 import { NEXT_PORT } from "./constants";
-import { announceProfile, sessionHeaders, signIn, skipOnReal } from "./profile";
+import { announceProfile, resetFakeFixture, sessionHeaders, signIn, skipOnReal } from "./profile";
 
 // THE TWO SESSION SCREENS, DRIVEN THROUGH THE BROWSER (E29).
 //
@@ -17,6 +17,11 @@ import { announceProfile, sessionHeaders, signIn, skipOnReal } from "./profile";
 // The API's answer is fetched through the CONSOLE'S RELAY with the browser's own session cookie, so even the
 // cross-check travels the public-API-only path and no spec here ever holds a credential.
 test.beforeAll(() => announceProfile("sessions.spec.ts"));
+
+// THIS FILE MUTATES THE SHARED FIXTURE — it renames sessions — and the suite runs two colour-scheme
+// projects over ONE fake process, so the second project inherits the first one's renames. It did: 16
+// assertions failed here in chromium-fake-dark and all 22 passed when that project ran alone (2026-08-01).
+test.beforeAll(resetFakeFixture);
 test.beforeEach(async ({ page }) => signIn(page));
 
 const ORIGIN = `http://127.0.0.1:${NEXT_PORT}`;

@@ -1162,6 +1162,16 @@ const SESSIONS = Array.from({ length: 24 }, (_, i) => {
 for (const row of SESSIONS) sessions.set(row.id, { approved: true, denied: false, model: MODEL });
 sessions.set(SESSIONS[REFUSED_INDEX].id, { approved: false, denied: true, model: MODEL });
 
+// THE PRISTINE COPY, AND WHY IT EXISTS: this fixture is ONE process shared by BOTH colour-scheme projects,
+// and PATCH /v1/sessions/{id} renames a row in place. So the light project renamed sessions and the dark
+// project inherited the renames — 16 of sessions.spec.ts's assertions failed in the second project and
+// passed (22/22) when that project ran alone. Measured 2026-08-01.
+//
+// That is not a flake: it is one project's writes leaking into another project's reads through a fixture
+// with no boundary between them. The same shape already cost mcp-tools.spec.ts three dark-only failures
+// when the light project published trev_console_0001.
+const SESSIONS_PRISTINE = structuredClone(SESSIONS);
+
 /** findSession is the item read AND the write path's lookup — one place decides what "no such session" means. */
 const findSession = (id) => SESSIONS.find((s) => s.id === id);
 
@@ -2411,6 +2421,15 @@ const server = createServer((request, response) => {
 
   if (method === "GET" && pathname === "/healthz") return sendJSON(response, 200, { status: "ok" });
   if (method === "GET" && pathname === "/__introspect") return sendJSON(response, 200, introspect);
+  // __reset restores every collection a test can MUTATE, so a spec file can start from the fixture as
+  // authored rather than from whatever the previous file — or the previous colour-scheme project — left
+  // behind. It is deliberately explicit about WHAT it restores: a reset that silently misses a collection
+  // is worse than none, because the file that calls it then believes it is isolated.
+  if (method === "POST" && pathname === "/__reset") {
+    SESSIONS.length = 0;
+    for (const row of structuredClone(SESSIONS_PRISTINE)) SESSIONS.push(row);
+    return sendJSON(response, 200, { reset: ["sessions"], count: SESSIONS.length });
+  }
   // The route table as this server dispatches from it — the runtime half of the conformance sweep's
   // "the table IS the surface" claim (the sweep also imports ROUTES directly, and asserts the two agree).
   if (method === "GET" && pathname === "/__routes") {

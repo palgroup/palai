@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { IS_REAL } from "./constants";
-import { announceProfile, signIn, skipOnReal } from "./profile";
+import { announceProfile, resetFakeFixture, signIn, skipOnReal } from "./profile";
 
 // THE MCP CONNECTION AND TOOL-APPROVAL SCREEN (E25 T7, plan §T7, CON-007).
 //
@@ -25,6 +25,11 @@ import { announceProfile, signIn, skipOnReal } from "./profile";
 // field.
 
 announceProfile("mcp-tools.spec.ts");
+
+// THIS FILE MUTATES THE SHARED FIXTURE — it renames sessions — and the suite runs two colour-scheme
+// projects over ONE fake process, so the second project would inherit the first one's renames. It did:
+// 16 assertions failed here in chromium-fake-dark and all 22 passed when that project ran alone.
+test.beforeAll(resetFakeFixture);
 
 // THE CONNECTION NAME IS THIS FILE'S ISOLATION KEY, AND IT NEEDED A SECOND AXIS (console design pass).
 //
