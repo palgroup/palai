@@ -209,7 +209,10 @@ export default function HistoryPage() {
 
       {selected === null ? (
         <section className="panel" aria-labelledby="history-hint-h">
-          <h2 id="history-hint-h">No run selected</h2>
+          {/* The region's name, not the state's. The empty state below carries the state, and two headings
+              saying "No run selected" one above the other is the same duplication app/approvals/page.tsx
+              removed an hour earlier. */}
+          <h2 id="history-hint-h">Run detail</h2>
           <div className="empty" data-testid="history-hint">
             <p className="empty-title">{selectedID === "" ? "No run selected" : "That run is not on this page"}</p>
             <p className="empty-body">
